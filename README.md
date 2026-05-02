@@ -1,6 +1,6 @@
-# Matron iOS
+# Matron
 
-Native iOS Matrix client, bot-first, App Store distributable. Built on [matrix-rust-sdk](https://github.com/matrix-org/matrix-rust-sdk).
+Native Matrix client for iOS and macOS, bot-first, App Store distributable on both platforms. Built on [matrix-rust-sdk](https://github.com/matrix-org/matrix-rust-sdk).
 
 Part of the [Matron](https://github.com/matronhq) ecosystem.
 
@@ -21,17 +21,26 @@ xcodegen generate
 open Matron.xcodeproj
 ```
 
-Select the `Matron` scheme, choose an iOS 17+ simulator or device, build & run.
+- For iPhone/iPad: select the `Matron` scheme, choose an iOS 17+ simulator or device, build & run.
+- For macOS: select the `MatronMac` scheme, build & run on the host (macOS 14+).
 
 ## Tests
 
 ```bash
+# iOS
 xcodebuild test -workspace Matron.xcworkspace -scheme Matron -destination 'platform=iOS Simulator,name=iPhone 15'
+
+# macOS
+xcodebuild test -workspace Matron.xcworkspace -scheme MatronMac -destination 'platform=macOS'
 ```
 
 ## License
 
-Apache 2.0. See `LICENSE`.
+AGPL-3.0 with commercial licensing available by arrangement. See `LICENSE`, `NOTICE`, and `CONTRIBUTING.md`.
+
+## Contributing
+
+External contributions require a signed CLA — see `CONTRIBUTING.md` and `.cla.md`. The `cla-assistant` GitHub bot prompts for signature on first PR.
 
 ## Documentation
 
