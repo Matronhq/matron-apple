@@ -4,10 +4,20 @@ import MatronModels
 import MatronViewModels
 
 /// iOS chat-list screen. Phase 2 wires `NavigationLink(value:)` rows that
-/// push a `ChatView` via `navigationDestination(for: ChatSummary.self)`.
+/// push a `ChatView` via `navigationDestination(for: ChatSummary.ID.self)`.
 /// The hosting `NavigationStack` lives in `MatronApp` so the environment
 /// values (`appDependencies`, `currentSession`) propagate into the
 /// destination column.
+///
+/// The destination value is the `ChatSummary.ID` (a stable `String`), not
+/// the full `ChatSummary` struct. `ChatSummary` auto-synthesises
+/// `Hashable` from *all* stored properties — including `lastActivity`
+/// and `unreadCount` — so a destination keyed on the struct receives a
+/// snapshot frozen at navigation time. When the underlying snapshot
+/// updates (a new message arrives, unread count changes), the pushed
+/// destination still holds the stale struct. Mirrors the round-3 fix to
+/// `MacChatListView` (`currentSummary(for:)`): the destination looks up
+/// the current `ChatSummary` from `viewModel.groups` by id.
 ///
 /// Long-press / swipe context menu surfaces Mute + Leave actions wired to
 /// `ChatService.mute(roomID:)` / `.leave(roomID:)`. Pull-to-refresh hits
@@ -40,7 +50,10 @@ struct ChatListView: View {
                     ForEach(viewModel.groups) { group in
                         Section(group.group.rawValue) {
                             ForEach(group.summaries) { summary in
-                                NavigationLink(value: summary) {
+                                // Navigate by id (stable `String`), not the
+                                // full struct — see file header for the
+                                // stale-capture rationale.
+                                NavigationLink(value: summary.id) {
                                     ChatRow(summary: summary)
                                 }
                                 .contextMenu {
@@ -106,8 +119,8 @@ struct ChatListView: View {
                 }
             )
         }
-        .navigationDestination(for: ChatSummary.self) { summary in
-            chatDestination(for: summary)
+        .navigationDestination(for: ChatSummary.ID.self) { id in
+            chatDestination(for: id)
         }
         .task { viewModel.start() }
         .onDisappear { viewModel.cancel() }
@@ -116,9 +129,16 @@ struct ChatListView: View {
     /// Builds the `ChatView` destination for a tapped row. Wrapped in a
     /// helper so `body` stays readable and the `nil`-environment branch
     /// doesn't leak SwiftUI conditional-content quirks into the main flow.
+    ///
+    /// Resolves the destination's `ChatSummary` from `viewModel.groups`
+    /// by id rather than capturing it at navigation time — see the file
+    /// header for the stale-capture rationale. If the lookup returns
+    /// `nil` (the room left the snapshot while the user was tapping),
+    /// the `Session unavailable`-style placeholder shows the same way
+    /// it does for a missing environment.
     @ViewBuilder
-    private func chatDestination(for summary: ChatSummary) -> some View {
-        if let deps, let session {
+    func chatDestination(for id: ChatSummary.ID) -> some View {
+        if let deps, let session, let summary = currentSummary(for: id) {
             let timelineSvc = deps.timelineService(for: session, roomID: summary.id)
             let mediaSvc = deps.mediaService(for: session)
             let chatVM = ChatViewModel(roomID: summary.id, timeline: timelineSvc, media: mediaSvc)
@@ -136,6 +156,24 @@ struct ChatListView: View {
                 description: Text("Sign in again to open this chat.")
             )
         }
+    }
+
+    /// Looks up the current `ChatSummary` for a navigation id across all
+    /// groups. Returns `nil` when the room has been removed from the
+    /// latest snapshot (e.g. user left from another device while the
+    /// destination was on screen). Re-evaluated on every
+    /// `viewModel.groups` change because `@Observable` triggers `body`
+    /// re-render — so the destination always reflects the latest summary
+    /// fields (title, unread count, last activity) without holding the
+    /// stale value frozen at navigation time. Mirrors
+    /// `MacChatListView.currentSummary(for:)`.
+    func currentSummary(for id: ChatSummary.ID) -> ChatSummary? {
+        for group in viewModel.groups {
+            if let match = group.summaries.first(where: { $0.id == id }) {
+                return match
+            }
+        }
+        return nil
     }
 
     /// Fires a chat-service action without awaiting its result. Used for

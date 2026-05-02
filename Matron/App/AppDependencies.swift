@@ -23,7 +23,16 @@ final class AppDependencies {
     /// preserves the SDK timeline handle and the in-memory snapshot the
     /// diff listener has built up — re-creating would cause a UI flicker
     /// on every push/pop.
-    private var timelineCache: [TimelineCacheKey: TimelineService] = [:]
+    ///
+    /// Bounded with an LRU cap (`timelineCacheLimit`) so a long session
+    /// that visits many rooms doesn't accumulate one SDK timeline handle
+    /// (+ in-memory snapshot) per room forever. `mediaCache` and
+    /// `syncCache` are bounded by user-count, but the timeline cache
+    /// scales with rooms-visited, which is unbounded over a session.
+    /// 16 entries comfortably covers the recently-active rooms most users
+    /// flip between; older entries fall out and are reconstructed on next
+    /// visit (a cheap rebuild from the SDK's persisted store).
+    private var timelineCache: LRUCache<TimelineCacheKey, TimelineService> = .init(limit: AppDependencies.timelineCacheLimit)
 
     init() {
         // iOS shares its crypto store + search DB with the NSE via the App
@@ -87,7 +96,8 @@ final class AppDependencies {
     /// handle — that handle owns the in-memory snapshot, so re-creating
     /// it would force the row diff listener to rebuild from scratch and
     /// flicker the UI on every push/pop. Mirrors the `syncCache`
-    /// per-session strategy.
+    /// per-session strategy, but bounded by `timelineCacheLimit` LRU
+    /// entries so the cache doesn't grow unbounded with rooms-visited.
     func timelineService(for session: UserSession, roomID: String) -> TimelineService {
         let key = TimelineCacheKey(userID: session.userID, roomID: roomID)
         if let existing = timelineCache[key] { return existing }
@@ -100,6 +110,24 @@ final class AppDependencies {
         timelineCache[key] = svc
         return svc
     }
+
+    /// Test seam: how many distinct rooms the timeline cache holds before
+    /// LRU eviction begins. Visible to `AppDependenciesTests` so the
+    /// eviction invariant is asserted against a stable bound.
+    static let timelineCacheLimit = 16
+
+    /// Test seam: number of entries currently held by the timeline cache.
+    /// Used by `AppDependenciesTests` to verify the LRU bound holds after
+    /// a barrage of distinct rooms.
+    var timelineCacheCount: Int { timelineCache.count }
+
+    /// Test seam: whether the timeline cache currently holds an entry for
+    /// `(userID, roomID)`. The cached value type is a protocol so we
+    /// can't expose it directly without leaking concrete `TimelineService`
+    /// identity — this boolean is enough to assert eviction.
+    func timelineCacheContains(userID: String, roomID: String) -> Bool {
+        timelineCache.contains(TimelineCacheKey(userID: userID, roomID: roomID))
+    }
 }
 
 /// Composite key for per-room timeline caching. Lives outside
@@ -108,6 +136,68 @@ final class AppDependencies {
 private struct TimelineCacheKey: Hashable {
     let userID: String
     let roomID: String
+}
+
+/// Tiny, ordered, fixed-capacity cache. Insertions and lookups update
+/// recency; once `count > limit`, the least-recently-used entry is
+/// evicted. Implementation is an `Array` of keys (recency-ordered, MRU
+/// last) plus a `Dictionary` of values — O(n) lookups for the recency
+/// move, but `n` is bounded by `limit` (16) so this is cheap and avoids
+/// pulling in `OrderedCollections`. Lives in this file because it's the
+/// only consumer.
+///
+/// Not `Sendable` — accessed only from `@MainActor`-isolated
+/// `AppDependencies`. `NSCache` was the alternative but it requires
+/// bridging `Hashable` keys to `NSObject`, and it can evict opaquely
+/// (memory-pressure callbacks), which would break the tight test we
+/// want for the LRU bound.
+struct LRUCache<Key: Hashable, Value> {
+    private let limit: Int
+    private var values: [Key: Value] = [:]
+    private var recency: [Key] = []
+
+    init(limit: Int) {
+        precondition(limit > 0, "LRU limit must be positive")
+        self.limit = limit
+    }
+
+    var count: Int { values.count }
+
+    func contains(_ key: Key) -> Bool { values[key] != nil }
+
+    subscript(key: Key) -> Value? {
+        mutating get {
+            guard let value = values[key] else { return nil }
+            // Touch — move to MRU end so this entry survives the next
+            // eviction.
+            if let i = recency.firstIndex(of: key) {
+                recency.remove(at: i)
+            }
+            recency.append(key)
+            return value
+        }
+        set {
+            if let newValue {
+                if values[key] == nil {
+                    recency.append(key)
+                } else if let i = recency.firstIndex(of: key) {
+                    // Existing key — touch to MRU.
+                    recency.remove(at: i)
+                    recency.append(key)
+                }
+                values[key] = newValue
+                while recency.count > limit {
+                    let evict = recency.removeFirst()
+                    values.removeValue(forKey: evict)
+                }
+            } else {
+                values.removeValue(forKey: key)
+                if let i = recency.firstIndex(of: key) {
+                    recency.remove(at: i)
+                }
+            }
+        }
+    }
 }
 
 // MARK: - SwiftUI Environment

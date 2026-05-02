@@ -234,43 +234,52 @@ final class TimelineSnapshotListener: TimelineListener, @unchecked Sendable {
     /// yield the resulting `[TimelineItem]` to the AsyncStream consumer.
     /// Synchronous (matches `TimelineListener`'s requirement) so this
     /// runs on whatever thread the SDK calls us on.
+    ///
+    /// The snapshot is built and copied out *while* the lock is held, but
+    /// `continuation.yield(_:)` runs *after* the lock is released. The
+    /// AsyncStream consumer's continuation can run synchronously (or stall
+    /// under back-pressure); yielding inside the lock would block the
+    /// SDK's timeline thread waiting for the consumer to drain.
     func onUpdate(diff: [TimelineDiff]) {
-        lock.lock()
-        defer { lock.unlock() }
-        for d in diff {
-            switch d {
-            case .append(let values):
-                for v in values { upsertAtEnd(map(v)) }
-            case .clear:
-                byID.removeAll()
-                order.removeAll()
-            case .pushFront(let value):
-                insert(map(value), at: 0)
-            case .pushBack(let value):
-                upsertAtEnd(map(value))
-            case .popFront:
-                guard !order.isEmpty else { break }
-                let id = order.removeFirst()
-                byID.removeValue(forKey: id)
-            case .popBack:
-                guard !order.isEmpty else { break }
-                let id = order.removeLast()
-                byID.removeValue(forKey: id)
-            case .insert(let index, let value):
-                insert(map(value), at: Int(index))
-            case .set(let index, let value):
-                replace(at: Int(index), with: map(value))
-            case .remove(let index):
-                removeAt(Int(index))
-            case .truncate(let length):
-                truncate(to: Int(length))
-            case .reset(let values):
-                byID.removeAll()
-                order.removeAll()
-                for v in values { upsertAtEnd(map(v)) }
+        let snapshot: [TimelineItem] = {
+            lock.lock()
+            defer { lock.unlock() }
+            for d in diff {
+                switch d {
+                case .append(let values):
+                    for v in values { upsertAtEnd(map(v)) }
+                case .clear:
+                    byID.removeAll()
+                    order.removeAll()
+                case .pushFront(let value):
+                    insert(map(value), at: 0)
+                case .pushBack(let value):
+                    upsertAtEnd(map(value))
+                case .popFront:
+                    guard !order.isEmpty else { break }
+                    let id = order.removeFirst()
+                    byID.removeValue(forKey: id)
+                case .popBack:
+                    guard !order.isEmpty else { break }
+                    let id = order.removeLast()
+                    byID.removeValue(forKey: id)
+                case .insert(let index, let value):
+                    insert(map(value), at: Int(index))
+                case .set(let index, let value):
+                    replace(at: Int(index), with: map(value))
+                case .remove(let index):
+                    removeAt(Int(index))
+                case .truncate(let length):
+                    truncate(to: Int(length))
+                case .reset(let values):
+                    byID.removeAll()
+                    order.removeAll()
+                    for v in values { upsertAtEnd(map(v)) }
+                }
             }
-        }
-        continuation.yield(order.compactMap { byID[$0] })
+            return order.compactMap { byID[$0] }
+        }()
+        continuation.yield(snapshot)
     }
 
     // MARK: - Snapshot mutators
@@ -444,11 +453,15 @@ final class TimelineSnapshotListener: TimelineListener, @unchecked Sendable {
             return .text(body: c.body, formattedHTML: c.formatted?.body)
         case .image(let c):
             let url = URL(string: c.source.url())
-            let size = c.info?.size.map { Int64($0) } ?? nil
+            // `c.info?.size.map { Int64($0) }` already yields `Int64?` —
+            // the previous `?? nil` was a no-op and read like an intent
+            // to coalesce when there's nothing to coalesce against.
+            let size = c.info?.size.map { Int64($0) }
             return .image(url: url, caption: c.caption, sizeBytes: size)
         case .file(let c):
             let url = URL(string: c.source.url())
-            let size = c.info?.size.map { Int64($0) } ?? nil
+            // See `.image` above re: dropped `?? nil` — same reasoning.
+            let size = c.info?.size.map { Int64($0) }
             return .file(url: url, filename: c.filename, sizeBytes: size)
         case .audio:
             return .unknown(eventType: "m.audio")

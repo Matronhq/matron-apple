@@ -22,7 +22,12 @@ final class AppDependencies {
     /// diff listener has built up — re-creating would force the listener
     /// to rebuild from scratch and flicker the UI on every selection
     /// change. Mirrors the iOS `AppDependencies` strategy.
-    private var timelineCache: [TimelineCacheKey: TimelineService] = [:]
+    ///
+    /// Bounded with an LRU cap (`timelineCacheLimit`) so a long session
+    /// that flips between many sidebar rooms doesn't accumulate one SDK
+    /// timeline handle per room forever. See iOS `AppDependencies` for
+    /// the full rationale.
+    private var timelineCache: LRUCache<TimelineCacheKey, TimelineService> = .init(limit: AppDependencies.timelineCacheLimit)
 
     init() {
         // Mac uses Application Support — single-process, no App Group.
@@ -71,7 +76,7 @@ final class AppDependencies {
     }
 
     /// Per-room `TimelineService` factory. See iOS `AppDependencies` for
-    /// the full caching rationale.
+    /// the full caching rationale (now bounded by `timelineCacheLimit`).
     func timelineService(for session: UserSession, roomID: String) -> TimelineService {
         let key = TimelineCacheKey(userID: session.userID, roomID: roomID)
         if let existing = timelineCache[key] { return existing }
@@ -84,11 +89,73 @@ final class AppDependencies {
         timelineCache[key] = svc
         return svc
     }
+
+    /// Test seam — see iOS `AppDependencies.timelineCacheLimit` for the
+    /// rationale and the eviction invariant.
+    static let timelineCacheLimit = 16
+
+    /// Test seam — see iOS `AppDependencies.timelineCacheCount`.
+    var timelineCacheCount: Int { timelineCache.count }
+
+    /// Test seam — see iOS `AppDependencies.timelineCacheContains(...)`.
+    func timelineCacheContains(userID: String, roomID: String) -> Bool {
+        timelineCache.contains(TimelineCacheKey(userID: userID, roomID: roomID))
+    }
 }
 
 private struct TimelineCacheKey: Hashable {
     let userID: String
     let roomID: String
+}
+
+/// Tiny, ordered, fixed-capacity cache. See `Matron/App/AppDependencies.swift`
+/// (iOS) for the full rationale — duplicated here because the Mac
+/// `AppDependencies` is a separate per-target type. If a third caller
+/// ever needs this, hoist into a shared utility module.
+struct LRUCache<Key: Hashable, Value> {
+    private let limit: Int
+    private var values: [Key: Value] = [:]
+    private var recency: [Key] = []
+
+    init(limit: Int) {
+        precondition(limit > 0, "LRU limit must be positive")
+        self.limit = limit
+    }
+
+    var count: Int { values.count }
+
+    func contains(_ key: Key) -> Bool { values[key] != nil }
+
+    subscript(key: Key) -> Value? {
+        mutating get {
+            guard let value = values[key] else { return nil }
+            if let i = recency.firstIndex(of: key) {
+                recency.remove(at: i)
+            }
+            recency.append(key)
+            return value
+        }
+        set {
+            if let newValue {
+                if values[key] == nil {
+                    recency.append(key)
+                } else if let i = recency.firstIndex(of: key) {
+                    recency.remove(at: i)
+                    recency.append(key)
+                }
+                values[key] = newValue
+                while recency.count > limit {
+                    let evict = recency.removeFirst()
+                    values.removeValue(forKey: evict)
+                }
+            } else {
+                values.removeValue(forKey: key)
+                if let i = recency.firstIndex(of: key) {
+                    recency.remove(at: i)
+                }
+            }
+        }
+    }
 }
 
 // MARK: - SwiftUI Environment
