@@ -15,3 +15,4 @@ Started 2026-05-02. Phase 1 shipped; this branch builds on top.
 See the plan for the canonical task list. Progress updates land here per push so a PR reviewer can scan a single file for context.
 
 - [x] **Task 1** — MarkdownUI + swift-snapshot-testing wired into `MatronShared/Package.swift`; added `DesignSystemSnapshotTests` test target. `MatronDesignSystem` was already declared in `project.yml` from Phase 1, so no project-yml churn.
+- [x] **Task 2** — `MarkdownText` primitive shipped with `Theme.matron` (system font, monospaced inline code, copy-button code blocks, accent-coloured underlined links). 4 snapshot tests × 3 macOS variants = 12 baselines recorded. Plan deviation: `swift-snapshot-testing` only ships a SwiftUI-aware `.image` strategy on iOS/tvOS, so on macOS the `assertVariants` helper hosts the SwiftUI view in `NSHostingView` and snapshots that. iOS variants will be wired up when this suite gets a host xcodebuild scheme.
