@@ -50,6 +50,14 @@ jobs:
             -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
             CODE_SIGNING_ALLOWED=NO
 
+      - name: Run MatronTests (iOS)
+        run: |
+          xcodebuild test \
+            -project Matron.xcodeproj \
+            -scheme MatronTests \
+            -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
+            CODE_SIGNING_ALLOWED=NO
+
   mac-build-and-test:
     runs-on: macos-15
     needs: shared-package-tests

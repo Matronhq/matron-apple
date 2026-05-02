@@ -71,13 +71,20 @@ public final class AuthServiceLive: AuthService, @unchecked Sendable {
                 initialDeviceName: initialDeviceDisplayName,
                 deviceId: nil
             )
-        } catch {
-            // Genuine login failures come up as ClientError.matrixApiError with
-            // M_FORBIDDEN / M_USER_DEACTIVATED. Anything else is worth surfacing.
-            let description = String(describing: error)
-            if description.contains("M_FORBIDDEN") || description.contains("M_INVALID") || description.contains("WrongPassword") {
+        } catch let clientError as ClientError {
+            // Match on the typed ErrorKind rather than substring-matching the
+            // description. .forbidden = M_FORBIDDEN (wrong password / no
+            // permission); .userDeactivated = M_USER_DEACTIVATED (account
+            // locked). Anything else propagates verbatim so the UI shows the
+            // real cause instead of a generic "Invalid credentials".
+            switch clientError {
+            case .MatrixApi(kind: .forbidden, _, _, _),
+                 .MatrixApi(kind: .userDeactivated, _, _, _):
                 throw AuthError.invalidCredentials
+            default:
+                throw AuthError.unexpected("login failed: \(clientError)")
             }
+        } catch {
             throw AuthError.unexpected("login failed: \(error)")
         }
         do {

@@ -16,7 +16,7 @@ public enum KeychainError: Error, LocalizedError {
     }
 }
 
-public struct KeychainStore {
+public struct KeychainStore: SessionStore {
     private let service: String
     private let accessGroup: String?
 
