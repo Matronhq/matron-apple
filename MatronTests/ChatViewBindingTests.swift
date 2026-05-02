@@ -26,6 +26,14 @@ private final class FakeTimelineForChat: TimelineService, @unchecked Sendable {
     func markAsRead() async throws { markReadCalls += 1 }
 }
 
+/// No-op MediaService for tests that don't exercise image resolution. The
+/// view-model tests in `MatronShared/Tests/ViewModelTests/` cover the
+/// `MediaService → resolvedImages` path; the view-binding tests here only
+/// need the protocol satisfied to construct a `ChatViewModel`.
+private final class FakeMediaForChat: MediaService, @unchecked Sendable {
+    func image(for mxc: URL) async -> Data? { nil }
+}
+
 final class ChatViewBindingTests: XCTestCase {
 
     @MainActor
@@ -36,7 +44,7 @@ final class ChatViewBindingTests: XCTestCase {
             kind: .text(body: "hi", formattedHTML: nil), isOwn: false
         )
         fake.snapshotsToEmit = [[item]]
-        let chatVM = ChatViewModel(roomID: "!r:s", timeline: fake)
+        let chatVM = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaForChat())
         let composerVM = ComposerViewModel(timeline: fake, commands: [])
 
         // Instantiating the view exercises the @State + binding wiring at
@@ -60,7 +68,7 @@ final class ChatViewBindingTests: XCTestCase {
     @MainActor
     func test_view_initialises_withProvidedTitle_andCallback() {
         let fake = FakeTimelineForChat()
-        let chatVM = ChatViewModel(roomID: "!r:s", timeline: fake)
+        let chatVM = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaForChat())
         let composerVM = ComposerViewModel(timeline: fake, commands: [])
 
         var profileTaps = 0

@@ -24,7 +24,7 @@ struct ChatView: View {
                 ScrollView {
                     LazyVStack(spacing: 8) {
                         ForEach(viewModel.items) { item in
-                            TimelineItemView(item: item)
+                            TimelineItemView(item: item, resolveImage: { viewModel.image(for: $0) })
                                 .id(item.id)
                                 .contextMenu {
                                     if case .text(let body, _) = item.kind {

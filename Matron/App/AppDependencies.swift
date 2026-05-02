@@ -57,4 +57,12 @@ final class AppDependencies {
             sync: syncService(for: session)
         )
     }
+
+    /// SDK-backed `MediaService` that resolves `mxc://` URLs into bytes via
+    /// `Client.getMediaContent`. Caching is per-instance (`NSCache` inside
+    /// `MediaServiceLive`) — callers that want a single shared cache across
+    /// rooms should hold onto one instance for the duration of the session.
+    func mediaService(for session: UserSession) -> MediaService {
+        MediaServiceLive(provider: clientProvider, session: session)
+    }
 }

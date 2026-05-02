@@ -46,4 +46,10 @@ final class AppDependencies {
             sync: syncService(for: session)
         )
     }
+
+    /// SDK-backed `MediaService` that resolves `mxc://` URLs into bytes via
+    /// `Client.getMediaContent`. See iOS `AppDependencies` for caching notes.
+    func mediaService(for session: UserSession) -> MediaService {
+        MediaServiceLive(provider: clientProvider, session: session)
+    }
 }

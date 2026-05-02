@@ -8,11 +8,18 @@ import MatronDesignSystem
 /// horizontal notices instead of full bubbles so they read as ambient
 /// context (member joins, profile updates, unsupported event types).
 ///
-/// Image attachments currently render with a placeholder — Task 12b adds a
-/// `MediaService` and a `[URL: Image]` cache on `ChatViewModel` so the
-/// resolved image can be passed in here.
+/// Image attachments are resolved through the parent's `resolveImage`
+/// closure (typically `ChatViewModel.image(for:)`). The closure returns
+/// `nil` on first call (cache miss) and kicks off a background fetch;
+/// once `ChatViewModel.resolvedImages` updates, SwiftUI re-evaluates the
+/// row and the resolved `Image` is handed to `AttachmentImage`.
 struct TimelineItemView: View {
     let item: TimelineItem
+    /// Optional resolver for `mxc://` image URLs. `nil` keeps the legacy
+    /// placeholder rendering for previews and tests that don't wire up a
+    /// `ChatViewModel`. Production usage in `ChatView` always passes
+    /// `viewModel.image(for:)`.
+    var resolveImage: ((URL) -> Image?)? = nil
 
     var body: some View {
         switch item.kind {
@@ -24,13 +31,13 @@ struct TimelineItemView: View {
                 MarkdownText(body)
             }
 
-        case .image(_, let caption, let sizeBytes):
+        case .image(let url, let caption, let sizeBytes):
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
                 senderLabel: item.isOwn ? nil : displayName(for: item.sender)
             ) {
                 AttachmentImage(
-                    image: nil,
+                    image: resolvedImage(for: url),
                     placeholder: "Image",
                     caption: caption ?? sizeBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
                 )
@@ -69,5 +76,13 @@ struct TimelineItemView: View {
     /// land in the SDK bridge.
     private func displayName(for senderID: String) -> String {
         senderID.split(separator: ":").first.map(String.init) ?? senderID
+    }
+
+    /// Resolves an image URL via the injected `resolveImage` closure if
+    /// present. Returns `nil` for previews/tests, which falls through to
+    /// `AttachmentImage`'s placeholder rendering.
+    private func resolvedImage(for url: URL?) -> Image? {
+        guard let url, let resolveImage else { return nil }
+        return resolveImage(url)
     }
 }
