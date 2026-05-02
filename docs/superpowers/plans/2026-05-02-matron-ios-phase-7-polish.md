@@ -48,7 +48,11 @@ matron-iOS-app/
 │   ├── Appfile
 │   ├── Fastfile
 │   └── Snapfile
-└── manual-tests.md                         MODIFIED — final regression checklist
+├── docs/manual-tests.md                    NEW — final regression checklist (per spec §10)
+├── MatronIntegrationTests/                 NEW — integration test target (Task 12)
+│   └── HappyPathTests.swift                NEW
+├── docker-compose.test.yml                 NEW — tuwunel homeserver for integration tests
+└── .github/workflows/integration.yml       NEW — CI for integration tests
 ```
 
 ---
@@ -177,7 +181,27 @@ public extension ButtonStyle where Self == MatronDestructiveButtonStyle {
 
 - [ ] **Step 5: Snapshot tests for each button style + colour swatch**
 
-Add snapshot tests (light + dark mode) under `DesignSystemSnapshotTests/`.
+Add snapshot tests under `DesignSystemSnapshotTests/`. For every button style and colour swatch, snapshot the following variants:
+
+- Light mode + default Dynamic Type
+- Dark mode + default Dynamic Type
+- Light mode + `.accessibility5` (alias `.accessibilityExtraExtraExtraLarge`)
+- Dark mode + `.accessibility5`
+
+If Phase 2 didn't already add a `traitsForAccessibility5()` helper, add one now in `MatronShared/Tests/SnapshotHelpers/SnapshotTraits.swift`:
+
+```swift
+import SwiftUI
+
+extension View {
+    /// Returns `self` with the largest accessibility Dynamic Type size applied.
+    func dynamicTypeAccessibility5() -> some View {
+        self.environment(\.dynamicTypeSize, .accessibility5)
+    }
+}
+```
+
+Use it in snapshot setups, e.g. `assertSnapshot(of: MyView().dynamicTypeAccessibility5(), as: .image(traits: .init(userInterfaceStyle: .dark)))`.
 
 - [ ] **Step 6: Commit**
 
@@ -189,30 +213,108 @@ git push
 
 ---
 
-### Task 2: Apply tokens across the app
+### Task 1.5: Reconcile Phase 2 provisional token
+
+Phase 2 introduced a provisional `Color.matronCodeBg` extension in `MatronShared/Sources/DesignSystem/Colors.swift` for use by `CodeBlock.swift`. Phase 7's canonical token is `Color.matronCodeBackground` (declared in Task 1, Step 1). Reconcile the two before any further token work depends on the canonical name.
 
 **Files:**
-- Modify: every `View` with hardcoded `Color`, `Font`, padding values
+- Modify: `MatronShared/Sources/DesignSystem/Colors.swift`
+- Modify: `MatronShared/Sources/DesignSystem/CodeBlock.swift` (and any other callsite found by grep)
 
-- [ ] **Step 1: Search-and-replace pass**
+- [ ] **Step 1: Locate every callsite**
 
-Find: `.font(.body)`, `.foregroundStyle(.secondary)`, `Color(.systemGray6)`, `padding(8)`, raw `Color.blue`, etc. Replace with the semantic tokens defined in Task 1.
+```bash
+grep -rn "matronCodeBg" .
+```
 
-Don't aim for a perfect sweep — focus on:
-- Onboarding views
-- ChatList + ChatRow
-- ChatView + Composer + TimelineItemView
-- Settings views (after Task 4)
+Expected: at minimum `CodeBlock.swift` (the Phase 2 consumer). Note any others found.
 
-- [ ] **Step 2: Visual regression check**
+- [ ] **Step 2: Remove the provisional definition**
 
-Re-run all snapshot tests; expect failures, eyeball each diff, accept the new baseline if it looks better, revert if not.
+In `MatronShared/Sources/DesignSystem/Colors.swift`, remove the Phase 2 provisional line:
+
+```swift
+static let matronCodeBg = Color(.systemGray6)
+```
+
+Confirm the canonical declaration from Task 1 Step 1 is in place:
+
+```swift
+static let matronCodeBackground = Color("MatronCodeBackground", bundle: nil)
+```
+
+- [ ] **Step 3: Update all callsites**
+
+Replace `Color.matronCodeBg` → `Color.matronCodeBackground` in `CodeBlock.swift` and any other consumer surfaced by Step 1's grep.
+
+- [ ] **Step 4: Re-run snapshot tests; rebaseline if intentional**
 
 ```bash
 cd MatronShared && swift test --filter SnapshotTests
 ```
 
-- [ ] **Step 3: Commit per logical chunk**
+If a baseline diff appears (the asset-catalogue value differs from `Color(.systemGray6)`), eyeball the new render against the design intent before accepting the new baseline. Revert if the visual change is unintentional.
+
+- [ ] **Step 5: Verify no stragglers**
+
+```bash
+grep -rn "matronCodeBg" .
+# expected: no results
+```
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add MatronShared/Sources/DesignSystem/Colors.swift MatronShared/Sources/DesignSystem/CodeBlock.swift
+git commit -m "refactor(designsystem): rename matronCodeBg → matronCodeBackground (Phase 2 → Phase 7 token reconciliation)"
+git push
+```
+
+---
+
+### Task 2: Apply tokens across the app
+
+**Files:**
+- Modify: every `View` with hardcoded `Color`, `Font`, padding values
+
+- [ ] **Step 1: Per-file token sweep**
+
+Replace hardcoded fonts, colours, and paddings with semantic tokens defined in Task 1. Touch each file explicitly — no "best effort" passes:
+
+- `Matron/Features/Onboarding/SignInView.swift` — replace `.font(.body)` → `.font(.matronBody)`, `.font(.headline)` → `.font(.matronHeadline)`, `.foregroundStyle(.secondary)` → `.foregroundStyle(Color.matronTextSecondary)`, `.padding(8)` → `.padding(MatronSpacing.s)`, raw `Color.blue` → `Color.matronAccent`.
+- `Matron/Features/ChatList/ChatListView.swift` — replace `.font(.body)` → `.font(.matronBody)`, `.font(.headline)` → `.font(.matronHeadline)`, `.background(Color(.systemGroupedBackground))` → `.background(Color.matronBackground)`, `.padding(...)` numeric literals → `MatronSpacing.*`.
+- `Matron/Features/ChatList/ChatRow.swift` — replace `.font(.subheadline)` → `.font(.matronCallout)`, `.font(.caption)` → `.font(.matronCaption)`, `.foregroundStyle(.secondary)` → `.foregroundStyle(Color.matronTextSecondary)`, unread badge background → `Color.matronAccent`.
+- `Matron/Features/Chat/ChatView.swift` — `.background(Color(.systemBackground))` → `Color.matronBackground`, all `.font(...)` system literals → `.font(.matron*)` equivalents, all numeric `.padding(...)` → `MatronSpacing.*`.
+- `Matron/Features/Chat/Composer/ComposerView.swift` — composer surface `.background(Color(.systemGray6))` → `Color.matronSurfaceRaised`, send-button tint `.tint(.blue)` → `.tint(Color.matronAccent)`, `.font(.body)` → `.font(.matronBody)`.
+- `Matron/Features/Chat/Rendering/TimelineItemView.swift` — date-separator `.foregroundStyle(.secondary)` → `Color.matronTextSecondary`, all fonts → `.matron*` equivalents.
+- `Matron/Features/Chat/Rendering/MessageBubble.swift` — bubble `.background(Color(.systemGray5/6))` → `Color.matronSurface` / `Color.matronSurfaceRaised` per role, text `.foregroundStyle(.primary)` → `Color.matronTextPrimary`, `.font(.body)` → `.font(.matronBody)`.
+- `Matron/Features/Settings/SettingsView.swift` (and the per-section views from Task 4) — all `.font(...)` and `.foregroundStyle(...)` literals → semantic tokens; `Form` row spacing using `MatronSpacing.*`.
+- `Matron/Features/Settings/NotificationSettingsView.swift` — replace hardcoded `.red` / `.green` (status indicator on lines ~401–403 of this plan's Task 4 Step 3) with `Color.matronDanger` / `Color.matronAccent`.
+
+- [ ] **Step 2: Verification — no hardcoded literals remain in `Features/`**
+
+```bash
+grep -rn 'foregroundStyle(.secondary)' Matron/Features
+grep -rn 'foregroundStyle(.primary)' Matron/Features
+grep -rn '\.font(\.body)' Matron/Features
+grep -rn '\.font(\.headline)' Matron/Features
+grep -rn '\.font(\.caption)' Matron/Features
+grep -rn 'Color(\.systemGray' Matron/Features
+grep -rn 'Color(\.systemBackground)' Matron/Features
+grep -rn 'Color\.blue\b\|Color\.red\b\|Color\.green\b' Matron/Features
+```
+
+Each grep above must return no results. The exit criterion for Task 2 is **no hardcoded color/font literals in `Matron/Features/`**.
+
+- [ ] **Step 3: Visual regression check**
+
+```bash
+cd MatronShared && swift test --filter SnapshotTests
+```
+
+If a baseline changed, eyeball the new baseline against the design intent before accepting. If the diff is unintentional, revert the offending replacement. Do not blanket-accept.
+
+- [ ] **Step 4: Commit per logical chunk**
 
 Don't commit one giant blob; commit per feature group:
 
@@ -232,9 +334,18 @@ git push
 - Create: `Matron/Resources/Assets.xcassets/AppIcon.appiconset/` (full icon set)
 - Modify: `Matron/Resources/Assets.xcassets/AccentColor.colorset/`
 
+- [ ] **Step 0: Create the master art file**
+
+Place `docs/app-store/icon-source.svg` (or `.pdf`) — a 1024×1024 vector design. Commit this file before running the generator. Without committed master art, the icon set cannot be regenerated reliably (you'd need to recreate the design from the rasterised PNGs, which loses fidelity).
+
+```bash
+git add docs/app-store/icon-source.svg
+git commit -m "chore(app-store): commit 1024×1024 vector icon source"
+```
+
 - [ ] **Step 1: Generate the full icon set**
 
-Need: 1024×1024 master + auto-generated sizes for iPhone (60pt @2x/@3x), Settings (29pt @2x/@3x), Spotlight (40pt @2x/@3x), Notification (20pt @2x/@3x), iPad sizes if you intend to ship iPad. Use a tool like `bakery` (`brew install bakery`) or `Icon Set Creator` to generate from one master.
+Need: 1024×1024 master + auto-generated sizes for iPhone (60pt @2x/@3x), Settings (29pt @2x/@3x), Spotlight (40pt @2x/@3x), Notification (20pt @2x/@3x), iPad sizes if you intend to ship iPad. Use a tool like `bakery` (`brew install bakery`) or `Icon Set Creator` to generate from one master (`docs/app-store/icon-source.svg`).
 
 Master design: simple monogram or wordmark. Recommend a flat single-colour-on-tint design over photographic — works at 20pt and ages well.
 
@@ -398,7 +509,7 @@ struct NotificationSettingsView: View {
         }
     }
     private var color: Color {
-        status == .denied ? .red : .green
+        status == .denied ? Color.matronDanger : Color.matronAccent
     }
     private func refresh() async {
         let center = UNUserNotificationCenter.current()
@@ -433,6 +544,8 @@ struct ServerSettingsView: View {
 
 ```swift
 struct AboutView: View {
+    private let privacyPolicyURL = URL(string: Bundle.main.object(forInfoDictionaryKey: "MatronPrivacyPolicyURL") as? String ?? "https://matron.example.com/privacy")!
+
     var body: some View {
         Form {
             Section {
@@ -440,7 +553,7 @@ struct AboutView: View {
                 LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")
             }
             Section {
-                Link("Privacy policy", destination: URL(string: "https://matron.example.com/privacy")!)
+                Link("Privacy policy", destination: privacyPolicyURL)
                 Link("Source code", destination: URL(string: "https://github.com/matronhq/matron-iOS-app")!)
             }
         }
@@ -448,36 +561,104 @@ struct AboutView: View {
     }
 }
 
+struct AckEntry: Decodable, Identifiable {
+    let name: String
+    let license: String
+    var id: String { name }
+}
+
 struct LicensesView: View {
+    @State private var entries: [AckEntry] = []
+    @State private var loadError: String?
+
     var body: some View {
-        ScrollView {
-            if let url = Bundle.main.url(forResource: "Acknowledgements", withExtension: "plist"),
-               let data = try? Data(contentsOf: url),
-               let text = String(data: data, encoding: .utf8) {
-                Text(text)
-                    .font(.system(.caption, design: .monospaced))
-                    .padding()
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
+        List {
+            if let loadError {
+                Text(loadError).foregroundStyle(Color.matronTextSecondary)
+            } else if entries.isEmpty {
+                Text("Licenses unavailable.").foregroundStyle(Color.matronTextSecondary)
             } else {
-                Text("Licenses unavailable.").foregroundStyle(.secondary)
+                ForEach(entries) { entry in
+                    NavigationLink {
+                        LicenseDetailView(entry: entry)
+                    } label: {
+                        VStack(alignment: .leading, spacing: MatronSpacing.xs) {
+                            Text(entry.name).font(.matronHeadline)
+                            Text(entry.license.prefix(120) + (entry.license.count > 120 ? "…" : ""))
+                                .font(.matronCaption)
+                                .foregroundStyle(Color.matronTextSecondary)
+                                .lineLimit(2)
+                        }
+                    }
+                }
             }
         }
         .navigationTitle("Licenses")
+        .task { load() }
+    }
+
+    private func load() {
+        guard let url = Bundle.main.url(forResource: "Acknowledgements", withExtension: "plist"),
+              let data = try? Data(contentsOf: url) else {
+            loadError = "Acknowledgements.plist not bundled."
+            return
+        }
+        do {
+            entries = try PropertyListDecoder().decode([AckEntry].self, from: data)
+        } catch {
+            loadError = "Failed to decode Acknowledgements.plist: \(error.localizedDescription)"
+        }
+    }
+}
+
+struct LicenseDetailView: View {
+    let entry: AckEntry
+    var body: some View {
+        ScrollView {
+            Text(entry.license)
+                .font(.matronCodeSmall)
+                .padding(MatronSpacing.l)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+        }
+        .navigationTitle(entry.name)
     }
 }
 ```
 
-- [ ] **Step 6: Generate Acknowledgements**
+- [ ] **Step 6: Generate `Acknowledgements.plist`**
 
-Use a script to dump SPM dependency licenses:
+The plist must decode into `[AckEntry]` (top-level array of `{ name: String, license: String }` dictionaries). Two supported paths:
+
+**Option A — `LicensePlist` SPM tool (preferred, repeatable):**
+
+Add to `Package.swift` under `swift-package-manager-plugins` (or run via `mint`):
 
 ```bash
-swift package describe --type json > Acknowledgements.json
-# Convert to a plist or simple text via a script you write once.
+brew install mint
+mint install mono0926/LicensePlist
+mint run LicensePlist license-plist \
+    --output-path Matron/Resources \
+    --package-path MatronShared/Package.swift \
+    --suppress-opening-directory \
+    --single-page
 ```
 
-(Manual fallback: list each SPM dep + license in `Acknowledgements.plist` by hand.)
+`LicensePlist` emits one combined plist (`com.mono0926.LicensePlist.Output.plist`). Adapt with a one-shot conversion script committed under `scripts/generate-acknowledgements.swift`:
+
+```bash
+swift scripts/generate-acknowledgements.swift \
+    Matron/Resources/com.mono0926.LicensePlist.Output.plist \
+    Matron/Resources/Acknowledgements.plist
+```
+
+The script reads LicensePlist's output and re-emits a top-level array of `{ name, license }` dictionaries (the shape `AckEntry` decodes).
+
+**Option B — manual one-time generation (fallback):**
+
+Commit `scripts/generate-acknowledgements.swift` that walks `swift package describe --type json` for each SPM dependency, looks up its `LICENSE` file from the checked-out source under `MatronShared/.build/checkouts/<dep>/LICENSE`, and emits the same plist shape. Run once; commit the resulting `Matron/Resources/Acknowledgements.plist`. Re-run after any `Package.swift` change.
+
+Either option, the committed `Acknowledgements.plist` is what ships in the bundle and is read by `LicensesView` via `PropertyListDecoder`.
 
 - [ ] **Step 7: Wire SettingsView into chat list**
 
@@ -504,7 +685,7 @@ If the bot has an `avatarURL` (mxc://), fetch via `MediaService` (introduce in M
 
 - [ ] **Step 2: Improve typography + spacing using design tokens**
 
-Use `MatronSpacing`, `MatronTypography`, `MatronColors` throughout.
+Use `MatronSpacing`, `Font.matronBody` / `Font.matronHeadline` / etc. (from the `Font` extension defined in Task 1), and `Color.matronAccent` / `Color.matronSurface` / etc. (from the `Color` extension defined in Task 1). All tokens are flat extension methods, not namespaced types — there is no `MatronTypography` or `MatronColors` type, only `MatronSpacing` (which is the one enum-namespaced token group).
 
 - [ ] **Step 3: Commit**
 
@@ -529,9 +710,9 @@ Audit checklist (do as one pass, commit per area):
   - Ask-user sheet inputs have proper `.accessibilityLabel`.
 
 - [ ] **Step 2: Dynamic Type**
-  - Test at sizes `.xSmall`, `.large` (default), `.xxxLarge`, and `.accessibility5`.
-  - Snapshot tests in DesignSystem already cover S/L/XXXL — extend with `.accessibility5`.
-  - Fix any clipped text or broken layouts.
+  - Test at sizes `.xSmall`, `.large` (default), `.xxxLarge`, and `.accessibility5` (alias `.accessibilityExtraExtraExtraLarge`).
+  - Snapshot tests in DesignSystem already cover S/L/XXXL — extend the existing test cases with `.accessibility5` variants alongside light/dark, using the `dynamicTypeAccessibility5()` helper added in Task 1 Step 5.
+  - Fix any clipped text or broken layouts surfaced by the new baselines.
 
 - [ ] **Step 3: Hit targets**
   - Every tappable element ≥ 44×44pt. Composer send button, palette rows, banner buttons.
@@ -587,11 +768,28 @@ Cover:
 - MarkdownUI, GRDB.swift, swift-snapshot-testing: no network access; on-device only.
 ```
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Wire the public privacy-policy URL into `AboutView`**
+
+Once `docs/app-store/privacy-policy.md` is hosted at a stable public URL (typically a GitHub Pages render of that file or a marketing site path), expose it to the app via Info.plist instead of hardcoding it in Swift.
+
+In `Matron/Resources/Info.plist`, add a new key:
+
+```xml
+<key>MatronPrivacyPolicyURL</key>
+<string>https://matron.example.com/privacy</string>
+```
+
+Replace `https://matron.example.com/privacy` with the real hosted URL before App Store submission. (`AboutView` already reads this key with a fallback — see Task 4 Step 5.)
+
+Document this requirement at the top of `docs/app-store/privacy-policy.md`:
+
+> The public hosted URL of this document MUST be set as `MatronPrivacyPolicyURL` in `Matron/Resources/Info.plist` before each App Store submission. The same URL must be entered as the Privacy Policy URL in App Store Connect.
+
+- [ ] **Step 4: Commit**
 
 ```bash
-git add Matron/Resources/PrivacyPolicy.md docs/app-store/
-git commit -m "docs: privacy policy + App Privacy disclosures"
+git add Matron/Resources/PrivacyPolicy.md Matron/Resources/Info.plist docs/app-store/
+git commit -m "docs: privacy policy + App Privacy disclosures + Info.plist URL key"
 git push
 ```
 
@@ -706,40 +904,48 @@ git push
 ### Task 10: Final QA pass + manual regression
 
 **Files:**
-- Modify: `manual-tests.md`
+- Create: `docs/manual-tests.md` (NEW — the file does not yet exist on disk; earlier phases referenced it but it was never authored)
 
-- [ ] **Step 1: Add a comprehensive regression checklist for v1.0**
+- [ ] **Step 1: Author `docs/manual-tests.md` with the full regression checklist**
+
+The checklist must run before each TestFlight build (per spec §10) and explicitly include every spec-mandated item. Write the file:
 
 ```markdown
-## v1.0 release regression
+# Matron iOS — manual test checklist
 
-Run the entire checklist (Phases 1–7) on a TestFlight build, on a physical device, against a clean homeserver. Anything that fails blocks the release.
+Run the entire checklist on a TestFlight build, on a physical device, against a clean homeserver, before each TestFlight build is promoted. Anything that fails blocks the release.
 
-### Smoke
+## Smoke
 
 - [ ] Cold install → sign-in → first-device verification → chat list → start a chat → send a message → response renders → push notification arrives → tap notification → opens correct chat.
 
-### Phases 1–6 checklists
+## Phases 1–6 regression
 
-- [ ] Re-run all manual checks added in earlier phases.
+- [ ] Re-run all manual checks added in earlier phases (sign-in, chat list, chat view, E2EE, push, custom events, search).
 
-### Polish
+## Per-TestFlight regression (mandatory — spec §10)
 
-- [ ] App icon present on Home Screen at every size.
+- [ ] **SAS verification with a real other device** — sign in to Matron on a second physical device with the same Matrix account; from device A, initiate verification with device B; both sides see the 7-emoji set; compare emojis aloud; both tap "They match"; both sides confirm the verification succeeded and the partner device shows as Verified.
+- [ ] **Push notification on physical device** — install the TestFlight build on a physical device; sign in; lock the device; from a separate Matrix account, send a message to a room the test user is in; assert the push arrives within 10 seconds with the decrypted message body visible (sender display name + message text), not a generic "New message" placeholder.
+- [ ] **Attachment picker end-to-end** — from the composer, open the image picker; pick a photo; send; on the second device (from the SAS step above), confirm the image renders correctly and decrypts. Repeat with the file picker (PDF or other non-image file). Both attachments must be sent encrypted (`m.image` / `m.file` with E2EE) and decrypted on the receiving device.
+
+## Visual polish
+
+- [ ] App icon present on Home Screen at every size (60pt, 29pt Settings, 40pt Spotlight, 20pt Notification).
 - [ ] App launches in <3 seconds on iPhone 12 or newer.
 - [ ] No console warnings in Xcode about layout, missing assets, or deprecated APIs.
 - [ ] All snapshot tests pass after design token application.
 - [ ] VoiceOver navigation through chat list, chat view, settings — every element has a sensible label.
-- [ ] Dynamic Type tested at `.accessibility3` — no clipped text on any major screen.
+- [ ] Dynamic Type tested at `.accessibility5` — no clipped text on any major screen.
 - [ ] Light + dark mode visually consistent.
-- [ ] Privacy policy link in About opens.
+- [ ] Privacy policy link in About opens to the URL set in `MatronPrivacyPolicyURL` (Info.plist).
 ```
 
 - [ ] **Step 2: Commit**
 
 ```bash
-git add manual-tests.md
-git commit -m "docs: v1.0 release regression checklist"
+git add docs/manual-tests.md
+git commit -m "docs: v1.0 release regression checklist (spec §10 mandatory items)"
 git push
 ```
 
@@ -789,23 +995,339 @@ git commit -m "chore: tag v1.0.0"
 
 ---
 
+### Task 12: Integration test target (spec §10 mandate)
+
+Spec §10 mandates "one happy-path flow against a real homeserver, run in CI" — a single end-to-end test that exercises real SDK wiring against a real Matrix server (no mocks). This is the only integration test in the project; its purpose is to catch SDK-wiring regressions that no unit test will surface. Do this **TDD-style**: write the failing test first, then bring up the homeserver and CI plumbing, then make it green. Commit per step.
+
+**Files:**
+- Create: `MatronIntegrationTests/HappyPathTests.swift`
+- Modify: `project.yml` (add `MatronIntegrationTests` test target depending on `MatronShared`)
+- Create: `docker-compose.test.yml` (repo root)
+- Create: `.github/workflows/integration.yml`
+
+- [ ] **Step 1: Add the test target to `project.yml` (test-first scaffold)**
+
+Append the following stanza under `targets:` in `project.yml`:
+
+```yaml
+  MatronIntegrationTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: MatronIntegrationTests
+    dependencies:
+      - package: MatronShared
+        product: MatronShared
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+```
+
+Regenerate Xcode project:
+
+```bash
+xcodegen generate
+```
+
+Commit:
+
+```bash
+git add project.yml
+git commit -m "test(integration): add MatronIntegrationTests target scaffold"
+```
+
+- [ ] **Step 2: Write the failing happy-path test first**
+
+Create `MatronIntegrationTests/HappyPathTests.swift`:
+
+```swift
+import XCTest
+@testable import MatronShared
+import MatrixRustSDK
+
+/// One end-to-end happy-path test against a real Matrix homeserver
+/// brought up via `docker-compose.test.yml` (tuwunel on localhost:8008).
+///
+/// Spec §10: catches SDK-wiring regressions that unit tests can't.
+final class HappyPathTests: XCTestCase {
+    private let homeserverURL = URL(string: "http://localhost:8008")!
+
+    func testRegisterUserAndBotRoundTripMessage() async throws {
+        // 1. Register a fresh user.
+        let userLocalpart = "alice-\(UUID().uuidString.prefix(8).lowercased())"
+        let userPassword = "test-password-\(UUID().uuidString)"
+        let userID = try await registerUser(localpart: userLocalpart, password: userPassword)
+
+        // 2. Register a fresh bot user.
+        let botLocalpart = "bot-\(UUID().uuidString.prefix(8).lowercased())"
+        let botPassword = "test-password-\(UUID().uuidString)"
+        let botID = try await registerUser(localpart: botLocalpart, password: botPassword)
+
+        // 3. Sign the user in via the real SDK and create a room.
+        let userClient = try await buildClient(userID: userID, password: userPassword)
+        let roomID = try await createRoom(client: userClient, invite: [botID])
+
+        // 4. Sign the bot in and accept the invite.
+        let botClient = try await buildClient(userID: botID, password: botPassword)
+        try await joinRoom(client: botClient, roomID: roomID)
+
+        // 5. User sends an `m.room.message`.
+        let body = "hello from integration test \(UUID().uuidString)"
+        let eventID = try await sendTextMessage(client: userClient, roomID: roomID, body: body)
+
+        // 6. Bot reads it back via NotificationClient.getNotification (the same path
+        //    the NSE takes — proves SDK wiring catches encryption + sync regressions).
+        let notification = try await fetchNotificationWithRetry(
+            client: botClient,
+            roomID: roomID,
+            eventID: eventID,
+            timeout: 30
+        )
+        XCTAssertNotNil(notification, "Bot must be able to read the message back via getNotification")
+        XCTAssertTrue(
+            (notification?.body ?? "").contains(body),
+            "Decrypted notification body must contain the sent text"
+        )
+    }
+
+    // MARK: - Helpers (raw HTTP for register/create-room; real SDK for client/send/getNotification)
+
+    private func registerUser(localpart: String, password: String) async throws -> String {
+        var req = URLRequest(url: homeserverURL.appendingPathComponent("/_matrix/client/v3/register"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: [
+            "username": localpart,
+            "password": password,
+            "auth": ["type": "m.login.dummy"],
+            "inhibit_login": false,
+        ])
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw NSError(domain: "Integration", code: 1, userInfo: [NSLocalizedDescriptionKey: "register failed: \(body)"])
+        }
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let userID = json?["user_id"] as? String else {
+            throw NSError(domain: "Integration", code: 2, userInfo: [NSLocalizedDescriptionKey: "missing user_id"])
+        }
+        return userID
+    }
+
+    private func buildClient(userID: String, password: String) async throws -> Client {
+        // Replace with whatever ClientBuilder factory MatronShared exposes; the point
+        // is to use the SAME builder the app uses so regressions in SDK wiring surface.
+        let builder = ClientBuilder()
+            .homeserverUrl(url: homeserverURL.absoluteString)
+        let client = try await builder.build()
+        try await client.login(username: userID, password: password, initialDeviceName: "integration", deviceId: nil)
+        return client
+    }
+
+    private func createRoom(client: Client, invite: [String]) async throws -> String {
+        let params = CreateRoomParameters(
+            name: "Integration test room",
+            topic: nil,
+            isEncrypted: true,
+            isDirect: true,
+            visibility: .private,
+            preset: .privateChat,
+            invite: invite,
+            avatar: nil
+        )
+        return try await client.createRoom(request: params)
+    }
+
+    private func joinRoom(client: Client, roomID: String) async throws {
+        try await client.joinRoomById(roomId: roomID)
+    }
+
+    private func sendTextMessage(client: Client, roomID: String, body: String) async throws -> String {
+        let room = try await client.getRoom(roomId: roomID)!
+        let timeline = try await room.timeline()
+        return try await timeline.sendMessage(msg: .text(body: body))
+    }
+
+    private func fetchNotificationWithRetry(client: Client, roomID: String, eventID: String, timeout: TimeInterval) async throws -> NotificationItem? {
+        let nc = try NotificationClient(client: client, processSetup: .singleProcess)
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let item = try? await nc.getNotification(roomId: roomID, eventId: eventID) {
+                return item
+            }
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        return nil
+    }
+}
+```
+
+(The exact `ClientBuilder` / `CreateRoomParameters` / `NotificationClient` shapes will need to be reconciled with the matrix-rust-sdk-swift version Matron pins — adjust property names per Phase 4's notes on SDK shape drift.)
+
+Run locally — expect failure (homeserver not yet up):
+
+```bash
+xcodebuild test -scheme MatronIntegrationTests -destination 'platform=iOS Simulator,name=iPhone 15'
+```
+
+Commit:
+
+```bash
+git add MatronIntegrationTests/HappyPathTests.swift
+git commit -m "test(integration): failing happy-path test against real homeserver"
+```
+
+- [ ] **Step 3: Bring up the test homeserver**
+
+Create `docker-compose.test.yml` at the repo root:
+
+```yaml
+services:
+  tuwunel:
+    image: tuwunel/tuwunel:latest
+    container_name: matron-tuwunel-test
+    restart: "no"
+    ports:
+      - "8008:8008"
+    environment:
+      TUWUNEL_SERVER_NAME: "localhost"
+      TUWUNEL_PORT: "8008"
+      TUWUNEL_ADDRESS: "0.0.0.0"
+      TUWUNEL_DATABASE_PATH: "/var/lib/tuwunel"
+      TUWUNEL_ALLOW_REGISTRATION: "true"
+      TUWUNEL_REGISTRATION_TOKEN: ""
+      TUWUNEL_YES_I_AM_VERY_VERY_SURE_I_WANT_AN_OPEN_REGISTRATION_SERVER_PROD: "true"
+      TUWUNEL_ALLOW_FEDERATION: "false"
+      TUWUNEL_ALLOW_CHECK_FOR_UPDATES: "false"
+      TUWUNEL_TRUSTED_SERVERS: "[]"
+      TUWUNEL_LOG: "warn"
+    volumes:
+      - tuwunel-test-data:/var/lib/tuwunel
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8008/_matrix/client/versions || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  tuwunel-test-data:
+```
+
+Verify locally:
+
+```bash
+docker compose -f docker-compose.test.yml up -d
+until curl -sf http://localhost:8008/_matrix/client/versions; do sleep 2; done
+xcodebuild test -scheme MatronIntegrationTests -destination 'platform=iOS Simulator,name=iPhone 15'
+docker compose -f docker-compose.test.yml down -v
+```
+
+Test should now pass. Commit:
+
+```bash
+git add docker-compose.test.yml
+git commit -m "test(integration): docker-compose tuwunel homeserver for integration tests"
+```
+
+- [ ] **Step 4: Wire CI**
+
+The repo's CI is GitHub Actions (per Phase 1's `.github/workflows/ci.yml`). Add a parallel workflow `.github/workflows/integration.yml`:
+
+```yaml
+name: integration
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  integration:
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Start tuwunel
+        run: docker compose -f docker-compose.test.yml up -d
+
+      - name: Wait for homeserver
+        run: |
+          for i in {1..60}; do
+            if curl -sf -o /dev/null -w "%{http_code}" http://localhost:8008/_matrix/client/versions | grep -q 200; then
+              echo "homeserver is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "homeserver did not come up within 120s"
+          docker compose -f docker-compose.test.yml logs
+          exit 1
+
+      - name: Run integration tests
+        run: |
+          xcodebuild test \
+            -scheme MatronIntegrationTests \
+            -destination 'platform=iOS Simulator,name=iPhone 15' \
+            -resultBundlePath integration-results.xcresult \
+            | xcpretty
+          exit ${PIPESTATUS[0]}
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v
+
+      - name: Upload xcresult on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-results
+          path: integration-results.xcresult
+```
+
+Verify in a PR — workflow runs green. Commit:
+
+```bash
+git add .github/workflows/integration.yml
+git commit -m "ci(integration): GitHub Actions workflow running tuwunel + xcodebuild test"
+git push
+```
+
+---
+
 ## Phase 7 acceptance
 
-1. All 11 tasks committed and pushed.
-2. CI green; all snapshot tests pass.
+1. All 13 tasks (Tasks 1, 1.5, 2–12) committed and pushed.
+2. CI green; all snapshot tests pass; the new integration workflow (Task 12) is green.
 3. App Store Connect listing complete.
 4. TestFlight build available; internal testers can install and use.
-5. Final regression checklist passes on TestFlight build.
+5. `docs/manual-tests.md` (Task 10) regression checklist passes on TestFlight build, including the per-TestFlight mandatory items (SAS verification with a real other device, push on physical device, attachment picker end-to-end).
 6. App submitted for App Review (acceptance ≠ approval — that's Apple's call).
 
 ---
 
 ## Plan self-review
 
+- **§3 Design system & tokens:** Task 1 declares canonical `Color.matronBackground/...`, `Font.matron*`, `MatronSpacing`. Task 1.5 reconciles Phase 2's provisional `matronCodeBg` → `matronCodeBackground`. Task 2 enforces a per-file sweep with grep-based exit criteria (no hardcoded font/color literals in `Matron/Features/`). Task 5 Step 2 references the actual extension methods (no fictional `MatronTypography`/`MatronColors` types). Task 4 Step 3's status indicator uses `Color.matronDanger` / `Color.matronAccent`, not raw `.red` / `.green`.
 - **§5.5 Bot profile:** Task 5.
 - **§5.6 Settings:** Task 4 (covers all five sections).
 - **§7 E2EE UX:** Existing DeviceSettingsView from Phase 3 plugs into the new SettingsView hierarchy.
-- **§8 Push notifications UX:** NotificationSettingsView (Task 4).
-- **§12 License & legal:** Privacy policy + disclosures (Task 7), encryption export compliance flagged in Task 11.
+- **§8 Push notifications UX:** NotificationSettingsView (Task 4) — privacy and accent colours via tokens.
+- **§10 Testing strategy:** Task 12 implements the spec-mandated single happy-path integration test against a real homeserver (tuwunel via docker-compose) wired to GitHub Actions, written test-first with commits per step. Task 10 creates `docs/manual-tests.md` (NEW — file did not previously exist on disk) with the three spec-mandated per-TestFlight items (SAS verification with a real other device, push on physical device, attachment picker end-to-end) plus visual polish checks. Snapshot tests cover light/dark × default/`.accessibility5` Dynamic Type variants (Task 1 Step 5; Task 6 Step 2).
+- **§12 License & legal:** Privacy policy + disclosures (Task 7); the public privacy URL is sourced from `MatronPrivacyPolicyURL` in Info.plist with a documented submission requirement (Task 7 Step 3); the AboutView uses this key, not a hardcoded string. `Acknowledgements.plist` is generated reproducibly via `LicensePlist` (Task 4 Step 6) and rendered by `LicensesView` as a structured `[AckEntry]` list with detail navigation (Task 4 Step 5), not a raw plist dump. Encryption export compliance flagged in Task 11.
+- App icon source art is committed as `docs/app-store/icon-source.svg` before the generator runs (Task 3 Step 0), so the icon set is reproducible.
 - No placeholders. App Store Connect tasks are intentionally manual — you can't fully automate the metadata form.
-- Phase 7 closes out the spec coverage: every numbered section in the design spec has at least one task across phases 1–7.
+- Phase 7 closes out the spec coverage: every numbered section in the design spec has at least one task across phases 1–7, including spec §10's integration-test mandate.

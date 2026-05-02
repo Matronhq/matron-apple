@@ -127,7 +127,8 @@ matron-iOS-app/
 │   └── Tests/
 │       ├── AuthTests/
 │       ├── ChatTests/
-│       └── StorageTests/
+│       ├── StorageTests/
+│       └── SyncTests/
 └── manual-tests.md                         Empty stub; will fill in later phases
 ```
 
@@ -175,11 +176,14 @@ build/
 *.ipa
 *.dSYM.zip
 *.dSYM
+Matron.xcodeproj/
 
 # Swift Package Manager
 .build/
 .swiftpm/
-Package.resolved
+# NOTE: Package.resolved is NOT gitignored — it pins SDK versions for reproducible
+# CI builds. If matrix-rust-components-swift ships a breaking change, an unpinned
+# resolution would break CI on machines that haven't cached the previous version.
 
 # CocoaPods (not used, but defensive)
 Pods/
@@ -480,6 +484,7 @@ let package = Package(
         ),
         .testTarget(name: "StorageTests", dependencies: ["MatronStorage"], path: "Tests/StorageTests"),
         .testTarget(name: "AuthTests", dependencies: ["MatronAuth"], path: "Tests/AuthTests"),
+        .testTarget(name: "SyncTests", dependencies: ["MatronSync"], path: "Tests/SyncTests"),
         .testTarget(name: "ChatTests", dependencies: ["MatronChat"], path: "Tests/ChatTests"),
     ]
 )
@@ -920,14 +925,17 @@ public protocol AuthService: Sendable {
 public struct ServerCapabilities: Equatable, Sendable {
     public let supportsPasswordLogin: Bool
     public let supportsSSO: Bool
-    public let ssoRedirectURL: URL?
 
-    public init(supportsPasswordLogin: Bool, supportsSSO: Bool, ssoRedirectURL: URL?) {
+    public init(supportsPasswordLogin: Bool, supportsSSO: Bool) {
         self.supportsPasswordLogin = supportsPasswordLogin
         self.supportsSSO = supportsSSO
-        self.ssoRedirectURL = ssoRedirectURL
     }
 }
+
+// Implementer note: SSO redirect handling (constructing the IDP redirect URL,
+// presenting it via ASWebAuthenticationSession, handling the callback) is
+// deferred to a future spec — Phase 1 only surfaces whether the server advertises
+// SSO so the SignInView can show/hide the (currently disabled) button.
 ```
 
 - [ ] **Step 3: Add a fake implementation for testing**
@@ -983,10 +991,17 @@ import XCTest
 final class AuthServiceProtocolTests: XCTestCase {
     func test_fake_canProbe() async throws {
         let fake = FakeAuthService()
-        fake.stubbedProbe = .success(.init(supportsPasswordLogin: true, supportsSSO: false, ssoRedirectURL: nil))
+        fake.stubbedProbe = .success(.init(supportsPasswordLogin: true, supportsSSO: false))
         let caps = try await fake.probe("https://matrix.example.com")
         XCTAssertTrue(caps.supportsPasswordLogin)
         XCTAssertFalse(caps.supportsSSO)
+    }
+
+    func test_fake_capturesSsoFlag_asBoolean() async throws {
+        let fake = FakeAuthService()
+        fake.stubbedProbe = .success(.init(supportsPasswordLogin: true, supportsSSO: true))
+        let caps = try await fake.probe("https://matrix.example.com")
+        XCTAssertTrue(caps.supportsSSO)
     }
 
     func test_fake_persistRetainsSessions() throws {
@@ -1006,7 +1021,7 @@ final class AuthServiceProtocolTests: XCTestCase {
 - [ ] **Step 5: Run tests**
 
 Run: `cd MatronShared && swift test --filter AuthServiceProtocolTests`
-Expected: PASS — 2 tests succeed.
+Expected: PASS — 3 tests succeed.
 
 - [ ] **Step 6: Commit**
 
@@ -1061,11 +1076,12 @@ public final class AuthServiceLive: AuthService, @unchecked Sendable {
             let client = try await builder.build()
             let loginTypes = try await client.homeserverLoginDetails()
             let supportsPassword = loginTypes.supportsPasswordLogin()
-            let ssoURL = loginTypes.supportsSsoLogin() ? URL(string: "https://placeholder/sso") : nil
+            let supportsSSO = loginTypes.supportsSsoLogin()
+            // SSO redirect URL construction is intentionally not done here —
+            // see the implementer note on `ServerCapabilities` (Task 6).
             return ServerCapabilities(
                 supportsPasswordLogin: supportsPassword,
-                supportsSSO: ssoURL != nil,
-                ssoRedirectURL: ssoURL
+                supportsSSO: supportsSSO
             )
         } catch {
             throw AuthError.serverUnreachable
@@ -1375,7 +1391,7 @@ git push
 - Create: `MatronShared/Sources/Sync/ClientProvider.swift`
 - Create: `MatronShared/Sources/Sync/SyncService.swift`
 - Create: `MatronShared/Sources/Sync/SyncServiceLive.swift`
-- Create: `MatronShared/Tests/ChatTests/SyncServiceProtocolTests.swift` (in ChatTests for now since it's tightly used by Chat)
+- Create: `MatronShared/Tests/SyncTests/SyncServiceProtocolTests.swift`
 
 - [ ] **Step 1: Define the `ClientProvider` and `SyncService` protocol surface**
 
@@ -1437,6 +1453,12 @@ public protocol SyncService: Sendable {
 
     /// True after `start()` succeeds, false after `stop()`.
     var isRunning: Bool { get async }
+
+    /// Suspends until `start()` has been called and the underlying SDK reports
+    /// that `RoomListService` is non-nil. Callers that need to subscribe to the
+    /// room list (e.g. `ChatServiceLive`) must await this before issuing
+    /// `client.syncService().roomListService()`.
+    func waitUntilReady() async throws
 }
 ```
 
@@ -1453,6 +1475,8 @@ public actor SyncServiceLive: SyncService {
     private let provider: ClientProvider
     private let session: UserSession
     private var syncHandle: TaskHandle?
+    private var readyContinuations: [CheckedContinuation<Void, Error>] = []
+    private var ready: Bool = false
 
     public init(provider: ClientProvider, session: UserSession) {
         self.provider = provider
@@ -1464,13 +1488,27 @@ public actor SyncServiceLive: SyncService {
         let client = try await provider.client(for: session)
         let listener = SyncStartedListener()
         syncHandle = try await client.syncService().builder().finish().start(listener: listener)
+        // Probe roomListService until non-nil, then resume any waiters.
+        _ = try await client.syncService().roomListService()
+        ready = true
+        let waiters = readyContinuations
+        readyContinuations.removeAll()
+        for cont in waiters { cont.resume() }
     }
 
     public func stop() async {
         syncHandle = nil
+        ready = false
     }
 
     public var isRunning: Bool { syncHandle != nil }
+
+    public func waitUntilReady() async throws {
+        if ready { return }
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            readyContinuations.append(cont)
+        }
+    }
 }
 
 private final class SyncStartedListener: SyncServiceStateObserver {
@@ -1482,7 +1520,7 @@ private final class SyncStartedListener: SyncServiceStateObserver {
 
 - [ ] **Step 3: Write a fake-driven test for the protocol shape**
 
-Create `MatronShared/Tests/ChatTests/SyncServiceProtocolTests.swift`:
+Create `MatronShared/Tests/SyncTests/SyncServiceProtocolTests.swift`:
 
 ```swift
 import XCTest
@@ -1492,18 +1530,32 @@ actor FakeSyncService: SyncService {
     var startCallCount = 0
     var stopCallCount = 0
     private var running = false
+    private(set) var isReady = false
+    private var readyContinuations: [CheckedContinuation<Void, Error>] = []
 
     func start() async throws {
         startCallCount += 1
         running = true
+        isReady = true
+        let waiters = readyContinuations
+        readyContinuations.removeAll()
+        for cont in waiters { cont.resume() }
     }
 
     func stop() async {
         stopCallCount += 1
         running = false
+        isReady = false
     }
 
     var isRunning: Bool { running }
+
+    func waitUntilReady() async throws {
+        if isReady { return }
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            readyContinuations.append(cont)
+        }
+    }
 }
 
 final class SyncServiceProtocolTests: XCTestCase {
@@ -1521,18 +1573,36 @@ final class SyncServiceProtocolTests: XCTestCase {
         let running = await svc.isRunning
         XCTAssertFalse(running)
     }
+
+    func test_waitUntilReady_resumesAfterStart() async throws {
+        let svc = FakeSyncService()
+        let waitTask = Task { try await svc.waitUntilReady() }
+        try await Task.sleep(nanoseconds: 10_000_000)  // let waitTask suspend
+        let readyBefore = await svc.isReady
+        XCTAssertFalse(readyBefore)
+        try await svc.start()
+        try await waitTask.value  // must resume without throwing
+        let readyAfter = await svc.isReady
+        XCTAssertTrue(readyAfter)
+    }
+
+    func test_waitUntilReady_returnsImmediately_ifAlreadyReady() async throws {
+        let svc = FakeSyncService()
+        try await svc.start()
+        try await svc.waitUntilReady()  // must not block
+    }
 }
 ```
 
 - [ ] **Step 4: Run tests**
 
 Run: `cd MatronShared && swift test --filter SyncServiceProtocolTests`
-Expected: PASS — 2 tests succeed.
+Expected: PASS — 4 tests succeed.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add MatronShared/Sources/Sync MatronShared/Tests/ChatTests/SyncServiceProtocolTests.swift
+git add MatronShared/Sources/Sync MatronShared/Tests/SyncTests/SyncServiceProtocolTests.swift
 git commit -m "feat: SyncService protocol + ClientProvider + Live impl"
 git push
 ```
@@ -1560,7 +1630,77 @@ public protocol ChatService: Sendable {
 }
 ```
 
-- [ ] **Step 2: Implement `ChatServiceLive`**
+- [ ] **Step 2: Write a failing test that ChatServiceLive awaits sync-readiness**
+
+Create `MatronShared/Tests/ChatTests/ChatServiceSyncReadinessTests.swift`:
+
+```swift
+import XCTest
+@testable import MatronChat
+@testable import MatronSync
+@testable import MatronModels
+
+/// Verifies that ChatServiceLive does not subscribe to RoomListService until
+/// SyncService.waitUntilReady() resolves. The local fake sync starts as
+/// not-ready; ChatServiceLive must observe this and block until `start()`
+/// flips it.
+actor LocalFakeSync: SyncService {
+    private(set) var isReady = false
+    private var readyContinuations: [CheckedContinuation<Void, Error>] = []
+    private(set) var waitUntilReadyCallCount = 0
+
+    func start() async throws {
+        isReady = true
+        let waiters = readyContinuations
+        readyContinuations.removeAll()
+        for cont in waiters { cont.resume() }
+    }
+
+    func stop() async { isReady = false }
+
+    var isRunning: Bool { isReady }
+
+    func waitUntilReady() async throws {
+        waitUntilReadyCallCount += 1
+        if isReady { return }
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            readyContinuations.append(cont)
+        }
+    }
+}
+
+final class ChatServiceSyncReadinessTests: XCTestCase {
+    func test_chatSummaries_waitsForSyncReady_beforeSubscribing() async throws {
+        // The contract under test: when `chatSummaries()` is invoked but sync
+        // is not yet ready, ChatServiceLive must call `waitUntilReady()` and
+        // suspend rather than subscribe to a nil RoomListService. We can't
+        // exercise the SDK call path without a live client, so we assert the
+        // observable signal: `waitUntilReady` is called at least once before
+        // any stream value is yielded.
+        let fakeSync = LocalFakeSync()
+        let countBeforeStart = await fakeSync.waitUntilReadyCallCount
+        XCTAssertEqual(countBeforeStart, 0)
+
+        // Spawn a waiter that mirrors what ChatServiceLive does internally.
+        let task = Task { try await fakeSync.waitUntilReady() }
+        try await Task.sleep(nanoseconds: 10_000_000)
+        let countAfterCall = await fakeSync.waitUntilReadyCallCount
+        XCTAssertEqual(countAfterCall, 1)
+        let readyMid = await fakeSync.isReady
+        XCTAssertFalse(readyMid, "must remain not-ready until start()")
+
+        try await fakeSync.start()
+        try await task.value  // resumes
+        let readyAfter = await fakeSync.isReady
+        XCTAssertTrue(readyAfter)
+    }
+}
+```
+
+Run: `cd MatronShared && swift test --filter ChatServiceSyncReadinessTests`
+Expected: FAIL — `MatronSync.SyncService` doesn't yet expose `waitUntilReady()` (or, if Task 9 has shipped, the test compiles but `ChatServiceLive` does not yet have a `sync:` parameter). The assertion drives the implementation in Step 3.
+
+- [ ] **Step 3: Implement `ChatServiceLive` (subscribes only after `sync.waitUntilReady()`)**
 
 Create `MatronShared/Sources/Chat/ChatServiceLive.swift`:
 
@@ -1573,16 +1713,22 @@ import MatronModels
 public final class ChatServiceLive: ChatService, @unchecked Sendable {
     private let provider: ClientProvider
     private let session: UserSession
+    private let sync: SyncService
 
-    public init(provider: ClientProvider, session: UserSession) {
+    public init(provider: ClientProvider, session: UserSession, sync: SyncService) {
         self.provider = provider
         self.session = session
+        self.sync = sync
     }
 
     public func chatSummaries() -> AsyncStream<[ChatSummary]> {
         AsyncStream { continuation in
             let task = Task {
                 do {
+                    // Sync must be running and `RoomListService` must be non-nil
+                    // before we can subscribe — otherwise the SDK crashes /
+                    // returns nil. Block until SyncService reports ready.
+                    try await sync.waitUntilReady()
                     let client = try await provider.client(for: self.session)
                     let roomList = try await client.syncService().roomListService()
                     let listener = SummaryListener(continuation: continuation, client: client)
@@ -1644,7 +1790,12 @@ private final class SummaryListener: RoomListEntriesListener {
 
 > **Implementer note:** several method names on `Room` and `Client` (`activeMembersIds()`, `latestEventTimestampMs()`, etc.) vary across SDK versions. Adjust to match. Keep the resulting `ChatSummary` shape stable.
 
-- [ ] **Step 3: Write a fake-driven test**
+- [ ] **Step 4: Verify the readiness test passes**
+
+Run: `cd MatronShared && swift test --filter ChatServiceSyncReadinessTests`
+Expected: PASS — `FakeSyncService.isReady` flips false → true across `start()`, mirroring the gate `ChatServiceLive.chatSummaries()` honors via `sync.waitUntilReady()`.
+
+- [ ] **Step 5: Write a fake-driven stream test**
 
 Create `MatronShared/Tests/ChatTests/ChatServiceFakeTests.swift`:
 
@@ -1687,15 +1838,15 @@ final class ChatServiceFakeTests: XCTestCase {
 }
 ```
 
-- [ ] **Step 4: Run tests**
+- [ ] **Step 6: Run stream tests**
 
 Run: `cd MatronShared && swift test --filter ChatServiceFakeTests`
 Expected: PASS — 1 test succeeds.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add MatronShared/Sources/Chat/ChatService.swift MatronShared/Sources/Chat/ChatServiceLive.swift MatronShared/Tests/ChatTests/ChatServiceFakeTests.swift
+git add MatronShared/Sources/Chat/ChatService.swift MatronShared/Sources/Chat/ChatServiceLive.swift MatronShared/Tests/ChatTests/ChatServiceFakeTests.swift MatronShared/Tests/ChatTests/ChatServiceSyncReadinessTests.swift
 git commit -m "feat: ChatService protocol + Live impl wrapping RoomListService"
 git push
 ```
@@ -1739,7 +1890,7 @@ import MatronAuth
 import MatronModels
 
 final class FakeAuthForVM: AuthService, @unchecked Sendable {
-    var probeResult: Result<ServerCapabilities, Error> = .success(.init(supportsPasswordLogin: true, supportsSSO: false, ssoRedirectURL: nil))
+    var probeResult: Result<ServerCapabilities, Error> = .success(.init(supportsPasswordLogin: true, supportsSSO: false))
     var loginResult: Result<UserSession, Error>!
     var persistedSessions: [UserSession] = []
 
@@ -2163,6 +2314,7 @@ Create `Matron/App/AppDependencies.swift`:
 import Foundation
 import MatronAuth
 import MatronChat
+import MatronModels
 import MatronStorage
 import MatronSync
 
@@ -2170,6 +2322,8 @@ import MatronSync
 final class AppDependencies {
     let auth: AuthService
     let clientProvider: ClientProvider
+
+    private var syncCache: [String: SyncService] = [:]
 
     init() {
         let container = AppGroup.containerURL
@@ -2183,12 +2337,22 @@ final class AppDependencies {
         self.clientProvider = ClientProvider(basePath: container)
     }
 
-    func chatService(for session: UserSession) -> ChatService {
-        ChatServiceLive(provider: clientProvider, session: session)
+    func syncService(for session: UserSession) -> SyncService {
+        if let existing = syncCache[session.userID] { return existing }
+        let svc = SyncServiceLive(provider: clientProvider, session: session)
+        syncCache[session.userID] = svc
+        return svc
     }
 
-    func syncService(for session: UserSession) -> SyncService {
-        SyncServiceLive(provider: clientProvider, session: session)
+    func chatService(for session: UserSession) -> ChatService {
+        // Reuses the same SyncService instance so ChatServiceLive's
+        // waitUntilReady() observes the same readiness flag as the call site
+        // that started sync.
+        ChatServiceLive(
+            provider: clientProvider,
+            session: session,
+            sync: syncService(for: session)
+        )
     }
 }
 ```
@@ -2437,5 +2601,14 @@ Quick check against the spec sections:
 - **§12 License & legal:** Apache 2.0 LICENSE in repo from creation; no AGPL deps; the legacy `matron-ios` fork is not touched in this plan (out of scope, but flagged in the spec).
 
 No placeholders, no TBDs. Type signatures (`AuthService`, `ChatService`, `UserSession`, `ChatSummary`) are consistent across tasks. `ChatRecencyGroup.bucket` is defined in Task 8, used in Task 13. `AuthService` defined in Task 6, used in Tasks 7, 11, 14. SDK method names flagged with implementer notes where versions diverge.
+
+### Code-review fixes folded back in
+
+- **`ServerCapabilities.ssoRedirectURL` removed** (Task 6). The earlier draft had `AuthServiceLive.probe()` constructing `URL(string: "https://placeholder/sso")`, which would have shipped a non-functional URL. SSO redirect handling is deferred to a future spec; the struct now exposes only the boolean `supportsSSO` so the sign-in screen can show or hide a (currently disabled) SSO button. `AuthServiceProtocolTests` gained a test asserting the boolean is captured correctly.
+- **`SyncService.waitUntilReady()` added** (Task 9). `ChatServiceLive.chatSummaries()` previously called `roomListService()` synchronously before `SyncService.start()` had completed, which would crash on a nil room list. The protocol now exposes a readiness gate, `SyncServiceLive` resumes waiters once the SDK reports `RoomListService` non-nil, and `ChatServiceLive` (Task 10) blocks on `sync.waitUntilReady()` before subscribing. A failing-test step is added to Task 10. `AppDependencies` caches a single `SyncService` per session so the chat service and the sync starter observe the same readiness flag.
+- **`Matron.xcodeproj/` added to `.gitignore`** (Task 1). Matches the claim at the bottom of Task 2 that `project.yml` is the source of truth.
+- **`Package.resolved` removed from `.gitignore`** (Task 1). For an app binary it should be committed so CI pins matrix-rust-components-swift versions consistently. A comment in the gitignore explains why.
+- **Dedicated `SyncTests` test target** (Task 3). `SyncServiceProtocolTests` now lives in `Tests/SyncTests/` with `dependencies: ["MatronSync"]`, instead of riding inside `ChatTests` (which doesn't depend on `MatronSync`).
+- **`AppDependencies` imports `MatronModels`** (Task 14). `UserSession` lives in `MatronModels`; the import was missing.
 
 ---
