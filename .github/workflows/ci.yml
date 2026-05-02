@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  shared-package-tests:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Run MatronShared package tests (host = macOS)
+        working-directory: MatronShared
+        run: swift test --enable-code-coverage
+
+  ios-build-and-test:
+    runs-on: macos-15
+    needs: shared-package-tests
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Resolve SPM dependencies
+        run: xcodebuild -resolvePackageDependencies -project Matron.xcodeproj -scheme Matron
+
+      - name: List available simulators
+        run: xcrun simctl list devices available | grep -E "iPhone " | head -5
+
+      - name: Build Matron app (iOS)
+        run: |
+          xcodebuild build \
+            -project Matron.xcodeproj \
+            -scheme Matron \
+            -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
+            CODE_SIGNING_ALLOWED=NO
+
+  mac-build-and-test:
+    runs-on: macos-15
+    needs: shared-package-tests
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Resolve SPM dependencies
+        run: xcodebuild -resolvePackageDependencies -project Matron.xcodeproj -scheme MatronMac
+
+      - name: Build MatronMac app
+        run: |
+          xcodebuild build \
+            -project Matron.xcodeproj \
+            -scheme MatronMac \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Run MatronMac tests
+        run: |
+          xcodebuild test \
+            -project Matron.xcodeproj \
+            -scheme MatronMacTests \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO
