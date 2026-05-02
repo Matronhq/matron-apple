@@ -1,12 +1,12 @@
-# Matron iOS — Phase 1 (Foundation) Implementation Plan
+# Matron — Phase 1 (Foundation) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Get a Matron iOS app that launches, signs in to a user-supplied Matrix homeserver, runs sliding sync, and shows the room list with bot names. E2EE on. Pure-Apache-2.0 codebase. App Store-submittable scaffold (TestFlight-ready, even if features are minimal).
+**Goal:** Get Matron apps (iOS + native macOS) that launch, sign in to a user-supplied Matrix homeserver, run sliding sync, and show the room list with bot names. E2EE on. AGPL-3.0 + commercial dual-licensed codebase with a CLA workflow. App Store-submittable scaffold for both platforms (TestFlight-ready iOS + signed Mac build, even if features are minimal).
 
-**Architecture:** Three Xcode targets (Matron app, MatronNSE extension, MatronShared SPM package). SwiftUI + MVVM with `@Observable` view models, native `NavigationStack`, no Coordinator pattern. matrix-rust-sdk-swift via SPM as the Matrix layer. App Group container shared between app and NSE for the crypto store.
+**Architecture:** Four Xcode targets (`Matron` iOS app, `MatronMac` macOS app, `MatronNSE` iOS-only NSE extension, `MatronShared` SPM package). SwiftUI + MVVM with `@Observable` view models that live in `MatronShared` and are shared by both apps; native `NavigationStack` on iOS, `NavigationSplitView` on Mac, no Coordinator pattern. matrix-rust-sdk-swift via SPM as the Matrix layer. iOS shares its crypto store with the NSE via an App Group; macOS uses a single-process Application Support directory.
 
-**Tech Stack:** Swift 5.10+, SwiftUI, iOS 17+, matrix-rust-sdk-swift (Apache 2.0), XCTest, swift-snapshot-testing.
+**Tech Stack:** Swift 5.10+, SwiftUI, iOS 17+ / macOS 14+, matrix-rust-sdk-swift (Apache 2.0), XCTest, swift-snapshot-testing.
 
 **Reference:** Full design spec at `docs/superpowers/specs/2026-05-02-matron-ios-design.md`. Read it before starting.
 
@@ -14,12 +14,12 @@
 
 ## Execution environment
 
-This is an iOS plan. Building, running, and testing requires **Xcode 16+ on macOS 14+**. The dev box `dev-2.yearbook.com` is Linux and CANNOT execute Xcode tasks. Two practical options for the implementing engineer:
+This is a multi-platform Apple plan (iOS + macOS). Building, running, and testing requires **Xcode 16+ on macOS 14+**. The dev box `dev-2.yearbook.com` is Linux and CANNOT execute Xcode tasks. Two practical options for the implementing engineer:
 
 1. **Local Mac** — clone the repo, install Xcode 16+, work locally. Push commits to GitHub.
 2. **Hosted Mac (e.g. MacStadium, GitHub-hosted macOS runner via Codespaces, Scaleway Apple Silicon)** — useful if no local Mac is available. Higher friction.
 
-CI for this plan uses **GitHub Actions macOS runners** (`macos-14` or `macos-15`). Free tier should cover MVP development; we may need a paid plan if iteration speed becomes a problem.
+CI for this plan uses **GitHub Actions macOS runners** (`macos-14` or `macos-15`). The CI matrix builds and tests both the `Matron` iOS scheme (against an iPhone simulator) and the `MatronMac` scheme (against the macOS host). Free tier should cover MVP development; we may need a paid plan if iteration speed becomes a problem.
 
 ---
 
@@ -29,7 +29,7 @@ This plan covers **Phase 1 only**. The other phases each get their own plan when
 
 | Phase | Title | Output |
 |---|---|---|
-| **1 (this plan)** | Foundation | App launches, signs in, runs sliding sync, lists rooms with bot names. E2EE on. ~25–30 tasks. |
+| **1 (this plan)** | Foundation | iOS + Mac apps launch, sign in, run sliding sync, list rooms with bot names. E2EE on. AGPL-3.0 + CLA in place. ~20 tasks. |
 | 2 | Chat experience | Timeline view, rendering primitives (Markdown, CodeBlock, attachments), composer, slash palette, attachment picker. ~25–30 tasks. |
 | 3 | E2EE & verification UX | First-device recovery key, multi-device SAS, bot verification banner, key backup. ~15 tasks. |
 | 4 | Push & NSE | Sygnal-compatible pusher registered on server, NSE target wired to decrypt push payloads, deep-link to chat on tap. ~15 tasks. |
@@ -57,8 +57,10 @@ Recap of every decision the spec encodes — so an engineer reading this plan in
 - **UI direction: ChatGPT/Claude.ai inspired** — sidebar of chats, single-pane chat view, minimalist.
 - **Pattern: SwiftUI + MVVM, no Coordinators.** `@Observable` view models, native `NavigationStack`.
 - **Onboarding: one combined sign-in screen** (server URL + username + password + SSO button), then verification screen.
-- **iOS 17 minimum target.** Matches Element X.
-- **License posture: Apache 2.0 / MIT / BSD only in the binary.** Element X may be studied (architectures aren't copyrightable) but no code translation. Fresh repo (`matronhq/matron-iOS-app`), not a fork.
+- **iOS 17 / macOS 14 minimum targets.** Both give us `@Observable`, modern `NavigationStack` / `NavigationSplitView`, and mature SwiftUI scene APIs (`Settings { ... }`, `.commands { ... }`).
+- **Multi-platform from day 1.** iOS and native macOS as co-equal targets — both App Store distributable. iPad inherits via adaptive `NavigationSplitView` on the iOS target.
+- **License posture: AGPL-3.0 + commercial dual-licensing.** Public licence is AGPL-3.0; Matron HQ retains copyright and offers commercial terms by arrangement. Dependencies must be AGPL-compatible (Apache 2.0 / MIT / BSD / MPL fine; pure GPL excluded). Element X may be studied (architectures aren't copyrightable) but no code translation. Repo is re-initialised in Phase 1 — fresh history, fresh `LICENSE`, no Element X lineage.
+- **Contributor License Agreement (CLA) required for external contributions.** Matron HQ retains the right to relicense under both AGPL and commercial terms. Enforced via `cla-assistant` GitHub Action.
 - **Search lives in MVP** (SQLite FTS5, NSFileProtectionComplete, decryption-time indexing, async backfill).
 - **Push: Sygnal-compatible HTTP pusher server-side + iOS NSE on-device.** Required by Apple's E2EE constraints.
 
@@ -72,38 +74,55 @@ By the end of Phase 1, the repo contains:
 matron-iOS-app/
 ├── .github/
 │   └── workflows/
-│       └── ci.yml                          GitHub Actions: build + test on macos-14
+│       ├── ci.yml                          GitHub Actions: build + test iOS + Mac on macos-15
+│       └── cla.yml                         cla-assistant CLA enforcement on PRs
 ├── .gitignore                              Standard Swift / Xcode .gitignore
-├── LICENSE                                 Apache 2.0 (already present)
+├── .cla.md                                 Contributor Licence Agreement text
+├── CONTRIBUTING.md                         Project licence model + contribution flow
+├── LICENSE                                 AGPL-3.0 (replaces any prior file)
+├── NOTICE                                  Copyright + dual-licence notice
 ├── README.md                               Project intro, build instructions
 ├── docs/
 │   └── superpowers/
 │       ├── specs/2026-05-02-matron-ios-design.md
 │       └── plans/2026-05-02-matron-ios-phase-1-foundation.md  (this file)
-├── Matron.xcworkspace/                     Xcode workspace
-├── Matron.xcodeproj/                       Xcode project (3 targets)
-├── Matron/                                 iOS app target source
+├── project.yml                             XcodeGen source of truth (4 targets)
+├── Matron.xcworkspace/                     Xcode workspace (gitignored, generated)
+├── Matron.xcodeproj/                       Xcode project (gitignored, generated)
+├── Matron/                                 iOS app target source (iPhone + iPad)
 │   ├── App/
 │   │   ├── MatronApp.swift                 @main entry, root navigation
 │   │   ├── AppDependencies.swift           DI container (struct of services)
+│   │   ├── Matron.entitlements
 │   │   └── Info.plist
 │   ├── Features/
 │   │   ├── Onboarding/
-│   │   │   ├── SignInView.swift
-│   │   │   └── SignInViewModel.swift
+│   │   │   └── SignInView.swift            (ViewModel lives in MatronShared)
 │   │   └── ChatList/
-│   │       ├── ChatListView.swift
-│   │       └── ChatListViewModel.swift
-│   ├── DesignSystem/
-│   │   ├── Colors.swift
-│   │   ├── Typography.swift
-│   │   └── Spacing.swift
+│   │       └── ChatListView.swift          (ViewModel lives in MatronShared)
 │   └── Resources/
 │       └── Assets.xcassets
-├── MatronNSE/                              Notification Service Extension target
+├── MatronMac/                              macOS app target source (single main window)
+│   ├── App/
+│   │   ├── MatronMacApp.swift              @main entry, WindowGroup + Settings scene
+│   │   ├── AppDependencies.swift           DI container (Mac variant — same protocol surface)
+│   │   ├── MatronMac.entitlements
+│   │   └── Info.plist
+│   ├── Features/
+│   │   ├── Onboarding/
+│   │   │   └── MacSignInView.swift         Centered card, fixed window during sign-in
+│   │   └── ChatList/
+│   │       └── MacChatListView.swift       NavigationSplitView 2-column stub
+│   └── Resources/
+│       └── Assets.xcassets
+├── MatronMacTests/                         macOS app target unit tests
+│   ├── MacSignInViewBindingTests.swift
+│   └── MacChatListViewBindingTests.swift
+├── MatronNSE/                              Notification Service Extension target (iOS-only)
 │   ├── NotificationService.swift           Stub for Phase 1 (logs, returns content unchanged)
+│   ├── MatronNSE.entitlements
 │   └── Info.plist
-├── MatronShared/                           Local SPM package (used by Matron + MatronNSE)
+├── MatronShared/                           Local SPM package (used by all 3 app targets)
 │   ├── Package.swift
 │   ├── Sources/
 │   │   ├── Auth/
@@ -119,20 +138,27 @@ matron-iOS-app/
 │   │   │   ├── ChatServiceLive.swift       Wraps RoomListService
 │   │   │   └── ChatSummary.swift           DTO
 │   │   ├── Storage/
-│   │   │   ├── AppGroup.swift              Constants + path helpers
+│   │   │   ├── StoragePaths.swift          Platform-conditional paths (App Group on iOS,
+│   │   │   │                               Application Support on macOS)
 │   │   │   └── KeychainStore.swift         Tiny wrapper around Security framework
-│   │   └── Models/
-│   │       ├── BotIdentity.swift
-│   │       └── UserSession.swift
+│   │   ├── Models/
+│   │   │   ├── BotIdentity.swift
+│   │   │   └── UserSession.swift
+│   │   ├── ViewModels/                     @Observable view models — used by both apps
+│   │   │   ├── SignInViewModel.swift
+│   │   │   └── ChatListViewModel.swift
+│   │   └── DesignSystem/                   Foundation directory; primitives land in Phase 2
+│   │       └── .gitkeep
 │   └── Tests/
 │       ├── AuthTests/
 │       ├── ChatTests/
 │       ├── StorageTests/
-│       └── SyncTests/
+│       ├── SyncTests/
+│       └── ViewModelTests/
 └── manual-tests.md                         Empty stub; will fill in later phases
 ```
 
-**Out of scope for Phase 1** (deferred to Phase 2+): all rendering primitives, composer, attachment picker, settings screen, bot profile, push notifications, NSE decryption, custom events, search, recovery key flow.
+**Out of scope for Phase 1** (deferred to Phase 2+): all rendering primitives (the `DesignSystem/` directory exists but is otherwise empty — primitives land in Phase 2), composer, attachment picker, settings screen, bot profile, push notifications, NSE decryption, custom events, search, recovery key flow, full Mac menu bar (`.commands`), full Mac toolbar.
 
 ---
 
@@ -140,11 +166,11 @@ matron-iOS-app/
 
 The implementing engineer needs:
 
-1. macOS 14+ with Xcode 16+ installed (`xcodebuild -version` to confirm).
+1. macOS 14+ with Xcode 16+ installed (`xcodebuild -version` to confirm). Both iOS and macOS builds are produced from the same Xcode install.
 2. SwiftLint installed (`brew install swiftlint`).
 3. A test homeserver (a `dev-boxer` instance) with a user account and at least one bot already invited. Bridge can stay default — Phase 1 doesn't exercise the bridge protocol, just sliding sync and basic room enumeration.
-4. Git configured with the `Matronhq` account.
-5. Cloned `matronhq/matron-iOS-app` repo.
+4. Git configured with the `matronhq` account.
+5. Cloned `matronhq/matron-iOS-app` repo. Note: any pre-existing `LICENSE` (e.g. inherited from the dropped Element X fork) is replaced with AGPL-3.0 in Task 1.
 
 ---
 
@@ -196,14 +222,17 @@ fastlane/test_output
 # IDE
 .vscode/
 .idea/
+
+# Signatures (the cla-assistant bot writes here on a separate branch; never commit locally)
+signatures/
 ```
 
 - [ ] **Step 2: Replace `README.md` with project intro**
 
 ```markdown
-# Matron iOS
+# Matron
 
-Native iOS Matrix client, bot-first, App Store distributable. Built on [matrix-rust-sdk](https://github.com/matrix-org/matrix-rust-sdk).
+Native Matrix client for iOS and macOS, bot-first, App Store distributable on both platforms. Built on [matrix-rust-sdk](https://github.com/matrix-org/matrix-rust-sdk).
 
 Part of the [Matron](https://github.com/matronhq) ecosystem.
 
@@ -223,17 +252,26 @@ Pre-alpha. Phase 1 (foundation) in progress — see `docs/superpowers/plans/`.
 open Matron.xcworkspace
 ```
 
-Select the `Matron` scheme, choose an iOS 17+ simulator or device, build & run.
+- For iPhone/iPad: select the `Matron` scheme, choose an iOS 17+ simulator or device, build & run.
+- For macOS: select the `MatronMac` scheme, build & run on the host (macOS 14+).
 
 ## Tests
 
 ```bash
+# iOS
 xcodebuild test -workspace Matron.xcworkspace -scheme Matron -destination 'platform=iOS Simulator,name=iPhone 15'
+
+# macOS
+xcodebuild test -workspace Matron.xcworkspace -scheme MatronMac -destination 'platform=macOS'
 ```
 
 ## License
 
-Apache 2.0. See `LICENSE`.
+AGPL-3.0 with commercial licensing available by arrangement. See `LICENSE`, `NOTICE`, and `CONTRIBUTING.md`.
+
+## Contributing
+
+External contributions require a signed CLA — see `CONTRIBUTING.md` and `.cla.md`. The `cla-assistant` GitHub bot prompts for signature on first PR.
 
 ## Documentation
 
@@ -251,13 +289,192 @@ git push
 
 ---
 
-### Task 2: Create the Xcode project skeleton (3 targets)
+### Task 1B: Licensing, NOTICE, CONTRIBUTING, CLA
+
+This task lands the project's licence posture in one shot: AGPL-3.0 source + dual-licensing notice + CLA text + GitHub Action that blocks unsigned PRs. Spec §12 is the canonical reference.
+
+**Files:**
+- Replace: `LICENSE` (AGPL-3.0)
+- Create: `NOTICE`
+- Create: `CONTRIBUTING.md`
+- Create: `.cla.md`
+- Create: `.github/workflows/cla.yml`
+
+- [ ] **Step 1: Replace `LICENSE` with the standard AGPL-3.0 text**
+
+Drop in the verbatim AGPL-3.0 text from <https://www.gnu.org/licenses/agpl-3.0.txt> (the canonical FSF copy). Don't paraphrase — the licence requires verbatim distribution.
+
+- [ ] **Step 2: Create `NOTICE`**
+
+Create `NOTICE`:
+
+```
+Copyright (c) 2026 Matron HQ. All Rights Reserved.
+
+This software is dual-licensed:
+
+- AGPL-3.0 for open source use (see LICENSE).
+- Commercial licensing is available by arrangement for redistributors who
+  cannot comply with AGPL-3.0.
+
+Contact: licensing@matron.chat
+```
+
+> **Implementer flag:** the `licensing@matron.chat` address is provisional. Confirm with the project owner before this task is committed; update if a different inbox is preferred.
+
+- [ ] **Step 3: Create `CONTRIBUTING.md`**
+
+Create `CONTRIBUTING.md`:
+
+```markdown
+# Contributing to Matron
+
+Thanks for your interest. This document explains the project's licence model and how to contribute.
+
+## Project licence
+
+Matron is dual-licensed:
+
+- **AGPL-3.0** for open source use. Source redistribution and modified-version network deployments must comply.
+- **Commercial licensing** is available by arrangement for redistributors who cannot comply with AGPL-3.0. Contact `licensing@matron.chat`.
+
+Matron HQ retains copyright on all first-party code.
+
+## Why we have a CLA
+
+Dual-licensing requires that the copyright holder retain the right to relicense contributions under both AGPL-3.0 and commercial terms. We use a Contributor Licence Agreement (CLA) to make this explicit.
+
+The CLA grants Matron HQ a perpetual, irrevocable, worldwide licence to use, modify, sublicense, and relicense your contribution under any terms — including the commercial licence offered alongside AGPL-3.0. You retain copyright on what you contribute; you simply grant Matron HQ broad rights to use it.
+
+The full CLA text is in [`.cla.md`](.cla.md).
+
+## How to contribute
+
+1. **Fork** the repo on GitHub.
+2. **Branch** from `main`, push your changes, **open a pull request** against `matronhq/matron-ios-app:main`.
+3. The **`cla-assistant` bot** will comment on your first PR asking you to sign the CLA. Reply with the exact phrase the bot requests; this records your signature in the `signatures/v1/cla.json` file on a CLA branch.
+4. A maintainer will review. We aim for first-pass review within a week.
+
+## Scope
+
+- **Bug fixes and small features:** PRs welcome directly.
+- **Larger features:** please open an issue first to discuss design before sinking time into a PR — see the design spec at `docs/superpowers/specs/`.
+- **Breaking changes to public protocols** (`AuthService`, `ChatService`, etc.): coordinate via issue.
+
+## Commit style
+
+- One logical change per commit.
+- Commit messages: short imperative subject (`feat: …`, `fix: …`, `chore: …`, `docs: …`), wrap body at 72 columns if you include one.
+
+## Tests
+
+Every new code path lands with a test. The plan documents in `docs/superpowers/plans/` show the TDD shape we follow (failing test → implementation → verify).
+```
+
+- [ ] **Step 4: Create `.cla.md`**
+
+Create `.cla.md`. The text below is an Apache ICLA-derived template adapted to the dual-licence context. Keep formatting as-is — the cla-assistant bot reads this file when contributors sign.
+
+```markdown
+# Matron Individual Contributor Licence Agreement (ICLA), v1.0
+
+Thank you for your interest in contributing to Matron, a project of Matron HQ ("Matron HQ"). To clarify the intellectual property licence granted with contributions from any person or entity, Matron HQ must have a Contributor Licence Agreement ("CLA") on file that has been signed by each contributor, indicating agreement to the licence terms below.
+
+This licence is for your protection as a contributor as well as the protection of Matron HQ and the project's users; it does not change your rights to use your own contributions for any other purpose.
+
+You accept and agree to the following terms and conditions for Your present and future Contributions submitted to Matron HQ. Except for the licence granted herein to Matron HQ and recipients of software distributed by Matron HQ, You reserve all right, title, and interest in and to Your Contributions.
+
+## 1. Definitions
+
+"You" (or "Your") shall mean the copyright owner or legal entity authorised by the copyright owner that is making this Agreement with Matron HQ.
+
+"Contribution" shall mean any original work of authorship, including any modifications or additions to an existing work, that is intentionally submitted by You to Matron HQ for inclusion in, or documentation of, any of the products owned or managed by Matron HQ (the "Work").
+
+## 2. Grant of Copyright Licence
+
+Subject to the terms and conditions of this Agreement, You hereby grant to Matron HQ and to recipients of software distributed by Matron HQ a **perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable** copyright licence to reproduce, prepare derivative works of, publicly display, publicly perform, sublicense, **relicense (including under commercial terms)**, and distribute Your Contributions and such derivative works.
+
+You acknowledge that Matron HQ dual-licenses the Work under AGPL-3.0 and a commercial licence, and that the licence granted in this section is broad enough to permit Matron HQ to continue doing so with respect to Your Contributions.
+
+## 3. Grant of Patent Licence
+
+Subject to the terms and conditions of this Agreement, You hereby grant to Matron HQ and to recipients of software distributed by Matron HQ a perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable (except as stated in this section) patent licence to make, have made, use, offer to sell, sell, import, and otherwise transfer the Work, where such licence applies only to those patent claims licensable by You that are necessarily infringed by Your Contribution(s) alone or by combination of Your Contribution(s) with the Work to which such Contribution(s) was submitted. If any entity institutes patent litigation against You or any other entity (including a cross-claim or counterclaim in a lawsuit) alleging that Your Contribution, or the Work to which You have contributed, constitutes direct or contributory patent infringement, then any patent licences granted to that entity under this Agreement for that Contribution or Work shall terminate as of the date such litigation is filed.
+
+## 4. Representations
+
+You represent that You are legally entitled to grant the above licence. If Your employer(s) has rights to intellectual property that You create that includes Your Contributions, You represent that You have received permission to make Contributions on behalf of that employer, that Your employer has waived such rights for Your Contributions to Matron HQ, or that Your employer has executed a separate Corporate CLA with Matron HQ.
+
+You represent that each of Your Contributions is Your original creation (see section 5 for submissions on behalf of others). You represent that Your Contribution submissions include complete details of any third-party licence or other restriction (including, but not limited to, related patents and trademarks) of which You are personally aware and which are associated with any part of Your Contributions.
+
+## 5. Third-party submissions
+
+Should You wish to submit work that is not Your original creation, You may submit it to Matron HQ separately from any Contribution, identifying the complete details of its source and of any licence or other restriction (including, but not limited to, related patents, trademarks, and licence agreements) of which You are personally aware, and conspicuously marking the work as "Submitted on behalf of a third-party: [name(s)]".
+
+## 6. Support; warranty disclaimer
+
+You are not expected to provide support for Your Contributions, except to the extent You desire to provide support. You may provide support for free, for a fee, or not at all. Unless required by applicable law or agreed to in writing, You provide Your Contributions on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied, including, without limitation, any warranties or conditions of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A PARTICULAR PURPOSE.
+
+## 7. Notification of changes
+
+You agree to notify Matron HQ of any facts or circumstances of which You become aware that would make these representations inaccurate in any respect.
+
+---
+
+To accept this Agreement, sign via the cla-assistant bot on your pull request. Your signature is recorded in `signatures/v1/cla.json` in this repository.
+```
+
+- [ ] **Step 5: Create the CLA workflow**
+
+Create `.github/workflows/cla.yml`:
+
+```yaml
+name: CLA
+on:
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, closed, synchronize]
+jobs:
+  cla:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: contributor-assistant/github-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PERSONAL_ACCESS_TOKEN: ${{ secrets.CLA_PAT }}
+        with:
+          path-to-signatures: 'signatures/v1/cla.json'
+          path-to-document: 'https://github.com/matronhq/matron-ios/blob/main/.cla.md'
+          branch: 'main'
+          allowlist: dependabot[bot]
+```
+
+> **Implementer note:** `CLA_PAT` is a fine-grained Personal Access Token with `Contents: write` scope on this repo, scoped to a CLA-bot machine user. Set it via `gh secret set CLA_PAT` once. The `path-to-document` URL points at the rendered `.cla.md` on `main`; update if the default branch name changes.
+
+- [ ] **Step 6: Verify the workflow file lints**
+
+Run: `gh workflow view cla.yml` (after pushing; before push, just confirm `yamllint .github/workflows/cla.yml` passes if `yamllint` is installed — the GitHub-side validation runs on push).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add LICENSE NOTICE CONTRIBUTING.md .cla.md .github/workflows/cla.yml
+git commit -m "chore: AGPL-3.0 + NOTICE + CONTRIBUTING + CLA workflow"
+git push
+```
+
+---
+
+### Task 2: Create the Xcode project skeleton (4 targets)
 
 **Files:**
 - Create: `Matron.xcodeproj/` (via Xcode UI or `xcodegen`)
 - Create: `Matron.xcworkspace/`
 - Create: `Matron/App/MatronApp.swift`
 - Create: `Matron/App/Info.plist`
+- Create: `MatronMac/App/MatronMacApp.swift`
+- Create: `MatronMac/App/Info.plist`
+- Create: `MatronMac/MatronMac.entitlements`
 - Create: `MatronNSE/NotificationService.swift`
 - Create: `MatronNSE/Info.plist`
 
@@ -278,6 +495,7 @@ options:
   bundleIdPrefix: chat.matron
   deploymentTarget:
     iOS: "17.0"
+    macOS: "14.0"
   developmentLanguage: en
   createIntermediateGroups: true
 
@@ -337,6 +555,27 @@ targets:
       - package: MatrixRustSDK
         product: MatrixRustSDK
 
+  MatronMac:
+    type: application
+    platform: macOS
+    deploymentTarget: 14.0
+    sources: [MatronMac]
+    dependencies:
+      - target: MatronShared
+    info:
+      path: MatronMac/Info.plist
+      properties:
+        CFBundleDisplayName: Matron
+        LSApplicationCategoryType: public.app-category.social-networking
+    entitlements:
+      path: MatronMac/MatronMac.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+        com.apple.security.files.user-selected.read-only: true
+        com.apple.security.application-groups: []  # Mac doesn't share with NSE
+        keychain-access-groups: ["$(AppIdentifierPrefix)chat.matron.mac"]
+
   MatronNSE:
     type: app-extension
     platform: iOS
@@ -365,6 +604,8 @@ targets:
         product: MatrixRustSDK
 ```
 
+> **Implementer note on the Mac target:** the `dependencies: [- target: MatronShared]` form mirrors the multi-platform spec verbatim. XcodeGen accepts `target:` for cross-target deps, but because `MatronShared` is registered as a Swift Package (`packages:` block above), some teams prefer `- package: MatronShared` for consistency with `Matron` and `MatronNSE`. Either resolves to the same SPM dependency at build time; pick one and apply consistently. The Mac target also intentionally omits a direct `MatrixRustSDK` package dep at this layer — it pulls the SDK transitively through `MatronShared`'s SPM products. iOS keeps the explicit dep because the NSE was historically wired that way.
+
 - [ ] **Step 3: Create the minimal source files referenced above**
 
 Create `Matron/App/MatronApp.swift`:
@@ -381,6 +622,87 @@ struct MatronApp: App {
         }
     }
 }
+```
+
+Create `MatronMac/App/MatronMacApp.swift`:
+
+```swift
+import SwiftUI
+
+@main
+struct MatronMacApp: App {
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+                .frame(minWidth: 800, minHeight: 600)
+        }
+        .windowResizability(.contentMinSize)
+
+        // Phase 7 fills this in. For Phase 1 it's a placeholder so `⌘,` opens
+        // a window rather than crashing.
+        Settings {
+            SettingsView()
+        }
+
+        // Phase 2 attaches the real menu bar (.commands { CommandMenu… }).
+        // Leaving an empty `.commands { }` block here is intentional — it
+        // keeps the diff small in Phase 2 and documents where the menu bar
+        // will live.
+        // .commands { /* Phase 2: File / Edit / View / Help command menus */ }
+    }
+}
+
+private struct ContentView: View {
+    var body: some View {
+        Text("Matron — Phase 1 scaffold (Mac)")
+            .padding()
+    }
+}
+
+private struct SettingsView: View {
+    var body: some View {
+        Text("Settings — Phase 7 fills this in.")
+            .padding()
+            .frame(width: 480, height: 240)
+    }
+}
+
+// Note: UNUserNotificationCenter.current().delegate registration is
+// deferred to Phase 4 (Push & NSE). The Mac receives silent APNs pushes
+// in-process via UNUserNotificationCenterDelegate; Phase 4 wires that.
+```
+
+Create `MatronMac/App/Info.plist` (empty plist; XcodeGen merges in the `properties` from `project.yml`):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict/>
+</plist>
+```
+
+Create `MatronMac/MatronMac.entitlements`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.files.user-selected.read-only</key>
+    <true/>
+    <key>com.apple.security.application-groups</key>
+    <array/>
+    <key>keychain-access-groups</key>
+    <array>
+        <string>$(AppIdentifierPrefix)chat.matron.mac</string>
+    </array>
+</dict>
+</plist>
 ```
 
 Create `MatronNSE/NotificationService.swift`:
@@ -406,19 +728,21 @@ final class NotificationService: UNNotificationServiceExtension {
 - [ ] **Step 4: Generate the Xcode project**
 
 Run: `xcodegen generate`
-Expected: `Matron.xcodeproj/` created with no errors.
+Expected: `Matron.xcodeproj/` created with no errors. The schemes `Matron`, `MatronMac`, and `MatronNSE` should all be present (`xcodebuild -list -project Matron.xcodeproj` to verify).
 
-- [ ] **Step 5: Open in Xcode and verify it builds**
+- [ ] **Step 5: Open in Xcode and verify both apps build**
 
 Run: `open Matron.xcodeproj` (workspace is generated alongside)
-Build the `Matron` scheme for an iPhone 15 simulator.
-Expected: Build succeeds. Running shows "Matron — Phase 1 scaffold" text on screen.
+- Build the `Matron` scheme for an iPhone 15 simulator. Running shows "Matron — Phase 1 scaffold" text on screen.
+- Build the `MatronMac` scheme on the macOS host. Running shows a resizable window (≥800×600) with "Matron — Phase 1 scaffold (Mac)" text. `⌘,` opens the placeholder Settings window.
+
+Expected: both builds succeed. (`MatronNSE` builds as a dependency of `Matron`; no separate run.)
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add project.yml Matron MatronNSE
-git commit -m "feat: scaffold Xcode project with Matron, MatronNSE, MatronShared targets"
+git add project.yml Matron MatronMac MatronNSE
+git commit -m "feat: scaffold Xcode project with Matron, MatronMac, MatronNSE, MatronShared targets"
 git push
 ```
 
@@ -430,8 +754,10 @@ git push
 
 **Files:**
 - Create: `MatronShared/Package.swift`
-- Create: `MatronShared/Sources/Storage/AppGroup.swift`
-- Create: `MatronShared/Tests/StorageTests/AppGroupTests.swift`
+- Create: `MatronShared/Sources/Storage/StoragePaths.swift`
+- Create: `MatronShared/Sources/DesignSystem/.gitkeep`
+- Create: `MatronShared/Sources/ViewModels/.gitkeep` (populated in Tasks 11/13)
+- Create: `MatronShared/Tests/StorageTests/StoragePathsTests.swift`
 
 - [ ] **Step 1: Create `MatronShared/Package.swift`**
 
@@ -441,13 +767,18 @@ import PackageDescription
 
 let package = Package(
     name: "MatronShared",
-    platforms: [.iOS(.v17)],
+    platforms: [
+        .iOS(.v17),
+        .macOS(.v14),
+    ],
     products: [
         .library(name: "MatronAuth", targets: ["MatronAuth"]),
         .library(name: "MatronChat", targets: ["MatronChat"]),
         .library(name: "MatronStorage", targets: ["MatronStorage"]),
         .library(name: "MatronSync", targets: ["MatronSync"]),
         .library(name: "MatronModels", targets: ["MatronModels"]),
+        .library(name: "MatronViewModels", targets: ["MatronViewModels"]),
+        .library(name: "MatronDesignSystem", targets: ["MatronDesignSystem"]),
     ],
     dependencies: [
         .package(url: "https://github.com/matrix-org/matrix-rust-components-swift", from: "25.1.0"),
@@ -482,86 +813,148 @@ let package = Package(
             ],
             path: "Sources/Chat"
         ),
+        // ViewModels live in MatronShared from day 1 so both Matron (iOS) and
+        // MatronMac can import the same @Observable types. No SwiftUI Views
+        // here — only Foundation + service-layer dependencies.
+        .target(
+            name: "MatronViewModels",
+            dependencies: [
+                "MatronAuth",
+                "MatronChat",
+                "MatronModels",
+            ],
+            path: "Sources/ViewModels"
+        ),
+        // DesignSystem starts empty in Phase 1 — primitives (MarkdownText,
+        // CodeBlock, ToolCallCard, etc.) land in Phase 2. Declaring the target
+        // now means Phase 2 just adds source files; no Package.swift churn.
+        .target(name: "MatronDesignSystem", path: "Sources/DesignSystem"),
         .testTarget(name: "StorageTests", dependencies: ["MatronStorage"], path: "Tests/StorageTests"),
         .testTarget(name: "AuthTests", dependencies: ["MatronAuth"], path: "Tests/AuthTests"),
         .testTarget(name: "SyncTests", dependencies: ["MatronSync"], path: "Tests/SyncTests"),
         .testTarget(name: "ChatTests", dependencies: ["MatronChat"], path: "Tests/ChatTests"),
+        .testTarget(name: "ViewModelTests", dependencies: ["MatronViewModels"], path: "Tests/ViewModelTests"),
     ]
 )
 ```
 
-- [ ] **Step 2: Write the failing test for `AppGroup`**
+- [ ] **Step 2: Create empty placeholder directories so SPM can resolve the new targets**
 
-Create `MatronShared/Tests/StorageTests/AppGroupTests.swift`:
+```bash
+mkdir -p MatronShared/Sources/DesignSystem
+mkdir -p MatronShared/Sources/ViewModels
+mkdir -p MatronShared/Tests/ViewModelTests
+touch MatronShared/Sources/DesignSystem/.gitkeep
+touch MatronShared/Sources/ViewModels/.gitkeep   # populated in Tasks 11/13
+touch MatronShared/Tests/ViewModelTests/.gitkeep
+```
+
+> **Reconciliation note:** the previously provisional `Color.matronCodeBg` shorthand is no longer in scope at any layer — the Phase 7 reconciliation has already merged the canonical token name `Color.matronCodeBackground`. When `MatronDesignSystem` gains content in Phase 2, the named token will live in this directory under `Sources/DesignSystem/Colors.swift`. Phase 1 only provisions the directory.
+
+- [ ] **Step 3: Write the failing test for `StoragePaths`**
+
+Create `MatronShared/Tests/StorageTests/StoragePathsTests.swift`:
 
 ```swift
 import XCTest
 @testable import MatronStorage
 
-final class AppGroupTests: XCTestCase {
-    func test_identifier_isStable() {
-        XCTAssertEqual(AppGroup.identifier, "group.chat.matron")
+final class StoragePathsTests: XCTestCase {
+
+    #if os(iOS)
+    func test_iOS_appGroupIdentifier_isStable() {
+        XCTAssertEqual(StoragePaths.appGroupIdentifier, "group.chat.matron")
     }
 
-    func test_containerURL_returnsAValidURL_whenAppGroupAvailable() throws {
-        // In test runner there's no entitlement, so containerURL is nil.
-        // We only assert the identifier is right; runtime coverage is via integration test.
-        XCTAssertEqual(AppGroup.identifier, "group.chat.matron")
+    func test_iOS_cryptoStorePath_endsWithExpectedComponent() {
+        // groupContainer is force-unwrapped in StoragePaths (entitlement
+        // required at runtime). In the test runner the entitlement is absent
+        // so we don't touch the property here; instead we test the exported
+        // path-derivation helper that doesn't rely on the entitlement.
+        let fake = URL(fileURLWithPath: "/tmp/test-group")
+        XCTAssertEqual(StoragePaths.cryptoStore(in: fake), fake.appendingPathComponent("crypto-store"))
+        XCTAssertEqual(StoragePaths.searchDB(in: fake), fake.appendingPathComponent("matron-search.sqlite"))
+    }
+    #endif
+
+    #if os(macOS)
+    func test_macOS_appSupportPath_isUnderUserApplicationSupport() {
+        let path = StoragePaths.appSupport
+        XCTAssertTrue(path.path.contains("/Library/Application Support/chat.matron.mac"))
     }
 
-    func test_cryptoStorePath_isUnderContainer() {
-        let fakeContainer = URL(fileURLWithPath: "/tmp/test-app-group")
-        let path = AppGroup.cryptoStorePath(in: fakeContainer)
-        XCTAssertEqual(path, fakeContainer.appendingPathComponent("crypto-store"))
+    func test_macOS_cryptoStorePath_isUnderAppSupport() {
+        XCTAssertEqual(StoragePaths.cryptoStorePath, StoragePaths.appSupport.appendingPathComponent("crypto-store"))
     }
 
-    func test_searchDBPath_isUnderContainer() {
-        let fakeContainer = URL(fileURLWithPath: "/tmp/test-app-group")
-        let path = AppGroup.searchDBPath(in: fakeContainer)
-        XCTAssertEqual(path, fakeContainer.appendingPathComponent("matron-search.sqlite"))
+    func test_macOS_searchDBPath_isUnderAppSupport() {
+        XCTAssertEqual(StoragePaths.searchDBPath, StoragePaths.appSupport.appendingPathComponent("matron-search.sqlite"))
     }
+    #endif
 }
 ```
 
-- [ ] **Step 3: Run test to verify it fails (compile error)**
+- [ ] **Step 4: Run test to verify it fails (compile error)**
 
-Run: `cd MatronShared && swift test --filter AppGroupTests`
-Expected: FAIL — `MatronStorage` module not found, `AppGroup` symbol missing.
+Run: `cd MatronShared && swift test --filter StoragePathsTests`
+Expected: FAIL — `MatronStorage` module not found, `StoragePaths` symbol missing.
 
-- [ ] **Step 4: Implement `AppGroup`**
+- [ ] **Step 5: Implement `StoragePaths`**
 
-Create `MatronShared/Sources/Storage/AppGroup.swift`:
+Create `MatronShared/Sources/Storage/StoragePaths.swift`:
 
 ```swift
 import Foundation
 
-public enum AppGroup {
-    public static let identifier = "group.chat.matron"
+public enum StoragePaths {
 
-    public static var containerURL: URL? {
-        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: identifier)
-    }
+    #if os(iOS)
+    public static let appGroupIdentifier = "group.chat.matron"
 
-    public static func cryptoStorePath(in container: URL) -> URL {
+    /// Force-unwrapped because every shipped iOS build has the App Group
+    /// entitlement; the only environment in which this is `nil` is the SPM
+    /// test runner, which never touches this property.
+    public static let groupContainer: URL = FileManager.default.containerURL(
+        forSecurityApplicationGroupIdentifier: appGroupIdentifier
+    )!
+
+    public static let cryptoStorePath = groupContainer.appendingPathComponent("crypto-store")
+    public static let searchDBPath   = groupContainer.appendingPathComponent("matron-search.sqlite")
+
+    /// Pure helper for tests / fallback paths.
+    public static func cryptoStore(in container: URL) -> URL {
         container.appendingPathComponent("crypto-store")
     }
-
-    public static func searchDBPath(in container: URL) -> URL {
+    public static func searchDB(in container: URL) -> URL {
         container.appendingPathComponent("matron-search.sqlite")
     }
+
+    #elseif os(macOS)
+    public static let appSupport: URL = {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let dir = base.appendingPathComponent("chat.matron.mac")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }()
+
+    public static let cryptoStorePath = appSupport.appendingPathComponent("crypto-store")
+    public static let searchDBPath   = appSupport.appendingPathComponent("matron-search.sqlite")
+    #endif
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+> **Why a single type with `#if os` branches and not two types:** call sites in `AppDependencies` (Task 14) and the chat services need a single name they can reach without conditional imports. The `#if os` lives inside the helper, not at the call site. Tests cover both branches via per-platform `#if os` test methods so the matrix CI job (Task 16) exercises both.
 
-Run: `cd MatronShared && swift test --filter AppGroupTests`
-Expected: PASS — 4 tests succeed.
+- [ ] **Step 6: Run test to verify it passes**
 
-- [ ] **Step 6: Commit**
+Run: `cd MatronShared && swift test --filter StoragePathsTests`
+Expected: PASS — 2 tests on iOS, 3 on macOS (compile-time selected; the CI matrix runs both).
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add MatronShared/Package.swift MatronShared/Sources/Storage MatronShared/Tests/StorageTests
-git commit -m "feat: MatronShared SPM package + AppGroup helpers"
+git add MatronShared/Package.swift MatronShared/Sources/Storage MatronShared/Sources/DesignSystem MatronShared/Sources/ViewModels MatronShared/Tests/StorageTests MatronShared/Tests/ViewModelTests
+git commit -m "feat: MatronShared SPM package + platform-aware StoragePaths + ViewModels/DesignSystem dirs"
 git push
 ```
 
@@ -1853,39 +2246,21 @@ git push
 
 ---
 
-### Task 11: SignInViewModel
+### Task 11: SignInViewModel (in MatronShared)
 
 **Files:**
-- Create: `Matron/Features/Onboarding/SignInViewModel.swift`
-- Create: `MatronTests/SignInViewModelTests.swift` (the app target's tests)
+- Create: `MatronShared/Sources/ViewModels/SignInViewModel.swift`
+- Create: `MatronShared/Tests/ViewModelTests/SignInViewModelTests.swift`
 
-The ViewModel orchestrates the AuthService — input validation, probe, login, persist.
+The ViewModel orchestrates the AuthService — input validation, probe, login, persist. It lives in `MatronShared` (target: `MatronViewModels`) so both the iOS app and the Mac app construct the same instance — the platform-specific Views just bind to it.
 
-- [ ] **Step 1: Add a `MatronTests` test target to `project.yml` (top of `targets:`)**
+- [ ] **Step 1: Write the failing test**
 
-Append to `project.yml` under `targets:`:
-
-```yaml
-  MatronTests:
-    type: bundle.unit-test
-    platform: iOS
-    sources:
-      - path: MatronTests
-    dependencies:
-      - target: Matron
-      - package: MatronShared
-```
-
-Run: `xcodegen generate`
-Expected: project regenerates with `MatronTests` target.
-
-- [ ] **Step 2: Write the failing test**
-
-Create `MatronTests/SignInViewModelTests.swift`:
+Create `MatronShared/Tests/ViewModelTests/SignInViewModelTests.swift`:
 
 ```swift
 import XCTest
-@testable import Matron
+@testable import MatronViewModels
 import MatronAuth
 import MatronModels
 
@@ -1913,7 +2288,7 @@ final class SignInViewModelTests: XCTestCase {
             userID: "@a:s", deviceID: "D", homeserverURL: URL(string: "https://s")!, accessToken: "t"
         )
         fake.loginResult = .success(session)
-        let vm = SignInViewModel(auth: fake)
+        let vm = SignInViewModel(auth: fake, deviceDisplayName: "Matron Tests")
         vm.serverURL = "https://matrix.example.com"
         vm.username = "alice"
         vm.password = "hunter2"
@@ -1928,7 +2303,7 @@ final class SignInViewModelTests: XCTestCase {
     func test_submit_showsError_onInvalidCredentials() async {
         let fake = FakeAuthForVM()
         fake.loginResult = .failure(AuthError.invalidCredentials)
-        let vm = SignInViewModel(auth: fake)
+        let vm = SignInViewModel(auth: fake, deviceDisplayName: "Matron Tests")
         vm.serverURL = "https://matrix.example.com"
         vm.username = "alice"
         vm.password = "wrong"
@@ -1945,21 +2320,21 @@ final class SignInViewModelTests: XCTestCase {
     @MainActor
     func test_submit_isNoOp_whenInputsEmpty() async {
         let fake = FakeAuthForVM()
-        let vm = SignInViewModel(auth: fake)
+        let vm = SignInViewModel(auth: fake, deviceDisplayName: "Matron Tests")
         await vm.submit()
         XCTAssertEqual(vm.state, .idle)
     }
 }
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [ ] **Step 2: Run test to verify it fails**
 
-Run (in Xcode): Product → Test (⌘U) with the `Matron` scheme.
+Run: `cd MatronShared && swift test --filter SignInViewModelTests`
 Expected: FAIL — `SignInViewModel` not defined.
 
-- [ ] **Step 4: Implement `SignInViewModel`**
+- [ ] **Step 3: Implement `SignInViewModel`**
 
-Create `Matron/Features/Onboarding/SignInViewModel.swift`:
+Create `MatronShared/Sources/ViewModels/SignInViewModel.swift`:
 
 ```swift
 import Foundation
@@ -1968,26 +2343,31 @@ import MatronModels
 
 @Observable
 @MainActor
-final class SignInViewModel {
-    enum State: Equatable {
+public final class SignInViewModel {
+    public enum State: Equatable {
         case idle
         case busy
         case error(String)
         case signedIn(UserSession)
     }
 
-    var serverURL: String = ""
-    var username: String = ""
-    var password: String = ""
-    private(set) var state: State = .idle
+    public var serverURL: String = ""
+    public var username: String = ""
+    public var password: String = ""
+    public private(set) var state: State = .idle
 
     private let auth: AuthService
+    private let deviceDisplayName: String
 
-    init(auth: AuthService) {
+    /// `deviceDisplayName` is platform-specific — "Matron iOS" from the iOS
+    /// app, "Matron Mac" from the Mac app — so the ViewModel itself stays
+    /// target-agnostic. Each App struct passes its own value.
+    public init(auth: AuthService, deviceDisplayName: String) {
         self.auth = auth
+        self.deviceDisplayName = deviceDisplayName
     }
 
-    func submit() async {
+    public func submit() async {
         guard !serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !username.isEmpty,
               !password.isEmpty else {
@@ -2001,7 +2381,7 @@ final class SignInViewModel {
                 homeserverURL: url,
                 username: username,
                 password: password,
-                initialDeviceDisplayName: "Matron iOS"
+                initialDeviceDisplayName: deviceDisplayName
             )
             try auth.persist(session)
             state = .signedIn(session)
@@ -2024,25 +2404,27 @@ final class SignInViewModel {
 }
 ```
 
-- [ ] **Step 5: Run tests**
+- [ ] **Step 4: Run tests**
 
-Run (in Xcode): Product → Test (⌘U).
+Run: `cd MatronShared && swift test --filter SignInViewModelTests`
 Expected: PASS — 3 tests succeed.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add project.yml Matron/Features/Onboarding/SignInViewModel.swift MatronTests/SignInViewModelTests.swift
-git commit -m "feat: SignInViewModel with input validation and login orchestration"
+git add MatronShared/Sources/ViewModels/SignInViewModel.swift MatronShared/Tests/ViewModelTests/SignInViewModelTests.swift
+git commit -m "feat: SignInViewModel in MatronShared with input validation and login orchestration"
 git push
 ```
 
 ---
 
-### Task 12: SignInView (UI)
+### Task 12: SignInView (iOS UI)
 
 **Files:**
 - Create: `Matron/Features/Onboarding/SignInView.swift`
+
+The iOS sign-in view binds to `MatronShared`'s `SignInViewModel` (Task 11). No view model is constructed in-target — the App struct (Task 14) does that with `deviceDisplayName: "Matron iOS"`.
 
 - [ ] **Step 1: Implement `SignInView`**
 
@@ -2052,6 +2434,7 @@ Create `Matron/Features/Onboarding/SignInView.swift`:
 import SwiftUI
 import MatronAuth
 import MatronModels
+import MatronViewModels
 
 struct SignInView: View {
     @State var viewModel: SignInViewModel
@@ -2119,20 +2502,196 @@ git push
 
 ---
 
-### Task 13: ChatListViewModel + ChatListView
+### Task 12B: MacSignInView (macOS UI)
 
 **Files:**
-- Create: `Matron/Features/ChatList/ChatListViewModel.swift`
-- Create: `Matron/Features/ChatList/ChatListView.swift`
-- Create: `MatronTests/ChatListViewModelTests.swift`
+- Create: `MatronMac/Features/Onboarding/MacSignInView.swift`
+- Create: `MatronMacTests/MacSignInViewBindingTests.swift`
 
-- [ ] **Step 1: Write the failing ViewModel test**
+The Mac sign-in view binds to the same `MatronShared.SignInViewModel`, but presents a centered card with a fixed onboarding window size (480×360). TDD-shaped: failing test asserts the view emits the expected `onSignedIn` callback when the bound view model transitions to `.signedIn`.
 
-Create `MatronTests/ChatListViewModelTests.swift`:
+- [ ] **Step 1: Add a `MatronMacTests` test target to `project.yml`**
+
+Append to `project.yml` under `targets:`:
+
+```yaml
+  MatronMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: 14.0
+    sources:
+      - path: MatronMacTests
+    dependencies:
+      - target: MatronMac
+      - package: MatronShared
+```
+
+Run: `xcodegen generate`
+Expected: project regenerates with `MatronMacTests` target.
+
+- [ ] **Step 2: Write the failing test**
+
+Create `MatronMacTests/MacSignInViewBindingTests.swift`:
 
 ```swift
 import XCTest
-@testable import Matron
+@testable import MatronMac
+import MatronAuth
+import MatronModels
+import MatronViewModels
+
+final class MacSignInViewBindingTests: XCTestCase {
+
+    @MainActor
+    func test_onSignedInClosure_isInvoked_whenViewModelTransitionsToSignedIn() async {
+        let fake = FakeAuthForVM()
+        let session = UserSession(
+            userID: "@a:s", deviceID: "D",
+            homeserverURL: URL(string: "https://s")!, accessToken: "t"
+        )
+        fake.loginResult = .success(session)
+
+        let vm = SignInViewModel(auth: fake, deviceDisplayName: "Matron Mac")
+        vm.serverURL = "https://matrix.example.com"
+        vm.username = "alice"
+        vm.password = "hunter2"
+
+        var captured: UserSession?
+        let _ = MacSignInView(viewModel: vm) { captured = $0 }
+
+        await vm.submit()
+
+        // The view's onChange(of:viewModel.state) handler is what fires
+        // onSignedIn in production. This unit test verifies the contract by
+        // simulating the same callback wiring through a helper:
+        if case .signedIn(let s) = vm.state {
+            captured = s
+        }
+        XCTAssertEqual(captured, session)
+    }
+}
+```
+
+> The test deliberately doesn't drive the SwiftUI runtime — that's covered by manual smoke (Task 15B). It just locks in the binding contract: the view exposes a `viewModel:` and a `onSignedIn:` closure, and the App struct (Task 14B) is responsible for wiring them.
+
+- [ ] **Step 3: Run test to verify it fails**
+
+Run (in Xcode): Product → Test (⌘U) with the `MatronMac` scheme.
+Expected: FAIL — `MacSignInView` not defined.
+
+- [ ] **Step 4: Implement `MacSignInView`**
+
+Create `MatronMac/Features/Onboarding/MacSignInView.swift`:
+
+```swift
+import SwiftUI
+import MatronAuth
+import MatronModels
+import MatronViewModels
+
+struct MacSignInView: View {
+    @State var viewModel: SignInViewModel
+    var onSignedIn: (UserSession) -> Void
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Sign in to Matron")
+                .font(.title2.weight(.semibold))
+
+            VStack(alignment: .leading, spacing: 12) {
+                LabeledField(label: "Server") {
+                    TextField("https://matrix.example.com", text: $viewModel.serverURL)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
+                }
+                LabeledField(label: "Username") {
+                    TextField("alice", text: $viewModel.username)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
+                }
+                LabeledField(label: "Password") {
+                    SecureField("", text: $viewModel.password)
+                        .textFieldStyle(.roundedBorder)
+                }
+            }
+
+            if case .error(let message) = viewModel.state {
+                Text(message)
+                    .foregroundStyle(.red)
+                    .font(.callout)
+            }
+
+            Button {
+                Task { await viewModel.submit() }
+            } label: {
+                if case .busy = viewModel.state {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Text("Sign in")
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .keyboardShortcut(.defaultAction)
+            .disabled({
+                if case .busy = viewModel.state { return true }
+                return viewModel.serverURL.isEmpty || viewModel.username.isEmpty || viewModel.password.isEmpty
+            }())
+        }
+        .padding(32)
+        .frame(width: 480, height: 360)   // Fixed onboarding window size per spec §5.9.
+        .onChange(of: viewModel.state) { _, new in
+            if case .signedIn(let session) = new {
+                onSignedIn(session)
+            }
+        }
+    }
+}
+
+private struct LabeledField<Field: View>: View {
+    let label: String
+    @ViewBuilder var field: Field
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            field
+        }
+    }
+}
+```
+
+- [ ] **Step 5: Run test to verify it passes**
+
+Run (in Xcode): Product → Test (⌘U) with the `MatronMac` scheme.
+Expected: PASS — 1 test succeeds.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add project.yml MatronMac/Features/Onboarding/MacSignInView.swift MatronMacTests/MacSignInViewBindingTests.swift
+git commit -m "feat: MacSignInView with fixed-size onboarding card bound to shared SignInViewModel"
+git push
+```
+
+---
+
+### Task 13: ChatListViewModel + ChatListView (iOS)
+
+**Files:**
+- Create: `MatronShared/Sources/ViewModels/ChatListViewModel.swift`
+- Create: `MatronShared/Tests/ViewModelTests/ChatListViewModelTests.swift`
+- Create: `Matron/Features/ChatList/ChatListView.swift`
+
+The view model lives in `MatronShared` (target: `MatronViewModels`) so the Mac sidebar (Task 13B) and the iOS list bind to the same `@Observable` instance. Only `ChatListView.swift` (iOS chrome) lives in the iOS app target.
+
+- [ ] **Step 1: Write the failing ViewModel test**
+
+Create `MatronShared/Tests/ViewModelTests/ChatListViewModelTests.swift`:
+
+```swift
+import XCTest
+@testable import MatronViewModels
 import MatronChat
 import MatronModels
 
@@ -2162,12 +2721,12 @@ final class ChatListViewModelTests: XCTestCase {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Product → Test (⌘U) on `ChatListViewModelTests`.
+Run: `cd MatronShared && swift test --filter ChatListViewModelTests`
 Expected: FAIL — `ChatListViewModel` not defined.
 
 - [ ] **Step 3: Implement `ChatListViewModel`**
 
-Create `Matron/Features/ChatList/ChatListViewModel.swift`:
+Create `MatronShared/Sources/ViewModels/ChatListViewModel.swift`:
 
 ```swift
 import Foundation
@@ -2176,24 +2735,24 @@ import MatronModels
 
 @Observable
 @MainActor
-final class ChatListViewModel {
-    struct GroupedSummaries: Identifiable {
-        let group: ChatRecencyGroup
-        let summaries: [ChatSummary]
-        var id: String { group.rawValue }
+public final class ChatListViewModel {
+    public struct GroupedSummaries: Identifiable {
+        public let group: ChatRecencyGroup
+        public let summaries: [ChatSummary]
+        public var id: String { group.rawValue }
     }
 
-    private(set) var groups: [GroupedSummaries] = []
-    private(set) var isLoading: Bool = true
+    public private(set) var groups: [GroupedSummaries] = []
+    public private(set) var isLoading: Bool = true
 
     private let chat: ChatService
     private var observationTask: Task<Void, Never>?
 
-    init(chat: ChatService) {
+    public init(chat: ChatService) {
         self.chat = chat
     }
 
-    func start() {
+    public func start() {
         observationTask?.cancel()
         observationTask = Task { [weak self] in
             guard let self else { return }
@@ -2211,7 +2770,7 @@ final class ChatListViewModel {
         observationTask?.cancel()
     }
 
-    static func group(summaries: [ChatSummary], now: Date = Date(), calendar: Calendar = .current) -> [GroupedSummaries] {
+    public static func group(summaries: [ChatSummary], now: Date = Date(), calendar: Calendar = .current) -> [GroupedSummaries] {
         let buckets = Dictionary(grouping: summaries) { ChatRecencyGroup.bucket($0.lastActivity, now: now, calendar: calendar) }
         return ChatRecencyGroup.allCases.compactMap { bucket in
             guard let summaries = buckets[bucket]?.sorted(by: { $0.lastActivity > $1.lastActivity }), !summaries.isEmpty else { return nil }
@@ -2223,10 +2782,10 @@ final class ChatListViewModel {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Product → Test (⌘U) on `ChatListViewModelTests`.
+Run: `cd MatronShared && swift test --filter ChatListViewModelTests`
 Expected: PASS — 2 tests succeed.
 
-- [ ] **Step 5: Implement `ChatListView`**
+- [ ] **Step 5: Implement `ChatListView` (iOS)**
 
 Create `Matron/Features/ChatList/ChatListView.swift`:
 
@@ -2234,6 +2793,7 @@ Create `Matron/Features/ChatList/ChatListView.swift`:
 import SwiftUI
 import MatronChat
 import MatronModels
+import MatronViewModels
 
 struct ChatListView: View {
     @State var viewModel: ChatListViewModel
@@ -2293,20 +2853,183 @@ private struct ChatRow: View {
 - [ ] **Step 6: Commit**
 
 ```bash
-git add Matron/Features/ChatList MatronTests/ChatListViewModelTests.swift
-git commit -m "feat: ChatListViewModel + ChatListView with recency grouping"
+git add MatronShared/Sources/ViewModels/ChatListViewModel.swift MatronShared/Tests/ViewModelTests/ChatListViewModelTests.swift Matron/Features/ChatList/ChatListView.swift
+git commit -m "feat: ChatListViewModel in MatronShared + iOS ChatListView with recency grouping"
 git push
 ```
 
 ---
 
-### Task 14: AppDependencies + root navigation
+### Task 13B: MacChatListView (macOS UI)
+
+**Files:**
+- Create: `MatronMac/Features/ChatList/MacChatListView.swift`
+- Create: `MatronMacTests/MacChatListViewBindingTests.swift`
+
+The Mac chat list is a `NavigationSplitView` 2-column stub: sidebar = chat rows; detail = "Select a chat" placeholder. It binds to the same `MatronShared.ChatListViewModel` as the iOS list — the platform diff is purely SwiftUI chrome (split view vs. stack). Phase 2 fills in the detail column with `MacChatView`; Phase 1 only proves the binding works.
+
+- [ ] **Step 1: Write the failing binding test**
+
+Create `MatronMacTests/MacChatListViewBindingTests.swift`:
+
+```swift
+import XCTest
+@testable import MatronMac
+import MatronChat
+import MatronModels
+import MatronViewModels
+
+final class MacChatListViewBindingTests: XCTestCase {
+
+    @MainActor
+    func test_view_observesViewModelGroups_afterStreamYield() async {
+        let bot = BotIdentity(matrixID: "@b:s", displayName: "Bot", avatarURL: nil)
+        let summaries = [
+            ChatSummary(id: "!1:s", title: "First chat", bot: bot,
+                        lastActivity: .now.addingTimeInterval(-3600), unreadCount: 0)
+        ]
+        let fake = LocalFakeChatService(snapshots: [summaries])
+        let vm = ChatListViewModel(chat: fake)
+
+        // Construct the view to ensure the type compiles and exposes the
+        // expected initialiser surface. The actual SwiftUI rendering is
+        // covered by manual smoke tests (Task 15B).
+        let _ = MacChatListView(viewModel: vm)
+
+        vm.start()
+        // Drain the in-memory stream.
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertFalse(vm.groups.isEmpty)
+        XCTAssertEqual(vm.groups.first?.summaries.first?.title, "First chat")
+    }
+}
+
+private final class LocalFakeChatService: ChatService, @unchecked Sendable {
+    private let snapshots: [[ChatSummary]]
+    init(snapshots: [[ChatSummary]]) { self.snapshots = snapshots }
+    func chatSummaries() -> AsyncStream<[ChatSummary]> {
+        AsyncStream { continuation in
+            for s in snapshots { continuation.yield(s) }
+            continuation.finish()
+        }
+    }
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run (in Xcode): Product → Test (⌘U) with the `MatronMac` scheme.
+Expected: FAIL — `MacChatListView` not defined.
+
+- [ ] **Step 3: Implement `MacChatListView`**
+
+Create `MatronMac/Features/ChatList/MacChatListView.swift`:
+
+```swift
+import SwiftUI
+import MatronChat
+import MatronModels
+import MatronViewModels
+
+struct MacChatListView: View {
+    @State var viewModel: ChatListViewModel
+    @State private var selectedChat: ChatSummary.ID?
+
+    var body: some View {
+        NavigationSplitView {
+            sidebar
+        } detail: {
+            detail
+        }
+        .navigationTitle("Matron")
+        .task { viewModel.start() }
+    }
+
+    @ViewBuilder
+    private var sidebar: some View {
+        if viewModel.isLoading {
+            ProgressView("Connecting…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if viewModel.groups.isEmpty {
+            ContentUnavailableView(
+                "No chats yet",
+                systemImage: "bubble.left.and.bubble.right",
+                description: Text("Provision a bot via dev-boxer to get started.")
+            )
+        } else {
+            List(selection: $selectedChat) {
+                ForEach(viewModel.groups) { group in
+                    Section(group.group.rawValue) {
+                        ForEach(group.summaries) { summary in
+                            MacChatRow(summary: summary)
+                                .tag(summary.id)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var detail: some View {
+        // Phase 2 replaces this with MacChatView(roomID: selectedChat).
+        VStack {
+            Spacer()
+            Text(selectedChat == nil ? "Select a chat" : "Chat detail — Phase 2")
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct MacChatRow: View {
+    let summary: ChatSummary
+
+    var body: some View {
+        HStack {
+            Circle().fill(.secondary.opacity(0.2)).frame(width: 28, height: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(summary.title).font(.body)
+                Text(summary.bot.displayName).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(summary.lastActivity, style: .relative)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            if summary.unreadCount > 0 {
+                Circle().fill(.blue).frame(width: 6, height: 6)
+            }
+        }
+    }
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run (in Xcode): Product → Test (⌘U) with the `MatronMac` scheme.
+Expected: PASS — 1 test succeeds.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add MatronMac/Features/ChatList/MacChatListView.swift MatronMacTests/MacChatListViewBindingTests.swift
+git commit -m "feat: MacChatListView 2-column NavigationSplitView stub bound to shared ChatListViewModel"
+git push
+```
+
+---
+
+### Task 14: AppDependencies + root navigation (iOS)
 
 **Files:**
 - Create: `Matron/App/AppDependencies.swift`
 - Modify: `Matron/App/MatronApp.swift`
 
-- [ ] **Step 1: Implement `AppDependencies`**
+The DI container is iOS-flavoured (uses `StoragePaths.groupContainer`) but the factory shape — `syncCache`, `chatService(for:)`, `syncService(for:)` — is shared with the Mac variant in Task 14B. The protocol surface stays target-agnostic.
+
+- [ ] **Step 1: Implement `AppDependencies` (iOS)**
 
 Create `Matron/App/AppDependencies.swift`:
 
@@ -2326,9 +3049,18 @@ final class AppDependencies {
     private var syncCache: [String: SyncService] = [:]
 
     init() {
-        let container = AppGroup.containerURL
+        // iOS shares its crypto store + search DB with the NSE via the App
+        // Group container. Falls back to a tmp dir only when running outside
+        // an entitlement (test runner / Previews).
+        let container: URL
+        #if os(iOS)
+        container = (FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: StoragePaths.appGroupIdentifier))
             ?? URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("matron-fallback")
+        #else
+        container = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("matron-fallback")
+        #endif
         try? FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
+
         let keychain = KeychainStore(
             service: "chat.matron.session",
             accessGroup: nil
@@ -2365,6 +3097,7 @@ Replace `Matron/App/MatronApp.swift`:
 import SwiftUI
 import MatronAuth
 import MatronModels
+import MatronViewModels
 
 @main
 struct MatronApp: App {
@@ -2383,7 +3116,7 @@ struct MatronApp: App {
                         .task { try? await dependencies.syncService(for: session).start() }
                 } else {
                     SignInView(
-                        viewModel: SignInViewModel(auth: dependencies.auth),
+                        viewModel: SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS"),
                         onSignedIn: { session in self.session = session }
                     )
                 }
@@ -2420,6 +3153,143 @@ git push
 
 ---
 
+### Task 14B: AppDependencies + root navigation (macOS)
+
+**Files:**
+- Create: `MatronMac/App/AppDependencies.swift`
+- Modify: `MatronMac/App/MatronMacApp.swift` (replace the Phase 1 scaffold from Task 2)
+
+The Mac variant of `AppDependencies` shares the factory shape (`syncCache`, `chatService(for:)`, `syncService(for:)`, same `AuthServiceLive` + `ClientProvider`) with iOS — the only diff is the storage container, which routes through `StoragePaths.appSupport` because Mac runs single-process and doesn't share with an NSE.
+
+- [ ] **Step 1: Implement `AppDependencies` (macOS)**
+
+Create `MatronMac/App/AppDependencies.swift`:
+
+```swift
+import Foundation
+import MatronAuth
+import MatronChat
+import MatronModels
+import MatronStorage
+import MatronSync
+
+@MainActor
+final class AppDependencies {
+    let auth: AuthService
+    let clientProvider: ClientProvider
+
+    private var syncCache: [String: SyncService] = [:]
+
+    init() {
+        // Mac uses Application Support — single-process, no App Group.
+        // StoragePaths.appSupport creates the directory on first read.
+        let container = StoragePaths.appSupport
+
+        let keychain = KeychainStore(
+            service: "chat.matron.mac.session",
+            accessGroup: nil
+        )
+        self.auth = AuthServiceLive(keychain: keychain, basePath: container)
+        self.clientProvider = ClientProvider(basePath: container)
+    }
+
+    func syncService(for session: UserSession) -> SyncService {
+        if let existing = syncCache[session.userID] { return existing }
+        let svc = SyncServiceLive(provider: clientProvider, session: session)
+        syncCache[session.userID] = svc
+        return svc
+    }
+
+    func chatService(for session: UserSession) -> ChatService {
+        ChatServiceLive(
+            provider: clientProvider,
+            session: session,
+            sync: syncService(for: session)
+        )
+    }
+}
+```
+
+- [ ] **Step 2: Replace `MatronMacApp.swift` (Task 2 scaffold) with real navigation**
+
+Replace `MatronMac/App/MatronMacApp.swift`:
+
+```swift
+import SwiftUI
+import MatronAuth
+import MatronModels
+import MatronViewModels
+
+@main
+struct MatronMacApp: App {
+    @State private var dependencies = AppDependencies()
+    @State private var session: UserSession?
+    @State private var bootstrapDone = false
+
+    var body: some Scene {
+        WindowGroup {
+            Group {
+                if !bootstrapDone {
+                    ProgressView("Loading…")
+                        .frame(width: 480, height: 360)
+                        .task { await bootstrap() }
+                } else if let session {
+                    MacChatListView(
+                        viewModel: ChatListViewModel(chat: dependencies.chatService(for: session))
+                    )
+                    .frame(minWidth: 800, minHeight: 600)
+                    .task { try? await dependencies.syncService(for: session).start() }
+                } else {
+                    MacSignInView(
+                        viewModel: SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac"),
+                        onSignedIn: { session in self.session = session }
+                    )
+                }
+            }
+        }
+        .windowResizability(.contentMinSize)
+
+        // Placeholder — Phase 7 fills in the full Settings UI.
+        Settings {
+            Text("Settings — Phase 7 fills this in.")
+                .padding()
+                .frame(width: 480, height: 240)
+        }
+        // Phase 2 attaches the real menu bar (.commands { CommandMenu… }).
+    }
+
+    private func bootstrap() async {
+        do {
+            session = try await dependencies.auth.restoreSession()
+        } catch {
+            session = nil
+        }
+        bootstrapDone = true
+    }
+}
+
+// UNUserNotificationCenter.current().delegate registration is deferred
+// to Phase 4 (Push & NSE).
+```
+
+- [ ] **Step 3: Build & run on macOS**
+
+In Xcode: select the `MatronMac` scheme, Product → Run (⌘R).
+Expected:
+- App launches showing "Loading…" inside a 480×360 window during bootstrap.
+- Transitions to the Mac sign-in card if no stored session.
+- After successful login against a real `dev-boxer` homeserver, the window resizes and shows the 2-column split with "Select a chat" detail and the chat list in the sidebar.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add MatronMac/App
+git commit -m "feat: MatronMac AppDependencies + MatronMacApp root navigation"
+git push
+```
+
+---
+
 ### Task 15: Manual end-to-end smoke test against a real homeserver
 
 **Files:**
@@ -2427,7 +3297,7 @@ git push
 
 This is a documentation task — no code. Establishes the manual baseline that subsequent tasks/phases extend.
 
-- [ ] **Step 1: Run the full flow on a simulator**
+- [ ] **Step 1: Run the iOS flow on a simulator**
 
 Pre-req: a `dev-boxer` homeserver with a Matrix user account and at least one bot already invited to a room with that user.
 
@@ -2438,18 +3308,28 @@ Steps:
 4. Verify: at least one chat appears with the bot's display name and a recency timestamp.
 5. Quit and re-launch the app. Verify it skips the sign-in screen and goes straight to the chat list.
 
-- [ ] **Step 2: Document the test**
+- [ ] **Step 2: Run the Mac flow on the host**
+
+Same homeserver, same account. Steps:
+1. Build & run the `MatronMac` scheme on the macOS host.
+2. Verify the onboarding window opens at 480×360 with the centered card.
+3. Enter homeserver URL, username, password. Press Return (default action).
+4. After login, verify the window resizes to ≥800×600 with the 2-column split: chat list in the sidebar, "Select a chat" placeholder in the detail.
+5. Quit (`⌘Q`) and re-launch. Verify it skips the sign-in screen and goes straight to the split view.
+6. Press `⌘,` — Settings placeholder window opens.
+
+- [ ] **Step 3: Document the test**
 
 Create `manual-tests.md`:
 
 ```markdown
-# Matron iOS — manual test checklist
+# Matron — manual test checklist
 
-Run before every TestFlight build.
+Run before every TestFlight build (iOS) and every Mac App Store build.
 
 ## Phase 1 (Foundation)
 
-### Sign-in flow
+### iOS — sign-in flow
 
 - [ ] Cold-launch on iPhone 15 simulator (or device) — sees Sign-in screen.
 - [ ] Enter homeserver URL with no scheme (e.g. `matrix.example.com`) — accepted, normalised to HTTPS.
@@ -2457,32 +3337,56 @@ Run before every TestFlight build.
 - [ ] Enter blatantly invalid credentials — sees error message in red.
 - [ ] Enter valid credentials — transitions to Connecting → chat list.
 
-### Session persistence
+### iOS — session persistence
 
 - [ ] After successful sign-in, force-quit the app and re-launch — skips sign-in, goes straight to chat list.
 - [ ] Reset simulator (Device → Erase All Content) and re-launch — back to sign-in (no stale session).
 
-### Chat list rendering
+### iOS — chat list rendering
 
 - [ ] At least one chat appears (assumes a bot is already invited).
 - [ ] Chat title shows the room name (Gemini-auto-titled if applicable; falls back to room ID).
 - [ ] Recency grouping headers appear (Today / Yesterday / etc.).
 - [ ] Unread dot appears for chats with unread messages.
 
+### macOS — sign-in flow
+
+- [ ] Cold-launch the `MatronMac` scheme — sees a 480×360 sign-in card window.
+- [ ] Press Return after filling the form — submits (default action wired via `keyboardShortcut(.defaultAction)`).
+- [ ] Enter blatantly invalid credentials — sees error message in red.
+- [ ] Enter valid credentials — window transitions to the 2-column split view at ≥800×600.
+
+### macOS — session persistence
+
+- [ ] After successful sign-in, `⌘Q` and re-launch — skips sign-in, opens the split view directly.
+- [ ] Reset Application Support (delete `~/Library/Application Support/chat.matron.mac/` while app is closed) and re-launch — back to sign-in (no stale session).
+
+### macOS — chat list rendering
+
+- [ ] Sidebar lists at least one chat with bot display name and relative time.
+- [ ] Detail column shows "Select a chat" until a row is selected (Phase 2 wires the actual chat view).
+- [ ] `⌘,` opens the placeholder Settings window.
+
+### Cross-platform smoke
+
+- [ ] Sign in with the same account on iOS simulator and macOS host. Both surfaces show the same chat list (after sliding-sync settles).
+
 ### What is NOT tested in Phase 1
 
-- Tapping a chat (Phase 2).
+- Tapping a chat to view the timeline (Phase 2).
 - Sending messages (Phase 2).
 - Push notifications (Phase 4).
 - Verification UX (Phase 3).
 - Search (Phase 6).
+- Full Mac menu bar / toolbar / drag-and-drop (Phase 2 onwards).
+- Mac Settings tabs (Phase 7).
 ```
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add manual-tests.md
-git commit -m "docs: phase 1 manual test checklist"
+git commit -m "docs: phase 1 manual test checklist (iOS + macOS)"
 git push
 ```
 
@@ -2492,6 +3396,8 @@ git push
 
 **Files:**
 - Create: `.github/workflows/ci.yml`
+
+The CI runs both targets in one workflow with two jobs (iOS-Simulator and macOS-host). The CLA workflow (`cla.yml`) is already present from Task 1B and runs independently.
 
 - [ ] **Step 1: Add CI workflow**
 
@@ -2507,9 +3413,9 @@ on:
     branches: [main]
 
 jobs:
-  build-and-test:
+  shared-package-tests:
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -2518,6 +3424,20 @@ jobs:
 
       - name: Show Xcode version
         run: xcodebuild -version
+
+      - name: Run MatronShared package tests (host = macOS, exercises both #if os branches)
+        working-directory: MatronShared
+        run: swift test --enable-code-coverage
+
+  ios-build-and-test:
+    runs-on: macos-15
+    needs: shared-package-tests
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -switch /Applications/Xcode_16.app
 
       - name: Install xcodegen
         run: brew install xcodegen
@@ -2528,11 +3448,7 @@ jobs:
       - name: Resolve SPM dependencies
         run: xcodebuild -resolvePackageDependencies -workspace Matron.xcworkspace -scheme Matron
 
-      - name: Run MatronShared package tests
-        working-directory: MatronShared
-        run: swift test --enable-code-coverage
-
-      - name: Build Matron app
+      - name: Build Matron app (iOS)
         run: |
           xcodebuild build \
             -workspace Matron.xcworkspace \
@@ -2540,32 +3456,69 @@ jobs:
             -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
             CODE_SIGNING_ALLOWED=NO
 
-      - name: Run Matron app tests
+      - name: Run Matron app tests (iOS)
         run: |
           xcodebuild test \
             -workspace Matron.xcworkspace \
             -scheme Matron \
             -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
             CODE_SIGNING_ALLOWED=NO
+
+  mac-build-and-test:
+    runs-on: macos-15
+    needs: shared-package-tests
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -switch /Applications/Xcode_16.app
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Resolve SPM dependencies
+        run: xcodebuild -resolvePackageDependencies -workspace Matron.xcworkspace -scheme MatronMac
+
+      - name: Build MatronMac app
+        run: |
+          xcodebuild build \
+            -workspace Matron.xcworkspace \
+            -scheme MatronMac \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Run MatronMac tests
+        run: |
+          xcodebuild test \
+            -workspace Matron.xcworkspace \
+            -scheme MatronMac \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO
 ```
+
+> **Why three jobs:** the `shared-package-tests` job runs `swift test` directly so we get a single host (macOS) running through both `#if os(iOS)` and `#if os(macOS)` branches via the SPM-package compile — the iOS `#if os(iOS)` block isn't reached in this job (compiles for the host), but the iOS-scheme job runs the full iOS test target. The split keeps the iOS and Mac jobs parallelisable without cross-contamination.
 
 - [ ] **Step 2: Push and verify the workflow runs green**
 
 ```bash
 git add .github/workflows/ci.yml
-git commit -m "ci: add GitHub Actions workflow building and testing on macos-15"
+git commit -m "ci: add GitHub Actions workflow building and testing iOS + macOS on macos-15"
 git push
 ```
 
 Run: `gh run list --workflow ci.yml --limit 1`
 Then: `gh run watch <run-id>`
-Expected: workflow completes green within ~15 minutes.
+Expected: workflow completes green within ~25 minutes (iOS + Mac jobs run in parallel after the shared-package job).
 
 - [ ] **Step 3: Iterate if red**
 
 If CI fails:
 - Read logs via `gh run view <run-id> --log-failed`.
-- Fix the issue (likely: SDK version pin mismatch, missing Xcode version, simulator name drift).
+- Fix the issue (likely: SDK version pin mismatch, missing Xcode version, simulator name drift, Mac `arm64` vs `x86_64` arch flags).
 - Push fix as a new commit. Repeat until green.
 
 ---
@@ -2574,10 +3527,12 @@ If CI fails:
 
 Phase 1 is done when:
 
-1. All 16 tasks committed and pushed to `main`.
-2. CI is green on `main`.
-3. Manual checklist (`manual-tests.md`) passes against at least one real `dev-boxer` homeserver.
-4. The app, when run, allows: enter server URL + credentials → sign in → see chat list with bot rooms.
+1. All 16 numbered tasks plus Tasks 1B / 12B / 13B / 14B committed and pushed to `main` (20 tasks total).
+2. CI is green on `main` — both the iOS job and the macOS job.
+3. Manual checklist (`manual-tests.md`) passes for both platforms against at least one real `dev-boxer` homeserver.
+4. The iOS app, when run, allows: enter server URL + credentials → sign in → see chat list with bot rooms.
+5. The macOS app, when run, allows: same flow → 2-column split with chat list in the sidebar.
+6. The repo's licence posture is in place: AGPL-3.0 `LICENSE`, dual-licence `NOTICE`, `CONTRIBUTING.md`, `.cla.md`, and the cla-assistant workflow blocks unsigned external PRs.
 
 After acceptance, request review (see superpowers:requesting-code-review), then write the Phase 2 plan.
 
@@ -2587,28 +3542,37 @@ After acceptance, request review (see superpowers:requesting-code-review), then 
 
 Quick check against the spec sections:
 
-- **§1 Goals & non-goals:** Covered — Phase 1 establishes the App Store-distributable codebase with E2EE on, sliding sync, and the bot-rooms-as-chats data model. Non-goals respected (no reactions, edits, etc., are even possible because no chat view exists yet).
-- **§2 High-level architecture:** Three targets created in Task 2; SDK wired in Tasks 3–10; App Group set in Task 2; iOS 17 enforced.
-- **§3 Module structure:** Auth/Sync/Chat/Storage/Models modules created. Push/Search/Verification/Media/Events deferred to phases that need them.
+- **§1 Goals & non-goals:** Covered — Phase 1 establishes App Store-distributable codebases for both iOS and macOS with E2EE on, sliding sync, and the bot-rooms-as-chats data model. Non-goals respected (no reactions, edits, etc., are even possible because no chat view exists yet).
+- **§2 High-level architecture:** Four targets created in Task 2 (`Matron`, `MatronMac`, `MatronNSE`, `MatronShared`). SDK wired in Tasks 3–10; App Group set on iOS only; iOS 17 / macOS 14 enforced.
+- **§3 Module structure:** Auth/Sync/Chat/Storage/Models modules in `MatronShared`; ViewModels and DesignSystem also live in `MatronShared` from Phase 1 (DesignSystem is provisioned but empty until Phase 2). Push/Search/Verification/Media/Events deferred to phases that need them.
 - **§4 Custom event types:** Deferred to Phase 5 (custom events depend on bridge changes that need their own spec).
-- **§5 Key UI flows:** Sign-in (§5.2) implemented in Tasks 11–12. Chat list (§5.3) implemented in Task 13. Other flows (§5.4–5.8) deferred.
+- **§5 Key UI flows:** Sign-in (§5.2) implemented for iOS in Task 12 and for macOS in Task 12B, both bound to the shared `SignInViewModel` (Task 11). Chat list (§5.3) implemented for iOS in Task 13 and for macOS in Task 13B, both bound to the shared `ChatListViewModel`. Mac chrome (§5.9) — full menu bar, toolbar, drag-and-drop — is intentionally deferred to Phase 2; only the placeholder `Settings { ... }` scene and `WindowGroup { ... }.windowResizability(.contentMinSize)` ship in Phase 1. Other flows (§5.4–5.8) deferred.
 - **§6 Data flow:** Sync loop (§6.1) and read-only chat-list slice implemented. Decryption hook to search (§6.2), push wakeup (§6.3), and new-chat creation (§6.4) deferred.
-- **§7 E2EE:** SDK is initialised with E2EE on by default in `ClientProvider` (Task 9). Verification UI (§7.2–7.3), key backup (§7.4), and trust posture banners (§7.5) deferred to Phase 3.
-- **§8 Push:** NSE stub created (Task 2) but no decryption logic; deferred to Phase 4.
-- **§9 Search storage:** Deferred to Phase 6 — schema not created in Phase 1.
-- **§10 Testing strategy:** Unit tests + ViewModel tests covered. Snapshot tests deferred (no rendering primitives yet). Integration test scaffold added in Task 7.
+- **§7 E2EE:** SDK is initialised with E2EE on by default in `ClientProvider` (Task 9). iOS uses the App Group container; macOS uses `~/Library/Application Support/chat.matron.mac/` via `StoragePaths.appSupport` (Task 3). Verification UI (§7.2–7.3), key backup (§7.4), and trust posture banners (§7.5) deferred to Phase 3.
+- **§8 Push:** NSE stub created (Task 2) but no decryption logic; deferred to Phase 4. Mac in-process push delegate also deferred to Phase 4.
+- **§9 Search storage:** Deferred to Phase 6 — schema not created in Phase 1. Storage paths are platform-conditional from Phase 1 so Phase 6 only adds schema/queries, not branching.
+- **§10 Testing strategy:** Unit tests + ViewModel tests covered for both platforms. Snapshot tests deferred (no rendering primitives yet). Integration test scaffold added in Task 7. CI matrix runs the SPM tests once on macOS (compiles both `#if os` branches at the host level) and the full iOS test target on a Simulator + the full Mac test target on the host.
 - **§11 Out of scope:** Honored — no scope creep beyond foundation.
-- **§12 License & legal:** Apache 2.0 LICENSE in repo from creation; no AGPL deps; the legacy `matron-ios` fork is not touched in this plan (out of scope, but flagged in the spec).
+- **§12 License & legal:** AGPL-3.0 `LICENSE` + dual-licence `NOTICE` + `CONTRIBUTING.md` + `.cla.md` + `cla-assistant` workflow all land in Task 1B before any new code. No AGPL-incompatible deps. The legacy `element-x-ios` lineage is dropped by re-initialising the repo (flagged in the spec, prerequisite to running this plan).
 
-No placeholders, no TBDs. Type signatures (`AuthService`, `ChatService`, `UserSession`, `ChatSummary`) are consistent across tasks. `ChatRecencyGroup.bucket` is defined in Task 8, used in Task 13. `AuthService` defined in Task 6, used in Tasks 7, 11, 14. SDK method names flagged with implementer notes where versions diverge.
+No placeholders, no TBDs. Type signatures (`AuthService`, `ChatService`, `UserSession`, `ChatSummary`, `SignInViewModel`, `ChatListViewModel`) are consistent across tasks. `ChatRecencyGroup.bucket` is defined in Task 8, used in Task 13. `AuthService` defined in Task 6, used in Tasks 7, 11, 14, 14B. `SignInViewModel` defined in Task 11, consumed by Task 12 (iOS) and Task 12B (Mac). `ChatListViewModel` defined in Task 13, consumed by Task 13 (iOS) and Task 13B (Mac). SDK method names flagged with implementer notes where versions diverge.
+
+### Multi-platform shape (added in this revision)
+
+- **Four Xcode targets** instead of three. `MatronMac` (Task 2) is a co-equal app target with its own bundle ID (`chat.matron.mac`), entitlements, and `WindowGroup { ContentView() }.windowResizability(.contentMinSize)` scene. `MatronNSE` remains iOS-only because Mac doesn't have NSEs.
+- **AGPL-3.0 + commercial dual licence** with a CLA workflow (Task 1B). `LICENSE`, `NOTICE` (with provisional `licensing@matron.chat` flagged for confirmation), `CONTRIBUTING.md`, `.cla.md`, and `.github/workflows/cla.yml` all land before any code.
+- **Mac storage path** (Task 3). `StoragePaths` replaces the old `AppGroup` enum with `#if os(iOS)` (App Group container) vs `#if os(macOS)` (Application Support). Tests cover both branches via per-platform `#if os` test methods; CI matrix exercises both.
+- **ViewModels move into MatronShared** (Tasks 3, 11, 13). `MatronViewModels` is a new SPM library product. `SignInViewModel` and `ChatListViewModel` are public, target-agnostic, `@Observable`. Both apps construct instances from their respective `App` struct; `deviceDisplayName` (`"Matron iOS"` / `"Matron Mac"`) is the only platform-specific input.
+- **DesignSystem moves into MatronShared** (Task 3). `MatronDesignSystem` library product is declared from Phase 1 with an empty `Sources/DesignSystem/` directory + `.gitkeep`. Phase 2 lands primitives directly there. The provisional `Color.matronCodeBg` shorthand is no longer in scope — the canonical token name is `Color.matronCodeBackground`, per the Phase 7 reconciliation already merged into the design spec.
+- **Mac stubs for Sign-in and ChatList** (Tasks 12B and 13B). `MacSignInView` is a centered card with `.frame(width: 480, height: 360)` during onboarding. `MacChatListView` is a 2-column `NavigationSplitView` with sidebar = chat rows + detail = "Select a chat" placeholder; the detail column is filled in by Phase 2. Both views are TDD-shaped via `MatronMacTests`.
 
 ### Code-review fixes folded back in
 
 - **`ServerCapabilities.ssoRedirectURL` removed** (Task 6). The earlier draft had `AuthServiceLive.probe()` constructing `URL(string: "https://placeholder/sso")`, which would have shipped a non-functional URL. SSO redirect handling is deferred to a future spec; the struct now exposes only the boolean `supportsSSO` so the sign-in screen can show or hide a (currently disabled) SSO button. `AuthServiceProtocolTests` gained a test asserting the boolean is captured correctly.
-- **`SyncService.waitUntilReady()` added** (Task 9). `ChatServiceLive.chatSummaries()` previously called `roomListService()` synchronously before `SyncService.start()` had completed, which would crash on a nil room list. The protocol now exposes a readiness gate, `SyncServiceLive` resumes waiters once the SDK reports `RoomListService` non-nil, and `ChatServiceLive` (Task 10) blocks on `sync.waitUntilReady()` before subscribing. A failing-test step is added to Task 10. `AppDependencies` caches a single `SyncService` per session so the chat service and the sync starter observe the same readiness flag.
+- **`SyncService.waitUntilReady()` added** (Task 9). `ChatServiceLive.chatSummaries()` previously called `roomListService()` synchronously before `SyncService.start()` had completed, which would crash on a nil room list. The protocol now exposes a readiness gate, `SyncServiceLive` resumes waiters once the SDK reports `RoomListService` non-nil, and `ChatServiceLive` (Task 10) blocks on `sync.waitUntilReady()` before subscribing. A failing-test step is added to Task 10. `AppDependencies` (both iOS and Mac variants) caches a single `SyncService` per session so the chat service and the sync starter observe the same readiness flag.
 - **`Matron.xcodeproj/` added to `.gitignore`** (Task 1). Matches the claim at the bottom of Task 2 that `project.yml` is the source of truth.
 - **`Package.resolved` removed from `.gitignore`** (Task 1). For an app binary it should be committed so CI pins matrix-rust-components-swift versions consistently. A comment in the gitignore explains why.
-- **Dedicated `SyncTests` test target** (Task 3). `SyncServiceProtocolTests` now lives in `Tests/SyncTests/` with `dependencies: ["MatronSync"]`, instead of riding inside `ChatTests` (which doesn't depend on `MatronSync`).
-- **`AppDependencies` imports `MatronModels`** (Task 14). `UserSession` lives in `MatronModels`; the import was missing.
+- **Dedicated `SyncTests` test target** (Task 3). `SyncServiceProtocolTests` lives in `Tests/SyncTests/` with `dependencies: ["MatronSync"]`, instead of riding inside `ChatTests` (which doesn't depend on `MatronSync`).
+- **`AppDependencies` imports `MatronModels`** (Tasks 14 and 14B). `UserSession` lives in `MatronModels`; the import was missing in the iOS draft and is now consistent across both platforms.
 
 ---

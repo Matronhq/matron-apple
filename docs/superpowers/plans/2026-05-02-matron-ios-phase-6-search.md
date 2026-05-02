@@ -3,9 +3,9 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 > **Prereq:** Phase 5 (Custom events) merged and CI green.
 
-**Goal:** Local full-text search across every chat. Each decrypted message text is indexed into SQLite FTS5. A unified search UI shows two sections — Chats (title/bot match) and Messages (FTS match) — with snippets and tap-to-open behaviour. Backfill runs asynchronously on first launch per room.
+**Goal:** Local full-text search across every chat on **both iOS and macOS**. Each decrypted message text is indexed into SQLite FTS5. A unified search UI shows two sections — Chats (title/bot match) and Messages (FTS match) — with snippets and tap-to-open behaviour. Backfill runs asynchronously on first launch per room.
 
-**Architecture:** New `MatronSearch` library with a `SearchService` protocol and a SQLite-backed `SearchServiceLive`. Indexing hook lives in `ChatServiceLive`'s timeline listener: every `m.text` (and tool-call result text) gets inserted into `messages_fts`. Backfill is a Task per room that paginates the SDK timeline backward until depth limit. UI: a `SearchView` invoked from the chat list's search bar.
+**Architecture:** New `MatronSearch` library with a `SearchService` protocol and a SQLite-backed `SearchServiceLive`. The library, schema, and `SearchViewModel` are platform-agnostic and live in `MatronShared`; iOS and Mac just bind different UI surfaces. Indexing hook lives in `ChatServiceLive`'s timeline listener: every `m.text` (and tool-call result text) gets inserted into `messages_fts`. Backfill is a Task per room that paginates the SDK timeline backward until depth limit. UI: a `SearchView` invoked from the chat list's search bar (iOS) or a `MacSearchView` whose field lives in the chat-window toolbar and whose results panel replaces the detail column (Mac).
 
 **Tech Stack:** Same as prior phases. Use **GRDB.swift** (https://github.com/groue/GRDB.swift, MIT) for the SQLite wrapper — easier than raw `sqlite3` for FTS5 + WAL + Data Protection. No other new deps.
 
@@ -27,18 +27,27 @@ matron-iOS-app/
 │   └── TimelinePagerLive.swift              NEW — SDK-backed pager (only file importing MatrixRustSDK)
 ├── MatronShared/Sources/Chat/
 │   └── ChatServiceLive.swift                MODIFIED — call SearchService.index from timeline listener
+├── MatronShared/Sources/ViewModels/
+│   └── SearchViewModel.swift                NEW — shared by iOS + Mac
+├── MatronShared/Sources/DesignSystem/
+│   └── SearchResultRow.swift                NEW — shared rendering primitive
 ├── Matron/Features/Search/
-│   ├── SearchView.swift                     NEW
-│   ├── SearchViewModel.swift                NEW
-│   └── SearchResultRow.swift                NEW
+│   └── SearchView.swift                     NEW (iOS)
 ├── Matron/Features/ChatList/
 │   └── ChatListView.swift                   MODIFIED — searchBar + presentation
+├── MatronMac/Features/Search/
+│   ├── MacSearchView.swift                  NEW — toolbar field + ⌘F focus wire-up
+│   └── MacSearchResultsView.swift           NEW — replaces detail column when query non-empty
+├── MatronMac/Features/Chat/
+│   └── MacChatView.swift                    MODIFIED — adds toolbar search field + results swap
 ├── MatronShared/Tests/SearchTests/
 │   ├── SearchSchemaTests.swift              NEW
 │   ├── SearchServiceLiveTests.swift         NEW
 │   └── BackfillTests.swift                  NEW
-└── MatronTests/
-    └── SearchViewModelTests.swift           NEW
+├── MatronShared/Tests/ViewModelTests/
+│   └── SearchViewModelTests.swift           NEW — runs under iOS + Mac schemes
+└── MatronMacTests/
+    └── MacSearchViewSnapshotTests.swift     NEW — 6-variant matrix for results view
 ```
 
 ---
@@ -71,12 +80,16 @@ matron-iOS-app/
 .testTarget(name: "SearchTests", dependencies: ["MatronSearch"], path: "Tests/SearchTests"),
 ```
 
-- [ ] **Step 2: Add MatronSearch to the Matron app target in project.yml**
+Also add `"MatronSearch"` to the `dependencies:` arrays of the existing `MatronViewModels` target (so `SearchViewModel` can refer to `SearchService` / `SearchHit`) and `MatronDesignSystem` target (so `SearchResultRow` can render `SearchHit`s).
+
+- [ ] **Step 2: Add MatronSearch to BOTH the Matron and MatronMac app targets in project.yml**
 
 ```yaml
   - package: MatronShared
     product: MatronSearch
 ```
+
+Add the entry under both `targets.Matron.dependencies` and `targets.MatronMac.dependencies`. The library is platform-agnostic; both apps depend on it directly.
 
 - [ ] **Step 3: Commit**
 
@@ -158,8 +171,14 @@ public enum SearchSchema {
     /// Opens (or creates) a database at `path` with Data Protection set to complete.
     /// The protection attribute is applied at file-creation time so the file is never
     /// briefly written without it.
+    ///
+    /// Platform note: `NSFileProtectionComplete` is iOS-only — macOS doesn't have file
+    /// protection classes. On Mac, encryption at rest comes from FileVault (user-managed)
+    /// and the file path is sandbox-private regardless. The pre-create + assert block is
+    /// therefore wrapped in `#if os(iOS)`.
     public static func makeDatabase(at path: URL) throws -> DatabaseQueue {
         try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+        #if os(iOS)
         // Pre-create the file with NSFileProtectionComplete so the attribute is set
         // before GRDB writes any bytes. setAttributes-after-open leaves a small window
         // where the file exists without protection.
@@ -170,14 +189,17 @@ public enum SearchSchema {
                 attributes: [.protectionKey: FileProtectionType.complete]
             )
         }
+        #endif
         var config = Configuration()
         config.prepareDatabase { db in
             try db.execute(sql: "PRAGMA foreign_keys = ON")
         }
         let queue = try DatabaseQueue(path: path.path, configuration: config)
+        #if os(iOS)
         // Defensive check: confirm protection is set on the resulting file.
         let attrs = try FileManager.default.attributesOfItem(atPath: path.path)
         assert((attrs[.protectionKey] as? FileProtectionType) == .complete, "matron-search.sqlite missing NSFileProtectionComplete")
+        #endif
         var migrator = DatabaseMigrator()
         migrate(&migrator)
         try migrator.migrate(queue)
@@ -894,6 +916,10 @@ func chatService(for session: UserSession) -> ChatService {
 }
 ```
 
+> **Platform note:** `AppGroup.searchDBPath(in:)` (per Phase 1's `StoragePaths.swift`) resolves to different containers on each platform — App Group container on iOS, `~/Library/Application Support/chat.matron.mac/` on Mac — but the call site here is unchanged. **Verify** during this task that `searchDBPath` returns the correct path on both platforms (run the existing `AppGroupTests` plus a Mac smoke test that opens the DB via `SearchServiceLive` and writes a row). No code change in Phase 6; this is a verify-the-assumption step.
+
+The Mac app's `AppDependencies` (or equivalent — see Phase 1/2 plans) constructs `SearchServiceLive(databaseURL:)` the same way; the platform-conditional path resolution lives behind the `StoragePaths` API.
+
 - [ ] **Step 2: After sign-in, kick off backfill for every known room**
 
 Construct a `BackfillRunner` once per signed-in session, wired with the SDK-backed `TimelinePagerLive`:
@@ -908,7 +934,7 @@ In `MatronApp`'s post-login `.task`, observe the chat list snapshot once and que
 
 - [ ] **Step 3: On sign-out, call `search.wipe()`**
 
-Wire into the sign-out flow.
+Wire into the sign-out flow on **both platforms**. iOS clears the App-Group-backed DB; Mac clears `~/Library/Application Support/chat.matron.mac/matron-search.sqlite`.
 
 - [ ] **Step 4: Commit**
 
@@ -919,19 +945,23 @@ git push
 
 ---
 
-### Task 8: SearchViewModel + SearchView
+### Task 8: SearchViewModel + SearchView (iOS)
 
 **Files:**
-- Create: `Matron/Features/Search/SearchViewModel.swift`
-- Create: `Matron/Features/Search/SearchView.swift`
-- Create: `Matron/Features/Search/SearchResultRow.swift`
-- Create: `MatronTests/SearchViewModelTests.swift`
+- Create: `MatronShared/Sources/ViewModels/SearchViewModel.swift` (shared by iOS + Mac)
+- Create: `Matron/Features/Search/SearchView.swift` (iOS)
+- Create: `MatronShared/Sources/DesignSystem/SearchResultRow.swift` (rendering primitive — shared by iOS + Mac, follows the Phase 2 design-system pattern)
+- Create: `MatronShared/Tests/ViewModelTests/SearchViewModelTests.swift` (shared — runs under both iOS and Mac schemes)
+
+> **Mac note:** `SearchViewModel` lives in `MatronShared` so the Mac UI in Task 10 can reuse it verbatim. Tests run under the iOS scheme; the same VM contract (`emptyResultsMessage`, `chatTitle(for:)`, `chatHits`, `messageHits`, `applyBackfillProgress(_:)`) drives both platforms.
 
 - [ ] **Step 1: ViewModel tests (failing first, per TDD)**
 
+`SearchViewModel` lives in `MatronShared/Sources/ViewModels/`, so its tests live alongside the existing Phase 1 view-model tests in `MatronShared/Tests/ViewModelTests/`. They run under both the iOS and Mac `swift test` invocations.
+
 ```swift
 import XCTest
-@testable import Matron
+@testable import MatronViewModels
 import MatronSearch
 import MatronChat
 import MatronModels
@@ -1083,18 +1113,24 @@ final class SearchViewModel {
 }
 ```
 
-- [ ] **Step 3: SearchResultRow**
+- [ ] **Step 3: SearchResultRow (in `MatronDesignSystem`)**
+
+Lives in `MatronShared/Sources/DesignSystem/SearchResultRow.swift` as a `public` rendering primitive so iOS `SearchView` and Mac `MacSearchResultsView` (Task 10) consume the same view. The `<mark>…</mark>` parsing and `Text` concatenation is platform-agnostic — no Mac-specific text rendering.
 
 ```swift
 import SwiftUI
 import MatronSearch
 
-struct SearchResultRow: View {
+public struct SearchResultRow: View {
     let hit: SearchHit
     let chatTitle: String
     let onTap: () -> Void
 
-    var body: some View {
+    public init(hit: SearchHit, chatTitle: String, onTap: @escaping () -> Void) {
+        self.hit = hit; self.chatTitle = chatTitle; self.onTap = onTap
+    }
+
+    public var body: some View {
         Button(action: onTap) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
@@ -1138,6 +1174,7 @@ import SwiftUI
 import MatronSearch
 import MatronChat
 import MatronModels
+import MatronDesignSystem  // SearchResultRow
 
 struct SearchView: View {
     @State var viewModel: SearchViewModel
@@ -1203,14 +1240,17 @@ so the empty state flips between "Indexing chats… (X of Y rooms)" and "No resu
 - [ ] **Step 7: Commit**
 
 ```bash
-git add Matron/Features/Search/ MatronTests/SearchViewModelTests.swift
+git add MatronShared/Sources/ViewModels/SearchViewModel.swift \
+        MatronShared/Sources/DesignSystem/SearchResultRow.swift \
+        MatronShared/Tests/ViewModelTests/SearchViewModelTests.swift \
+        Matron/Features/Search/SearchView.swift
 git commit -m "feat: SearchView + SearchViewModel + SearchResultRow with snippet highlighting"
 git push
 ```
 
 ---
 
-### Task 9: Wire SearchView into ChatList navigation
+### Task 9: Wire SearchView into ChatList navigation (iOS)
 
 **Files:**
 - Modify: `Matron/Features/ChatList/ChatListView.swift`
@@ -1231,14 +1271,166 @@ git push
 
 ---
 
-### Task 10: Indexing-progress indicator on first run
+### Task 10: MacSearchView + MacSearchResultsView (Mac)
+
+**Files:**
+- Create: `MatronMac/Features/Search/MacSearchView.swift`
+- Create: `MatronMac/Features/Search/MacSearchResultsView.swift`
+- Modify: `MatronMac/Features/Chat/MacChatView.swift` (toolbar wire-up)
+- Create: `MatronMacTests/MacSearchViewSnapshotTests.swift`
+
+The Mac UI surface differs from iOS: there's no chat-list-pushed search screen. Instead the search field lives in the chat window's toolbar (already added in Phase 2's `MacChatView`), `⌘F` focuses it (already a Phase 2 menu item; this task wires the focus action), and a non-empty query swaps the detail column for `MacSearchResultsView`. Same `SearchViewModel` from Task 8 — Mac just binds a different chrome.
+
+- [ ] **Step 1: Failing snapshot tests first (TDD)**
+
+Add Mac variants of the search results view to `MatronMacTests/MacSearchViewSnapshotTests.swift`. Use the `assertVariants` helper from Phase 2 — but Mac-only here (skip the iOS branch since this is Mac chrome), still 6 variants across `{light, dark, accessibility5} × {empty-during-backfill, populated-results}`:
+
+```swift
+import XCTest
+import SnapshotTesting
+import SwiftUI
+import MatronSearch
+import MatronModels
+@testable import MatronMac
+
+final class MacSearchViewSnapshotTests: XCTestCase {
+    @MainActor
+    func test_macSearchResultsView_populated() {
+        let claude = BotIdentity(matrixID: "@claude:s", displayName: "Claude", avatarURL: nil)
+        let chats = [ChatSummary(id: "!1:s", title: "Auth bug", bot: claude, lastActivity: Date(), unreadCount: 0)]
+        let vm = SearchViewModel(search: FakeSearchService(), allChats: chats)
+        vm.query = "auth"
+        // Inject a hit by stashing it in the fake; assert the view renders
+        // chat-section + message-section with snippet highlight.
+        let view = MacSearchResultsView(viewModel: vm, onSelectChat: { _ in }, onSelectMessage: { _ in })
+        assertMacVariants(view, named: "MacSearchResultsView_populated")
+    }
+
+    @MainActor
+    func test_macSearchResultsView_emptyDuringBackfill() {
+        let vm = SearchViewModel(search: FakeSearchService(), allChats: [])
+        vm.query = "anything"
+        vm.applyBackfillProgress(.init(roomsCompleted: 3, roomsTotal: 10))
+        let view = MacSearchResultsView(viewModel: vm, onSelectChat: { _ in }, onSelectMessage: { _ in })
+        assertMacVariants(view, named: "MacSearchResultsView_emptyDuringBackfill")
+    }
+}
+```
+
+Run: `xcodebuild test -scheme MatronMac -only-testing:MatronMacTests/MacSearchViewSnapshotTests`. Expected: FAIL — `MacSearchResultsView` doesn't exist yet.
+
+- [ ] **Step 2: Implement `MacSearchResultsView`**
+
+Renders the same two-section layout as iOS `SearchView` (Chats / Messages) using `List`. The `<mark>…</mark>` snippet rendering reuses the same `attributedSnippet` helper as iOS; `AttributedString` / SwiftUI `Text` concatenation is platform-agnostic, so no Mac-specific text rendering is needed.
+
+```swift
+import SwiftUI
+import MatronSearch
+import MatronModels
+import MatronDesignSystem  // SearchResultRow
+
+struct MacSearchResultsView: View {
+    @Bindable var viewModel: SearchViewModel
+    let onSelectChat: (ChatSummary) -> Void
+    let onSelectMessage: (SearchHit) -> Void
+
+    var body: some View {
+        List {
+            if !viewModel.chatHits.isEmpty {
+                Section("Chats") {
+                    ForEach(viewModel.chatHits) { chat in
+                        Button { onSelectChat(chat) } label: {
+                            VStack(alignment: .leading) {
+                                Text(chat.title)
+                                Text(chat.bot.displayName).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            if !viewModel.messageHits.isEmpty {
+                Section("Messages") {
+                    ForEach(viewModel.messageHits) { hit in
+                        SearchResultRow(
+                            hit: hit,
+                            chatTitle: viewModel.chatTitle(for: hit.roomID),
+                            onTap: { onSelectMessage(hit) }
+                        )
+                    }
+                }
+            }
+            if viewModel.chatHits.isEmpty && viewModel.messageHits.isEmpty && !viewModel.isSearching {
+                Section { Text(viewModel.emptyResultsMessage).foregroundStyle(.secondary) }
+            }
+        }
+    }
+}
+```
+
+`SearchResultRow` is consumed directly from `MatronShared/Sources/DesignSystem/` (already there per Task 8 — it's a shared rendering primitive). No Mac-specific duplicate or restyle is needed.
+
+- [ ] **Step 3: Implement `MacSearchView` (toolbar field + ⌘F focus)**
+
+```swift
+import SwiftUI
+import MatronSearch
+
+struct MacSearchView: View {
+    @Bindable var viewModel: SearchViewModel
+    @FocusState var isFieldFocused: Bool
+    /// Set to `true` from the menu's `⌘F` action (NotificationCenter or shared @State binding)
+    /// to programmatically focus the field.
+    @Binding var focusRequest: Bool
+
+    var body: some View {
+        TextField("Search", text: $viewModel.query)
+            .textFieldStyle(.roundedBorder)
+            .frame(minWidth: 200)
+            .focused($isFieldFocused)
+            .onChange(of: viewModel.query) { _, _ in
+                Task { await viewModel.search() }
+            }
+            .onChange(of: focusRequest) { _, newValue in
+                if newValue {
+                    isFieldFocused = true
+                    focusRequest = false
+                }
+            }
+    }
+}
+```
+
+- [ ] **Step 4: Wire `MacSearchView` into `MacChatView`'s toolbar + swap the detail column**
+
+Modify `MacChatView` (Phase 2):
+- Add `MacSearchView(viewModel:focusRequest:)` to the right side of the existing `.toolbar`.
+- When `viewModel.query` is non-empty, render `MacSearchResultsView` in place of the chat detail body.
+- Wire the `Find in Chat` `⌘F` menu command (Phase 2 `.commands`) to flip a shared `@State var focusSearch = false` to `true`.
+- `onSelectChat(chat)` → update the sidebar selection to that chat (reuses the `ChatListViewModel.selection` binding from Phase 2) and clear `viewModel.query` so the detail column flips back.
+- `onSelectMessage(hit)` → same as above, plus pass the event ID to `ChatViewModel` for `Timeline.focusedAt(eventID)`-based scroll/highlight (matches iOS jump-to-message).
+
+- [ ] **Step 5: Run tests, commit**
+
+```bash
+xcodebuild test -scheme MatronMac -only-testing:MatronMacTests/MacSearchViewSnapshotTests
+git add MatronMac/Features/Search/ MatronMac/Features/Chat/MacChatView.swift MatronMacTests/MacSearchViewSnapshotTests.swift
+git commit -m "feat: Mac search — toolbar field, ⌘F focus, results panel replaces detail column"
+git push
+```
+
+---
+
+### Task 11: Indexing-progress indicator on first run
 
 **Files:**
 - Modify: `Matron/Features/ChatList/ChatListView.swift`
 
-- [ ] **Step 1: Show a small "Indexing chats…" footer**
+- [ ] **Step 1: Show a small "Indexing chats…" footer (iOS)**
 
 If any room has `backfillComplete(roomID:) == false`, display a footer at the bottom of the list with a `ProgressView` and a count: "Indexing chats… (24 done)". Hide once all complete.
+
+> **Mac note:** the equivalent surface on Mac is already covered by Task 10 — `MacSearchResultsView` reads `viewModel.emptyResultsMessage` and shows "Indexing chats… (X of Y rooms)" while the query is non-empty and backfill is in progress. No separate sidebar footer is needed in MVP (the Mac chat list is dense; the in-search-panel message is enough).
 
 - [ ] **Step 2: Commit**
 
@@ -1249,20 +1441,20 @@ git push
 
 ---
 
-### Task 11: Manual test additions
+### Task 12: Manual test additions
 
 Append to `manual-tests.md`:
 
 ```markdown
 ## Phase 6 (Search)
 
-### Indexing
+### Indexing (both platforms)
 
-- [ ] On first launch after upgrade, footer shows "Indexing chats…" with a count.
-- [ ] After ~minutes, footer disappears.
+- [ ] On first launch after upgrade, footer (iOS) / search empty-state (Mac) shows "Indexing chats…" with a count.
+- [ ] After ~minutes, footer disappears / empty-state flips to "No results." for non-matching queries.
 - [ ] Send a new message → it's searchable within seconds.
 
-### Search UI
+### Search UI — iOS
 
 - [ ] Tap the search bar → SearchView appears.
 - [ ] Type "auth" — see Chats section with chats whose title or bot matches; Messages section with FTS hits.
@@ -1272,13 +1464,25 @@ Append to `manual-tests.md`:
 - [ ] No matches with backfill complete → "No results."
 - [ ] No matches while backfill in progress → "Indexing chats… (X of Y rooms)" instead of "No results."
 
+### Search UI — Mac
+
+- [ ] `⌘F` (Find in Chat menu item) focuses the search field in the chat-window toolbar.
+- [ ] Typing in the search field replaces the chat detail column with `MacSearchResultsView`.
+- [ ] Results show the same two-section layout (Chats / Messages) with `<mark>`-highlighted snippets.
+- [ ] Clicking a Chat result restores the detail column with that chat selected in the sidebar.
+- [ ] Clicking a Message result restores the detail column with the chat scrolled to (and briefly highlighting) the matched event.
+- [ ] Clearing the field returns the detail column to the previously-selected chat.
+- [ ] Empty-state shows "Indexing chats… (X of Y rooms)" during backfill, "No results." once complete.
+
 ### Sign-out
 
-- [ ] After sign-out + sign-in, search returns no hits until backfill re-runs.
+- [ ] After sign-out + sign-in on iOS, search returns no hits until backfill re-runs.
+- [ ] After sign-out on Mac, the file at `~/Library/Application Support/chat.matron.mac/matron-search.sqlite` is wiped (verify via Finder or `ls`); after sign-in, search returns no hits until backfill re-runs.
 
 ### File protection
 
-- [ ] On a locked, powered-off device, the matron-search.sqlite file is encrypted (verify via diagnostic profile or by attempting to read it pre-unlock — should fail).
+- [ ] **iOS:** On a locked, powered-off device, the matron-search.sqlite file is encrypted (verify via diagnostic profile or by attempting to read it pre-unlock — should fail).
+- [ ] **Mac:** No file-protection check — encryption at rest is FileVault's responsibility (user-managed). Confirm the file path is sandbox-private (`~/Library/Application Support/chat.matron.mac/matron-search.sqlite` is inside the app's container).
 ```
 
 Commit:
@@ -1293,10 +1497,10 @@ git push
 
 ## Phase 6 acceptance
 
-1. All 11 tasks committed and pushed.
-2. CI green.
-3. Manual checklist passes — search returns results from both new and backfilled messages, snippets highlighted, jump-to-message works.
-4. SQLite file verified to have `NSFileProtectionComplete`.
+1. All 12 tasks committed and pushed.
+2. CI green on both iOS and Mac schemes.
+3. Manual checklist passes on **both platforms** — search returns results from both new and backfilled messages, snippets highlighted, jump-to-message works.
+4. iOS: SQLite file verified to have `NSFileProtectionComplete`. Mac: SQLite file lives at `~/Library/Application Support/chat.matron.mac/matron-search.sqlite` and is sandbox-private (no protection class — FileVault covers encryption at rest).
 
 After acceptance, write Phase 7 plan (polish).
 
@@ -1304,12 +1508,14 @@ After acceptance, write Phase 7 plan (polish).
 
 ## Plan self-review
 
-- **§5.8 Search UX:** Tasks 8–10. SearchView resolves room IDs to chat titles via `viewModel.chatTitle(for:)` (Task 8 Step 5). Empty-state text reflects backfill progress: "Indexing chats… (X of Y rooms)" while in flight, "No results." once complete (Task 8 Steps 1–2 + 6).
-- **§6.2 Decryption hook:** Task 5.
+- **§5.8 Search UX:** Tasks 8–11. iOS `SearchView` resolves room IDs to chat titles via `viewModel.chatTitle(for:)` (Task 8 Step 5). Empty-state text reflects backfill progress: "Indexing chats… (X of Y rooms)" while in flight, "No results." once complete (Task 8 Steps 1–2 + 6).
+- **§5.9 Mac UX:** Task 10. Mac search field lives in the chat-window **toolbar** (per spec §5.9 toolbar table — search field, focused by `⌘F`); the `Find in Chat` menu item from Phase 2 wires through to a `@FocusState` flip. A non-empty query swaps the detail column for `MacSearchResultsView`, which renders the same two-section layout as iOS using the shared `SearchViewModel`. Selecting a result restores the detail column with the chat focused (and event highlighted, for message hits). No file protection on Mac — `NSFileProtectionComplete` is wrapped in `#if os(iOS)` (Task 2 Step 1) since macOS has no file protection classes; encryption at rest is FileVault's responsibility per spec §9.2. The `<mark>…</mark>` snippet renderer is platform-agnostic so no Mac-specific text rendering changes are needed.
+- **§6.2 Decryption hook:** Task 5. Platform-agnostic — both apps share `ChatServiceLive` from `MatronShared`.
 - **§9.1 Schema:** Task 2. Uses content-table FTS5: a `messages` table holds the indexable columns + UNIQUE `event_id`, `messages_fts` mirrors only `body`, and three triggers (`messages_ai`/`messages_ad`/`messages_au`) keep them synchronised. This is mandatory because FTS5 silently no-ops `DELETE … WHERE` clauses against `UNINDEXED` columns; the content-table design lets `INSERT OR REPLACE INTO messages` and `DELETE FROM messages WHERE event_id = ?` work for idempotent re-indexing and redactions.
-- **§9.2 File location & protection:** Tasks 2 + 7. The DB file is **pre-created** with `NSFileProtectionComplete` at the file-creation step (Task 2 Step 1), avoiding the brief unprotected window that `setAttributes` after `DatabaseQueue` open would leave. A defensive assertion verifies the attribute on the resulting file. Wipe on sign-out covered in Task 7.
-- **§9.3 Index lifecycle:** Tasks 5 (live), 6 (backfill). `BackfillRunner` depends on a `TimelinePager` protocol (Task 6 Step 2) so the loop is fully testable with a fake. The runner walks pages backward, skips already-indexed events via `search.contains(eventID:)`, tracks the oldest-event ID, and stops on depth limit, `sinceCutoff`, or start-of-timeline. SDK-specific code lives only in `TimelinePagerLive`. Tests cover three batches with mixed indexable/non-indexable items, the depth-limit cap, `sinceCutoff` early-stop, and the duplicate-skip path.
+- **§9.2 File location & protection:** Tasks 2 + 7. On iOS the DB file is **pre-created** with `NSFileProtectionComplete` at the file-creation step (Task 2 Step 1), avoiding the brief unprotected window that `setAttributes` after `DatabaseQueue` open would leave; a defensive assertion verifies the attribute. On Mac the protection block is `#if os(iOS)`-gated and the file lives at `~/Library/Application Support/chat.matron.mac/matron-search.sqlite` (sandbox-private; FileVault covers encryption at rest). Path resolution is unified behind `AppGroup.searchDBPath` / `StoragePaths.swift` from Phase 1 — Phase 6 just verifies the assumption (Task 7 Step 1). Wipe on sign-out covered for both platforms in Task 7 Step 3.
+- **§9.3 Index lifecycle:** Tasks 5 (live), 6 (backfill). `BackfillRunner` depends on a `TimelinePager` protocol (Task 6 Step 2) so the loop is fully testable with a fake. The runner walks pages backward, skips already-indexed events via `search.contains(eventID:)`, tracks the oldest-event ID, and stops on depth limit, `sinceCutoff`, or start-of-timeline. SDK-specific code lives only in `TimelinePagerLive`. Tests cover three batches with mixed indexable/non-indexable items, the depth-limit cap, `sinceCutoff` early-stop, and the duplicate-skip path. Lifecycle is identical on both platforms — same `BackfillProgress` AsyncStream feeds `SearchViewModel.emptyResultsMessage` on iOS and Mac.
 - **§9.4 Query:** Task 4. The query JOINs `messages_fts` to `messages` to recover sender/timestamp/room_id (no longer in the FTS table). Snippet column index is `0` (FTS5 contains only `body`), not `4` as in the original spec snippet — this is documented inline.
 - **Test coverage of redaction:** added `test_remove_clearsFTSRow` (Task 4) and `test_deleteRemovesFromFTS` (Task 2) to lock in trigger correctness.
-- **Backfill progress surfacing:** `SearchViewModel` exposes `AggregateBackfillProgress` and an `observeBackfill(_:)` AsyncStream consumer; `SearchView` reads `viewModel.emptyResultsMessage` (Task 8 Steps 2 + 4 + 6).
-- No placeholders. SDK pagination API isolated to `TimelinePagerLive` for the implementer.
+- **Backfill progress surfacing:** `SearchViewModel` lives in `MatronShared/Sources/ViewModels/`, exposes `AggregateBackfillProgress` and an `observeBackfill(_:)` AsyncStream consumer; iOS `SearchView` and Mac `MacSearchResultsView` both read `viewModel.emptyResultsMessage` (Task 8 Steps 2 + 4 + 6, Task 10 Step 2).
+- **Mac snapshot coverage:** Task 10 Step 1 adds `MacSearchViewSnapshotTests` — 6-variant matrix `{light, dark, accessibility5} × {populated, empty-during-backfill}` for the Mac results view.
+- No placeholders. SDK pagination API isolated to `TimelinePagerLive` for the implementer. Mac UI bindings (`@Bindable` viewModel, `@FocusState`, toolbar wire-up) match the Phase 2 patterns.

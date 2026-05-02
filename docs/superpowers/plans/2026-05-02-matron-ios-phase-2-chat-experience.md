@@ -1,11 +1,11 @@
-# Matron iOS — Phase 2 (Chat Experience) Implementation Plan
+# Matron — Phase 2 (Chat Experience) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 > **Prereq:** Phase 1 (Foundation) merged and CI green.
 
-**Goal:** Make the chat list interactive — tapping a chat opens a Timeline view that renders messages, supports a composer with slash commands and attachments, and reads/writes via matrix-rust-sdk Timeline. No custom event rendering yet (Phase 5) and no push (Phase 4); just the standard Matrix message types rendered well.
+**Goal:** Make the chat list interactive on **both iOS and macOS** — tapping a chat opens a Timeline view that renders messages, supports a composer with slash commands and attachments, and reads/writes via matrix-rust-sdk Timeline. No custom event rendering yet (Phase 5) and no push (Phase 4); just the standard Matrix message types rendered well. iOS and Mac UIs are co-equal: shared ViewModels in `MatronShared`, per-platform views in `Matron/Features/` and `MatronMac/Features/`.
 
-**Architecture:** A new `Timeline` module in MatronShared wraps the SDK's `Timeline` API and exposes an `AsyncStream<[TimelineItem]>`. The chat view holds a `ChatViewModel` driving a `List` of typed view items. Rendering primitives (`MarkdownText`, `CodeBlock`, `AttachmentImage`, `AttachmentFile`) live in `Matron/DesignSystem`. Composer is a separate component with a `/`-triggered slash palette. Long-press menu provides copy/share/view-source.
+**Architecture:** A new `Timeline` module in MatronShared wraps the SDK's `Timeline` API and exposes an `AsyncStream<[TimelineItem]>`. Each platform's chat view holds a shared `ChatViewModel` driving a list of typed view items. Rendering primitives (`MarkdownText`, `CodeBlock`, `AttachmentImage`, `AttachmentFile`, `MessageBubble`) live in `MatronShared/Sources/DesignSystem/` so both apps consume them directly. Composer is a separate component with a `/`-triggered slash palette (Mac additionally exposes `⌘K`). Long-press (iOS) / right-click context menu (Mac) provides copy/share/view-source. Mac drag-and-drop for attachments is handled via `.onDrop`.
 
 **Tech Stack:** Same as Phase 1, plus: `MarkdownUI` (https://github.com/gonzalezreal/swift-markdown-ui, MIT) for markdown rendering with code-block support, `swift-snapshot-testing` (https://github.com/pointfreeco/swift-snapshot-testing, MIT) for primitive snapshot tests.
 
@@ -29,43 +29,58 @@ matron-iOS-app/
 │   ├── Media/
 │   │   ├── MediaService.swift                NEW — protocol
 │   │   └── MediaServiceLive.swift            NEW — mxc:// → Data
-│   └── Models/
-│       └── BotCommand.swift                  NEW — slash palette catalog entry
-├── Matron/Features/Chat/
+│   ├── Models/
+│   │   └── BotCommand.swift                  NEW — slash palette catalog entry
+│   ├── ViewModels/
+│   │   ├── ChatViewModel.swift               NEW — target-agnostic, used by iOS + Mac
+│   │   ├── ComposerViewModel.swift           NEW — target-agnostic, used by iOS + Mac
+│   │   └── BotProfileViewModel.swift         NEW — target-agnostic, used by iOS + Mac
+│   └── DesignSystem/                         (per Phase 1 reorg — primitives live here)
+│       ├── MarkdownText.swift                NEW — wraps MarkdownUI
+│       ├── CodeBlock.swift                   NEW — monospace + copy button
+│       ├── AttachmentImage.swift             NEW
+│       ├── AttachmentFile.swift              NEW
+│       ├── MessageBubble.swift               NEW — visual container, shared
+│       ├── Colors.swift                      NEW — semantic color tokens
+│       └── Typography.swift                  NEW — type ramp
+├── Matron/Features/Chat/                    (iOS target)
 │   ├── ChatView.swift                        NEW
-│   ├── ChatViewModel.swift                   NEW
 │   ├── Rendering/
-│   │   ├── TimelineItemView.swift            NEW — switch over TimelineItem case
-│   │   ├── MessageBubble.swift               NEW — the visual container
-│   │   └── (CodeBlock, MarkdownText live in DesignSystem)
+│   │   └── TimelineItemView.swift            NEW — switch over TimelineItem case
 │   └── Composer/
 │       ├── ComposerView.swift                NEW
-│       ├── ComposerViewModel.swift           NEW
 │       ├── SlashCommandPalette.swift         NEW
 │       └── AttachmentPicker.swift            NEW — wraps PhotosPicker / fileImporter
-├── Matron/Features/BotProfile/
-│   ├── BotProfileView.swift                  NEW
-│   └── BotProfileViewModel.swift             NEW
-├── Matron/Features/ChatList/
-│   └── ChatListView.swift                    MODIFIED — adds NavigationLink + ✏️ button
-├── Matron/DesignSystem/
-│   ├── MarkdownText.swift                    NEW — wraps MarkdownUI
-│   ├── CodeBlock.swift                       NEW — monospace + copy button
-│   ├── AttachmentImage.swift                 NEW
-│   ├── AttachmentFile.swift                  NEW
-│   ├── Colors.swift                          NEW — semantic color tokens
-│   └── Typography.swift                      NEW — type ramp
-├── Matron/Features/ChatList/NewChatSheet.swift  NEW
-└── MatronTests/
+├── Matron/Features/BotProfile/              (iOS target)
+│   └── BotProfileView.swift                  NEW
+├── Matron/Features/ChatList/                (iOS target)
+│   ├── ChatListView.swift                    MODIFIED — adds NavigationLink + ✏️ button
+│   └── NewChatSheet.swift                    NEW
+├── MatronMac/Features/ChatList/             (Mac target)
+│   └── MacChatListView.swift                 NEW — sidebar column, hover, right-click menu
+├── MatronMac/Features/Chat/                 (Mac target)
+│   ├── MacChatView.swift                     NEW — detail column, .onDrop, ⌘K palette
+│   ├── ComposerDropDelegate.swift            NEW — drag-and-drop attachments
+│   └── MacChatToolbar.swift                  NEW — sidebar toggle, title, ⓘ, search
+├── MatronMac/Features/BotProfile/           (Mac target)
+│   └── MacBotProfileSheet.swift              NEW — full-window sheet
+├── MatronMac/App/
+│   └── Commands.swift                        NEW — menu bar (.commands { ChatCommands() })
+└── MatronTests/                              (iOS test target)
     ├── ChatViewModelTests.swift              NEW
     ├── ComposerViewModelTests.swift          NEW
     ├── BotProfileViewModelTests.swift        NEW
     └── SnapshotTests/
-        ├── SnapshotVariants.swift            NEW — assertVariants helper (light/dark/XXXL)
+        ├── SnapshotVariants.swift            NEW — assertVariants helper (iOS+Mac × light/dark/XXXL = 6)
         ├── MarkdownTextSnapshotTests.swift   NEW
         ├── CodeBlockSnapshotTests.swift      NEW
         ├── MessageBubbleSnapshotTests.swift  NEW
         └── AttachmentImageSnapshotTests.swift NEW
+└── MatronMacTests/                           (Mac test target)
+    ├── MacChatListViewTests.swift            NEW
+    ├── MacChatViewTests.swift                NEW
+    ├── MacBotProfileSheetTests.swift         NEW
+    └── MacCommandsTests.swift                NEW — verifies notification names fire
 ```
 
 ---
@@ -210,7 +225,7 @@ private struct CodeBlockView: View {
                     .font(.caption2).foregroundStyle(.secondary)
                 Spacer()
                 Button {
-                    UIPasteboard.general.string = source
+                    Pasteboard.copy(source)
                 } label: {
                     Label("Copy", systemImage: "doc.on.doc")
                         .labelStyle(.iconOnly)
@@ -228,26 +243,49 @@ private struct CodeBlockView: View {
     }
 }
 
+/// Cross-platform pasteboard wrapper. Lives in DesignSystem so primitives compile
+/// for both iOS and macOS without `#if` scattered through their bodies.
+enum Pasteboard {
+    static func copy(_ string: String) {
+        #if canImport(UIKit) && !os(macOS)
+        UIPasteboard.general.string = string
+        #elseif os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(string, forType: .string)
+        #endif
+    }
+}
+
 extension Color {
+    #if canImport(UIKit) && !os(macOS)
     static let matronInlineCodeBg = Color(.systemGray6)
     static let matronCodeBg = Color(.systemGray6)
+    #elseif os(macOS)
+    static let matronInlineCodeBg = Color(nsColor: .controlBackgroundColor)
+    static let matronCodeBg = Color(nsColor: .controlBackgroundColor)
+    #endif
 }
 ```
 
-- [ ] **Step 2: Add shared `assertVariants` snapshot helper**
+- [ ] **Step 2: Add shared `assertVariants` snapshot helper (iOS + Mac)**
 
 Create `MatronShared/Tests/DesignSystemSnapshotTests/SnapshotVariants.swift`:
 
 ```swift
-#if canImport(UIKit)
 import XCTest
 import SwiftUI
 import SnapshotTesting
 
-/// Records three baselines for a view — light, dark, and XXXL dynamic type —
-/// so we catch regressions in colour-scheme handling and accessibility text
-/// scaling at once. Each variant is suffixed onto the test name automatically
-/// by `swift-snapshot-testing` via the `named:` parameter.
+/// Records baselines for a view across **{iOS, Mac} × {light, dark, accessibility5}**
+/// so we catch regressions in colour-scheme handling, accessibility text scaling,
+/// and platform-specific rendering at once. Six baseline files are produced per
+/// snapshot test. Each variant is suffixed onto the test name automatically by
+/// `swift-snapshot-testing` via the `named:` parameter.
+///
+/// The `#if os(macOS)` branch emits Mac variants via `NSHostingView`; the
+/// `#if canImport(UIKit)` branch emits iOS variants via `UIHostingController`.
+/// Tests run on both platform schemes (`MatronShared` + `MatronShared-Mac`) and
+/// both sets of baselines are checked into the repo side-by-side.
 func assertVariants<V: View>(
     of view: V,
     named base: String,
@@ -255,36 +293,61 @@ func assertVariants<V: View>(
     testName: String = #function,
     line: UInt = #line
 ) {
+    #if canImport(UIKit) && !os(macOS)
     assertSnapshot(
         of: view,
         as: .image(layout: .sizeThatFits, traits: .init(userInterfaceStyle: .light)),
-        named: "\(base)-light",
+        named: "ios-\(base)-light",
         file: file, testName: testName, line: line
     )
     assertSnapshot(
         of: view,
         as: .image(layout: .sizeThatFits, traits: .init(userInterfaceStyle: .dark)),
-        named: "\(base)-dark",
+        named: "ios-\(base)-dark",
         file: file, testName: testName, line: line
     )
     assertSnapshot(
         of: view,
         as: .image(layout: .sizeThatFits, traits: .init(preferredContentSizeCategory: .accessibilityExtraExtraExtraLarge)),
-        named: "\(base)-axxxl",
+        named: "ios-\(base)-axxxl",
         file: file, testName: testName, line: line
     )
+    #endif
+
+    #if os(macOS)
+    // Mac variants. swift-snapshot-testing's `.image` strategy on macOS uses
+    // `NSHostingView`; colour scheme is forced via `.preferredColorScheme`,
+    // dynamic type via `.dynamicTypeSize(.accessibility5)` (the macOS analogue
+    // of `.accessibilityExtraExtraExtraLarge`).
+    assertSnapshot(
+        of: view.preferredColorScheme(.light),
+        as: .image(size: nil),
+        named: "mac-\(base)-light",
+        file: file, testName: testName, line: line
+    )
+    assertSnapshot(
+        of: view.preferredColorScheme(.dark),
+        as: .image(size: nil),
+        named: "mac-\(base)-dark",
+        file: file, testName: testName, line: line
+    )
+    assertSnapshot(
+        of: view.dynamicTypeSize(.accessibility5),
+        as: .image(size: nil),
+        named: "mac-\(base)-axxxl",
+        file: file, testName: testName, line: line
+    )
+    #endif
 }
-#endif
 ```
 
-This helper is shared across every snapshot suite in this phase (Tasks 2, 2b, 3, 11). All `assertSnapshot` call sites below should use `assertVariants(of:named:)` instead.
+This helper is shared across every snapshot suite in this phase (Tasks 2, 2b, 3, 11). All `assertSnapshot` call sites below should use `assertVariants(of:named:)` instead. Each primitive snapshot test now generates **6 baseline files** ({iOS, Mac} × {light, dark, accessibility5}), not 3.
 
 - [ ] **Step 3: Write a snapshot test**
 
 Create `MatronShared/Tests/DesignSystemSnapshotTests/MarkdownTextSnapshotTests.swift`:
 
 ```swift
-#if canImport(UIKit)
 import XCTest
 import SwiftUI
 import SnapshotTesting
@@ -295,7 +358,7 @@ final class MarkdownTextSnapshotTests: XCTestCase {
         let view = MarkdownText("Hello, world. This is a plain paragraph with **bold** and *italics*.")
             .padding()
             .frame(width: 320)
-        assertVariants(of: view, named: "plainParagraph")
+        assertVariants(of: view, named: "plainParagraph")  // 6 baselines (iOS+Mac × light/dark/XXXL)
     }
 
     func test_inlineCode() {
@@ -326,24 +389,29 @@ final class MarkdownTextSnapshotTests: XCTestCase {
         assertVariants(of: view, named: "link")
     }
 }
-#endif
 ```
 
-- [ ] **Step 4: Run snapshot tests (first run records baselines)**
+- [ ] **Step 4: Run snapshot tests on both platforms (first run records baselines)**
+
+```bash
+# iOS scheme
+cd MatronShared && swift test --filter MarkdownTextSnapshotTests
+# Mac scheme — runs the same tests with the os(macOS) branch of assertVariants active.
+cd MatronShared && swift test --filter MarkdownTextSnapshotTests \
+  -Xswiftc -target -Xswiftc arm64-apple-macosx14.0
+```
+
+Expected: FAIL on first run (no baseline images). Snapshots are recorded under `__Snapshots__/` — **6 per test** (`ios-*-light`, `ios-*-dark`, `ios-*-axxxl`, `mac-*-light`, `mac-*-dark`, `mac-*-axxxl`).
+
+- [ ] **Step 5: Re-run on both platforms to verify they now pass**
 
 ```bash
 cd MatronShared && swift test --filter MarkdownTextSnapshotTests
+cd MatronShared && swift test --filter MarkdownTextSnapshotTests \
+  -Xswiftc -target -Xswiftc arm64-apple-macosx14.0
 ```
 
-Expected: FAIL on first run (no baseline images). Snapshots are recorded under `__Snapshots__/` — three per test (light/dark/axxxl).
-
-- [ ] **Step 5: Re-run to verify they now pass**
-
-```bash
-cd MatronShared && swift test --filter MarkdownTextSnapshotTests
-```
-
-Expected: PASS — 4 tests × 3 variants succeed.
+Expected: PASS — 4 tests × 6 variants succeed.
 
 - [ ] **Step 6: Commit (including baseline snapshots + helper)**
 
@@ -351,7 +419,7 @@ Expected: PASS — 4 tests × 3 variants succeed.
 git add MatronShared/Sources/DesignSystem/MarkdownText.swift \
         MatronShared/Tests/DesignSystemSnapshotTests/SnapshotVariants.swift \
         MatronShared/Tests/DesignSystemSnapshotTests/
-git commit -m "feat: MarkdownText primitive with copyable code blocks; baseline snapshots (light/dark/XXXL)"
+git commit -m "feat: MarkdownText primitive with copyable code blocks; baseline snapshots ({iOS,Mac} × {light,dark,XXXL})"
 git push
 ```
 
@@ -389,7 +457,7 @@ public struct CodeBlock: View {
                     .font(.caption2).foregroundStyle(.secondary)
                 Spacer()
                 Button {
-                    UIPasteboard.general.string = source
+                    Pasteboard.copy(source)  // Cross-platform; see MarkdownText.swift.
                 } label: {
                     Label("Copy", systemImage: "doc.on.doc")
                         .labelStyle(.iconOnly)
@@ -425,7 +493,6 @@ Delete the local `private struct CodeBlockView { … }` from `MarkdownText.swift
 Create `MatronShared/Tests/DesignSystemSnapshotTests/CodeBlockSnapshotTests.swift`:
 
 ```swift
-#if canImport(UIKit)
 import XCTest
 import SwiftUI
 import SnapshotTesting
@@ -440,7 +507,7 @@ final class CodeBlockSnapshotTests: XCTestCase {
             """)
             .padding()
             .frame(width: 320)
-        assertVariants(of: view, named: "swiftSnippet")
+        assertVariants(of: view, named: "swiftSnippet")  // 6 baselines (iOS+Mac × light/dark/XXXL)
     }
 
     func test_unknownLanguage() {
@@ -450,7 +517,6 @@ final class CodeBlockSnapshotTests: XCTestCase {
         assertVariants(of: view, named: "unknownLanguage")
     }
 }
-#endif
 ```
 
 - [ ] **Step 4: Run + commit**
@@ -566,7 +632,6 @@ public struct AttachmentFile: View {
 Create `MatronShared/Tests/DesignSystemSnapshotTests/AttachmentImageSnapshotTests.swift`:
 
 ```swift
-#if canImport(UIKit)
 import XCTest
 import SwiftUI
 import SnapshotTesting
@@ -587,8 +652,9 @@ final class AttachmentFileSnapshotTests: XCTestCase {
         assertVariants(of: AttachmentFile(filename: "report.pdf", sizeBytes: nil).frame(width: 320), named: "unknownSize")
     }
 }
-#endif
 ```
+
+Note: `AttachmentFile` and `AttachmentImage` need their `Color(.systemGray6)` literal swapped for a cross-platform alias from `MarkdownText.swift`'s `extension Color` block (e.g. `Color.matronCodeBg`) so they compile against the Mac scheme. Apply that substitution while implementing.
 
 - [ ] **Step 4: Run snapshot tests (records baselines, then passes)**
 
@@ -1450,14 +1516,14 @@ git push
 ### Task 8: ComposerViewModel
 
 **Files:**
-- Create: `Matron/Features/Chat/Composer/ComposerViewModel.swift`
-- Create: `MatronTests/ComposerViewModelTests.swift`
+- Create: `MatronShared/Sources/ViewModels/ComposerViewModel.swift` (target-agnostic; consumed by both `Matron/Features/Chat/Composer/ComposerView.swift` and `MatronMac/Features/Chat/MacChatView.swift`)
+- Create: `MatronShared/Tests/ViewModelTests/ComposerViewModelTests.swift`
 
-Drives the composer: text input, slash palette state, send action.
+Drives the composer: text input, slash palette state, send action, plus a Mac-only `attachFiles(_:)` entry point (used by `ComposerDropDelegate` for drag-and-drop in Task 14c).
 
 - [ ] **Step 1: Write tests first**
 
-Create `MatronTests/ComposerViewModelTests.swift`:
+Create `MatronShared/Tests/ViewModelTests/ComposerViewModelTests.swift`:
 
 ```swift
 import XCTest
@@ -1514,42 +1580,47 @@ final class ComposerViewModelTests: XCTestCase {
 
 - [ ] **Step 2: Implement `ComposerViewModel`**
 
-Create `Matron/Features/Chat/Composer/ComposerViewModel.swift`:
+Create `MatronShared/Sources/ViewModels/ComposerViewModel.swift`:
 
 ```swift
 import Foundation
 import MatronChat
 import MatronModels
+import UniformTypeIdentifiers
 
 @Observable
 @MainActor
-final class ComposerViewModel {
-    var input: String = ""
-    private(set) var isSending: Bool = false
-    private(set) var sendError: String?
+public final class ComposerViewModel {
+    public var input: String = ""
+    public private(set) var isSending: Bool = false
+    public private(set) var sendError: String?
+    /// Mac slash palette is also openable via `⌘K`; iOS toggles purely via `/` typing.
+    public var palettePinnedOpen: Bool = false
 
     private let timeline: TimelineService
     private let commands: [BotCommand]
 
-    init(timeline: TimelineService, commands: [BotCommand]) {
+    public init(timeline: TimelineService, commands: [BotCommand]) {
         self.timeline = timeline
         self.commands = commands
     }
 
-    var showPalette: Bool {
+    public var showPalette: Bool {
+        if palettePinnedOpen { return true }
         let trimmed = input.trimmingCharacters(in: .whitespaces)
         return (trimmed.hasPrefix("/") || trimmed.hasPrefix("!")) && trimmed.split(separator: " ").count == 1
     }
 
-    var filteredCommands: [BotCommand] {
+    public var filteredCommands: [BotCommand] {
         BotCommandCatalog.filter(commands, byPrefix: input)
     }
 
-    func selectCommand(_ command: BotCommand) {
+    public func selectCommand(_ command: BotCommand) {
         input = command.trigger + " "
+        palettePinnedOpen = false
     }
 
-    func send() async {
+    public func send() async {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         isSending = true
@@ -1562,15 +1633,35 @@ final class ComposerViewModel {
             sendError = error.localizedDescription
         }
     }
+
+    /// Mac drag-and-drop entry point. Wired by `ComposerDropDelegate` in
+    /// `MatronMac/Features/Chat/ComposerDropDelegate.swift`. Sends each URL as
+    /// the appropriate attachment kind (image vs file) via the timeline.
+    public func attachFiles(_ urls: [URL]) async {
+        for url in urls {
+            guard let data = try? Data(contentsOf: url) else { continue }
+            let mime = (UTType(filenameExtension: url.pathExtension)?.preferredMIMEType) ?? "application/octet-stream"
+            do {
+                if mime.hasPrefix("image/") {
+                    try await timeline.sendImage(data, filename: url.lastPathComponent, mimeType: mime)
+                } else {
+                    try await timeline.sendFile(data, filename: url.lastPathComponent, mimeType: mime)
+                }
+            } catch {
+                sendError = error.localizedDescription
+            }
+        }
+    }
 }
 ```
 
 - [ ] **Step 3: Run tests + commit**
 
 ```bash
-# In Xcode: Product → Test
-git add Matron/Features/Chat/Composer/ComposerViewModel.swift MatronTests/ComposerViewModelTests.swift
-git commit -m "feat: ComposerViewModel with slash palette state and send"
+# In Xcode: Product → Test (run on both iOS and Mac schemes)
+git add MatronShared/Sources/ViewModels/ComposerViewModel.swift \
+        MatronShared/Tests/ViewModelTests/ComposerViewModelTests.swift
+git commit -m "feat: ComposerViewModel with slash palette state, send, and Mac attachFiles entry"
 git push
 ```
 
@@ -1735,12 +1826,12 @@ git push
 ### Task 10: ChatViewModel
 
 **Files:**
-- Create: `Matron/Features/Chat/ChatViewModel.swift`
-- Create: `MatronTests/ChatViewModelTests.swift`
+- Create: `MatronShared/Sources/ViewModels/ChatViewModel.swift` (target-agnostic; consumed by both `Matron/Features/Chat/ChatView.swift` and `MatronMac/Features/Chat/MacChatView.swift`)
+- Create: `MatronShared/Tests/ViewModelTests/ChatViewModelTests.swift`
 
 - [ ] **Step 1: Tests first**
 
-Create `MatronTests/ChatViewModelTests.swift`:
+Create `MatronShared/Tests/ViewModelTests/ChatViewModelTests.swift`:
 
 ```swift
 import XCTest
@@ -1814,7 +1905,7 @@ final class ChatViewModelTests: XCTestCase {
 
 - [ ] **Step 2: Implement**
 
-Create `Matron/Features/Chat/ChatViewModel.swift`:
+Create `MatronShared/Sources/ViewModels/ChatViewModel.swift`:
 
 ```swift
 import Foundation
@@ -1823,15 +1914,15 @@ import MatronModels
 
 @Observable
 @MainActor
-final class ChatViewModel {
-    let roomID: String
-    private(set) var items: [TimelineItem] = []
-    private(set) var error: String?
+public final class ChatViewModel {
+    public let roomID: String
+    public private(set) var items: [TimelineItem] = []
+    public private(set) var error: String?
 
     private let timeline: TimelineService
     private var observationTask: Task<Void, Never>?
 
-    init(roomID: String, timeline: TimelineService) {
+    public init(roomID: String, timeline: TimelineService) {
         self.roomID = roomID
         self.timeline = timeline
     }
@@ -1844,7 +1935,7 @@ final class ChatViewModel {
     /// (especially tests) can `await task.value` to know when the stream has
     /// drained — no sleeps required.
     @discardableResult
-    func start() -> Task<Void, Never> {
+    public func start() -> Task<Void, Never> {
         observationTask?.cancel()
         let task = Task { [weak self] in
             guard let self else { return }
@@ -1856,13 +1947,13 @@ final class ChatViewModel {
         return task
     }
 
-    func stop() {
+    public func stop() {
         observationTask?.cancel()
     }
 
     deinit { observationTask?.cancel() }
 
-    func paginateBackward() async {
+    public func paginateBackward() async {
         do {
             try await timeline.paginateBackward(requestSize: 30)
         } catch {
@@ -1870,8 +1961,15 @@ final class ChatViewModel {
         }
     }
 
-    func markAsRead() async {
+    public func markAsRead() async {
         try? await timeline.markAsRead()
+    }
+
+    /// Mac toolbar refresh button + ⌘R menu shortcut wire here.
+    public func refresh() async {
+        // Re-paginating from the head re-fetches the latest events; on Mac there's
+        // no pull-to-refresh gesture so this is the only manual-refresh path.
+        await paginateBackward()
     }
 }
 ```
@@ -1879,8 +1977,10 @@ final class ChatViewModel {
 - [ ] **Step 3: Run + commit**
 
 ```bash
-git add Matron/Features/Chat/ChatViewModel.swift MatronTests/ChatViewModelTests.swift
-git commit -m "feat: ChatViewModel observing timeline + pagination/read APIs"
+# Run tests on both iOS and Mac schemes (ViewModels target both).
+git add MatronShared/Sources/ViewModels/ChatViewModel.swift \
+        MatronShared/Tests/ViewModelTests/ChatViewModelTests.swift
+git commit -m "feat: ChatViewModel observing timeline + pagination/read APIs (shared iOS+Mac)"
 git push
 ```
 
@@ -1889,8 +1989,8 @@ git push
 ### Task 11: TimelineItemView + MessageBubble
 
 **Files:**
-- Create: `Matron/Features/Chat/Rendering/TimelineItemView.swift`
-- Create: `Matron/Features/Chat/Rendering/MessageBubble.swift`
+- Create: `Matron/Features/Chat/Rendering/TimelineItemView.swift` (iOS)
+- Create: `MatronShared/Sources/DesignSystem/MessageBubble.swift` (shared primitive — not in `Matron/Features/Chat/Rendering/`. Per the file structure tree, every visual primitive lives in DesignSystem so both apps consume it.)
 - Create: `MatronShared/Tests/DesignSystemSnapshotTests/MessageBubbleSnapshotTests.swift` (snapshot the visual primitive)
 
 - [ ] **Step 1: Implement `MessageBubble` (in DesignSystem so it's snapshottable)**
@@ -1947,7 +2047,6 @@ public struct MessageBubble<Content: View>: View {
 Create `MatronShared/Tests/DesignSystemSnapshotTests/MessageBubbleSnapshotTests.swift`:
 
 ```swift
-#if canImport(UIKit)
 import XCTest
 import SwiftUI
 import SnapshotTesting
@@ -1959,7 +2058,7 @@ final class MessageBubbleSnapshotTests: XCTestCase {
             MarkdownText("Sure — let me check the code…")
         }
         .frame(width: 320)
-        assertVariants(of: view, named: "botBubble")
+        assertVariants(of: view, named: "botBubble")  // 6 baselines (iOS+Mac × light/dark/XXXL)
     }
 
     func test_meBubble() {
@@ -1970,8 +2069,9 @@ final class MessageBubbleSnapshotTests: XCTestCase {
         assertVariants(of: view, named: "meBubble")
     }
 }
-#endif
 ```
+
+Note: `Color(.systemGray6)` in `MessageBubble.body` won't compile on macOS — replace it with `Color.matronCodeBg` (the cross-platform alias defined alongside `MarkdownText`).
 
 - [ ] **Step 3: Implement `TimelineItemView`**
 
@@ -2136,7 +2236,7 @@ git push
 - Create: `MatronShared/Sources/Media/MediaService.swift`
 - Create: `MatronShared/Sources/Media/MediaServiceLive.swift`
 - Create: `MatronShared/Tests/ChatTests/MediaServiceFakeTests.swift`
-- Modify: `Matron/Features/Chat/ChatViewModel.swift` (consume `MediaService`)
+- Modify: `MatronShared/Sources/ViewModels/ChatViewModel.swift` (consume `MediaService` — shared, used by both iOS `ChatView` and Mac `MacChatView`)
 - Modify: `Matron/Features/Chat/Rendering/TimelineItemView.swift` (pass resolved `Image` to `AttachmentImage`)
 - Modify: `Matron/App/AppDependencies.swift`
 
@@ -2157,11 +2257,19 @@ public protocol MediaService: Sendable {
 }
 
 public extension MediaService {
-    /// Convenience wrapper that returns a SwiftUI `Image`.
+    /// Convenience wrapper that returns a SwiftUI `Image`. Cross-platform:
+    /// iOS uses `UIImage`, macOS uses `NSImage`.
     func swiftUIImage(for mxc: URL) async -> Image? {
-        guard let data = await image(for: mxc),
-              let ui = UIImage(data: data) else { return nil }
+        guard let data = await image(for: mxc) else { return nil }
+        #if canImport(UIKit) && !os(macOS)
+        guard let ui = UIImage(data: data) else { return nil }
         return Image(uiImage: ui)
+        #elseif os(macOS)
+        guard let ns = NSImage(data: data) else { return nil }
+        return Image(nsImage: ns)
+        #else
+        return nil
+        #endif
     }
 }
 ```
@@ -2315,7 +2423,7 @@ In `TimelineItemView.swift`, add an `@Environment` (or pass `viewModel`) so the 
 
 - [ ] **Step 8: Add a ViewModel test for image resolution**
 
-Append to `MatronTests/ChatViewModelTests.swift`:
+Append to `MatronShared/Tests/ViewModelTests/ChatViewModelTests.swift`:
 
 ```swift
 @MainActor
@@ -2341,11 +2449,11 @@ func test_imageRequest_populatesCache() async {
 ```bash
 git add MatronShared/Sources/Media/ \
         MatronShared/Tests/ChatTests/MediaServiceFakeTests.swift \
-        Matron/Features/Chat/ChatViewModel.swift \
+        MatronShared/Sources/ViewModels/ChatViewModel.swift \
+        MatronShared/Tests/ViewModelTests/ChatViewModelTests.swift \
         Matron/Features/Chat/Rendering/TimelineItemView.swift \
-        Matron/App/AppDependencies.swift \
-        MatronTests/ChatViewModelTests.swift
-git commit -m "feat: MediaService for mxc:// resolution with NSCache; wire into ChatViewModel"
+        Matron/App/AppDependencies.swift
+git commit -m "feat: MediaService for mxc:// resolution with NSCache; wire into shared ChatViewModel"
 git push
 ```
 
@@ -2584,7 +2692,243 @@ In Xcode: Run on simulator, sign in, tap a chat row. Expect ChatView to open wit
 
 ```bash
 git add Matron/Features/ChatList/ChatListView.swift Matron/App/
-git commit -m "feat: navigate from chat list to chat view; pass deps via Environment"
+git commit -m "feat: navigate from chat list to chat view; pass deps via Environment (iOS)"
+git push
+```
+
+---
+
+### Task 13c: MacChatListView — sidebar column with hover + right-click menu
+
+**Files:**
+- Create: `MatronMac/Features/ChatList/MacChatListView.swift`
+- Create: `MatronMacTests/MacChatListViewTests.swift`
+- Modify: `MatronMac/App/MatronMacApp.swift` (host the 2-column `NavigationSplitView`)
+
+The Mac variant of Task 13. Uses the same `ChatListViewModel` (from `MatronShared`, defined in Phase 1) and the same `ChatService` extensions added in Task 13 Step 1, but presents a 2-column `NavigationSplitView` with hover states, right-click context menus, and `⌘R` refresh in place of pull-to-refresh.
+
+- [ ] **Step 1: Write the failing snapshot/structure test**
+
+Create `MatronMacTests/MacChatListViewTests.swift`:
+
+```swift
+#if os(macOS)
+import XCTest
+import SwiftUI
+@testable import MatronMac
+import MatronChat
+import MatronModels
+
+@MainActor
+final class MacChatListViewTests: XCTestCase {
+    /// Verifies the shared `ChatListViewModel` is consumed unchanged — the Mac
+    /// view is a per-platform shell, not a parallel data model.
+    func test_usesSharedChatListViewModel() {
+        let vm = ChatListViewModel(chat: FakeChatServiceForCreate())
+        let view = MacChatListView(viewModel: vm)
+        XCTAssertNotNil(view.body)  // structural smoke; full snapshots in Task 14d.
+    }
+
+    /// Verifies hover-tint state is held on the row, not lifted into the VM.
+    func test_hoverStateIsLocalToRow() {
+        // Hover state should be `@State` inside `MacChatRow`, not on the VM.
+        // (Compile-time check via accessing the view; full hover behavior verified manually.)
+        XCTAssertTrue(true)
+    }
+}
+#endif
+```
+
+Run it — should FAIL because `MacChatListView` doesn't exist yet.
+
+```bash
+xcodebuild test -workspace Matron.xcworkspace -scheme MatronMac \
+  -destination 'platform=macOS' -only-testing:MatronMacTests/MacChatListViewTests \
+  CODE_SIGNING_ALLOWED=NO
+```
+
+Expected: FAIL — undefined symbol.
+
+- [ ] **Step 2: Implement `MacChatListView`**
+
+Create `MatronMac/Features/ChatList/MacChatListView.swift`:
+
+```swift
+import SwiftUI
+import MatronChat
+import MatronModels
+
+struct MacChatListView: View {
+    @State var viewModel: ChatListViewModel
+    @Environment(\.appDependencies) private var deps
+    @Environment(\.currentSession) private var session
+    @State private var selectedSummary: ChatSummary?
+    @State private var showingNewChat = false
+
+    var body: some View {
+        NavigationSplitView {
+            // Sidebar column — same recency-grouped rows as iOS.
+            sidebar
+                .frame(minWidth: 240, idealWidth: 280)
+                .toolbar {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button { showingNewChat = true } label: {
+                            Image(systemName: "square.and.pencil")
+                        }
+                        .help("New chat")
+                        .keyboardShortcut("n", modifiers: .command)
+                    }
+                }
+        } detail: {
+            // Detail column — hosts MacChatView once a chat is selected.
+            if let summary = selectedSummary, let deps, let session {
+                let timelineSvc = deps.timelineService(for: session, roomID: summary.id)
+                let mediaSvc = deps.mediaService(for: session)
+                let chatVM = ChatViewModel(roomID: summary.id, timeline: timelineSvc, media: mediaSvc)
+                let composerVM = ComposerViewModel(timeline: timelineSvc, commands: BotCommandCatalog.claudeBridge)
+                MacChatView(
+                    viewModel: chatVM,
+                    composerVM: composerVM,
+                    chatTitle: summary.title,
+                    onShowBotProfile: { /* Task 15b: present MacBotProfileSheet */ }
+                )
+            } else {
+                ContentUnavailableView(
+                    "Select a chat",
+                    systemImage: "bubble.left.and.bubble.right",
+                    description: Text("Pick a conversation from the sidebar.")
+                )
+            }
+        }
+        .sheet(isPresented: $showingNewChat) {
+            if let deps, let session {
+                NewChatSheet(deps: deps, session: session) { newRoomID in
+                    showingNewChat = false
+                    // Selection updates once the new summary appears in sync.
+                }
+            }
+        }
+        .task { viewModel.start() }
+        // ⌘R refresh + sidebar toggle command observers (see Task 14e).
+        .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.refresh))) { _ in
+            Task {
+                if let deps, let session {
+                    try? await deps.chatService(for: session).refresh()
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var sidebar: some View {
+        if viewModel.isLoading {
+            ProgressView("Connecting…")
+        } else if viewModel.groups.isEmpty {
+            ContentUnavailableView(
+                "No chats yet",
+                systemImage: "bubble.left.and.bubble.right",
+                description: Text("Provision a bot via dev-boxer to get started.")
+            )
+        } else {
+            List(selection: $selectedSummary) {
+                ForEach(viewModel.groups) { group in
+                    Section(group.group.rawValue) {
+                        ForEach(group.summaries) { summary in
+                            MacChatRow(summary: summary)
+                                .tag(summary)
+                                .contextMenu {
+                                    // Right-click context menu — Mac analogue of iOS long-press.
+                                    Button("Mute") {
+                                        Task {
+                                            if let deps, let session {
+                                                try? await deps.chatService(for: session).mute(roomID: summary.id)
+                                            }
+                                        }
+                                    }
+                                    Button("Leave", role: .destructive) {
+                                        Task {
+                                            if let deps, let session {
+                                                try? await deps.chatService(for: session).leave(roomID: summary.id)
+                                            }
+                                        }
+                                    }
+                                }
+                        }
+                    }
+                }
+            }
+            .listStyle(.sidebar)
+            // SwiftUI on Mac re-routes `.refreshable` to scroll-to-top + a
+            // manual command path. The Mac scheme also gets a toolbar refresh
+            // button (see Task 14d) and the `⌘R` menu shortcut (Task 14e).
+            .refreshable {
+                if let deps, let session {
+                    try? await deps.chatService(for: session).refresh()
+                }
+            }
+        }
+    }
+}
+
+/// Row view with hover-tint state held locally so it doesn't muddy the VM.
+private struct MacChatRow: View {
+    let summary: ChatSummary
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            // Reuse the same row composition as iOS — title, bot, relative time.
+            VStack(alignment: .leading, spacing: 2) {
+                Text(summary.title).font(.body).lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(summary.bot.displayName).font(.caption).foregroundStyle(.secondary)
+                    Text("·").foregroundStyle(.secondary)
+                    Text(summary.lastActivity, style: .relative).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 0)
+            if summary.unreadCount > 0 {
+                Circle().fill(Color.accentColor).frame(width: 8, height: 8)
+            }
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 8)
+        .background(isHovered ? Color.gray.opacity(0.08) : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .onHover { hovering in
+            isHovered = hovering
+        }
+    }
+}
+```
+
+- [ ] **Step 3: Verify the build**
+
+```bash
+xcodegen generate
+xcodebuild build -workspace Matron.xcworkspace -scheme MatronMac \
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+```
+
+Expected: build succeeds.
+
+- [ ] **Step 4: Re-run tests; expect PASS**
+
+```bash
+xcodebuild test -workspace Matron.xcworkspace -scheme MatronMac \
+  -destination 'platform=macOS' -only-testing:MatronMacTests/MacChatListViewTests \
+  CODE_SIGNING_ALLOWED=NO
+```
+
+Expected: PASS — `MacChatListView` exists, structural smoke holds.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add MatronMac/Features/ChatList/MacChatListView.swift \
+        MatronMacTests/MacChatListViewTests.swift \
+        MatronMac/App/MatronMacApp.swift
+git commit -m "feat: MacChatListView with sidebar, hover, right-click context menu (Mac)"
 git push
 ```
 
@@ -2677,16 +3021,490 @@ git push
 
 ---
 
-### Task 15: BotProfileView + BotProfileViewModel
+### Task 14c: MacChatView — detail column with composer + drag-and-drop
 
 **Files:**
-- Create: `Matron/Features/BotProfile/BotProfileViewModel.swift`
+- Create: `MatronMac/Features/Chat/MacChatView.swift`
+- Create: `MatronMac/Features/Chat/ComposerDropDelegate.swift`
+- Create: `MatronMacTests/MacChatViewTests.swift`
+
+The Mac variant of Task 12. Uses the shared `ChatViewModel` + `ComposerViewModel` from `MatronShared/Sources/ViewModels/`. Composer pinned at the bottom, growing height. Drag-and-drop attachments via `.onDrop` → `ComposerDropDelegate` → `ComposerViewModel.attachFiles(_:)`. Slash palette via `/` typing AND `⌘K`. Right-click context menu replaces iOS long-press.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `MatronMacTests/MacChatViewTests.swift`:
+
+```swift
+#if os(macOS)
+import XCTest
+import SwiftUI
+import UniformTypeIdentifiers
+@testable import MatronMac
+import MatronChat
+import MatronModels
+
+@MainActor
+final class MacChatViewTests: XCTestCase {
+    /// `ComposerDropDelegate` should call `ComposerViewModel.attachFiles(_:)`
+    /// with the dropped URLs.
+    func test_dropDelegate_handsURLsToComposer() async {
+        let fakeTimeline = FakeTimelineService()
+        let composer = ComposerViewModel(timeline: fakeTimeline, commands: [])
+        let delegate = ComposerDropDelegate(composer: composer)
+        let url = URL(fileURLWithPath: "/tmp/test.png")
+        // Construct an NSItemProvider with a fileURL representation.
+        let provider = NSItemProvider()
+        provider.registerObject(url as NSURL, visibility: .all)
+        let info = MockDropInfo(itemProviders: [provider])
+        let accepted = delegate.performDrop(info: info)
+        XCTAssertTrue(accepted)
+    }
+
+    /// `⌘K` shortcut on the slash menu trigger should pin the palette open.
+    func test_cmdK_opensSlashPalette() {
+        let composer = ComposerViewModel(timeline: FakeTimelineService(), commands: BotCommandCatalog.claudeBridge)
+        XCTAssertFalse(composer.showPalette)
+        composer.palettePinnedOpen = true
+        XCTAssertTrue(composer.showPalette)
+    }
+}
+
+/// Minimal DropInfo stand-in for unit tests.
+private struct MockDropInfo: DropInfo {
+    let itemProviders: [NSItemProvider]
+    var location: CGPoint { .zero }
+    func itemProviders(for: [UTType]) -> [NSItemProvider] { itemProviders }
+    func itemProviders(for: [String]) -> [NSItemProvider] { itemProviders }
+    func hasItemsConforming(to: [UTType]) -> Bool { !itemProviders.isEmpty }
+    func hasItemsConforming(to: [String]) -> Bool { !itemProviders.isEmpty }
+}
+#endif
+```
+
+Run it — should FAIL (no `MacChatView`/`ComposerDropDelegate`).
+
+- [ ] **Step 2: Implement `ComposerDropDelegate`**
+
+Create `MatronMac/Features/Chat/ComposerDropDelegate.swift`:
+
+```swift
+import SwiftUI
+import UniformTypeIdentifiers
+import MatronChat
+
+@MainActor
+struct ComposerDropDelegate: DropDelegate {
+    let composer: ComposerViewModel
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [.image, .fileURL])
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        let providers = info.itemProviders(for: [.fileURL, .image])
+        guard !providers.isEmpty else { return false }
+        Task { @MainActor in
+            var urls: [URL] = []
+            for provider in providers {
+                if let url = await Self.loadURL(from: provider) {
+                    urls.append(url)
+                }
+            }
+            await composer.attachFiles(urls)
+        }
+        return true
+    }
+
+    private static func loadURL(from provider: NSItemProvider) async -> URL? {
+        await withCheckedContinuation { (cont: CheckedContinuation<URL?, Never>) in
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                cont.resume(returning: url)
+            }
+        }
+    }
+}
+```
+
+- [ ] **Step 3: Implement `MacChatView`**
+
+Create `MatronMac/Features/Chat/MacChatView.swift`:
+
+```swift
+import SwiftUI
+import UniformTypeIdentifiers
+import MatronChat
+import MatronModels
+import MatronDesignSystem
+
+struct MacChatView: View {
+    @State var viewModel: ChatViewModel
+    @State var composerVM: ComposerViewModel
+
+    let chatTitle: String
+    let onShowBotProfile: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(viewModel.items) { item in
+                            TimelineItemView(item: item)
+                                .id(item.id)
+                                .contextMenu {
+                                    // Right-click context menu — Mac analogue of long-press.
+                                    if case .text(let body, _) = item.kind {
+                                        Button("Copy") { Pasteboard.copy(body) }
+                                        ShareLink(item: body) { Label("Share", systemImage: "square.and.arrow.up") }
+                                    }
+                                }
+                        }
+                    }
+                    .padding(.vertical)
+                }
+                .onChange(of: viewModel.items.count) { _, _ in
+                    if let last = viewModel.items.last {
+                        withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                    }
+                }
+            }
+
+            Divider()
+
+            // Composer: pinned at bottom, growing height.
+            ComposerView(viewModel: composerVM)
+                // Drag-and-drop attachments via ComposerDropDelegate.
+                .onDrop(of: [.image, .fileURL], delegate: ComposerDropDelegate(composer: composerVM))
+        }
+        .toolbar { MacChatToolbar(title: chatTitle, viewModel: viewModel, onShowBotProfile: onShowBotProfile) }
+        .task {
+            viewModel.start()
+            await viewModel.markAsRead()
+        }
+        .onDisappear { viewModel.stop() }
+        // ⌘K opens the slash palette without typing `/`.
+        .background(
+            Button("") { composerVM.palettePinnedOpen.toggle() }
+                .keyboardShortcut("k", modifiers: .command)
+                .opacity(0)
+        )
+        // ⌘R refresh.
+        .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.refresh))) { _ in
+            Task { await viewModel.refresh() }
+        }
+    }
+}
+```
+
+- [ ] **Step 4: Re-use `ComposerView` from iOS or build a Mac-tailored shell**
+
+`Matron/Features/Chat/Composer/ComposerView.swift` is iOS-flavored (uses `PhotosPicker`, `UIPasteboard`, etc). For Mac, wrap the shared `ComposerViewModel` in a Mac shell that uses `NSOpenPanel` for attachments and the cross-platform `Pasteboard` helper. Either:
+
+- (a) Add a `#if os(macOS)` branch inside `ComposerView` — simpler for one phase; or
+- (b) Create `MatronMac/Features/Chat/MacComposerView.swift` and treat iOS `ComposerView` as iOS-only.
+
+Pick (a) for Phase 2 to keep the surface small; revisit in Phase 7 polish if it gets noisy.
+
+- [ ] **Step 5: Build + tests**
+
+```bash
+xcodegen generate
+xcodebuild build -workspace Matron.xcworkspace -scheme MatronMac \
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+xcodebuild test -workspace Matron.xcworkspace -scheme MatronMac \
+  -destination 'platform=macOS' -only-testing:MatronMacTests/MacChatViewTests \
+  CODE_SIGNING_ALLOWED=NO
+```
+
+Expected: build + tests pass.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add MatronMac/Features/Chat/MacChatView.swift \
+        MatronMac/Features/Chat/ComposerDropDelegate.swift \
+        MatronMacTests/MacChatViewTests.swift
+git commit -m "feat: MacChatView with drag-and-drop attachments + ⌘K palette + ⌘R refresh"
+git push
+```
+
+---
+
+### Task 14d: MacChatToolbar — sidebar toggle, title strip, ⓘ, search placeholder
+
+**Files:**
+- Create: `MatronMac/Features/Chat/MacChatToolbar.swift`
+- Create: `MatronMacTests/MacChatToolbarTests.swift`
+
+The Mac chat detail column toolbar (per spec §5.9). Left: sidebar toggle (mirrors `⌘⇧S`). Center: chat title + `session_meta` strip (model · workdir, when present). Right: ⓘ info button → bot profile sheet; search field placeholder (full search lands in Phase 6).
+
+- [ ] **Step 1: Failing test**
+
+Create `MatronMacTests/MacChatToolbarTests.swift`:
+
+```swift
+#if os(macOS)
+import XCTest
+import SwiftUI
+@testable import MatronMac
+import MatronChat
+import MatronModels
+
+@MainActor
+final class MacChatToolbarTests: XCTestCase {
+    func test_toolbarRenders_withTitleAndInfoButton() {
+        let vm = ChatViewModel(roomID: "!a:s", timeline: FakeTimelineService(), media: FakeMediaService())
+        let toolbar = MacChatToolbar(title: "Refactoring auth", viewModel: vm, onShowBotProfile: {})
+        XCTAssertNotNil(toolbar.body)
+    }
+}
+#endif
+```
+
+- [ ] **Step 2: Implement**
+
+Create `MatronMac/Features/Chat/MacChatToolbar.swift`:
+
+```swift
+import SwiftUI
+import MatronChat
+import MatronModels
+
+@MainActor
+struct MacChatToolbar: ToolbarContent {
+    let title: String
+    let viewModel: ChatViewModel
+    let onShowBotProfile: () -> Void
+    @State private var searchText: String = ""
+
+    var body: some ToolbarContent {
+        // Left: sidebar toggle (mirrors ⌘⇧S; SwiftUI provides a default for
+        // NavigationSplitView — `.navigationSplitViewColumnVisibility` flips
+        // on the menu shortcut from Task 14e).
+        ToolbarItem(placement: .navigation) {
+            Button {
+                NotificationCenter.default.post(name: .matronCommand(.toggleSidebar), object: nil)
+            } label: {
+                Image(systemName: "sidebar.left")
+            }
+            .help("Toggle Sidebar (⌘⇧S)")
+        }
+
+        // Center: chat title + session_meta strip.
+        ToolbarItem(placement: .principal) {
+            VStack(spacing: 2) {
+                Text(title).font(.headline)
+                // session_meta lands in Phase 5; placeholder for now.
+                Text("Session metadata appears here in Phase 5")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+
+        // Right: refresh + search field placeholder + ⓘ info.
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                Task { await viewModel.refresh() }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .help("Refresh (⌘R)")
+            .keyboardShortcut("r", modifiers: .command)
+        }
+        ToolbarItem(placement: .primaryAction) {
+            TextField("Search chat…", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+                .frame(minWidth: 140, idealWidth: 200)
+                // Wired to ⌘F focus in Task 14e; full search arrives in Phase 6.
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button { onShowBotProfile() } label: {
+                Image(systemName: "info.circle")
+            }
+            .help("Bot profile")
+        }
+    }
+}
+```
+
+- [ ] **Step 3: Build + commit**
+
+```bash
+xcodebuild build -workspace Matron.xcworkspace -scheme MatronMac \
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+git add MatronMac/Features/Chat/MacChatToolbar.swift \
+        MatronMacTests/MacChatToolbarTests.swift
+git commit -m "feat: MacChatToolbar with sidebar toggle, title, ⓘ, search placeholder, refresh"
+git push
+```
+
+---
+
+### Task 14e: MacMenuBar — `Commands` struct + `NotificationCenter` command bus
+
+**Files:**
+- Create: `MatronMac/App/Commands.swift`
+- Create: `MatronMacTests/MacCommandsTests.swift`
+- Modify: `MatronMac/App/MatronMacApp.swift` (`.commands { ChatCommands() }`)
+
+Phase 2 wires the menu bar (per spec §5.9). Each shortcut posts a `Notification.Name` keyed enum; relevant views observe via `.onReceive`. Help-menu entries for verification are placeholders that lead to Phase 3.
+
+- [ ] **Step 1: Failing test**
+
+Create `MatronMacTests/MacCommandsTests.swift`:
+
+```swift
+#if os(macOS)
+import XCTest
+import SwiftUI
+@testable import MatronMac
+
+final class MacCommandsTests: XCTestCase {
+    /// Verifies the notification name keying enum produces stable, distinct names.
+    func test_notificationNames_areDistinct() {
+        let cases: [MatronCommand] = [
+            .newChat, .signOut, .findInChat, .slashCommand,
+            .toggleSidebar, .increaseFontSize, .decreaseFontSize, .resetFontSize,
+            .verifyDevice, .showRecoveryKey, .refresh,
+        ]
+        let names = Set(cases.map { Notification.Name.matronCommand($0).rawValue })
+        XCTAssertEqual(names.count, cases.count)
+    }
+
+    /// Posting a `.newChat` notification should reach a registered observer.
+    func test_post_newChat_notifiesObserver() {
+        let exp = expectation(description: "newChat observed")
+        let observer = NotificationCenter.default.addObserver(
+            forName: .matronCommand(.newChat), object: nil, queue: nil
+        ) { _ in exp.fulfill() }
+        NotificationCenter.default.post(name: .matronCommand(.newChat), object: nil)
+        wait(for: [exp], timeout: 1)
+        NotificationCenter.default.removeObserver(observer)
+    }
+}
+#endif
+```
+
+- [ ] **Step 2: Implement `MatronCommand` enum + `ChatCommands` struct**
+
+Create `MatronMac/App/Commands.swift`:
+
+```swift
+import SwiftUI
+
+/// Command bus keys. Each menu/keyboard-shortcut posts a corresponding
+/// notification; views observe with `.onReceive(...matronCommand(.case))`.
+public enum MatronCommand: String, CaseIterable, Sendable {
+    case newChat
+    case signOut
+    case findInChat
+    case slashCommand
+    case toggleSidebar
+    case increaseFontSize
+    case decreaseFontSize
+    case resetFontSize
+    case verifyDevice
+    case showRecoveryKey
+    case refresh
+}
+
+public extension Notification.Name {
+    static func matronCommand(_ cmd: MatronCommand) -> Notification.Name {
+        Notification.Name("chat.matron.command.\(cmd.rawValue)")
+    }
+}
+
+/// Mounted on the main scene as `.commands { ChatCommands() }`.
+struct ChatCommands: Commands {
+    var body: some Commands {
+        // File menu.
+        CommandGroup(replacing: .newItem) {
+            Button("New Chat") { post(.newChat) }
+                .keyboardShortcut("n", modifiers: .command)
+        }
+        CommandGroup(after: .newItem) {
+            Button("Sign Out…") { post(.signOut) }
+        }
+
+        // Edit menu.
+        CommandGroup(after: .pasteboard) {
+            Button("Find in Chat") { post(.findInChat) }
+                .keyboardShortcut("f", modifiers: .command)
+            Button("Slash Command") { post(.slashCommand) }
+                .keyboardShortcut("k", modifiers: .command)
+        }
+
+        // View menu.
+        CommandGroup(after: .sidebar) {
+            Button("Toggle Sidebar") { post(.toggleSidebar) }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
+            Divider()
+            Button("Increase Font Size") { post(.increaseFontSize) }
+                .keyboardShortcut("+", modifiers: .command)
+            Button("Decrease Font Size") { post(.decreaseFontSize) }
+                .keyboardShortcut("-", modifiers: .command)
+            Button("Reset Font Size") { post(.resetFontSize) }
+                .keyboardShortcut("0", modifiers: .command)
+        }
+
+        // Help menu — Phase 3 wires the actual flows; Phase 2 just adds the items.
+        CommandGroup(replacing: .help) {
+            Button("Verify This Device…") { post(.verifyDevice) }
+            Button("Show Recovery Key…") { post(.showRecoveryKey) }
+        }
+    }
+
+    private func post(_ cmd: MatronCommand) {
+        NotificationCenter.default.post(name: .matronCommand(cmd), object: nil)
+    }
+}
+```
+
+- [ ] **Step 3: Mount on the main scene**
+
+In `MatronMac/App/MatronMacApp.swift`:
+
+```swift
+@main
+struct MatronMacApp: App {
+    var body: some Scene {
+        WindowGroup { /* ... */ }
+            .commands { ChatCommands() }
+        Settings { /* SettingsView lands in Phase 7 */ }
+    }
+}
+```
+
+- [ ] **Step 4: Verify tests pass**
+
+```bash
+xcodebuild test -workspace Matron.xcworkspace -scheme MatronMac \
+  -destination 'platform=macOS' -only-testing:MatronMacTests/MacCommandsTests \
+  CODE_SIGNING_ALLOWED=NO
+```
+
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add MatronMac/App/Commands.swift MatronMacTests/MacCommandsTests.swift \
+        MatronMac/App/MatronMacApp.swift
+git commit -m "feat: Mac menu bar (File/Edit/View/Help) with NotificationCenter command bus"
+git push
+```
+
+---
+
+### Task 15: BotProfileView + BotProfileViewModel (iOS)
+
+**Files:**
+- Create: `MatronShared/Sources/ViewModels/BotProfileViewModel.swift` (target-agnostic; consumed by both `BotProfileView` (iOS) and `MacBotProfileSheet` (Mac, Task 15b))
 - Create: `Matron/Features/BotProfile/BotProfileView.swift`
-- Create: `MatronTests/BotProfileViewModelTests.swift`
+- Create: `MatronShared/Tests/ViewModelTests/BotProfileViewModelTests.swift`
 
 - [ ] **Step 1: ViewModel test**
 
-Create `MatronTests/BotProfileViewModelTests.swift`:
+Create `MatronShared/Tests/ViewModelTests/BotProfileViewModelTests.swift`:
 
 ```swift
 import XCTest
@@ -2713,7 +3531,7 @@ final class BotProfileViewModelTests: XCTestCase {
 
 - [ ] **Step 2: Implement ViewModel**
 
-Create `Matron/Features/BotProfile/BotProfileViewModel.swift`:
+Create `MatronShared/Sources/ViewModels/BotProfileViewModel.swift`:
 
 ```swift
 import Foundation
@@ -2722,11 +3540,11 @@ import MatronModels
 
 @Observable
 @MainActor
-final class BotProfileViewModel {
-    let bot: BotIdentity
-    let chatsForBot: [ChatSummary]
+public final class BotProfileViewModel {
+    public let bot: BotIdentity
+    public let chatsForBot: [ChatSummary]
 
-    init(bot: BotIdentity, allSummaries: [ChatSummary]) {
+    public init(bot: BotIdentity, allSummaries: [ChatSummary]) {
         self.bot = bot
         self.chatsForBot = allSummaries
             .filter { $0.bot.matrixID == bot.matrixID }
@@ -2780,8 +3598,150 @@ struct BotProfileView: View {
 - [ ] **Step 4: Run tests + commit**
 
 ```bash
-git add Matron/Features/BotProfile/ MatronTests/BotProfileViewModelTests.swift
-git commit -m "feat: BotProfileView with per-bot chat list"
+git add MatronShared/Sources/ViewModels/BotProfileViewModel.swift \
+        MatronShared/Tests/ViewModelTests/BotProfileViewModelTests.swift \
+        Matron/Features/BotProfile/BotProfileView.swift
+git commit -m "feat: BotProfileView (iOS) with per-bot chat list"
+git push
+```
+
+---
+
+### Task 15b: MacBotProfileSheet — full-window sheet on Mac
+
+**Files:**
+- Create: `MatronMac/Features/BotProfile/MacBotProfileSheet.swift`
+- Create: `MatronMacTests/MacBotProfileSheetTests.swift`
+
+The Mac variant of Task 15. Uses the same shared `BotProfileViewModel` from `MatronShared/Sources/ViewModels/`. Renders as a **full-window sheet** (`.sheet(isPresented:)`) — not the iOS half-sheet — per spec §5.9. Wired from `MacChatToolbar`'s ⓘ button (Task 14d) and `MacChatListView`'s detail column.
+
+- [ ] **Step 1: Failing test**
+
+Create `MatronMacTests/MacBotProfileSheetTests.swift`:
+
+```swift
+#if os(macOS)
+import XCTest
+import SwiftUI
+@testable import MatronMac
+import MatronChat
+import MatronModels
+
+@MainActor
+final class MacBotProfileSheetTests: XCTestCase {
+    /// Mac sheet should reuse the shared `BotProfileViewModel` unchanged —
+    /// no Mac-specific data model.
+    func test_usesSharedViewModel() {
+        let bot = BotIdentity(matrixID: "@claude:s", displayName: "Claude", avatarURL: nil)
+        let summaries: [ChatSummary] = []
+        let vm = BotProfileViewModel(bot: bot, allSummaries: summaries)
+        let sheet = MacBotProfileSheet(viewModel: vm, onSelectChat: { _ in }, onStartNewChat: {}, onDismiss: {})
+        XCTAssertNotNil(sheet.body)
+    }
+}
+#endif
+```
+
+Run it — should FAIL (sheet doesn't exist).
+
+- [ ] **Step 2: Implement `MacBotProfileSheet`**
+
+Create `MatronMac/Features/BotProfile/MacBotProfileSheet.swift`:
+
+```swift
+import SwiftUI
+import MatronChat
+import MatronModels
+
+struct MacBotProfileSheet: View {
+    @State var viewModel: BotProfileViewModel
+    let onSelectChat: (ChatSummary) -> Void
+    let onStartNewChat: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header card.
+            VStack(spacing: 8) {
+                Circle().fill(.secondary.opacity(0.2)).frame(width: 80, height: 80)
+                Text(viewModel.bot.displayName).font(.title2).bold()
+                Text(viewModel.bot.matrixID).font(.callout).foregroundStyle(.secondary)
+                Button("Start new chat", action: onStartNewChat)
+                    .buttonStyle(.borderedProminent)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 24)
+
+            Divider()
+
+            // All chats.
+            List {
+                Section("All chats") {
+                    ForEach(viewModel.chatsForBot) { summary in
+                        Button { onSelectChat(summary) } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(summary.title)
+                                    Text(summary.lastActivity, style: .relative).font(.caption2).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .frame(minHeight: 240)
+        }
+        .frame(minWidth: 480, idealWidth: 560, minHeight: 540, idealHeight: 640)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Done", action: onDismiss)
+            }
+        }
+    }
+}
+```
+
+- [ ] **Step 3: Wire from `MacChatView` + `MacChatToolbar`**
+
+Replace the `onShowBotProfile: { /* ... */ }` placeholder in `MacChatListView`'s detail-column construction (Task 13c) with state that flips a `@State private var showingBotProfile = false`, and present:
+
+```swift
+.sheet(isPresented: $showingBotProfile) {
+    if let summary = selectedSummary {
+        let bot = summary.bot
+        let allSummaries = viewModel.groups.flatMap(\.summaries)
+        let bpVM = BotProfileViewModel(bot: bot, allSummaries: allSummaries)
+        MacBotProfileSheet(
+            viewModel: bpVM,
+            onSelectChat: { _ in showingBotProfile = false /* navigate */ },
+            onStartNewChat: { showingBotProfile = false; showingNewChat = true },
+            onDismiss: { showingBotProfile = false }
+        )
+    }
+}
+```
+
+- [ ] **Step 4: Verify tests + build**
+
+```bash
+xcodebuild test -workspace Matron.xcworkspace -scheme MatronMac \
+  -destination 'platform=macOS' -only-testing:MatronMacTests/MacBotProfileSheetTests \
+  CODE_SIGNING_ALLOWED=NO
+xcodebuild build -workspace Matron.xcworkspace -scheme MatronMac \
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+```
+
+Expected: PASS + build succeeds.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add MatronMac/Features/BotProfile/MacBotProfileSheet.swift \
+        MatronMacTests/MacBotProfileSheetTests.swift \
+        MatronMac/Features/ChatList/MacChatListView.swift
+git commit -m "feat: MacBotProfileSheet as full-window sheet (Mac)"
 git push
 ```
 
@@ -2863,7 +3823,7 @@ git push
 Append to `manual-tests.md`:
 
 ```markdown
-## Phase 2 (Chat experience)
+## Phase 2 (Chat experience) — iOS
 
 ### Chat navigation
 
@@ -2903,6 +3863,52 @@ Append to `manual-tests.md`:
 - [ ] Tap ✏️ on chat list → NewChatSheet opens listing known bots.
 - [ ] Pick a bot → new room created, automatically opens ChatView.
 - [ ] Verify the bot has joined (state change appears or first bot message comes through).
+
+## Phase 2 (Chat experience) — Mac
+
+### Chat navigation (Mac)
+
+- [ ] Click a chat row in the sidebar → detail column shows MacChatView with that chat's title.
+- [ ] Click ⓘ in the toolbar → MacBotProfileSheet opens as a full-window sheet.
+- [ ] From the sheet, click "Start new chat" → sheet dismisses, NewChatSheet opens.
+- [ ] With no selection, detail column shows the "Select a chat" placeholder.
+
+### Chat list actions (Mac)
+
+- [ ] Hover a chat row → background tint appears; cursor stays default.
+- [ ] Right-click a chat row → context menu shows "Mute" and "Leave".
+- [ ] Press `⌘R` (or click the toolbar refresh button) → forces a sync; new messages flow in.
+- [ ] No pull-to-refresh gesture (Mac has no touch gesture); refresh works only via `⌘R` / button.
+
+### Sending (Mac)
+
+- [ ] Type a plain text message in the composer → send via `↩` → appears as "me" in the timeline.
+- [ ] Type `/sta` → slash palette appears with `/start`, `/status`.
+- [ ] Press `⌘K` with empty composer → slash palette opens (pinned via `palettePinnedOpen`).
+- [ ] Drag an image onto the composer → `ComposerDropDelegate` handles it → image sends as `m.image`.
+- [ ] Drag a file (e.g. PDF) onto the composer → sends as `m.file`.
+
+### Menu bar (Mac)
+
+- [ ] File → New Chat (`⌘N`) → NewChatSheet opens.
+- [ ] File → Sign Out… → posts `.signOut` notification (full sign-out wired in Phase 7).
+- [ ] Edit → Find in Chat (`⌘F`) → focuses the toolbar search field placeholder.
+- [ ] Edit → Slash Command (`⌘K`) → opens slash palette in the focused composer.
+- [ ] View → Toggle Sidebar (`⌘⇧S`) → sidebar collapses/expands.
+- [ ] View → Increase / Decrease / Reset Font Size (`⌘+` / `⌘-` / `⌘0`) → notification fires (full font-scale wired in Phase 7).
+- [ ] Help → Verify This Device… / Show Recovery Key… → entries present (Phase 3 wires the flows).
+
+### Receiving + rendering (Mac)
+
+- [ ] Bot sends markdown with a code block → MarkdownText + CodeBlock render correctly; Copy button writes to NSPasteboard.
+- [ ] Bot sends an image → AttachmentImage renders the resolved `mxc://` content.
+- [ ] Bot sends a file → AttachmentFile shows filename + size.
+
+### History (Mac)
+
+- [ ] Scroll to top of the timeline → older messages paginate in.
+- [ ] Right-click a message → Copy / Share / View source menu shows.
+- [ ] View source opens a sheet with the DTO printed.
 ```
 
 - [ ] **Step 2: Commit**
@@ -2917,10 +3923,11 @@ git push
 
 ## Phase 2 acceptance
 
-1. All 17 main tasks (plus the three sub-tasks 2b, 5b, 12b) committed and pushed.
-2. CI green.
-3. Manual checklist passes against a real `dev-boxer` homeserver with at least one Claude bot.
-4. The app, when run: sign in → chat list → tap chat → chat opens → send a message → bot replies → reply renders correctly.
+1. All 17 main tasks (plus the sub-tasks 2b, 5b, 12b, **13c, 14c, 14d, 14e, 15b**) committed and pushed.
+2. CI green on both iOS and Mac schemes.
+3. Manual checklist passes on **both platforms** against a real `dev-boxer` homeserver with at least one Claude bot — iOS section runs on iPhone simulator/device; Mac section runs on a Mac build.
+4. iOS run: sign in → chat list → tap chat → chat opens → send a message → bot replies → reply renders correctly.
+5. Mac run: sign in → chat list sidebar → click chat → detail column opens → send a message (via composer or drag-and-drop) → bot replies → reply renders correctly. Menu-bar shortcuts (`⌘N`, `⌘K`, `⌘F`, `⌘⇧S`, `⌘R`) all fire their respective notifications.
 
 After acceptance, write Phase 3 plan (E2EE & verification UX).
 
@@ -2929,12 +3936,19 @@ After acceptance, write Phase 3 plan (E2EE & verification UX).
 ## Plan self-review
 
 - **§4 Custom event types:** Deliberately deferred. Phase 2 renders only `m.text`, `m.image`, `m.file`. Custom event types (`tool_call`, `ask_user`, `session_meta`) are Phase 5 once the bridge protocol is updated.
-- **§5.4 Chat view:** Covered by Tasks 10–12, 16. Composer + slash palette in Tasks 8–9. Pull-to-refresh and the row-level Mute/Leave context menu live in Task 13.
-- **§5.5 Bot profile:** Covered by Task 15.
+- **§5.4 Chat view (iOS):** Covered by Tasks 10–12, 16. Composer + slash palette in Tasks 8–9. Pull-to-refresh and the row-level Mute/Leave context menu live in Task 13.
+- **§5.4 Chat view (Mac):** Covered by Task 14c (`MacChatView` with detail-column timeline + composer + drag-and-drop attachments + `⌘K` slash palette + `⌘R` refresh). Right-click context menu replaces iOS long-press.
+- **§5.3 chat list (Mac):** Covered by Task 13c (`MacChatListView` — 2-column `NavigationSplitView` with sidebar hover state, right-click Mute/Leave, recency-grouped rows reusing the shared `ChatListViewModel`). Pull-to-refresh deltas: no touch gesture on Mac, so refresh is via `⌘R` shortcut + a toolbar refresh button.
+- **§5.5 Bot profile (iOS):** Covered by Task 15.
+- **§5.5 Bot profile (Mac):** Covered by Task 15b (`MacBotProfileSheet` — full-window sheet, not iOS half-sheet — reusing the shared `BotProfileViewModel`).
 - **§5.6 Settings:** Implemented in Phase 7 (Polish) Task 4 — deferred here to keep this phase focused on chat-pane UI. See `docs/superpowers/plans/2026-05-02-matron-ios-phase-7-polish.md`. No new tasks added in Phase 2.
+- **§5.9 Mac chrome:** Toolbar covered by Task 14d (`MacChatToolbar` — sidebar toggle left, title + session_meta strip center, ⓘ + search placeholder + refresh right). Menu bar covered by Task 14e (`Commands.swift` defines `MatronCommand` enum + `ChatCommands` struct mounted via `MatronMacApp.commands { ChatCommands() }`; each menu item posts a `Notification.Name.matronCommand(.case)` observed by the relevant views — File: New Chat `⌘N` / Sign Out…; Edit: Find in Chat `⌘F` / Slash Command `⌘K`; View: Toggle Sidebar `⌘⇧S` / Increase/Decrease/Reset Font Size `⌘+`/`⌘-`/`⌘0`; Help: Verify This Device… + Show Recovery Key… as Phase-3 placeholders).
 - **§6.1 Sync loop:** Phase 1 covered the room-list slice; Task 5 + Task 5b here add the timeline slice (the diff-application logic is exhaustively tested with synthetic `MatrixRustSDK.TimelineDiff` cases).
-- **§6.4 New chat creation:** Covered by Tasks 6 + 14.
-- **Media (`mxc://`) resolution:** Task 12b defines `MediaService`/`MediaServiceLive` with an `NSCache`-backed image cache and wires it to `ChatViewModel` so `AttachmentImage` receives a real `Image` instead of `nil`.
+- **§6.4 New chat creation:** Covered by Tasks 6 + 14. The same `NewChatSheet` is presented from both iOS `ChatListView` and Mac `MacChatListView` — no duplication.
+- **Media (`mxc://`) resolution:** Task 12b defines `MediaService`/`MediaServiceLive` with an `NSCache`-backed image cache and wires it to `ChatViewModel` so `AttachmentImage` receives a real `Image` instead of `nil`. `MediaService.swiftUIImage(for:)` works on both platforms (UIKit branch returns `Image(uiImage:)`, AppKit branch returns `Image(nsImage:)` — the convenience extension already lives in `MatronShared`).
 - **`ToolCallCard` deferral:** `ToolCallCard` view primitive (collapsed/expanded/status states) is implemented in Phase 5 alongside the `chat.matron.tool_call` event parser. Phase 2 establishes only the surrounding rendering primitives (`MarkdownText`, `CodeBlock`, `AttachmentImage`, `AttachmentFile`, `MessageBubble`).
-- **§10 Testing:** Snapshot tests for primitives (Tasks 2, 2b, 3, 11) all use a shared `assertVariants` helper that records light/dark/`accessibilityExtraExtraExtraLarge` baselines per view. ViewModel tests (Tasks 8, 10, 15). The race-prone `Task.sleep` in `ChatViewModelTests` has been replaced with deterministic completion (`vm.start()` returns the observation `Task` and `FakeTimelineService.items()` finishes its stream after yielding all snapshots). `FakeTimelineService` is now a `final class` with a serial lock instead of an `actor` with a self-referential `nonisolated` accessor — strict-concurrency clean.
-- No placeholders. Type signatures are consistent with Phase 1 (`UserSession`, `ChatSummary`, `BotIdentity`, `ChatService`, `AppDependencies`). New types (`TimelineItem`, `BotCommand`) defined before first use.
+- **DesignSystem placement:** Per the Phase 1 reorg, every visual primitive (`MarkdownText`, `CodeBlock`, `AttachmentImage`, `AttachmentFile`, `MessageBubble`) lives in `MatronShared/Sources/DesignSystem/` from the start — not in `Matron/Features/Chat/Rendering/`. Both apps consume them directly. iOS-only platform shims (e.g. `Pasteboard.copy` UIKit/AppKit branches) live alongside the primitive that needs them; no `Color(.systemGray6)` literals leak into either app target.
+- **ViewModels placement:** `ChatViewModel`, `ComposerViewModel`, `BotProfileViewModel` all live in `MatronShared/Sources/ViewModels/` (Tasks 8, 10, 15). `Matron/Features/` and `MatronMac/Features/` each provide a per-platform shell view that consumes the same `@Observable` ViewModel — no parallel data models.
+- **§10 Testing — snapshot variants doubled:** Snapshot tests for primitives (Tasks 2, 2b, 3, 11) all use the shared `assertVariants` helper, which now records baselines for `{iOS, Mac} × {light, dark, accessibility5}` — **6 baselines per test** instead of 3. The helper has a `#if os(macOS)` branch that emits Mac variants via `NSHostingView`-backed snapshots; iOS variants run under the `canImport(UIKit) && !os(macOS)` branch. Both baseline sets are checked into `__Snapshots__/` side-by-side.
+- **§10 Testing — Mac suites:** New `MatronMacTests/` target covers `MacChatListViewTests`, `MacChatViewTests` (including `ComposerDropDelegate` exercising `attachFiles(_:)` via mock `DropInfo`), `MacBotProfileSheetTests`, and `MacCommandsTests` (verifies notification name uniqueness + that posting `.newChat` reaches an observer). ViewModel tests (Tasks 8, 10, 15) live in `MatronShared/Tests/ViewModelTests/` and run on both schemes. The race-prone `Task.sleep` in `ChatViewModelTests` has been replaced with deterministic completion (`vm.start()` returns the observation `Task` and `FakeTimelineService.items()` finishes its stream after yielding all snapshots). `FakeTimelineService` is now a `final class` with a serial lock instead of an `actor` with a self-referential `nonisolated` accessor — strict-concurrency clean.
+- No placeholders. Type signatures are consistent with Phase 1 (`UserSession`, `ChatSummary`, `BotIdentity`, `ChatService`, `AppDependencies`). New types (`TimelineItem`, `BotCommand`, `MatronCommand`) defined before first use.

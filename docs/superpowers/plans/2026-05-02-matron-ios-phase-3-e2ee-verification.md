@@ -3,13 +3,13 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 > **Prereq:** Phase 2 (Chat experience) merged and CI green.
 
-**Goal:** Wire the encryption UX. After Phase 3, users can: (a) generate + save a recovery key on first device, (b) verify a new device via SAS with another device, (c) verify each bot via SAS, (d) restore from recovery key on a fresh install. Banners surface verification state and link into the right flow.
+**Goal:** Wire the encryption UX on **both iOS and macOS**. After Phase 3, users on either platform can: (a) generate + save a recovery key on first device, (b) verify a new device via SAS with another device, (c) verify each bot via SAS, (d) restore from recovery key on a fresh install. Banners surface verification state and link into the right flow. iCloud Keychain auto-syncs the recovery key from iOS to Mac (and vice versa) so a Mac install can pull existing keys without re-entry when iCloud Keychain is enabled (spec §7.1, §7.2 Scenario A).
 
-**Architecture:** New `VerificationService` in `MatronShared` wraps the SDK's verification machinery. UI flows live in `Matron/Features/Verification/`. Two screens: `RecoveryKeyView` (show/save/restore) and `SasView` (emoji compare). Banners are SwiftUI overlays driven by a top-level `VerificationStateObserver`. Trust posture from spec §7.5: nothing auto-trusted.
+**Architecture:** New `VerificationService` in `MatronShared` wraps the SDK's verification machinery. ViewModels (`SasViewModel`, `RecoveryKeyViewModel`) live in `MatronShared/Sources/ViewModels/` and are imported by both apps. UI flows live in `Matron/Features/Verification/` (iOS, half-sheet + `NavigationStack` chrome) and `MatronMac/Features/Verification/` (Mac, fixed-size sheets + `NSPasteboard` integration + Help menu wire-up). Two screens per platform: `RecoveryKeyView` / `MacRecoveryKeyView` (show/save/restore) and `SasView` / `MacSasView` (emoji compare). Banners are SwiftUI overlays driven by a top-level `VerificationCenter` shared by both apps. Trust posture from spec §7.5: nothing auto-trusted. The `SessionVerificationControlling` protocol seam (Task 4) is shared — both iOS and Mac use the same `LiveSessionVerificationController` from `MatronShared`; the SDK Client API is identical on both platforms.
 
 **Tech Stack:** Same as Phase 2. No new third-party deps — matrix-rust-sdk-swift exposes the verification primitives natively.
 
-**Reference:** Spec §7 (E2EE), §5.7 (verification banner UX).
+**Reference:** Spec §7 (E2EE), §5.7 (verification banner UX), §5.9 (Mac chrome — Help menu, fixed-size sheets), §7.1 (Mac crypto store + iCloud Keychain auto-sync).
 
 ---
 
@@ -29,21 +29,32 @@ matron-iOS-app/
 │   ├── VerificationServiceFakeTests.swift              NEW
 │   ├── VerificationServiceLiveTests.swift              NEW — exercises live impl against the fake controller
 │   └── DeviceVerificationRequestObserverTests.swift    NEW
+├── MatronShared/Sources/ViewModels/
+│   ├── RecoveryKeyViewModel.swift                      NEW — shared by iOS + Mac
+│   └── SasViewModel.swift                              NEW — shared by iOS + Mac
 ├── Matron/Features/Verification/
-│   ├── RecoveryKeyView.swift                           NEW
-│   ├── RecoveryKeyViewModel.swift                      NEW
-│   ├── SasView.swift                                   NEW
-│   ├── SasViewModel.swift                              NEW
-│   ├── VerificationBanner.swift                        NEW — top-of-list overlay
-│   └── VerificationCenter.swift                        NEW — orchestrates incoming requests, cancels on dismiss
+│   ├── RecoveryKeyView.swift                           NEW — iOS view (UIPasteboard + half-sheet chrome)
+│   ├── SasView.swift                                   NEW — iOS view
+│   ├── VerificationBanner.swift                        NEW — iOS top-of-list overlay
+│   └── VerificationCenter.swift                        NEW — orchestrates incoming requests, cancels on dismiss (used by both apps)
 ├── Matron/Features/Onboarding/
 │   └── PostLoginVerificationView.swift                 NEW — second onboarding step
 ├── Matron/Features/Settings/
 │   └── DeviceSettingsView.swift                        NEW — minimal device info + recovery reveal
+├── MatronMac/Features/Verification/
+│   ├── MacSasView.swift                                NEW — fixed-size Mac sheet (480×400), keyboard shortcuts
+│   ├── MacRecoveryKeyView.swift                        NEW — three phases (show / re-enter / confirmed); NSPasteboard
+│   ├── MacVerificationBanner.swift                     NEW — top-of-window banner above the chat list
+│   └── NSPasteboardWrapper.swift                       NEW — protocol seam for paste detection (live + fake)
+├── MatronMac/App/
+│   └── MatronMacCommands.swift                         MODIFY — wire Help menu placeholders ("Verify This Device…", "Show Recovery Key…") to NotificationCenter posts
 ├── MatronTests/
 │   ├── RecoveryKeyViewModelTests.swift                 NEW
 │   ├── SasViewModelTests.swift                         NEW
 │   └── VerificationCenterTests.swift                   NEW
+├── MatronMacTests/
+│   ├── MacRecoveryKeyViewTests.swift                   NEW — paste-detection test against fake NSPasteboard
+│   └── MacVerificationBannerSnapshotTests.swift        NEW — Mac snapshot variants
 ```
 
 ---
@@ -766,11 +777,11 @@ git push
 
 ---
 
-### Task 5: RecoveryKeyViewModel + RecoveryKeyView (first-device flow)
+### Task 5: RecoveryKeyViewModel + RecoveryKeyView (first-device flow, iOS)
 
 **Files:**
-- Create: `Matron/Features/Verification/RecoveryKeyViewModel.swift`
-- Create: `Matron/Features/Verification/RecoveryKeyView.swift`
+- Create: `MatronShared/Sources/ViewModels/RecoveryKeyViewModel.swift` (target-agnostic; imported by both iOS and Mac via `MatronViewModels`)
+- Create: `Matron/Features/Verification/RecoveryKeyView.swift` (iOS view)
 - Create: `MatronTests/RecoveryKeyViewModelTests.swift`
 
 Spec §7.2 Scenario A: "Show recovery key once; require user to tick 'I've saved this.' Re-enter it to confirm." That's a three-phase flow on the generate path:
@@ -786,6 +797,7 @@ Spec §7.2 Scenario A: "Show recovery key once; require user to tick 'I've saved
 ```swift
 import XCTest
 @testable import Matron
+@testable import MatronViewModels      // RecoveryKeyViewModel lives in MatronShared
 import MatronModels
 
 final class FakeRecoveryKeyManager {
@@ -1042,19 +1054,264 @@ struct RecoveryKeyView: View {
 
 ```bash
 git add Matron/Features/Verification/RecoveryKeyView.swift \
-        Matron/Features/Verification/RecoveryKeyViewModel.swift \
+        MatronShared/Sources/ViewModels/RecoveryKeyViewModel.swift \
         MatronTests/RecoveryKeyViewModelTests.swift
-git commit -m "feat: RecoveryKeyView with show + re-enter + confirm phases"
+git commit -m "feat: RecoveryKeyView with show + re-enter + confirm phases (iOS)"
 git push
 ```
 
 ---
 
-### Task 6: SasViewModel + SasView
+### Task 5c: MacRecoveryKeyView
 
 **Files:**
-- Create: `Matron/Features/Verification/SasViewModel.swift`
-- Create: `Matron/Features/Verification/SasView.swift`
+- Create: `MatronMac/Features/Verification/MacRecoveryKeyView.swift`
+- Create: `MatronMac/Features/Verification/NSPasteboardWrapper.swift`
+- Create: `MatronMacTests/MacRecoveryKeyViewTests.swift`
+
+The Mac recovery-key view has the same three phases as iOS (show / re-enter / confirmed; spec §7.2 Scenario A) but uses native Mac chrome: `NSPasteboard` for copy + paste detection, `.textSelection(.enabled)` so the displayed key is selectable, fixed-size sheet (480×400) instead of half-sheet. Mac users will likely paste the recovery key from a password manager or from clipboard (having copied it on iOS), so Phase B auto-advances to Phase C as soon as the pasted text matches `generatedKey`. Same `RecoveryKeyViewModel` from `MatronShared/Sources/ViewModels/` — view-only differences.
+
+> **iCloud Keychain auto-restore on Mac:** spec §7.1 states macOS Keychain auto-syncs to iCloud Keychain when the user has it enabled, so a Mac install can pick up the recovery key written by the iOS install (Task 3 already passes `synchronizable: true` to `KeychainStore` via `kSecAttrSynchronizable`). When the user lands on `MacRecoveryKeyView` in `.restore` mode and `RecoveryKeyManager.currentKey()` returns a non-nil value, prefill the entry field and offer a one-tap "Use saved recovery key" button. The `KeychainStore` `synchronizable` flag from Task 3 makes the Mac side a read-only consumer here — no UI difference from the underlying iOS scheme, just a different default-state experience.
+
+- [ ] **Step 1: Failing tests — paste detection auto-advances**
+
+```swift
+// MatronMacTests/MacRecoveryKeyViewTests.swift
+import XCTest
+@testable import MatronMac
+@testable import MatronViewModels
+
+final class FakeNSPasteboard: NSPasteboardReading {
+    var stringValue: String?
+    func string(forType type: NSPasteboard.PasteboardType) -> String? { stringValue }
+}
+
+final class MacRecoveryKeyViewTests: XCTestCase {
+    @MainActor
+    func test_pasteOfMatchingKey_autoAdvancesToConfirmed() async {
+        let vm = RecoveryKeyViewModel(mode: .generate, generate: { "MOCK-KEY-1234" }, restore: { _ in })
+        vm.generatedKey = "MOCK-KEY-1234"
+        vm.userAcknowledgedSaved = true
+        vm.generatePhase = .reenter
+
+        let pasteboard = FakeNSPasteboard()
+        pasteboard.stringValue = "MOCK-KEY-1234"
+        let detector = PasteDetector(pasteboard: pasteboard, viewModel: vm)
+        detector.checkClipboardAndApply()
+
+        XCTAssertEqual(vm.reenteredKey, "MOCK-KEY-1234")
+        XCTAssertTrue(vm.canFinish)
+        XCTAssertEqual(vm.generatePhase, .confirmed)
+    }
+
+    @MainActor
+    func test_pasteOfNonMatchingKey_doesNotAdvance() {
+        let vm = RecoveryKeyViewModel(mode: .generate, generate: { "K" }, restore: { _ in })
+        vm.generatedKey = "MOCK-KEY-1234"
+        vm.userAcknowledgedSaved = true
+        vm.generatePhase = .reenter
+
+        let pasteboard = FakeNSPasteboard()
+        pasteboard.stringValue = "WRONG"
+        let detector = PasteDetector(pasteboard: pasteboard, viewModel: vm)
+        detector.checkClipboardAndApply()
+
+        XCTAssertEqual(vm.reenteredKey, "WRONG")
+        XCTAssertFalse(vm.canFinish)
+        XCTAssertEqual(vm.generatePhase, .reenter)
+    }
+}
+```
+
+- [ ] **Step 2: Implement `NSPasteboardWrapper` (protocol seam)**
+
+```swift
+// MatronMac/Features/Verification/NSPasteboardWrapper.swift
+import AppKit
+
+/// Read-only abstraction over `NSPasteboard` so paste detection can be unit-tested
+/// against an in-memory fake without touching the system pasteboard.
+protocol NSPasteboardReading {
+    func string(forType type: NSPasteboard.PasteboardType) -> String?
+}
+
+/// Production adapter — forwards to `NSPasteboard.general`.
+final class LiveNSPasteboard: NSPasteboardReading {
+    func string(forType type: NSPasteboard.PasteboardType) -> String? {
+        NSPasteboard.general.string(forType: type)
+    }
+}
+
+/// Bridges clipboard contents into `RecoveryKeyViewModel.reenteredKey` and auto-advances
+/// to `.confirmed` when the key matches. View calls `checkClipboardAndApply()` from
+/// `.onChange(of: scenePhase)` and from a "Paste" button.
+@MainActor
+final class PasteDetector {
+    private let pasteboard: NSPasteboardReading
+    private let viewModel: RecoveryKeyViewModel
+
+    init(pasteboard: NSPasteboardReading, viewModel: RecoveryKeyViewModel) {
+        self.pasteboard = pasteboard
+        self.viewModel = viewModel
+    }
+
+    func checkClipboardAndApply() {
+        guard viewModel.mode == .generate, viewModel.generatePhase == .reenter else { return }
+        guard let candidate = pasteboard.string(forType: .string), !candidate.isEmpty else { return }
+        viewModel.reenteredKey = candidate
+        if viewModel.canFinish {
+            viewModel.generatePhase = .confirmed
+        }
+    }
+}
+```
+
+- [ ] **Step 3: Implement `MacRecoveryKeyView`**
+
+```swift
+// MatronMac/Features/Verification/MacRecoveryKeyView.swift
+import SwiftUI
+import AppKit
+import MatronViewModels
+import MatronModels
+
+struct MacRecoveryKeyView: View {
+    @State var viewModel: RecoveryKeyViewModel
+    let onFinished: () -> Void
+    @State private var detector: PasteDetector?
+
+    var body: some View {
+        VStack(spacing: 16) {
+            switch viewModel.mode {
+            case .generate: generateBody
+            case .restore:  restoreBody
+            }
+            Spacer()
+            primaryActionButton
+        }
+        .padding(24)
+        .frame(width: 480, height: 400)        // fixed-size Mac sheet (not a half-sheet)
+        .navigationTitle("Recovery key")
+        .onAppear {
+            detector = PasteDetector(pasteboard: LiveNSPasteboard(), viewModel: viewModel)
+        }
+    }
+
+    @ViewBuilder
+    private var generateBody: some View {
+        switch viewModel.generatePhase {
+        case .notStarted, .show:
+            Text("This is your recovery key. Save it somewhere safe — it's the only way to recover your encrypted history.")
+                .font(.callout)
+            if let key = viewModel.generatedKey {
+                HStack {
+                    Text(key)
+                        .font(.system(.title3, design: .monospaced))
+                        .textSelection(.enabled)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(NSColor.controlBackgroundColor))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                    Button("Copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(key, forType: .string)
+                    }
+                }
+                Toggle("I've saved this key somewhere safe", isOn: $viewModel.userAcknowledgedSaved)
+            } else {
+                Button("Generate") { Task { await viewModel.generate() } }
+            }
+        case .reenter:
+            Text("Re-enter your recovery key, or paste it from the clipboard.")
+                .font(.callout)
+            HStack {
+                TextField("XXXX-XXXX-XXXX-XXXX", text: $viewModel.reenteredKey)
+                    .font(.system(.title3, design: .monospaced))
+                    .textFieldStyle(.roundedBorder)
+                Button("Paste") { detector?.checkClipboardAndApply() }
+            }
+            // Auto-advance is also driven by `onChange` so typing the right key works too.
+            .onChange(of: viewModel.reenteredKey) { _, _ in
+                if viewModel.canFinish { viewModel.generatePhase = .confirmed }
+            }
+            if !viewModel.reenteredKey.isEmpty && !viewModel.canFinish {
+                Text("Doesn't match the key above.").foregroundStyle(.orange).font(.caption)
+            }
+        case .confirmed:
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 60))
+                .foregroundStyle(.green)
+                .transition(.scale.combined(with: .opacity))
+            Text("Recovery key confirmed").font(.title2).bold()
+                .task {
+                    try? await Task.sleep(nanoseconds: 600_000_000)
+                    onFinished()
+                }
+        }
+        if case .error(let msg) = viewModel.phase { Text(msg).foregroundStyle(.red).font(.caption) }
+    }
+
+    @ViewBuilder
+    private var restoreBody: some View {
+        Text("Enter your recovery key to unlock encrypted history on this Mac.")
+            .font(.callout)
+        HStack {
+            TextField("XXXX-XXXX-XXXX-XXXX", text: $viewModel.enteredKey)
+                .font(.system(.title3, design: .monospaced))
+                .textFieldStyle(.roundedBorder)
+            Button("Paste") {
+                if let s = NSPasteboard.general.string(forType: .string) { viewModel.enteredKey = s }
+            }
+        }
+        Button("Restore") { Task { await viewModel.attemptRestore() } }
+            .keyboardShortcut(.return)
+            .disabled(viewModel.enteredKey.isEmpty)
+        if case .error(let msg) = viewModel.phase { Text(msg).foregroundStyle(.red).font(.caption) }
+    }
+
+    @ViewBuilder
+    private var primaryActionButton: some View {
+        switch (viewModel.mode, viewModel.generatePhase) {
+        case (.generate, .show):
+            Button("Continue") { viewModel.advanceFromShow() }
+                .keyboardShortcut(.return)
+                .disabled(!viewModel.userAcknowledgedSaved)
+        case (.generate, .reenter):
+            Button("Confirm") { viewModel.generatePhase = .confirmed; onFinished() }
+                .keyboardShortcut(.return)
+                .disabled(!viewModel.canFinish)
+        case (.generate, .confirmed):
+            EmptyView()        // auto-dismisses via the .task delay
+        default:
+            EmptyView()
+        }
+    }
+}
+```
+
+- [ ] **Step 4: Verify**
+
+```bash
+xcodebuild test -scheme MatronMac -only-testing:MatronMacTests/MacRecoveryKeyViewTests
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add MatronMac/Features/Verification/MacRecoveryKeyView.swift \
+        MatronMac/Features/Verification/NSPasteboardWrapper.swift \
+        MatronMacTests/MacRecoveryKeyViewTests.swift
+git commit -m "feat: MacRecoveryKeyView with NSPasteboard paste detection"
+git push
+```
+
+---
+
+### Task 6: SasViewModel + SasView (iOS)
+
+**Files:**
+- Create: `MatronShared/Sources/ViewModels/SasViewModel.swift` (target-agnostic; imported by both iOS and Mac via `MatronViewModels`)
+- Create: `Matron/Features/Verification/SasView.swift` (iOS view)
 - Create: `MatronTests/SasViewModelTests.swift`
 
 - [ ] **Step 1: Tests**
@@ -1062,6 +1319,7 @@ git push
 ```swift
 import XCTest
 @testable import Matron
+@testable import MatronViewModels      // SasViewModel lives in MatronShared
 import MatronModels
 
 final class SasViewModelTests: XCTestCase {
@@ -1221,9 +1479,104 @@ struct SasView: View {
 - [ ] **Step 4: Commit**
 
 ```bash
-git add Matron/Features/Verification/SasView.swift Matron/Features/Verification/SasViewModel.swift \
+git add Matron/Features/Verification/SasView.swift MatronShared/Sources/ViewModels/SasViewModel.swift \
         MatronTests/SasViewModelTests.swift
-git commit -m "feat: SasView for emoji-compare verification"
+git commit -m "feat: SasView for emoji-compare verification (iOS)"
+git push
+```
+
+---
+
+### Task 7c: MacSasView
+
+**Files:**
+- Create: `MatronMac/Features/Verification/MacSasView.swift`
+
+Native Mac sheet rendering of the SAS emoji compare flow. Same `SasViewModel` from `MatronShared/Sources/ViewModels/` (via `MatronViewModels` import) — no extra view-model logic. Differences from iOS:
+
+- Renders as a fixed-size Mac sheet (`.sheet(isPresented:)` returning a 480×400 view), not a half-sheet — Mac sheets are always centred and modal-to-window.
+- Same 7-emoji grid layout (use `LazyVGrid` of 7 columns or two rows of 4+3 to keep Mac-native compact spacing).
+- Buttons get keyboard shortcuts: "They match" → `.keyboardShortcut(.return)`, "They don't match" → `.keyboardShortcut(.escape, modifiers: [])`.
+
+- [ ] **Step 1: Implement**
+
+```swift
+// MatronMac/Features/Verification/MacSasView.swift
+import SwiftUI
+import MatronViewModels
+import MatronModels
+
+struct MacSasView: View {
+    @State var viewModel: SasViewModel
+    let title: String
+
+    var body: some View {
+        VStack(spacing: 24) {
+            switch viewModel.state {
+            case .idle, .requested:
+                ProgressView("Starting verification…")
+            case .readyForEmoji(let emojis):
+                emojiGrid(emojis)
+                buttons
+            case .awaitingConfirmation:
+                ProgressView("Waiting for the other device…")
+            case .verified:
+                Image(systemName: "checkmark.shield.fill").font(.system(size: 60)).foregroundStyle(.green)
+                Text("Verified").font(.title2).bold()
+            case .cancelled(let reason):
+                Image(systemName: "xmark.shield.fill").font(.system(size: 60)).foregroundStyle(.red)
+                Text(reason).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            }
+        }
+        .padding(24)
+        .frame(width: 480, height: 400)        // fixed-size Mac sheet
+        .navigationTitle(title)
+        .task(id: viewModel.requestID) { await viewModel.observe() }
+    }
+
+    @ViewBuilder
+    private func emojiGrid(_ emojis: [SasEmoji]) -> some View {
+        VStack(spacing: 12) {
+            Text("Compare these emojis with the other device.").font(.callout)
+            // 7-emoji grid: top row 4, bottom row 3 — matches iOS layout densely.
+            let columns = Array(repeating: GridItem(.flexible(), spacing: 12), count: 4)
+            LazyVGrid(columns: columns, spacing: 12) {
+                ForEach(Array(emojis.enumerated()), id: \.offset) { _, e in
+                    VStack {
+                        Text(e.symbol).font(.system(size: 40))
+                        Text(e.description).font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding()
+            .background(Color(NSColor.controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    @ViewBuilder
+    private var buttons: some View {
+        HStack {
+            Button("They don't match", role: .destructive) { Task { await viewModel.cancel() } }
+                .keyboardShortcut(.escape, modifiers: [])
+            Spacer()
+            Button("They match") { Task { await viewModel.confirm() } }
+                .keyboardShortcut(.return)
+                .buttonStyle(.borderedProminent)
+        }
+    }
+}
+```
+
+- [ ] **Step 2: Verify**
+
+The `SasViewModel` test suite (`SasViewModelTests`) already covers the underlying state-machine; `MacSasView` is view-only chrome. Visual coverage comes from snapshots in Task 12. No new logic-test in this step.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add MatronMac/Features/Verification/MacSasView.swift
+git commit -m "feat: MacSasView fixed-size sheet with keyboard shortcuts"
 git push
 ```
 
@@ -1490,6 +1843,209 @@ git push
 
 ---
 
+### Task 9b: MacVerificationBanner
+
+**Files:**
+- Create: `MatronMac/Features/Verification/MacVerificationBanner.swift`
+- Modify: `MatronMac/Features/ChatList/MacChatListView.swift` (or equivalent — Phase 2's Mac sidebar)
+- Create: `MatronMacTests/MacVerificationBannerSnapshotTests.swift`
+
+The Mac equivalent of `VerificationBanner` renders as a top-of-window banner above the chat-list sidebar (within the leading column of `NavigationSplitView`) when `VerificationCenter.pending` is non-empty. Click "Verify" → opens `MacSasView` as a fixed-size sheet (Task 7c). Same `VerificationCenter` from Task 8 — the orchestrator is shared across platforms.
+
+- [ ] **Step 1: Implement `MacVerificationBanner`**
+
+```swift
+// MatronMac/Features/Verification/MacVerificationBanner.swift
+import SwiftUI
+import MatronModels
+
+struct MacVerificationBanner: View {
+    let summary: VerificationRequestSummary
+    let onAccept: (VerificationRequestSummary) -> Void
+    let onDismiss: (VerificationRequestSummary) -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "lock.shield.fill").foregroundStyle(.tint)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(summary.otherUserID) wants to verify").font(.callout).bold()
+                if let device = summary.otherDeviceID {
+                    Text(device).font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            Button("Verify") { onAccept(summary) }
+                .controlSize(.small)
+                .buttonStyle(.borderedProminent)
+            Button {
+                onDismiss(summary)
+            } label: {
+                Image(systemName: "xmark").foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color(NSColor.windowBackgroundColor).opacity(0.9))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.secondary.opacity(0.2), lineWidth: 0.5)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal, 8)
+        .padding(.top, 8)
+    }
+}
+```
+
+- [ ] **Step 2: Hook into `MacChatListView`**
+
+In the Mac sidebar view (Phase 2 deliverable), hold a `@State var verificationCenter: VerificationCenter` and `@State var sasSummary: VerificationRequestSummary?`. Above the chat list, render `ForEach(verificationCenter.pending)` of `MacVerificationBanner`s. Tap "Verify" → set `sasSummary` → `.sheet(item: $sasSummary) { MacSasView(...) }`. Tap dismiss → `Task { await verificationCenter.dismiss(summary) }` (same async-cancel-before-remove ordering as iOS).
+
+- [ ] **Step 3: Snapshot tests**
+
+```swift
+// MatronMacTests/MacVerificationBannerSnapshotTests.swift
+import XCTest
+import SnapshotTesting
+@testable import MatronMac
+
+final class MacVerificationBannerSnapshotTests: XCTestCase {
+    func test_banner_renders_macVariants() {
+        let summary = VerificationRequestSummary(
+            id: "req-1",
+            otherUserID: "@alice:example.org",
+            otherDeviceID: "DEV1",
+            createdAt: Date(timeIntervalSince1970: 0)
+        )
+        let view = MacVerificationBanner(summary: summary, onAccept: { _ in }, onDismiss: { _ in })
+            .frame(width: 320)
+        // Mac scheme runs only the Mac-side variants of the 6-variant assertVariants helper.
+        assertVariants(of: view, named: "MacVerificationBanner")
+    }
+}
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add MatronMac/Features/Verification/MacVerificationBanner.swift \
+        MatronMac/Features/ChatList/MacChatListView.swift \
+        MatronMacTests/MacVerificationBannerSnapshotTests.swift
+git commit -m "feat: MacVerificationBanner top-of-window overlay; tap launches MacSasView"
+git push
+```
+
+---
+
+### Task 9c: Help menu wire-up (Mac)
+
+**Files:**
+- Modify: `MatronMac/App/MatronMacCommands.swift`
+- Modify: `MatronMac/App/MatronMacApp.swift` (root scene observes the menu posts)
+
+Phase 2 added Help menu placeholders for "Verify This Device…" and "Show Recovery Key…" (spec §5.9). Phase 3 wires them to the real flows:
+
+- **Verify This Device…** — if the user has another logged-in device, opens `MacSasView` driven by a fresh `VerificationServiceLive.startSAS(...)`. If no other devices are reachable, falls back to opening `MacRecoveryKeyView` in `.restore` mode (matches spec §7.2 Scenario B fallback).
+- **Show Recovery Key…** — opens `MacRecoveryKeyView` in a re-authentication-then-reveal mode: prompts for the user's recovery key (entry sheet), then displays it back via `RecoveryKeyManager.currentKey()` once re-authenticated. Matches the iOS Settings → Show Recovery Key flow from Task 11.
+
+The wiring uses the SwiftUI `Notification.Name` pattern: menu items post a notification, the root scene's `onReceive` hands it to a state binding that flips a sheet open. The notification names live in a small `MatronCommand` namespace next to `MatronMacCommands.swift`.
+
+- [ ] **Step 1: Define notification names**
+
+```swift
+// MatronMac/App/MatronMacCommands.swift
+import SwiftUI
+
+extension Notification.Name {
+    /// Posted by the Help menu's "Verify This Device…" item.
+    static let matronVerifyDeviceCommand = Notification.Name("MatronCommand.verifyDevice")
+    /// Posted by the Help menu's "Show Recovery Key…" item.
+    static let matronShowRecoveryKeyCommand = Notification.Name("MatronCommand.showRecoveryKey")
+}
+
+/// Convenience for callers — `View.matronCommand(.verifyDevice)` reads as
+/// "observe the verify-device menu command".
+enum MatronCommand {
+    case verifyDevice, showRecoveryKey
+
+    var notificationName: Notification.Name {
+        switch self {
+        case .verifyDevice:    return .matronVerifyDeviceCommand
+        case .showRecoveryKey: return .matronShowRecoveryKeyCommand
+        }
+    }
+}
+
+extension View {
+    func matronCommand(_ command: MatronCommand, perform action: @escaping () -> Void) -> some View {
+        onReceive(NotificationCenter.default.publisher(for: command.notificationName)) { _ in
+            action()
+        }
+    }
+}
+```
+
+- [ ] **Step 2: Replace Phase 2 placeholders with posts**
+
+Inside the existing `.commands { ... }` block from Phase 2 (Help menu group), replace the two placeholder buttons with the wired versions:
+
+```swift
+CommandGroup(replacing: .help) {
+    Button("Verify This Device…") {
+        NotificationCenter.default.post(name: .matronVerifyDeviceCommand, object: nil)
+    }
+    Button("Show Recovery Key…") {
+        NotificationCenter.default.post(name: .matronShowRecoveryKeyCommand, object: nil)
+    }
+}
+```
+
+- [ ] **Step 3: Observe the posts in the root scene**
+
+In `MatronMacApp`'s `WindowGroup` body, add observers that flip presentation state:
+
+```swift
+@State private var showSasSheet = false
+@State private var showRecoveryKeySheet = false
+
+WindowGroup {
+    RootMacView(...)
+        .matronCommand(.verifyDevice) { showSasSheet = true }
+        .matronCommand(.showRecoveryKey) { showRecoveryKeySheet = true }
+        .sheet(isPresented: $showSasSheet) {
+            // If another device is reachable, present SAS; else fall back to recovery-key restore.
+            // The "is another device reachable" check is best-effort — call
+            // VerificationServiceLive.isThisDeviceVerified() and look at the SDK device list;
+            // if empty (only this device), present MacRecoveryKeyView in .restore mode instead.
+            MacSasView(viewModel: makeSasViewModelForSelfVerification(), title: "Verify this device")
+        }
+        .sheet(isPresented: $showRecoveryKeySheet) {
+            MacRecoveryKeyView(
+                viewModel: RecoveryKeyViewModel(
+                    mode: .restore,
+                    generate: { "" },
+                    restore: { _ in }
+                ),
+                onFinished: { showRecoveryKeySheet = false }
+            )
+        }
+}
+```
+
+> **Implementer note:** `makeSasViewModelForSelfVerification()` mirrors the construction inside `PostLoginVerificationView` (Task 7) — building a `SasViewModel` over a fresh `VerificationServiceLive.startSAS(withUser:deviceID:)` stream with the synthetic `self-verify:` request ID. Extract that into a tiny helper in `MatronShared/Sources/ViewModels/` if it ends up duplicated more than twice.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add MatronMac/App/MatronMacCommands.swift MatronMac/App/MatronMacApp.swift
+git commit -m "feat: wire Mac Help menu (Verify This Device, Show Recovery Key) to flows"
+git push
+```
+
+---
+
 ### Task 10: ChatView verification-state banner (per-room)
 
 **Files:**
@@ -1574,50 +2130,215 @@ git push
 
 ---
 
-### Task 12: Manual test additions
+### Task 12: Snapshot tests — Mac verification chrome
+
+**Files:**
+- Create: `MatronMacTests/MacSasViewSnapshotTests.swift`
+- Create: `MatronMacTests/MacRecoveryKeyViewSnapshotTests.swift`
+- Already created in Task 9b: `MatronMacTests/MacVerificationBannerSnapshotTests.swift` — referenced here for completeness.
+
+Use the same `assertVariants(of:named:)` helper added in Phase 2 (now does 6 variants: `{iOS, Mac} × {light, dark, accessibility5}`). Mac targets snapshot only the Mac variants of the helper (the helper internally skips the iOS triple when running under the Mac scheme — see Phase 2 Task 2 Step 2 for the helper's implementation).
+
+- [ ] **Step 1: `MacSasView` snapshots**
+
+```swift
+// MatronMacTests/MacSasViewSnapshotTests.swift
+import XCTest
+import SnapshotTesting
+@testable import MatronMac
+@testable import MatronViewModels
+
+final class MacSasViewSnapshotTests: XCTestCase {
+    @MainActor
+    func test_emojiCompareState() {
+        let emojis = (0..<7).map { SasEmoji(symbol: ["🐢","🚀","🍎","🐱","🌟","🔥","🦄"][$0], description: "E\($0)") }
+        let stream = AsyncStream<SasFlowState> { c in
+            c.yield(.readyForEmoji(emojis))
+            c.finish()
+        }
+        let vm = SasViewModel(stream: stream, requestID: "snap", confirm: {}, cancel: { _ in })
+        // Drive the VM to the emoji state synchronously by yielding through an awaited observe().
+        let exp = expectation(description: "observe")
+        Task { @MainActor in await vm.observe(); exp.fulfill() }
+        wait(for: [exp], timeout: 1)
+        assertVariants(of: MacSasView(viewModel: vm, title: "Verify this device"),
+                       named: "MacSasView_emojiCompare")
+    }
+
+    @MainActor
+    func test_verifiedState() {
+        let stream = AsyncStream<SasFlowState> { c in c.yield(.verified); c.finish() }
+        let vm = SasViewModel(stream: stream, requestID: "snap", confirm: {}, cancel: { _ in })
+        let exp = expectation(description: "observe")
+        Task { @MainActor in await vm.observe(); exp.fulfill() }
+        wait(for: [exp], timeout: 1)
+        assertVariants(of: MacSasView(viewModel: vm, title: "Verify this device"),
+                       named: "MacSasView_verified")
+    }
+}
+```
+
+- [ ] **Step 2: `MacRecoveryKeyView` snapshots — one per phase**
+
+```swift
+// MatronMacTests/MacRecoveryKeyViewSnapshotTests.swift
+import XCTest
+import SnapshotTesting
+@testable import MatronMac
+@testable import MatronViewModels
+
+final class MacRecoveryKeyViewSnapshotTests: XCTestCase {
+    @MainActor
+    func test_show_phase() {
+        let vm = RecoveryKeyViewModel(mode: .generate, generate: { "MOCK-KEY" }, restore: { _ in })
+        vm.generatedKey = "MOCK-KEY-1234-5678"
+        vm.generatePhase = .show
+        assertVariants(of: MacRecoveryKeyView(viewModel: vm, onFinished: {}),
+                       named: "MacRecoveryKeyView_show")
+    }
+
+    @MainActor
+    func test_reenter_phase_mismatch() {
+        let vm = RecoveryKeyViewModel(mode: .generate, generate: { "K" }, restore: { _ in })
+        vm.generatedKey = "MOCK-KEY-1234-5678"
+        vm.userAcknowledgedSaved = true
+        vm.generatePhase = .reenter
+        vm.reenteredKey = "WRONG"
+        assertVariants(of: MacRecoveryKeyView(viewModel: vm, onFinished: {}),
+                       named: "MacRecoveryKeyView_reenterMismatch")
+    }
+
+    @MainActor
+    func test_confirmed_phase() {
+        let vm = RecoveryKeyViewModel(mode: .generate, generate: { "K" }, restore: { _ in })
+        vm.generatedKey = "MOCK-KEY-1234-5678"
+        vm.userAcknowledgedSaved = true
+        vm.reenteredKey = "MOCK-KEY-1234-5678"
+        vm.generatePhase = .confirmed
+        assertVariants(of: MacRecoveryKeyView(viewModel: vm, onFinished: {}),
+                       named: "MacRecoveryKeyView_confirmed")
+    }
+
+    @MainActor
+    func test_restore_mode() {
+        let vm = RecoveryKeyViewModel(mode: .restore, generate: { "" }, restore: { _ in })
+        vm.enteredKey = "MOCK-KEY-1234-5678"
+        assertVariants(of: MacRecoveryKeyView(viewModel: vm, onFinished: {}),
+                       named: "MacRecoveryKeyView_restore")
+    }
+}
+```
+
+- [ ] **Step 3: Run + commit**
+
+```bash
+xcodebuild test -scheme MatronMac -only-testing:MatronMacTests/MacSasViewSnapshotTests \
+                                  -only-testing:MatronMacTests/MacRecoveryKeyViewSnapshotTests
+git add MatronMacTests/MacSasViewSnapshotTests.swift \
+        MatronMacTests/MacRecoveryKeyViewSnapshotTests.swift \
+        MatronMacTests/__Snapshots__/
+git commit -m "test: snapshot variants for Mac SAS + recovery key views"
+git push
+```
+
+---
+
+### Task 13: MatronMac entitlements — keychain access group
+
+**Files:**
+- Modify: `MatronMac/MatronMac.entitlements`
+
+Spec §7.1 establishes that the Mac crypto store is encrypted at rest with a Keychain-stored passphrase, and §7.2 Scenario A states the recovery key persists to iCloud Keychain so a Mac install can pick it up from an iOS install. For both to work consistently, the Mac entitlements must declare the same Keychain access group convention as iOS (Phase 1):
+
+```xml
+<key>keychain-access-groups</key>
+<array>
+    <string>$(AppIdentifierPrefix)chat.matron.mac</string>
+</array>
+```
+
+The Mac bundle's keychain access group is namespaced to `chat.matron.mac` (matches the bundle ID from spec §8.1). iCloud Keychain auto-sync is independent of access group — it's controlled by the `kSecAttrSynchronizable` flag on each item (see `KeychainStore` in Task 3). So a recovery key written by iOS with `synchronizable: true` automatically shows up in Mac Keychain on a sync-enabled device, even though the access group strings differ.
+
+- [ ] **Step 1: Verify entitlements file matches**
+
+```bash
+plutil -p MatronMac/MatronMac.entitlements | grep keychain-access-groups -A 3
+```
+
+Expected output includes the `$(AppIdentifierPrefix)chat.matron.mac` entry.
+
+- [ ] **Step 2: Add a setup-time assertion**
+
+In `MatronMacApp`'s init (or first-run check), assert that `KeychainStore(service: "chat.matron.recovery", synchronizable: true).set(_:forKey:)` round-trips successfully against a probe value. If it fails (entitlements misconfigured), surface a fatal-but-helpful error in the onboarding screen ("Keychain access not configured — see docs/setup-mac.md") rather than silently no-op'ing.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add MatronMac/MatronMac.entitlements MatronMac/App/MatronMacApp.swift
+git commit -m "feat: MatronMac keychain-access-groups entitlement for E2EE recovery"
+git push
+```
+
+---
+
+### Task 14: Manual test additions
 
 Append to `manual-tests.md`:
 
 ```markdown
 ## Phase 3 (E2EE & Verification UX)
 
-### First-device flow
+### First-device flow (iOS)
 
 - [ ] Fresh install, sign in → PostLoginVerificationView appears.
 - [ ] Tap "This is my first device" → recovery key generated and shown.
-- [ ] Toggle "I've saved this key" → Continue is enabled. Tap Continue → chat list appears.
+- [ ] Toggle "I've saved this key" → Continue is enabled. Tap Continue → re-enter sheet appears.
+- [ ] Re-enter the key correctly → Confirm enables. Tap Confirm → chat list appears.
 - [ ] Settings → Show recovery key → same key revealed.
 
-### Restore flow
+### Restore flow (iOS)
 
 - [ ] On a second simulator/device with the same Matrix user, sign in → PostLoginVerificationView appears.
 - [ ] Tap "Use recovery key" → enter the key from the first device → Continue → chat list appears, message history decrypts.
 
-### SAS verification (multi-device)
+### SAS verification (multi-device, iOS)
 
 - [ ] On the second device, instead of recovery key, choose "Verify with another device."
 - [ ] Switch to first device — VerificationBanner appears at the top of the chat list.
 - [ ] Tap "Verify" on the banner → both devices show emoji compare screen.
 - [ ] Confirm match on both → both screens show ✓ Verified.
 
-### Bot verification
+### Bot verification (iOS)
 
 - [ ] Run `dev-boxer add-bot box-name` on the homeserver — emits a verification request to the user.
 - [ ] On Matron iOS, banner appears: "@box-name wants to verify."
 - [ ] Tap Verify → emoji compare with the bot's identity (cross-signed at provisioning time).
 - [ ] After confirmation, open a chat with that bot — no "unverified device" banner inside the chat.
 
-### Trust posture
+### Trust posture (iOS)
 
 - [ ] If a bot adds a new device (e.g. dev-boxer reprint), opening that chat shows the inline "unverified device" banner.
 - [ ] Tap the in-chat banner → opens SAS view.
+
+### Mac verification chrome
+
+- [ ] Sign in to MatronMac with a fresh user → first-device flow shows `MacRecoveryKeyView`. Key is selectable; Copy button writes to system pasteboard (paste into another app to confirm).
+- [ ] Continue → re-entry phase. Type a wrong key → "Doesn't match" warning. Paste the right key (via the Paste button or ⌘V into the field) → auto-advances to the green checkmark and dismisses.
+- [ ] Help menu → "Verify This Device…" opens `MacSasView` as a fixed-size sheet (480×400). `Return` confirms; `Esc` cancels.
+- [ ] Help menu → "Show Recovery Key…" opens `MacRecoveryKeyView` in restore mode after re-authentication.
+- [ ] Trigger a verification request from another device → `MacVerificationBanner` appears above the chat-list sidebar. Click "Verify" → SAS sheet opens. Click ✕ → banner disappears AND the partner device's "waiting" UI cancels (per Task 8 dismiss-cancels-SDK contract).
+
+### iCloud Keychain auto-restore (cross-platform)
+
+- [ ] On an iOS device with iCloud Keychain enabled, complete first-device flow → recovery key stored in iCloud Keychain.
+- [ ] On a Mac signed in to the same iCloud account with Keychain sync enabled, install MatronMac, sign in → `MacRecoveryKeyView.restore` mode pre-fills the recovery key from the synced Keychain. Tap "Use saved recovery key" → message history decrypts without re-entry.
 ```
 
 Commit:
 
 ```bash
 git add manual-tests.md
-git commit -m "docs: phase 3 manual test additions"
+git commit -m "docs: phase 3 manual test additions (iOS + Mac)"
 git push
 ```
 
@@ -1625,11 +2346,13 @@ git push
 
 ## Phase 3 acceptance
 
-1. All 13 tasks (1, 2, 3, 4, 4b, 5, 6, 7, 8, 9, 10, 11, 12) committed and pushed.
-2. CI green.
-3. Manual checklist passes for: first-device generate (with re-entry confirmation), second-device restore, multi-device SAS, bot SAS.
+1. All tasks (1, 2, 3, 4, 4b, 5, 5c, 6, 7c, 7, 8, 9, 9b, 9c, 10, 11, 12, 13, 14) committed and pushed.
+2. CI green on both `Matron` and `MatronMac` schemes.
+3. Manual checklist passes for: first-device generate (with re-entry confirmation), second-device restore, multi-device SAS, bot SAS — on both iOS and Mac.
 4. Trust posture matches §7.5: nothing auto-trusted, banners surface unverified devices.
 5. Banner dismiss cancels the SDK request (verified by `VerificationCenterTests`).
+6. Mac Help menu items "Verify This Device…" and "Show Recovery Key…" open the right flows; keyboard shortcuts on `MacSasView` work (`Return` confirms, `Esc` cancels).
+7. iCloud Keychain auto-restore works end-to-end (iOS → Mac) per the cross-platform manual test.
 
 After acceptance, write Phase 4 plan.
 
@@ -1637,11 +2360,17 @@ After acceptance, write Phase 4 plan.
 
 ## Plan self-review
 
-- **§7 E2EE & verification:** Recovery (§7.4) → Tasks 3, 5, 7. SAS (§7.2 Scenario A: show + acknowledge + re-enter to confirm) → Task 5. SAS (§7.2 Scenario B: emoji compare + cancel/approve) → Tasks 4, 4b, 6, 7, 9. Bot verification (§7.3) → Tasks 4b, 8, 9, 10. Trust posture (§7.5) → Task 10. Crypto store sharing (§7.1) was set up in Phase 1 (App Group). What we deliberately don't do (§7.6): identity server, device manager screen, room-key sharing UI, QR — none implemented.
+- **§7 E2EE & verification:** Recovery (§7.4) → Tasks 3, 5, 5c, 7. SAS (§7.2 Scenario A: show + acknowledge + re-enter to confirm) → Tasks 5, 5c. SAS (§7.2 Scenario B: emoji compare + cancel/approve) → Tasks 4, 4b, 6, 7c, 7, 9, 9b. Bot verification (§7.3) → Tasks 4b, 8, 9, 9b, 10. Trust posture (§7.5) → Task 10. Crypto store sharing (§7.1) was set up in Phase 1 (App Group on iOS; Application Support directory on Mac). Mac entitlements (§7.1, §8.1) → Task 13. What we deliberately don't do (§7.6): identity server, device manager screen, room-key sharing UI, QR — none implemented.
 - **§5.2 Onboarding:** Phase 1 had sign-in only. Task 7 here adds the post-login verification screen, completing §5.2.
 - **§5.7 In-chat verification banner:** Task 10.
+- **§5.9 Mac chrome:** `MacSasView` (Task 7c) is a fixed-size 480×400 sheet with `Return` / `Esc` keyboard shortcuts — not a half-sheet. `MacRecoveryKeyView` (Task 5c) is also a fixed-size sheet with `NSPasteboard`-backed Copy button and paste detection through the `NSPasteboardReading` protocol seam (`PasteDetector` is unit-tested against `FakeNSPasteboard`). `MacVerificationBanner` (Task 9b) renders as a top-of-window banner above the chat-list sidebar.
+- **Mac Help menu wire-up (Task 9c):** Phase 2 added Help menu placeholders for "Verify This Device…" and "Show Recovery Key…"; this phase wires them to flows via a `Notification.Name`-based `matronCommand(_:perform:)` view modifier. Verify This Device opens `MacSasView` (or falls back to recovery-key restore if no other device is reachable); Show Recovery Key opens `MacRecoveryKeyView` in re-auth-then-reveal mode.
+- **iCloud Keychain auto-restore on Mac:** spec §7.1 + §7.2 Scenario A — recovery key written by iOS via `KeychainStore(synchronizable: true)` (Task 3) auto-syncs through iCloud Keychain so a Mac install picks it up without re-entry. The `KeychainStore` extension for `kSecAttrSynchronizable` items added in Task 3 is the only state shared across platforms; UI flow is identical to iOS, just with a "Use saved recovery key" prefill in `MacRecoveryKeyView.restore` mode.
+- **Shared `SessionVerificationControlling`:** Task 4's protocol seam is platform-agnostic — both iOS and Mac apps consume the same `LiveSessionVerificationController` from `MatronShared`. The SDK Client API is identical on both platforms, so there is no platform-specific live impl.
+- **Shared ViewModels:** `SasViewModel` and `RecoveryKeyViewModel` live in `MatronShared/Sources/ViewModels/` (Phase 1 reorg) and are imported by both `Matron/Features/Verification/` and `MatronMac/Features/Verification/` via the `MatronViewModels` library product. Each platform owns only its `*View.swift` + tests.
+- **Snapshot tests (Task 12):** Mac variants of `MacSasView` (emoji + verified states), `MacRecoveryKeyView` (show / re-enter mismatch / confirmed / restore phases), and `MacVerificationBanner` (in Task 9b) all use the shared `assertVariants(of:named:)` helper from Phase 2, which now does 6 variants (`{iOS, Mac} × {light, dark, accessibility5}`). Mac targets only emit the Mac triple per spec §10 (snapshot tests run against both platforms when the primitive is cross-platform; Mac-only chrome under Mac scheme only).
 - **SDK collision:** the matrix-rust-sdk-swift `VerificationState` enum and our DTOs cohabit in `VerificationServiceLive.swift`; the SDK enum is qualified as `MatrixRustSDK.VerificationState` at the listener boundary, and our DTOs live in `VerificationDTOs.swift` (renamed from `VerificationState.swift`) precisely to dodge the name clash.
 - **Active flow caching:** Task 4 introduces `activeFlows: [String: SessionVerificationControlling]` in `VerificationServiceLive`, populated from `IncomingVerificationListener.onUpdate` via the `DeviceVerificationRequestObserver` shim (Task 4b). `acceptIncoming` / `confirmEmojiMatch` / `cancel` all look up the controller by request ID; cancel reason is propagated verbatim into the `.cancelled(reason:)` state.
-- **Re-entrancy:** `SasViewModel.observe()` is guarded against double-call via `isObserving`, paired with `.task(id: viewModel.requestID)` in `SasView` so re-presentation with the same ID doesn't re-fire.
-- **Dismiss-cancels-request:** `VerificationCenter.dismiss(_:)` is async and calls `service.cancel(requestID:reason:)` before removing from `pending`. Test asserts the cancel happens and the reason is `"User dismissed"`.
+- **Re-entrancy:** `SasViewModel.observe()` is guarded against double-call via `isObserving`, paired with `.task(id: viewModel.requestID)` in both `SasView` and `MacSasView` so re-presentation with the same ID doesn't re-fire.
+- **Dismiss-cancels-request:** `VerificationCenter.dismiss(_:)` is async and calls `service.cancel(requestID:reason:)` before removing from `pending`. Test asserts the cancel happens and the reason is `"User dismissed"`. Both `VerificationBanner` and `MacVerificationBanner` route their dismiss action through the same async helper.
 - **No stub bodies left.** SDK-API-volatile call sites flagged with "Implementer note: API name varies — verify against SDK version Phase 1 pinned" comments.
