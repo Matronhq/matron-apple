@@ -1,8 +1,8 @@
-# Matron iOS — design spec
+# Matron — multi-platform design spec (iOS + macOS)
 
 **Date:** 2026-05-02
-**Status:** Draft, awaiting user review
-**Repo (target):** `matronhq/matron-ios` (to be re-initialised; current contents are an Element X fork under AGPL and will be removed before any new code lands)
+**Status:** Revised — multi-platform from day 1 (iOS + native macOS as co-equal targets), AGPL-3.0 + commercial dual-licensing.
+**Repo (target):** `matronhq/matron-ios` (to be re-initialised before any new code lands; the repo currently contains an Element X fork whose history and copyright lineage will be dropped — the project itself will be AGPL-3.0 with commercial licensing available by arrangement, see §12).
 
 ---
 
@@ -10,14 +10,14 @@
 
 ### Goals
 
-- Native iOS app for Matrix, App Store distributable. No AGPL or copyleft code in the binary.
-- Bot-first chat UX: ChatGPT/Claude.ai-inspired layout — sidebar of chats, single-pane chat view, minimalist.
+- **Native iOS and native macOS** apps for Matrix — both App Store distributable, both treated as first-class. iPad runs the iOS app via adaptive layout (`NavigationSplitView` collapses on iPhone, expands on iPad).
+- Bot-first chat UX: ChatGPT/Claude.ai-inspired layout — sidebar of chats, single-pane chat view, minimalist. Single main window on Mac (focus on one chat at a time; no multi-window sprawl).
 - Optimised for talking to AI bots over E2EE Matrix in a closed personal ecosystem (the user's own homeserver, only their own bots).
 - One Matrix room per chat conversation; multiple chats per bot. Bot auto-titles each chat via server-side Gemini Flash.
 - Excellent rendering of long markdown + code blocks, plus distinctive UX for tool-call cards and "ask the user" prompts.
 - E2EE on by default with first-class device verification (SAS) and recovery key flows.
-- iOS push notifications via APNs (silent encrypted pushes, decrypted on-device by a Notification Service Extension).
-- Local full-text search across all chats.
+- Push notifications via APNs on both platforms — iOS uses a Notification Service Extension to decrypt silent pushes; macOS handles them in-process via `UNUserNotificationCenterDelegate` (Mac apps run their full process for delivered notifications, no extension needed).
+- Local full-text search across all chats (per-device; same SQLite FTS5 store on both platforms).
 
 ### Non-goals (MVP)
 
@@ -34,34 +34,42 @@
 
 - In-app "create new bot" flow (calling a future server API).
 - Multi-bot rooms.
-- macOS/iPadOS-specific layouts (the SwiftUI codebase will run on iPad but layouts are iPhone-first in MVP).
+- iPadOS-specific layouts (the iOS app already adapts via `NavigationSplitView` to give iPad a sidebar in landscape; bespoke iPad-specific UI — e.g. drag-and-drop between chats, multi-column custom layouts — is deferred).
 
 ---
 
 ## 2 — High-level architecture
 
 ```
+┌─────────────────────────┐  ┌─────────────────────────┐
+│   Matron (iOS app)      │  │   MatronMac (macOS app) │
+│   iPhone + iPad         │  │   single main window    │
+│  ┌───────────────────┐  │  │  ┌───────────────────┐  │
+│  │ SwiftUI views     │  │  │  │ SwiftUI views     │  │
+│  │ NavigationStack / │  │  │  │ NavigationSplit-  │  │
+│  │ adaptive Split    │  │  │  │ View 2-col + menu │  │
+│  └─────────┬─────────┘  │  │  └─────────┬─────────┘  │
+└────────────┼────────────┘  └────────────┼────────────┘
+             │                            │
+             ▼                            ▼
 ┌──────────────────────────────────────────────────────────┐
-│                       iOS app target                     │
-│  ┌────────────────────────────────────────────────────┐  │
-│  │              SwiftUI views (per feature)           │  │
-│  └──────────────────────┬─────────────────────────────┘  │
-│                         │ binds to                        │
-│  ┌──────────────────────▼─────────────────────────────┐  │
-│  │   @Observable ViewModels (per screen / feature)    │  │
-│  └──────────────────────┬─────────────────────────────┘  │
-│                         │ calls                           │
-│  ┌──────────────────────▼─────────────────────────────┐  │
-│  │              Service layer (Swift)                 │  │
-│  │   AuthService · SyncService · ChatService ·        │  │
-│  │   PushService · VerificationService · MediaService │  │
-│  │   SearchService                                    │  │
-│  └──────────────────────┬─────────────────────────────┘  │
-│                         │ wraps                           │
-│  ┌──────────────────────▼─────────────────────────────┐  │
-│  │   matrix-rust-sdk-swift  (Apache 2.0, via SPM)     │  │
-│  │   Client · RoomListService · Timeline · Encryption │  │
-│  └──────────────────────┬─────────────────────────────┘  │
+│                    MatronShared (SPM)                    │
+│  ┌─────────────────────────────────────────────────────┐ │
+│  │ ViewModels  (per feature, @Observable, target-      │ │
+│  │              agnostic — used by both apps)          │ │
+│  ├─────────────────────────────────────────────────────┤ │
+│  │ DesignSystem — rendering primitives                 │ │
+│  │ MarkdownText · CodeBlock · ToolCallCard ·           │ │
+│  │ AskUserSheetBody · SessionMetaHeader · Attachment*  │ │
+│  ├─────────────────────────────────────────────────────┤ │
+│  │ Service layer                                       │ │
+│  │ AuthService · SyncService · ChatService ·           │ │
+│  │ PushService · VerificationService · MediaService ·  │ │
+│  │ SearchService                                       │ │
+│  ├─────────────────────────────────────────────────────┤ │
+│  │ matrix-rust-sdk-swift (Apache 2.0, via SPM)         │ │
+│  │ Client · RoomListService · Timeline · Encryption    │ │
+│  └──────────────────────┬──────────────────────────────┘ │
 └─────────────────────────┼────────────────────────────────┘
                           │ sliding sync over HTTPS
                           ▼
@@ -70,78 +78,105 @@
                           ▼
                   bot accounts (Claude bridge, etc.)
 
-┌──────────────────────────────────────────────────────────┐
-│         NotificationServiceExtension target              │
-│  Receives silent APNs push → uses matrix-rust-sdk-swift  │
-│  (NotificationClient) to fetch + decrypt the event →     │
-│  rewrites the notification with cleartext title/body.    │
-└──────────────────────────────────────────────────────────┘
+┌──────────────────────────┐   ┌──────────────────────────────┐
+│ MatronNSE (iOS-only)     │   │ MatronMac in-process push    │
+│ NotificationService-     │   │ UNUserNotificationCenter-    │
+│ Extension. Receives      │   │ Delegate. Same PushDecoder   │
+│ silent APNs → calls      │   │ from MatronShared, called    │
+│ shared PushDecoder →     │   │ in-process — no extension,   │
+│ rewrites notification.   │   │ no App Group complications.  │
+└──────────────────────────┘   └──────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────┐
 │         Sygnal-compatible HTTP pusher (server-side)      │
-│  Lives alongside matron-server. Receives Matrix push     │
-│  events, forwards as silent APNs pushes to the app.      │
+│  Lives alongside matron-server. Two app entries —        │
+│  chat.matron.ios + chat.matron.mac (with .dev variants   │
+│  for sandbox builds). Forwards Matrix push events as     │
+│  silent APNs pushes to the appropriate app.              │
 └──────────────────────────────────────────────────────────┘
 ```
 
-### Three Xcode targets
+### Four Xcode targets
 
-1. **`Matron`** — the iOS app (SwiftUI, MVVM, iOS 17+).
-2. **`MatronNSE`** — Notification Service Extension (decrypts push payloads).
-3. **`MatronShared`** — local Swift Package holding services + models reused by app and NSE.
+1. **`Matron`** — iOS app (SwiftUI, MVVM, iOS 17+). Runs on iPhone and iPad; iPad inherits via adaptive `NavigationSplitView`.
+2. **`MatronMac`** — native macOS app (SwiftUI, macOS 14+, single main window, Mac chrome — menu bar, Settings scene, toolbar, hover states, keyboard shortcuts).
+3. **`MatronNSE`** — Notification Service Extension, **iOS-only**. macOS does not have NSEs; Mac handles pushes in-process.
+4. **`MatronShared`** — local Swift Package, depended on by all three apps. Holds services, models, ViewModels, design-system primitives, and event-type definitions.
 
 ### Architectural choices
 
-- **Pattern: MVVM, no Coordinators.** SwiftUI views bind to `@Observable` ViewModels. Navigation goes through native `NavigationStack` typed paths. Coordinators (Element X-style FlowCoordinator) are deliberately omitted — they duplicate `NavigationStack`'s declarative model. If complex multi-screen flows arise later, introduce Coordinators per-flow rather than as a global pattern.
+- **Pattern: MVVM, no Coordinators.** SwiftUI views bind to `@Observable` ViewModels (target-agnostic, in `MatronShared`). Navigation goes through native `NavigationStack` (iOS) and `NavigationSplitView` (Mac, and iPad-adaptive on iOS). Coordinators (Element X-style FlowCoordinator) are deliberately omitted — they duplicate the declarative model. If complex multi-screen flows arise later, introduce Coordinators per-flow rather than as a global pattern.
+- **Per-platform views, shared everything else.** `Matron/Features/` and `MatronMac/Features/` each contain their own `*View.swift` files tailored to platform conventions. The corresponding `*ViewModel.swift` lives in `MatronShared/Sources/ViewModels/` and is imported by both. Design-system primitives (`MarkdownText`, `CodeBlock`, `ToolCallCard`, etc.) are shared in `MatronShared/Sources/DesignSystem/` and render identically on both platforms.
 - **Sync: matrix-rust-sdk sliding sync** — required for responsive room list. Tuwunel (matron-server) supports it.
-- **Crypto store sharing** — app and NSE both open the same SDK crypto store inside an App Group container (`group.chat.matron`). matrix-rust-sdk supports concurrent-process access via internal locking.
-- **Minimum target: iOS 17.** Gives us `@Observable`, modern `NavigationStack`, mature SwiftUI APIs. Matches Element X's target.
-- **License posture: nothing AGPL/GPL in the binary.** matrix-rust-sdk-swift (Apache 2.0) and any other SPM dependencies must be Apache 2.0 / MIT / BSD. Element X is studied for architectural inspiration only — no code translation, no derivative work.
+- **Crypto store sharing (iOS).** iOS app and NSE both open the same SDK crypto store inside an App Group container (`group.chat.matron`). matrix-rust-sdk supports concurrent-process access via internal locking.
+- **Crypto store (Mac).** Single-process — no App Group needed. Store lives in `~/Library/Application Support/chat.matron.mac/` (`NSApplicationSupportDirectory`) and is encrypted at rest with a passphrase derived from a Keychain-stored key.
+- **Minimum targets: iOS 17, macOS 14.** Both give us `@Observable`, modern `NavigationStack` / `NavigationSplitView`, mature SwiftUI scene APIs (`Settings { ... }`, `.commands { ... }`).
+- **License posture: AGPL-3.0 + commercial dual-licensing.** Matron HQ retains copyright; the public licence is AGPL-3.0; commercial terms available by arrangement for redistributors who can't comply. App Store distribution by the copyright holder is unaffected (binary licensed under App Store EULA; AGPL governs source redistribution by third parties). Element X is studied for architectural inspiration only — no code translation, no derivative work. Dependencies must be AGPL-compatible (matrix-rust-sdk-swift Apache 2.0 ✓; MIT/BSD/Apache 2.0/MPL all fine; pure-GPL with no AGPL permission is excluded). See §12.
 
 ---
 
 ## 3 — Module structure
 
 ```
-MatronShared/                    (local SPM package, depended on by Matron + MatronNSE)
+MatronShared/                    (local SPM package, depended on by Matron + MatronMac + MatronNSE)
 ├── Sources/
 │   ├── Auth/                    AuthService, login, logout, server URL discovery
 │   ├── Sync/                    ClientProvider, SyncService (sliding sync wrapper)
 │   ├── Chat/                    ChatService, RoomListWrapper, Timeline wrapper
-│   ├── Verification/            SAS verification flow, recovery key
-│   ├── Push/                    Pusher registration, NSE-shared decoding
+│   ├── Verification/            SAS verification flow, recovery key (DTOs in VerificationDTOs.swift)
+│   ├── Push/                    Pusher registration, PushDecoder shared by NSE (iOS) and
+│   │                            UNUserNotificationCenterDelegate (Mac)
 │   ├── Media/                   Image/file fetch + cache, mxc:// resolution
 │   ├── Search/                  SQLite FTS5 service (see §5.8)
 │   ├── Models/                  Plain-Swift DTOs: ChatSummary, BotIdentity, Message
 │   ├── Events/                  Custom event type defs (chat.matron.tool_call, …)
-│   └── Storage/                 App Group paths, crypto store init
-└── Tests/                       Unit tests per module
+│   ├── Storage/                 App Group paths (iOS), Application Support paths (Mac), crypto store init
+│   ├── ViewModels/              @Observable ViewModels per feature, target-agnostic.
+│   │                            Used by both Matron/Features/ and MatronMac/Features/.
+│   └── DesignSystem/            Colors, typography, spacing tokens; shared rendering primitives:
+│                                MarkdownText, CodeBlock, ToolCallCard, AskUserSheetBody,
+│                                SessionMetaHeader, AttachmentImage, AttachmentFile, MessageBubble.
+└── Tests/                       Unit tests per module + snapshot tests for DesignSystem
+                                 (light/dark/XXXL × iOS/Mac variants)
 
-Matron/                          (iOS app target)
+Matron/                          (iOS app target — iPhone + iPad)
 ├── App/                         MatronApp, root navigation, session restore
-├── Features/
+├── Features/                    NavigationSplitView-based views (auto-collapses to a stack on
+│   │                            iPhone, expands to sidebar+detail on iPad in landscape).
 │   ├── Onboarding/              Combined server URL + login screen, then verification
-│   ├── ChatList/                Sidebar, chat-summary rows, new-chat button, search bar
+│   ├── ChatList/                List, chat-summary rows, new-chat button, search bar
 │   ├── Chat/                    Timeline view, composer, slash command palette
-│   │   ├── Rendering/           Markdown, code block, tool-call card, ask-user sheet
 │   │   └── Composer/            Input field, slash menu, attachment picker
 │   ├── BotProfile/              Per-bot view: list of chats with that bot
 │   ├── Verification/            SAS verification UI, recovery flows
-│   ├── Search/                  Search results screen (chats + messages)
-│   └── Settings/                Account, push prefs, server info, sign-out
-├── Resources/                   Assets, Localizable, fonts
-└── DesignSystem/                Colors, typography, spacing, shared View modifiers
+│   └── Search/                  Search results screen (chats + messages)
+└── Resources/                   Assets, Localizable, fonts
 
-MatronNSE/                       (Notification Service Extension target)
-├── NotificationService.swift    Entry point, calls into MatronShared.Push
+MatronMac/                       (macOS app target — native, single main window)
+├── App/                         MatronMacApp, scenes (WindowGroup main + Settings),
+│                                .commands menu bar, restore window state
+├── Features/                    NavigationSplitView 2-column layouts (sidebar + detail);
+│   │                            Mac chrome (toolbar, hover states, drag-and-drop, ⌘ shortcuts).
+│   ├── Onboarding/              Centered card layout, fixed window size during sign-in
+│   ├── ChatList/                Sidebar column with chat rows
+│   ├── Chat/                    Detail column: timeline + composer with .onDrop
+│   ├── BotProfile/              Sheet (single-window pattern; no third column)
+│   ├── Verification/            SAS as a Mac sheet; recovery key with native paste detection
+│   ├── Search/                  Toolbar field + ⌘F focus + results panel replaces detail
+│   └── Settings/                Native Settings { } scene (Preferences window, ⌘, opens it)
+└── Resources/                   Assets (Mac icon set 16/32/.../1024), Localizable
+
+MatronNSE/                       (Notification Service Extension target — iOS-only)
+├── NotificationService.swift    Entry point, calls into MatronShared.Push.PushDecoder
 └── Info.plist
 ```
 
 ### Conventions
 
-- `Features/` modules follow a uniform shape: `*View.swift`, `*ViewModel.swift`, optional component sub-folder. No cross-feature imports — features only talk to the service layer.
-- `DesignSystem/` is the single source of truth for color, type ramp, spacing tokens, and shared view primitives (`ChatBubble`, `ToolCallCard`, `CodeBlock`, etc.).
+- `Features/` modules in each app follow a uniform shape: `*View.swift` (platform-tailored, in app target) + corresponding `*ViewModel.swift` (in `MatronShared/Sources/ViewModels/`) + optional component sub-folder. No cross-feature imports — features only talk to the service layer.
+- `MatronShared/Sources/DesignSystem/` is the single source of truth for color, type ramp, spacing tokens, and shared view primitives. Both apps consume directly; primitives render identically on both platforms.
 - `MatronShared` services expose protocol interfaces for testing (real impl + fake impl side-by-side per protocol).
+- Snapshot tests run against both platforms when the primitive is cross-platform (most of `DesignSystem/`); Mac-only or iOS-only chrome (toolbars, menu bar, NSE) is snapshot-tested only on the relevant platform.
 
 ---
 
@@ -242,7 +277,7 @@ The iOS app degrades gracefully if these aren't present — tool calls fall back
 
 ## 5 — Key UI flows
 
-ChatGPT/Claude.ai-inspired layout. Phone-first; iPad gets a split view "for free" via SwiftUI.
+ChatGPT/Claude.ai-inspired layout. iOS is phone-first; iPad gets a split view "for free" via adaptive `NavigationSplitView`. Mac is its own native target with single-window 2-column layout and full Mac chrome (menu bar, Settings scene, toolbar, keyboard shortcuts, drag-and-drop, hover states). Per-platform UX details are captured in §5.1–5.8 below; Mac-specific chrome (menu bar, window, Settings scene) is consolidated in §5.9.
 
 ### 5.1 — App launch
 
@@ -347,6 +382,50 @@ Unified search across chat titles, bot names, and message content.
 
 Implementation: see §6 (data flow) and §9 (search storage details).
 
+### 5.9 — Mac-specific UX
+
+The macOS app is a native SwiftUI target with single-main-window focus (no multi-window sprawl). All flows above apply; Mac additions:
+
+**Window management**
+- Single `WindowGroup` for the main window. Minimum size **800×600**, default opens at **1100×750**.
+- `.windowResizability(.contentMinSize)`; SwiftUI restores size + position automatically.
+- Closing the last window quits the app (no menu-bar-only mode in MVP).
+
+**Settings scene**
+- Native `Settings { SettingsView }` — opens with **`⌘,`** as a Preferences window.
+- Tabbed layout (Account / This Device / Notifications / Server / About) using `TabView` with the macOS Preferences look. Same `SettingsViewModel` from `MatronShared`; iOS renders as a stack of sections, Mac as Preferences tabs.
+
+**Menu bar (`.commands { ... }`)**
+
+| Menu | Item | Shortcut |
+|---|---|---|
+| File | New Chat | `⌘N` |
+| | Sign Out… | — |
+| Edit | Find in Chat | `⌘F` |
+| | Slash Command | `⌘K` |
+| View | Toggle Sidebar | `⌘⇧S` |
+| | Increase / Decrease / Reset Font Size | `⌘+` / `⌘-` / `⌘0` |
+| Window | (default) | |
+| Help | Verify This Device… | — |
+| | Show Recovery Key… | — |
+
+**Toolbar (per-window)**
+- Left: sidebar toggle button (mirrors `⌘⇧S`).
+- Center: chat title + `session_meta` strip (model · workdir, when present).
+- Right: ⓘ info button → bot profile sheet; search field (focused by `⌘F`).
+
+**Hover states**
+- Chat list rows: subtle background tint + show "last message preview" line on hover (hidden by default to keep list dense).
+- Tool-call cards: cursor turns to pointer; "Click to expand" hint on hover.
+
+**Drag-and-drop**
+- Composer accepts dragged images and files via `.onDrop(of: [.image, .fileURL], delegate: ...)`.
+- Chat list: not droppable in MVP (no chat reordering).
+
+**Layout structure**
+- 2-column `NavigationSplitView` (sidebar = chat list; detail = current chat).
+- Bot profile renders as a sheet (single-window-focus pattern; no third column).
+
 ---
 
 ## 6 — Data flow
@@ -367,11 +446,18 @@ Implementation: see §6 (data flow) and §9 (search storage details).
 
 ### 6.3 — Push wakeup
 
+**iOS path:**
 - NSE receives APNs push with `event_id` + `room_id`.
-- `NotificationService` (in `MatronNSE`) opens a read-only SDK client against the shared crypto store.
+- `NotificationService` (in `MatronNSE`) opens a read-only SDK client against the shared crypto store (App Group container).
 - Calls `NotificationClient.getNotification(roomID, eventID)`.
 - Builds title/body/avatar, returns the rewritten `UNNotificationContent`.
 - App, when next foregrounded, runs sync to catch up — push wakeups don't update app state directly.
+
+**Mac path:**
+- App's `UNUserNotificationCenterDelegate` receives the silent APNs push directly (no extension; Mac apps receive notifications in-process).
+- Calls into the same `MatronShared.Push.PushDecoder` — single-process access to the crypto store, no App Group complications.
+- Updates the notification's title/body/avatar via the completion handler, posts it to the Notification Center.
+- App is already running (or relaunched); state may be live, so push handling can opportunistically refresh the affected room as well.
 
 ### 6.4 — New chat creation
 
@@ -386,9 +472,15 @@ Implementation: see §6 (data flow) and §9 (search storage details).
 
 ### 7.1 — Crypto store
 
+**iOS:**
 - SDK creates a SQLite-backed crypto store inside the App Group container (`group.chat.matron`).
 - App and NSE both open the SAME store. matrix-rust-sdk supports this via internal locking.
 - Store is encrypted at rest with a passphrase derived from a Keychain-stored key (Keychain access group shared with NSE).
+
+**Mac:**
+- Single-process — no App Group / NSE sharing required.
+- Store lives in `~/Library/Application Support/chat.matron.mac/` (`NSApplicationSupportDirectory`).
+- Same encrypted-at-rest scheme: passphrase derived from a Keychain-stored key. macOS Keychain auto-syncs to iCloud Keychain when the user has it enabled, so a Mac install can pick up keys from the iOS install via SSSS recovery (per §7.4).
 
 ### 7.2 — Device verification (SAS)
 
@@ -436,28 +528,45 @@ We do **not** auto-trust new bot devices. Unverified-device messages show a warn
 ### 8.1 — Server side
 
 - A **Sygnal**-compatible HTTP pusher runs alongside `matron-server`. Sygnal itself is Apache 2.0 — we can use it directly, or write a thin replacement.
-- Pusher holds an APNs auth key (signed JWT) for the Matron app's bundle ID.
-- When the iOS app registers a push token, it tells the homeserver to send pushes via this pusher.
+- Pusher holds APNs auth keys (signed JWT) for **two** bundle IDs: `chat.matron.ios` (iPhone/iPad app) and `chat.matron.mac` (Mac app), each with `.dev` variants for sandbox builds.
+- When the apps register a push token (see §8.2), they tell the homeserver to send pushes via this pusher with the appropriate `app_id`.
 
 ### 8.2 — App side
 
+**iOS** (Matron target):
 On launch (after auth):
 - Request push notification permission.
 - Get APNs device token.
-- Call `POST /_matrix/client/v3/pushers` to register the token.
+- Call `POST /_matrix/client/v3/pushers` with `app_id = chat.matron.ios` (or `.dev` for debug builds).
 - Configure default push rules: notify on every event in joined rooms (only bot rooms exist in this ecosystem; per-room mute is in the long-press menu).
+
+**Mac** (MatronMac target):
+On launch (after auth):
+- Request notification permission via `UNUserNotificationCenter`.
+- Get APNs device token via `NSApplication.registerForRemoteNotifications()`.
+- Same pusher registration call, but `app_id = chat.matron.mac` (or `.dev`).
+- Same push rules.
 
 ### 8.3 — Receiving a push
 
+**iOS:**
 - Server-side push rule matches → pusher sends a silent APNs notification with `event_id` + `room_id` (no message content; encrypted events are opaque to the server).
 - iOS wakes the NSE.
-- NSE opens shared crypto store + SDK client (read-only mode), decrypts the event, returns title/body/avatar.
+- NSE opens shared crypto store + SDK client (read-only mode) via the App Group, decrypts the event, returns title/body/avatar.
+
+**Mac:**
+- Same APNs path; the silent push arrives directly to the running app's `UNUserNotificationCenterDelegate`.
+- Delegate calls into `MatronShared.Push.PushDecoder` in-process — single-process crypto store access, no App Group needed.
+- Same title/body/avatar build path.
+
+**Both platforms:**
 - Notification: title = bot display name, body = decrypted text (or "📎 image" / "🔧 tool call"), thread identifier = room ID.
 - App icon badge = total unread count from the room list summary.
 
 ### 8.4 — Tap to open
 
-- Tapping a notification deep-links into the chat view for that room ID. Single SwiftUI navigation push from chat list, so back returns to the list.
+- **iOS:** Tapping a notification deep-links into the chat view for that room ID. Single SwiftUI navigation push from chat list, so back returns to the list.
+- **Mac:** Tapping focuses the main window and navigates the detail column to the room. The sidebar updates selection so it's clear which chat is open. If the app is hidden, it activates first.
 
 ---
 
@@ -485,9 +594,9 @@ CREATE TABLE indexed_rooms (
 
 ### 9.2 — File location & protection
 
-- Path: `App Group / matron-search.sqlite`.
-- iOS `NSFileProtectionComplete` so it's encrypted at rest with the device passcode.
-- The DB is wiped on sign-out.
+- **iOS path:** `App Group / matron-search.sqlite`. `NSFileProtectionComplete` so it's encrypted at rest with the device passcode (file is pre-created with the protection attribute set, then opened — see Phase 6 plan).
+- **Mac path:** `~/Library/Application Support/chat.matron.mac/matron-search.sqlite`. macOS doesn't have iOS-style file protection classes; encryption at rest comes from FileVault (which the user is responsible for enabling). The path is sandbox-private regardless.
+- The DB is wiped on sign-out on both platforms.
 
 ### 9.3 — Index lifecycle
 
@@ -530,21 +639,36 @@ Pragmatic, not exhaustive. The SDK is well-tested upstream; our job is to test t
 
 ### Snapshot tests (swift-snapshot-testing) — rendering primitives only
 
-- `MarkdownText`, `CodeBlock`, `ToolCallCard` (collapsed + expanded + each status), `AskUserSheet` (text/choice/multi/boolean variants), `AttachmentImage`, `AttachmentFile`.
-- Light + dark mode, dynamic type sizes (S, L, XXXL).
+- `MarkdownText`, `CodeBlock`, `ToolCallCard` (collapsed + expanded + each status), `AskUserSheet` (text/choice/multi/boolean variants), `AttachmentImage`, `AttachmentFile`, `MessageBubble`, `SessionMetaHeader` (collapsed + expanded).
+- Each primitive snapshots **6 variants**: `{iOS, Mac} × {light, dark, accessibility5}`.
+- Mac-only chrome (toolbar layouts, command-menu surfaces) snapshots under Mac scheme only; iOS-only chrome (tab bars if any) under iOS scheme only.
 - Not snapshotting full screens — too brittle, low value.
 
 ### Integration tests — one happy-path flow against a real homeserver
 
 - Spin up a test matron-server in CI (docker-compose), create user, create bot, send a message round-trip, assert decryption.
-- One test, end-to-end. Catches "did we wire the SDK up correctly" regressions that no unit test will.
+- Two CI jobs: iOS Simulator + macOS host. Same `HappyPathTests.swift` runs against both schemes (`MatronIntegrationTests` for iOS, `MatronMacIntegrationTests` for Mac). ~5 min added CI time per push.
+- Catches "did we wire the SDK up correctly" regressions that no unit test will, on both platforms.
 
 ### Manual test checklist (`docs/manual-tests.md`)
 
+Split into platform sections:
+
+**iOS per-TestFlight regression**
 - SAS verification with a real other device.
-- Push notification arrives on a physical device (TestFlight build).
+- Push notification arrives on a physical iPhone/iPad (TestFlight build).
 - Attachment picker (image, file) end-to-end.
-- Run before each TestFlight build.
+
+**Mac per-App-Store-build regression**
+- Menu bar items + keyboard shortcuts work (`⌘N`, `⌘F`, `⌘K`, `⌘⇧S`, `⌘+`/`-`/`0`, `⌘,`).
+- Sidebar toggle, window position restores, drag-and-drop attachments into composer.
+- Settings Preferences window opens with `⌘,`; tabs render correctly.
+- Mac push notification arrives on a real Mac with the app backgrounded.
+
+**Cross-platform smoke**
+- Sign in with the same account on iOS and Mac → both see same chat list → send from one → receive on the other within seconds.
+
+Run before each TestFlight build / Mac App Store build.
 
 ### What we don't test
 
@@ -561,23 +685,57 @@ Captured here so the door's open without bloating MVP.
 - **In-app bot provisioning** — UI to call a future `matron-server` API for "create new bot account." Replaces the `dev-boxer add-bot` CLI for end users.
 - **Multi-bot rooms** — group rooms with multiple bots coordinating. Member list, mentions, etc.
 - **Threads** — if any bots ever need them.
-- **macOS / iPad-optimised layouts** — current spec runs on iPad but uses iPhone layouts.
+- **iPad-optimised bespoke layouts** — current spec gives iPad an adaptive `NavigationSplitView` automatically; iPad-specific UI (drag-between-chats, multi-column custom layouts) is a future spec.
+- **Mac multi-window** — single main window in MVP per "focus on one thing at a time" stance. Detached chat windows / multiple main windows could come later if usage signals demand.
+- **Mac menu-bar-only mode** — currently closing the last window quits the app; running as a faceless menu-bar utility (like Slack's small mode) is deferred.
 - **Reactions, replies, edits** — if user research surfaces a need.
 - **Voice / video calls** — Matrix Element Call integration.
 - **Background sync without push** — silent sync to keep local state warm. Currently, app catches up on launch + push wakeups handle real-time.
 - **Multiple accounts** — connecting to multiple matron-servers from one app install.
-- **Widget / Lock Screen activity** — show current chat status on Lock Screen / Home Screen.
+- **Widget / Lock Screen activity (iOS)** — show current chat status on Lock Screen / Home Screen.
+- **Mac widgets / Today extension** — same idea on Mac.
 - **Offline composer / queued sends** — currently send fails if offline. Could queue locally and retry.
 - **Server-side / cross-device search index** — current search is per-device only.
-- **Camera capture in composer** — only photo library / files in MVP.
+- **Camera capture in composer (iOS)** — only photo library / files in MVP.
 - **Device manager screen** — sign-out only of *this* device from MVP Settings.
 
 ---
 
 ## 12 — License & legal
 
-- App binary, dependencies, and all bundled code: Apache 2.0 / MIT / BSD only. No GPL/AGPL/LGPL.
-- The `matronhq/matron-ios` repo is currently a fork of `element-hq/element-x-ios` (AGPL). Before any new code lands, the repo will be re-initialised: history wiped, fork relationship dropped, fresh `LICENSE` (Apache 2.0 recommended) committed.
-- Element X iOS may be **studied** for architectural patterns (architectures aren't copyrightable). No code translation, no derivative work. When in doubt, build it from first principles using only the matrix-rust-sdk-swift API surface as reference.
+### 12.1 — Project licence
+
+- **Public licence: AGPL-3.0.** Source is published under AGPL-3.0; third parties redistributing source or running modified versions over a network must comply (publish their source under AGPL-3.0).
+- **Commercial licensing available by arrangement.** Matron HQ retains copyright and offers commercial terms to redistributors who can't comply with AGPL. This is the same dual-licensing model Matrix.org / Element / Synapse use.
+- **App Store distribution by the copyright holder is unaffected.** The iOS and Mac binaries on Apple's App Stores are licensed to end users under the standard App Store EULA; AGPL governs source redistribution by third parties only. The copyright holder is free to distribute their own code under any terms.
+
+### 12.2 — Repo posture
+
+- The `matronhq/matron-ios` repo currently contains a fork of `element-hq/element-x-ios` (AGPL). Before any new code lands, the repo will be re-initialised: history wiped, fork relationship dropped. Fresh `LICENSE` (AGPL-3.0) and clean Matron HQ copyright lineage committed in Phase 1.
+- Element X iOS may be **studied** for architectural patterns (architectures aren't copyrightable). No code translation, no derivative work. When in doubt, build from first principles using only the matrix-rust-sdk-swift API surface as reference.
+
+### 12.3 — Dependencies
+
+- Dependencies must be AGPL-compatible:
+  - Apache 2.0 ✓ (matrix-rust-sdk-swift, swift-snapshot-testing).
+  - MIT / BSD / MPL-2.0 ✓.
+  - LGPL with linking exception ✓.
+  - **Pure GPL without an explicit AGPL permission is excluded** (would conflict with the AGPL distribution).
 - Bridge code (`claude-matrix-bridge`) remains AGPL — that's fine, it's a separate process talking over the wire. The AGPL "use" boundary doesn't extend to network clients.
-- App Store submission requires: privacy policy URL, App Privacy disclosures (Matrix ID + push token transmitted to user's homeserver; no third-party analytics), encryption export compliance (uses standard E2EE — qualifies for ITSAppUsesNonExemptEncryption=NO if we use only standard ciphers via the SDK; verify before submission).
+
+### 12.4 — Contributor agreement
+
+- Dual-licensing requires that the copyright holder retain the right to relicense contributions under both AGPL and commercial terms. Either:
+  - **Copyright assignment** — contributors assign copyright to Matron HQ on contribution; or
+  - **Contributor License Agreement (CLA)** — contributors grant Matron HQ a perpetual, irrevocable, worldwide licence to use, modify, sublicense, and relicense their contribution under any terms.
+- MVP plan uses **option 2 (CLA)** via `cla-assistant.io` (GitHub bot blocks unsigned PRs from external contributors). `CONTRIBUTING.md` explains the model; `.cla.md` holds the CLA text. Both committed in Phase 1.
+- Internal/founder commits don't need a separate CLA — copyright is held by the legal entity that employs the founders.
+
+### 12.5 — App Store submission
+
+- **iOS App Store** + **Mac App Store** submissions require:
+  - Privacy policy URL (one URL covers both apps).
+  - App Privacy disclosures: Matrix ID + push token transmitted to the user's homeserver; no third-party analytics.
+  - Encryption export compliance: uses standard E2EE via matrix-rust-sdk — qualifies for `ITSAppUsesNonExemptEncryption=NO` if we use only standard ciphers via the SDK. Verify before submission for both binaries.
+  - Two App Store Connect records (one per platform) since iOS and Mac App Store binaries are submitted separately.
+  - Mac builds are notarized via App Store Connect upload (no separate notarization step).
