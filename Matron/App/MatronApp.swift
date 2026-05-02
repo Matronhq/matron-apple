@@ -16,8 +16,12 @@ struct MatronApp: App {
                     ProgressView("Loading…")
                         .task { await bootstrap() }
                 } else if let session {
-                    ChatListView(viewModel: ChatListViewModel(chat: dependencies.chatService(for: session)))
-                        .task { try? await dependencies.syncService(for: session).start() }
+                    NavigationStack {
+                        ChatListView(viewModel: ChatListViewModel(chat: dependencies.chatService(for: session)))
+                    }
+                    .environment(\.appDependencies, dependencies)
+                    .environment(\.currentSession, session)
+                    .task { try? await dependencies.syncService(for: session).start() }
                 } else {
                     SignInView(
                         viewModel: SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS"),

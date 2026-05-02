@@ -6,6 +6,9 @@ final class FakeChatService: ChatService, @unchecked Sendable {
     var snapshotsToEmit: [[ChatSummary]] = []
     var createCalls: [String] = []
     var nextCreatedRoomID: String = "!fake:server"
+    var refreshCalls: Int = 0
+    var mutedRooms: [String] = []
+    var leftRooms: [String] = []
 
     func chatSummaries() -> AsyncStream<[ChatSummary]> {
         AsyncStream { continuation in
@@ -20,6 +23,10 @@ final class FakeChatService: ChatService, @unchecked Sendable {
         createCalls.append(botID)
         return nextCreatedRoomID
     }
+
+    func refresh() async throws { refreshCalls += 1 }
+    func mute(roomID: String) async throws { mutedRooms.append(roomID) }
+    func leave(roomID: String) async throws { leftRooms.append(roomID) }
 }
 
 final class ChatServiceFakeTests: XCTestCase {

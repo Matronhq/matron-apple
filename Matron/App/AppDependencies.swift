@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import MatronAuth
 import MatronChat
 import MatronModels
@@ -11,6 +12,12 @@ final class AppDependencies {
     let clientProvider: ClientProvider
 
     private var syncCache: [String: SyncService] = [:]
+    /// Per-room timeline cache keyed by `(userID, roomID)`. Re-using the
+    /// same `TimelineServiceLive` across navigations to the same room
+    /// preserves the SDK timeline handle and the in-memory snapshot the
+    /// diff listener has built up — re-creating would cause a UI flicker
+    /// on every push/pop.
+    private var timelineCache: [TimelineCacheKey: TimelineService] = [:]
 
     init() {
         // iOS shares its crypto store + search DB with the NSE via the App
@@ -64,5 +71,59 @@ final class AppDependencies {
     /// rooms should hold onto one instance for the duration of the session.
     func mediaService(for session: UserSession) -> MediaService {
         MediaServiceLive(provider: clientProvider, session: session)
+    }
+
+    /// Per-room `TimelineService` factory. Cached by `(userID, roomID)` so
+    /// repeat navigations to the same room re-use the same SDK timeline
+    /// handle — that handle owns the in-memory snapshot, so re-creating
+    /// it would force the row diff listener to rebuild from scratch and
+    /// flicker the UI on every push/pop. Mirrors the `syncCache`
+    /// per-session strategy.
+    func timelineService(for session: UserSession, roomID: String) -> TimelineService {
+        let key = TimelineCacheKey(userID: session.userID, roomID: roomID)
+        if let existing = timelineCache[key] { return existing }
+        let svc = TimelineServiceLive(
+            provider: clientProvider,
+            session: session,
+            sync: syncService(for: session),
+            roomID: roomID
+        )
+        timelineCache[key] = svc
+        return svc
+    }
+}
+
+/// Composite key for per-room timeline caching. Lives outside
+/// `AppDependencies` so the cache type is plain dictionary; the actor
+/// isolation comes from `AppDependencies` being `@MainActor`.
+private struct TimelineCacheKey: Hashable {
+    let userID: String
+    let roomID: String
+}
+
+// MARK: - SwiftUI Environment
+
+/// Environment key carrying the app-wide `AppDependencies`. Defaulting to
+/// `nil` keeps preview/test sites compile-clean without a fake stack;
+/// production usage in `MatronApp` always injects a real instance.
+struct AppDependenciesKey: EnvironmentKey {
+    static let defaultValue: AppDependencies? = nil
+}
+
+/// Environment key carrying the current authenticated `UserSession`. Set
+/// by `MatronApp` after sign-in succeeds; read by views that construct
+/// per-session services (timeline, media, chat-actions).
+struct CurrentSessionKey: EnvironmentKey {
+    static let defaultValue: UserSession? = nil
+}
+
+extension EnvironmentValues {
+    var appDependencies: AppDependencies? {
+        get { self[AppDependenciesKey.self] }
+        set { self[AppDependenciesKey.self] = newValue }
+    }
+    var currentSession: UserSession? {
+        get { self[CurrentSessionKey.self] }
+        set { self[CurrentSessionKey.self] = newValue }
     }
 }

@@ -37,6 +37,33 @@ public final class ChatServiceLive: ChatService, @unchecked Sendable {
         return try await client.createRoom(request: request)
     }
 
+    /// Phase 2 refresh contract: ensure sliding sync is ready, then return.
+    /// The SDK doesn't expose a `forceSyncOnce`-style trigger in v26, and
+    /// sliding sync is continuous in the background, so the meaningful
+    /// work is making sure the next call to `chatSummaries()` won't race
+    /// the initial sync. The UI calls this from `.refreshable` and then
+    /// re-subscribes to the stream.
+    public func refresh() async throws {
+        try await sync.waitUntilReady()
+    }
+
+    public func mute(roomID: String) async throws {
+        try await sync.waitUntilReady()
+        let client = try await provider.client(for: session)
+        let settings = await client.getNotificationSettings()
+        try await settings.setRoomNotificationMode(roomId: roomID, mode: .mute)
+    }
+
+    public func leave(roomID: String) async throws {
+        try await sync.waitUntilReady()
+        let client = try await provider.client(for: session)
+        guard let room = try client.getRoom(roomId: roomID) else {
+            throw ChatServiceError.roomNotFound(roomID)
+        }
+        try await room.leave()
+        try await room.forget()
+    }
+
     public func chatSummaries() -> AsyncStream<[ChatSummary]> {
         AsyncStream { continuation in
             let task = Task {
@@ -116,4 +143,11 @@ public final class ChatServiceLive: ChatService, @unchecked Sendable {
         }
         return BotIdentity(matrixID: "@unknown:matron", displayName: fallbackTitle, avatarURL: nil)
     }
+}
+
+public enum ChatServiceError: Error, Equatable, Sendable {
+    /// Raised when `mute(roomID:)` or `leave(roomID:)` cannot resolve the
+    /// requested room — typically because the SDK hasn't synced it yet, or
+    /// the user has already left it.
+    case roomNotFound(String)
 }

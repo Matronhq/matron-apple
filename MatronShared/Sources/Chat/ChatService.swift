@@ -18,4 +18,24 @@ public protocol ChatService: Sendable {
     /// room ID. The bot is invited via the SDK's `CreateRoomParameters`;
     /// the server (tuwunel) is responsible for marking the room as a DM.
     func createChat(with botID: String) async throws -> String
+
+    /// Forces the chat list to re-poll its underlying source so consumers
+    /// observing `chatSummaries()` receive a fresh snapshot. Wired to the
+    /// iOS pull-to-refresh gesture and the Mac `⌘R` menu shortcut. The
+    /// Phase 1 contract that `chatSummaries()` is single-shot per call
+    /// stays intact — `refresh()` is a write-side ping that the Phase 2
+    /// live impl uses to wait for sync readiness; the consumer is
+    /// responsible for kicking off a new subscription.
+    func refresh() async throws
+
+    /// Mutes notifications for `roomID` by setting the SDK's
+    /// `NotificationSettings` room mode to `.mute`. Idempotent — calling
+    /// twice for an already-muted room is a no-op on the server.
+    func mute(roomID: String) async throws
+
+    /// Leaves and forgets `roomID`. The room disappears from the chat
+    /// list once the server confirms the leave; tuwunel may also tombstone
+    /// the room for the bot. Phase 4 will add a confirmation alert in the
+    /// UI so this isn't a one-tap destructive action.
+    func leave(roomID: String) async throws
 }
