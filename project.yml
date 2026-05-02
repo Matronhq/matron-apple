@@ -118,6 +118,25 @@ targets:
       - package: MatronShared
         product: MatronDesignSystem
 
+  MatronMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: MatronMacTests
+    settings:
+      base:
+        SUPPORTED_PLATFORMS: macosx
+    dependencies:
+      - target: MatronMac
+      - package: MatronShared
+        product: MatronAuth
+      - package: MatronShared
+        product: MatronChat
+      - package: MatronShared
+        product: MatronModels
+      - package: MatronShared
+        product: MatronViewModels
+
   MatronNSE:
     type: app-extension
     platform: iOS
