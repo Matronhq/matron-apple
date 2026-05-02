@@ -903,10 +903,18 @@ git push
 let search: SearchService
 
 init() throws {
-    let container = AppGroup.containerURL
-        ?? URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("matron-fallback")
-    try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
-    let dbURL = AppGroup.searchDBPath(in: container)
+    // Phase 1's StoragePaths exposes the search DB path as an optional URL
+    // (App Group entitlement may not resolve in test runners). Fall back to
+    // a per-process tmp dir when nil, matching the AppDependencies pattern.
+    let dbURL: URL
+    if let path = StoragePaths.searchDBPath {
+        dbURL = path
+    } else {
+        let fallback = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("matron-fallback")
+        try FileManager.default.createDirectory(at: fallback, withIntermediateDirectories: true)
+        dbURL = StoragePaths.searchDB(in: fallback)
+    }
     self.search = try SearchServiceLive(databaseURL: dbURL)
     // ... existing inits
 }
@@ -916,7 +924,7 @@ func chatService(for session: UserSession) -> ChatService {
 }
 ```
 
-> **Platform note:** `AppGroup.searchDBPath(in:)` (per Phase 1's `StoragePaths.swift`) resolves to different containers on each platform — App Group container on iOS, `~/Library/Application Support/chat.matron.mac/` on Mac — but the call site here is unchanged. **Verify** during this task that `searchDBPath` returns the correct path on both platforms (run the existing `AppGroupTests` plus a Mac smoke test that opens the DB via `SearchServiceLive` and writes a row). No code change in Phase 6; this is a verify-the-assumption step.
+> **Platform note:** `StoragePaths.searchDB(in:)` (per Phase 1's `StoragePaths.swift`) resolves to different containers on each platform — App Group container on iOS, `~/Library/Application Support/chat.matron.mac/` on Mac — but the call site here is unchanged. **Verify** during this task that `searchDBPath` returns the correct path on both platforms (run the existing `StoragePathsTests` plus a Mac smoke test that opens the DB via `SearchServiceLive` and writes a row). No code change in Phase 6; this is a verify-the-assumption step.
 
 The Mac app's `AppDependencies` (or equivalent — see Phase 1/2 plans) constructs `SearchServiceLive(databaseURL:)` the same way; the platform-conditional path resolution lives behind the `StoragePaths` API.
 
@@ -995,8 +1003,8 @@ final class SearchViewModelTests: XCTestCase {
     func test_chatHits_filterByTitleOrBotName() {
         let claude = BotIdentity(matrixID: "@claude:s", displayName: "Claude", avatarURL: nil)
         let chats = [
-            ChatSummary(id: "!1:s", title: "Auth bug", bot: claude, lastActivity: Date(), unreadCount: 0),
-            ChatSummary(id: "!2:s", title: "Refactor", bot: claude, lastActivity: Date(), unreadCount: 0),
+            ChatSummary(id: "!1:s", title: "Auth bug", bot: claude, lastActivity: nil, unreadCount: 0),
+            ChatSummary(id: "!2:s", title: "Refactor", bot: claude, lastActivity: nil, unreadCount: 0),
         ]
         let vm = SearchViewModel(search: FakeSearchService(), allChats: chats)
         vm.query = "auth"
@@ -1007,8 +1015,8 @@ final class SearchViewModelTests: XCTestCase {
     func test_chatTitle_resolvesViaAllChats() {
         let claude = BotIdentity(matrixID: "@claude:s", displayName: "Claude", avatarURL: nil)
         let chats = [
-            ChatSummary(id: "!a:s", title: "Auth bug", bot: claude, lastActivity: Date(), unreadCount: 0),
-            ChatSummary(id: "!b:s", title: "Refactor", bot: claude, lastActivity: Date(), unreadCount: 0),
+            ChatSummary(id: "!a:s", title: "Auth bug", bot: claude, lastActivity: nil, unreadCount: 0),
+            ChatSummary(id: "!b:s", title: "Refactor", bot: claude, lastActivity: nil, unreadCount: 0),
         ]
         let vm = SearchViewModel(search: FakeSearchService(), allChats: chats)
         XCTAssertEqual(vm.chatTitle(for: "!a:s"), "Auth bug")
@@ -1297,7 +1305,7 @@ final class MacSearchViewSnapshotTests: XCTestCase {
     @MainActor
     func test_macSearchResultsView_populated() {
         let claude = BotIdentity(matrixID: "@claude:s", displayName: "Claude", avatarURL: nil)
-        let chats = [ChatSummary(id: "!1:s", title: "Auth bug", bot: claude, lastActivity: Date(), unreadCount: 0)]
+        let chats = [ChatSummary(id: "!1:s", title: "Auth bug", bot: claude, lastActivity: nil, unreadCount: 0)]
         let vm = SearchViewModel(search: FakeSearchService(), allChats: chats)
         vm.query = "auth"
         // Inject a hit by stashing it in the fake; assert the view renders
@@ -1512,7 +1520,7 @@ After acceptance, write Phase 7 plan (polish).
 - **§5.9 Mac UX:** Task 10. Mac search field lives in the chat-window **toolbar** (per spec §5.9 toolbar table — search field, focused by `⌘F`); the `Find in Chat` menu item from Phase 2 wires through to a `@FocusState` flip. A non-empty query swaps the detail column for `MacSearchResultsView`, which renders the same two-section layout as iOS using the shared `SearchViewModel`. Selecting a result restores the detail column with the chat focused (and event highlighted, for message hits). No file protection on Mac — `NSFileProtectionComplete` is wrapped in `#if os(iOS)` (Task 2 Step 1) since macOS has no file protection classes; encryption at rest is FileVault's responsibility per spec §9.2. The `<mark>…</mark>` snippet renderer is platform-agnostic so no Mac-specific text rendering changes are needed.
 - **§6.2 Decryption hook:** Task 5. Platform-agnostic — both apps share `ChatServiceLive` from `MatronShared`.
 - **§9.1 Schema:** Task 2. Uses content-table FTS5: a `messages` table holds the indexable columns + UNIQUE `event_id`, `messages_fts` mirrors only `body`, and three triggers (`messages_ai`/`messages_ad`/`messages_au`) keep them synchronised. This is mandatory because FTS5 silently no-ops `DELETE … WHERE` clauses against `UNINDEXED` columns; the content-table design lets `INSERT OR REPLACE INTO messages` and `DELETE FROM messages WHERE event_id = ?` work for idempotent re-indexing and redactions.
-- **§9.2 File location & protection:** Tasks 2 + 7. On iOS the DB file is **pre-created** with `NSFileProtectionComplete` at the file-creation step (Task 2 Step 1), avoiding the brief unprotected window that `setAttributes` after `DatabaseQueue` open would leave; a defensive assertion verifies the attribute. On Mac the protection block is `#if os(iOS)`-gated and the file lives at `~/Library/Application Support/chat.matron.mac/matron-search.sqlite` (sandbox-private; FileVault covers encryption at rest). Path resolution is unified behind `AppGroup.searchDBPath` / `StoragePaths.swift` from Phase 1 — Phase 6 just verifies the assumption (Task 7 Step 1). Wipe on sign-out covered for both platforms in Task 7 Step 3.
+- **§9.2 File location & protection:** Tasks 2 + 7. On iOS the DB file is **pre-created** with `NSFileProtectionComplete` at the file-creation step (Task 2 Step 1), avoiding the brief unprotected window that `setAttributes` after `DatabaseQueue` open would leave; a defensive assertion verifies the attribute. On Mac the protection block is `#if os(iOS)`-gated and the file lives at `~/Library/Application Support/chat.matron.mac/matron-search.sqlite` (sandbox-private; FileVault covers encryption at rest). Path resolution is unified behind `StoragePaths.searchDB` / `StoragePaths.swift` from Phase 1 — Phase 6 just verifies the assumption (Task 7 Step 1). Wipe on sign-out covered for both platforms in Task 7 Step 3.
 - **§9.3 Index lifecycle:** Tasks 5 (live), 6 (backfill). `BackfillRunner` depends on a `TimelinePager` protocol (Task 6 Step 2) so the loop is fully testable with a fake. The runner walks pages backward, skips already-indexed events via `search.contains(eventID:)`, tracks the oldest-event ID, and stops on depth limit, `sinceCutoff`, or start-of-timeline. SDK-specific code lives only in `TimelinePagerLive`. Tests cover three batches with mixed indexable/non-indexable items, the depth-limit cap, `sinceCutoff` early-stop, and the duplicate-skip path. Lifecycle is identical on both platforms — same `BackfillProgress` AsyncStream feeds `SearchViewModel.emptyResultsMessage` on iOS and Mac.
 - **§9.4 Query:** Task 4. The query JOINs `messages_fts` to `messages` to recover sender/timestamp/room_id (no longer in the FTS table). Snippet column index is `0` (FTS5 contains only `body`), not `4` as in the original spec snippet — this is documented inline.
 - **Test coverage of redaction:** added `test_remove_clearsFTSRow` (Task 4) and `test_deleteRemovesFromFTS` (Task 2) to lock in trigger correctness.
