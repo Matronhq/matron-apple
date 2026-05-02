@@ -42,9 +42,17 @@ struct MacChatListView: View {
         }
         .navigationTitle("Matron")
         .sheet(isPresented: $showingNewChat) {
-            // Task 14 lands the real `NewChatSheet`. Until then the sheet
-            // shows a small placeholder so the toolbar wiring is testable.
-            MacNewChatPlaceholder(onDismiss: { showingNewChat = false })
+            // Mac `AppDependencies` is a per-target type, so the sheet
+            // wires off the Mac variant. The placeholder fallback keeps
+            // previews / tests rendering when the environment isn't
+            // populated.
+            if let deps, let session {
+                MacNewChatSheet(deps: deps, session: session) { _ in
+                    showingNewChat = false
+                }
+            } else {
+                MacNewChatPlaceholder(onDismiss: { showingNewChat = false })
+            }
         }
         .task { viewModel.start() }
         .onDisappear { viewModel.cancel() }

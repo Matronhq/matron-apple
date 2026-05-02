@@ -67,11 +67,17 @@ struct ChatListView: View {
             }
         }
         .sheet(isPresented: $showingNewChat) {
-            // Task 14 lands `NewChatSheet`. Until then the sheet shows a
-            // small placeholder so the toolbar button is testable in
-            // isolation; the binding plumbing is what Task 13 needs to
-            // get right.
-            NewChatPlaceholder(onDismiss: { showingNewChat = false })
+            // `deps` / `session` come from the environment so the sheet
+            // body is conditional. Without either we render the original
+            // placeholder so the toolbar button is still observable in
+            // tests / previews where the environment isn't injected.
+            if let deps, let session {
+                NewChatSheet(deps: deps, session: session) { _ in
+                    showingNewChat = false
+                }
+            } else {
+                NewChatPlaceholder(onDismiss: { showingNewChat = false })
+            }
         }
         .navigationDestination(for: ChatSummary.self) { summary in
             chatDestination(for: summary)
