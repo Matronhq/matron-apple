@@ -19,6 +19,11 @@ struct ChatListView: View {
     @Environment(\.appDependencies) private var deps
     @Environment(\.currentSession) private var session
     @State private var showingNewChat = false
+    /// The chat whose ⓘ button was tapped. Setting this drives the
+    /// `.sheet(item:)` presentation of `BotProfileView`. Cleared back to
+    /// `nil` either by the sheet's onDismiss or when the user picks a chat
+    /// from inside the sheet.
+    @State private var botProfileSummary: ChatSummary?
 
     var body: some View {
         Group {
@@ -79,6 +84,28 @@ struct ChatListView: View {
                 NewChatPlaceholder(onDismiss: { showingNewChat = false })
             }
         }
+        .sheet(item: $botProfileSummary) { summary in
+            // Snapshot the current grouped summaries flat-list — the
+            // BotProfileViewModel filters by bot.matrixID at construction.
+            // Re-opening the sheet picks up a fresh snapshot from the
+            // groups state at that moment.
+            let allSummaries = viewModel.groups.flatMap(\.summaries)
+            let bpVM = BotProfileViewModel(bot: summary.bot, allSummaries: allSummaries)
+            BotProfileView(
+                viewModel: bpVM,
+                onSelectChat: { _ in
+                    // Phase-2 simply closes the sheet; in-sheet navigation
+                    // to a different chat with the same bot is a Phase-3
+                    // task. The user's already inside *some* chat with the
+                    // bot, so dismissing returns them there.
+                    botProfileSummary = nil
+                },
+                onStartNewChat: {
+                    botProfileSummary = nil
+                    showingNewChat = true
+                }
+            )
+        }
         .navigationDestination(for: ChatSummary.self) { summary in
             chatDestination(for: summary)
         }
@@ -100,7 +127,7 @@ struct ChatListView: View {
                 viewModel: chatVM,
                 composerVM: composerVM,
                 chatTitle: summary.title,
-                onShowBotProfile: { /* Task 15 wires the bot profile sheet */ }
+                onShowBotProfile: { botProfileSummary = summary }
             )
         } else {
             ContentUnavailableView(
