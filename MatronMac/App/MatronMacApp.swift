@@ -21,6 +21,8 @@ struct MatronMacApp: App {
                         viewModel: ChatListViewModel(chat: dependencies.chatService(for: session))
                     )
                     .frame(minWidth: 800, minHeight: 600)
+                    .environment(\.appDependencies, dependencies)
+                    .environment(\.currentSession, session)
                     .task { try? await dependencies.syncService(for: session).start() }
                 } else {
                     MacSignInView(
