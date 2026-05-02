@@ -542,15 +542,23 @@ final class NotificationService: UNNotificationServiceExtension {
 
         Task {
             do {
-                guard let container = AppGroup.containerURL else {
+                guard let container = StoragePaths.groupContainer else {
                     fallback(); return
                 }
-                let keychain = KeychainStore(service: "chat.matron.session")
-                let auth = AuthServiceLive(keychain: keychain, basePath: container)
+                // Match the main app's storage layout (Phase 1 AppDependencies):
+                // sdk-store holds the SDK's SQLite + crypto store; sessions/
+                // holds the persisted UserSession JSON via FileSessionStore.
+                // KeychainStore conforms to SessionStore — once Phase 4 wires
+                // the keychain-access-groups entitlement, swap FileSessionStore
+                // for KeychainStore here so iOS app and NSE share session state.
+                let sdkStore = container.appendingPathComponent("sdk-store")
+                let sessionsDir = container.appendingPathComponent("sessions")
+                let sessionStore = FileSessionStore(directory: sessionsDir)
+                let auth = AuthServiceLive(sessionStore: sessionStore, basePath: sdkStore)
                 guard let session = try await auth.restoreSession() else {
                     fallback(); return
                 }
-                let provider = ClientProvider(basePath: container)
+                let provider = ClientProvider(basePath: sdkStore)
                 let decoder = PushDecoder.live(provider: provider, session: session)
                 let decoded = try await decoder.decode(roomID: roomID, eventID: eventID)
 

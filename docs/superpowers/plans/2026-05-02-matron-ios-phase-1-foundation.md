@@ -1555,7 +1555,7 @@ final class AuthServiceLivePersistenceTests: XCTestCase {
 
     override func setUp() async throws {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        service = AuthServiceLive(keychain: keychain, basePath: tempDir)
+        service = AuthServiceLive(sessionStore: keychain, basePath: tempDir)
     }
 
     override func tearDown() async throws {
@@ -3065,7 +3065,7 @@ final class AppDependencies {
             service: "chat.matron.session",
             accessGroup: nil
         )
-        self.auth = AuthServiceLive(keychain: keychain, basePath: container)
+        self.auth = AuthServiceLive(sessionStore: keychain, basePath: container)
         self.clientProvider = ClientProvider(basePath: container)
     }
 
@@ -3189,7 +3189,7 @@ final class AppDependencies {
             service: "chat.matron.mac.session",
             accessGroup: nil
         )
-        self.auth = AuthServiceLive(keychain: keychain, basePath: container)
+        self.auth = AuthServiceLive(sessionStore: keychain, basePath: container)
         self.clientProvider = ClientProvider(basePath: container)
     }
 
