@@ -5,13 +5,13 @@ import MatronStorage
 
 final class AuthServiceLivePersistenceTests: XCTestCase {
     var service: AuthServiceLive!
-    let keychain = KeychainStore(service: "chat.matron.test.auth")
     let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("matron-auth-test-\(UUID().uuidString)")
 
     override func setUp() async throws {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        service = AuthServiceLive(keychain: keychain, basePath: tempDir)
+        let sessionStore = FileSessionStore(directory: tempDir.appendingPathComponent("sessions"))
+        service = AuthServiceLive(sessionStore: sessionStore, basePath: tempDir)
     }
 
     override func tearDown() async throws {

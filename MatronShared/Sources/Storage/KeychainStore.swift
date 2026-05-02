@@ -1,9 +1,19 @@
 import Foundation
 import Security
 
-public enum KeychainError: Error {
+public enum KeychainError: Error, LocalizedError {
     case unhandled(OSStatus)
     case dataCorrupted
+
+    public var errorDescription: String? {
+        switch self {
+        case .unhandled(let status):
+            let message = SecCopyErrorMessageString(status, nil) as String? ?? "unknown"
+            return "Keychain error \(status): \(message)"
+        case .dataCorrupted:
+            return "Keychain value could not be decoded as UTF-8."
+        }
+    }
 }
 
 public struct KeychainStore {

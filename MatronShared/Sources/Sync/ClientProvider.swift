@@ -17,6 +17,7 @@ public actor ClientProvider {
         let client = try await ClientBuilder()
             .serverNameOrHomeserverUrl(serverNameOrUrl: session.homeserverURL.absoluteString)
             .sessionPaths(dataPath: basePath.path, cachePath: basePath.path)
+            .slidingSyncVersionBuilder(versionBuilder: .native)
             .build()
         let sdkSession = Session(
             accessToken: session.accessToken,

@@ -25,11 +25,13 @@ final class AppDependencies {
         #endif
         try? FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
 
-        let keychain = KeychainStore(
-            service: "chat.matron.session",
-            accessGroup: nil
-        )
-        self.auth = AuthServiceLive(keychain: keychain, basePath: container)
+        // Phase 1 uses a file-backed session store rather than Keychain. The
+        // iOS Simulator rejects keychain-access-groups entitlements without a
+        // signing team, and ad-hoc signing strips them. Phase 3 (verification
+        // / recovery key) will add a SessionStore that picks Keychain when
+        // entitlements resolve and falls back to file storage otherwise.
+        let sessionStore = FileSessionStore(directory: container.appendingPathComponent("sessions"))
+        self.auth = AuthServiceLive(sessionStore: sessionStore, basePath: container)
         self.clientProvider = ClientProvider(basePath: container)
     }
 

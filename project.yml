@@ -56,8 +56,12 @@ targets:
       properties:
         com.apple.security.application-groups:
           - group.chat.matron
-        keychain-access-groups:
-          - $(AppIdentifierPrefix)chat.matron
+        # keychain-access-groups intentionally absent in Phase 1. iOS Simulator
+        # rejects keychain ops without a signing-team-resolved access group
+        # ($(AppIdentifierPrefix) doesn't expand without a team). Phase 1 stores
+        # the post-login session as a JSON file via FileSessionStore (in the
+        # SDK's basePath alongside its own SQLite store). Phase 3 will add
+        # Keychain back when signing is wired.
     scheme: {}
     dependencies:
       - package: MatronShared
@@ -158,8 +162,7 @@ targets:
       properties:
         com.apple.security.application-groups:
           - group.chat.matron
-        keychain-access-groups:
-          - $(AppIdentifierPrefix)chat.matron
+        # keychain-access-groups omitted — see note on the Matron target.
     dependencies:
       - package: MatronShared
         product: MatronStorage
