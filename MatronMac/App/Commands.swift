@@ -4,14 +4,14 @@ import SwiftUI
 /// posts a corresponding `Notification`; views observe via
 /// `.onReceive(NotificationCenter.default.publisher(for: .matronCommand(.case)))`.
 ///
-/// Task 14c lands a minimal version (just `.refresh`) so `MacChatView`
-/// can wire ⌘R while the menu bar itself isn't mounted yet. Task 14e
-/// expands the enum to the full set (newChat, signOut, findInChat,
-/// slashCommand, toggleSidebar, font-size cases, verifyDevice,
-/// showRecoveryKey) and adds the `ChatCommands` struct + `.commands { … }`
-/// mounting on the main scene.
+/// Task 14c landed `.refresh`; Task 14d adds `.toggleSidebar` for the
+/// chat-toolbar sidebar button. Task 14e expands the enum to the full
+/// set (newChat, signOut, findInChat, slashCommand, font-size cases,
+/// verifyDevice, showRecoveryKey) and adds the `ChatCommands` struct +
+/// `.commands { … }` mounting on the main scene.
 public enum MatronCommand: String, CaseIterable, Sendable {
     case refresh
+    case toggleSidebar
 }
 
 public extension Notification.Name {
