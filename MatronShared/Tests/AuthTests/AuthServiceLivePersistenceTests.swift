@@ -10,8 +10,12 @@ final class AuthServiceLivePersistenceTests: XCTestCase {
 
     override func setUp() async throws {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let sessionStore = FileSessionStore(directory: tempDir.appendingPathComponent("sessions"))
-        service = AuthServiceLive(sessionStore: sessionStore, basePath: tempDir)
+        let sdkStore = tempDir.appendingPathComponent("sdk-store")
+        let sessionsDir = tempDir.appendingPathComponent("sessions")
+        try FileManager.default.createDirectory(at: sdkStore, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
+        let sessionStore = FileSessionStore(directory: sessionsDir)
+        service = AuthServiceLive(sessionStore: sessionStore, basePath: sdkStore)
     }
 
     override func tearDown() async throws {

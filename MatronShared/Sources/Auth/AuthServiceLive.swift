@@ -43,11 +43,14 @@ public final class AuthServiceLive: AuthService, @unchecked Sendable {
         password: String,
         initialDeviceDisplayName: String
     ) async throws -> UserSession {
-        // Phase 1 simplification: each fresh login starts with a clean
-        // basePath. Otherwise the SDK's crypto store remembers the previous
-        // device_id and rejects the new login with "account in the store
-        // doesn't match the account in the constructor". Phase 3 will reuse
-        // the existing store via restoreSession when the same user re-logs in.
+        // Phase 1 simplification: each fresh login starts with a clean SDK
+        // store. Otherwise the SDK remembers the previous device_id and
+        // rejects the new login with "account in the store doesn't match the
+        // account in the constructor". Callers must scope `basePath` to a
+        // directory that contains *only* the SDK's SQLite + crypto store —
+        // never the persisted UserSession JSON, which lives in a sibling
+        // directory owned by SessionStore. Phase 3 will reuse the existing
+        // store via restoreSession when the same user re-logs in.
         try? FileManager.default.removeItem(at: basePath)
         try? FileManager.default.createDirectory(at: basePath, withIntermediateDirectories: true)
 

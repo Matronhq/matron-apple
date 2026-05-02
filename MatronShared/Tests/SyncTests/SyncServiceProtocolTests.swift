@@ -66,4 +66,21 @@ final class SyncServiceProtocolTests: XCTestCase {
         try await svc.start()
         try await svc.waitUntilReady()
     }
+
+    func test_syncReadyError_distinguishesTerminalStates() {
+        // The live impl's waitUntilReady() throws one of these when sync
+        // reaches a terminal state without ever passing .running. Locking the
+        // shape so a future refactor doesn't silently merge them.
+        XCTAssertNotEqual(SyncReadyError.timeout, SyncReadyError.terminated)
+        XCTAssertNotEqual(SyncReadyError.timeout, SyncReadyError.errored)
+        XCTAssertNotEqual(SyncReadyError.terminated, SyncReadyError.errored)
+    }
+
+    func test_readyTimeout_isAReasonableUpperBound() {
+        // Tighter bound would surface false positives on a slow first sync
+        // against a real homeserver; looser would let the UI wedge for too
+        // long when the server is unreachable.
+        XCTAssertGreaterThanOrEqual(SyncServiceLive.readyTimeout, 10)
+        XCTAssertLessThanOrEqual(SyncServiceLive.readyTimeout, 60)
+    }
 }
