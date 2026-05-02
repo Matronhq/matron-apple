@@ -45,8 +45,8 @@ let package = Package(
             path: "Sources/Chat"
         ),
         .testTarget(name: "StorageTests", dependencies: ["MatronStorage"], path: "Tests/StorageTests"),
-        .testTarget(name: "AuthTests", dependencies: ["MatronAuth"], path: "Tests/AuthTests"),
-        .testTarget(name: "SyncTests", dependencies: ["MatronSync"], path: "Tests/SyncTests"),
-        .testTarget(name: "ChatTests", dependencies: ["MatronChat"], path: "Tests/ChatTests"),
+        .testTarget(name: "AuthTests", dependencies: ["MatronAuth", "MatronModels"], path: "Tests/AuthTests"),
+        .testTarget(name: "SyncTests", dependencies: ["MatronSync", "MatronModels"], path: "Tests/SyncTests"),
+        .testTarget(name: "ChatTests", dependencies: ["MatronChat", "MatronModels"], path: "Tests/ChatTests"),
     ]
 )
