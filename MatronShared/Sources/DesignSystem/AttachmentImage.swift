@@ -31,9 +31,13 @@ public struct AttachmentImage: View {
                 } else {
                     ZStack {
                         Rectangle().fill(.secondary.opacity(0.2))
-                        Image(systemName: "photo")
-                            .font(.largeTitle)
-                            .foregroundStyle(.secondary)
+                        VStack(spacing: 4) {
+                            Image(systemName: "photo")
+                                .font(.largeTitle)
+                            Text(placeholder)
+                                .font(.caption)
+                        }
+                        .foregroundStyle(.secondary)
                     }
                 }
             }
