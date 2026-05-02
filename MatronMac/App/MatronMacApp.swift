@@ -33,6 +33,10 @@ struct MatronMacApp: App {
             }
         }
         .windowResizability(.contentMinSize)
+        // Mac menu bar — File / Edit / View / Help shortcuts that post
+        // to a `NotificationCenter` command bus. See `Commands.swift`
+        // for the keyboard shortcuts and notification names.
+        .commands { ChatCommands() }
 
         // Placeholder — Phase 7 fills in the full Settings UI.
         Settings {
@@ -40,7 +44,6 @@ struct MatronMacApp: App {
                 .padding()
                 .frame(width: 480, height: 240)
         }
-        // Phase 2 attaches the real menu bar (.commands { CommandMenu… }).
     }
 
     private func bootstrap() async {
