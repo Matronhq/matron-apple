@@ -5,15 +5,17 @@ public enum StoragePaths {
     #if os(iOS)
     public static let appGroupIdentifier = "group.chat.matron"
 
-    /// Force-unwrapped because every shipped iOS build has the App Group
-    /// entitlement; the only environment in which this is `nil` is the SPM
-    /// test runner, which never touches this property.
-    public static let groupContainer: URL = FileManager.default.containerURL(
-        forSecurityApplicationGroupIdentifier: appGroupIdentifier
-    )!
+    /// Optional — `nil` when the App Group entitlement isn't provisioned
+    /// (e.g. SPM test runner, or a build with `CODE_SIGNING_ALLOWED=NO` that
+    /// strips the entitlement). Callers must handle the `nil` case; the
+    /// previous force-unwrap was a footgun for any future code path that
+    /// reaches here outside the entitled iOS app target.
+    public static var groupContainer: URL? {
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier)
+    }
 
-    public static let cryptoStorePath = groupContainer.appendingPathComponent("crypto-store")
-    public static let searchDBPath   = groupContainer.appendingPathComponent("matron-search.sqlite")
+    public static var cryptoStorePath: URL? { groupContainer?.appendingPathComponent("crypto-store") }
+    public static var searchDBPath: URL?   { groupContainer?.appendingPathComponent("matron-search.sqlite") }
 
     /// Pure helper for tests / fallback paths.
     public static func cryptoStore(in container: URL) -> URL {

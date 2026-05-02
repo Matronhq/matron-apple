@@ -32,6 +32,7 @@ struct ChatListView: View {
             }
             .navigationTitle("Matron")
             .task { viewModel.start() }
+            .onDisappear { viewModel.cancel() }
         }
     }
 }
@@ -47,9 +48,11 @@ private struct ChatRow: View {
                 Text(summary.bot.displayName).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            Text(summary.lastActivity, style: .relative)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            if let lastActivity = summary.lastActivity {
+                Text(lastActivity, style: .relative)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
             if summary.unreadCount > 0 {
                 Circle().fill(.blue).frame(width: 8, height: 8)
             }

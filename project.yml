@@ -122,6 +122,25 @@ targets:
       - package: MatronShared
         product: MatronDesignSystem
 
+  MatronTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: MatronTests
+    settings:
+      base:
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+    dependencies:
+      - target: Matron
+      - package: MatronShared
+        product: MatronAuth
+      - package: MatronShared
+        product: MatronChat
+      - package: MatronShared
+        product: MatronModels
+      - package: MatronShared
+        product: MatronViewModels
+
   MatronMacTests:
     type: bundle.unit-test
     platform: macOS

@@ -54,7 +54,11 @@ public final class ChatServiceLive: ChatService, @unchecked Sendable {
             let roomID = room.id()
             let title = room.displayName() ?? roomID
             let bot = botIdentity(from: room, excluding: myID, fallbackTitle: title)
-            let lastActivity = await timestamp(of: room.latestEvent()) ?? Date()
+            // `nil` when latestEvent() is .none — the timeline hasn't been
+            // hydrated yet. UI hides the relative-time label and the row
+            // sorts to the bottom of its bucket. Phase 2's timeline
+            // subscription will fill these in for real.
+            let lastActivity = await timestamp(of: room.latestEvent())
             result.append(
                 ChatSummary(
                     id: roomID,

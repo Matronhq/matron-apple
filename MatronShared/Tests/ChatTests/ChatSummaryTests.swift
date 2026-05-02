@@ -24,4 +24,8 @@ final class ChatRecencyGroupTests: XCTestCase {
         let date = calendar.date(byAdding: .day, value: -30, to: now)!
         XCTAssertEqual(ChatRecencyGroup.bucket(date, now: now, calendar: calendar), .earlier)
     }
+
+    func test_buckets_noActivity_whenDateIsNil() {
+        XCTAssertEqual(ChatRecencyGroup.bucket(nil, now: now, calendar: calendar), .noActivity)
+    }
 }
