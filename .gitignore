@@ -1,0 +1,35 @@
+# macOS
+.DS_Store
+
+# Xcode
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad/
+DerivedData/
+build/
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+Matron.xcodeproj/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+# NOTE: Package.resolved is NOT gitignored — it pins SDK versions for reproducible
+# CI builds. If matrix-rust-components-swift ships a breaking change, an unpinned
+# resolution would break CI on machines that haven't cached the previous version.
+
+# CocoaPods (not used, but defensive)
+Pods/
+
+# fastlane (not used yet)
+fastlane/report.xml
+fastlane/screenshots
+fastlane/test_output
+
+# IDE
+.vscode/
+.idea/
