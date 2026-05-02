@@ -25,7 +25,7 @@ packages:
     path: MatronShared
   MatrixRustSDK:
     url: https://github.com/matrix-org/matrix-rust-components-swift
-    from: "25.1.0"
+    from: "26.04.01"
 
 targets:
   Matron:
