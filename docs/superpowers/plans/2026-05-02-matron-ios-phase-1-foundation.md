@@ -259,7 +259,7 @@ open Matron.xcworkspace
 
 ```bash
 # iOS
-xcodebuild test -workspace Matron.xcworkspace -scheme Matron -destination 'platform=iOS Simulator,name=iPhone 15'
+xcodebuild test -workspace Matron.xcworkspace -scheme Matron -destination 'platform=iOS Simulator,name=iPhone 17'
 
 # macOS
 xcodebuild test -workspace Matron.xcworkspace -scheme MatronMac -destination 'platform=macOS'
@@ -516,7 +516,7 @@ packages:
     path: MatronShared
   MatrixRustSDK:
     url: https://github.com/matrix-org/matrix-rust-components-swift
-    from: "25.1.0"
+    from: "26.04.01"
 
 targets:
   Matron:
@@ -733,7 +733,7 @@ Expected: `Matron.xcodeproj/` created with no errors. The schemes `Matron`, `Mat
 - [ ] **Step 5: Open in Xcode and verify both apps build**
 
 Run: `open Matron.xcodeproj` (workspace is generated alongside)
-- Build the `Matron` scheme for an iPhone 15 simulator. Running shows "Matron — Phase 1 scaffold" text on screen.
+- Build the `Matron` scheme for an iPhone 17 simulator. Running shows "Matron — Phase 1 scaffold" text on screen.
 - Build the `MatronMac` scheme on the macOS host. Running shows a resizable window (≥800×600) with "Matron — Phase 1 scaffold (Mac)" text. `⌘,` opens the placeholder Settings window.
 
 Expected: both builds succeed. (`MatronNSE` builds as a dependency of `Matron`; no separate run.)
@@ -781,7 +781,7 @@ let package = Package(
         .library(name: "MatronDesignSystem", targets: ["MatronDesignSystem"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/matrix-org/matrix-rust-components-swift", from: "25.1.0"),
+        .package(url: "https://github.com/matrix-org/matrix-rust-components-swift", from: "26.04.01"),
     ],
     targets: [
         .target(name: "MatronModels", path: "Sources/Models"),
@@ -3137,7 +3137,7 @@ struct MatronApp: App {
 
 - [ ] **Step 3: Build & run on simulator**
 
-In Xcode: Product → Run (⌘R) on iPhone 15 simulator.
+In Xcode: Product → Run (⌘R) on iPhone 17 simulator.
 Expected:
 - App launches showing "Loading…"
 - Transitions to "Sign in to Matron" if no stored session
@@ -3302,7 +3302,7 @@ This is a documentation task — no code. Establishes the manual baseline that s
 Pre-req: a `dev-boxer` homeserver with a Matrix user account and at least one bot already invited to a room with that user.
 
 Steps:
-1. Cold-launch the app on iPhone 15 simulator.
+1. Cold-launch the app on iPhone 17 simulator.
 2. Enter homeserver URL, username, password. Tap Sign in.
 3. Wait for chat list to populate.
 4. Verify: at least one chat appears with the bot's display name and a recency timestamp.
@@ -3331,7 +3331,7 @@ Run before every TestFlight build (iOS) and every Mac App Store build.
 
 ### iOS — sign-in flow
 
-- [ ] Cold-launch on iPhone 15 simulator (or device) — sees Sign-in screen.
+- [ ] Cold-launch on iPhone 17 simulator (or device) — sees Sign-in screen.
 - [ ] Enter homeserver URL with no scheme (e.g. `matrix.example.com`) — accepted, normalised to HTTPS.
 - [ ] Enter homeserver URL with HTTP — rejected with friendly error.
 - [ ] Enter blatantly invalid credentials — sees error message in red.
@@ -3453,7 +3453,7 @@ jobs:
           xcodebuild build \
             -workspace Matron.xcworkspace \
             -scheme Matron \
-            -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
+            -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
             CODE_SIGNING_ALLOWED=NO
 
       - name: Run Matron app tests (iOS)
@@ -3461,7 +3461,7 @@ jobs:
           xcodebuild test \
             -workspace Matron.xcworkspace \
             -scheme Matron \
-            -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
+            -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
             CODE_SIGNING_ALLOWED=NO
 
   mac-build-and-test:

@@ -1343,8 +1343,14 @@ Append the following two stanzas under `targets:` in `project.yml`. Both referen
     sources:
       - path: MatronIntegrationTests
     dependencies:
+      # MatronShared exposes seven library products (no aggregate "MatronShared"
+      # product exists). Pick the products HappyPathTests actually imports —
+      # MatronAuth covers the Client builder + login helpers. Add more lines
+      # (MatronChat, MatronModels, etc.) if the test starts using their types.
       - package: MatronShared
-        product: MatronShared
+        product: MatronAuth
+      - package: MatrixRustSDK
+        product: MatrixRustSDK
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
@@ -1357,7 +1363,9 @@ Append the following two stanzas under `targets:` in `project.yml`. Both referen
       - path: MatronIntegrationTests   # same source — single canonical HappyPathTests.swift
     dependencies:
       - package: MatronShared
-        product: MatronShared
+        product: MatronAuth
+      - package: MatrixRustSDK
+        product: MatrixRustSDK
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
@@ -1383,8 +1391,10 @@ Create `MatronIntegrationTests/HappyPathTests.swift`:
 
 ```swift
 import XCTest
-@testable import MatronShared
 import MatrixRustSDK
+// Add `import MatronAuth` (or other MatronShared products) only if the test
+// helpers grow to use those types — `MatronShared` itself is not a Swift
+// module, the package exposes per-feature library products.
 
 /// One end-to-end happy-path test against a real Matrix homeserver
 /// brought up via `docker-compose.test.yml` (tuwunel on localhost:8008).
@@ -1508,7 +1518,7 @@ final class HappyPathTests: XCTestCase {
 Run locally on **both** schemes — expect failure (homeserver not yet up):
 
 ```bash
-xcodebuild test -scheme MatronIntegrationTests -destination 'platform=iOS Simulator,name=iPhone 15'
+xcodebuild test -scheme MatronIntegrationTests -destination 'platform=iOS Simulator,name=iPhone 17'
 xcodebuild test -scheme MatronMacIntegrationTests -destination 'platform=macOS'
 ```
 
@@ -1560,7 +1570,7 @@ Verify locally on both schemes:
 ```bash
 docker compose -f docker-compose.test.yml up -d
 until curl -sf http://localhost:8008/_matrix/client/versions; do sleep 2; done
-xcodebuild test -scheme MatronIntegrationTests    -destination 'platform=iOS Simulator,name=iPhone 15'
+xcodebuild test -scheme MatronIntegrationTests    -destination 'platform=iOS Simulator,name=iPhone 17'
 xcodebuild test -scheme MatronMacIntegrationTests -destination 'platform=macOS'
 docker compose -f docker-compose.test.yml down -v
 ```
@@ -1596,7 +1606,7 @@ jobs:
         include:
           - platform: ios
             scheme: MatronIntegrationTests
-            destination: 'platform=iOS Simulator,name=iPhone 15'
+            destination: 'platform=iOS Simulator,name=iPhone 17'
           - platform: macos
             scheme: MatronMacIntegrationTests
             destination: 'platform=macOS'

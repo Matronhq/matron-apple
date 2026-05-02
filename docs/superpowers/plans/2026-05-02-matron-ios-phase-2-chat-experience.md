@@ -149,7 +149,7 @@ Add to the Matron target's `dependencies` in `project.yml`:
 ```bash
 xcodegen generate
 xcodebuild build -workspace Matron.xcworkspace -scheme Matron \
-  -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
+  -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
   CODE_SIGNING_ALLOWED=NO
 ```
 
@@ -1296,7 +1296,7 @@ The production `TimelineListener.onUpdate(diff:)` (defined in `TimelineServiceLi
 cd MatronShared && swift test --filter TimelineDiffApplicationTests
 xcodegen generate
 xcodebuild build -workspace Matron.xcworkspace -scheme Matron \
-  -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' CODE_SIGNING_ALLOWED=NO
+  -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' CODE_SIGNING_ALLOWED=NO
 ```
 
 Expected: tests pass; project builds.
@@ -1809,7 +1809,7 @@ struct ComposerView: View {
 ```bash
 xcodegen generate
 xcodebuild build -workspace Matron.xcworkspace -scheme Matron \
-  -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
+  -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
   CODE_SIGNING_ALLOWED=NO
 ```
 
@@ -1951,7 +1951,11 @@ public final class ChatViewModel {
         observationTask?.cancel()
     }
 
-    deinit { observationTask?.cancel() }
+    // Note: no `deinit { observationTask?.cancel() }` — Swift 6 / Xcode 26
+    // strict concurrency forbids accessing @MainActor-isolated properties from
+    // a nonisolated deinit. Callers should invoke `stop()` explicitly when the
+    // ViewModel goes out of scope; the AsyncStream also drains naturally when
+    // the actor releases.
 
     public func paginateBackward() async {
         do {
@@ -2130,7 +2134,7 @@ struct TimelineItemView: View {
 cd MatronShared && swift test --filter MessageBubbleSnapshotTests
 xcodegen generate
 xcodebuild build -workspace Matron.xcworkspace -scheme Matron \
-  -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' CODE_SIGNING_ALLOWED=NO
+  -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' CODE_SIGNING_ALLOWED=NO
 ```
 
 - [ ] **Step 5: Commit**
@@ -2217,7 +2221,7 @@ struct ChatView: View {
 
 ```bash
 xcodebuild build -workspace Matron.xcworkspace -scheme Matron \
-  -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' CODE_SIGNING_ALLOWED=NO
+  -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' CODE_SIGNING_ALLOWED=NO
 ```
 
 - [ ] **Step 3: Commit**
@@ -2371,7 +2375,7 @@ public final class MediaServiceLive: MediaService, @unchecked Sendable {
 ```bash
 cd MatronShared && swift test --filter MediaServiceFakeTests
 xcodebuild build -workspace Matron.xcworkspace -scheme Matron \
-  -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' CODE_SIGNING_ALLOWED=NO
+  -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' CODE_SIGNING_ALLOWED=NO
 ```
 
 Expected: tests pass; project builds.
