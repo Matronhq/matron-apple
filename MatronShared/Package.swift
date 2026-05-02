@@ -18,6 +18,8 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/matrix-org/matrix-rust-components-swift", from: "26.04.01"),
+        .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.4.0"),
+        .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.17.0"),
     ],
     targets: [
         .target(name: "MatronModels", path: "Sources/Models"),
@@ -64,11 +66,25 @@ let package = Package(
         // DesignSystem starts empty in Phase 1 — primitives (MarkdownText,
         // CodeBlock, ToolCallCard, etc.) land in Phase 2. Declaring the target
         // now means Phase 2 just adds source files; no Package.swift churn.
-        .target(name: "MatronDesignSystem", path: "Sources/DesignSystem"),
+        .target(
+            name: "MatronDesignSystem",
+            dependencies: [
+                .product(name: "MarkdownUI", package: "swift-markdown-ui"),
+            ],
+            path: "Sources/DesignSystem"
+        ),
         .testTarget(name: "StorageTests", dependencies: ["MatronStorage"], path: "Tests/StorageTests"),
         .testTarget(name: "AuthTests", dependencies: ["MatronAuth", "MatronModels", "MatronStorage"], path: "Tests/AuthTests"),
         .testTarget(name: "SyncTests", dependencies: ["MatronSync", "MatronModels"], path: "Tests/SyncTests"),
         .testTarget(name: "ChatTests", dependencies: ["MatronChat", "MatronModels", "MatronSync"], path: "Tests/ChatTests"),
         .testTarget(name: "ViewModelTests", dependencies: ["MatronViewModels", "MatronAuth", "MatronChat", "MatronModels"], path: "Tests/ViewModelTests"),
+        .testTarget(
+            name: "DesignSystemSnapshotTests",
+            dependencies: [
+                "MatronDesignSystem",
+                .product(name: "SnapshotTesting", package: "swift-snapshot-testing"),
+            ],
+            path: "Tests/DesignSystemSnapshotTests"
+        ),
     ]
 )

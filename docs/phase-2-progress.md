@@ -13,3 +13,5 @@ Started 2026-05-02. Phase 1 shipped; this branch builds on top.
 ## Tasks (will be checked off as completed)
 
 See the plan for the canonical task list. Progress updates land here per push so a PR reviewer can scan a single file for context.
+
+- [x] **Task 1** — MarkdownUI + swift-snapshot-testing wired into `MatronShared/Package.swift`; added `DesignSystemSnapshotTests` test target. `MatronDesignSystem` was already declared in `project.yml` from Phase 1, so no project-yml churn.
