@@ -3,6 +3,7 @@ options:
   bundleIdPrefix: chat.matron
   deploymentTarget:
     iOS: "17.0"
+    macOS: "14.0"
   developmentLanguage: en
   createIntermediateGroups: true
 
@@ -11,8 +12,6 @@ settings:
     SWIFT_VERSION: "5.10"
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     APP_GROUP_ID: group.chat.matron
-    SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
-    SUPPORTS_MACCATALYST: NO
   configs:
     Debug:
       SWIFT_OPTIMIZATION_LEVEL: -Onone
@@ -50,6 +49,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: chat.matron.app
         CODE_SIGN_ENTITLEMENTS: Matron/App/Matron.entitlements
         TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+        SUPPORTS_MACCATALYST: NO
     entitlements:
       path: Matron/App/Matron.entitlements
       properties:
@@ -60,8 +61,62 @@ targets:
     scheme: {}
     dependencies:
       - package: MatronShared
+        product: MatronAuth
+      - package: MatronShared
+        product: MatronChat
+      - package: MatronShared
+        product: MatronModels
+      - package: MatronShared
+        product: MatronStorage
+      - package: MatronShared
+        product: MatronSync
+      - package: MatronShared
+        product: MatronViewModels
+      - package: MatronShared
+        product: MatronDesignSystem
       - package: MatrixRustSDK
         product: MatrixRustSDK
+
+  MatronMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: MatronMac
+    info:
+      path: MatronMac/App/Info.plist
+      properties:
+        CFBundleDisplayName: Matron
+        LSApplicationCategoryType: public.app-category.social-networking
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: chat.matron.mac
+        CODE_SIGN_ENTITLEMENTS: MatronMac/App/MatronMac.entitlements
+        SUPPORTED_PLATFORMS: macosx
+    entitlements:
+      path: MatronMac/App/MatronMac.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+        com.apple.security.files.user-selected.read-only: true
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)chat.matron.mac
+    scheme: {}
+    dependencies:
+      - package: MatronShared
+        product: MatronAuth
+      - package: MatronShared
+        product: MatronChat
+      - package: MatronShared
+        product: MatronModels
+      - package: MatronShared
+        product: MatronStorage
+      - package: MatronShared
+        product: MatronSync
+      - package: MatronShared
+        product: MatronViewModels
+      - package: MatronShared
+        product: MatronDesignSystem
 
   MatronNSE:
     type: app-extension
@@ -78,6 +133,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: chat.matron.app.nse
         CODE_SIGN_ENTITLEMENTS: MatronNSE/MatronNSE.entitlements
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
     entitlements:
       path: MatronNSE/MatronNSE.entitlements
       properties:
@@ -87,5 +143,6 @@ targets:
           - $(AppIdentifierPrefix)chat.matron
     dependencies:
       - package: MatronShared
+        product: MatronStorage
       - package: MatrixRustSDK
         product: MatrixRustSDK
