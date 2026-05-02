@@ -23,6 +23,11 @@ struct MacChatListView: View {
     @Environment(\.currentSession) private var session
     @State private var selectedSummary: ChatSummary?
     @State private var showingNewChat = false
+    /// The chat whose ⓘ button was tapped. Drives the
+    /// `.sheet(item: $botProfileSummary)` presentation of
+    /// `MacBotProfileSheet`. Cleared by the sheet's onDismiss / row tap /
+    /// "Start new chat" callbacks.
+    @State private var botProfileSummary: ChatSummary?
 
     var body: some View {
         NavigationSplitView {
@@ -53,6 +58,28 @@ struct MacChatListView: View {
             } else {
                 MacNewChatPlaceholder(onDismiss: { showingNewChat = false })
             }
+        }
+        .sheet(item: $botProfileSummary) { summary in
+            // Snapshot the sidebar's grouped summaries flat-list at
+            // presentation time. The shared `BotProfileViewModel` filters
+            // by `bot.matrixID`. Re-opening picks up a fresh snapshot.
+            let allSummaries = viewModel.groups.flatMap(\.summaries)
+            let bpVM = BotProfileViewModel(bot: summary.bot, allSummaries: allSummaries)
+            MacBotProfileSheet(
+                viewModel: bpVM,
+                onSelectChat: { selected in
+                    // Move selection to the tapped chat (Mac uses a
+                    // sidebar-driven `selectedSummary` rather than a
+                    // pushed NavigationStack), then dismiss.
+                    selectedSummary = selected
+                    botProfileSummary = nil
+                },
+                onStartNewChat: {
+                    botProfileSummary = nil
+                    showingNewChat = true
+                },
+                onDismiss: { botProfileSummary = nil }
+            )
         }
         .task { viewModel.start() }
         .onDisappear { viewModel.cancel() }
@@ -129,7 +156,7 @@ struct MacChatListView: View {
                 viewModel: chatVM,
                 composerVM: composerVM,
                 chatTitle: summary.title,
-                onShowBotProfile: { /* Task 15b wires the bot profile sheet */ }
+                onShowBotProfile: { botProfileSummary = summary }
             )
             .id(summary.id)
         } else {
