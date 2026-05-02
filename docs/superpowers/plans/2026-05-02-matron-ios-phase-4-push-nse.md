@@ -606,7 +606,7 @@ If anything has drifted (e.g. a stray edit) re-sync it now — the NSE cannot re
 ```bash
 xcodegen generate
 xcodebuild build -workspace Matron.xcworkspace -scheme MatronNSE \
-  -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' CODE_SIGNING_ALLOWED=NO
+  -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' CODE_SIGNING_ALLOWED=NO
 git add MatronNSE/NotificationService.swift project.yml
 git commit -m "feat: NSE decrypts event via PushDecoder and rewrites notification"
 git push
