@@ -1,0 +1,95 @@
+import Foundation
+
+extension TimelineItem {
+    /// Pretty-printed, JSON-shaped dump of the DTO for the long-press /
+    /// right-click "View source" sheet (Phase 2 Task 16).
+    ///
+    /// Phase 2 only has access to the `TimelineItem` DTO — not the underlying
+    /// raw Matrix event JSON. This synthesises a JSON-shaped record from the
+    /// DTO so the sheet is useful as a developer diagnostic surface
+    /// regardless. Phase 3+ will swap this for the SDK's
+    /// `EventTimelineItem.originalJson` once we wire that through.
+    ///
+    /// Output is real JSON (parseable by `JSONSerialization`), so users can
+    /// copy the contents into another tool. The `kind` field is a nested
+    /// object with a `type` discriminator and the kind's payload fields.
+    public func prettyJSON() -> String {
+        let payload: [String: Any] = [
+            "id": id,
+            "sender": sender,
+            "timestamp": ISO8601DateFormatter().string(from: timestamp),
+            "isOwn": isOwn,
+            "kind": kindAsJSON(),
+            "sendState": sendStateAsJSON(),
+        ]
+        // `.prettyPrinted` emits a multi-line layout. `.sortedKeys` keeps
+        // field order deterministic so two snapshots of the same DTO render
+        // byte-identically — useful for snapshotting and for users diffing
+        // two source dumps. `.withoutEscapingSlashes` keeps `mxc://` URLs
+        // readable instead of `mxc:\/\/`.
+        let options: JSONSerialization.WritingOptions = [
+            .prettyPrinted, .sortedKeys, .withoutEscapingSlashes
+        ]
+        guard
+            JSONSerialization.isValidJSONObject(payload),
+            let data = try? JSONSerialization.data(withJSONObject: payload, options: options),
+            let string = String(data: data, encoding: .utf8)
+        else {
+            // Should be unreachable — every value above is a JSON-safe
+            // primitive (String / Bool / nested [String: Any]). If this ever
+            // does fire, fall back to a minimal description so the sheet
+            // doesn't show an empty box.
+            return "{ \"id\": \"\(id)\", \"error\": \"could not serialise\" }"
+        }
+        return string
+    }
+
+    private func kindAsJSON() -> [String: Any] {
+        switch kind {
+        case .text(let body, let formattedHTML):
+            // `formattedHTML` is optional; emit `NSNull` (which serialises to
+            // JSON `null`) rather than dropping the key, so the shape stays
+            // stable across rows.
+            return [
+                "type": "text",
+                "body": body,
+                "formattedHTML": formattedHTML ?? NSNull(),
+            ]
+        case .image(let url, let caption, let sizeBytes):
+            return [
+                "type": "image",
+                "url": url?.absoluteString ?? NSNull(),
+                "caption": caption ?? NSNull(),
+                "sizeBytes": sizeBytes.map { NSNumber(value: $0) } ?? NSNull(),
+            ]
+        case .file(let url, let filename, let sizeBytes):
+            return [
+                "type": "file",
+                "url": url?.absoluteString ?? NSNull(),
+                "filename": filename,
+                "sizeBytes": sizeBytes.map { NSNumber(value: $0) } ?? NSNull(),
+            ]
+        case .stateChange(let text):
+            return [
+                "type": "stateChange",
+                "text": text,
+            ]
+        case .unknown(let eventType):
+            return [
+                "type": "unknown",
+                "eventType": eventType,
+            ]
+        }
+    }
+
+    private func sendStateAsJSON() -> [String: Any] {
+        switch sendState {
+        case .sent:
+            return ["status": "sent"]
+        case .sending:
+            return ["status": "sending"]
+        case .failed(let reason):
+            return ["status": "failed", "reason": reason]
+        }
+    }
+}

@@ -24,6 +24,11 @@ import MatronDesignSystem
 struct MacChatView: View {
     @State var viewModel: ChatViewModel
     @State var composerVM: ComposerViewModel
+    /// Backing state for the right-click "View source" sheet (Task 16).
+    /// `TimelineItem` is `Identifiable` (the SDK's stable
+    /// `TimelineUniqueId.id`), so `.sheet(item:)` re-presents a fresh sheet
+    /// when the user picks a different row.
+    @State private var sourceItem: TimelineItem?
 
     let chatTitle: String
     let onShowBotProfile: () -> Void
@@ -46,6 +51,14 @@ struct MacChatView: View {
                                         ShareLink(item: body) {
                                             Label("Share", systemImage: "square.and.arrow.up")
                                         }
+                                    }
+                                    // "View source" applies to every kind —
+                                    // text, image, file, stateChange, unknown
+                                    // — so it lives outside the `.text` guard.
+                                    Button {
+                                        sourceItem = item
+                                    } label: {
+                                        Label("View source", systemImage: "curlybraces")
                                     }
                                 }
                         }
@@ -100,6 +113,9 @@ struct MacChatView: View {
         // ⌘R refresh — driven by the menu-bar command bus (Task 14e).
         .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.refresh))) { _ in
             Task { await viewModel.refresh() }
+        }
+        .sheet(item: $sourceItem) { item in
+            MacEventSourceSheet(item: item, onDismiss: { sourceItem = nil })
         }
     }
 }

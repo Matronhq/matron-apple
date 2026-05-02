@@ -72,6 +72,28 @@ final class MacChatViewTests: XCTestCase {
         XCTAssertFalse(composer.showPalette)
     }
 
+    /// Task 16: right-click "View source" presents a `MacEventSourceSheet`
+    /// whose body is `item.prettyJSON()`. Constructing the sheet here
+    /// exercises the binding wiring; the underlying JSON shape is
+    /// verified at the SPM level in `TimelineItemTests`.
+    func test_macEventSourceSheet_compiles_andInvokesDismiss() {
+        let item = TimelineItem(
+            id: "$evt:mac:1",
+            sender: "@bot:s",
+            timestamp: .now,
+            kind: .text(body: "hi", formattedHTML: nil),
+            isOwn: false
+        )
+        var dismissals = 0
+        let sheet = MacEventSourceSheet(item: item, onDismiss: { dismissals += 1 })
+        XCTAssertEqual(sheet.item.id, "$evt:mac:1")
+        // Invoke the dismiss closure directly to verify the binding is
+        // plumbed through (the SwiftUI body itself isn't rendered here).
+        sheet.onDismiss()
+        XCTAssertEqual(dismissals, 1)
+        XCTAssertTrue(item.prettyJSON().contains("$evt:mac:1"))
+    }
+
     /// Constructing the view exercises the @State + binding wiring at
     /// compile time; the body itself isn't rendered in this unit test
     /// (no host scene).

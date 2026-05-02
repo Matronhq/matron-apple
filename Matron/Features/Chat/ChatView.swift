@@ -14,6 +14,11 @@ import MatronViewModels
 struct ChatView: View {
     @State var viewModel: ChatViewModel
     @State var composerVM: ComposerViewModel
+    /// Backing state for the "View source" sheet. `TimelineItem` is
+    /// `Identifiable` (the SDK's stable `TimelineUniqueId.id`), so
+    /// `.sheet(item:)` re-presents a fresh sheet whenever the user picks a
+    /// different row instead of clinging to the prior one.
+    @State private var sourceItem: TimelineItem?
 
     let chatTitle: String
     let onShowBotProfile: () -> Void
@@ -36,6 +41,14 @@ struct ChatView: View {
                                         ShareLink(item: body) {
                                             Label("Share", systemImage: "square.and.arrow.up")
                                         }
+                                    }
+                                    // "View source" applies to every kind —
+                                    // text, image, file, stateChange, unknown
+                                    // — so it lives outside the `.text` guard.
+                                    Button {
+                                        sourceItem = item
+                                    } label: {
+                                        Label("View source", systemImage: "curlybraces")
                                     }
                                 }
                         }
@@ -79,5 +92,8 @@ struct ChatView: View {
             await viewModel.markAsRead()
         }
         .onDisappear { viewModel.stop() }
+        .sheet(item: $sourceItem) { item in
+            EventSourceSheet(item: item)
+        }
     }
 }

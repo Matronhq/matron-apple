@@ -86,6 +86,26 @@ final class ChatViewBindingTests: XCTestCase {
     }
 
     @MainActor
+    func test_eventSourceSheet_compiles_andRendersDTOJSON() {
+        // Task 16: long-press "View source" presents an `EventSourceSheet`
+        // whose body is `item.prettyJSON()`. Constructing the sheet here
+        // exercises the binding wiring; the underlying JSON shape is
+        // verified at the SPM level in `TimelineItemTests`.
+        let item = TimelineItem(
+            id: "$evt:1",
+            sender: "@bot:s",
+            timestamp: .now,
+            kind: .text(body: "hi", formattedHTML: nil),
+            isOwn: false
+        )
+        let sheet = EventSourceSheet(item: item)
+        XCTAssertEqual(sheet.item.id, "$evt:1")
+        // The sheet renders `item.prettyJSON()` — keep this assertion in
+        // sync with the SPM tests so a refactor of either side trips here.
+        XCTAssertTrue(item.prettyJSON().contains("$evt:1"))
+    }
+
+    @MainActor
     func test_lastItemID_changesAcrossSnapshots_evenWhenCountIsConstant() async throws {
         // Round-3 bugbot finding #5: `ChatView`'s scroll-to-bottom keys on
         // `viewModel.items.last?.id`, not `items.count`. The count-keyed
