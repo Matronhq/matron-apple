@@ -49,6 +49,24 @@ final class ComposerViewBindingTests: XCTestCase {
     }
 
     @MainActor
+    func test_photoTempURL_producesDistinctURLs_forSameExtension() {
+        // Round 2 bugbot finding #4: the photo path used a fixed
+        // `"photo.\(ext)"` filename. Two photos picked in quick
+        // succession shared the same URL, so the second `data.write(to:)`
+        // clobbered the first file before `attachFiles(_:)` had finished
+        // reading it. `photoTempURL(ext:)` now embeds a `UUID` so each
+        // call is unique.
+        let a = ComposerView.photoTempURL(ext: "heic")
+        let b = ComposerView.photoTempURL(ext: "heic")
+        XCTAssertNotEqual(a, b, "two photo selections must land at distinct temp URLs")
+        XCTAssertTrue(a.lastPathComponent.hasSuffix(".heic"))
+        XCTAssertTrue(b.lastPathComponent.hasSuffix(".heic"))
+        // Sanity: still in the temp dir.
+        let tmp = FileManager.default.temporaryDirectory.path
+        XCTAssertTrue(a.path.hasPrefix(tmp))
+    }
+
+    @MainActor
     func test_isSendable_matchesSendBehaviour_forWhitespaceOnly() async {
         // Regression for bugbot finding #3. Previously the disable
         // predicate was `viewModel.input.isEmpty`, which lit up the send

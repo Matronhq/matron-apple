@@ -43,9 +43,14 @@ public final class ComposerViewModel {
         return leading.split(separator: " ", omittingEmptySubsequences: false).count == 1
     }
 
-    /// Filtered command list driven by the current `input`.
+    /// Filtered command list driven by the current `input`. Leading
+    /// whitespace is stripped before filtering so `"  /sta"` matches the
+    /// same set as `"/sta"` — `showPalette` already ignores leading spaces
+    /// when deciding whether to *show* the palette, so the filter must
+    /// agree, otherwise the palette shows but is empty.
     public var filteredCommands: [BotCommand] {
-        BotCommandCatalog.filter(commands, byPrefix: input)
+        let leading = String(input.drop(while: { $0 == " " || $0 == "\t" }))
+        return BotCommandCatalog.filter(commands, byPrefix: leading)
     }
 
     /// Replaces the current input with the chosen command's trigger plus a
@@ -78,8 +83,19 @@ public final class ComposerViewModel {
     /// timeline. URLs that fail to read or send are recorded in
     /// `sendError`; the previous behaviour silently dropped read failures
     /// via `try?`, which masked iOS security-scoped-URL permission errors.
+    ///
+    /// Each URL is wrapped in `start/stopAccessingSecurityScopedResource()`
+    /// so any caller — `ComposerDropDelegate` on Mac, `fileImporter` on
+    /// iOS, `PhotosPicker`-staged temp URLs, or any future entry point —
+    /// gets the right scope handling. Calling `start` on a URL that isn't
+    /// security-scoped is a documented no-op (returns `false`), so the
+    /// wrap is safe for the temp-file path too. View-layer wrappers may
+    /// still call `start/stop` themselves — the SDK guards repeat
+    /// start/stop calls, so the inner wrap here is defence-in-depth.
     public func attachFiles(_ urls: [URL]) async {
         for url in urls {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             let data: Data
             do {
                 data = try Data(contentsOf: url)

@@ -84,9 +84,22 @@ struct SnapshotApplier {
             return
         }
         let oldID = order[index]
+        // Mirror the production fix: if `item.id` already lives at some
+        // *other* position in `order`, remove that stale entry first
+        // (before overwriting `order[index]`) so `compactMap { byID[$0] }`
+        // can't yield the same item twice. Done before the index swap
+        // so we can identify the foreign occurrence unambiguously.
         if oldID != item.id {
-            byID.removeValue(forKey: oldID)
-            order[index] = item.id
+            if let existing = order.firstIndex(of: item.id) {
+                order.remove(at: existing)
+                // Removing before `index` shifts our target left by one.
+                let adjusted = existing < index ? index - 1 : index
+                byID.removeValue(forKey: oldID)
+                order[adjusted] = item.id
+            } else {
+                byID.removeValue(forKey: oldID)
+                order[index] = item.id
+            }
         }
         byID[item.id] = item
     }
@@ -254,5 +267,24 @@ final class TimelineDiffApplicationTests: XCTestCase {
             .insert(0, mkItem("3", "moved")),
         ])
         XCTAssertEqual(a.snapshot.map(\.id), ["3", "1", "2"])
+    }
+
+    func test_set_withIDAlreadyElsewhere_doesNotDuplicate() {
+        // Round 2 bugbot finding #5: `replace(at:with:)` previously only
+        // cleared the *old* id at `index`. If the SDK sent a `.set` whose
+        // new item's id already lived at some other position in `order`,
+        // the array ended up with two slots for the same id and
+        // `compactMap { byID[$0] }` yielded the same `TimelineItem`
+        // twice. The fix removes any stale duplicate elsewhere in
+        // `order`, preserving the position at `at`.
+        var a = SnapshotApplier()
+        a.apply([
+            .append([mkItem("1"), mkItem("2"), mkItem("3")]),
+            // Set index 0 to the item already living at index 2.
+            .set(0, mkItem("3", "moved")),
+        ])
+        let ids = a.snapshot.map(\.id)
+        XCTAssertEqual(ids, ["3", "2"], "id `3` must appear exactly once, at the new position")
+        XCTAssertEqual(Set(ids).count, ids.count, "snapshot must not contain duplicate ids")
     }
 }

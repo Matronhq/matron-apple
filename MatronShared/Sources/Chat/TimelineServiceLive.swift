@@ -87,6 +87,12 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
             blurhash: nil,
             isAnimated: nil
         )
+        // No `await`: in matrix-rust-components-swift v26 `sendImage` is
+        // declared `throws -> SendAttachmentJoinHandle` (synchronous),
+        // not `async throws`. The handle represents the in-flight upload
+        // that the SDK runs on its own runtime; the call itself returns
+        // immediately. See `matrix_sdk_ffi.swift` line ~16051. Compare
+        // with `Timeline.send(msg:)` above, which *is* `async throws`.
         _ = try timeline.sendImage(params: params, thumbnailSource: nil, imageInfo: info)
     }
 
@@ -105,6 +111,9 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
             thumbnailInfo: nil,
             thumbnailSource: nil
         )
+        // No `await`: see `sendImage` above. `Timeline.sendFile` is
+        // `throws -> SendAttachmentJoinHandle` in the v26 SDK, not
+        // `async throws`. (`matrix_sdk_ffi.swift` line ~16041.)
         _ = try timeline.sendFile(params: params, fileInfo: info)
     }
 
@@ -287,9 +296,24 @@ final class TimelineSnapshotListener: TimelineListener, @unchecked Sendable {
             return
         }
         let oldID = order[index]
+        // If the new id already lives at some *other* position in `order`,
+        // remove that stale entry first — otherwise `order` would carry
+        // duplicate ids for the same item, and `compactMap { byID[$0] }`
+        // would yield the same `TimelineItem` twice. Defensive against
+        // SDK diffs that move-via-set rather than emitting an explicit
+        // remove + insert pair. We do the dedup *before* overwriting
+        // `order[index]` so the foreign occurrence is unambiguous.
         if oldID != item.id {
-            byID.removeValue(forKey: oldID)
-            order[index] = item.id
+            if let existing = order.firstIndex(of: item.id) {
+                order.remove(at: existing)
+                // Removing before `index` shifts our target left by one.
+                let adjusted = existing < index ? index - 1 : index
+                byID.removeValue(forKey: oldID)
+                order[adjusted] = item.id
+            } else {
+                byID.removeValue(forKey: oldID)
+                order[index] = item.id
+            }
         }
         byID[item.id] = item
     }

@@ -72,8 +72,7 @@ struct ComposerView: View {
                 // accurately (HEIC for HEIC, PNG for PNG, …).
                 if let data = try? await newItem.loadTransferable(type: Data.self) {
                     let ext = preferredExtension(for: newItem) ?? "jpg"
-                    let filename = "photo.\(ext)"
-                    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+                    let tmp = ComposerView.photoTempURL(ext: ext)
                     try? data.write(to: tmp)
                     await viewModel.attachFiles([tmp])
                 }
@@ -111,6 +110,18 @@ struct ComposerView: View {
             if let ext = type.preferredFilenameExtension { return ext }
         }
         return nil
+    }
+
+    /// Builds a unique temporary URL for a `PhotosPicker` selection. The
+    /// previous fixed `"photo.\(ext)"` filename collided when the user
+    /// picked two photos of the same type in quick succession — the
+    /// second `data.write(to:)` clobbered the first file before
+    /// `attachFiles(_:)` had finished reading it. Including a `UUID`
+    /// guarantees each selection lands at its own URL. `static internal`
+    /// so `ComposerViewBindingTests` can assert the uniqueness.
+    static func photoTempURL(ext: String) -> URL {
+        let filename = "photo-\(UUID().uuidString).\(ext)"
+        return FileManager.default.temporaryDirectory.appendingPathComponent(filename)
     }
 
     /// Reads each security-scoped URL into a temporary file so

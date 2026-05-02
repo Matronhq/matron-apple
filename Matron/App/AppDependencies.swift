@@ -12,6 +12,12 @@ final class AppDependencies {
     let clientProvider: ClientProvider
 
     private var syncCache: [String: SyncService] = [:]
+    /// Per-session `MediaService` cache. `MediaServiceLive` owns its own
+    /// 64 MB `NSCache` for resolved `mxc://` bytes; returning a fresh
+    /// instance every call (the prior behaviour) defeated that cache and
+    /// re-fetched the same image bytes on every view re-render. Caching
+    /// per `userID` keeps the cache shared across rooms in a session.
+    private var mediaCache: [String: MediaService] = [:]
     /// Per-room timeline cache keyed by `(userID, roomID)`. Re-using the
     /// same `TimelineServiceLive` across navigations to the same room
     /// preserves the SDK timeline handle and the in-memory snapshot the
@@ -66,11 +72,14 @@ final class AppDependencies {
     }
 
     /// SDK-backed `MediaService` that resolves `mxc://` URLs into bytes via
-    /// `Client.getMediaContent`. Caching is per-instance (`NSCache` inside
-    /// `MediaServiceLive`) — callers that want a single shared cache across
-    /// rooms should hold onto one instance for the duration of the session.
+    /// `Client.getMediaContent`. Cached per `session.userID` so the
+    /// 64 MB `NSCache` inside `MediaServiceLive` is shared across rooms
+    /// for the lifetime of the session — mirrors the `syncCache` strategy.
     func mediaService(for session: UserSession) -> MediaService {
-        MediaServiceLive(provider: clientProvider, session: session)
+        if let existing = mediaCache[session.userID] { return existing }
+        let svc = MediaServiceLive(provider: clientProvider, session: session)
+        mediaCache[session.userID] = svc
+        return svc
     }
 
     /// Per-room `TimelineService` factory. Cached by `(userID, roomID)` so
