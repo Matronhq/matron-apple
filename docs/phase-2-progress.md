@@ -1,0 +1,15 @@
+# Phase 2 — Chat Experience: Progress
+
+This file tracks Phase 2 implementation progress. Updated as each task ships.
+
+**Plan:** `docs/superpowers/plans/2026-05-02-matron-ios-phase-2-chat-experience.md`
+
+**Branch:** `phase-2-chat-experience`
+
+## Status
+
+Started 2026-05-02. Phase 1 shipped; this branch builds on top.
+
+## Tasks (will be checked off as completed)
+
+See the plan for the canonical task list. Progress updates land here per push so a PR reviewer can scan a single file for context.
