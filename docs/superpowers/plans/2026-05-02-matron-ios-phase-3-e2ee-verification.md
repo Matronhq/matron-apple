@@ -18,36 +18,44 @@
 ```
 matron-iOS-app/
 ├── MatronShared/Sources/Verification/
-│   ├── VerificationService.swift                NEW
-│   ├── VerificationServiceLive.swift            NEW
-│   ├── VerificationState.swift                  NEW — DTO
-│   ├── RecoveryKeyManager.swift                 NEW — generate/store/restore
-│   └── DeviceVerificationRequestObserver.swift  NEW
+│   ├── VerificationService.swift                       NEW
+│   ├── VerificationServiceLive.swift                   NEW
+│   ├── VerificationDTOs.swift                          NEW — DTOs (DeviceInfo, SasFlowState, SasEmoji, VerificationRequestSummary)
+│   ├── SessionVerificationControlling.swift            NEW — protocol seam over MatrixRustSDK.SessionVerificationController
+│   ├── RecoveryKeyManager.swift                        NEW — generate/store/restore
+│   └── DeviceVerificationRequestObserver.swift         NEW — adapts SDK callbacks into IncomingVerificationListener events
+├── MatronShared/Tests/VerificationTests/
+│   ├── FakeSessionVerificationController.swift         NEW — test fake for the controller protocol
+│   ├── VerificationServiceFakeTests.swift              NEW
+│   ├── VerificationServiceLiveTests.swift              NEW — exercises live impl against the fake controller
+│   └── DeviceVerificationRequestObserverTests.swift    NEW
 ├── Matron/Features/Verification/
-│   ├── RecoveryKeyView.swift                    NEW
-│   ├── RecoveryKeyViewModel.swift               NEW
-│   ├── SasView.swift                            NEW
-│   ├── SasViewModel.swift                       NEW
-│   ├── VerificationBanner.swift                 NEW — top-of-list overlay
-│   └── VerificationCenter.swift                 NEW — orchestrates incoming requests
+│   ├── RecoveryKeyView.swift                           NEW
+│   ├── RecoveryKeyViewModel.swift                      NEW
+│   ├── SasView.swift                                   NEW
+│   ├── SasViewModel.swift                              NEW
+│   ├── VerificationBanner.swift                        NEW — top-of-list overlay
+│   └── VerificationCenter.swift                        NEW — orchestrates incoming requests, cancels on dismiss
 ├── Matron/Features/Onboarding/
-│   └── PostLoginVerificationView.swift          NEW — second onboarding step
+│   └── PostLoginVerificationView.swift                 NEW — second onboarding step
 ├── Matron/Features/Settings/
-│   └── DeviceSettingsView.swift                 NEW — minimal device info + recovery reveal
+│   └── DeviceSettingsView.swift                        NEW — minimal device info + recovery reveal
 ├── MatronTests/
-│   ├── VerificationServiceFakeTests.swift       NEW
-│   ├── RecoveryKeyViewModelTests.swift          NEW
-│   └── SasViewModelTests.swift                  NEW
+│   ├── RecoveryKeyViewModelTests.swift                 NEW
+│   ├── SasViewModelTests.swift                         NEW
+│   └── VerificationCenterTests.swift                   NEW
 ```
 
 ---
 
 ## Tasks
 
-### Task 1: VerificationState DTO
+### Task 1: Verification DTOs
 
 **Files:**
-- Create: `MatronShared/Sources/Verification/VerificationState.swift`
+- Create: `MatronShared/Sources/Verification/VerificationDTOs.swift`
+
+> **Why this name:** the matrix-rust-sdk-swift module exposes a `VerificationState` enum of its own. Naming our file `VerificationState.swift` causes a confusing collision. None of our DTOs are actually called `VerificationState` — they're `SasFlowState`, `SasEmoji`, `DeviceInfo`, `VerificationRequestSummary` — so the file name is just `VerificationDTOs.swift`.
 
 - [ ] **Step 1: Define the DTOs**
 
@@ -112,8 +120,8 @@ public struct VerificationRequestSummary: Equatable, Identifiable, Sendable {
 - [ ] **Step 2: Commit**
 
 ```bash
-git add MatronShared/Sources/Verification/VerificationState.swift
-git commit -m "feat: VerificationState DTOs (DeviceInfo, SasFlowState, SasEmoji, RequestSummary)"
+git add MatronShared/Sources/Verification/VerificationDTOs.swift
+git commit -m "feat: Verification DTOs (DeviceInfo, SasFlowState, SasEmoji, RequestSummary)"
 git push
 ```
 
@@ -123,7 +131,7 @@ git push
 
 **Files:**
 - Create: `MatronShared/Sources/Verification/VerificationService.swift`
-- Create: `MatronShared/Tests/AuthTests/VerificationServiceFakeTests.swift`
+- Create: `MatronShared/Tests/VerificationTests/VerificationServiceFakeTests.swift`
 
 - [ ] **Step 1: Define the protocol**
 
@@ -353,7 +361,49 @@ git push
 **Files:**
 - Create: `MatronShared/Sources/Verification/VerificationServiceLive.swift`
 
-- [ ] **Step 1: Implement**
+- [ ] **Step 1: Failing tests against a `FakeSessionVerificationController`**
+
+The unit tests must exercise the live impl's flow logic against an in-memory fake controller, not the real SDK. Define a small protocol the live impl depends on, then provide both a fake (for tests) and a thin adapter that bridges to `MatrixRustSDK.SessionVerificationController` (for production).
+
+```swift
+// MatronShared/Sources/Verification/SessionVerificationControlling.swift
+import Foundation
+
+/// Protocol abstraction over `MatrixRustSDK.SessionVerificationController`.
+/// Lets us unit-test VerificationServiceLive without spinning up a live SDK client.
+public protocol SessionVerificationControlling: AnyObject, Sendable {
+    func acceptVerificationRequest() async throws
+    func startSasVerification() async throws
+    func approveVerification() async throws
+    func declineVerification() async throws
+    func cancelVerification() async throws
+}
+```
+
+```swift
+// MatronShared/Tests/VerificationTests/FakeSessionVerificationController.swift
+final class FakeSessionVerificationController: SessionVerificationControlling, @unchecked Sendable {
+    var didAccept = false
+    var didStartSas = false
+    var didApprove = false
+    var didCancel = false
+    var didDecline = false
+
+    func acceptVerificationRequest() async throws { didAccept = true }
+    func startSasVerification()      async throws { didStartSas = true }
+    func approveVerification()       async throws { didApprove = true }
+    func declineVerification()       async throws { didDecline = true }
+    func cancelVerification()        async throws { didCancel = true }
+}
+```
+
+Add failing tests asserting:
+- `acceptIncoming(requestID:)` calls `acceptVerificationRequest()` then `startSasVerification()` on the matching cached controller.
+- `confirmEmojiMatch(requestID:)` calls `approveVerification()` on the cached controller and yields `.verified` after the callback fires.
+- `cancel(requestID:, reason:)` calls `cancelVerification()`, removes the entry from `activeFlows`, and yields `.cancelled(reason: reason)` with the supplied reason propagated verbatim.
+- An unknown `requestID` produces `.cancelled` (or throws) instead of silently no-op'ing.
+
+- [ ] **Step 2: Implement**
 
 ```swift
 import Foundation
@@ -364,7 +414,15 @@ import MatronSync
 public final class VerificationServiceLive: VerificationService, @unchecked Sendable {
     private let provider: ClientProvider
     private let session: UserSession
-    private var activeFlows: [String: AnyObject] = [:]
+
+    /// Cache of in-flight verification controllers, keyed by request ID.
+    /// Populated when `IncomingVerificationListener.onUpdate` fires with a new request,
+    /// drained on cancel / verified / declined.
+    private var activeFlows: [String: SessionVerificationControlling] = [:]
+    /// Per-request continuations so accept / confirm / cancel can yield into the
+    /// same stream the UI is observing.
+    private var activeContinuations: [String: AsyncStream<SasFlowState>.Continuation] = [:]
+    private let lock = NSLock()
 
     public init(provider: ClientProvider, session: UserSession) {
         self.provider = provider
@@ -382,7 +440,12 @@ public final class VerificationServiceLive: VerificationService, @unchecked Send
                 guard let self else { return }
                 do {
                     let client = try await provider.client(for: session)
-                    let listener = IncomingVerificationListener(continuation: continuation)
+                    let listener = IncomingVerificationListener(
+                        continuation: continuation,
+                        onController: { [weak self] requestID, controller in
+                            self?.register(controller: controller, for: requestID)
+                        }
+                    )
                     let _ = try await client.encryption().verificationStateListener(listener: listener)
                 } catch {
                     continuation.finish()
@@ -411,27 +474,136 @@ public final class VerificationServiceLive: VerificationService, @unchecked Send
     }
 
     public func acceptIncoming(requestID: String) -> AsyncStream<SasFlowState> {
-        // Look up the request by id (cached from incomingRequests), accept, start SAS, stream states.
-        // Implementer: maintain a cache `[requestID: SDKVerificationRequest]` populated by IncomingVerificationListener.
-        AsyncStream { $0.finish() }
+        AsyncStream { continuation in
+            self.setContinuation(continuation, for: requestID)
+            let task = Task { [weak self] in
+                guard let self else { return }
+                guard let controller = self.controller(for: requestID) else {
+                    continuation.yield(.cancelled(reason: "Unknown request: \(requestID)"))
+                    continuation.finish()
+                    return
+                }
+                do {
+                    try await controller.acceptVerificationRequest()
+                    continuation.yield(.requested)
+                    try await controller.startSasVerification()
+                    // Emoji-state updates arrive via the SDK delegate (`SasFlowListener`),
+                    // which yields `.readyForEmoji([...])` / `.awaitingConfirmation` into
+                    // this same continuation.
+                } catch {
+                    continuation.yield(.cancelled(reason: error.localizedDescription))
+                    continuation.finish()
+                }
+            }
+            continuation.onTermination = { [weak self] _ in
+                task.cancel()
+                self?.clearContinuation(for: requestID)
+            }
+        }
     }
 
     public func confirmEmojiMatch(requestID: String) async throws {
-        // Look up cached request, call confirm() on its SAS verification.
+        // Implementer note: API name varies — verify against SDK version Phase 1 pinned.
+        // matrix-rust-sdk-swift currently exposes `approveVerification()`; older builds used
+        // `confirmVerification()` / `confirm()`. If the symbol is missing, name the SDK
+        // module qualifier explicitly: `MatrixRustSDK.SessionVerificationController`.
+        guard let controller = controller(for: requestID) else {
+            throw VerificationError.unknownRequest(requestID)
+        }
+        try await controller.approveVerification()
+        if let continuation = continuation(for: requestID) {
+            continuation.yield(.verified)
+            continuation.finish()
+        }
+        clearController(for: requestID)
     }
 
     public func cancel(requestID: String, reason: String) async throws {
-        // Look up cached request, call cancel().
+        guard let controller = controller(for: requestID) else {
+            // Nothing to cancel — emit terminal state if a stream is waiting and exit.
+            if let continuation = continuation(for: requestID) {
+                continuation.yield(.cancelled(reason: reason))
+                continuation.finish()
+            }
+            clearContinuation(for: requestID)
+            return
+        }
+        try await controller.cancelVerification()
+        if let continuation = continuation(for: requestID) {
+            continuation.yield(.cancelled(reason: reason))
+            continuation.finish()
+        }
+        clearController(for: requestID)
     }
+
+    // MARK: - activeFlows bookkeeping (NSLock-guarded)
+
+    func register(controller: SessionVerificationControlling, for requestID: String) {
+        lock.lock(); defer { lock.unlock() }
+        activeFlows[requestID] = controller
+    }
+
+    private func controller(for requestID: String) -> SessionVerificationControlling? {
+        lock.lock(); defer { lock.unlock() }
+        return activeFlows[requestID]
+    }
+
+    private func clearController(for requestID: String) {
+        lock.lock(); defer { lock.unlock() }
+        activeFlows.removeValue(forKey: requestID)
+        activeContinuations.removeValue(forKey: requestID)
+    }
+
+    private func setContinuation(_ c: AsyncStream<SasFlowState>.Continuation, for requestID: String) {
+        lock.lock(); defer { lock.unlock() }
+        activeContinuations[requestID] = c
+    }
+
+    private func continuation(for requestID: String) -> AsyncStream<SasFlowState>.Continuation? {
+        lock.lock(); defer { lock.unlock() }
+        return activeContinuations[requestID]
+    }
+
+    private func clearContinuation(for requestID: String) {
+        lock.lock(); defer { lock.unlock() }
+        activeContinuations.removeValue(forKey: requestID)
+    }
+}
+
+public enum VerificationError: Error, Equatable {
+    case unknownRequest(String)
+}
+
+/// Production adapter — bridges our protocol to the real SDK type.
+/// Implementer note: API name varies — verify against SDK version Phase 1 pinned.
+final class LiveSessionVerificationController: SessionVerificationControlling, @unchecked Sendable {
+    private let inner: MatrixRustSDK.SessionVerificationController
+    init(_ inner: MatrixRustSDK.SessionVerificationController) { self.inner = inner }
+
+    func acceptVerificationRequest() async throws { try await inner.acceptVerificationRequest() }
+    func startSasVerification()      async throws { try await inner.startSasVerification() }
+    func approveVerification()       async throws { try await inner.approveVerification() }
+    func declineVerification()       async throws { try await inner.declineVerification() }
+    func cancelVerification()        async throws { try await inner.cancelVerification() }
 }
 
 private final class IncomingVerificationListener: VerificationStateListener {
     let continuation: AsyncStream<VerificationRequestSummary>.Continuation
-    init(continuation: AsyncStream<VerificationRequestSummary>.Continuation) {
+    let onController: (String, SessionVerificationControlling) -> Void
+    init(
+        continuation: AsyncStream<VerificationRequestSummary>.Continuation,
+        onController: @escaping (String, SessionVerificationControlling) -> Void
+    ) {
         self.continuation = continuation
+        self.onController = onController
     }
-    func onUpdate(state: VerificationState) {
-        // Map SDK enum to summaries when there's a pending request. Adjust per SDK version.
+    /// SDK delegate callback. `MatrixRustSDK.VerificationState` (the SDK enum) is qualified
+    /// here to avoid colliding with anything our own module defines.
+    func onUpdate(sdkState: MatrixRustSDK.VerificationState) {
+        // When the SDK reports a new pending request, extract its request ID and the
+        // associated SessionVerificationController, register the controller in
+        // VerificationServiceLive.activeFlows via `onController`, then yield a summary.
+        // Adjust the case match per SDK version Phase 1 pinned.
     }
 }
 
@@ -448,13 +620,147 @@ private final class SasFlowListener: SasListener {
 }
 ```
 
-> **Implementer notes:** the verification API in matrix-rust-components-swift has been one of the more volatile surfaces. Expect to spend an afternoon mapping methods. The protocol shape is what matters — it isolates the SDK churn from the UI.
+> **Implementer notes:** the verification API in matrix-rust-components-swift has been one of the more volatile surfaces. Expect to spend an afternoon mapping methods. The protocol shape is what matters — it isolates the SDK churn from the UI. The `SessionVerificationControlling` indirection means tests run against `FakeSessionVerificationController` while production uses `LiveSessionVerificationController` over the real `MatrixRustSDK.SessionVerificationController`.
 
-- [ ] **Step 2: Commit**
+- [ ] **Step 3: Verify tests pass against the fake**
 
 ```bash
-git add MatronShared/Sources/Verification/VerificationServiceLive.swift
-git commit -m "feat: VerificationServiceLive skeleton wrapping SDK SAS flows"
+cd MatronShared && swift test --filter VerificationServiceLiveTests
+```
+
+Confirms `acceptIncoming` / `confirmEmojiMatch` / `cancel` all do the right thing without touching the SDK; cancel reason is propagated verbatim through the stream.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add MatronShared/Sources/Verification/VerificationServiceLive.swift \
+        MatronShared/Sources/Verification/SessionVerificationControlling.swift \
+        MatronShared/Tests/VerificationTests/FakeSessionVerificationController.swift \
+        MatronShared/Tests/VerificationTests/VerificationServiceLiveTests.swift
+git commit -m "feat: VerificationServiceLive wraps SDK SAS flows with cached active flows"
+git push
+```
+
+---
+
+### Task 4b: DeviceVerificationRequestObserver
+
+**Files:**
+- Create: `MatronShared/Sources/Verification/DeviceVerificationRequestObserver.swift`
+- Create: `MatronShared/Tests/VerificationTests/DeviceVerificationRequestObserverTests.swift`
+
+The observer is the entry point that receives raw SDK callbacks and forwards them into the `IncomingVerificationListener` events `VerificationServiceLive` already consumes. Splitting it out of `VerificationServiceLive` keeps the live impl free of SDK delegate boilerplate and gives us a test seam.
+
+- [ ] **Step 1: Failing test (protocol + fake)**
+
+```swift
+// MatronShared/Tests/VerificationTests/DeviceVerificationRequestObserverTests.swift
+import XCTest
+@testable import MatronVerification
+
+final class FakeIncomingVerificationListener: IncomingVerificationListening {
+    var received: [(requestID: String, summary: VerificationRequestSummary, controller: SessionVerificationControlling)] = []
+    func onUpdate(requestID: String, summary: VerificationRequestSummary, controller: SessionVerificationControlling) {
+        received.append((requestID, summary, controller))
+    }
+}
+
+final class DeviceVerificationRequestObserverTests: XCTestCase {
+    func test_forwardsSdkCallbackIntoListener() {
+        let listener = FakeIncomingVerificationListener()
+        let observer = DeviceVerificationRequestObserver(listener: listener)
+        let controller = FakeSessionVerificationController()
+        observer.handleIncomingRequest(
+            requestID: "req-1",
+            otherUserID: "@alice:s",
+            otherDeviceID: "DEV1",
+            controller: controller
+        )
+        XCTAssertEqual(listener.received.count, 1)
+        XCTAssertEqual(listener.received.first?.requestID, "req-1")
+        XCTAssertEqual(listener.received.first?.summary.otherUserID, "@alice:s")
+        XCTAssertEqual(listener.received.first?.summary.otherDeviceID, "DEV1")
+        XCTAssertTrue(listener.received.first?.controller === controller)
+    }
+}
+```
+
+- [ ] **Step 2: Implement**
+
+```swift
+// MatronShared/Sources/Verification/DeviceVerificationRequestObserver.swift
+import Foundation
+import MatrixRustSDK
+
+public protocol IncomingVerificationListening: AnyObject, Sendable {
+    func onUpdate(
+        requestID: String,
+        summary: VerificationRequestSummary,
+        controller: SessionVerificationControlling
+    )
+}
+
+/// Adapts SDK verification-request callbacks into `IncomingVerificationListening` events
+/// consumed by `VerificationServiceLive`. Owns no state of its own — pure forwarding shim.
+public final class DeviceVerificationRequestObserver: @unchecked Sendable {
+    private let listener: IncomingVerificationListening
+
+    public init(listener: IncomingVerificationListening) {
+        self.listener = listener
+    }
+
+    /// Pure entry point used by tests + the real SDK delegate.
+    public func handleIncomingRequest(
+        requestID: String,
+        otherUserID: String,
+        otherDeviceID: String?,
+        controller: SessionVerificationControlling
+    ) {
+        let summary = VerificationRequestSummary(
+            id: requestID,
+            otherUserID: otherUserID,
+            otherDeviceID: otherDeviceID,
+            createdAt: Date()
+        )
+        listener.onUpdate(requestID: requestID, summary: summary, controller: controller)
+    }
+}
+
+/// Production-side delegate that the SDK calls. Translates the SDK's payload into our
+/// `handleIncomingRequest` shape, wrapping the SDK controller in `LiveSessionVerificationController`.
+/// Implementer note: API name varies — verify against SDK version Phase 1 pinned.
+final class LiveDeviceVerificationRequestDelegate: @unchecked Sendable {
+    private let observer: DeviceVerificationRequestObserver
+    init(observer: DeviceVerificationRequestObserver) { self.observer = observer }
+
+    func onIncomingVerificationRequest(
+        requestID: String,
+        otherUserID: String,
+        otherDeviceID: String?,
+        sdkController: MatrixRustSDK.SessionVerificationController
+    ) {
+        observer.handleIncomingRequest(
+            requestID: requestID,
+            otherUserID: otherUserID,
+            otherDeviceID: otherDeviceID,
+            controller: LiveSessionVerificationController(sdkController)
+        )
+    }
+}
+```
+
+- [ ] **Step 3: Verify**
+
+```bash
+cd MatronShared && swift test --filter DeviceVerificationRequestObserverTests
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add MatronShared/Sources/Verification/DeviceVerificationRequestObserver.swift \
+        MatronShared/Tests/VerificationTests/DeviceVerificationRequestObserverTests.swift
+git commit -m "feat: DeviceVerificationRequestObserver adapts SDK callbacks to IncomingVerificationListener"
 git push
 ```
 
@@ -466,6 +772,14 @@ git push
 - Create: `Matron/Features/Verification/RecoveryKeyViewModel.swift`
 - Create: `Matron/Features/Verification/RecoveryKeyView.swift`
 - Create: `MatronTests/RecoveryKeyViewModelTests.swift`
+
+Spec §7.2 Scenario A: "Show recovery key once; require user to tick 'I've saved this.' Re-enter it to confirm." That's a three-phase flow on the generate path:
+
+- **Phase A — show:** key visible, "I've saved this" toggle.
+- **Phase B — re-enter:** user types/pastes the key; `canFinish` only becomes true when the re-entered string equals `generatedKey` (constant-time compare to defeat timing leakage in the unlikely case anyone ever wires this to a remote check).
+- **Phase C — confirm:** persist + dismiss.
+
+(The restore path is unchanged — single phase, key entry → restore.)
 
 - [ ] **Step 1: Tests**
 
@@ -485,20 +799,38 @@ final class FakeRecoveryKeyManager {
 
 final class RecoveryKeyViewModelTests: XCTestCase {
     @MainActor
-    func test_generate_setsGeneratedKey() async {
+    func test_generate_setsGeneratedKey_andEntersPhaseShow() async {
         let fake = FakeRecoveryKeyManager()
         let vm = RecoveryKeyViewModel(mode: .generate, generate: { try await fake.generateAndPersist() }, restore: { _ in })
         await vm.generate()
         XCTAssertEqual(vm.generatedKey, "MOCK-RECOVERY-KEY-1234-5678")
         XCTAssertEqual(fake.generatedCount, 1)
+        XCTAssertEqual(vm.generatePhase, .show)
     }
 
     @MainActor
-    func test_confirm_requiresUserAcknowledgment() {
+    func test_acknowledgeSaved_advancesToReenterPhase() {
         let vm = RecoveryKeyViewModel(mode: .generate, generate: { "K" }, restore: { _ in })
         vm.generatedKey = "K"
-        XCTAssertFalse(vm.canFinish)
+        vm.generatePhase = .show
+        XCTAssertFalse(vm.canFinish)        // can't finish from show phase yet
         vm.userAcknowledgedSaved = true
+        vm.advanceFromShow()
+        XCTAssertEqual(vm.generatePhase, .reenter)
+        XCTAssertFalse(vm.canFinish)        // still can't finish — must re-enter
+    }
+
+    @MainActor
+    func test_canFinish_isFalseUntilReenteredKeyMatches() {
+        let vm = RecoveryKeyViewModel(mode: .generate, generate: { "K" }, restore: { _ in })
+        vm.generatedKey = "MOCK-RECOVERY-KEY-1234-5678"
+        vm.userAcknowledgedSaved = true
+        vm.generatePhase = .reenter
+        vm.reenteredKey = ""
+        XCTAssertFalse(vm.canFinish)
+        vm.reenteredKey = "WRONG"
+        XCTAssertFalse(vm.canFinish)
+        vm.reenteredKey = "MOCK-RECOVERY-KEY-1234-5678"
         XCTAssertTrue(vm.canFinish)
     }
 
@@ -523,12 +855,18 @@ import Foundation
 final class RecoveryKeyViewModel {
     enum Mode { case generate, restore }
     enum Phase: Equatable { case idle, busy, done, error(String) }
+    /// Sub-phase within `.generate` mode (spec §7.2 Scenario A).
+    enum GeneratePhase: Equatable { case notStarted, show, reenter, confirmed }
 
     let mode: Mode
     var generatedKey: String?
+    /// Restore-mode entry.
     var enteredKey: String = ""
+    /// Generate-mode re-entry (Phase B).
+    var reenteredKey: String = ""
     var userAcknowledgedSaved: Bool = false
     var phase: Phase = .idle
+    var generatePhase: GeneratePhase = .notStarted
 
     private let generate: () async throws -> String
     private let restore: (String) async throws -> Void
@@ -541,9 +879,29 @@ final class RecoveryKeyViewModel {
 
     var canFinish: Bool {
         switch mode {
-        case .generate: return generatedKey != nil && userAcknowledgedSaved
-        case .restore:  return !enteredKey.isEmpty
+        case .generate:
+            // Only finishable from Phase B (`reenter`) once the user has acknowledged
+            // saving the key AND the re-entered value matches the generated one
+            // (constant-time compare — see `keysMatch`).
+            guard generatePhase == .reenter,
+                  userAcknowledgedSaved,
+                  let key = generatedKey else { return false }
+            return Self.keysMatch(key, reenteredKey)
+        case .restore:
+            return !enteredKey.isEmpty
         }
+    }
+
+    /// Constant-time string comparison — avoids returning early on first mismatched byte.
+    static func keysMatch(_ a: String, _ b: String) -> Bool {
+        let aBytes = Array(a.utf8)
+        let bBytes = Array(b.utf8)
+        if aBytes.count != bBytes.count { return false }
+        var diff: UInt8 = 0
+        for i in 0..<aBytes.count {
+            diff |= aBytes[i] ^ bBytes[i]
+        }
+        return diff == 0
     }
 
     func generate() async {
@@ -551,9 +909,17 @@ final class RecoveryKeyViewModel {
         do {
             generatedKey = try await generate()
             phase = .done
+            generatePhase = .show
         } catch {
             phase = .error(error.localizedDescription)
         }
+    }
+
+    /// Advance from Phase A (show) → Phase B (reenter) once user has ticked the
+    /// "I've saved this" toggle. Called from the view.
+    func advanceFromShow() {
+        guard mode == .generate, generatePhase == .show, userAcknowledgedSaved else { return }
+        generatePhase = .reenter
     }
 
     func attemptRestore() async {
@@ -568,7 +934,13 @@ final class RecoveryKeyViewModel {
 }
 ```
 
-- [ ] **Step 3: Implement view**
+- [ ] **Step 3: Verify failing tests now pass**
+
+```bash
+cd MatronShared && swift test --filter RecoveryKeyViewModelTests
+```
+
+- [ ] **Step 4: Implement view**
 
 ```swift
 import SwiftUI
@@ -584,29 +956,65 @@ struct RecoveryKeyView: View {
             case .restore:  restoreBody
             }
             Spacer()
-            Button("Continue") { onFinished() }
-                .buttonStyle(.borderedProminent)
-                .disabled(!viewModel.canFinish)
+            primaryActionButton
         }
         .padding()
         .navigationTitle("Recovery key")
     }
 
+    /// Continue button label + action vary by phase: in `.generate / .show`, advances to
+    /// re-entry; in `.generate / .reenter`, finishes; in `.restore`, finishes.
+    @ViewBuilder
+    private var primaryActionButton: some View {
+        switch (viewModel.mode, viewModel.generatePhase) {
+        case (.generate, .show):
+            Button("Continue") { viewModel.advanceFromShow() }
+                .buttonStyle(.borderedProminent)
+                .disabled(!viewModel.userAcknowledgedSaved)
+        case (.generate, .reenter):
+            Button("Confirm") { onFinished() }
+                .buttonStyle(.borderedProminent)
+                .disabled(!viewModel.canFinish)
+        default:
+            Button("Continue") { onFinished() }
+                .buttonStyle(.borderedProminent)
+                .disabled(!viewModel.canFinish)
+        }
+    }
+
     @ViewBuilder
     private var generateBody: some View {
-        Text("This is your recovery key. Save it somewhere safe — it's the only way to recover your encrypted history.")
-            .font(.callout)
-        if let key = viewModel.generatedKey {
-            Text(key)
+        switch viewModel.generatePhase {
+        case .notStarted, .show:
+            Text("This is your recovery key. Save it somewhere safe — it's the only way to recover your encrypted history.")
+                .font(.callout)
+            if let key = viewModel.generatedKey {
+                Text(key)
+                    .font(.system(.title3, design: .monospaced))
+                    .padding()
+                    .frame(maxWidth: .infinity)
+                    .background(Color(.systemGray6))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                Toggle("I've saved this key somewhere safe", isOn: $viewModel.userAcknowledgedSaved)
+            } else {
+                Button("Generate") { Task { await viewModel.generate() } }
+                    .buttonStyle(.bordered)
+            }
+        case .reenter:
+            Text("Re-enter your recovery key to confirm you've saved it correctly.")
+                .font(.callout)
+            TextField("XXXX-XXXX-XXXX-XXXX", text: $viewModel.reenteredKey)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
                 .font(.system(.title3, design: .monospaced))
                 .padding()
-                .frame(maxWidth: .infinity)
                 .background(Color(.systemGray6))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
-            Toggle("I've saved this key somewhere safe", isOn: $viewModel.userAcknowledgedSaved)
-        } else {
-            Button("Generate") { Task { await viewModel.generate() } }
-                .buttonStyle(.bordered)
+            if !viewModel.reenteredKey.isEmpty && !viewModel.canFinish {
+                Text("Doesn't match the key above.").foregroundStyle(.orange).font(.caption)
+            }
+        case .confirmed:
+            EmptyView()
         }
         if case .error(let msg) = viewModel.phase { Text(msg).foregroundStyle(.red).font(.caption) }
     }
@@ -630,13 +1038,13 @@ struct RecoveryKeyView: View {
 }
 ```
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add Matron/Features/Verification/RecoveryKeyView.swift \
         Matron/Features/Verification/RecoveryKeyViewModel.swift \
         MatronTests/RecoveryKeyViewModelTests.swift
-git commit -m "feat: RecoveryKeyView for generate + restore flows"
+git commit -m "feat: RecoveryKeyView with show + re-enter + confirm phases"
 git push
 ```
 
@@ -669,7 +1077,7 @@ final class SasViewModelTests: XCTestCase {
             for s in states { c.yield(s) }
             c.finish()
         }
-        let vm = SasViewModel(stream: stream, confirm: {}, cancel: { _ in })
+        let vm = SasViewModel(stream: stream, requestID: "req-1", confirm: {}, cancel: { _ in })
         await vm.observe()
         XCTAssertEqual(vm.state, .verified)
     }
@@ -678,9 +1086,27 @@ final class SasViewModelTests: XCTestCase {
     func test_confirm_invokesCallback() async {
         var confirmed = false
         let stream = AsyncStream<SasFlowState> { c in c.finish() }
-        let vm = SasViewModel(stream: stream, confirm: { confirmed = true }, cancel: { _ in })
+        let vm = SasViewModel(stream: stream, requestID: "req-1", confirm: { confirmed = true }, cancel: { _ in })
         await vm.confirm()
         XCTAssertTrue(confirmed)
+    }
+
+    @MainActor
+    func test_observe_isIdempotent_underDoubleCall() async {
+        // Two calls to observe() must NOT re-consume the stream. The second call must
+        // early-return immediately because `isObserving` is already true.
+        var yielded = 0
+        let stream = AsyncStream<SasFlowState> { c in
+            c.yield(.requested); yielded += 1
+            c.yield(.verified);  yielded += 1
+            c.finish()
+        }
+        let vm = SasViewModel(stream: stream, requestID: "req-1", confirm: {}, cancel: { _ in })
+        await vm.observe()
+        let yieldedAfterFirst = yielded
+        await vm.observe()  // must be a no-op, not re-iterate the (already-finished) stream
+        XCTAssertEqual(yielded, yieldedAfterFirst, "observe() must be guarded against double-call")
+        XCTAssertEqual(vm.state, .verified)
     }
 }
 ```
@@ -694,21 +1120,29 @@ import Foundation
 @MainActor
 final class SasViewModel {
     private(set) var state: SasFlowState = .idle
+    let requestID: String
     private let stream: AsyncStream<SasFlowState>
     private let confirmAction: () async throws -> Void
     private let cancelAction: (String) async throws -> Void
+    /// Re-entrancy guard: `observe()` must consume the stream exactly once even if
+    /// SwiftUI re-fires the `.task` modifier (e.g. on view re-presentation).
+    private var isObserving: Bool = false
 
     init(
         stream: AsyncStream<SasFlowState>,
+        requestID: String,
         confirm: @escaping () async throws -> Void,
         cancel: @escaping (String) async throws -> Void
     ) {
         self.stream = stream
+        self.requestID = requestID
         self.confirmAction = confirm
         self.cancelAction = cancel
     }
 
     func observe() async {
+        guard !isObserving else { return }
+        isObserving = true
         for await new in stream {
             state = new
         }
@@ -748,7 +1182,9 @@ struct SasView: View {
         }
         .padding()
         .navigationTitle(title)
-        .task { await viewModel.observe() }
+        // Use `.task(id:)` so re-presentation with the same request ID doesn't re-fire,
+        // and pairs with the `isObserving` guard inside the view-model.
+        .task(id: viewModel.requestID) { await viewModel.observe() }
     }
 
     @ViewBuilder
@@ -866,11 +1302,16 @@ struct PostLoginVerificationView: View {
                     ), onFinished: onCompleted)
                 case .sasWithOtherDevice:
                     let svc = VerificationServiceLive(provider: dependencies.clientProvider, session: session)
+                    // The self-verification request gets a synthetic request ID derived
+                    // from the user/device pair so SasViewModel can route confirm/cancel
+                    // back to the right cached flow.
+                    let requestID = "self-verify:\(session.userID):\(session.deviceID)"
                     let stream = svc.startSAS(withUser: session.userID, deviceID: nil)
                     SasView(viewModel: SasViewModel(
                         stream: stream,
-                        confirm: { /* implement once acceptIncoming + confirmEmojiMatch are wired */ },
-                        cancel: { _ in }
+                        requestID: requestID,
+                        confirm: { try await svc.confirmEmojiMatch(requestID: requestID) },
+                        cancel: { reason in try await svc.cancel(requestID: requestID, reason: reason) }
                     ), title: "Verify this device")
                 }
             }
@@ -897,8 +1338,35 @@ git push
 
 **Files:**
 - Create: `Matron/Features/Verification/VerificationCenter.swift`
+- Create: `MatronTests/VerificationCenterTests.swift`
 
-- [ ] **Step 1: Implement**
+- [ ] **Step 1: Failing test — dismiss must cancel the SDK request**
+
+```swift
+import XCTest
+@testable import Matron
+import MatronModels
+
+final class VerificationCenterTests: XCTestCase {
+    @MainActor
+    func test_dismiss_callsServiceCancelBeforeRemovingFromPending() async {
+        let svc = FakeVerificationService()
+        let center = VerificationCenter(service: svc)
+        let summary = VerificationRequestSummary(id: "req-1", otherUserID: "@bob:s", otherDeviceID: "DEV", createdAt: Date())
+        center.injectPending(summary)  // test seam — appends to `pending` directly
+
+        await center.dismiss(summary)
+
+        XCTAssertEqual(svc.cancelled.map(\.id), ["req-1"])
+        XCTAssertEqual(svc.cancelled.first?.reason, "User dismissed")
+        XCTAssertTrue(center.pending.isEmpty)
+    }
+}
+```
+
+(Extend `FakeVerificationService` to record `(id, reason)` tuples in `cancelled`.)
+
+- [ ] **Step 2: Implement**
 
 ```swift
 import Foundation
@@ -932,17 +1400,34 @@ final class VerificationCenter {
 
     func stop() { observationTask?.cancel() }
 
-    func dismiss(_ requestID: String) {
-        pending.removeAll { $0.id == requestID }
+    /// Dismissing a banner must also cancel the underlying SDK verification request,
+    /// otherwise the other side keeps the request open forever and the user sees a
+    /// stale "waiting" UI on the partner device. Cancel-then-remove ordering ensures
+    /// the SDK call still happens even if `pending` removal would otherwise skip it.
+    func dismiss(_ summary: VerificationRequestSummary) async {
+        try? await service.cancel(requestID: summary.id, reason: "User dismissed")
+        pending.removeAll { $0.id == summary.id }
     }
+
+    #if DEBUG
+    /// Test seam — lets unit tests pre-populate `pending` without driving the stream.
+    func injectPending(_ summary: VerificationRequestSummary) { pending.append(summary) }
+    #endif
 }
 ```
 
-- [ ] **Step 2: Commit**
+- [ ] **Step 3: Verify**
 
 ```bash
-git add Matron/Features/Verification/VerificationCenter.swift
-git commit -m "feat: VerificationCenter to surface pending requests app-wide"
+cd MatronShared && swift test --filter VerificationCenterTests
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add Matron/Features/Verification/VerificationCenter.swift \
+        MatronTests/VerificationCenterTests.swift
+git commit -m "feat: VerificationCenter cancels SDK request on dismiss"
 git push
 ```
 
@@ -993,7 +1478,7 @@ struct VerificationBanner: View {
 
 - [ ] **Step 2: Add the banner to `ChatListView`**
 
-In `ChatListView`, hold a `@State var verificationCenter: VerificationCenter` and a `@State var sasSummary: VerificationRequestSummary?`. Above the `List`, render a `ForEach(verificationCenter.pending)` of `VerificationBanner`s. Tap → set `sasSummary` → `.sheet(item: $sasSummary)` presents a `SasView`.
+In `ChatListView`, hold a `@State var verificationCenter: VerificationCenter` and a `@State var sasSummary: VerificationRequestSummary?`. Above the `List`, render a `ForEach(verificationCenter.pending)` of `VerificationBanner`s. Tap "Verify" → set `sasSummary` → `.sheet(item: $sasSummary)` presents a `SasView`. Tap dismiss → `Task { await verificationCenter.dismiss(summary) }` (async, because `dismiss` cancels the SDK request before removing from `pending`).
 
 - [ ] **Step 3: Commit**
 
@@ -1140,10 +1625,11 @@ git push
 
 ## Phase 3 acceptance
 
-1. All 12 tasks committed and pushed.
+1. All 13 tasks (1, 2, 3, 4, 4b, 5, 6, 7, 8, 9, 10, 11, 12) committed and pushed.
 2. CI green.
-3. Manual checklist passes for: first-device generate, second-device restore, multi-device SAS, bot SAS.
+3. Manual checklist passes for: first-device generate (with re-entry confirmation), second-device restore, multi-device SAS, bot SAS.
 4. Trust posture matches §7.5: nothing auto-trusted, banners surface unverified devices.
+5. Banner dismiss cancels the SDK request (verified by `VerificationCenterTests`).
 
 After acceptance, write Phase 4 plan.
 
@@ -1151,7 +1637,11 @@ After acceptance, write Phase 4 plan.
 
 ## Plan self-review
 
-- **§7 E2EE & verification:** Recovery (§7.4) → Tasks 3, 5, 7. SAS (§7.2) → Tasks 4, 6, 7, 9. Bot verification (§7.3) → Tasks 8, 9, 10. Trust posture (§7.5) → Task 10. Crypto store sharing (§7.1) was set up in Phase 1 (App Group). What we deliberately don't do (§7.6): identity server, device manager screen, room-key sharing UI, QR — none implemented.
+- **§7 E2EE & verification:** Recovery (§7.4) → Tasks 3, 5, 7. SAS (§7.2 Scenario A: show + acknowledge + re-enter to confirm) → Task 5. SAS (§7.2 Scenario B: emoji compare + cancel/approve) → Tasks 4, 4b, 6, 7, 9. Bot verification (§7.3) → Tasks 4b, 8, 9, 10. Trust posture (§7.5) → Task 10. Crypto store sharing (§7.1) was set up in Phase 1 (App Group). What we deliberately don't do (§7.6): identity server, device manager screen, room-key sharing UI, QR — none implemented.
 - **§5.2 Onboarding:** Phase 1 had sign-in only. Task 7 here adds the post-login verification screen, completing §5.2.
 - **§5.7 In-chat verification banner:** Task 10.
-- No placeholders. SDK-API-volatile call sites flagged for the implementer.
+- **SDK collision:** the matrix-rust-sdk-swift `VerificationState` enum and our DTOs cohabit in `VerificationServiceLive.swift`; the SDK enum is qualified as `MatrixRustSDK.VerificationState` at the listener boundary, and our DTOs live in `VerificationDTOs.swift` (renamed from `VerificationState.swift`) precisely to dodge the name clash.
+- **Active flow caching:** Task 4 introduces `activeFlows: [String: SessionVerificationControlling]` in `VerificationServiceLive`, populated from `IncomingVerificationListener.onUpdate` via the `DeviceVerificationRequestObserver` shim (Task 4b). `acceptIncoming` / `confirmEmojiMatch` / `cancel` all look up the controller by request ID; cancel reason is propagated verbatim into the `.cancelled(reason:)` state.
+- **Re-entrancy:** `SasViewModel.observe()` is guarded against double-call via `isObserving`, paired with `.task(id: viewModel.requestID)` in `SasView` so re-presentation with the same ID doesn't re-fire.
+- **Dismiss-cancels-request:** `VerificationCenter.dismiss(_:)` is async and calls `service.cancel(requestID:reason:)` before removing from `pending`. Test asserts the cancel happens and the reason is `"User dismissed"`.
+- **No stub bodies left.** SDK-API-volatile call sites flagged with "Implementer note: API name varies — verify against SDK version Phase 1 pinned" comments.

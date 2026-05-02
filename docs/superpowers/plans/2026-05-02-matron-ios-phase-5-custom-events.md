@@ -36,22 +36,27 @@ matron-iOS-app/
 │   └── TimelineServiceLive.swift          MODIFIED — map custom events
 ├── MatronShared/Sources/Push/
 │   └── PushDecoder.swift                  MODIFIED — body for tool_call/ask_user
-├── Matron/Features/Chat/Rendering/
+├── MatronShared/Sources/DesignSystem/
 │   ├── ToolCallCard.swift                 NEW
-│   ├── AskUserSheet.swift                 NEW
-│   ├── AskUserSheetViewModel.swift        NEW
+│   ├── AskUserSheetBody.swift             NEW — DesignSystem-snapshottable inner view
 │   └── SessionMetaHeader.swift            NEW
+├── Matron/Features/Chat/Rendering/
+│   ├── AskUserSheet.swift                 NEW — app-target wrapper around AskUserSheetBody
+│   └── AskUserSheetViewModel.swift        NEW
 ├── Matron/Features/Chat/
 │   ├── TimelineItemView.swift             MODIFIED — switch over new cases
 │   ├── ChatView.swift                     MODIFIED — present sheet, render header
-│   └── ChatViewModel.swift                MODIFIED — replyToAskUser
+│   └── ChatViewModel.swift                MODIFIED — answeredPromptIDs + pendingAsk()
+├── MatronShared/Sources/Chat/
+│   └── TimelineService.swift              MODIFIED — sendText(_:inReplyTo:)
 ├── MatronShared/Tests/EventsTests/
 │   ├── ToolCallEventTests.swift           NEW
 │   ├── AskUserEventTests.swift            NEW
 │   └── SessionMetaEventTests.swift        NEW
 └── MatronShared/Tests/DesignSystemSnapshotTests/
     ├── ToolCallCardSnapshotTests.swift    NEW
-    └── AskUserSheetSnapshotTests.swift    NEW
+    ├── AskUserSheetSnapshotTests.swift    NEW
+    └── SessionMetaHeaderSnapshotTests.swift NEW
 ```
 
 ---
@@ -556,10 +561,14 @@ import MatronEvents
 
 public struct ToolCallCard: View {
     let event: ToolCallEvent
-    @State private var expanded = false
+    @State private var expanded: Bool
 
-    public init(event: ToolCallEvent) {
+    /// `expanded` defaults to `false` for production tap-toggle behaviour.
+    /// Callers (notably snapshot tests) may pass `true` to render the
+    /// expanded state directly.
+    public init(event: ToolCallEvent, expanded: Bool = false) {
         self.event = event
+        self._expanded = State(initialValue: expanded)
     }
 
     public var body: some View {
@@ -663,6 +672,36 @@ final class ToolCallCardSnapshotTests: XCTestCase {
         )
         assertSnapshot(of: ToolCallCard(event: evt).frame(width: 320), as: .image(layout: .sizeThatFits))
     }
+
+    func test_ok_expanded_showsArgsAndResult() {
+        let evt = ToolCallEvent(
+            tool: "Read", argsJSON: #"{ "file_path": "/etc/hosts" }"#,
+            status: .ok, resultText: "127.0.0.1 localhost\n::1 ip6-localhost",
+            resultTruncated: false, startedAt: baseDate, endedAt: baseDate.addingTimeInterval(0.5)
+        )
+        assertSnapshot(of: ToolCallCard(event: evt, expanded: true).frame(width: 320),
+                       as: .image(layout: .sizeThatFits))
+    }
+
+    func test_error_expanded_showsErrorBody() {
+        let evt = ToolCallEvent(
+            tool: "Bash", argsJSON: #"{ "command": "false" }"#,
+            status: .error, resultText: "exit 1: command not found",
+            resultTruncated: false, startedAt: baseDate, endedAt: baseDate.addingTimeInterval(0.1)
+        )
+        assertSnapshot(of: ToolCallCard(event: evt, expanded: true).frame(width: 320),
+                       as: .image(layout: .sizeThatFits))
+    }
+
+    func test_ok_expanded_truncatedResult() {
+        let evt = ToolCallEvent(
+            tool: "Bash", argsJSON: #"{ "command": "ls -la /" }"#,
+            status: .ok, resultText: String(repeating: "drwxr-xr-x  1 root root  4096 Jan  1 00:00 .\n", count: 30),
+            resultTruncated: true, startedAt: baseDate, endedAt: baseDate.addingTimeInterval(0.2)
+        )
+        assertSnapshot(of: ToolCallCard(event: evt, expanded: true).frame(width: 320),
+                       as: .image(layout: .sizeThatFits))
+    }
 }
 #endif
 ```
@@ -704,7 +743,70 @@ git push
 
 (Sheet lives in app target, not DesignSystem, because it has app-level reply behavior.)
 
-- [ ] **Step 1: ViewModel**
+- [ ] **Step 1: Extend `TimelineService` with reply support (TDD)**
+
+Per spec §4.2: "the user's response goes back as a normal `m.room.message` with `m.in_reply_to` referencing the prompt event so the bot can correlate." Add an optional reply event ID to `sendText` (or a dedicated `sendReply`).
+
+Update the protocol in `MatronShared/Sources/Chat/TimelineService.swift`:
+
+```swift
+public protocol TimelineService: Sendable {
+    // ... existing
+    /// Send a text message. If `inReplyTo` is non-nil, the wire content includes
+    /// `m.relates_to.m.in_reply_to.event_id` so the bot can correlate.
+    func sendText(_ body: String, inReplyTo: String?) async throws
+}
+
+public extension TimelineService {
+    func sendText(_ body: String) async throws { try await sendText(body, inReplyTo: nil) }
+}
+```
+
+In `TimelineServiceLive`, when `inReplyTo` is set, build the content map with the relation block before handing to the SDK. Real shape (SDK API may differ — flag with implementer note):
+
+```swift
+public func sendText(_ body: String, inReplyTo: String?) async throws {
+    var content: [String: Any] = ["msgtype": "m.text", "body": body]
+    if let replyID = inReplyTo {
+        content["m.relates_to"] = ["m.in_reply_to": ["event_id": replyID]]
+    }
+    // SDK API likely either:
+    //   try await timeline.sendReply(eventId: replyID, content: ...)
+    // or build a TimelineEventBuilder:
+    //   let builder = TimelineEventBuilder(eventType: "m.room.message", content: content)
+    //   try await timeline.send(builder)
+    try await sdkTimeline.send(content: content)
+}
+```
+
+> **Implementer note:** Matrix Rust SDK exposes `Timeline.sendReply(...)` taking an `EventOrTransactionId`. Confirm the exact symbol in `Package.resolved` (`matrix-rust-sdk`) and prefer it over hand-rolled `m.relates_to`, since the SDK adds the rich-reply fallback formatting automatically.
+
+Write the test first (in `MatronShared/Tests/ChatTests/TimelineServiceLiveTests.swift` or a new `FakeTimelineServiceTests.swift`):
+
+```swift
+func test_sendText_withReply_recordsInReplyTo() async throws {
+    let fake = FakeTimelineService()
+    try await fake.sendText("yes", inReplyTo: "$prompt-evt-1")
+    XCTAssertEqual(fake.lastSentBody, "yes")
+    XCTAssertEqual(fake.lastSentInReplyTo, "$prompt-evt-1")
+}
+```
+
+Update `FakeTimelineService` (test fake) to record the reply target:
+
+```swift
+final class FakeTimelineService: TimelineService {
+    private(set) var lastSentBody: String?
+    private(set) var lastSentInReplyTo: String?
+    func sendText(_ body: String, inReplyTo: String?) async throws {
+        lastSentBody = body
+        lastSentInReplyTo = inReplyTo
+    }
+    // ... other protocol stubs
+}
+```
+
+- [ ] **Step 2: ViewModel**
 
 ```swift
 import Foundation
@@ -732,15 +834,21 @@ final class AskUserSheetViewModel {
         self.onClose = onClose
     }
 
+    /// True once `expiresAt` has passed. UI uses this to disable Send and auto-dismiss.
+    var isExpired: Bool {
+        guard let expiresAt = event.expiresAt else { return false }
+        return Date.now >= expiresAt
+    }
+
     func send() async {
         let body = constructReplyBody()
-        guard !body.isEmpty else { return }
+        guard !body.isEmpty, !isExpired else { return }
         isSending = true
         defer { isSending = false }
         do {
-            // Phase 5 minimal: send a normal text message. Future: include `m.in_reply_to: { event_id: promptEventID }`.
-            // The bridge correlates by reading the most recent ask_user event.
-            try await timeline.sendText(body)
+            // Per spec §4.2: include `m.in_reply_to` so the bot correlates the answer
+            // back to the originating ask_user prompt event.
+            try await timeline.sendText(body, inReplyTo: promptEventID)
             onClose()
         } catch {
             self.error = error.localizedDescription
@@ -767,7 +875,26 @@ final class AskUserSheetViewModel {
 }
 ```
 
-- [ ] **Step 2: Sheet view**
+TDD: add a ViewModel test (`AskUserSheetViewModelTests`) that uses `FakeTimelineService` and asserts `send()` sends the reply with the right `inReplyTo`:
+
+```swift
+@MainActor
+func test_send_passesPromptEventID_asInReplyTo() async {
+    let fake = FakeTimelineService()
+    let vm = AskUserSheetViewModel(
+        event: AskUserEvent(prompt: "Which?", kind: .text, expiresAt: nil),
+        promptEventID: "$prompt-1",
+        timeline: fake,
+        onClose: {}
+    )
+    vm.textInput = "src/main.rs"
+    await vm.send()
+    XCTAssertEqual(fake.lastSentBody, "src/main.rs")
+    XCTAssertEqual(fake.lastSentInReplyTo, "$prompt-1")
+}
+```
+
+- [ ] **Step 3: Sheet view**
 
 ```swift
 import SwiftUI
@@ -775,6 +902,7 @@ import MatronEvents
 
 struct AskUserSheet: View {
     @State var viewModel: AskUserSheetViewModel
+    let onClose: () -> Void
 
     var body: some View {
         NavigationStack {
@@ -786,6 +914,7 @@ struct AskUserSheet: View {
                     TextField("Your answer…", text: $viewModel.textInput, axis: .vertical)
                         .lineLimit(3...8)
                         .textFieldStyle(.roundedBorder)
+                        .disabled(viewModel.isExpired)
 
                 case .choice(let options, let allowOther):
                     ForEach(options, id: \.id) { opt in
@@ -800,9 +929,12 @@ struct AskUserSheet: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .disabled(viewModel.isExpired)
                     }
                     if allowOther {
-                        TextField("Other…", text: $viewModel.textInput).textFieldStyle(.roundedBorder)
+                        TextField("Other…", text: $viewModel.textInput)
+                            .textFieldStyle(.roundedBorder)
+                            .disabled(viewModel.isExpired)
                     }
 
                 case .multiChoice(let options, let allowOther):
@@ -822,19 +954,29 @@ struct AskUserSheet: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .disabled(viewModel.isExpired)
                     }
                     if allowOther {
-                        TextField("Other…", text: $viewModel.textInput).textFieldStyle(.roundedBorder)
+                        TextField("Other…", text: $viewModel.textInput)
+                            .textFieldStyle(.roundedBorder)
+                            .disabled(viewModel.isExpired)
                     }
 
                 case .boolean:
                     HStack {
                         Button("Yes") { viewModel.booleanAnswer = true }
                             .buttonStyle(viewModel.booleanAnswer == true ? .borderedProminent : .bordered)
+                            .disabled(viewModel.isExpired)
                         Button("No") { viewModel.booleanAnswer = false }
                             .buttonStyle(viewModel.booleanAnswer == false ? .borderedProminent : .bordered)
+                            .disabled(viewModel.isExpired)
                         Spacer()
                     }
+                }
+
+                if viewModel.isExpired {
+                    Label("This question has expired.", systemImage: "clock.badge.exclamationmark")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
 
                 Spacer()
@@ -849,23 +991,250 @@ struct AskUserSheet: View {
                     if viewModel.isSending { ProgressView() } else { Text("Send") }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(viewModel.isSending)
+                .disabled(viewModel.isSending || viewModel.isExpired)
             }
             .padding()
             .navigationTitle("Question")
             .navigationBarTitleDisplayMode(.inline)
+            // Auto-dismiss when `expires_at` is reached. The `.task(id:)` is keyed
+            // on the prompt event ID so a new prompt restarts the timer.
+            .task(id: viewModel.promptEventID) {
+                await viewModel.awaitExpiry(onExpire: onClose)
+            }
         }
         .presentationDetents([.medium, .large])
     }
 }
 ```
 
-- [ ] **Step 3: Commit**
+> **Note:** `promptEventID` is exposed on the ViewModel so SwiftUI can key the auto-dismiss task on it. Mark the property `let` (immutable, public to module).
+
+- [ ] **Step 4: TDD — auto-dismiss on expiry**
+
+The auto-dismiss timer lives in the `.task(id:)` modifier on `AskUserSheet`. We extract the sleep-and-fire body into a small helper on the ViewModel so it's deterministically testable:
+
+```swift
+extension AskUserSheetViewModel {
+    /// Sleeps until `event.expiresAt`, then calls `onClose` (unless cancelled).
+    /// Driven by the View's `.task(id: promptEventID)` modifier.
+    func awaitExpiry(onExpire: @escaping () -> Void) async {
+        guard let expiresAt = event.expiresAt else { return }
+        let interval = max(0, expiresAt.timeIntervalSinceNow)
+        try? await Task.sleep(for: .seconds(interval))
+        if !Task.isCancelled { onExpire() }
+    }
+}
+```
+
+Update the `.task(id:)` block in the View to call `await viewModel.awaitExpiry(onExpire: onClose)`.
+
+Test fixture with `expires_at` 100ms in the future:
+
+```swift
+@MainActor
+func test_awaitExpiry_callsOnExpire_afterExpiresAt() async {
+    var didExpire = false
+    let expires = Date.now.addingTimeInterval(0.1)
+    let vm = AskUserSheetViewModel(
+        event: AskUserEvent(prompt: "Q?", kind: .text, expiresAt: expires),
+        promptEventID: "$p-1",
+        timeline: FakeTimelineService(),
+        onClose: {}
+    )
+    await vm.awaitExpiry(onExpire: { didExpire = true })
+    XCTAssertTrue(didExpire)
+    XCTAssertTrue(vm.isExpired)
+}
+
+@MainActor
+func test_awaitExpiry_isNoop_whenNoExpiresAt() async {
+    var didExpire = false
+    let vm = AskUserSheetViewModel(
+        event: AskUserEvent(prompt: "Q?", kind: .text, expiresAt: nil),
+        promptEventID: "$p-1",
+        timeline: FakeTimelineService(),
+        onClose: {}
+    )
+    await vm.awaitExpiry(onExpire: { didExpire = true })
+    XCTAssertFalse(didExpire)
+}
+```
+
+Also add a unit test for `isExpired`:
+
+```swift
+@MainActor
+func test_isExpired_isTrue_afterExpiresAt() {
+    let vm = AskUserSheetViewModel(
+        event: AskUserEvent(prompt: "Q", kind: .text, expiresAt: Date.now.addingTimeInterval(-1)),
+        promptEventID: "$p-1",
+        timeline: FakeTimelineService(),
+        onClose: {}
+    )
+    XCTAssertTrue(vm.isExpired)
+}
+
+@MainActor
+func test_send_isNoop_whenExpired() async {
+    let fake = FakeTimelineService()
+    let vm = AskUserSheetViewModel(
+        event: AskUserEvent(prompt: "Q", kind: .text, expiresAt: Date.now.addingTimeInterval(-1)),
+        promptEventID: "$p-1",
+        timeline: fake,
+        onClose: {}
+    )
+    vm.textInput = "answer"
+    await vm.send()
+    XCTAssertNil(fake.lastSentBody)  // expired → not sent
+}
+```
+
+- [ ] **Step 5: Commit**
 
 ```bash
 git add Matron/Features/Chat/Rendering/AskUserSheet.swift \
-        Matron/Features/Chat/Rendering/AskUserSheetViewModel.swift
-git commit -m "feat: AskUserSheet half-sheet with text/choice/multi/boolean inputs"
+        Matron/Features/Chat/Rendering/AskUserSheetViewModel.swift \
+        Matron/Tests/ChatTests/AskUserSheetViewModelTests.swift \
+        MatronShared/Sources/Chat/TimelineService.swift \
+        MatronShared/Tests/ChatTests/FakeTimelineService.swift
+git commit -m "feat: AskUserSheet half-sheet with reply correlation + expiry"
+git push
+```
+
+---
+
+### Task 9b: AskUserSheet snapshot tests
+
+**Files:**
+- Create: `MatronShared/Tests/DesignSystemSnapshotTests/AskUserSheetSnapshotTests.swift`
+
+The sheet view itself lives in the app target, but for snapshotting we extract the *content* of the sheet (the inner `VStack`) into a `View` that DesignSystem-tests can instantiate without app-only dependencies. Either:
+
+1. Move the sheet body into a `public struct AskUserSheetBody: View` in `MatronShared/Sources/DesignSystem/AskUserSheetBody.swift`, parameterised on the same state values the ViewModel exposes (so it doesn't need `TimelineService`), or
+2. Use a snapshot-only stub `TimelineService` and render the full sheet.
+
+Prefer (1) — keeps DesignSystem decoupled from app types.
+
+- [ ] **Step 1: Extract `AskUserSheetBody` into DesignSystem**
+
+```swift
+import SwiftUI
+import MatronEvents
+
+public struct AskUserSheetBody: View {
+    public let event: AskUserEvent
+    @Binding public var textInput: String
+    @Binding public var selectedChoiceIDs: Set<String>
+    @Binding public var booleanAnswer: Bool?
+    public let isSending: Bool
+    public let isExpired: Bool
+    public let onSend: () -> Void
+
+    public init(event: AskUserEvent, textInput: Binding<String>, selectedChoiceIDs: Binding<Set<String>>, booleanAnswer: Binding<Bool?>, isSending: Bool, isExpired: Bool, onSend: @escaping () -> Void) {
+        self.event = event
+        self._textInput = textInput
+        self._selectedChoiceIDs = selectedChoiceIDs
+        self._booleanAnswer = booleanAnswer
+        self.isSending = isSending
+        self.isExpired = isExpired
+        self.onSend = onSend
+    }
+    // body: same VStack contents as in Task 9 Step 3
+}
+```
+
+Update `AskUserSheet` (app target) to wrap `AskUserSheetBody` and connect it to the ViewModel.
+
+- [ ] **Step 2: Snapshot tests for all four input kinds + expired variant**
+
+```swift
+#if canImport(UIKit)
+import XCTest
+import SwiftUI
+import SnapshotTesting
+@testable import MatronDesignSystem
+@testable import MatronEvents
+
+final class AskUserSheetSnapshotTests: XCTestCase {
+    private func body(event: AskUserEvent, isExpired: Bool = false) -> some View {
+        StatefulPreviewWrapper(initial: ("", Set<String>(), Bool?.none)) { state in
+            AskUserSheetBody(
+                event: event,
+                textInput: Binding(get: { state.wrappedValue.0 }, set: { state.wrappedValue.0 = $0 }),
+                selectedChoiceIDs: Binding(get: { state.wrappedValue.1 }, set: { state.wrappedValue.1 = $0 }),
+                booleanAnswer: Binding(get: { state.wrappedValue.2 }, set: { state.wrappedValue.2 = $0 }),
+                isSending: false,
+                isExpired: isExpired,
+                onSend: {}
+            )
+            .frame(width: 375, height: 480)
+        }
+    }
+
+    private func snapshot(_ view: some View, named: String, file: StaticString = #file, line: UInt = #line) {
+        for (suffix, traits) in [
+            ("light",      UITraitCollection(userInterfaceStyle: .light)),
+            ("dark",       UITraitCollection(userInterfaceStyle: .dark)),
+            ("xxxl-light", UITraitCollection(traitsFrom: [
+                UITraitCollection(userInterfaceStyle: .light),
+                UITraitCollection(preferredContentSizeCategory: .accessibilityExtraExtraExtraLarge)
+            ]))
+        ] {
+            assertSnapshot(of: view, as: .image(layout: .sizeThatFits, traits: traits),
+                           named: "\(named).\(suffix)", file: file, line: line)
+        }
+    }
+
+    func test_text() {
+        snapshot(body(event: AskUserEvent(prompt: "What's the workdir?", kind: .text, expiresAt: nil)),
+                 named: "text")
+    }
+
+    func test_choice() {
+        let opts = [AskUserEvent.Option(id: "a", label: "src/main.rs"),
+                    AskUserEvent.Option(id: "b", label: "src/lib.rs")]
+        snapshot(body(event: AskUserEvent(prompt: "Which file?",
+                                          kind: .choice(options: opts, allowOther: true),
+                                          expiresAt: nil)),
+                 named: "choice")
+    }
+
+    func test_multiChoice() {
+        let opts = [AskUserEvent.Option(id: "a", label: "Build"),
+                    AskUserEvent.Option(id: "b", label: "Test"),
+                    AskUserEvent.Option(id: "c", label: "Lint")]
+        snapshot(body(event: AskUserEvent(prompt: "Which steps to run?",
+                                          kind: .multiChoice(options: opts, allowOther: false),
+                                          expiresAt: nil)),
+                 named: "multiChoice")
+    }
+
+    func test_boolean() {
+        snapshot(body(event: AskUserEvent(prompt: "Proceed?", kind: .boolean, expiresAt: nil)),
+                 named: "boolean")
+    }
+
+    func test_expired_disablesControls() {
+        snapshot(body(event: AskUserEvent(prompt: "What's the workdir?", kind: .text,
+                                          expiresAt: Date.now.addingTimeInterval(-1)),
+                      isExpired: true),
+                 named: "expired")
+    }
+}
+#endif
+```
+
+> **Implementer note:** `StatefulPreviewWrapper` is a tiny SwiftUI helper that gives a snapshot test a mutable backing store for a `@Binding`. If one isn't already in the test helpers, add it to `MatronShared/Tests/DesignSystemSnapshotTests/Support/StatefulPreviewWrapper.swift`.
+
+- [ ] **Step 3: Run + commit**
+
+```bash
+cd MatronShared && swift test --filter AskUserSheetSnapshotTests
+git add MatronShared/Sources/DesignSystem/AskUserSheetBody.swift \
+        MatronShared/Tests/DesignSystemSnapshotTests/AskUserSheetSnapshotTests.swift \
+        MatronShared/Tests/DesignSystemSnapshotTests/Support/StatefulPreviewWrapper.swift \
+        MatronShared/Tests/DesignSystemSnapshotTests/__Snapshots__/
+git commit -m "test: AskUserSheetBody snapshots (text/choice/multi/boolean + expired)"
 git push
 ```
 
@@ -874,7 +1243,10 @@ git push
 ### Task 10: SessionMetaHeader
 
 **Files:**
-- Create: `Matron/Features/Chat/Rendering/SessionMetaHeader.swift`
+- Create: `MatronShared/Sources/DesignSystem/SessionMetaHeader.swift`
+- Create: `MatronShared/Tests/DesignSystemSnapshotTests/SessionMetaHeaderSnapshotTests.swift`
+
+(Lives in DesignSystem so it's snapshottable in isolation. Wrapped from the app target by a thin `Matron/Features/Chat/Rendering/SessionMetaHeader.swift` if app-level state is needed later.)
 
 - [ ] **Step 1: Implement**
 
@@ -882,18 +1254,37 @@ git push
 import SwiftUI
 import MatronEvents
 
-struct SessionMetaHeader: View {
+public struct SessionMetaHeader: View {
     let event: SessionMetaEvent
-    @State private var collapsed = false
+    let chatTitle: String
+    @State private var collapsed: Bool
 
-    var body: some View {
+    public init(event: SessionMetaEvent, chatTitle: String, collapsed: Bool = false) {
+        self.event = event
+        self.chatTitle = chatTitle
+        self._collapsed = State(initialValue: collapsed)
+    }
+
+    public var body: some View {
         Button { collapsed.toggle() } label: {
-            HStack(spacing: 8) {
-                Image(systemName: collapsed ? "chevron.right" : "chevron.down").font(.caption2)
-                if let model = event.model { Text(model).font(.caption).bold() }
-                if let workdir = event.workdir { Text("· \(workdir)").font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
-                Spacer()
-                Text(event.startedAt, style: .time).font(.caption2).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    Image(systemName: collapsed ? "chevron.right" : "chevron.down").font(.caption2)
+                    Text(chatTitle).font(.caption).bold()
+                    Spacer()
+                    Text(event.startedAt, style: .time).font(.caption2).foregroundStyle(.secondary)
+                }
+                if !collapsed {
+                    HStack(spacing: 6) {
+                        if let model = event.model {
+                            Text(model).font(.caption2).foregroundStyle(.secondary)
+                        }
+                        if let workdir = event.workdir {
+                            Text("· \(workdir)")
+                                .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }
+                }
             }
             .padding(.horizontal)
             .padding(.vertical, 6)
@@ -905,11 +1296,53 @@ struct SessionMetaHeader: View {
 }
 ```
 
-- [ ] **Step 2: Commit**
+The collapsed state shows only the chat title + chevron + time. The expanded state additionally shows model + workdir details.
+
+- [ ] **Step 2: Snapshot tests for both states**
+
+```swift
+#if canImport(UIKit)
+import XCTest
+import SwiftUI
+import SnapshotTesting
+@testable import MatronDesignSystem
+@testable import MatronEvents
+
+final class SessionMetaHeaderSnapshotTests: XCTestCase {
+    private let evt = SessionMetaEvent(
+        sessionID: "abc",
+        model: "claude-sonnet-4-7",
+        workdir: "~/yearbook-app",
+        startedAt: Date(timeIntervalSince1970: 1745000000)
+    )
+
+    func test_expanded_showsModelAndWorkdir() {
+        assertSnapshot(
+            of: SessionMetaHeader(event: evt, chatTitle: "Refactor login flow", collapsed: false)
+                .frame(width: 375),
+            as: .image(layout: .sizeThatFits)
+        )
+    }
+
+    func test_collapsed_showsOnlyTitle() {
+        assertSnapshot(
+            of: SessionMetaHeader(event: evt, chatTitle: "Refactor login flow", collapsed: true)
+                .frame(width: 375),
+            as: .image(layout: .sizeThatFits)
+        )
+    }
+}
+#endif
+```
+
+- [ ] **Step 3: Commit**
 
 ```bash
-git add Matron/Features/Chat/Rendering/SessionMetaHeader.swift
-git commit -m "feat: SessionMetaHeader collapsible chat header"
+cd MatronShared && swift test --filter SessionMetaHeaderSnapshotTests
+git add MatronShared/Sources/DesignSystem/SessionMetaHeader.swift \
+        MatronShared/Tests/DesignSystemSnapshotTests/SessionMetaHeaderSnapshotTests.swift \
+        MatronShared/Tests/DesignSystemSnapshotTests/__Snapshots__/
+git commit -m "feat: SessionMetaHeader collapsible chat header + snapshots"
 git push
 ```
 
@@ -952,33 +1385,116 @@ case .askUser(_, let event):
     }
 ```
 
-- [ ] **Step 2: ChatView presents the AskUserSheet for the most recent unanswered ask_user**
+- [ ] **Step 2: ChatViewModel tracks already-answered prompts (idempotency)**
+
+Push decryption can re-deliver an `ask_user` event after the user has already answered (e.g. NSE ran for a backgrounded notification, then the foregrounded app re-decrypts the same event). We must NOT re-pop the sheet.
+
+In `ChatViewModel`:
+
+```swift
+@MainActor
+final class ChatViewModel: ObservableObject {
+    let roomID: String
+    @Published private(set) var items: [TimelineItem] = []
+
+    /// Event IDs of `ask_user` prompts the user has already answered in this room.
+    /// Persisted across app launches under `matron.answeredPrompts.<roomID>`.
+    private var answeredPromptIDs: Set<String>
+
+    private var defaultsKey: String { "matron.answeredPrompts.\(roomID)" }
+
+    init(roomID: String, /* ... */) {
+        self.roomID = roomID
+        let stored = UserDefaults.standard.stringArray(forKey: "matron.answeredPrompts.\(roomID)") ?? []
+        self.answeredPromptIDs = Set(stored)
+    }
+
+    /// Filter timeline items to only `ask_user` prompts the user hasn't answered yet.
+    /// Returns the most recent unanswered prompt, if any.
+    func pendingAsk() -> (eventID: String, AskUserEvent)? {
+        for item in items.reversed() {
+            if case .askUser(let id, let evt) = item.kind, !answeredPromptIDs.contains(id) {
+                return (id, evt)
+            }
+        }
+        return nil
+    }
+
+    /// Called from `AskUserSheetViewModel.onClose` after a successful send.
+    func markPromptAnswered(_ eventID: String) {
+        answeredPromptIDs.insert(eventID)
+        UserDefaults.standard.set(Array(answeredPromptIDs), forKey: defaultsKey)
+    }
+}
+```
+
+- [ ] **Step 3: TDD — re-delivered prompt does not re-present**
+
+```swift
+@MainActor
+func test_pendingAsk_excludesAnsweredPrompts_evenAfterRedelivery() {
+    let vm = ChatViewModel(roomID: "!room:server", /* ... */)
+    let prompt = AskUserEvent(prompt: "Q?", kind: .text, expiresAt: nil)
+    vm.items = [TimelineItem(id: "$1", kind: .askUser(eventID: "$1", prompt))]
+    XCTAssertNotNil(vm.pendingAsk())
+
+    vm.markPromptAnswered("$1")
+
+    // Simulate push re-decrypt: same event arrives again.
+    vm.items = [TimelineItem(id: "$1", kind: .askUser(eventID: "$1", prompt))]
+    XCTAssertNil(vm.pendingAsk(), "answered prompt must not re-pop")
+}
+
+@MainActor
+func test_answeredPromptIDs_persistAcrossLaunches() {
+    let key = "matron.answeredPrompts.!room:server"
+    UserDefaults.standard.removeObject(forKey: key)
+    do {
+        let vm = ChatViewModel(roomID: "!room:server", /* ... */)
+        vm.markPromptAnswered("$persist-1")
+    }
+    // New ViewModel instance, same room → loads from UserDefaults.
+    let vm2 = ChatViewModel(roomID: "!room:server", /* ... */)
+    let prompt = AskUserEvent(prompt: "Q?", kind: .text, expiresAt: nil)
+    vm2.items = [TimelineItem(id: "$persist-1", kind: .askUser(eventID: "$persist-1", prompt))]
+    XCTAssertNil(vm2.pendingAsk())
+    UserDefaults.standard.removeObject(forKey: key)
+}
+```
+
+- [ ] **Step 4: ChatView presents the AskUserSheet for the most recent unanswered ask_user**
 
 Add `@State private var pendingAsk: (eventID: String, AskUserEvent)?` and:
 
 ```swift
-.onChange(of: viewModel.items) { _, items in
-    pendingAsk = items.reversed().compactMap { item -> (String, AskUserEvent)? in
-        if case .askUser(let id, let evt) = item.kind { return (id, evt) }
-        return nil
-    }.first
+.onChange(of: viewModel.items) { _, _ in
+    pendingAsk = viewModel.pendingAsk()
 }
 .sheet(item: Binding(
     get: { pendingAsk.map { AskUserSheetIdentifier(eventID: $0.eventID, event: $0.1) } },
     set: { _ in pendingAsk = nil }
 )) { id in
-    AskUserSheet(viewModel: AskUserSheetViewModel(
-        event: id.event,
-        promptEventID: id.eventID,
-        timeline: timelineSvc,
-        onClose: { pendingAsk = nil }
-    ))
+    AskUserSheet(
+        viewModel: AskUserSheetViewModel(
+            event: id.event,
+            promptEventID: id.eventID,
+            timeline: timelineSvc,
+            onClose: {
+                viewModel.markPromptAnswered(id.eventID)
+                pendingAsk = nil
+            }
+        ),
+        onClose: {
+            viewModel.markPromptAnswered(id.eventID)
+            pendingAsk = nil
+        }
+    )
 }
 ```
 
 (Define `AskUserSheetIdentifier: Identifiable` locally — `id` = `eventID`.)
 
-- [ ] **Step 3: ChatView shows SessionMetaHeader at the top**
+- [ ] **Step 5: ChatView shows SessionMetaHeader at the top**
 
 Add `@State private var sessionMeta: SessionMetaEvent?`:
 
@@ -988,9 +1504,15 @@ Add `@State private var sessionMeta: SessionMetaEvent?`:
 }
 ```
 
-Render above the ScrollView when non-nil.
+Render above the ScrollView when non-nil, passing the chat title:
 
-- [ ] **Step 4: Commit**
+```swift
+if let meta = sessionMeta {
+    SessionMetaHeader(event: meta, chatTitle: viewModel.chatTitle)
+}
+```
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git commit -am "feat: ChatView renders ToolCallCard inline, AskUserSheet modal, SessionMetaHeader top"
@@ -1085,11 +1607,15 @@ After acceptance, write Phase 6 plan (search).
 
 ## Plan self-review
 
-- **§4.1 tool_call:** Tasks 2, 6, 8, 11.
-- **§4.2 ask_user:** Tasks 3, 6, 9, 11.
-- **§4.3 session_meta:** Tasks 4, 7, 10, 11.
+- **§4.1 tool_call:** Tasks 2, 6, 8, 11. `ToolCallCard` takes an `expanded:` initializer parameter so snapshot tests can capture both states; production retains tap-toggle behaviour by defaulting to `false`.
+- **§4.2 ask_user:** Tasks 3, 6, 9, 9b, 11. `m.in_reply_to` correlation is now actually wired: `TimelineService.sendText(_:inReplyTo:)` adds the `m.relates_to` block; `AskUserSheetViewModel.send()` passes `promptEventID`; `FakeTimelineService` records the reply target so tests can assert it (Task 9 Step 1).
+- **§4.2 expiry:** `AskUserEvent.expiresAt` is honoured. The ViewModel exposes `isExpired`; the Sheet has a `.task(id: promptEventID)` that sleeps until `expiresAt` then calls `onClose`; controls are disabled when expired (Task 9 Steps 3–4).
+- **§4.2 idempotency:** `ChatViewModel.answeredPromptIDs` is persisted to UserDefaults (`matron.answeredPrompts.<roomID>`) so a re-decrypted prompt does not re-pop the sheet (Task 11 Steps 2–3).
+- **§4.3 session_meta:** Tasks 4, 7, 10, 11. `SessionMetaHeader` collapsed state shows only chat title + chevron; expanded shows model + workdir; both states have snapshot tests (Task 10).
 - **§4.4 standard event types:** unchanged from Phase 2.
-- **§4.5 sending side:** Composer remains text-only; `ask_user` reply is sent as plain text matching the user's selection (per spec note: bot correlates by `m.in_reply_to`; we'll add `m.in_reply_to` once the bridge expects it — captured in Task 9 step 1 note).
+- **§4.5 sending side:** Composer remains text-only. `ask_user` replies use `sendText(_:inReplyTo:)` so the wire content includes `m.relates_to.m.in_reply_to.event_id`, matching spec §4.2.
 - **§4.6 bridge changes implied:** Captured at the top of this plan; defer to a separate bridge-side spec.
 - **§8.3 push body construction:** Updated in Task 12.
+- **Snapshots:** ToolCallCard (collapsed × 3 statuses + expanded × 3 variants), AskUserSheetBody (4 input kinds × {light, dark, XXXL} + expired), SessionMetaHeader (collapsed + expanded).
+- **TDD discipline:** Each behavioural change ships with a failing test first — sendText reply target, ViewModel `isExpired` + send no-op, sheet auto-dismiss, `pendingAsk` excludes answered prompts, `answeredPromptIDs` persistence.
 - No placeholders. New types defined before first use. SDK API pseudocode flagged with implementer notes.

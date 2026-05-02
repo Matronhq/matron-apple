@@ -30,33 +30,157 @@ These are **bridge/server-side** changes; track them in a separate `dev-boxer` /
 
 ```
 matron-iOS-app/
+├── project.yml                                MODIFIED — adds MatronNSE app-extension target
 ├── MatronShared/Sources/Push/
-│   ├── PushService.swift                 NEW — protocol
-│   ├── PushServiceLive.swift             NEW — APNs token + register pusher
-│   ├── PushDecoder.swift                 NEW — shared by app + NSE
-│   └── PushConfig.swift                  NEW — pusher URL, app_id consts
+│   ├── PushService.swift                      NEW — protocol
+│   ├── PushServiceLive.swift                  NEW — APNs token + register pusher
+│   ├── PushDecoder.swift                      NEW — shared by app + NSE (closure-injectable Fetcher)
+│   ├── PushConfig.swift                       NEW — pusher URL, app_id consts
+│   └── PushBootstrap+PushRules.swift          NEW — default push rules (§8.2)
 ├── MatronNSE/
-│   ├── NotificationService.swift         MODIFIED — real decrypt + rewrite
-│   └── MatronNSE.entitlements            MODIFIED — App Group + keychain group
+│   ├── NotificationService.swift              NEW (stub in Task 1, replaced in Task 4)
+│   ├── Info.plist                             NEW — extension bundle plist
+│   └── MatronNSE.entitlements                 NEW — App Group + keychain group
 ├── Matron/App/
-│   ├── PushBootstrap.swift               NEW — request permission, register
-│   └── NotificationDelegate.swift        NEW — handle taps for deep link
-├── MatronTests/
-│   ├── PushDecoderTests.swift            NEW
-│   └── PushServiceLiveTests.swift        NEW
+│   ├── PushBootstrap.swift                    NEW — request permission, register
+│   └── NotificationDelegate.swift             NEW — handle taps for deep link
+├── MatronShared/Tests/PushTests/
+│   ├── PushDecoderDefaultsTests.swift         NEW — Task 3 default-fallback test
+│   ├── PushDecoderBodyTests.swift             NEW — Task 7 fixture coverage
+│   ├── PushServiceLiveTests.swift             NEW
+│   ├── PushBootstrapPushRulesTests.swift      NEW — Task 5 default-push-rules test
+│   ├── Fixtures/NotificationItemFixtures.swift NEW
+│   └── Doubles/FakeNotificationSettings.swift NEW
 └── docs/
-    └── push-setup.md                     NEW — server-side runbook for Sygnal
+    └── push-setup.md                          NEW — server-side runbook for Sygnal
 ```
 
 ---
 
 ## Tasks
 
-### Task 1: PushConfig + PushService protocol
+### Task 1: NSE Xcode target + PushConfig + PushService protocol
 
 **Files:**
+- Modify: `project.yml` (add `MatronNSE` target)
+- Create: `MatronNSE/Info.plist`
+- Create: `MatronNSE/MatronNSE.entitlements`
+- Create: `MatronNSE/NotificationService.swift` (stub)
 - Create: `MatronShared/Sources/Push/PushConfig.swift`
 - Create: `MatronShared/Sources/Push/PushService.swift`
+
+> **Note:** Phase 1 wired up `Matron` (the host app) and `MatronShared`, but did **not** create the NSE Xcode target. Phase 4 owns this — without the target, none of Tasks 2–10 can build. This task creates it via XcodeGen so the rest of the phase has a place to plug into.
+
+- [ ] **Step 0: Add `MatronNSE` target to `project.yml`**
+
+Append the following stanza under `targets:` in `project.yml`:
+
+```yaml
+MatronNSE:
+  type: app-extension
+  platform: iOS
+  deploymentTarget: 17.0
+  sources: [MatronNSE]
+  dependencies:
+    - target: MatronShared
+  info:
+    path: MatronNSE/Info.plist
+    properties:
+      NSExtension:
+        NSExtensionPointIdentifier: com.apple.usernotifications.service
+        NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+  entitlements:
+    path: MatronNSE/MatronNSE.entitlements
+    properties:
+      com.apple.security.application-groups: [group.chat.matron]
+      keychain-access-groups: ["$(AppIdentifierPrefix)chat.matron"]
+```
+
+Also add `MatronNSE` as an extension dependency on the `Matron` host target so it gets embedded in the app bundle:
+
+```yaml
+Matron:
+  # …existing config…
+  dependencies:
+    # …existing deps…
+    - target: MatronNSE
+      embed: true
+      codeSign: true
+```
+
+Create `MatronNSE/MatronNSE.entitlements` with the full plist contents:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>group.chat.matron</string>
+    </array>
+    <key>keychain-access-groups</key>
+    <array>
+        <string>$(AppIdentifierPrefix)chat.matron</string>
+    </array>
+</dict>
+</plist>
+```
+
+Create `MatronNSE/Info.plist` (XcodeGen will merge `info.properties` from `project.yml` into this — the file just needs to exist with the bundle basics):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key>
+    <string>MatronNSE</string>
+    <key>CFBundlePackageType</key>
+    <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+</dict>
+</plist>
+```
+
+Create a stub `MatronNSE/NotificationService.swift` so the target compiles before Task 4 swaps in the real implementation:
+
+```swift
+import UserNotifications
+
+final class NotificationService: UNNotificationServiceExtension {
+    private var contentHandler: ((UNNotificationContent) -> Void)?
+    private var bestAttempt: UNMutableNotificationContent?
+
+    override func didReceive(
+        _ request: UNNotificationRequest,
+        withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void
+    ) {
+        self.contentHandler = contentHandler
+        self.bestAttempt = request.content.mutableCopy() as? UNMutableNotificationContent
+        contentHandler(request.content)
+    }
+
+    override func serviceExtensionTimeWillExpire() {
+        if let handler = contentHandler, let content = bestAttempt {
+            handler(content)
+        }
+    }
+}
+```
+
+**Verify the target builds before moving on:**
+
+```bash
+xcodegen generate && xcodebuild -scheme MatronNSE -configuration Debug CODE_SIGNING_ALLOWED=NO build
+```
+
+The build must succeed before continuing — if XcodeGen complains about the stanza or `xcodebuild` cannot find `MatronNSE`, fix that first. Commit before touching Push code:
+
+```bash
+git add project.yml MatronNSE/Info.plist MatronNSE/MatronNSE.entitlements MatronNSE/NotificationService.swift
+git commit -m "feat(nse): add MatronNSE app-extension target via XcodeGen with App Group + keychain entitlements"
+git push
+```
 
 - [ ] **Step 1: PushConfig**
 
@@ -64,8 +188,14 @@ matron-iOS-app/
 import Foundation
 
 public enum PushConfig {
-    /// Matches the bundle identifier in project.yml.
-    public static let appID = "chat.matron.app.ios"          // pusher app_id (NOT the bundle ID — Matrix-side identifier)
+    /// Matrix-side pusher `app_id`. Distinct per build configuration so Sygnal
+    /// can route Debug builds to the APNs sandbox endpoint and Release builds
+    /// to production (see `docs/push-setup.md` § "APNs sandbox vs production").
+    #if DEBUG
+    public static let appID = "chat.matron.ios.dev"
+    #else
+    public static let appID = "chat.matron.ios"
+    #endif
     public static let appDisplayName = "Matron"
     public static let pushFormat = "event_id_only"           // silent payload — NSE decrypts on-device
     public static let language = "en"
@@ -221,9 +351,30 @@ git push
 **Files:**
 - Create: `MatronShared/Sources/Push/PushDecoder.swift`
 
-Used by the NSE. Wraps the SDK's `NotificationClient` to fetch + decrypt one event.
+Used by the NSE. Wraps the SDK's `NotificationClient` to fetch + decrypt one event. We adopt a closure-injectable fetcher up front so Task 7 can drive `decode(...)` against fixture `NotificationItem`s without standing up a real SDK client.
 
-- [ ] **Step 1: Implement**
+- [ ] **Step 1: Failing test first (TDD)**
+
+`MatronShared/Tests/PushTests/PushDecoderDefaultsTests.swift`:
+
+```swift
+import XCTest
+@testable import MatronPush
+
+final class PushDecoderDefaultsTests: XCTestCase {
+    func test_decode_returnsDefaultWhenFetcherYieldsNil() async throws {
+        let decoder = PushDecoder(fetcher: { _, _ in nil })
+        let result = try await decoder.decode(roomID: "!r:s", eventID: "$evt")
+        XCTAssertEqual(result.title, "Matron")
+        XCTAssertEqual(result.body, "New message")
+        XCTAssertEqual(result.threadIdentifier, "!r:s")
+    }
+}
+```
+
+Run it, watch it fail to compile (`PushDecoder` doesn't exist yet).
+
+- [ ] **Step 2: Implement**
 
 ```swift
 import Foundation
@@ -240,45 +391,74 @@ public struct DecodedNotification: Sendable {
 }
 
 public final class PushDecoder: @unchecked Sendable {
-    private let provider: ClientProvider
-    private let session: UserSession
+    /// Closure shape lets tests drive `decode(...)` with fixture `NotificationItem`s
+    /// without a real homeserver. The `live(provider:session:)` factory wires the
+    /// production path through `Client.notificationClient(...)`.
+    public typealias Fetcher = (_ roomID: String, _ eventID: String) async throws -> NotificationItem?
 
-    public init(provider: ClientProvider, session: UserSession) {
-        self.provider = provider
-        self.session = session
+    private let fetcher: Fetcher
+
+    public init(fetcher: @escaping Fetcher) {
+        self.fetcher = fetcher
+    }
+
+    public static func live(provider: ClientProvider, session: UserSession) -> PushDecoder {
+        PushDecoder { roomID, eventID in
+            let client = try await provider.client(for: session)
+            let nc = try await client.notificationClient(processSetup: .multipleProcesses)
+            return try await nc.getNotification(roomId: roomID, eventId: eventID)
+        }
     }
 
     public func decode(roomID: String, eventID: String) async throws -> DecodedNotification {
-        let client = try await provider.client(for: session)
-        let nc = try await client.notificationClient(processSetup: .multipleProcesses)
-        guard let item = try await nc.getNotification(roomId: roomID, eventId: eventID) else {
+        guard let item = try await fetcher(roomID, eventID) else {
             return DecodedNotification(title: "Matron", body: "New message", threadIdentifier: roomID, badge: nil)
         }
         let title = item.senderInfo.displayName ?? item.senderInfo.userId
-        let body: String = {
-            switch item.event {
-            case .timeline(let event):
-                if let text = event.text { return text }
-                return "New message"
-            default:
-                return "New message"
-            }
-        }()
+        let body = Self.body(for: item)
         return DecodedNotification(title: title, body: body, threadIdentifier: roomID, badge: nil)
+    }
+
+    /// Maps a decrypted `NotificationItem` to a user-visible body string.
+    /// Explicit cases for every msgtype we care about; falls through to a generic
+    /// "New message" only for genuinely unknown types so missing handlers are
+    /// caught by Task 7's fixture suite.
+    static func body(for item: NotificationItem) -> String {
+        switch item.event {
+        case .text(let body):
+            return body
+        case .image(let alt):
+            return "📎 image" + (alt.map { " — \($0)" } ?? "")
+        case .file(let name):
+            return "📎 file" + (name.map { " — \($0)" } ?? "")
+        case .toolCall(let tool, _):
+            return "🔧 \(tool)"
+        case .askUser(let prompt):
+            return prompt
+        default:
+            return "New message"
+        }
     }
 }
 ```
 
 > **Implementer notes:**
-> - `NotificationClient.getNotification` returns a struct whose shape varies across SDK versions. Adjust property accesses (`senderInfo.displayName`, `event`, `text`).
-> - For attachments (`m.image`/`m.file`), set `body` to "📎 Image" / "📎 File" — pull mime via `event.kind`.
-> - Tool calls (Phase 5): set `body` to "🔧 Tool call". This is added in Phase 5.
+> - `NotificationClient.getNotification` returns a struct whose shape varies across SDK versions. Adjust property accesses (`senderInfo.displayName`, `event`).
+> - The `switch item.event` cases above assume an enum-like surface (`.text`/`.image`/`.file`/`.toolCall`/`.askUser`). If the pinned SDK exposes a generic `NotificationItem` carrying a `msgtype` string instead, dispatch on that string with the same body strings — the fixture suite in Task 7 pins the expected outputs either way.
+> - `chat.matron.tool_call` and `chat.matron.ask_user` are the custom event types defined in spec §10 (Phase 5). We branch on them here so push bodies are correct from day one even though the in-app rendering arrives in Phase 5.
 
-- [ ] **Step 2: Commit**
+- [ ] **Step 3: Verify**
 
 ```bash
-git add MatronShared/Sources/Push/PushDecoder.swift
-git commit -m "feat: PushDecoder wraps NotificationClient for NSE-side decryption"
+swift test --filter PushDecoderDefaultsTests
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add MatronShared/Sources/Push/PushDecoder.swift \
+        MatronShared/Tests/PushTests/PushDecoderDefaultsTests.swift
+git commit -m "feat: PushDecoder with closure-injectable fetcher + msgtype-aware body construction"
 git push
 ```
 
@@ -327,7 +507,7 @@ final class NotificationService: UNNotificationServiceExtension {
                     fallback(); return
                 }
                 let provider = ClientProvider(basePath: container)
-                let decoder = PushDecoder(provider: provider, session: session)
+                let decoder = PushDecoder.live(provider: provider, session: session)
                 let decoded = try await decoder.decode(roomID: roomID, eventID: eventID)
 
                 guard let content = bestAttempt else { fallback(); return }
@@ -361,9 +541,9 @@ final class NotificationService: UNNotificationServiceExtension {
 }
 ```
 
-- [ ] **Step 2: Update `MatronNSE.entitlements`**
+- [ ] **Step 2: Verify `MatronNSE.entitlements`**
 
-In `project.yml`, the entitlements block for `MatronNSE` should match `Matron`'s:
+The entitlements file was created in Task 1 Step 0 and must contain (re-paste here as the contract this task depends on):
 
 ```yaml
     entitlements:
@@ -375,7 +555,7 @@ In `project.yml`, the entitlements block for `MatronNSE` should match `Matron`'s
           - $(AppIdentifierPrefix)chat.matron
 ```
 
-(Already configured in Phase 1, but verify.)
+If anything has drifted (e.g. a stray edit) re-sync it now — the NSE cannot read the shared crypto store or the keychain session without both groups.
 
 - [ ] **Step 3: Build + commit**
 
@@ -408,15 +588,25 @@ import MatronModels
 final class PushBootstrap {
     private let pushService: PushService
     private let pusherBaseURL: URL
+    let notificationSettings: NotificationSettingsProtocol
+    let joinedRoomIDs: () async -> [String]
 
-    init(pushService: PushService, pusherBaseURL: URL) {
+    init(
+        pushService: PushService,
+        pusherBaseURL: URL,
+        notificationSettings: NotificationSettingsProtocol,
+        joinedRoomIDs: @escaping () async -> [String]
+    ) {
         self.pushService = pushService
         self.pusherBaseURL = pusherBaseURL
+        self.notificationSettings = notificationSettings
+        self.joinedRoomIDs = joinedRoomIDs
     }
 
     func bootstrap() async {
         let granted = await pushService.requestPermission()
         guard granted else { return }
+        try? await ensureDefaultPushRules()                // see Step 3
         await UIApplication.shared.registerForRemoteNotifications()
         // Token arrives via UIApplicationDelegate.didRegisterForRemoteNotificationsWithDeviceToken;
         // the AppDelegate caches it in PushTokenStore (defined below).
@@ -462,11 +652,97 @@ final class MatronAppDelegate: NSObject, UIApplicationDelegate {
 
 In the post-login branch of `MatronApp`, after sync starts, invoke `PushBootstrap.bootstrap()` once and observe `PushTokenStore` for the token, then `register(token:)`.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Ensure default push rules notify on every joined-room message (spec §8.2)**
+
+Per spec §8.2: "Configure default push rules: notify on every event in joined rooms." Out of the box, the homeserver applies the standard Matrix push rule defaults — `.m.rule.master` may be disabled and there is no guarantee that every encrypted bot-room message ends up with a `notify` action. We need a one-shot post-login call that ensures (a) the master rule is enabled, and (b) any joined room defaults to `.allMessages` notification mode.
+
+Failing test first (TDD — `MatronShared/Tests/PushTests/PushBootstrapPushRulesTests.swift`):
+
+```swift
+import XCTest
+@testable import MatronPush
+
+final class PushBootstrapPushRulesTests: XCTestCase {
+    func test_ensureDefaultPushRules_enablesMasterAndSetsAllMessages() async throws {
+        let fake = FakeNotificationSettings()
+        fake.masterRuleEnabled = false   // simulate user-disabled state
+        let bootstrap = PushBootstrap(
+            pushService: NoopPushService(),
+            pusherBaseURL: URL(string: "https://example.com")!,
+            notificationSettings: fake,
+            joinedRoomIDs: { ["!a:s", "!b:s"] }
+        )
+
+        try await bootstrap.ensureDefaultPushRules()
+
+        // Master must be on after bootstrap.
+        XCTAssertTrue(fake.masterRuleEnabled)
+        // Every joined room must end up in .allMessages mode.
+        XCTAssertEqual(fake.modes["!a:s"], .allMessages)
+        XCTAssertEqual(fake.modes["!b:s"], .allMessages)
+    }
+}
+```
+
+Implementation in `PushBootstrap.swift`:
+
+```swift
+import MatrixRustSDK
+
+extension PushBootstrap {
+    /// Ensures spec §8.2 default push rules are in place:
+    /// - `.m.rule.master` is enabled (push not globally suppressed).
+    /// - Every joined room is set to `.allMessages` notification mode.
+    func ensureDefaultPushRules() async throws {
+        // 1. Master override — re-enable if a previous client (or user) toggled it off.
+        if try await notificationSettings.isPushRuleEnabled(
+            ruleKind: .override, ruleId: ".m.rule.master"
+        ) == false {
+            try await notificationSettings.setPushRuleEnabled(
+                ruleKind: .override, ruleId: ".m.rule.master", enabled: true
+            )
+        }
+
+        // 2. Per-room: default each joined room to .allMessages so silent pushes fire
+        //    even when matrix's default rule set wouldn't have produced a `notify` action.
+        for roomID in await joinedRoomIDs() {
+            try await notificationSettings.setRoomNotificationMode(
+                roomId: roomID, mode: .allMessages
+            )
+        }
+
+        // 3. Sanity check: assert the resolved action for each joined room is `notify`.
+        //    Surfaces drift if the SDK ever changes the .allMessages semantics.
+        for roomID in await joinedRoomIDs() {
+            let mode = try await notificationSettings.getRoomNotificationMode(roomId: roomID)
+            assert(mode == .allMessages, "expected notify/allMessages for \(roomID), got \(mode)")
+        }
+    }
+}
+```
+
+`ensureDefaultPushRules()` is already invoked from `bootstrap()` in Step 1 (between permission grant and `registerForRemoteNotifications()`); this step adds the implementation behind that call site.
+
+> **Implementer notes:**
+> - The matrix-rust-sdk-swift surface for this is `Client.notificationSettings()` returning a `NotificationSettings` actor with `isPushRuleEnabled` / `setPushRuleEnabled` / `setRoomNotificationMode` / `getRoomNotificationMode`. Some older releases instead expose `Client.setPushRule(...)` directly — adjust to the actual SDK shape pinned in `Package.resolved`.
+> - `NotificationSettingsProtocol` is a thin in-house protocol that mirrors the four SDK methods we need; the live impl wraps `Client.notificationSettings()`, the test double `FakeNotificationSettings` records writes against an in-memory dict.
+> - `joinedRoomIDs` is supplied by the caller (read from the room-list snapshot Phase 2 already maintains) so we do not couple `PushBootstrap` to the sync layer.
+> - `NoopPushService` and `FakeNotificationSettings` are simple test doubles in `Tests/PushTests/Doubles/`.
+
+Run the test, watch it fail (no impl), implement, re-run, watch it pass:
 
 ```bash
-git add Matron/App/PushBootstrap.swift Matron/App/MatronApp.swift
-git commit -m "feat: PushBootstrap requests permission and registers APNs token"
+swift test --filter PushBootstrapPushRulesTests
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add Matron/App/PushBootstrap.swift Matron/App/MatronApp.swift \
+        MatronShared/Sources/Push/PushBootstrap+PushRules.swift \
+        MatronShared/Tests/PushTests/PushBootstrapPushRulesTests.swift \
+        MatronShared/Tests/PushTests/Doubles/FakeNotificationSettings.swift
+git commit -m "feat: PushBootstrap requests permission, enables .m.rule.master, sets joined rooms to .allMessages, registers APNs token"
 git push
 ```
 
@@ -537,68 +813,79 @@ git push
 
 ---
 
-### Task 7: PushDecoder unit tests with fixture event
+### Task 7: PushDecoder fixture tests for every msgtype
 
 **Files:**
-- Create: `MatronShared/Tests/PushTests/PushDecoderTests.swift`
-- Create: `MatronShared/Tests/PushTests/Fixtures/decrypted-text.json`
+- Create: `MatronShared/Tests/PushTests/PushDecoderBodyTests.swift`
+- Create: `MatronShared/Tests/PushTests/Fixtures/NotificationItemFixtures.swift`
 
-We can't drive a real `NotificationClient` without a homeserver, but we can test the title/body construction with a fake `getNotification` injection. Refactor `PushDecoder` slightly to take a closure-based dependency:
+The closure-injectable shape and the msgtype switch already landed in Task 3. This task adds fixture-driven tests that pin the body string for every variant we care about (and the unknown-msgtype fall-through). No production-code changes.
 
-- [ ] **Step 1: Refactor `PushDecoder` to accept an injectable fetcher**
+- [ ] **Step 1: Failing tests first (TDD)**
 
-```swift
-public final class PushDecoder: @unchecked Sendable {
-    public typealias Fetcher = (String, String) async throws -> NotificationItem?
-
-    private let fetcher: Fetcher
-
-    public init(fetcher: @escaping Fetcher) {
-        self.fetcher = fetcher
-    }
-
-    public static func live(provider: ClientProvider, session: UserSession) -> PushDecoder {
-        PushDecoder { roomID, eventID in
-            let client = try await provider.client(for: session)
-            let nc = try await client.notificationClient(processSetup: .multipleProcesses)
-            return try await nc.getNotification(roomId: roomID, eventId: eventID)
-        }
-    }
-
-    public func decode(roomID: String, eventID: String) async throws -> DecodedNotification {
-        guard let item = try await fetcher(roomID, eventID) else {
-            return DecodedNotification(title: "Matron", body: "New message", threadIdentifier: roomID, badge: nil)
-        }
-        // …same body construction as before…
-    }
-}
-```
-
-- [ ] **Step 2: Write fixture-based test**
+`MatronShared/Tests/PushTests/PushDecoderBodyTests.swift`:
 
 ```swift
 import XCTest
 @testable import MatronPush
 
-final class PushDecoderTests: XCTestCase {
-    func test_returnsDefaultWhenNoItem() async throws {
-        let decoder = PushDecoder(fetcher: { _, _ in nil })
-        let result = try await decoder.decode(roomID: "!r:s", eventID: "$evt")
-        XCTAssertEqual(result.title, "Matron")
-        XCTAssertEqual(result.body, "New message")
-        XCTAssertEqual(result.threadIdentifier, "!r:s")
+final class PushDecoderBodyTests: XCTestCase {
+    private func decode(_ item: NotificationItem) async throws -> DecodedNotification {
+        let decoder = PushDecoder(fetcher: { _, _ in item })
+        return try await decoder.decode(roomID: "!r:s", eventID: "$evt")
     }
 
-    // Once SDK types are stable, add fixtures with a hand-built NotificationItem
-    // (reuse the SDK's struct definitions) and assert title/body construction.
+    func test_body_text() async throws {
+        let r = try await decode(.fixture(event: .text("hello world")))
+        XCTAssertEqual(r.body, "hello world")
+    }
+
+    func test_body_image_withAlt() async throws {
+        let r = try await decode(.fixture(event: .image("cat.png")))
+        XCTAssertEqual(r.body, "📎 image — cat.png")
+    }
+
+    func test_body_image_withoutAlt() async throws {
+        let r = try await decode(.fixture(event: .image(nil)))
+        XCTAssertEqual(r.body, "📎 image")
+    }
+
+    func test_body_file_withName() async throws {
+        let r = try await decode(.fixture(event: .file("report.pdf")))
+        XCTAssertEqual(r.body, "📎 file — report.pdf")
+    }
+
+    func test_body_file_withoutName() async throws {
+        let r = try await decode(.fixture(event: .file(nil)))
+        XCTAssertEqual(r.body, "📎 file")
+    }
+
+    func test_body_toolCall() async throws {
+        let r = try await decode(.fixture(event: .toolCall("search", ["q": "swift"])))
+        XCTAssertEqual(r.body, "🔧 search")
+    }
+
+    func test_body_askUser() async throws {
+        let r = try await decode(.fixture(event: .askUser("Approve transfer?")))
+        XCTAssertEqual(r.body, "Approve transfer?")
+    }
+
+    func test_body_unknownMsgtypeFallsThrough() async throws {
+        let r = try await decode(.fixture(event: .other("m.sticker")))
+        XCTAssertEqual(r.body, "New message")
+    }
 }
 ```
 
-- [ ] **Step 3: Commit**
+`MatronShared/Tests/PushTests/Fixtures/NotificationItemFixtures.swift` builds in-memory `NotificationItem` values with each event variant. If the pinned SDK exposes a `msgtype: String` rather than an enum, the fixtures should produce items with the corresponding raw msgtype strings (`m.text`, `m.image`, `m.file`, `chat.matron.tool_call`, `chat.matron.ask_user`, plus an unknown one like `m.sticker`) and the `body(for:)` switch in `PushDecoder` should be adjusted to dispatch on the string — assertions stay identical.
+
+- [ ] **Step 2: Run, verify, commit**
 
 ```bash
-git add MatronShared/Sources/Push/PushDecoder.swift MatronShared/Tests/PushTests/PushDecoderTests.swift
-git commit -m "test: PushDecoder injectable fetcher + default-fallback test"
+swift test --filter PushDecoderBodyTests
+git add MatronShared/Tests/PushTests/PushDecoderBodyTests.swift \
+        MatronShared/Tests/PushTests/Fixtures/NotificationItemFixtures.swift
+git commit -m "test: PushDecoder fixture coverage for text/image/file/tool_call/ask_user/unknown msgtypes"
 git push
 ```
 
@@ -673,12 +960,13 @@ docker run -d --name sygnal \
 
 ```yaml
 apps:
-  chat.matron.app.ios:
+  chat.matron.ios:
     type: apns
-    keyfile: /etc/auth_key.p8
-    key_id: <KEY_ID>
-    team_id: <TEAM_ID>
-    topic: chat.matron.app
+    keyfile: /etc/sygnal/AuthKey_XXX.p8
+    key_id: XXXXXXXXXX
+    team_id: YYYYYYYYYY
+    topic: chat.matron.ios
+    use_sandbox: true   # set false for TestFlight/production builds
     push_type: alert
 log:
   setup:
@@ -690,9 +978,15 @@ log:
     root: { handlers: [console], level: DEBUG }
 ```
 
-`app_id` (`chat.matron.app.ios`) MUST match `PushConfig.appID` in `MatronShared/Push/PushConfig.swift`.
+`app_id` (`chat.matron.ios`) MUST match `PushConfig.appID` in `MatronShared/Push/PushConfig.swift`.
 
 `topic` is the bundle ID of the **NSE-bearing app**, not the NSE itself — `chat.matron.app`.
+
+### APNs sandbox vs production
+
+TestFlight and App Store builds use the production APNs endpoint. Debug/dev builds (Xcode `Run`, simulator deploys, ad-hoc development provisioning profiles) use sandbox. Mismatched configs produce silent push failures — Sygnal accepts the request, APNs returns `BadDeviceToken` for the wrong endpoint, and the user simply never sees a notification.
+
+Operationally we run two Sygnal app entries side-by-side: `chat.matron.ios.dev` with `use_sandbox: true` and `chat.matron.ios` with `use_sandbox: false`. The iOS build picks the right `app_id` at compile time from a build setting (debug vs release). Whenever you cut a TestFlight build, double-check that `use_sandbox` on the matching Sygnal entry is `false` — a stray `true` here is the single most common cause of "push works on my Mac but not on TestFlight".
 
 ## Cloudflare Tunnel
 
@@ -703,6 +997,24 @@ Add a route mapping `https://push.<domain>` → `http://127.0.0.1:5000`.
 No specific config — pushers are per-user, registered by the iOS app via `POST /_matrix/client/v3/pushers`.
 
 ## Smoke test
+
+**Pre-flight: verify `use_sandbox` matches the build type you are testing against.**
+
+```bash
+# Check the sandbox flag for the app_id we're about to hit:
+docker exec sygnal grep -A1 "^  chat.matron.ios" /etc/sygnal.yaml | grep use_sandbox
+# Expect: use_sandbox: true   for a Debug/dev IPA / simulator build
+# Expect: use_sandbox: false  for a TestFlight or App Store build
+
+# Cross-check the build type by reading the embedded.mobileprovision from the .ipa:
+unzip -p Matron.ipa "Payload/Matron.app/embedded.mobileprovision" \
+  | security cms -D \
+  | plutil -extract aps-environment xml1 -o - -
+# Expect: <string>development</string>  → must pair with use_sandbox: true
+# Expect: <string>production</string>   → must pair with use_sandbox: false
+```
+
+Mismatched values here are a hard fail — abort the smoke test and fix the Sygnal config (or rebuild the IPA with the correct provisioning profile) before sending traffic.
 
 ```bash
 curl -i -X POST https://push.example.com/_matrix/push/v1/notify \
@@ -715,7 +1027,7 @@ curl -i -X POST https://push.example.com/_matrix/push/v1/notify \
       "sender": "@test:example.com",
       "counts": { "unread": 1 },
       "devices": [{
-        "app_id": "chat.matron.app.ios",
+        "app_id": "chat.matron.ios",
         "pushkey": "<APNS_TOKEN_HEX>",
         "data": { "format": "event_id_only" }
       }]
@@ -787,9 +1099,13 @@ After acceptance, write Phase 5 plan (custom events).
 
 ## Plan self-review
 
-- **§8.1 Server side:** Documented in `docs/push-setup.md` (Task 9). Implementation is upstream Sygnal; no app-side code.
-- **§8.2 App side:** PushService (Tasks 1–2) + PushBootstrap (Task 5).
-- **§8.3 Receiving a push:** PushDecoder (Task 3) + NotificationService.swift (Task 4).
-- **§8.4 Tap to open:** NotificationDelegate (Task 6).
-- **§7.1 Crypto store sharing:** Already established in Phase 1 (App Group). NSE accesses it in `processSetup: .multipleProcesses` mode (Task 3).
+- **NSE Xcode target:** Created in Task 1 Step 0 — Phase 1 wired the host app and `MatronShared` only; this phase owns the `MatronNSE` app-extension target, its `Info.plist`, its entitlements (App Group + keychain group), and a stub `NotificationService.swift` that compiles before Task 4 swaps in the real implementation. Verified via `xcodegen generate && xcodebuild -scheme MatronNSE -configuration Debug CODE_SIGNING_ALLOWED=NO build` before Push code lands. Phase 4 stands alone here — no implicit dependency on Phase 1 doing this work.
+- **§8.1 Server side:** Documented in `docs/push-setup.md` (Task 9). Implementation is upstream Sygnal; no app-side code. Sandbox vs production endpoints, `use_sandbox` config, and the build-type cross-check are explicit.
+- **§8.2 App side — registration:** `PushService` (Tasks 1–2) + `PushBootstrap` (Task 5 Steps 1–2).
+- **§8.2 App side — default push rules:** Task 5 Step 3 enables `.m.rule.master` if disabled and pins every joined room to `.allMessages`, with a sanity-check assertion on the resolved mode. Test-first: `PushBootstrapPushRulesTests` drives a `FakeNotificationSettings` to confirm both effects.
+- **§8.3 Receiving a push:** `PushDecoder` (Task 3) + `NotificationService.swift` (Task 4). The closure-injectable `Fetcher` shape lives in Task 3 from the start (no late refactor), and `NotificationService` calls `PushDecoder.live(provider:session:)`. Body construction has explicit cases for `m.text`, `m.image` (with/without alt), `m.file` (with/without name), `chat.matron.tool_call`, `chat.matron.ask_user`, with a `default → "New message"` fall-through that the Task 7 fixture suite pins.
+- **§8.3 fixture coverage:** Task 7 is now tests-only — eight cases covering every body variant plus the unknown-msgtype fall-through, all driven via the same closure fetcher Task 3 ships with.
+- **§8.4 Tap to open:** `NotificationDelegate` (Task 6).
+- **§7.1 Crypto store sharing:** Established in Phase 1 (App Group). NSE accesses it in `processSetup: .multipleProcesses` mode (Tasks 3 & 4) and the App Group + keychain entitlements are owned by Phase 4 in Task 1 Step 0.
+- **TDD discipline:** Tasks 3, 5 Step 3, and 7 all open with a failing test before any implementation lands; the Sygnal smoke test in Task 9 begins with a sandbox-vs-build verification gate.
 - No placeholders. SDK API names flagged where they shift.
