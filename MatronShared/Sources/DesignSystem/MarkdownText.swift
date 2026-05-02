@@ -20,8 +20,8 @@ public struct MarkdownText: View {
 
 public extension Theme {
     /// Matron's house markdown theme: system font, monospaced inline code on a
-    /// subtle grey, accent-coloured underlined links, and a custom code-block
-    /// renderer with a copy button (see `CodeBlockView` below).
+    /// subtle grey, accent-coloured underlined links, and the public
+    /// `CodeBlock` primitive (with a copy button) wired in for fenced blocks.
     static let matron: Theme = Theme()
         .text {
             FontFamily(.system(.default))
@@ -33,44 +33,12 @@ public extension Theme {
             BackgroundColor(.matronInlineCodeBg)
         }
         .codeBlock { configuration in
-            CodeBlockView(language: configuration.language ?? "", source: configuration.content)
+            CodeBlock(language: configuration.language ?? "", source: configuration.content)
         }
         .link {
             ForegroundColor(.accentColor)
             UnderlineStyle(.single)
         }
-}
-
-/// In-house renderer used by `Theme.matron.codeBlock`. Task 2b promotes the
-/// public `CodeBlock` primitive; this private view is the bridge between
-/// MarkdownUI's `CodeBlockConfiguration` and that primitive's plain init.
-private struct CodeBlockView: View {
-    let language: String
-    let source: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(language.isEmpty ? "code" : language)
-                    .font(.caption2).foregroundStyle(.secondary)
-                Spacer()
-                Button {
-                    Pasteboard.copy(source)
-                } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
-                        .labelStyle(.iconOnly)
-                        .font(.caption)
-                }
-            }
-            ScrollView(.horizontal, showsIndicators: false) {
-                Text(source)
-                    .font(.system(.callout, design: .monospaced))
-                    .padding(8)
-            }
-            .background(Color.matronCodeBg)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-        }
-    }
 }
 
 /// Cross-platform pasteboard wrapper. Lives in DesignSystem so primitives compile
