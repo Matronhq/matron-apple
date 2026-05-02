@@ -44,8 +44,10 @@ public actor SyncServiceLive: SyncService {
     }
 
     /// Returns the underlying SDK SyncService. Used by ChatServiceLive to
-    /// obtain a RoomListService once start() has completed.
-    func sdkService() async -> MatrixRustSDK.SyncService? {
+    /// obtain a RoomListService once start() has completed. Exposed on the
+    /// concrete actor (not the protocol) to keep the cross-module surface
+    /// out of MatronSync's public protocol shape.
+    public func sdkService() -> MatrixRustSDK.SyncService? {
         sdkSyncService
     }
 }
