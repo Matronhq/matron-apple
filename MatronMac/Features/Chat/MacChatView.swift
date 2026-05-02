@@ -1,0 +1,96 @@
+import SwiftUI
+import UniformTypeIdentifiers
+import MatronChat
+import MatronModels
+import MatronViewModels
+import MatronDesignSystem
+
+/// Mac chat detail column. Hosts a `ScrollView` + `LazyVStack` of
+/// `MacTimelineItemView` rows above the `MacComposerView`. Right-click
+/// context menu replaces iOS's long-press; `⌘K` (hidden button) toggles
+/// the slash palette without the user typing `/`. `⌘R` refresh is wired
+/// via `NotificationCenter.matronCommand(.refresh)` (Task 14e attaches
+/// the menu item; the listener stays attached even when the menu is
+/// absent, so trackpad-only Macs without a hardware ⌘R can still drive
+/// refresh once a binding lands).
+///
+/// Drag-and-drop attachments via `.onDrop(of: [.image, .fileURL], delegate:)`,
+/// which routes through `ComposerDropDelegate → ComposerViewModel.attachFiles(_:)`
+/// — same pipeline as the iOS PhotosPicker / fileImporter sites. The
+/// security-scoped-resource bracketing the iOS `fileImporter` site
+/// requires isn't needed here because the Mac sandbox grants drop URLs
+/// transparent read access via the
+/// `com.apple.security.files.user-selected.read-only` entitlement.
+struct MacChatView: View {
+    @State var viewModel: ChatViewModel
+    @State var composerVM: ComposerViewModel
+
+    let chatTitle: String
+    let onShowBotProfile: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(viewModel.items) { item in
+                            MacTimelineItemView(item: item, resolveImage: { viewModel.image(for: $0) })
+                                .id(item.id)
+                                .contextMenu {
+                                    if case .text(let body, _) = item.kind {
+                                        Button {
+                                            Pasteboard.copy(body)
+                                        } label: {
+                                            Label("Copy", systemImage: "doc.on.doc")
+                                        }
+                                        ShareLink(item: body) {
+                                            Label("Share", systemImage: "square.and.arrow.up")
+                                        }
+                                    }
+                                }
+                        }
+                    }
+                    .padding(.vertical)
+                }
+                .onChange(of: viewModel.items.count) { _, _ in
+                    if let last = viewModel.items.last {
+                        withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                    }
+                }
+            }
+
+            Divider()
+
+            // Drag-and-drop attachments via ComposerDropDelegate.
+            MacComposerView(viewModel: composerVM)
+                .onDrop(
+                    of: [.image, .fileURL],
+                    delegate: ComposerDropDelegate(composer: composerVM)
+                )
+        }
+        .toolbar {
+            MacChatToolbar(
+                title: chatTitle,
+                viewModel: viewModel,
+                onShowBotProfile: onShowBotProfile
+            )
+        }
+        .task {
+            viewModel.start()
+            await viewModel.markAsRead()
+        }
+        .onDisappear { viewModel.stop() }
+        // ⌘K opens the slash palette without typing `/`. The hidden
+        // button is the SwiftUI-recommended pattern for a global keyboard
+        // shortcut that doesn't have a visible UI counterpart.
+        .background(
+            Button("") { composerVM.palettePinnedOpen.toggle() }
+                .keyboardShortcut("k", modifiers: .command)
+                .opacity(0)
+        )
+        // ⌘R refresh — driven by the menu-bar command bus (Task 14e).
+        .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.refresh))) { _ in
+            Task { await viewModel.refresh() }
+        }
+    }
+}

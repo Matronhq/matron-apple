@@ -95,18 +95,48 @@ struct MacChatListView: View {
         }
     }
 
-    /// Detail column. Task 14c lands `MacChatView`; until then we render
-    /// either a "select a chat" placeholder or a "selected chat" header so
-    /// selection wiring is observable without the chat view itself.
+    /// Detail column. Routes the selected `ChatSummary` into `MacChatView`,
+    /// which constructs its per-room `ChatViewModel` + `ComposerViewModel`
+    /// from the cached `TimelineService` + `MediaService`. The
+    /// "select a chat" content-unavailable view stays as the empty state.
     @ViewBuilder
     private var detail: some View {
         if let summary = selectedSummary {
-            MacChatDetailPlaceholder(summary: summary)
+            chatDetail(for: summary)
         } else {
             ContentUnavailableView(
                 "Select a chat",
                 systemImage: "bubble.left.and.bubble.right",
                 description: Text("Pick a conversation from the sidebar.")
+            )
+        }
+    }
+
+    /// Builds the `MacChatView` for the currently-selected summary. Wrapped
+    /// in a helper so the missing-environment branch (no deps / session)
+    /// stays out of the main `body` flow. The `id(summary.id)` modifier
+    /// forces a fresh instance per row selection — so `@State` view
+    /// models reset rather than holding stale data from the previous
+    /// room.
+    @ViewBuilder
+    private func chatDetail(for summary: ChatSummary) -> some View {
+        if let deps, let session {
+            let timelineSvc = deps.timelineService(for: session, roomID: summary.id)
+            let mediaSvc = deps.mediaService(for: session)
+            let chatVM = ChatViewModel(roomID: summary.id, timeline: timelineSvc, media: mediaSvc)
+            let composerVM = ComposerViewModel(timeline: timelineSvc, commands: BotCommandCatalog.claudeBridge)
+            MacChatView(
+                viewModel: chatVM,
+                composerVM: composerVM,
+                chatTitle: summary.title,
+                onShowBotProfile: { /* Task 15b wires the bot profile sheet */ }
+            )
+            .id(summary.id)
+        } else {
+            ContentUnavailableView(
+                "Session unavailable",
+                systemImage: "exclamationmark.triangle",
+                description: Text("Sign in again to open this chat.")
             )
         }
     }
@@ -157,36 +187,6 @@ private struct MacChatRow: View {
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .onHover { hovering in
             isHovered = hovering
-        }
-    }
-}
-
-/// Phase 2 detail-column placeholder. Task 14c replaces this with
-/// `MacChatView(viewModel:composerVM:chatTitle:onShowBotProfile:)`. The
-/// placeholder still constructs the per-room `TimelineService` /
-/// `MediaService` so the cache priming and selection contract are
-/// exercised end-to-end before the chat view itself lands.
-private struct MacChatDetailPlaceholder: View {
-    let summary: ChatSummary
-    @Environment(\.appDependencies) private var deps
-    @Environment(\.currentSession) private var session
-
-    var body: some View {
-        VStack(spacing: 8) {
-            Text(summary.title).font(.title2)
-            Text(summary.bot.displayName).font(.caption).foregroundStyle(.secondary)
-            Text("Mac chat view — Task 14c lands the timeline + composer.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .padding(.top, 8)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Prime the per-room caches so navigating in/out of this room is
-        // free of network churn once Task 14c hooks the real view in.
-        .task(id: summary.id) {
-            guard let deps, let session else { return }
-            _ = deps.timelineService(for: session, roomID: summary.id)
-            _ = deps.mediaService(for: session)
         }
     }
 }

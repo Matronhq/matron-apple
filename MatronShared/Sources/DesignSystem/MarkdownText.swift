@@ -43,8 +43,11 @@ public extension Theme {
 
 /// Cross-platform pasteboard wrapper. Lives in DesignSystem so primitives compile
 /// for both iOS and macOS without `#if` scattered through their bodies.
-enum Pasteboard {
-    static func copy(_ string: String) {
+/// Promoted to `public` in Phase 2 so app-target views (`MacChatView`'s
+/// right-click context-menu Copy action) can reach it without re-implementing
+/// the `#if` cascade themselves.
+public enum Pasteboard {
+    public static func copy(_ string: String) {
         #if canImport(UIKit) && !os(macOS)
         UIPasteboard.general.string = string
         #elseif os(macOS)
