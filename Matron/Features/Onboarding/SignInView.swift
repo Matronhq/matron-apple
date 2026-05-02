@@ -1,0 +1,54 @@
+import SwiftUI
+import MatronAuth
+import MatronModels
+import MatronViewModels
+
+struct SignInView: View {
+    @State var viewModel: SignInViewModel
+    var onSignedIn: (UserSession) -> Void
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Server") {
+                    TextField("https://matrix.example.com", text: $viewModel.serverURL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                }
+                Section("Credentials") {
+                    TextField("Username", text: $viewModel.username)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    SecureField("Password", text: $viewModel.password)
+                }
+                if case .error(let message) = viewModel.state {
+                    Section {
+                        Text(message).foregroundStyle(.red)
+                    }
+                }
+                Section {
+                    Button {
+                        Task { await viewModel.submit() }
+                    } label: {
+                        if case .busy = viewModel.state {
+                            ProgressView()
+                        } else {
+                            Text("Sign in")
+                        }
+                    }
+                    .disabled({
+                        if case .busy = viewModel.state { return true }
+                        return viewModel.serverURL.isEmpty || viewModel.username.isEmpty || viewModel.password.isEmpty
+                    }())
+                }
+            }
+            .navigationTitle("Sign in to Matron")
+            .onChange(of: viewModel.state) { _, new in
+                if case .signedIn(let session) = new {
+                    onSignedIn(session)
+                }
+            }
+        }
+    }
+}
