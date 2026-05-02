@@ -32,6 +32,13 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
 
     public func items() -> AsyncStream<[TimelineItem]> {
         AsyncStream { continuation in
+            // Holder owns both the setup `Task` and the eventual listener
+            // `TaskHandle`. Reassigning `continuation.onTermination` had a
+            // race window: if the consumer terminated between
+            // `addListener` returning and the second `onTermination = …`
+            // assignment, the old closure cancelled the setup task but
+            // the freshly-attached listener handle leaked.
+            let holder = TimelineLifecycleHolder()
             let task = Task { [provider, session, sync, roomID] in
                 do {
                     try await sync.waitUntilReady()
@@ -41,20 +48,17 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
                         return
                     }
                     let timeline = try await room.timeline()
-                    let myID = (try? client.userId()) ?? ""
-                    let listener = TimelineSnapshotListener(continuation: continuation, myID: myID)
+                    let listener = TimelineSnapshotListener(continuation: continuation)
                     let handle = await timeline.addListener(listener: listener)
-                    continuation.onTermination = { _ in
-                        handle.cancel()
-                    }
+                    holder.setHandle(handle)
                 } catch {
                     continuation.finish()
                 }
             }
-            // Replaced once the addListener completes; this initial
-            // closure cancels the setup task if the consumer gives up
-            // before the listener has been attached.
-            continuation.onTermination = { _ in task.cancel() }
+            holder.setTask(task)
+            // Assigned exactly once. The holder will atomically cancel
+            // whichever of (task, handle) exist at termination time.
+            continuation.onTermination = { _ in holder.cancelAll() }
         }
     }
 
@@ -132,6 +136,66 @@ public enum TimelineServiceError: Error, Equatable, Sendable {
     case roomNotFound(String)
 }
 
+/// Owns the setup `Task` and the SDK listener `TaskHandle` for a single
+/// `items()` subscription. `cancelAll()` is invoked from the AsyncStream
+/// termination closure and atomically cancels both — even if the consumer
+/// terminates between `setTask` and `setHandle`. This replaces the prior
+/// double-assignment of `continuation.onTermination` which had a race
+/// window where the listener handle could leak.
+///
+/// The holder stores cancellation as opaque `() -> Void` closures so it
+/// stays testable without needing to construct a real SDK `TaskHandle`.
+final class TimelineLifecycleHolder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var taskCancel: (() -> Void)?
+    private var handleCancel: (() -> Void)?
+    private var cancelled = false
+
+    func setTask(_ t: Task<Void, Never>) {
+        setTaskCancel { t.cancel() }
+    }
+
+    func setHandle(_ h: TaskHandle) {
+        setHandleCancel { h.cancel() }
+    }
+
+    /// Test seam — lets `TimelineLifecycleHolderTests` register a
+    /// cancel-recorder without needing a real `TaskHandle`.
+    func setTaskCancel(_ cancel: @escaping () -> Void) {
+        lock.lock()
+        if cancelled {
+            lock.unlock()
+            cancel()
+            return
+        }
+        self.taskCancel = cancel
+        lock.unlock()
+    }
+
+    func setHandleCancel(_ cancel: @escaping () -> Void) {
+        lock.lock()
+        if cancelled {
+            lock.unlock()
+            cancel()
+            return
+        }
+        self.handleCancel = cancel
+        lock.unlock()
+    }
+
+    func cancelAll() {
+        lock.lock()
+        cancelled = true
+        let t = taskCancel
+        let h = handleCancel
+        taskCancel = nil
+        handleCancel = nil
+        lock.unlock()
+        t?()
+        h?()
+    }
+}
+
 // MARK: - Diff listener
 
 /// Walks `MatrixRustSDK.TimelineDiff` updates and rebuilds an ordered
@@ -141,7 +205,6 @@ public enum TimelineServiceError: Error, Equatable, Sendable {
 /// up a real SDK.
 final class TimelineSnapshotListener: TimelineListener, @unchecked Sendable {
     private let continuation: AsyncStream<[TimelineItem]>.Continuation
-    private let myID: String
 
     /// Maintains the current ordered snapshot. Items are keyed by their
     /// stable id (event id once the homeserver has acked, transaction id
@@ -150,9 +213,12 @@ final class TimelineSnapshotListener: TimelineListener, @unchecked Sendable {
     private var order: [String] = []
     private let lock = NSLock()
 
-    init(continuation: AsyncStream<[TimelineItem]>.Continuation, myID: String) {
+    /// `isOwn` is sourced from `EventTimelineItem.isOwn` — the SDK already
+    /// knows which events came from us, so we don't need to thread the
+    /// user ID through here. (Earlier drafts stored `myID` for a manual
+    /// comparison; the property was unused and has been removed.)
+    init(continuation: AsyncStream<[TimelineItem]>.Continuation) {
         self.continuation = continuation
-        self.myID = myID
     }
 
     /// SDK callback. Apply each diff to the in-memory snapshot, then

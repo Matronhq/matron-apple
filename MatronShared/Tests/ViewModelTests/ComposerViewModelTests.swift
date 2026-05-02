@@ -109,4 +109,53 @@ final class ComposerViewModelTests: XCTestCase {
         // Input is preserved on failure so the user can retry.
         XCTAssertEqual(vm.input, "hi")
     }
+
+    @MainActor
+    func test_palette_staysClosed_afterCommandSelection() {
+        // Regression for bugbot finding #1: `selectCommand` set the input
+        // to "/start " (trailing space). The palette's old check trimmed
+        // whitespace, collapsing the input back to a single token starting
+        // with `/`, which re-opened the palette immediately.
+        let vm = ComposerViewModel(timeline: FakeTimelineService(), commands: BotCommandCatalog.claudeBridge)
+        let cmd = BotCommand(trigger: "/start", summary: "x", argHint: "[workdir]")
+        vm.selectCommand(cmd)
+        XCTAssertEqual(vm.input, "/start ")
+        XCTAssertFalse(vm.showPalette,
+                       "palette should stay closed once a command has been chosen and the trailing space is in place")
+    }
+
+    @MainActor
+    func test_palette_isHiddenForCommandWithTrailingSpace() {
+        // Tightened version of the regression above: typing the command
+        // followed by a space (without the user even hitting an argument)
+        // should hide the palette so it doesn't cover the next character.
+        let vm = ComposerViewModel(timeline: FakeTimelineService(), commands: BotCommandCatalog.claudeBridge)
+        vm.input = "/start "
+        XCTAssertFalse(vm.showPalette)
+    }
+
+    @MainActor
+    func test_send_doesNothing_forWhitespaceOnlyInput_andSendErrorStaysNil() async {
+        // Tightened version of `test_send_doesNothing_forEmptyInput`. The
+        // send-button binding (`ComposerView.isSendable`) mirrors this
+        // trim — both must agree the input is unsendable, otherwise the
+        // button looks active but `send()` no-ops.
+        let fake = FakeTimelineService()
+        let vm = ComposerViewModel(timeline: fake, commands: [])
+        vm.input = "   \t\n  "
+        await vm.send()
+        XCTAssertTrue(fake.sentText.isEmpty)
+        XCTAssertNil(vm.sendError, "no-op send should not record an error")
+    }
+
+    @MainActor
+    func test_reportAttachmentError_recordsSendError() {
+        // Surfacing path used by iOS `fileImporter` security-scoped read
+        // failures (bugbot finding #4). Without this method, view-layer
+        // errors had no way into the view model's private(set) field and
+        // were silently dropped via `try?`.
+        let vm = ComposerViewModel(timeline: FakeTimelineService(), commands: [])
+        vm.reportAttachmentError("boom")
+        XCTAssertEqual(vm.sendError, "boom")
+    }
 }

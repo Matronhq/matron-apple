@@ -47,4 +47,30 @@ final class ComposerViewBindingTests: XCTestCase {
         XCTAssertTrue(vm.showPalette)
         XCTAssertTrue(vm.filteredCommands.contains { $0.trigger == "/start" })
     }
+
+    @MainActor
+    func test_isSendable_matchesSendBehaviour_forWhitespaceOnly() async {
+        // Regression for bugbot finding #3. Previously the disable
+        // predicate was `viewModel.input.isEmpty`, which lit up the send
+        // button for "   " — but `send()` trims first and no-ops, leaving
+        // the user with an active button that does nothing. The view's
+        // `isSendable` must mirror the model's trim.
+        let fake = FakeTimelineForComposer()
+        let vm = ComposerViewModel(timeline: fake, commands: [])
+        let view = ComposerView(viewModel: vm)
+
+        vm.input = ""
+        XCTAssertFalse(view.isSendable)
+
+        vm.input = "   \t\n   "
+        XCTAssertFalse(view.isSendable, "whitespace-only input must not enable the send button")
+
+        vm.input = "  hi  "
+        XCTAssertTrue(view.isSendable, "non-whitespace content (after trim) must enable the send button")
+
+        // And the model agrees: send() with whitespace-only is a no-op.
+        vm.input = "   "
+        await vm.send()
+        XCTAssertTrue(fake.sentText.isEmpty, "send() must no-op for whitespace-only input")
+    }
 }

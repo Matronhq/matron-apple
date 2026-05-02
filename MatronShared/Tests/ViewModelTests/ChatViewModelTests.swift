@@ -132,6 +132,38 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_imageRequest_doesNotLoop_whenMediaServiceReturnsNil() async {
+        // Regression for bugbot finding #8. When `MediaService.image(for:)`
+        // returns nil (decode failure / 404), the URL was removed from
+        // `inFlightRequests` but never recorded as resolved. `@Observable`
+        // would re-render → `image(for:url)` re-called → cache miss, no
+        // in-flight guard → another fetch fires. Forever.
+        let timeline = FakeTimelineService()
+        let media = FakeMediaService()
+        let url = URL(string: "mxc://example/never-decodes")!
+        // Stub no data → MediaServiceFake returns nil → swiftUIImage(for:)
+        // returns nil too.
+        let vm = ChatViewModel(roomID: "!r:s", timeline: timeline, media: media)
+
+        XCTAssertNil(vm.image(for: url))
+        // Drain the first fetch.
+        let start = Date()
+        while media.requested.count < 1 && Date().timeIntervalSince(start) < 2 {
+            await Task.yield()
+        }
+        // Now simulate SwiftUI re-rendering: call `image(for:)` repeatedly.
+        // Each call should bail without firing another fetch.
+        for _ in 0..<5 {
+            XCTAssertNil(vm.image(for: url))
+            await Task.yield()
+        }
+        // Give any erroneous in-flight task a chance to finish.
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(media.requested.count, 1,
+                       "failed fetch should be remembered; image(for:) must not loop")
+    }
+
+    @MainActor
     func test_imageRequest_isCoalescedWhileInFlight() async {
         // Repeated calls for the same URL while the fetch is in flight
         // should coalesce to a single MediaService request, not N.

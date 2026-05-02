@@ -16,6 +16,15 @@ struct ComposerView: View {
     @State private var photoItem: PhotosPickerItem?
     @State private var showFileImporter = false
 
+    /// Mirrors `ComposerViewModel.send()`'s own trim so the send button is
+    /// disabled for whitespace-only input. Without this, the button looks
+    /// active but `send()` no-ops on the trimmed empty string.
+    /// `internal` so `ComposerViewBindingTests` can assert this matches
+    /// `send()`'s behaviour without scraping SwiftUI internals.
+    var isSendable: Bool {
+        !viewModel.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if viewModel.showPalette {
@@ -40,9 +49,9 @@ struct ComposerView: View {
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.title)
-                        .foregroundStyle(viewModel.input.isEmpty ? Color.secondary : Color.accentColor)
+                        .foregroundStyle(isSendable ? Color.accentColor : Color.secondary)
                 }
-                .disabled(viewModel.input.isEmpty || viewModel.isSending)
+                .disabled(!isSendable || viewModel.isSending)
                 .padding(.trailing, 4)
             }
             .padding()
@@ -50,15 +59,21 @@ struct ComposerView: View {
         .onChange(of: photoItem) { _, newItem in
             guard let newItem else { return }
             Task {
-                // Photo path: the picker hands back transferable Data + a
-                // suggested filename. We materialise the Data to a temporary
-                // URL so we can reuse `attachFiles(_:)` (which keys MIME off
-                // the path extension).
+                // Photo path: the picker hands back transferable Data; we
+                // materialise it to a temporary URL so we can reuse
+                // `attachFiles(_:)` (which keys MIME off the path
+                // extension). The previous impl tried to parse a filename
+                // out of `itemIdentifier`, but that value is a PHAsset
+                // local identifier (UUID-shaped) — never a URL — so the
+                // fallback `"photo.jpg"` always won and HEIC / PNG
+                // selections were sent as `image/jpeg`. We instead pick
+                // the best file extension from the item's
+                // `supportedContentTypes`, which the picker populates
+                // accurately (HEIC for HEIC, PNG for PNG, …).
                 if let data = try? await newItem.loadTransferable(type: Data.self) {
-                    let suggestedName = newItem.itemIdentifier.flatMap { id in
-                        URL(string: id)?.lastPathComponent
-                    } ?? "photo.jpg"
-                    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(suggestedName)
+                    let ext = preferredExtension(for: newItem) ?? "jpg"
+                    let filename = "photo.\(ext)"
+                    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
                     try? data.write(to: tmp)
                     await viewModel.attachFiles([tmp])
                 }
@@ -72,12 +87,53 @@ struct ComposerView: View {
         ) { result in
             switch result {
             case .success(let urls):
-                Task { await viewModel.attachFiles(urls) }
-            case .failure:
-                // Importer cancellation/failure surfaces here; ComposerViewModel's
-                // own error reporting is reserved for actual send failures.
-                break
+                // URLs from `fileImporter` are security-scoped on physical
+                // devices; reading them without
+                // `startAccessingSecurityScopedResource()` returns
+                // permission-denied errors that the previous `try?` was
+                // silently swallowing. We materialise the bytes here, then
+                // hand the staged temporary URL to `attachFiles(_:)`.
+                Task { await stageAndAttach(urls) }
+            case .failure(let error):
+                viewModel.reportAttachmentError(error.localizedDescription)
             }
+        }
+    }
+
+    /// Picks the best filename extension for a `PhotosPickerItem` using
+    /// its `supportedContentTypes`. Returns `nil` when the picker hasn't
+    /// declared a content type with a preferred extension. The first
+    /// type whose preferred extension is concrete (heic / png / gif /
+    /// jpeg / …) wins, which keeps HEIC / PNG / GIF selections in their
+    /// native format instead of always being relabelled JPEG.
+    private func preferredExtension(for item: PhotosPickerItem) -> String? {
+        for type in item.supportedContentTypes {
+            if let ext = type.preferredFilenameExtension { return ext }
+        }
+        return nil
+    }
+
+    /// Reads each security-scoped URL into a temporary file so
+    /// `ComposerViewModel.attachFiles(_:)` can read it without needing the
+    /// scope (which only the `fileImporter` callback owns). Surfaces read
+    /// errors via the view model instead of dropping them.
+    private func stageAndAttach(_ urls: [URL]) async {
+        var staged: [URL] = []
+        for url in urls {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let data = try Data(contentsOf: url)
+                let tmp = FileManager.default.temporaryDirectory
+                    .appendingPathComponent(url.lastPathComponent)
+                try data.write(to: tmp)
+                staged.append(tmp)
+            } catch {
+                viewModel.reportAttachmentError(error.localizedDescription)
+            }
+        }
+        if !staged.isEmpty {
+            await viewModel.attachFiles(staged)
         }
     }
 }

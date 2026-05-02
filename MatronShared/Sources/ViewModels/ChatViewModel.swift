@@ -38,6 +38,11 @@ public final class ChatViewModel {
     /// Tracks `mxc://` URLs with a request already in flight so we don't
     /// fire duplicate fetches on every SwiftUI re-render.
     private var inFlightRequests: Set<URL> = []
+    /// URLs whose fetch completed but the bytes failed to decode into a
+    /// SwiftUI `Image`. Without this, `image(for:)` would loop forever:
+    /// the call returns nil → `@Observable` re-renders → `image(for:)`
+    /// is called again → cache miss, no in-flight guard → re-fetch.
+    private var failedRequests: Set<URL> = []
 
     public init(roomID: String, timeline: TimelineService, media: MediaService) {
         self.roomID = roomID
@@ -92,16 +97,22 @@ public final class ChatViewModel {
     /// kicks off a background fetch. The fetch updates `resolvedImages` on
     /// completion, which triggers `@Observable` re-evaluation so the row
     /// can render the resolved image. Idempotent: repeat calls for the
-    /// same URL coalesce to a single in-flight request.
+    /// same URL coalesce to a single in-flight request, and URLs whose
+    /// fetch returned non-decodable bytes are remembered so we don't loop.
     public func image(for url: URL) -> Image? {
         if let cached = resolvedImages[url] { return cached }
+        if failedRequests.contains(url) { return nil }
         guard !inFlightRequests.contains(url) else { return nil }
         inFlightRequests.insert(url)
         Task { [weak self, media] in
             let img = await media.swiftUIImage(for: url)
             guard let self else { return }
             await MainActor.run {
-                if let img { self.resolvedImages[url] = img }
+                if let img {
+                    self.resolvedImages[url] = img
+                } else {
+                    self.failedRequests.insert(url)
+                }
                 self.inFlightRequests.remove(url)
             }
         }

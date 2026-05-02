@@ -72,10 +72,17 @@ struct TimelineItemView: View {
     }
 
     /// Phase 2 placeholder for member display names: take the local part of
-    /// the Matrix ID. Phase 5+ can resolve from member events when those
-    /// land in the SDK bridge.
+    /// the Matrix ID without the leading `@` sigil. Phase 5+ can resolve
+    /// from member events when those land in the SDK bridge.
+    /// `internal static` so unit tests in `MatronTests` can pin the
+    /// formatting without instantiating the SwiftUI view.
+    static func displayName(for senderID: String) -> String {
+        let withoutSigil = senderID.hasPrefix("@") ? String(senderID.dropFirst()) : senderID
+        return withoutSigil.split(separator: ":").first.map(String.init) ?? senderID
+    }
+
     private func displayName(for senderID: String) -> String {
-        senderID.split(separator: ":").first.map(String.init) ?? senderID
+        Self.displayName(for: senderID)
     }
 
     /// Resolves an image URL via the injected `resolveImage` closure if

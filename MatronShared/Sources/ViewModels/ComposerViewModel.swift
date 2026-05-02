@@ -29,11 +29,18 @@ public final class ComposerViewModel {
     /// Whether the slash palette should be visible. True when the input is
     /// a single token that starts with `/` or `!`, or when the palette is
     /// pinned open via the Mac shortcut.
+    ///
+    /// We deliberately do *not* trim trailing whitespace before checking —
+    /// `selectCommand(_:)` sets input to `"/start "` (note the trailing
+    /// space) to position the caret for arguments. Trimming would collapse
+    /// this back to a single token and re-open the palette immediately
+    /// after selection. A trailing space means "command chosen, ready for
+    /// arguments" → palette closed.
     public var showPalette: Bool {
         if palettePinnedOpen { return true }
-        let trimmed = input.trimmingCharacters(in: .whitespaces)
-        guard trimmed.hasPrefix("/") || trimmed.hasPrefix("!") else { return false }
-        return trimmed.split(separator: " ").count == 1
+        let leading = input.drop(while: { $0 == " " || $0 == "\t" })
+        guard leading.hasPrefix("/") || leading.hasPrefix("!") else { return false }
+        return leading.split(separator: " ", omittingEmptySubsequences: false).count == 1
     }
 
     /// Filtered command list driven by the current `input`.
@@ -68,11 +75,18 @@ public final class ComposerViewModel {
     /// Mac drag-and-drop entry point. Wired by `ComposerDropDelegate` in
     /// `MatronMac/Features/Chat/ComposerDropDelegate.swift` (Task 14c). Sends
     /// each URL as the appropriate attachment kind (image vs file) via the
-    /// timeline. URLs that fail to read or send are skipped; the last error
-    /// surfaced is recorded in `sendError`.
+    /// timeline. URLs that fail to read or send are recorded in
+    /// `sendError`; the previous behaviour silently dropped read failures
+    /// via `try?`, which masked iOS security-scoped-URL permission errors.
     public func attachFiles(_ urls: [URL]) async {
         for url in urls {
-            guard let data = try? Data(contentsOf: url) else { continue }
+            let data: Data
+            do {
+                data = try Data(contentsOf: url)
+            } catch {
+                sendError = error.localizedDescription
+                continue
+            }
             let mime = (UTType(filenameExtension: url.pathExtension)?.preferredMIMEType) ?? "application/octet-stream"
             do {
                 if mime.hasPrefix("image/") {
@@ -84,5 +98,14 @@ public final class ComposerViewModel {
                 sendError = error.localizedDescription
             }
         }
+    }
+
+    /// Allows views to surface attachment-staging errors that occur
+    /// outside `attachFiles(_:)` itself — e.g. iOS `fileImporter` failure
+    /// or security-scoped resource read errors. Using a method instead of
+    /// a public setter keeps the existing `private(set)` invariant
+    /// honest.
+    public func reportAttachmentError(_ message: String) {
+        sendError = message
     }
 }

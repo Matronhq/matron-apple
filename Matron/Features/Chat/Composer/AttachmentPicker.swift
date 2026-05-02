@@ -12,7 +12,17 @@ struct AttachmentPicker: View {
 
     var body: some View {
         Menu {
-            PhotosPicker(selection: $photoItem, matching: .images) {
+            // `photoLibrary: .shared()` is required for
+            // `PhotosPickerItem.itemIdentifier` to be populated. Without
+            // it, `itemIdentifier` is always nil and the consumer falls
+            // back to a hardcoded `"photo.jpg"` filename — which forces
+            // every selection to be sent as `image/jpeg` regardless of
+            // the actual format (HEIC, PNG, …).
+            PhotosPicker(
+                selection: $photoItem,
+                matching: .images,
+                photoLibrary: .shared()
+            ) {
                 Label("Photo", systemImage: "photo")
             }
             Button {
