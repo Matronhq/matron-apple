@@ -14,6 +14,29 @@ public final class ChatServiceLive: ChatService, @unchecked Sendable {
         self.sync = sync
     }
 
+    public func createChat(with botID: String) async throws -> String {
+        try await sync.waitUntilReady()
+        let client = try await provider.client(for: session)
+        // SDK v26 (26.04.01) `CreateRoomParameters` shape: `invite` is
+        // `[String]?`; positional args after `name`/`topic`/`isEncrypted`/
+        // `isDirect`/`visibility`/`preset`/`invite`/`avatar` (powerLevels,
+        // joinRule, historyVisibility, canonicalAlias, isSpace) take
+        // sensible defaults. See
+        // matrix-rust-components-swift/Sources/MatrixRustSDK/matrix_sdk_ffi.swift
+        // for the canonical signature.
+        let request = CreateRoomParameters(
+            name: nil,
+            topic: nil,
+            isEncrypted: true,
+            isDirect: true,
+            visibility: .private,
+            preset: .privateChat,
+            invite: [botID],
+            avatar: nil
+        )
+        return try await client.createRoom(request: request)
+    }
+
     public func chatSummaries() -> AsyncStream<[ChatSummary]> {
         AsyncStream { continuation in
             let task = Task {

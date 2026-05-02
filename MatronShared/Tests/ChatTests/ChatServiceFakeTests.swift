@@ -4,6 +4,8 @@ import XCTest
 
 final class FakeChatService: ChatService, @unchecked Sendable {
     var snapshotsToEmit: [[ChatSummary]] = []
+    var createCalls: [String] = []
+    var nextCreatedRoomID: String = "!fake:server"
 
     func chatSummaries() -> AsyncStream<[ChatSummary]> {
         AsyncStream { continuation in
@@ -12,6 +14,11 @@ final class FakeChatService: ChatService, @unchecked Sendable {
             }
             continuation.finish()
         }
+    }
+
+    func createChat(with botID: String) async throws -> String {
+        createCalls.append(botID)
+        return nextCreatedRoomID
     }
 }
 

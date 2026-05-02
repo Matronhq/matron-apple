@@ -35,4 +35,5 @@ private final class LocalFakeChatService: ChatService, @unchecked Sendable {
             continuation.finish()
         }
     }
+    func createChat(with botID: String) async throws -> String { "!stub:server" }
 }

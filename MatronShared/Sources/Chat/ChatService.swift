@@ -13,4 +13,9 @@ public protocol ChatService: Sendable {
     /// unread-count changes). Test fakes already emit multiple snapshots,
     /// so consumer ViewModels (`ChatListViewModel`) are diff-tolerant today.
     func chatSummaries() -> AsyncStream<[ChatSummary]>
+
+    /// Creates a new 1:1 encrypted room with `botID` and returns the new
+    /// room ID. The bot is invited via the SDK's `CreateRoomParameters`;
+    /// the server (tuwunel) is responsible for marking the room as a DM.
+    func createChat(with botID: String) async throws -> String
 }
