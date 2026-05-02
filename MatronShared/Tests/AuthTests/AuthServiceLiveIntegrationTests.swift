@@ -20,9 +20,13 @@ final class AuthServiceLiveIntegrationTests: XCTestCase {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
+        let sdkStore = tempDir.appendingPathComponent("sdk-store")
+        let sessionsDir = tempDir.appendingPathComponent("sessions")
+        try FileManager.default.createDirectory(at: sdkStore, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
         let service = AuthServiceLive(
-            sessionStore: FileSessionStore(directory: tempDir.appendingPathComponent("sessions")),
-            basePath: tempDir
+            sessionStore: FileSessionStore(directory: sessionsDir),
+            basePath: sdkStore
         )
 
         let caps = try await service.probe(server)

@@ -17,14 +17,19 @@ final class AppDependencies {
         // StoragePaths.appSupport creates the directory on first read.
         let container = StoragePaths.appSupport
 
+        // Split the container into two sibling directories so a fresh-login
+        // wipe of the SDK store can never take out the persisted session JSON.
+        // See the iOS AppDependencies for the full rationale.
+        let sdkStore = container.appendingPathComponent("sdk-store")
+        let sessionsDir = container.appendingPathComponent("sessions")
+        try? FileManager.default.createDirectory(at: sdkStore, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
+
         // Phase 1 uses a file-backed session store on Mac for symmetry with
-        // iOS — see the iOS AppDependencies for the full rationale. Mac
-        // Keychain works without entitlements, so this is the looser of two
-        // valid choices; Phase 3 will switch to Keychain when the signing
-        // story is settled.
-        let sessionStore = FileSessionStore(directory: container.appendingPathComponent("sessions"))
-        self.auth = AuthServiceLive(sessionStore: sessionStore, basePath: container)
-        self.clientProvider = ClientProvider(basePath: container)
+        // iOS. Phase 3 will switch to Keychain when signing is settled.
+        let sessionStore = FileSessionStore(directory: sessionsDir)
+        self.auth = AuthServiceLive(sessionStore: sessionStore, basePath: sdkStore)
+        self.clientProvider = ClientProvider(basePath: sdkStore)
     }
 
     func syncService(for session: UserSession) -> SyncService {
