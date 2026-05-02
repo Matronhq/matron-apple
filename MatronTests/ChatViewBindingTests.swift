@@ -58,7 +58,7 @@ final class ChatViewBindingTests: XCTestCase {
 
         // Drive the same start() the view's `.task` would. This proves the
         // view-model contract the view depends on.
-        let task = chatVM.start()
+        let task = await chatVM.start()
         await task.value
 
         XCTAssertEqual(chatVM.items.count, 1)
@@ -83,5 +83,47 @@ final class ChatViewBindingTests: XCTestCase {
         // Invoke the closure directly to verify the binding is plumbed through.
         view.onShowBotProfile()
         XCTAssertEqual(profileTaps, 1)
+    }
+
+    @MainActor
+    func test_lastItemID_changesAcrossSnapshots_evenWhenCountIsConstant() async throws {
+        // Round-3 bugbot finding #5: `ChatView`'s scroll-to-bottom keys on
+        // `viewModel.items.last?.id`, not `items.count`. The count-keyed
+        // version missed two cases:
+        //   (a) `.set` diff swapping a local-echo id for a remote-event id
+        //       (count constant; last id moves)
+        //   (b) a remove + add in the same diff batch (count constant;
+        //       last id moves)
+        // Without rendering the view we can't exercise `.onChange`
+        // directly, but we can pin the underlying `last?.id` change that
+        // the modifier observes. If a future regression replaces the
+        // `last?.id` key with `count` again, this test stays green —
+        // that's why the modifier-key choice is also documented inline
+        // in `ChatView.swift`. The value of this test is asserting that
+        // `ChatViewModel.items.last?.id` does in fact differ between two
+        // same-count snapshots; if `items` were ever de-duped to ignore
+        // tail mutations, the scroll modifier would silently break.
+        let fake = FakeTimelineForChat()
+        let local = TimelineItem(
+            id: "local-echo", sender: "@me:s", timestamp: .now,
+            kind: .text(body: "hello", formattedHTML: nil), isOwn: true
+        )
+        let remote = TimelineItem(
+            id: "$event:s", sender: "@me:s", timestamp: .now,
+            kind: .text(body: "hello", formattedHTML: nil), isOwn: true
+        )
+        // Two snapshots of equal length, but the tail item id changes —
+        // this is the exact diff shape that the count-keyed onChange
+        // missed. Both snapshots are emitted by the fake stream in
+        // order; awaiting the observation Task drains them.
+        fake.snapshotsToEmit = [[local], [remote]]
+        let chatVM = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaForChat())
+
+        let task = await chatVM.start()
+        await task.value
+
+        XCTAssertEqual(chatVM.items.count, 1, "tail mutation kept count constant")
+        XCTAssertEqual(chatVM.items.last?.id, "$event:s",
+                       "last item id must reflect the latest snapshot — the value the scroll modifier keys on")
     }
 }

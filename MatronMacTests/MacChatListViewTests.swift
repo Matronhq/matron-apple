@@ -16,24 +16,47 @@ final class MacChatListViewTests: XCTestCase {
         XCTAssertNotNil(view.body)
     }
 
-    /// Verifies the view drives selection through `ChatSummary?` (Hashable),
-    /// not through `ChatSummary.ID`. The split-view detail column needs the
-    /// full `ChatSummary` to construct `ChatViewModel` without re-querying
-    /// the view-model.
-    func test_selectionState_isChatSummary_notID() async {
+    /// Verifies the view drives selection through `ChatSummary.ID` (a
+    /// stable `String`), not through the full `ChatSummary` struct.
+    /// `ChatSummary` auto-synthesises `Hashable` from *all* stored
+    /// properties — including `lastActivity` and `unreadCount` — so a
+    /// selection bound to the struct silently breaks when a snapshot
+    /// updates either field (the new struct's hash != the stored
+    /// selection's hash). Round-3 bugbot finding #6: revert to
+    /// id-based selection (Phase 1's pattern) and look the full
+    /// `ChatSummary` up by id when the detail column needs it.
+    func test_selectionState_isChatSummaryID_notFullStruct() async {
         let bot = BotIdentity(matrixID: "@b:s", displayName: "Bot", avatarURL: nil)
-        let summaries = [
+        let initial = [
             ChatSummary(id: "!1:s", title: "First chat", bot: bot,
                         lastActivity: .now.addingTimeInterval(-3600), unreadCount: 0)
         ]
-        let fake = LocalFakeChatActions(snapshots: [summaries])
+        // Second snapshot: same id, but `lastActivity` and `unreadCount`
+        // changed — the exact diff shape that broke the struct-keyed
+        // selection.
+        let updated = [
+            ChatSummary(id: "!1:s", title: "First chat", bot: bot,
+                        lastActivity: .now, unreadCount: 3)
+        ]
+        let fake = LocalFakeChatActions(snapshots: [initial, updated])
         let vm = ChatListViewModel(chat: fake)
         _ = MacChatListView(viewModel: vm)
         vm.start()
         try? await Task.sleep(nanoseconds: 50_000_000)
         XCTAssertFalse(vm.groups.isEmpty)
-        // Compile-time check: ChatSummary must be Hashable for List(selection:).
-        XCTAssertEqual(summaries.first.hashValue, summaries.first.hashValue)
+
+        // Hash invariant: the new snapshot's struct hash differs from the
+        // initial one's, even though the id is stable. Using the struct as
+        // the selection key would lose the binding here; using the id
+        // (stable `String`) preserves it.
+        let firstHash = initial.first!.hashValue
+        let updatedHash = vm.groups.flatMap(\.summaries).first { $0.id == "!1:s" }!.hashValue
+        XCTAssertNotEqual(firstHash, updatedHash,
+                          "ChatSummary auto-synthesised Hashable folds in lastActivity + unreadCount")
+        // The id is stable across both snapshots, which is what the view's
+        // `selectedSummaryID` binds to.
+        XCTAssertEqual(initial.first?.id, "!1:s")
+        XCTAssertEqual(vm.groups.flatMap(\.summaries).first?.id, "!1:s")
     }
 }
 

@@ -50,20 +50,49 @@ public final class ChatViewModel {
         self.media = media
     }
 
-    /// Starts observing the timeline. Returns the observation task so callers
-    /// (especially tests) can `await task.value` to know when the stream has
-    /// drained — no sleeps required.
+    /// Starts observing the timeline. Returns *after* the first snapshot has
+    /// been applied (or the stream has finished without yielding), so callers
+    /// that chain `markAsRead()` after `start()` mark the actual head of the
+    /// timeline as read instead of marking an empty room as read. Returns
+    /// the long-lived observation `Task` so tests can still
+    /// `await task.value` to know when the stream has fully drained — the
+    /// fake stream finishes after yielding queued snapshots, the live
+    /// stream stays open until `stop()` cancels it.
+    ///
+    /// Round 3 bugbot finding #3: previously `start()` returned the task
+    /// synchronously and the View's `.task { viewModel.start(); await
+    /// viewModel.markAsRead() }` raced — `markAsRead()` fired before the
+    /// observation Task had a chance to apply the first snapshot, so on
+    /// first open the SDK marked "no events" as read and unread counts
+    /// were never cleared.
     @discardableResult
-    public func start() -> Task<Void, Never> {
+    public func start() async -> Task<Void, Never> {
         observationTask?.cancel()
         let timeline = self.timeline
+        // Box wrapping a single-shot CheckedContinuation. The observation
+        // Task resumes it on the first snapshot processed (or on stream
+        // completion if no snapshot ever arrives). All other paths — late
+        // snapshots, stream end after the first snapshot — are no-ops.
+        // Boxed via a class so the value-type continuation can be flipped
+        // from inside the long-lived Task without value-type copy issues.
+        let firstSignal = FirstSnapshotSignal()
         let task = Task { [weak self] in
             for await snapshot in timeline.items() {
-                guard let self else { return }
+                guard let self else {
+                    firstSignal.fireOnce()
+                    return
+                }
                 await MainActor.run { self.items = snapshot }
+                firstSignal.fireOnce()
             }
+            // Stream finished without yielding any snapshot — still
+            // resume so the caller of `start()` doesn't hang on a room
+            // that the live timeline never populates (or a fake set up
+            // with no `snapshotsToEmit`).
+            firstSignal.fireOnce()
         }
         observationTask = task
+        await firstSignal.wait()
         return task
     }
 
@@ -117,5 +146,44 @@ public final class ChatViewModel {
             }
         }
         return nil
+    }
+}
+
+/// Single-shot signal used by `ChatViewModel.start()` to bridge "first
+/// timeline snapshot processed" from the long-lived observation Task back
+/// to the `start()` caller. Class-typed so the underlying continuation can
+/// be flipped by reference from inside the Task closure (a value-type
+/// `CheckedContinuation` would be copied each time it's captured).
+///
+/// `fireOnce()` is idempotent: subsequent calls are no-ops, so it's safe
+/// to call from both the first-snapshot path and the stream-completion
+/// fallback. `wait()` returns immediately if `fireOnce()` already ran;
+/// otherwise it suspends until it does.
+private final class FirstSnapshotSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fired = false
+    private var pending: [CheckedContinuation<Void, Never>] = []
+
+    func fireOnce() {
+        lock.lock()
+        guard !fired else { lock.unlock(); return }
+        fired = true
+        let waiters = pending
+        pending = []
+        lock.unlock()
+        for waiter in waiters { waiter.resume() }
+    }
+
+    func wait() async {
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            if fired {
+                lock.unlock()
+                cont.resume()
+            } else {
+                pending.append(cont)
+                lock.unlock()
+            }
+        }
     }
 }

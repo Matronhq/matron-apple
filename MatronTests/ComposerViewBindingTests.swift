@@ -67,6 +67,31 @@ final class ComposerViewBindingTests: XCTestCase {
     }
 
     @MainActor
+    func test_stagedTempURL_producesDistinctPaths_forSameLastPathComponent() {
+        // Round 3 bugbot finding #1: `stageAndAttach` wrote each picked
+        // file to `temporaryDirectory/<url.lastPathComponent>`. Two source
+        // files in different parent dirs but with the same filename (e.g.
+        // both named `report.pdf`) wrote to the same temp path — the
+        // second `data.write(to:)` clobbered the first before
+        // `attachFiles(_:)` had finished reading it. `stagedTempURL(for:)`
+        // now embeds a `UUID` per call so each staging lands at its own
+        // path. Mirrors `photoTempURL(ext:)` (round-2 fix #4).
+        let dirA = URL(fileURLWithPath: "/Users/example/folderA")
+            .appendingPathComponent("report.pdf")
+        let dirB = URL(fileURLWithPath: "/Users/example/folderB")
+            .appendingPathComponent("report.pdf")
+        let stagedA = ComposerView.stagedTempURL(for: dirA)
+        let stagedB = ComposerView.stagedTempURL(for: dirB)
+        XCTAssertNotEqual(stagedA, stagedB,
+                          "two source files with the same lastPathComponent must stage to distinct temp URLs")
+        XCTAssertTrue(stagedA.lastPathComponent.hasSuffix("report.pdf"),
+                      "preserves the original filename suffix so MIME inference still works")
+        XCTAssertTrue(stagedB.lastPathComponent.hasSuffix("report.pdf"))
+        let tmp = FileManager.default.temporaryDirectory.path
+        XCTAssertTrue(stagedA.path.hasPrefix(tmp))
+    }
+
+    @MainActor
     func test_isSendable_matchesSendBehaviour_forWhitespaceOnly() async {
         // Regression for bugbot finding #3. Previously the disable
         // predicate was `viewModel.input.isEmpty`, which lit up the send

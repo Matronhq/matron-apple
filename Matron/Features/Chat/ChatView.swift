@@ -42,7 +42,15 @@ struct ChatView: View {
                     }
                     .padding(.vertical)
                 }
-                .onChange(of: viewModel.items.count) { _, _ in
+                .onChange(of: viewModel.items.last?.id) { _, _ in
+                    // Round-3 bugbot finding #5: previously we keyed on
+                    // `items.count`, which misses two real cases —
+                    // (a) a `.set` diff swapping a local-echo item id for
+                    // its remote-event id keeps `count` constant but
+                    // should still scroll to the new tail, and
+                    // (b) a remove + add in the same diff batch leaves
+                    // `count` unchanged but the last-item id moves.
+                    // Keying on `last?.id` catches both.
                     if let last = viewModel.items.last {
                         withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
                     }
@@ -60,7 +68,14 @@ struct ChatView: View {
             }
         }
         .task {
-            viewModel.start()
+            // Chain `markAsRead()` *after* the timeline observation has
+            // applied its first snapshot. `start()` is now `async` and
+            // returns once the first snapshot has landed (or the stream
+            // ends without one), so the subsequent `markAsRead()` always
+            // marks the actual head of the timeline as read instead of
+            // racing the empty initial state. See `ChatViewModel.start()`
+            // for the underlying signal mechanism (round-3 bugbot fix #3).
+            await viewModel.start()
             await viewModel.markAsRead()
         }
         .onDisappear { viewModel.stop() }

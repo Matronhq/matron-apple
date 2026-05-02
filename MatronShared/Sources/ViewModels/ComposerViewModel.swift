@@ -84,18 +84,23 @@ public final class ComposerViewModel {
     /// `sendError`; the previous behaviour silently dropped read failures
     /// via `try?`, which masked iOS security-scoped-URL permission errors.
     ///
-    /// Each URL is wrapped in `start/stopAccessingSecurityScopedResource()`
-    /// so any caller — `ComposerDropDelegate` on Mac, `fileImporter` on
-    /// iOS, `PhotosPicker`-staged temp URLs, or any future entry point —
-    /// gets the right scope handling. Calling `start` on a URL that isn't
-    /// security-scoped is a documented no-op (returns `false`), so the
-    /// wrap is safe for the temp-file path too. View-layer wrappers may
-    /// still call `start/stop` themselves — the SDK guards repeat
-    /// start/stop calls, so the inner wrap here is defence-in-depth.
+    /// Security-scoped wrap policy: `attachFiles(_:)` is *only* reached
+    /// with URLs the caller has already prepared for unscoped reading.
+    /// - iOS `fileImporter`: the View's `stageAndAttach` wraps the
+    ///   original URL with `start/stopAccessingSecurityScopedResource()`,
+    ///   reads its bytes inside that window, and writes them to a temp
+    ///   URL — temp URLs are not security-scoped, so no wrap needed here.
+    /// - iOS `PhotosPicker`: data is staged to a temp URL via
+    ///   `photoTempURL(ext:)` before the call — same as above.
+    /// - Mac `ComposerDropDelegate`: drop URLs are granted transparent
+    ///   read access by the
+    ///   `com.apple.security.files.user-selected.read-only` entitlement
+    ///   (see `MacChatView.swift` comment on `.onDrop`).
+    /// Removing the inner wrap eliminates the round-3 bugbot finding #4
+    /// double-wrap on staged temp URLs (where the inner wrap was a no-op
+    /// but misleading).
     public func attachFiles(_ urls: [URL]) async {
         for url in urls {
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             let data: Data
             do {
                 data = try Data(contentsOf: url)

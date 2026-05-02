@@ -6,11 +6,17 @@ import MatronViewModels
 /// Mac chat-list screen — the sidebar column of a `NavigationSplitView`
 /// hosting a placeholder detail column until Task 14c lands `MacChatView`.
 ///
-/// Selection is held as a `ChatSummary?` (rather than just the id) so the
-/// detail column has the full row data — title, bot identity, last
-/// activity — without re-querying the view-model. List-selection in
-/// SwiftUI on Mac binds to a `Hashable` value; `ChatSummary` was made
-/// `Hashable` in Task 13.
+/// Selection is held as a `ChatSummary.ID` (a `String`) so the binding
+/// survives snapshot updates. Phase 1 used the id; Phase 2 / Task 13c
+/// briefly switched to the full `ChatSummary` struct, but `ChatSummary`
+/// auto-synthesises `Hashable` from *all* stored properties — including
+/// `lastActivity` and `unreadCount` — so any new snapshot with updated
+/// values for those fields produced a `ChatSummary` whose hash didn't
+/// match the stored selection, silently breaking the binding (round-3
+/// bugbot finding #6). The id is a stable `String`, so re-selecting the
+/// same room across snapshots works as long as the row exists. The
+/// detail column looks up the full `ChatSummary` from `viewModel.groups`
+/// when it needs the bot identity / title.
 ///
 /// Right-click context menu surfaces Mute + Leave (the Mac analogue of
 /// iOS long-press). `.refreshable` is reachable from the keyboard via
@@ -21,7 +27,7 @@ struct MacChatListView: View {
     @State var viewModel: ChatListViewModel
     @Environment(\.appDependencies) private var deps
     @Environment(\.currentSession) private var session
-    @State private var selectedSummary: ChatSummary?
+    @State private var selectedSummaryID: ChatSummary.ID?
     @State private var showingNewChat = false
     /// The chat whose ⓘ button was tapped. Drives the
     /// `.sheet(item: $botProfileSummary)` presentation of
@@ -69,9 +75,9 @@ struct MacChatListView: View {
                 viewModel: bpVM,
                 onSelectChat: { selected in
                     // Move selection to the tapped chat (Mac uses a
-                    // sidebar-driven `selectedSummary` rather than a
-                    // pushed NavigationStack), then dismiss.
-                    selectedSummary = selected
+                    // sidebar-driven id selection rather than a pushed
+                    // NavigationStack), then dismiss.
+                    selectedSummaryID = selected.id
                     botProfileSummary = nil
                 },
                 onStartNewChat: {
@@ -97,12 +103,12 @@ struct MacChatListView: View {
                 description: Text("Provision a bot via dev-boxer to get started.")
             )
         } else {
-            List(selection: $selectedSummary) {
+            List(selection: $selectedSummaryID) {
                 ForEach(viewModel.groups) { group in
                     Section(group.group.rawValue) {
                         ForEach(group.summaries) { summary in
                             MacChatRow(summary: summary)
-                                .tag(summary)
+                                .tag(summary.id)
                                 .contextMenu {
                                     Button("Mute") {
                                         runChatAction { try await $0.mute(roomID: summary.id) }
@@ -122,13 +128,17 @@ struct MacChatListView: View {
         }
     }
 
-    /// Detail column. Routes the selected `ChatSummary` into `MacChatView`,
+    /// Detail column. Looks up the full `ChatSummary` from
+    /// `viewModel.groups` by id, then routes it into `MacChatView`,
     /// which constructs its per-room `ChatViewModel` + `ComposerViewModel`
     /// from the cached `TimelineService` + `MediaService`. The
-    /// "select a chat" content-unavailable view stays as the empty state.
+    /// "select a chat" content-unavailable view stays as the empty state
+    /// for both `nil` selection and an id whose row has been removed
+    /// from the latest snapshot (e.g. user left the room from another
+    /// device while it was selected).
     @ViewBuilder
     private var detail: some View {
-        if let summary = selectedSummary {
+        if let id = selectedSummaryID, let summary = currentSummary(for: id) {
             chatDetail(for: summary)
         } else {
             ContentUnavailableView(
@@ -137,6 +147,22 @@ struct MacChatListView: View {
                 description: Text("Pick a conversation from the sidebar.")
             )
         }
+    }
+
+    /// Looks up the current `ChatSummary` for a sidebar selection id
+    /// across all groups. Returns `nil` when the selected room has been
+    /// removed from the latest snapshot (e.g. the user left it from
+    /// another device). Re-evaluated on every `viewModel.groups` change
+    /// because `@Observable` triggers `body` re-render, so the detail
+    /// column always reflects the latest summary fields (title, unread
+    /// count, last activity) without needing a stale captured value.
+    private func currentSummary(for id: ChatSummary.ID) -> ChatSummary? {
+        for group in viewModel.groups {
+            if let match = group.summaries.first(where: { $0.id == id }) {
+                return match
+            }
+        }
+        return nil
     }
 
     /// Builds the `MacChatView` for the currently-selected summary. Wrapped

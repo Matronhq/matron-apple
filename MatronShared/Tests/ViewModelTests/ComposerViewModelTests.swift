@@ -176,19 +176,19 @@ final class ComposerViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func test_attachFiles_readsSecurityScopedURL_byWrappingItself() async {
-        // Round 2 bugbot finding #1: the earlier fix wrapped each URL in
-        // the *View*'s `stageAndAttach` helper, but `attachFiles(_:)`
-        // itself (called from `ComposerDropDelegate` on Mac) still used
-        // `Data(contentsOf:)` without the wrap. Move the wrap *into*
-        // `attachFiles` so every caller benefits.
+    func test_attachFiles_readsURLBytesAndDispatchesToTimeline() async {
+        // Round-3 bugbot finding #4 dropped the security-scoped wrap
+        // from `attachFiles(_:)` itself. Callers (iOS `stageAndAttach`,
+        // iOS `PhotosPicker` temp-staging, Mac `ComposerDropDelegate`)
+        // are responsible for ensuring the URLs they pass don't need a
+        // security-scoped wrap (or have already opened one and read the
+        // bytes into a temp URL). The Mac sandbox grants drop URLs
+        // transparent read access, and both iOS staging paths convert
+        // to a tmp URL before reaching `attachFiles`.
         //
-        // We exercise the wrap with a TrackingURL that records start /
-        // stop calls. We can't easily simulate a *real* security-scoped
-        // failure in a unit test (the system grants access by default to
-        // tmp-dir URLs), so instead we drop a real file at the URL and
-        // verify (a) the SDK's start/stop calls fired, (b) the timeline
-        // received the bytes (i.e. the read succeeded inside the wrap).
+        // This test pins the contract: given a non-scoped URL with real
+        // bytes on disk, `attachFiles` reads them and dispatches to the
+        // timeline as the right kind based on MIME.
         let tmpDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("attach-scope-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
@@ -202,9 +202,9 @@ final class ComposerViewModelTests: XCTestCase {
 
         // Outcome: the file was read and dispatched to `sendFile`
         // (text/plain isn't an image MIME). A no-op (zero bytes, no
-        // dispatch) would mean the wrap was masking the read.
+        // dispatch) would mean the read failed silently.
         XCTAssertEqual(fake.sentFiles.count, 1, "attachFiles should dispatch one file")
         XCTAssertEqual(fake.sentFiles.first?.sizeBytes, 2, "the 2-byte payload should reach the timeline intact")
-        XCTAssertNil(vm.sendError, "non-scoped tmp URL should round-trip cleanly through the new wrap")
+        XCTAssertNil(vm.sendError, "non-scoped tmp URL should round-trip cleanly")
     }
 }

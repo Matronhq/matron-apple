@@ -34,10 +34,12 @@ final class ChatViewModelTests: XCTestCase {
         fake.snapshotsToEmit = [[item]]
         let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
 
-        // Deterministic: `start()` returns the observation task. The fake's
-        // AsyncStream finishes after yielding all snapshots, so awaiting the
-        // task is a precise "processing complete" signal — no sleep needed.
-        let task = vm.start()
+        // Deterministic: `start()` is async and returns once the first
+        // snapshot has been applied (round-3 bugbot fix #3). The fake's
+        // AsyncStream finishes after yielding all snapshots, so awaiting
+        // the returned task's `.value` is still the precise
+        // "processing complete" signal — no sleep needed.
+        let task = await vm.start()
         await task.value
 
         XCTAssertEqual(vm.items.count, 1)
@@ -51,7 +53,7 @@ final class ChatViewModelTests: XCTestCase {
         let fake = FakeTimelineService()
         fake.snapshotsToEmit = [[]]
         let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
-        let task = vm.start()
+        let task = await vm.start()
         // Bound the wait so a misbehaving stream surfaces as a test failure
         // rather than hanging the suite.
         let outcome = await Task.detached {
@@ -83,6 +85,65 @@ final class ChatViewModelTests: XCTestCase {
         let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
         await vm.markAsRead()
         XCTAssertEqual(fake.markReadCalls, 1)
+    }
+
+    @MainActor
+    func test_start_returnsAfterFirstSnapshot_so_markAsRead_seesItems() async throws {
+        // Round 3 bugbot finding #3: the View's `.task { viewModel.start();
+        // await viewModel.markAsRead() }` previously raced — `start()`
+        // returned the observation Task synchronously and `markAsRead()`
+        // fired before any snapshot had been applied, so the SDK marked
+        // an empty room as read on first open. `start()` is now `async`
+        // and returns once the first snapshot has landed; this test
+        // pins that ordering by asserting `items` is populated *before*
+        // `markAsRead()` runs.
+        let fake = FakeTimelineService()
+        let item = TimelineItem(
+            id: "1", sender: "@a:s", timestamp: .now,
+            kind: .text(body: "hi", formattedHTML: nil), isOwn: false
+        )
+        fake.snapshotsToEmit = [[item]]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+
+        // Mirror the View's `.task` body exactly.
+        await vm.start()
+        // At this point the first snapshot must already be visible so
+        // `markAsRead()` marks the head of a populated timeline.
+        XCTAssertEqual(vm.items.count, 1,
+                       "start() must return only after the first snapshot has been applied")
+        await vm.markAsRead()
+        XCTAssertEqual(fake.markReadCalls, 1)
+    }
+
+    @MainActor
+    func test_start_returnsPromptly_evenWhenStreamYieldsNoSnapshots() async throws {
+        // Defence against `start()` hanging forever on a freshly-joined
+        // room whose live timeline never emits a snapshot. The fake's
+        // empty `snapshotsToEmit` mirrors that case: the AsyncStream
+        // finishes without ever yielding a value. `start()` must still
+        // return so the View's chained `markAsRead()` runs.
+        let fake = FakeTimelineService()
+        // Default `snapshotsToEmit = []` → stream finishes immediately
+        // without yielding.
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+
+        let outcome = await Task.detached {
+            await withTaskGroup(of: Bool.self) { group in
+                group.addTask { @MainActor in
+                    _ = await vm.start()
+                    return true
+                }
+                group.addTask {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    return false
+                }
+                let first = await group.next()!
+                group.cancelAll()
+                return first
+            }
+        }.value
+        XCTAssertTrue(outcome,
+                      "start() must return within 2s even when the stream yields no snapshots")
     }
 
     @MainActor
@@ -207,7 +268,7 @@ final class ChatViewModelTests: XCTestCase {
         let fake = FakeTimelineService()
         fake.snapshotsToEmit = [[]]
         let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
-        let task = vm.start()
+        let task = await vm.start()
         vm.stop()
         // After `stop()`, the existing task is cancelled. Awaiting it should
         // return promptly (the fake's stream finishes anyway).

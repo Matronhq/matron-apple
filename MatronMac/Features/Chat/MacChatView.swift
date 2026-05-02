@@ -52,7 +52,12 @@ struct MacChatView: View {
                     }
                     .padding(.vertical)
                 }
-                .onChange(of: viewModel.items.count) { _, _ in
+                .onChange(of: viewModel.items.last?.id) { _, _ in
+                    // Round-3 bugbot finding #5: keying on `items.count`
+                    // missed `.set` diffs that swap a local-echo id for
+                    // a remote-event id (count constant, last id moves)
+                    // and remove+add diff batches (count constant, last
+                    // id moves). Keying on `last?.id` catches both.
                     if let last = viewModel.items.last {
                         withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
                     }
@@ -76,7 +81,11 @@ struct MacChatView: View {
             )
         }
         .task {
-            viewModel.start()
+            // `start()` (round-3 bugbot fix #3) returns once the first
+            // timeline snapshot has been applied, so the chained
+            // `markAsRead()` marks the actual head of the timeline as
+            // read instead of racing the empty initial state.
+            await viewModel.start()
             await viewModel.markAsRead()
         }
         .onDisappear { viewModel.stop() }

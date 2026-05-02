@@ -124,10 +124,32 @@ struct ComposerView: View {
         return FileManager.default.temporaryDirectory.appendingPathComponent(filename)
     }
 
+    /// Builds a unique temporary URL for a staged `fileImporter` selection.
+    /// The previous impl appended `url.lastPathComponent` directly, so two
+    /// source files with the same filename (different parent dirs) wrote
+    /// to the same temp path — the second `data.write(to:)` clobbered the
+    /// first before `attachFiles(_:)` had finished reading it. Embedding a
+    /// `UUID` per selection guarantees distinct paths. `static internal`
+    /// so `ComposerViewBindingTests` can assert the uniqueness directly.
+    /// Mirrors `photoTempURL(ext:)` (round-2 fix #4).
+    static func stagedTempURL(for source: URL) -> URL {
+        let filename = "\(UUID().uuidString)-\(source.lastPathComponent)"
+        return FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+    }
+
     /// Reads each security-scoped URL into a temporary file so
     /// `ComposerViewModel.attachFiles(_:)` can read it without needing the
     /// scope (which only the `fileImporter` callback owns). Surfaces read
     /// errors via the view model instead of dropping them.
+    ///
+    /// The View owns the security-scoped wrap because the `Data(contentsOf:)`
+    /// of the *original* URL has to happen inside the start/stop window —
+    /// this is the only call site that touches a security-scoped URL.
+    /// `attachFiles(_:)` no longer wraps because everything reaching it
+    /// from this path is a temp URL we wrote ourselves (not security-scoped),
+    /// and the Mac drop-delegate path passes URLs the sandbox already
+    /// grants transparent read access to. Avoiding the redundant inner
+    /// wrap keeps the scope contract on a single owner per call.
     private func stageAndAttach(_ urls: [URL]) async {
         var staged: [URL] = []
         for url in urls {
@@ -135,8 +157,7 @@ struct ComposerView: View {
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             do {
                 let data = try Data(contentsOf: url)
-                let tmp = FileManager.default.temporaryDirectory
-                    .appendingPathComponent(url.lastPathComponent)
+                let tmp = ComposerView.stagedTempURL(for: url)
                 try data.write(to: tmp)
                 staged.append(tmp)
             } catch {
