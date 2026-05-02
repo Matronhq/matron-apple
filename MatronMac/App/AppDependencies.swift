@@ -17,11 +17,13 @@ final class AppDependencies {
         // StoragePaths.appSupport creates the directory on first read.
         let container = StoragePaths.appSupport
 
-        let keychain = KeychainStore(
-            service: "chat.matron.mac.session",
-            accessGroup: nil
-        )
-        self.auth = AuthServiceLive(keychain: keychain, basePath: container)
+        // Phase 1 uses a file-backed session store on Mac for symmetry with
+        // iOS — see the iOS AppDependencies for the full rationale. Mac
+        // Keychain works without entitlements, so this is the looser of two
+        // valid choices; Phase 3 will switch to Keychain when the signing
+        // story is settled.
+        let sessionStore = FileSessionStore(directory: container.appendingPathComponent("sessions"))
+        self.auth = AuthServiceLive(sessionStore: sessionStore, basePath: container)
         self.clientProvider = ClientProvider(basePath: container)
     }
 

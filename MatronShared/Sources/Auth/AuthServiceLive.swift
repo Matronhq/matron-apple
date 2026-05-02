@@ -5,11 +5,11 @@ import MatronStorage
 
 public final class AuthServiceLive: AuthService, @unchecked Sendable {
     private let sessionKey = "matron.session"
-    private let keychain: KeychainStore
+    private let sessionStore: any SessionStore
     private let basePath: URL
 
-    public init(keychain: KeychainStore, basePath: URL) {
-        self.keychain = keychain
+    public init(sessionStore: any SessionStore, basePath: URL) {
+        self.sessionStore = sessionStore
         self.basePath = basePath
     }
 
@@ -25,6 +25,7 @@ public final class AuthServiceLive: AuthService, @unchecked Sendable {
             let client = try await ClientBuilder()
                 .serverNameOrHomeserverUrl(serverNameOrUrl: url.absoluteString)
                 .sessionPaths(dataPath: basePath.path, cachePath: basePath.path)
+                .slidingSyncVersionBuilder(versionBuilder: .native)
                 .build()
             let loginTypes = await client.homeserverLoginDetails()
             return ServerCapabilities(
@@ -42,17 +43,41 @@ public final class AuthServiceLive: AuthService, @unchecked Sendable {
         password: String,
         initialDeviceDisplayName: String
     ) async throws -> UserSession {
+        // Phase 1 simplification: each fresh login starts with a clean
+        // basePath. Otherwise the SDK's crypto store remembers the previous
+        // device_id and rejects the new login with "account in the store
+        // doesn't match the account in the constructor". Phase 3 will reuse
+        // the existing store via restoreSession when the same user re-logs in.
+        try? FileManager.default.removeItem(at: basePath)
+        try? FileManager.default.createDirectory(at: basePath, withIntermediateDirectories: true)
+
+        let client: Client
         do {
-            let client = try await ClientBuilder()
+            client = try await ClientBuilder()
                 .serverNameOrHomeserverUrl(serverNameOrUrl: homeserverURL.absoluteString)
                 .sessionPaths(dataPath: basePath.path, cachePath: basePath.path)
+                .slidingSyncVersionBuilder(versionBuilder: .native)
                 .build()
+        } catch {
+            throw AuthError.unexpected("ClientBuilder.build failed: \(error)")
+        }
+        do {
             try await client.login(
                 username: username,
                 password: password,
                 initialDeviceName: initialDeviceDisplayName,
                 deviceId: nil
             )
+        } catch {
+            // Genuine login failures come up as ClientError.matrixApiError with
+            // M_FORBIDDEN / M_USER_DEACTIVATED. Anything else is worth surfacing.
+            let description = String(describing: error)
+            if description.contains("M_FORBIDDEN") || description.contains("M_INVALID") || description.contains("WrongPassword") {
+                throw AuthError.invalidCredentials
+            }
+            throw AuthError.unexpected("login failed: \(error)")
+        }
+        do {
             let session = try client.session()
             return UserSession(
                 userID: session.userId,
@@ -62,12 +87,12 @@ public final class AuthServiceLive: AuthService, @unchecked Sendable {
                 refreshToken: session.refreshToken
             )
         } catch {
-            throw AuthError.invalidCredentials
+            throw AuthError.unexpected("session() failed after login: \(error)")
         }
     }
 
     public func restoreSession() async throws -> UserSession? {
-        guard let json = try keychain.get(key: sessionKey),
+        guard let json = try sessionStore.get(key: sessionKey),
               let data = json.data(using: .utf8) else {
             return nil
         }
@@ -79,10 +104,10 @@ public final class AuthServiceLive: AuthService, @unchecked Sendable {
         guard let json = String(data: data, encoding: .utf8) else {
             throw AuthError.unexpected("encode")
         }
-        try keychain.set(json, forKey: sessionKey)
+        try sessionStore.set(json, forKey: sessionKey)
     }
 
     public func clearSession() throws {
-        try keychain.delete(key: sessionKey)
+        try sessionStore.delete(key: sessionKey)
     }
 }

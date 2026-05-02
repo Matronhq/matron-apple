@@ -6,9 +6,5 @@
 	<array>
 		<string>group.chat.matron</string>
 	</array>
-	<key>keychain-access-groups</key>
-	<array>
-		<string>$(AppIdentifierPrefix)chat.matron</string>
-	</array>
 </dict>
 </plist>

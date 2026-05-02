@@ -21,7 +21,7 @@ final class AuthServiceLiveIntegrationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let service = AuthServiceLive(
-            keychain: KeychainStore(service: "chat.matron.test.integration"),
+            sessionStore: FileSessionStore(directory: tempDir.appendingPathComponent("sessions")),
             basePath: tempDir
         )
 
