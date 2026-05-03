@@ -59,9 +59,21 @@ struct RecoveryKeyView: View {
             .buttonStyle(.borderedProminent)
             .disabled(!viewModel.canFinish)
         case (.restore, _):
-            Button("Done") { onFinished() }
-                .buttonStyle(.borderedProminent)
-                .disabled(!viewModel.canFinish)
+            // Bugbot caught: previously enabled whenever `enteredKey`
+            // non-empty, letting the user tap Done without ever invoking
+            // attemptRestore — passing the verification gate without
+            // unlocking encryption keys. Now Done both runs the restore
+            // and dismisses on success; standalone "Restore" button (in
+            // restoreBody) stays for retry-on-error UX so the user can
+            // see + correct an error inline before committing.
+            Button("Done") {
+                Task {
+                    await viewModel.attemptRestore()
+                    if viewModel.phase == .done { onFinished() }
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(viewModel.enteredKey.isEmpty || viewModel.phase == .busy)
         default:
             EmptyView()
         }
