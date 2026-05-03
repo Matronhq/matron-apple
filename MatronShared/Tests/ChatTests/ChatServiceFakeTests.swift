@@ -4,15 +4,37 @@ import XCTest
 
 final class FakeChatService: ChatService, @unchecked Sendable {
     var snapshotsToEmit: [[ChatSummary]] = []
+    /// When non-nil, `chatSummaries()` finishes by throwing this error
+    /// after yielding all queued snapshots. Lets tests pin the error-flow
+    /// added in QA finding #10.
+    var streamError: Error?
+    var createCalls: [String] = []
+    var nextCreatedRoomID: String = "!fake:server"
+    var refreshCalls: Int = 0
+    var mutedRooms: [String] = []
+    var leftRooms: [String] = []
 
-    func chatSummaries() -> AsyncStream<[ChatSummary]> {
-        AsyncStream { continuation in
+    func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error> {
+        AsyncThrowingStream { continuation in
             for snapshot in snapshotsToEmit {
                 continuation.yield(snapshot)
             }
-            continuation.finish()
+            if let streamError {
+                continuation.finish(throwing: streamError)
+            } else {
+                continuation.finish()
+            }
         }
     }
+
+    func createChat(with botID: String) async throws -> String {
+        createCalls.append(botID)
+        return nextCreatedRoomID
+    }
+
+    func refresh() async throws { refreshCalls += 1 }
+    func mute(roomID: String) async throws { mutedRooms.append(roomID) }
+    func leave(roomID: String) async throws { leftRooms.append(roomID) }
 }
 
 final class ChatServiceFakeTests: XCTestCase {
@@ -26,7 +48,7 @@ final class ChatServiceFakeTests: XCTestCase {
         let fake = FakeChatService()
         fake.snapshotsToEmit = [s1, s2]
         var received: [[ChatSummary]] = []
-        for await snap in fake.chatSummaries() {
+        for try await snap in fake.chatSummaries() {
             received.append(snap)
         }
         XCTAssertEqual(received.count, 2)

@@ -1,7 +1,7 @@
 import Foundation
 import MatronModels
 
-public struct ChatSummary: Equatable, Identifiable, Sendable {
+public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
     public let id: String
     public let title: String
     public let bot: BotIdentity

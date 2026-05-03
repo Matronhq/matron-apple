@@ -14,8 +14,58 @@ public final class ChatServiceLive: ChatService, @unchecked Sendable {
         self.sync = sync
     }
 
-    public func chatSummaries() -> AsyncStream<[ChatSummary]> {
-        AsyncStream { continuation in
+    public func createChat(with botID: String) async throws -> String {
+        try await sync.waitUntilReady()
+        let client = try await provider.client(for: session)
+        // SDK v26 (26.04.01) `CreateRoomParameters` shape: `invite` is
+        // `[String]?`; positional args after `name`/`topic`/`isEncrypted`/
+        // `isDirect`/`visibility`/`preset`/`invite`/`avatar` (powerLevels,
+        // joinRule, historyVisibility, canonicalAlias, isSpace) take
+        // sensible defaults. See
+        // matrix-rust-components-swift/Sources/MatrixRustSDK/matrix_sdk_ffi.swift
+        // for the canonical signature.
+        let request = CreateRoomParameters(
+            name: nil,
+            topic: nil,
+            isEncrypted: true,
+            isDirect: true,
+            visibility: .private,
+            preset: .privateChat,
+            invite: [botID],
+            avatar: nil
+        )
+        return try await client.createRoom(request: request)
+    }
+
+    /// Phase 2 refresh contract: ensure sliding sync is ready, then return.
+    /// The SDK doesn't expose a `forceSyncOnce`-style trigger in v26, and
+    /// sliding sync is continuous in the background, so the meaningful
+    /// work is making sure the next call to `chatSummaries()` won't race
+    /// the initial sync. The UI calls this from `.refreshable` and then
+    /// re-subscribes to the stream.
+    public func refresh() async throws {
+        try await sync.waitUntilReady()
+    }
+
+    public func mute(roomID: String) async throws {
+        try await sync.waitUntilReady()
+        let client = try await provider.client(for: session)
+        let settings = await client.getNotificationSettings()
+        try await settings.setRoomNotificationMode(roomId: roomID, mode: .mute)
+    }
+
+    public func leave(roomID: String) async throws {
+        try await sync.waitUntilReady()
+        let client = try await provider.client(for: session)
+        guard let room = try client.getRoom(roomId: roomID) else {
+            throw ChatServiceError.roomNotFound(roomID)
+        }
+        try await room.leave()
+        try await room.forget()
+    }
+
+    public func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error> {
+        AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     try await sync.waitUntilReady()
@@ -39,7 +89,11 @@ public final class ChatServiceLive: ChatService, @unchecked Sendable {
                     continuation.yield(summaries)
                     continuation.finish()
                 } catch {
-                    continuation.finish()
+                    // Surface the failure to the consumer instead of
+                    // silently completing — `ChatListViewModel` routes
+                    // this into its `error` field so the View can show
+                    // a banner / overlay (QA finding #10).
+                    continuation.finish(throwing: error)
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
@@ -93,4 +147,11 @@ public final class ChatServiceLive: ChatService, @unchecked Sendable {
         }
         return BotIdentity(matrixID: "@unknown:matron", displayName: fallbackTitle, avatarURL: nil)
     }
+}
+
+public enum ChatServiceError: Error, Equatable, Sendable {
+    /// Raised when `mute(roomID:)` or `leave(roomID:)` cannot resolve the
+    /// requested room — typically because the SDK hasn't synced it yet, or
+    /// the user has already left it.
+    case roomNotFound(String)
 }
