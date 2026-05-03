@@ -70,10 +70,20 @@ struct ComposerView: View {
                 // the best file extension from the item's
                 // `supportedContentTypes`, which the picker populates
                 // accurately (HEIC for HEIC, PNG for PNG, …).
-                if let data = try? await newItem.loadTransferable(type: Data.self) {
-                    let ext = preferredExtension(for: newItem) ?? "jpg"
-                    let tmp = ComposerView.photoTempURL(ext: ext)
-                    await ComposerView.stagePhotoData(data, to: tmp, viewModel: viewModel)
+                // Surface load failures via `reportAttachmentError` instead
+                // of silently dropping the selection — the previous `try?`
+                // swallowed iCloud-not-downloaded / corrupt-asset / unsupported-
+                // format errors and the user got no feedback (bugbot caught it).
+                do {
+                    if let data = try await newItem.loadTransferable(type: Data.self) {
+                        let ext = preferredExtension(for: newItem) ?? "jpg"
+                        let tmp = ComposerView.photoTempURL(ext: ext)
+                        await ComposerView.stagePhotoData(data, to: tmp, viewModel: viewModel)
+                    } else {
+                        viewModel.reportAttachmentError("Couldn't load that photo. If it's stored in iCloud, try downloading it first.")
+                    }
+                } catch {
+                    viewModel.reportAttachmentError(error.localizedDescription)
                 }
                 photoItem = nil
             }

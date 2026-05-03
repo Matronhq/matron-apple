@@ -491,7 +491,11 @@ final class TimelineSnapshotListener: TimelineListener, @unchecked Sendable {
         case .location:
             return .unknown(eventType: "m.location")
         case .other(let msgtype, _):
-            _ = fallbackBody
+            // fallbackBody isn't surfaced today — `.unknown` doesn't carry a
+            // body. Phase 3+ should extend `.unknown` so unknown msgtypes
+            // can render their plain-text body. Until then drop the param
+            // on the floor (formerly a `_ = fallbackBody` dead store —
+            // bugbot caught the false-utility line).
             return .unknown(eventType: msgtype)
         }
     }

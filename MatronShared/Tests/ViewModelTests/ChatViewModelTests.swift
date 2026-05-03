@@ -311,13 +311,19 @@ final class ChatViewModelTests: XCTestCase {
             urls.append(url)
             media.stubData[url] = Self.tinyPNG
         }
+        // Serialise the fetches so cache-insertion order matches request
+        // order — `image(for:)` kicks off a background Task whose completion
+        // order isn't deterministic across runtimes (the failing CI run
+        // exposed it). Wait for each individual URL's fetch to land before
+        // kicking off the next, so "oldest in cache" == "first requested"
+        // by construction. Per-URL polling (rather than count-based) is
+        // robust to LRU evictions silently dropping the count target.
         for url in urls {
             _ = vm.image(for: url)
-        }
-        // Drain all in-flight fetches.
-        let start = Date()
-        while vm.resolvedImageCount < limit && Date().timeIntervalSince(start) < 5 {
-            await Task.yield()
+            let start = Date()
+            while vm.resolvedImage(for: url) == nil && Date().timeIntervalSince(start) < 5 {
+                await Task.yield()
+            }
         }
         XCTAssertEqual(vm.resolvedImageCount, limit,
                        "resolved image cache must stay bounded at mediaCacheLimit")
