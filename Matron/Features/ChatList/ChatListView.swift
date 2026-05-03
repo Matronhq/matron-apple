@@ -1,6 +1,7 @@
 import SwiftUI
 import MatronChat
 import MatronModels
+import MatronStorage
 import MatronVerification
 import MatronViewModels
 
@@ -40,6 +41,12 @@ struct ChatListView: View {
     /// Cleared back to `nil` by the sheet's `onFinished` (the SAS reaches
     /// `.verified`) or by an explicit dismiss inside the sheet.
     @State private var sasSummary: VerificationRequestSummary?
+    /// Settings → Device sheet visibility (Task 11). Phase 7 will land
+    /// the full Settings UI; this Phase-3 surface ships the
+    /// device-verification + recovery-key reveal flow inside an
+    /// otherwise-empty sheet so users can read their key without
+    /// digging through the menu bar.
+    @State private var showingDeviceSettings = false
     /// Sign-out callback owned by `MatronApp` (drops the in-memory session
     /// + clears persistent state). Optional so previews / tests that
     /// don't wire the full app can still construct the view. Phase-7
@@ -93,6 +100,18 @@ struct ChatListView: View {
             if let onSignOut {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
+                        // Settings sits above Sign Out so the destructive
+                        // action stays at the bottom of the menu (iOS HIG
+                        // — destructive actions live last). Hidden when
+                        // the host doesn't wire `deps` / `session` so
+                        // tests / previews stay clean.
+                        if deps != nil, session != nil {
+                            Button {
+                                showingDeviceSettings = true
+                            } label: {
+                                Label("Settings", systemImage: "gear")
+                            }
+                        }
                         Button("Sign Out", role: .destructive, action: onSignOut)
                     } label: {
                         Image(systemName: "ellipsis.circle")
@@ -147,6 +166,29 @@ struct ChatListView: View {
                 sasSheetContent(for: summary, deps: deps, session: session)
             } else {
                 Text("Verification unavailable")
+                    .padding()
+            }
+        }
+        .sheet(isPresented: $showingDeviceSettings) {
+            // Settings → Device. Wraps `DeviceSettingsView` in a
+            // `NavigationStack` so the navigationTitle renders + the
+            // sheet has a Done button. Construction reuses the
+            // `verificationCenter.service` (so the FlowStore stays
+            // shared with the incoming-request banner) and forwards
+            // a closure that reads `RecoveryKeyManager.currentKey()`
+            // — the closure indirection keeps the view itself free
+            // of the manager so it stays trivially testable.
+            if let deps, let session {
+                NavigationStack {
+                    deviceSettingsSheetBody(for: deps, session: session)
+                        .toolbar {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                Button("Done") { showingDeviceSettings = false }
+                            }
+                        }
+                }
+            } else {
+                Text("Settings unavailable")
                     .padding()
             }
         }
@@ -258,6 +300,34 @@ struct ChatListView: View {
             ),
             title: "Verify device",
             onFinished: { sasSummary = nil }
+        )
+    }
+
+    /// Builds the `DeviceSettingsView` body for the Settings sheet
+    /// (Task 11). Reuses the `VerificationCenter.service` so any
+    /// per-account verification check shares the same cache as the
+    /// incoming-request banner; falls back to a fresh
+    /// `VerificationServiceLive` when no center is wired (test /
+    /// preview path). The recovery-key closure forwards
+    /// `RecoveryKeyManager.currentKey()` — closure indirection keeps
+    /// the view free of `RecoveryKeyManager` so it stays trivially
+    /// testable without a real Keychain.
+    @ViewBuilder
+    private func deviceSettingsSheetBody(
+        for deps: AppDependencies,
+        session: UserSession
+    ) -> some View {
+        let svc: VerificationService = verificationCenter?.service
+            ?? VerificationServiceLive(provider: deps.clientProvider, session: session)
+        let mgr = RecoveryKeyManager(
+            provider: deps.clientProvider,
+            session: session,
+            keychain: KeychainStore(service: "chat.matron.recovery", synchronizable: true)
+        )
+        DeviceSettingsView(
+            session: session,
+            verificationService: svc,
+            currentRecoveryKey: { try mgr.currentKey() }
         )
     }
 

@@ -202,14 +202,14 @@ struct MatronMacApp: App {
         )
     }
 
-    /// Help → Show Recovery Key… sheet body. Phase 3 wires the menu
-    /// surface; the actual re-auth-then-reveal flow (Settings analogue)
-    /// lands with Task 11 (DeviceSettingsView). Today's body opens
-    /// `MacRecoveryKeyView` in `.restore` mode against the live
-    /// `RecoveryKeyManager` so the user can paste their recovery key
-    /// and re-unlock backup — the same shape as the post-login restore
-    /// path. The "show me the locally-stored key after re-auth" surface
-    /// will be a separate sheet variant in Task 11.
+    /// Help → Show Recovery Key… sheet body. Task 11 swap: presents
+    /// `MacDeviceSettingsView` (Settings → Device on iOS) so the user
+    /// can read their locally-stored recovery key without leaving the
+    /// menu route. The .restore-mode `MacRecoveryKeyView` that this
+    /// menu used to open lives behind the verification gate /
+    /// `MacPostLoginVerificationView` for additional-device installs;
+    /// the Help menu's job is reveal-the-existing-key, which is what
+    /// Task 11's view does.
     @ViewBuilder
     private func showRecoveryKeySheetBody(for session: UserSession) -> some View {
         let mgr = RecoveryKeyManager(
@@ -217,12 +217,13 @@ struct MatronMacApp: App {
             session: session,
             keychain: KeychainStore(service: "chat.matron.recovery", synchronizable: true)
         )
-        MacRecoveryKeyView(
-            viewModel: RecoveryKeyViewModel(
-                mode: .restore,
-                generate: { "" },
-                restore: { try await mgr.restore(usingKey: $0) }
+        MacDeviceSettingsView(
+            session: session,
+            verificationService: VerificationServiceLive(
+                provider: dependencies.clientProvider,
+                session: session
             ),
+            currentRecoveryKey: { try mgr.currentKey() },
             onFinished: { showRecoveryKeySheet = false }
         )
     }
