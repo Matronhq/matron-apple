@@ -63,4 +63,25 @@ final class VerificationServiceFakeTests: XCTestCase {
         let verified = try await svc.isThisDeviceVerified()
         XCTAssertTrue(verified)
     }
+
+    func test_isUserVerified_defaultsToFalse_forUnknownUser() async throws {
+        // Spec §7.5: "nothing auto-trusted". Unknown identities — and any
+        // user the test hasn't explicitly seeded as verified — must read
+        // as unverified so the per-bot banner errs on the side of
+        // prompting verification (Task 10 inline banner above the
+        // ChatView timeline).
+        let svc = FakeVerificationService()
+        let verified = try await svc.isUserVerified(matrixID: "@bot:s")
+        XCTAssertFalse(verified)
+    }
+
+    func test_isUserVerified_returnsSeededValue() async throws {
+        let svc = FakeVerificationService()
+        await svc.setUserVerified(true, for: "@bot:s")
+        let verified = try await svc.isUserVerified(matrixID: "@bot:s")
+        XCTAssertTrue(verified)
+        // Other users are unaffected.
+        let other = try await svc.isUserVerified(matrixID: "@other:s")
+        XCTAssertFalse(other)
+    }
 }

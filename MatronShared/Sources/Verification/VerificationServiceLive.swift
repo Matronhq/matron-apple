@@ -98,6 +98,31 @@ public final class VerificationServiceLive: VerificationService, @unchecked Send
         return client.encryption().verificationState() == .verified
     }
 
+    /// Per-user verification check for the chat-view banner (spec §7.3, §7.5).
+    /// Looks up the SDK's `UserIdentity` for `matrixID` and reads its
+    /// `isVerified()` flag — that's already account-scoped (the SDK requires
+    /// our own identity to be verified for another user's identity to count
+    /// as verified, so the banner correctly hides only when both sides are
+    /// trusted). `fallbackToServer: false` avoids blocking the banner on a
+    /// network round-trip; the local crypto store already has the identity
+    /// the SDK needs to make this decision once any prior to-device or
+    /// /keys/query has landed (which the sliding-sync warmup already drives).
+    public func isUserVerified(matrixID: String) async throws -> Bool {
+        guard let provider, let session else {
+            throw VerificationError.notConfigured
+        }
+        let client = try await provider.client(for: session)
+        guard let identity = try await client.encryption().userIdentity(
+            userId: matrixID,
+            fallbackToServer: false
+        ) else {
+            // Unknown identity → not verified. Caller's banner will prompt
+            // the user to verify, matching §7.5's "nothing auto-trusted".
+            return false
+        }
+        return identity.isVerified()
+    }
+
     public func incomingRequests() -> AsyncStream<VerificationRequestSummary> {
         // Production wiring lands with `DeviceVerificationRequestObserver` in Task 4b.
         // Without a configured provider the stream finishes empty so unit tests can

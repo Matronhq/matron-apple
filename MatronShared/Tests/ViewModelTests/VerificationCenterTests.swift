@@ -130,6 +130,8 @@ private actor ScriptedVerificationService: VerificationService {
 
     func isThisDeviceVerified() async throws -> Bool { true }
 
+    func isUserVerified(matrixID: String) async throws -> Bool { false }
+
     nonisolated func incomingRequests() -> AsyncStream<VerificationRequestSummary> {
         AsyncStream { continuation in
             Task { [weak self] in

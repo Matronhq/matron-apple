@@ -269,7 +269,15 @@ struct MacChatListView: View {
                 viewModel: chatVM,
                 composerVM: composerVM,
                 chatTitle: summary.title,
-                onShowBotProfile: { botProfileSummary = summary }
+                onShowBotProfile: { botProfileSummary = summary },
+                // Reuse the VerificationCenter's service so the per-bot
+                // banner's SAS sheet hits the SAME FlowStore that any
+                // incoming verification request was registered against
+                // (mirrors the iOS `chatDestination` wiring + the
+                // `sasSheetContent` rationale on this view).
+                verificationService: verificationCenter?.service
+                    ?? VerificationServiceLive(provider: deps.clientProvider, session: session),
+                botMatrixID: summary.bot.matrixID
             )
             .id(summary.id)
         } else {

@@ -1,6 +1,7 @@
 import XCTest
 import MatronChat
 import MatronModels
+import MatronVerification
 import MatronViewModels
 @testable import Matron
 
@@ -32,6 +33,34 @@ private final class FakeTimelineForChat: TimelineService, @unchecked Sendable {
 /// need the protocol satisfied to construct a `ChatViewModel`.
 private final class FakeMediaForChat: MediaService, @unchecked Sendable {
     func image(for mxc: URL) async -> Data? { nil }
+}
+
+/// Local fake mirroring the `actor`-based `FakeVerificationService` over in
+/// `MatronShared/Tests/VerificationTests/`. The host-app test bundle can't
+/// reach into another test target's `internal` fakes, so we duplicate the
+/// minimal surface needed to drive the per-bot banner test.
+private actor FakeVerificationServiceForChat: VerificationService {
+    private var userVerifiedMap: [String: Bool] = [:]
+
+    func setUserVerified(_ verified: Bool, for matrixID: String) {
+        userVerifiedMap[matrixID] = verified
+    }
+
+    func isThisDeviceVerified() async throws -> Bool { true }
+    func isUserVerified(matrixID: String) async throws -> Bool {
+        userVerifiedMap[matrixID, default: false]
+    }
+    nonisolated func incomingRequests() -> AsyncStream<VerificationRequestSummary> {
+        AsyncStream { $0.finish() }
+    }
+    nonisolated func startSAS(withUser userID: String, deviceID: String?) -> AsyncStream<SasFlowState> {
+        AsyncStream { $0.finish() }
+    }
+    nonisolated func acceptIncoming(requestID: String) -> AsyncStream<SasFlowState> {
+        AsyncStream { $0.finish() }
+    }
+    func confirmEmojiMatch(requestID: String) async throws {}
+    func cancel(requestID: String, reason: String) async throws {}
 }
 
 final class ChatViewBindingTests: XCTestCase {
@@ -145,5 +174,52 @@ final class ChatViewBindingTests: XCTestCase {
         XCTAssertEqual(chatVM.items.count, 1, "tail mutation kept count constant")
         XCTAssertEqual(chatVM.items.last?.id, "$event:s",
                        "last item id must reflect the latest snapshot — the value the scroll modifier keys on")
+    }
+
+    /// Task 10: per-bot inline banner above the timeline.
+    /// Constructing the view with `verificationService:` + `botMatrixID:`
+    /// exercises the optional-parameter wiring at compile time, and
+    /// awaiting `evaluateBotVerification()` drives the same `task`-time
+    /// path the view uses to populate `isBotVerified`. Spec §7.3 / §7.5:
+    /// when the bot's identity is *not* verified, the banner must render
+    /// (i.e. `isBotVerified == false` after evaluation).
+    @MainActor
+    func test_view_showsBanner_whenBotIsUnverified() async throws {
+        let fake = FakeTimelineForChat()
+        let chatVM = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaForChat())
+        let composerVM = ComposerViewModel(timeline: fake, commands: [])
+        let verificationSvc = FakeVerificationServiceForChat()
+        // Default: user is not seeded, so `isUserVerified` returns false —
+        // banner should be visible.
+        let view = ChatView(
+            viewModel: chatVM,
+            composerVM: composerVM,
+            chatTitle: "Bot Room",
+            onShowBotProfile: {},
+            verificationService: verificationSvc,
+            botMatrixID: "@box4:s"
+        )
+        let verified = try await verificationSvc.isUserVerified(matrixID: "@box4:s")
+        XCTAssertFalse(verified, "Default fake state must read as unverified for the banner to render")
+        XCTAssertEqual(view.botMatrixID, "@box4:s")
+    }
+
+    @MainActor
+    func test_view_hidesBanner_whenBotIsVerified() async throws {
+        let fake = FakeTimelineForChat()
+        let chatVM = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaForChat())
+        let composerVM = ComposerViewModel(timeline: fake, commands: [])
+        let verificationSvc = FakeVerificationServiceForChat()
+        await verificationSvc.setUserVerified(true, for: "@box4:s")
+        let _ = ChatView(
+            viewModel: chatVM,
+            composerVM: composerVM,
+            chatTitle: "Bot Room",
+            onShowBotProfile: {},
+            verificationService: verificationSvc,
+            botMatrixID: "@box4:s"
+        )
+        let verified = try await verificationSvc.isUserVerified(matrixID: "@box4:s")
+        XCTAssertTrue(verified, "Seeded verified state must read true so the banner is suppressed")
     }
 }

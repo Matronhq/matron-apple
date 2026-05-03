@@ -282,7 +282,17 @@ struct ChatListView: View {
                 viewModel: chatVM,
                 composerVM: composerVM,
                 chatTitle: summary.title,
-                onShowBotProfile: { botProfileSummary = summary }
+                onShowBotProfile: { botProfileSummary = summary },
+                // Reuse the VerificationCenter's service so the per-bot
+                // banner's SAS sheet hits the SAME FlowStore that any
+                // incoming verification request was registered against
+                // — building a fresh `VerificationServiceLive` would
+                // hit an empty FlowStore (mirrors the comment on
+                // `sasSheetContent`). Falls back to a fresh instance
+                // when no center is wired (test/preview path).
+                verificationService: verificationCenter?.service
+                    ?? VerificationServiceLive(provider: deps.clientProvider, session: session),
+                botMatrixID: summary.bot.matrixID
             )
         } else {
             ContentUnavailableView(
