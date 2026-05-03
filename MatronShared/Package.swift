@@ -62,6 +62,12 @@ let package = Package(
                 "MatronChat",
                 "MatronModels",
                 "MatronStorage",
+                // Phase 3 Task 6: SasViewModel exposes `SasFlowState` /
+                // `SasEmoji` (from `MatronVerification`) on its public
+                // surface. Closure-only injection à la RecoveryKeyViewModel
+                // doesn't work here because the VM's `state` property is
+                // typed `SasFlowState` and views switch on it.
+                "MatronVerification",
             ],
             path: "Sources/ViewModels"
         ),
@@ -92,7 +98,7 @@ let package = Package(
         .testTarget(name: "AuthTests", dependencies: ["MatronAuth", "MatronModels", "MatronStorage"], path: "Tests/AuthTests"),
         .testTarget(name: "SyncTests", dependencies: ["MatronSync", "MatronModels"], path: "Tests/SyncTests"),
         .testTarget(name: "ChatTests", dependencies: ["MatronChat", "MatronModels", "MatronSync"], path: "Tests/ChatTests"),
-        .testTarget(name: "ViewModelTests", dependencies: ["MatronViewModels", "MatronAuth", "MatronChat", "MatronModels", "MatronStorage"], path: "Tests/ViewModelTests"),
+        .testTarget(name: "ViewModelTests", dependencies: ["MatronViewModels", "MatronAuth", "MatronChat", "MatronModels", "MatronStorage", "MatronVerification"], path: "Tests/ViewModelTests"),
         .testTarget(
             name: "DesignSystemSnapshotTests",
             dependencies: [
