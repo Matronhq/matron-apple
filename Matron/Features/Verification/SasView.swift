@@ -22,6 +22,13 @@ import MatronViewModels
 struct SasView: View {
     @State var viewModel: SasViewModel
     let title: String
+    /// Fired once when the flow reaches `.verified`. Mirrors
+    /// `RecoveryKeyView.onFinished` so the onboarding `PostLoginVerificationView`
+    /// gate can flip its `verifyDone` state and let the user reach the chat
+    /// list. Bugbot caught: previously `.verified` showed the green checkmark
+    /// and then the user was permanently stuck because the parent never
+    /// learned the flow had completed.
+    var onFinished: () -> Void = {}
 
     var body: some View {
         VStack(spacing: 24) {
@@ -55,6 +62,9 @@ struct SasView: View {
         // `.task(id:)` so re-presentation with the same request ID doesn't
         // re-fire; pairs with the `isObserving` guard inside the view-model.
         .task(id: viewModel.requestID) { await viewModel.observe() }
+        .onChange(of: viewModel.state) { _, new in
+            if case .verified = new { onFinished() }
+        }
     }
 
     @ViewBuilder

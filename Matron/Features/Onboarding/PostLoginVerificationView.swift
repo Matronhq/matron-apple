@@ -141,7 +141,8 @@ struct PostLoginVerificationView: View {
                             confirm: { try await svc.confirmEmojiMatch(requestID: requestID) },
                             cancel: { reason in try await svc.cancel(requestID: requestID, reason: reason) }
                         ),
-                        title: "Verify this device"
+                        title: "Verify this device",
+                        onFinished: onCompleted
                     )
                 }
             }

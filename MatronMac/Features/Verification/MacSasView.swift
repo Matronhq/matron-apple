@@ -27,6 +27,12 @@ import MatronViewModels
 struct MacSasView: View {
     @State var viewModel: SasViewModel
     let title: String
+    /// Fired once when the flow reaches `.verified`. Mirrors
+    /// `MacRecoveryKeyView.onFinished` so the onboarding gate's `verifyDone`
+    /// flag flips. Bugbot caught: the user previously saw the green
+    /// checkmark and was permanently stuck because the parent never learned
+    /// the flow had completed.
+    var onFinished: () -> Void = {}
 
     var body: some View {
         VStack(spacing: 24) {
@@ -61,6 +67,9 @@ struct MacSasView: View {
         // Pairs with `SasViewModel.isObserving` — re-presenting the sheet
         // with the same requestID is a no-op, not a re-iteration.
         .task(id: viewModel.requestID) { await viewModel.observe() }
+        .onChange(of: viewModel.state) { _, new in
+            if case .verified = new { onFinished() }
+        }
     }
 
     @ViewBuilder

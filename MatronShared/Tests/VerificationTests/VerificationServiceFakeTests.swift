@@ -17,9 +17,17 @@ final class VerificationServiceFakeTests: XCTestCase {
         let svc = FakeVerificationService()
         // Drain the stream to ensure the recording task has had a chance to run.
         for await _ in svc.startSAS(withUser: "@b:s", deviceID: nil) {}
-        // Round-trip through the actor's serial queue to flush the recording task.
-        _ = try await svc.isThisDeviceVerified()
-        let calls = await svc.didCallStart
+        // The recording is fire-and-forget via `Task { await self.recordStart }`
+        // from a `nonisolated` startSAS. The Task body races with subsequent
+        // actor calls — even an actor-isolated probe doesn't fully serialise
+        // it (the Task creation queues the hop separately). Poll-with-timeout
+        // so a slower CI runner doesn't see an empty array. Was a flake.
+        var calls: [(userID: String, deviceID: String?)] = []
+        let deadline = Date().addingTimeInterval(2)
+        while calls.isEmpty && Date() < deadline {
+            calls = await svc.didCallStart
+            if calls.isEmpty { try? await Task.sleep(nanoseconds: 10_000_000) }
+        }
         XCTAssertEqual(calls.count, 1)
         XCTAssertEqual(calls.first?.userID, "@b:s")
         XCTAssertNil(calls.first?.deviceID)
