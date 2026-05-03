@@ -89,6 +89,28 @@ public struct KeychainStore: SessionStore {
         }
     }
 
+    /// Recovery-key store factory (Phase 3 / Wave 3 / B3 fix-up). Funnels
+    /// every recovery-key Keychain construction through one place so the
+    /// service name + access group + synchronizable flag stay in lockstep.
+    ///
+    /// Pinning the access group explicitly (rather than letting the system
+    /// default to the first entry in `keychain-access-groups`) is the
+    /// load-bearing piece — Phase 4 adds a second group on iOS for the
+    /// NSE, at which point the implicit default would silently switch and
+    /// items written before the change become unreadable. See
+    /// `KeychainAccessGroups.recovery` for the full rationale + the
+    /// platform-specific group strings.
+    ///
+    /// `synchronizable: true` because recovery keys ride iCloud Keychain
+    /// to enable additional-device install without re-entering the key.
+    public static func recoveryStore() -> KeychainStore {
+        return KeychainStore(
+            service: "chat.matron.recovery",
+            accessGroup: KeychainAccessGroups.recovery,
+            synchronizable: true
+        )
+    }
+
     private func baseQuery(for key: String) -> [String: Any] {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

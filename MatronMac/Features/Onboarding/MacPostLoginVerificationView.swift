@@ -71,7 +71,7 @@ struct MacPostLoginVerificationView: View {
                     let mgr = RecoveryKeyManager(
                         provider: dependencies.clientProvider,
                         session: session,
-                        keychain: KeychainStore(service: "chat.matron.recovery", synchronizable: true)
+                        keychain: KeychainStore.recoveryStore()
                     )
                     MacRecoveryKeyView(
                         viewModel: RecoveryKeyViewModel(
@@ -85,7 +85,7 @@ struct MacPostLoginVerificationView: View {
                     let mgr = RecoveryKeyManager(
                         provider: dependencies.clientProvider,
                         session: session,
-                        keychain: KeychainStore(service: "chat.matron.recovery", synchronizable: true)
+                        keychain: KeychainStore.recoveryStore()
                     )
                     MacRecoveryKeyView(
                         viewModel: RecoveryKeyViewModel(

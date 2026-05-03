@@ -64,12 +64,18 @@ targets:
       properties:
         com.apple.security.application-groups:
           - group.chat.matron
-        # keychain-access-groups intentionally absent in Phase 1. iOS Simulator
-        # rejects keychain ops without a signing-team-resolved access group
-        # ($(AppIdentifierPrefix) doesn't expand without a team). Phase 1 stores
-        # the post-login session as a JSON file via FileSessionStore (in the
-        # SDK's basePath alongside its own SQLite store). Phase 3 will add
-        # Keychain back when signing is wired.
+        # Phase 3 / Wave 3 / M1: explicit keychain-access-group for the
+        # recovery-key store. Mirrors the Mac entitlement's group entry.
+        # `chat.matron` (NOT `chat.matron.app`) so Phase 4's NSE share +
+        # any future MatronShared extension can be granted the same group
+        # without invalidating recovery keys written today (B3 rationale).
+        # iOS Simulator without a signing team cannot resolve
+        # `$(AppIdentifierPrefix)` and surfaces `errSecMissingEntitlement
+        # (-34018)` on every keychain op — `MatronApp.bootstrap()`'s probe
+        # is gated `#if !targetEnvironment(simulator)` so dev runs stay
+        # green. Real-device + signed-CI builds get the probe.
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)chat.matron
     # `scheme.testTargets` populates `<Testables>` on the auto-generated
     # `Matron.xcscheme`. Without this, `xcodebuild test -scheme Matron`
     # fails with "Scheme is not currently configured for the test action"

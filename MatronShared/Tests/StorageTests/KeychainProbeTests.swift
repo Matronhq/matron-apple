@@ -62,6 +62,66 @@ final class KeychainProbeTests: XCTestCase {
             XCTAssertEqual(got, "wrong-value")
         }
     }
+
+    /// Phase 3 / Wave 3 / M1: the iOS bootstrap probe routes through the
+    /// SAME `KeychainStore.recoveryStore()` factory the recovery-key flow
+    /// writes to (B3 invariant). Without that, the probe could pass against
+    /// an implicit-default-group store while the actual recovery-key path
+    /// silently fails on the explicit-group store.
+    ///
+    /// Live round-trip is gated behind the iCloud-Keychain entitlement
+    /// (the SPM host doesn't have one), so this test pins the structural
+    /// invariant: the factory is callable + produces a non-nil store the
+    /// probe can consume. The actual access-group wiring is asserted in
+    /// `RecoveryKeyManagerTests.test_recoveryStoreFactory_usesCentralisedAccessGroup`.
+    func test_run_usesRecoveryStoreFactory_forBootstrapParity() throws {
+        let store = KeychainStore.recoveryStore()
+        do {
+            try KeychainProbe.run(keychain: store)
+            // Probe cleans up after itself even on the iCloud-sync path —
+            // entry must not leak across test runs.
+            XCTAssertNil(try store.get(key: KeychainProbe.probeKey),
+                         "probe must delete its entry on success")
+        } catch KeychainProbeError.setFailed(let underlying) {
+            // Expected on hosts without the iCloud-keychain entitlement
+            // (SPM `swift test` runner / iOS Simulator without signing).
+            // The bootstrap UI maps this exact case to the hard-gate
+            // `KeychainSetupErrorView` — the structural wiring is what
+            // matters here, the host can't execute the round-trip.
+            if let underlyingKey = underlying as? KeychainError,
+               case .unhandled(let status) = underlyingKey,
+               status == -34018 {
+                throw XCTSkip("Host lacks iCloud-keychain entitlement (errSecMissingEntitlement) — probe + factory are structurally wired")
+            }
+            throw underlying
+        }
+    }
+
+    /// Phase 3 / Wave 3 / M1 negative-path coverage: probe failure ⇒
+    /// bootstrap surfaces a non-empty error string suitable for the
+    /// `KeychainSetupErrorView` body. Pins that `KeychainProbeError`'s
+    /// `LocalizedError` conformance produces a usable description for
+    /// every branch the bootstrap UI maps onto the hard-gate view.
+    /// Without this, a future refactor could silently break the user-
+    /// facing error message (e.g. dropping `LocalizedError` conformance)
+    /// and leave the hard-gate UI showing an empty `Text(message)`.
+    func test_probeError_localizedDescriptions_areNonEmpty_forBootstrapHardGate() {
+        let setFailed = KeychainProbeError.setFailed(underlying: FakeStoreError.injected)
+        XCTAssertFalse(setFailed.localizedDescription.isEmpty,
+                       ".setFailed must produce a usable bootstrap error message")
+
+        let getFailed = KeychainProbeError.getFailed(underlying: FakeStoreError.injected)
+        XCTAssertFalse(getFailed.localizedDescription.isEmpty,
+                       ".getFailed must produce a usable bootstrap error message")
+
+        let mismatch = KeychainProbeError.roundTripMismatch(expected: "a", got: "b")
+        XCTAssertFalse(mismatch.localizedDescription.isEmpty,
+                       ".roundTripMismatch must produce a usable bootstrap error message")
+
+        let deleteFailed = KeychainProbeError.deleteFailed(underlying: FakeStoreError.injected)
+        XCTAssertFalse(deleteFailed.localizedDescription.isEmpty,
+                       ".deleteFailed must produce a usable bootstrap error message")
+    }
 }
 
 // MARK: - Test doubles

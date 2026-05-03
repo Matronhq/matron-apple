@@ -1,5 +1,6 @@
 import SwiftUI
 import MatronAuth
+import MatronDesignSystem
 import MatronModels
 import MatronStorage
 import MatronVerification
@@ -27,7 +28,7 @@ struct MatronMacApp: App {
     @State private var verificationCenter: VerificationCenter?
     /// Set by `bootstrap()` when the setup-time `KeychainProbe.run(...)`
     /// fails (Phase 3 / Task 13). When non-nil, every other UI branch is
-    /// short-circuited and `MacKeychainSetupErrorView` renders the message.
+    /// short-circuited and `KeychainSetupErrorView` renders the message.
     /// The recovery-key flow is unusable without working Keychain access,
     /// so this is intentionally a hard gate rather than a dismissable
     /// banner — surfacing the error in onboarding is the regression guard
@@ -57,7 +58,10 @@ struct MatronMacApp: App {
                     // do not let the user reach the sign-in or recovery-key
                     // flows where they'd silently lose their key. See
                     // `bootstrapError`'s declaration for full rationale.
-                    MacKeychainSetupErrorView(message: bootstrapError)
+                    // Cross-platform view lives in MatronDesignSystem now
+                    // (Phase 3 / Wave 3 / M1) so iOS bootstrap can mount
+                    // the same hard gate.
+                    KeychainSetupErrorView(message: bootstrapError)
                 } else if let session {
                     if verifyDone {
                         // VerificationCenter is hoisted to `@State` and
@@ -217,10 +221,13 @@ struct MatronMacApp: App {
         do {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 group.addTask {
-                    try KeychainProbe.run(keychain: KeychainStore(
-                        service: "chat.matron.recovery",
-                        synchronizable: true
-                    ))
+                    // Phase 3 / Wave 3 / B3: route through the centralised
+                    // factory so the probe targets the SAME service +
+                    // access group that `RecoveryKeyManager` writes to.
+                    // Otherwise the probe could pass against an implicit-
+                    // group store while the actual recovery-key path
+                    // silently fails on the explicit-group store.
+                    try KeychainProbe.run(keychain: KeychainStore.recoveryStore())
                 }
                 group.addTask {
                     try await Task.sleep(nanoseconds: 2_000_000_000)
@@ -306,7 +313,9 @@ struct MatronMacApp: App {
         let mgr = RecoveryKeyManager(
             provider: dependencies.clientProvider,
             session: session,
-            keychain: KeychainStore(service: "chat.matron.recovery", synchronizable: true)
+            // Phase 3 / Wave 3 / B3: centralised factory. See
+            // `KeychainAccessGroups.recovery` for the rationale.
+            keychain: KeychainStore.recoveryStore()
         )
         MacDeviceSettingsView(
             session: session,
@@ -327,16 +336,6 @@ struct MatronMacApp: App {
 /// timeout-specific message without conflating it with an entitlement
 /// failure.
 private struct KeychainProbeTimeout: Error {}
-
-/// Hard-gate UI shown when `KeychainProbe.run(...)` fails at app launch
-/// (Phase 3 / Task 13). The recovery-key flow can't function without
-/// working Keychain access, so we deliberately replace the normal
-/// onboarding chrome rather than render a dismissable banner — the user
-/// must see the error before they can sign in.
-///
-/// Mirrors the visual weight of `MacPostLoginVerificationView` (lock-shield
-/// icon, fixed-size frame) so it reads as part of the onboarding flow
-/// rather than a runtime crash dialog.
 
 /// Help → Verify This Device sheet body. Owns the `SasViewModel` +
 /// stream as `@State` so they're built exactly once per present
@@ -364,32 +363,6 @@ private struct HelpMenuVerifyDeviceSheet: View {
             title: "Verify this device",
             onFinished: onFinished
         )
-    }
-}
-
-private struct MacKeychainSetupErrorView: View {
-    let message: String
-
-    var body: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "exclamationmark.shield")
-                .font(.system(size: 60))
-                .foregroundStyle(.red)
-            Text("Keychain access not configured")
-                .font(.title2)
-                .bold()
-            Text("Matron cannot persist your recovery key without Keychain access. See `docs/setup-mac.md` to fix the entitlement, then relaunch.")
-                .multilineTextAlignment(.center)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            Text(message)
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.top, 8)
-        }
-        .padding(32)
-        .frame(width: 480, height: 360)
     }
 }
 

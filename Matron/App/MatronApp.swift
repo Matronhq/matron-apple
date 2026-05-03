@@ -1,6 +1,8 @@
 import SwiftUI
 import MatronAuth
+import MatronDesignSystem
 import MatronModels
+import MatronStorage
 import MatronVerification
 import MatronViewModels
 
@@ -28,9 +30,22 @@ struct MatronApp: App {
     /// from the orphaned center hit an empty FlowStore.
     ///
     /// Hoisting to `@State` + driving construction from a `.task(id:)`
-    /// keyed on `session.userID` keeps the center stable across body
-    /// re-evaluations and (correctly) rebuilds when the user changes.
+    /// keeps the center stable across body re-evaluations and (correctly)
+    /// rebuilds when the user changes.
     @State private var verificationCenter: VerificationCenter?
+    /// Set by `bootstrap()` when the setup-time `KeychainProbe.run(...)`
+    /// fails (Phase 3 / Wave 3 / M1 — parity with Mac Task 13). When
+    /// non-nil, every other UI branch is short-circuited and
+    /// `KeychainSetupErrorView` renders the message. The recovery-key
+    /// flow is unusable without working Keychain access, so this is
+    /// intentionally a hard gate rather than a dismissable banner —
+    /// surfacing the error in onboarding is the regression guard against
+    /// shipping an iOS build with broken `keychain-access-groups`
+    /// entitlements (e.g. signing-team mismatch on a TestFlight build).
+    /// Stays `nil` on the iOS Simulator: the probe is `#if
+    /// !targetEnvironment(simulator)`-gated because the Sim can't resolve
+    /// `$(AppIdentifierPrefix)` without a signing team.
+    @State private var bootstrapError: String?
 
     var body: some Scene {
         WindowGroup {
@@ -38,6 +53,14 @@ struct MatronApp: App {
                 if !bootstrapDone {
                     ProgressView("Loading…")
                         .task { await bootstrap() }
+                } else if let bootstrapError {
+                    // Hard gate: Keychain probe failed (entitlements
+                    // misconfigured). Recovery-key persistence is unusable;
+                    // do not let the user reach the sign-in or recovery-key
+                    // flows where they'd silently lose their key. See
+                    // `bootstrapError`'s declaration for full rationale.
+                    // Phase 3 / Wave 3 / M1 — parity with Mac Task 13.
+                    KeychainSetupErrorView(message: bootstrapError)
                 } else if let session {
                     if verifyDone {
                         // VerificationCenter is hoisted to `@State` and
@@ -127,6 +150,55 @@ struct MatronApp: App {
     }
 
     private func bootstrap() async {
+        // Phase 3 / Wave 3 / M1: setup-time Keychain probe (parity with
+        // Mac Task 13). Skipped on the iOS Simulator because
+        // `$(AppIdentifierPrefix)` doesn't resolve without a signing team
+        // — the Sim build has the entitlement *string* but
+        // `SecItemAdd`/`SecItemCopyMatching` against an unresolved
+        // access-group surfaces `errSecMissingEntitlement (-34018)` on
+        // every call. Real-device + signed-CI builds run the probe and
+        // surface failure via the hard-gate UI in `body`.
+        //
+        // `RecoveryKeyManager.generateAndPersist` already catches the
+        // post-sign-in case (write failed → return the key anyway with a
+        // `PersistenceError.keychainWriteFailedButKeyAvailable`), but
+        // that's after the user has signed in + generated a key. The
+        // probe catches the misconfiguration BEFORE sign-in so the user
+        // doesn't lose their key to a silent persistence failure.
+        #if !targetEnvironment(simulator)
+        do {
+            // Wrap in a 2s timeout so a hypothetical Keychain unlock
+            // prompt (e.g. first-time iCloud Keychain setup) doesn't
+            // strand the app on the indefinite ProgressView. Mirrors the
+            // Mac probe's `withThrowingTaskGroup` race.
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    // Centralised factory — same service + access group
+                    // the recovery-key flow writes to (B3 invariant).
+                    try KeychainProbe.run(keychain: KeychainStore.recoveryStore())
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 2_000_000_000)
+                    throw KeychainProbeTimeout()
+                }
+                try await group.next()
+                group.cancelAll()
+            }
+        } catch let error as KeychainProbeError {
+            bootstrapError = error.localizedDescription
+            bootstrapDone = true
+            return
+        } catch is KeychainProbeTimeout {
+            bootstrapError = "Keychain access timed out — see docs/setup-ios.md"
+            bootstrapDone = true
+            return
+        } catch {
+            bootstrapError = "Keychain probe failed: \(error.localizedDescription) — see docs/setup-ios.md"
+            bootstrapDone = true
+            return
+        }
+        #endif
+
         do {
             session = try await dependencies.auth.restoreSession()
             // Restore the verify-done flag for the bootstrapped session
@@ -174,3 +246,10 @@ struct MatronApp: App {
         verifyDone = false
     }
 }
+
+/// Sentinel error thrown by the timeout branch of `MatronApp.bootstrap()`'s
+/// Keychain probe race (Phase 3 / Wave 3 / M1). Distinct from
+/// `KeychainProbeError.getFailed` so the catch arms can render a
+/// timeout-specific message without conflating it with an entitlement
+/// failure. Mirrors the Mac sentinel of the same name in `MatronMacApp`.
+private struct KeychainProbeTimeout: Error {}

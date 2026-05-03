@@ -324,7 +324,7 @@ struct ChatListView: View {
         let mgr = RecoveryKeyManager(
             provider: deps.clientProvider,
             session: session,
-            keychain: KeychainStore(service: "chat.matron.recovery", synchronizable: true)
+            keychain: KeychainStore.recoveryStore()
         )
         DeviceSettingsView(
             session: session,
