@@ -30,3 +30,5 @@ Started 2026-05-03. Stacked on Phase 2 to overlap iteration with Phase 2 review.
 ## Tasks
 
 See plan for canonical list. Updates land here per push.
+
+- [x] **Task 1 — Verification DTOs** (2026-05-03). `DeviceInfo`, `DeviceTrustLevel`, `SasFlowState`, `SasEmoji`, `VerificationRequestSummary` in `MatronShared/Sources/Verification/VerificationDTOs.swift`. 5 unit tests in `Tests/VerificationTests/VerificationDTOsTests.swift`. **Plan deviation:** added the `MatronVerification` SPM library product + target in this commit (plan defers to Task 2 step 3) so the DTO file is reachable from a target and the commit can build/test in isolation. Wired the new product into both apps and both test targets in `project.yml`. SPM total: 150 tests (was 145). iOS scheme: 27. Mac scheme: 25. All green.

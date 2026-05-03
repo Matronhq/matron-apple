@@ -15,6 +15,7 @@ let package = Package(
         .library(name: "MatronModels", targets: ["MatronModels"]),
         .library(name: "MatronViewModels", targets: ["MatronViewModels"]),
         .library(name: "MatronDesignSystem", targets: ["MatronDesignSystem"]),
+        .library(name: "MatronVerification", targets: ["MatronVerification"]),
     ],
     dependencies: [
         .package(url: "https://github.com/matrix-org/matrix-rust-components-swift", from: "26.04.01"),
@@ -74,6 +75,19 @@ let package = Package(
             ],
             path: "Sources/DesignSystem"
         ),
+        // Verification target wraps the SDK's E2EE / SAS surface. Phase 3
+        // Task 1 lands DTOs only; later tasks layer on the protocol, live
+        // impl, recovery key manager, and observers.
+        .target(
+            name: "MatronVerification",
+            dependencies: [
+                "MatronModels",
+                "MatronStorage",
+                "MatronSync",
+                .product(name: "MatrixRustSDK", package: "matrix-rust-components-swift"),
+            ],
+            path: "Sources/Verification"
+        ),
         .testTarget(name: "StorageTests", dependencies: ["MatronStorage"], path: "Tests/StorageTests"),
         .testTarget(name: "AuthTests", dependencies: ["MatronAuth", "MatronModels", "MatronStorage"], path: "Tests/AuthTests"),
         .testTarget(name: "SyncTests", dependencies: ["MatronSync", "MatronModels"], path: "Tests/SyncTests"),
@@ -86,6 +100,11 @@ let package = Package(
                 .product(name: "SnapshotTesting", package: "swift-snapshot-testing"),
             ],
             path: "Tests/DesignSystemSnapshotTests"
+        ),
+        .testTarget(
+            name: "VerificationTests",
+            dependencies: ["MatronVerification", "MatronModels", "MatronStorage"],
+            path: "Tests/VerificationTests"
         ),
     ]
 )

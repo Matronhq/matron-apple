@@ -86,6 +86,8 @@ targets:
         product: MatronViewModels
       - package: MatronShared
         product: MatronDesignSystem
+      - package: MatronShared
+        product: MatronVerification
       - package: MatrixRustSDK
         product: MatrixRustSDK
 
@@ -132,6 +134,8 @@ targets:
         product: MatronViewModels
       - package: MatronShared
         product: MatronDesignSystem
+      - package: MatronShared
+        product: MatronVerification
 
   MatronTests:
     type: bundle.unit-test
@@ -151,6 +155,8 @@ targets:
         product: MatronModels
       - package: MatronShared
         product: MatronViewModels
+      - package: MatronShared
+        product: MatronVerification
 
   MatronMacTests:
     type: bundle.unit-test
@@ -170,6 +176,8 @@ targets:
         product: MatronModels
       - package: MatronShared
         product: MatronViewModels
+      - package: MatronShared
+        product: MatronVerification
 
   MatronNSE:
     type: app-extension
