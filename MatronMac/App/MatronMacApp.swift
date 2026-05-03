@@ -1,6 +1,7 @@
 import SwiftUI
 import MatronAuth
 import MatronModels
+import MatronStorage
 import MatronVerification
 import MatronViewModels
 
@@ -13,6 +14,16 @@ struct MatronMacApp: App {
     /// See `MacPostLoginVerificationView.verifyDoneKey(for:)` for the
     /// per-user `UserDefaults` scoping.
     @State private var verifyDone = false
+    /// Help → Verify This Device… sheet visibility. Flipped by the
+    /// `.matronCommand(.verifyDevice)` listener on the WindowGroup root
+    /// (Phase 3 / Task 9c). Sheet body builds a fresh self-verification
+    /// SAS flow on each present, mirroring `MacPostLoginVerificationView`.
+    @State private var showVerifyDeviceSheet = false
+    /// Help → Show Recovery Key… sheet visibility. Flipped by the
+    /// `.matronCommand(.showRecoveryKey)` listener on the WindowGroup
+    /// root (Phase 3 / Task 9c). Phase 3 wires the menu surface; Task 11
+    /// fills in the actual re-auth-then-reveal body.
+    @State private var showRecoveryKeySheet = false
 
     var body: some Scene {
         WindowGroup {
@@ -86,6 +97,37 @@ struct MatronMacApp: App {
                 session = nil
                 verifyDone = false
             }
+            // Help → Verify This Device… (Phase 3 / Task 9c). The menu
+            // item posts the notification; the listener flips the sheet
+            // open. Listener lives on the WindowGroup root so it's
+            // attached regardless of which child view is on screen — but
+            // the sheet body short-circuits to a "sign in first" message
+            // when no `session` is set so the menu item is harmless from
+            // the SignInView state. Mirrors `.signOut` listener wiring.
+            .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.verifyDevice))) { _ in
+                showVerifyDeviceSheet = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showRecoveryKey))) { _ in
+                showRecoveryKeySheet = true
+            }
+            .sheet(isPresented: $showVerifyDeviceSheet) {
+                if let session {
+                    verifyDeviceSheet(for: session)
+                } else {
+                    Text("Sign in first to verify this device.")
+                        .frame(width: 360, height: 120)
+                        .padding()
+                }
+            }
+            .sheet(isPresented: $showRecoveryKeySheet) {
+                if let session {
+                    showRecoveryKeySheetBody(for: session)
+                } else {
+                    Text("Sign in first to view your recovery key.")
+                        .frame(width: 360, height: 120)
+                        .padding()
+                }
+            }
         }
         .windowResizability(.contentMinSize)
         // Mac menu bar — File / Edit / View / Help shortcuts that post
@@ -122,6 +164,67 @@ struct MatronMacApp: App {
     private func markVerifyDone(for session: UserSession) {
         UserDefaults.standard.set(true, forKey: MacPostLoginVerificationView.verifyDoneKey(for: session))
         verifyDone = true
+    }
+
+    /// Help → Verify This Device… sheet body. Builds a fresh
+    /// self-verification SAS flow against the active session, mirroring
+    /// the construction inside `MacPostLoginVerificationView` (Task 7).
+    /// `requestID` is the user's matrix ID — that's the cache key
+    /// `VerificationServiceLive.startSAS` registers under for
+    /// self-verification flows; using it here makes confirm/cancel route
+    /// back to the same FlowStore entry.
+    ///
+    /// Plan §9c describes a "no other device reachable → fall back to
+    /// recovery-key restore" branch. Implementing the live device-list
+    /// query needs the SDK device-fetch surface (out of scope for the
+    /// menu wire-up), so today the sheet always presents `MacSasView` —
+    /// if no other device responds, the SAS flow surfaces the timeout /
+    /// cancellation back to the user via the same `.cancelled(reason:)`
+    /// path the rest of the verification UX already handles. Recovery-
+    /// key fallback lands with Task 11.
+    @ViewBuilder
+    private func verifyDeviceSheet(for session: UserSession) -> some View {
+        let svc = VerificationServiceLive(
+            provider: dependencies.clientProvider,
+            session: session
+        )
+        let requestID = session.userID
+        let stream = svc.startSAS(withUser: session.userID, deviceID: nil)
+        MacSasView(
+            viewModel: SasViewModel(
+                stream: stream,
+                requestID: requestID,
+                confirm: { try await svc.confirmEmojiMatch(requestID: requestID) },
+                cancel: { reason in try await svc.cancel(requestID: requestID, reason: reason) }
+            ),
+            title: "Verify this device",
+            onFinished: { showVerifyDeviceSheet = false }
+        )
+    }
+
+    /// Help → Show Recovery Key… sheet body. Phase 3 wires the menu
+    /// surface; the actual re-auth-then-reveal flow (Settings analogue)
+    /// lands with Task 11 (DeviceSettingsView). Today's body opens
+    /// `MacRecoveryKeyView` in `.restore` mode against the live
+    /// `RecoveryKeyManager` so the user can paste their recovery key
+    /// and re-unlock backup — the same shape as the post-login restore
+    /// path. The "show me the locally-stored key after re-auth" surface
+    /// will be a separate sheet variant in Task 11.
+    @ViewBuilder
+    private func showRecoveryKeySheetBody(for session: UserSession) -> some View {
+        let mgr = RecoveryKeyManager(
+            provider: dependencies.clientProvider,
+            session: session,
+            keychain: KeychainStore(service: "chat.matron.recovery", synchronizable: true)
+        )
+        MacRecoveryKeyView(
+            viewModel: RecoveryKeyViewModel(
+                mode: .restore,
+                generate: { "" },
+                restore: { try await mgr.restore(usingKey: $0) }
+            ),
+            onFinished: { showRecoveryKeySheet = false }
+        )
     }
 }
 
