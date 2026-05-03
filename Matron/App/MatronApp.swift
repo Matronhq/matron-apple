@@ -1,6 +1,7 @@
 import SwiftUI
 import MatronAuth
 import MatronModels
+import MatronVerification
 import MatronViewModels
 
 @main
@@ -24,10 +25,24 @@ struct MatronApp: App {
                         .task { await bootstrap() }
                 } else if let session {
                     if verifyDone {
+                        // Build the verification orchestrator once per
+                        // (session, scene) pair. `VerificationCenter`'s
+                        // `start()` / `stop()` lifecycle is wired inside
+                        // `ChatListView` so the long-lived
+                        // `incomingRequests()` stream doesn't outlive the
+                        // host view (Swift 6 strict concurrency forbids a
+                        // `@MainActor deinit` reaching isolated state).
+                        let verificationCenter = VerificationCenter(
+                            service: VerificationServiceLive(
+                                provider: dependencies.clientProvider,
+                                session: session
+                            )
+                        )
                         NavigationStack {
                             ChatListView(
                                 viewModel: ChatListViewModel(chat: dependencies.chatService(for: session)),
-                                onSignOut: { signOut() }
+                                onSignOut: { signOut() },
+                                verificationCenter: verificationCenter
                             )
                         }
                         .environment(\.appDependencies, dependencies)

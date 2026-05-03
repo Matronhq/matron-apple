@@ -1,6 +1,7 @@
 import SwiftUI
 import MatronChat
 import MatronModels
+import MatronVerification
 import MatronViewModels
 
 /// iOS chat-list screen. Phase 2 wires `NavigationLink(value:)` rows that
@@ -34,6 +35,11 @@ struct ChatListView: View {
     /// `nil` either by the sheet's onDismiss or when the user picks a chat
     /// from inside the sheet.
     @State private var botProfileSummary: ChatSummary?
+    /// The summary whose "Verify" button on a `VerificationBanner` was
+    /// tapped. Drives the `.sheet(item:)` presentation of `SasView`.
+    /// Cleared back to `nil` by the sheet's `onFinished` (the SAS reaches
+    /// `.verified`) or by an explicit dismiss inside the sheet.
+    @State private var sasSummary: VerificationRequestSummary?
     /// Sign-out callback owned by `MatronApp` (drops the in-memory session
     /// + clears persistent state). Optional so previews / tests that
     /// don't wire the full app can still construct the view. Phase-7
@@ -41,61 +47,37 @@ struct ChatListView: View {
     /// hook keeps the user from being stranded once Sign Out is exposed
     /// from the menu (QA finding #7).
     var onSignOut: (() -> Void)? = nil
+    /// Cross-platform incoming-verification orchestrator (spec §7.1, §5.9).
+    /// Optional so previews / tests that exercise only the chat-list
+    /// rendering can construct the view without standing up a full
+    /// verification stack. When non-nil, `start()` runs in `.onAppear` and
+    /// `stop()` in `.onDisappear` — Swift 6 strict concurrency forbids a
+    /// `@MainActor deinit` reaching into isolated state, so the lifecycle
+    /// hooks are explicit (mirrors the `ChatListViewModel.cancel()` pattern).
+    var verificationCenter: VerificationCenter? = nil
 
     var body: some View {
-        Group {
-            if viewModel.isLoading {
-                ProgressView("Connecting…")
-            } else if let errorMessage = viewModel.error, viewModel.groups.isEmpty {
-                // QA finding #10: surface upstream stream failures
-                // (e.g. `SyncReadyError.timeout`) instead of leaving
-                // the user staring at an empty list. If we have a prior
-                // good snapshot we keep showing it (the banner below
-                // would render too) — this branch only handles the
-                // first-load failure case.
-                ContentUnavailableView(
-                    "Couldn't load chats",
-                    systemImage: "exclamationmark.triangle",
-                    description: Text(errorMessage)
-                )
-            } else if viewModel.groups.isEmpty {
-                ContentUnavailableView(
-                    "No chats yet",
-                    systemImage: "bubble.left.and.bubble.right",
-                    description: Text("Provision a bot via dev-boxer to get started.")
-                )
-            } else {
-                List {
-                    ForEach(viewModel.groups) { group in
-                        Section(group.group.rawValue) {
-                            ForEach(group.summaries) { summary in
-                                // Navigate by id (stable `String`), not the
-                                // full struct — see file header for the
-                                // stale-capture rationale.
-                                NavigationLink(value: summary.id) {
-                                    ChatRow(summary: summary)
-                                }
-                                .contextMenu {
-                                    Button {
-                                        runChatAction { try await $0.mute(roomID: summary.id) }
-                                    } label: {
-                                        Label("Mute", systemImage: "bell.slash")
-                                    }
-                                    Button(role: .destructive) {
-                                        runChatAction { try await $0.leave(roomID: summary.id) }
-                                    } label: {
-                                        Label("Leave", systemImage: "rectangle.portrait.and.arrow.right")
-                                    }
-                                }
+        VStack(spacing: 0) {
+            // Verification banners surface above whatever list state is
+            // showing — loading, error, empty, or populated. One banner
+            // per pending request (spec §7.1, §5.9). The host wires
+            // `verificationCenter` from `MatronApp`; tests / previews
+            // omit it and the `if let` short-circuits.
+            if let center = verificationCenter, !center.pending.isEmpty {
+                VStack(spacing: 8) {
+                    ForEach(center.pending) { summary in
+                        VerificationBanner(
+                            summary: summary,
+                            onAccept: { sasSummary = $0 },
+                            onDismiss: { dismissed in
+                                Task { await center.dismiss(dismissed) }
                             }
-                        }
+                        )
                     }
                 }
-                .listStyle(.plain)
-                .refreshable {
-                    await runChatActionAwaiting { try await $0.refresh() }
-                }
+                .padding(.top, 8)
             }
+            chatListContent
         }
         .navigationTitle("Matron")
         .toolbar {
@@ -154,11 +136,123 @@ struct ChatListView: View {
                 }
             )
         }
+        .sheet(item: $sasSummary) { summary in
+            // SAS sheet driven by the banner's "Verify" tap. Build the
+            // service inline (mirrors `PostLoginVerificationView`) so the
+            // sheet body owns no long-lived SDK state — when the sheet
+            // dismisses the controller is released. Without `deps` /
+            // `session` we render a minimal placeholder so the binding is
+            // still observable in tests / previews.
+            if let deps, let session {
+                sasSheetContent(for: summary, deps: deps, session: session)
+            } else {
+                Text("Verification unavailable")
+                    .padding()
+            }
+        }
         .navigationDestination(for: ChatSummary.ID.self) { id in
             chatDestination(for: id)
         }
         .task { viewModel.start() }
-        .onDisappear { viewModel.cancel() }
+        // `verificationCenter.start()` belongs in `.onAppear`, not
+        // `.task`: Swift 6 strict concurrency forbids a `@MainActor deinit`
+        // touching isolated state, so the explicit `start` / `stop` pair
+        // is the lifecycle. Mirrors `ChatListViewModel.cancel()`. Optional
+        // cast lets previews / tests omit the center entirely.
+        .onAppear { verificationCenter?.start() }
+        .onDisappear {
+            viewModel.cancel()
+            verificationCenter?.stop()
+        }
+    }
+
+    /// Extracted to keep `body` readable now that the verification banner
+    /// sits above this list. Same render branches as before — loading /
+    /// error / empty / populated — just lifted out.
+    @ViewBuilder
+    private var chatListContent: some View {
+        if viewModel.isLoading {
+            ProgressView("Connecting…")
+        } else if let errorMessage = viewModel.error, viewModel.groups.isEmpty {
+            // QA finding #10: surface upstream stream failures
+            // (e.g. `SyncReadyError.timeout`) instead of leaving
+            // the user staring at an empty list. If we have a prior
+            // good snapshot we keep showing it (the banner above
+            // would render too) — this branch only handles the
+            // first-load failure case.
+            ContentUnavailableView(
+                "Couldn't load chats",
+                systemImage: "exclamationmark.triangle",
+                description: Text(errorMessage)
+            )
+        } else if viewModel.groups.isEmpty {
+            ContentUnavailableView(
+                "No chats yet",
+                systemImage: "bubble.left.and.bubble.right",
+                description: Text("Provision a bot via dev-boxer to get started.")
+            )
+        } else {
+            List {
+                ForEach(viewModel.groups) { group in
+                    Section(group.group.rawValue) {
+                        ForEach(group.summaries) { summary in
+                            // Navigate by id (stable `String`), not the
+                            // full struct — see file header for the
+                            // stale-capture rationale.
+                            NavigationLink(value: summary.id) {
+                                ChatRow(summary: summary)
+                            }
+                            .contextMenu {
+                                Button {
+                                    runChatAction { try await $0.mute(roomID: summary.id) }
+                                } label: {
+                                    Label("Mute", systemImage: "bell.slash")
+                                }
+                                Button(role: .destructive) {
+                                    runChatAction { try await $0.leave(roomID: summary.id) }
+                                } label: {
+                                    Label("Leave", systemImage: "rectangle.portrait.and.arrow.right")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .listStyle(.plain)
+            .refreshable {
+                await runChatActionAwaiting { try await $0.refresh() }
+            }
+        }
+    }
+
+    /// Builds the SAS sheet shown when a banner's "Verify" is tapped. The
+    /// underlying `acceptIncoming(requestID:)` returns an `AsyncStream`
+    /// that the live impl already wires `acceptVerificationRequest` +
+    /// `startSasVerification` into the cached controller for; the cache
+    /// entry was registered when the incoming request landed. The
+    /// `onFinished` callback clears `sasSummary` so the sheet dismisses
+    /// once the SAS reaches `.verified`. Mirrors the construction inside
+    /// `PostLoginVerificationView` for self-verification, but here the
+    /// `requestID` is the banner summary's own id (an incoming request)
+    /// rather than the user's matrix ID (self-verify).
+    @ViewBuilder
+    private func sasSheetContent(
+        for summary: VerificationRequestSummary,
+        deps: AppDependencies,
+        session: UserSession
+    ) -> some View {
+        let svc = VerificationServiceLive(provider: deps.clientProvider, session: session)
+        let stream = svc.acceptIncoming(requestID: summary.id)
+        SasView(
+            viewModel: SasViewModel(
+                stream: stream,
+                requestID: summary.id,
+                confirm: { try await svc.confirmEmojiMatch(requestID: summary.id) },
+                cancel: { reason in try await svc.cancel(requestID: summary.id, reason: reason) }
+            ),
+            title: "Verify device",
+            onFinished: { sasSummary = nil }
+        )
     }
 
     /// Builds the `ChatView` destination for a tapped row. Wrapped in a
