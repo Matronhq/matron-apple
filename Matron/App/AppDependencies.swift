@@ -128,6 +128,24 @@ final class AppDependencies {
     func timelineCacheContains(userID: String, roomID: String) -> Bool {
         timelineCache.contains(TimelineCacheKey(userID: userID, roomID: roomID))
     }
+
+    /// Sign-out path. Wipes the persisted session on disk and clears every
+    /// per-session cache so a subsequent `restoreSession()` returns nil
+    /// and a fresh login lands in a clean state.
+    ///
+    /// Errors thrown by `auth.clearSession()` are ignored — typical
+    /// failure mode is "no session file to delete," which is exactly
+    /// what we want post sign-out. Callers (`MatronApp`) drop their
+    /// `session` state regardless so the UI flips to the SignInView.
+    /// Per-session caches (`syncCache`, `mediaCache`, `timelineCache`)
+    /// are cleared so the next login doesn't reuse stale handles bound
+    /// to the previous user's SDK state.
+    func signOut() {
+        try? auth.clearSession()
+        syncCache.removeAll()
+        mediaCache.removeAll()
+        timelineCache = .init(limit: AppDependencies.timelineCacheLimit)
+    }
 }
 
 // MARK: - SwiftUI Environment

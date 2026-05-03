@@ -34,9 +34,14 @@ struct MacChatListView: View {
     /// `MacBotProfileSheet`. Cleared by the sheet's onDismiss / row tap /
     /// "Start new chat" callbacks.
     @State private var botProfileSummary: ChatSummary?
+    /// Sidebar visibility toggle — wired to `.matronCommand(.toggleSidebar)`
+    /// so the menu-bar item / toolbar button / ⌘⇧S keyboard shortcut all
+    /// flip the same state. `.automatic` is the system default (sidebar
+    /// shown); `.detailOnly` collapses it.
+    @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebar
                 .frame(minWidth: 240, idealWidth: 280)
                 .toolbar {
@@ -50,6 +55,15 @@ struct MacChatListView: View {
                 }
         } detail: {
             detail
+        }
+        // Toggle Sidebar — menu-bar item (`Commands.swift`), ⌘⇧S, and the
+        // sidebar-toggle toolbar button in `MacChatToolbar` all post the
+        // same notification. Listener flips between `.automatic` (shown)
+        // and `.detailOnly` (collapsed). QA finding #2 — previously the
+        // notification was posted but had no listener, so toggle was a
+        // silent no-op.
+        .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.toggleSidebar))) { _ in
+            columnVisibility = (columnVisibility == .detailOnly) ? .automatic : .detailOnly
         }
         .navigationTitle("Matron")
         .sheet(isPresented: $showingNewChat) {

@@ -35,25 +35,41 @@ public extension Notification.Name {
 
 /// Mounted on the main scene as `.commands { ChatCommands() }`. Each
 /// button posts a `Notification` to the command bus; the View layer
-/// listens for the cases it cares about. Help-menu items are placeholders
-/// for Phase 3 (verification + recovery key flows) — they post their
-/// notifications today, but the listeners will land in Phase 3.
+/// listens for the cases it cares about.
+///
+/// Listener wiring as of Phase-2 close (QA finding #2):
+///   - `.newChat`        — `MacChatListView` (toolbar `+` button mirrors the shortcut)
+///   - `.signOut`        — `MatronMacApp` (clears session + caches)
+///   - `.toggleSidebar`  — `MacChatListView` (flips `NavigationSplitViewVisibility`)
+///   - `.slashCommand`   — `MacChatView` (toggles `composerVM.palettePinnedOpen`)
+///   - `.refresh`        — `MacChatView` (triggers `viewModel.refresh()`)
+///
+/// Posted-but-unhandled (placeholder menu items, listeners land later):
+///   - `.findInChat`            — Phase 6 wires SearchService; today the
+///                                Mac toolbar's search field is decorative.
+///   - `.increase/decrease/resetFontSize` — Phase 5+ design-system font scaling.
+///   - `.verifyDevice`, `.showRecoveryKey` — Phase 3 (E2EE + verification UX).
+///
+/// Help-menu items ship now so the menu-bar shape is testable end-to-end;
+/// their listeners will land in Phase 3.
 struct ChatCommands: Commands {
     var body: some Commands {
         // File menu — `.newItem` is the system "New" group; we replace
-        // it with our `New Chat` so the keyboard shortcut binds cleanly
-        // and "Sign Out…" lands directly underneath via `.after(.newItem)`.
-        CommandGroup(replacing: .newItem) {
+        // it with our `New Chat` so the keyboard shortcut binds cleanly.
+        // Use `.after(.newItem)` instead of replacing the whole group so
+        // the system "New Window" item stays available (QA finding #20).
+        CommandGroup(after: .newItem) {
             Button("New Chat") { post(.newChat) }
                 .keyboardShortcut("n", modifiers: .command)
-        }
-        CommandGroup(after: .newItem) {
             Button("Sign Out…") { post(.signOut) }
         }
 
         // Edit menu — `.pasteboard` group is "Cut/Copy/Paste"; we add
         // our chat-specific Find + Slash Command after it.
         CommandGroup(after: .pasteboard) {
+            // TODO Phase 6: wire `.findInChat` to focus the chat search
+            // field; today the listener is missing so the menu item / ⌘F
+            // post into the void.
             Button("Find in Chat") { post(.findInChat) }
                 .keyboardShortcut("f", modifiers: .command)
             Button("Slash Command") { post(.slashCommand) }
@@ -66,6 +82,9 @@ struct ChatCommands: Commands {
             Button("Toggle Sidebar") { post(.toggleSidebar) }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
             Divider()
+            // TODO Phase 5: wire font-size commands to a design-system
+            // scale environment; today the listeners are missing so the
+            // menu items / shortcuts post into the void.
             Button("Increase Font Size") { post(.increaseFontSize) }
                 .keyboardShortcut("+", modifiers: .command)
             Button("Decrease Font Size") { post(.decreaseFontSize) }
@@ -77,6 +96,7 @@ struct ChatCommands: Commands {
         // Help menu — Phase 3 wires the actual flows; Phase 2 just adds
         // the items so the menu-bar shape is testable end-to-end.
         CommandGroup(replacing: .help) {
+            // TODO Phase 3: wire to the verification + recovery-key flows.
             Button("Verify This Device…") { post(.verifyDevice) }
             Button("Show Recovery Key…") { post(.showRecoveryKey) }
         }

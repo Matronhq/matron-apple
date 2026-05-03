@@ -59,7 +59,7 @@ jobs:
         run: |
           xcodebuild test \
             -project Matron.xcodeproj \
-            -scheme MatronTests \
+            -scheme Matron \
             -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
             CODE_SIGNING_ALLOWED=NO
 
@@ -94,6 +94,6 @@ jobs:
         run: |
           xcodebuild test \
             -project Matron.xcodeproj \
-            -scheme MatronMacTests \
+            -scheme MatronMac \
             -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO

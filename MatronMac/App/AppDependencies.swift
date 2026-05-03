@@ -101,6 +101,17 @@ final class AppDependencies {
     func timelineCacheContains(userID: String, roomID: String) -> Bool {
         timelineCache.contains(TimelineCacheKey(userID: userID, roomID: roomID))
     }
+
+    /// Sign-out path — see iOS `AppDependencies.signOut()` for the full
+    /// rationale. Wipes the persisted session and clears every
+    /// per-session cache so a subsequent `restoreSession()` returns
+    /// nil and a fresh login lands in a clean state.
+    func signOut() {
+        try? auth.clearSession()
+        syncCache.removeAll()
+        mediaCache.removeAll()
+        timelineCache = .init(limit: AppDependencies.timelineCacheLimit)
+    }
 }
 
 // MARK: - SwiftUI Environment

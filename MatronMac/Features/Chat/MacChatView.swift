@@ -104,15 +104,27 @@ struct MacChatView: View {
         .onDisappear { viewModel.stop() }
         // ⌘K opens the slash palette without typing `/`. The hidden
         // button is the SwiftUI-recommended pattern for a global keyboard
-        // shortcut that doesn't have a visible UI counterpart.
+        // shortcut that doesn't have a visible UI counterpart. Marked
+        // accessibilityHidden because the unlabeled button would
+        // otherwise be announced as a nameless "button" by VoiceOver
+        // (QA finding #21).
         .background(
             Button("") { composerVM.palettePinnedOpen.toggle() }
                 .keyboardShortcut("k", modifiers: .command)
                 .opacity(0)
+                .accessibilityHidden(true)
         )
         // ⌘R refresh — driven by the menu-bar command bus (Task 14e).
         .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.refresh))) { _ in
             Task { await viewModel.refresh() }
+        }
+        // ⌘K menu route — `Commands.swift` posts `.slashCommand` from
+        // the Edit menu's "Slash Command" item. Without this listener
+        // the menu route was dead (the keyboard shortcut still worked
+        // via the hidden Button above, but the menu picked the same
+        // notification and dropped it). QA finding #2.
+        .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.slashCommand))) { _ in
+            composerVM.palettePinnedOpen.toggle()
         }
         .sheet(item: $sourceItem) { item in
             MacEventSourceSheet(item: item, onDismiss: { sourceItem = nil })

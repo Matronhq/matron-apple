@@ -31,6 +31,17 @@ struct MatronMacApp: App {
                     )
                 }
             }
+            // Sign Out menu / toolbar: clear the persisted session, drop
+            // in-memory caches, and flip `session = nil` so the SignInView
+            // re-mounts. Without this listener the menu item posted to
+            // the command bus but nothing observed it — sign-out was
+            // silently a no-op (QA finding #2 + #7). Listener lives on
+            // the WindowGroup root so it's attached regardless of which
+            // child view (chat list, sign-in) is on screen.
+            .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.signOut))) { _ in
+                dependencies.signOut()
+                session = nil
+            }
         }
         .windowResizability(.contentMinSize)
         // Mac menu bar — File / Edit / View / Help shortcuts that post
@@ -38,7 +49,9 @@ struct MatronMacApp: App {
         // for the keyboard shortcuts and notification names.
         .commands { ChatCommands() }
 
-        // Placeholder — Phase 7 fills in the full Settings UI.
+        // Placeholder — Phase 7 fills in the full Settings UI. Phase 2
+        // ships Sign Out via the File menu (`Commands.swift`), so even
+        // without a Settings UI the user can swap accounts.
         Settings {
             Text("Settings — Phase 7 fills this in.")
                 .padding()

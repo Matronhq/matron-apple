@@ -34,6 +34,13 @@ struct ChatListView: View {
     /// `nil` either by the sheet's onDismiss or when the user picks a chat
     /// from inside the sheet.
     @State private var botProfileSummary: ChatSummary?
+    /// Sign-out callback owned by `MatronApp` (drops the in-memory session
+    /// + clears persistent state). Optional so previews / tests that
+    /// don't wire the full app can still construct the view. Phase-7
+    /// spec lands a Settings → Account → Sign Out flow; this Phase-2
+    /// hook keeps the user from being stranded once Sign Out is exposed
+    /// from the menu (QA finding #7).
+    var onSignOut: (() -> Void)? = nil
 
     var body: some View {
         Group {
@@ -82,6 +89,22 @@ struct ChatListView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showingNewChat = true } label: { Image(systemName: "square.and.pencil") }
+            }
+            // Sign-out lives in an overflow menu next to the New-Chat
+            // button until Phase 7 ships the full Settings UI. Without
+            // this hook the only way to swap accounts on iOS was
+            // deleting the app's Application Support directory (QA
+            // finding #7). The menu only renders when the host wired
+            // an `onSignOut` callback so previews / tests stay clean.
+            if let onSignOut {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button("Sign Out", role: .destructive, action: onSignOut)
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .accessibilityLabel("More")
+                }
             }
         }
         .sheet(isPresented: $showingNewChat) {
