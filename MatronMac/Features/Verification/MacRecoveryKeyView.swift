@@ -160,6 +160,14 @@ struct MacRecoveryKeyView: View {
             .disabled(!viewModel.canFinish)
         case (.generate, .confirmed):
             EmptyView()        // auto-dismisses via the .task delay
+        case (.restore, _):
+            // Bugbot caught: restore mode previously fell through to
+            // EmptyView() — Mac users had no way to finish after restoring.
+            // iOS RecoveryKeyView ships an explicit Done button in the same
+            // spot; mirror it.
+            Button("Done") { onFinished() }
+                .keyboardShortcut(.return)
+                .buttonStyle(.borderedProminent)
         default:
             EmptyView()
         }
