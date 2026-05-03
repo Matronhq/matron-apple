@@ -136,6 +136,14 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
     /// Resolves a fresh `Timeline` handle for each operation. The SDK
     /// returns the same per-room handle internally; we don't cache it
     /// here because the cached `Client` already owns lifecycle.
+    ///
+    /// QA finding #8: relying on the SDK's per-room handle identity is
+    /// fragile across SDK bumps — caching here would risk stop()/start()
+    /// lifecycle issues with a reused handle that the SDK might tear
+    /// down internally. Re-resolving each call is the conservative
+    /// choice while we're pinned to v26 (26.04.01). When bumping the
+    /// SDK, double-check `room.timeline()`'s identity contract before
+    /// considering a cache.
     private func timeline() async throws -> Timeline {
         let client = try await provider.client(for: session)
         guard let room = try client.getRoom(roomId: roomID) else {
@@ -385,6 +393,13 @@ final class TimelineSnapshotListener: TimelineListener, @unchecked Sendable {
     private func mapVirtual(_ v: VirtualTimelineItem, id: String) -> TimelineItem {
         let kind: TimelineItem.Kind
         let ts: Date
+        // TODO Phase 3 (QA finding #16): split this into proper
+        // `TimelineItem.Kind.dateDivider(Date)` / `.readMarker` /
+        // `.timelineStart` cases instead of collapsing all three into
+        // `.stateChange(text: "")`. The renderer's `shouldRender(_:)`
+        // hides the empty-state-change today, but a real implementation
+        // wants distinct visual treatment for each (sticky date pill,
+        // unread divider line, "beginning of conversation" tombstone).
         switch v {
         case .dateDivider(let t):
             ts = Date(timeIntervalSince1970: TimeInterval(t) / 1000)

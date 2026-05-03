@@ -47,15 +47,25 @@ final class MacChatViewTests: XCTestCase {
         let provider = NSItemProvider()
         provider.registerObject(url as NSURL, visibility: .all)
         let resolved = await ComposerDropDelegate.loadURL(from: provider)
-        XCTAssertNotNil(resolved)
+        if case .success(let resolvedURL) = resolved {
+            XCTAssertEqual(resolvedURL.lastPathComponent, "test.png")
+        } else {
+            XCTFail("Expected .success(URL), got \(resolved)")
+        }
     }
 
-    /// Empty provider → nil. Defensive — ensures the helper doesn't return
-    /// a junk URL when the drop is empty.
-    func test_loadURL_returnsNil_forEmptyProvider() async {
+    /// Empty provider → failure (QA finding #9). Previously the helper
+    /// silently returned nil for both "no URL" and "load failed", so the
+    /// composer banner never surfaced when a drop failed. Now an empty
+    /// provider routes through the typed `ComposerDropError`.
+    func test_loadURL_returnsFailure_forEmptyProvider() async {
         let provider = NSItemProvider()
         let resolved = await ComposerDropDelegate.loadURL(from: provider)
-        XCTAssertNil(resolved)
+        if case .failure = resolved {
+            // expected
+        } else {
+            XCTFail("Expected .failure, got \(resolved)")
+        }
     }
 
     /// `⌘K` toggles the slash palette open without typing `/`. The view

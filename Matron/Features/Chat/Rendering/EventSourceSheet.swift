@@ -18,6 +18,12 @@ struct EventSourceSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
+                // TODO Phase 3 (QA finding #19): swap `item.prettyJSON()`
+                // for the SDK's raw event JSON via
+                // `EventTimelineItem.originalJson` once the bridge
+                // exposes it. Today the sheet renders our reconstructed
+                // DTO, which is good for "what does the app see?" but
+                // not for "what did the homeserver actually send?".
                 Text(item.prettyJSON())
                     .font(.system(.callout, design: .monospaced))
                     .padding()

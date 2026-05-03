@@ -121,3 +121,20 @@ Cleared the round-4 (final) bugbot findings on top of 67cb21d. One commit on `ph
 No new dependencies; SDK still pinned at `26.04.01`; no project-yml churn (regenerated cleanly). Next step: human review of PR #1, then Phase 3 (E2EE & verification UX) plan.
 
 ## Final-final bugbot pass: photo write surfaces / virtual rows hidden / LRUCache extracted to MatronShared
+
+## Expert-QA pass complete: addressed 18 remaining items across 3 commits
+
+Continuing the partial expert-QA pass started on `phase-2-chat-experience` (3 of 21 items shipped earlier in `5b3d3c0` test scheme wiring + `9f88cd8` Mac menu listeners + sign-out path), the remaining 18 items are now resolved across three logical commits:
+
+- **Commit C** (UI consistency / bounded media caches / accessibility): #3 Pasteboard helper on iOS, #4 LRU caps on `resolvedImages`/`failedRequests` (limit 100 = `ChatViewModel.mediaCacheLimit`), #5 NewChatSheet + MacNewChatSheet empty state via `ContentUnavailableView`, #11 MarkdownText OpenURL policy (http(s) → system, matrix:// + mxc:// swallowed), #12 dropped unused `AttachmentImage.onTap`, #13 VoiceOver accessibility labels on bubble containers, #14 `MacChatToolbar.searchText` Phase-6 TODO, #15 `FirstSnapshotSignal` `@unchecked Sendable` rationale, #21 `accessibilityHidden` on the `MacChatView` hidden-button keyboard-shortcut shim. New `MatronStorage` dep on `MatronViewModels` for `LRUCache` import.
+- **Commit D** (error surfacing): #10 `ChatService.chatSummaries()` and `TimelineService.items()` now return `AsyncThrowingStream`, with `error: String?` fields on `ChatListViewModel` + `ChatViewModel` rendered as `ContentUnavailableView` overlays / red banners. New `streamError` knob on test fakes; new tests pin the error-flow.
+- **Commit E** (contract honesty + small notes): #6 `chatSummaries()` doc-comment now honestly says "Phase 2 still single-snapshot per call" (the live impl never flipped to long-lived in Phase 2), #8 `TimelineServiceLive.timeline()` keeps re-resolving on every call but now carries an SDK-version pin reminder so a future bump considers caching, #9 `ComposerDropDelegate.loadURL` returns `Result<URL, Error>` so SDK errors surface via `ComposerViewModel.reportAttachmentError`, #16 mapVirtual TODO splitting `dateDivider`/`readMarker`/`timelineStart`, #17 `ChatListViewModel.cancel()` Phase-2-still-single-snapshot comment, #18 already-present `BotProfileViewModel.byRecencyDescending` "promote when third consumer needs it" note (no-op), #19 explicit Phase-3 TODOs on EventSourceSheet + MacEventSourceSheet for `EventTimelineItem.originalJson`, #20 `Commands.swift` already uses `CommandGroup(after: .newItem)` to keep system "New Window" (was done as part of `9f88cd8`).
+
+Final test counts:
+
+- **145 SPM tests** (`MatronShared`, `swift test`) — 1 skipped, 0 failures (was 132; +13 new).
+- **27 Matron scheme tests** (iOS, iPhone 17 simulator) — 0 failures (was 22; +5 new in Commit C/D).
+- **25 MatronMac scheme tests** (macOS) — 0 failures (was 22; +3 new in Commit C/D, +0 net change in Commit E since `test_loadURL_returnsNil_forEmptyProvider` was renamed-not-added).
+
+No new dependencies; SDK still pinned at `26.04.01`; no architectural changes.
+

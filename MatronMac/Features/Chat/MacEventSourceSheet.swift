@@ -31,6 +31,9 @@ struct MacEventSourceSheet: View {
             Divider()
 
             ScrollView {
+                // TODO Phase 3 (QA finding #19): swap `item.prettyJSON()`
+                // for the SDK's raw event JSON (`EventTimelineItem.originalJson`).
+                // Mirrors the iOS `EventSourceSheet` TODO.
                 Text(item.prettyJSON())
                     .font(.system(.callout, design: .monospaced))
                     .padding(16)
