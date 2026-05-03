@@ -62,7 +62,15 @@ targets:
         # the post-login session as a JSON file via FileSessionStore (in the
         # SDK's basePath alongside its own SQLite store). Phase 3 will add
         # Keychain back when signing is wired.
-    scheme: {}
+    # `scheme.testTargets` populates `<Testables>` on the auto-generated
+    # `Matron.xcscheme`. Without this, `xcodebuild test -scheme Matron`
+    # fails with "Scheme is not currently configured for the test action"
+    # — only `MatronTests` (the bundle scheme) was usable. CI uses the
+    # bundle scheme, but adding the testable here lets developers run
+    # the same suite from the app scheme and from Xcode's Test action.
+    scheme:
+      testTargets:
+        - MatronTests
     dependencies:
       - package: MatronShared
         product: MatronAuth
@@ -105,7 +113,10 @@ targets:
         com.apple.security.files.user-selected.read-only: true
         keychain-access-groups:
           - $(AppIdentifierPrefix)chat.matron.mac
-    scheme: {}
+    # See the iOS target's `scheme.testTargets` comment — same rationale.
+    scheme:
+      testTargets:
+        - MatronMacTests
     dependencies:
       - package: MatronShared
         product: MatronAuth

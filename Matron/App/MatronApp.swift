@@ -16,8 +16,15 @@ struct MatronApp: App {
                     ProgressView("Loading…")
                         .task { await bootstrap() }
                 } else if let session {
-                    ChatListView(viewModel: ChatListViewModel(chat: dependencies.chatService(for: session)))
-                        .task { try? await dependencies.syncService(for: session).start() }
+                    NavigationStack {
+                        ChatListView(
+                            viewModel: ChatListViewModel(chat: dependencies.chatService(for: session)),
+                            onSignOut: { signOut() }
+                        )
+                    }
+                    .environment(\.appDependencies, dependencies)
+                    .environment(\.currentSession, session)
+                    .task { try? await dependencies.syncService(for: session).start() }
                 } else {
                     SignInView(
                         viewModel: SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS"),
@@ -35,5 +42,17 @@ struct MatronApp: App {
             session = nil
         }
         bootstrapDone = true
+    }
+
+    /// Sign-out path. Phase-7 spec lands a full Settings → Account → Sign
+    /// Out flow; Phase 2 wires the menu / toolbar hook now (QA finding
+    /// #7) so swapping accounts on iOS doesn't require deleting the
+    /// app's Application Support directory. Drops the in-memory session
+    /// state and clears the persisted session + caches via
+    /// `AppDependencies.signOut()` — the resulting `session == nil`
+    /// branch re-mounts the SignInView.
+    private func signOut() {
+        dependencies.signOut()
+        session = nil
     }
 }
