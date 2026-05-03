@@ -178,7 +178,7 @@ Run before every TestFlight build (iOS) and every Mac App Store build.
 
 ### What is NOT tested in Phase 2
 
-- Verification UX / cross-device session verification (Phase 3).
+- ~~Verification UX / cross-device session verification (Phase 3).~~ → see Phase 3 below.
 - Push notifications (Phase 4).
 - Custom event types — `tool_call`, `ask_user`, `session_meta` rendering (Phase 5).
 - Message search (Phase 6).
@@ -186,3 +186,64 @@ Run before every TestFlight build (iOS) and every Mac App Store build.
 - Sign-out flow end-to-end (Phase 7 — File → Sign Out posts the notification today, but the listener side ships in Phase 7).
 - Mac font-scaling end-to-end (Phase 7 — `⌘+` / `⌘-` / `⌘0` post notifications today, but no view yet observes them).
 - Settings deep-links from BotProfile (Phase 7).
+
+## Phase 3 (E2EE & Verification UX)
+
+### First-device flow (iOS)
+
+- [ ] Fresh install, sign in → PostLoginVerificationView appears.
+- [ ] Tap "This is my first device" → recovery key generated and shown.
+- [ ] Toggle "I've saved this key" → Continue is enabled. Tap Continue → re-enter sheet appears.
+- [ ] Re-enter the key correctly → Confirm enables. Tap Confirm → chat list appears.
+- [ ] Settings → Show recovery key → same key revealed.
+
+### Restore flow (iOS)
+
+- [ ] On a second simulator/device with the same Matrix user, sign in → PostLoginVerificationView appears.
+- [ ] Tap "Use recovery key" → enter the key from the first device → Continue → chat list appears, message history decrypts.
+
+### SAS verification (multi-device, iOS)
+
+- [ ] On the second device, instead of recovery key, choose "Verify with another device."
+- [ ] Switch to first device — VerificationBanner appears at the top of the chat list.
+- [ ] Tap "Verify" on the banner → both devices show emoji compare screen.
+- [ ] Confirm match on both → both screens show ✓ Verified.
+
+### Bot verification (iOS)
+
+- [ ] Run `dev-boxer add-bot box-name` on the homeserver — emits a verification request to the user.
+- [ ] On Matron iOS, banner appears: "@box-name wants to verify."
+- [ ] Tap Verify → emoji compare with the bot's identity (cross-signed at provisioning time).
+- [ ] After confirmation, open a chat with that bot — no "unverified device" banner inside the chat.
+
+### Trust posture (iOS)
+
+- [ ] If a bot adds a new device (e.g. dev-boxer reprint), opening that chat shows the inline "unverified device" banner.
+- [ ] Tap the in-chat banner → opens SAS view.
+
+### Mac verification chrome
+
+- [ ] Sign in to MatronMac with a fresh user → first-device flow shows `MacRecoveryKeyView`. Key is selectable; Copy button writes to system pasteboard (paste into another app to confirm).
+- [ ] Continue → re-entry phase. Type a wrong key → "Doesn't match" warning. Paste the right key (via the Paste button or ⌘V into the field) → auto-advances to the green checkmark and dismisses.
+- [ ] Help menu → "Verify This Device…" opens `MacSasView` as a fixed-size sheet (480×400). `Return` confirms; `Esc` cancels.
+- [ ] Help menu → "Show Recovery Key…" opens `MacDeviceSettingsView`; "Show recovery key" button reveals the locally-stored key (or a clear "Couldn't read…" error rather than silent "not stored").
+- [ ] Trigger a verification request from another device → `MacVerificationBanner` appears above the chat-list sidebar. Click "Verify" → SAS sheet opens. Click ✕ → banner disappears AND the partner device's "waiting" UI cancels (per Task 8 dismiss-cancels-SDK contract).
+
+### iCloud Keychain auto-restore (cross-platform)
+
+- [ ] On an iOS device with iCloud Keychain enabled, complete first-device flow → recovery key stored in iCloud Keychain.
+- [ ] On a Mac signed in to the same iCloud account with Keychain sync enabled, install MatronMac, sign in → `MacRecoveryKeyView.restore` mode pre-fills the recovery key from the synced Keychain. Tap "Use saved recovery key" → message history decrypts without re-entry.
+
+### Multi-account (iOS or Mac)
+
+- [ ] Sign in as user A → generate recovery key → confirm. Sign out. Sign in as user B → generate a different recovery key → confirm. Sign out. Sign back in as user A → Settings → Show recovery key reveals user A's key (NOT user B's). Bugbot finding #4 regression guard — recovery keys are now per-user-scoped in Keychain (`matron.recovery-key.<userID>`) so a second account can't overwrite the first.
+
+### Verification gate (iOS + Mac)
+
+- [ ] On a fresh sign-in (post-verification gate, before Continue) start a SAS verification flow from another device → request reaches this device. Bugbot finding #2 regression guard — sliding-sync runs during the verification gate so to-device events flow.
+
+### What is NOT tested in Phase 3
+
+- Live device-list query for "no other device reachable → fall back to recovery key" branch (deferred — needs SDK device-fetch surface).
+- The full Settings → Account → Sign Out reauth flow (Phase 7).
+- Snapshot pixel-mismatch on macos-15 CI runners (gated behind `MATRON_SKIP_SNAPSHOT_TESTS=1`).
