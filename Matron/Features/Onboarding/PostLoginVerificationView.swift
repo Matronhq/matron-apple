@@ -122,10 +122,12 @@ struct PostLoginVerificationView: View {
                         onFinished: onCompleted
                     )
                 case .sasWithOtherDevice:
-                    let svc = VerificationServiceLive(
-                        provider: dependencies.clientProvider,
-                        session: session
-                    )
+                    // Use the cached service so the FlowStore + registered
+                    // SDK delegate are shared with every other consumer
+                    // (chat-list banner, per-bot ChatView banner, Settings
+                    // → Device). A fresh instance would have an empty
+                    // FlowStore + an unregistered delegate (expert-QA B1).
+                    let svc = dependencies.verificationService(for: session)
                     // Synthetic request ID derived from (user, device) so
                     // SasViewModel's confirm/cancel route back to the
                     // FlowStore entry that `startSAS` registered. The

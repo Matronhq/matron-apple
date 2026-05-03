@@ -56,11 +56,14 @@ struct MatronMacApp: App {
                         // `incomingRequests()` stream doesn't outlive the
                         // host view (Swift 6 strict concurrency forbids a
                         // `@MainActor deinit` reaching isolated state).
+                        // The cached `verificationService(for:)` is
+                        // load-bearing — the SAME instance is later passed
+                        // to `MacChatListView`, `MacChatView` (per-bot
+                        // banner), `MacDeviceSettingsView`, and the Help
+                        // menu sheets so they all share a FlowStore + the
+                        // registered SDK delegate.
                         let verificationCenter = VerificationCenter(
-                            service: VerificationServiceLive(
-                                provider: dependencies.clientProvider,
-                                session: session
-                            )
+                            service: dependencies.verificationService(for: session)
                         )
                         MacChatListView(
                             viewModel: ChatListViewModel(chat: dependencies.chatService(for: session)),
@@ -70,6 +73,14 @@ struct MatronMacApp: App {
                         .environment(\.appDependencies, dependencies)
                         .environment(\.currentSession, session)
                         .task { try? await dependencies.syncService(for: session).start() }
+                        // See iOS `MatronApp` for full rationale —
+                        // VerificationServiceLive.start() registers the
+                        // SDK delegate that drives `incomingRequests()` +
+                        // every `.readyForEmoji([…])` / `.verified` /
+                        // `.cancelled` SAS transition. Without it, the
+                        // sidebar banner is silent and every SAS sheet
+                        // hangs forever (expert-QA finding B1).
+                        .task { try? await dependencies.verificationService(for: session).start() }
                     } else {
                         MacPostLoginVerificationView(
                             dependencies: dependencies,
@@ -84,6 +95,9 @@ struct MatronMacApp: App {
                         // post-verify branch; the verify-with-other-device flow
                         // would hang because nothing was talking to the server.
                         .task { try? await dependencies.syncService(for: session).start() }
+                        // Mirrors the post-verify branch — see iOS
+                        // `MatronApp` for full rationale (expert-QA B1).
+                        .task { try? await dependencies.verificationService(for: session).start() }
                     }
                 } else {
                     MacSignInView(
@@ -249,10 +263,11 @@ struct MatronMacApp: App {
     /// key fallback lands with Task 11.
     @ViewBuilder
     private func verifyDeviceSheet(for session: UserSession) -> some View {
-        let svc = VerificationServiceLive(
-            provider: dependencies.clientProvider,
-            session: session
-        )
+        // Cached service so the FlowStore + registered SDK delegate are
+        // shared with the sidebar banner / Settings / per-bot banner. A
+        // fresh instance would have an empty FlowStore + an unregistered
+        // delegate so the SAS sheet would hang forever (expert-QA B1).
+        let svc = dependencies.verificationService(for: session)
         let requestID = session.userID
         let stream = svc.startSAS(withUser: session.userID, deviceID: nil)
         MacSasView(
@@ -284,10 +299,11 @@ struct MatronMacApp: App {
         )
         MacDeviceSettingsView(
             session: session,
-            verificationService: VerificationServiceLive(
-                provider: dependencies.clientProvider,
-                session: session
-            ),
+            // Cached service — Settings → Encryption reads
+            // `isThisDeviceVerified()`; sharing the cache means the read
+            // doesn't double-fetch the SDK controller (and the registered
+            // delegate stays singular).
+            verificationService: dependencies.verificationService(for: session),
             currentRecoveryKey: { try mgr.currentKey() },
             onFinished: { showRecoveryKeySheet = false }
         )

@@ -5,6 +5,7 @@ import MatronChat
 import MatronModels
 import MatronStorage
 import MatronSync
+import MatronVerification
 
 @MainActor
 final class AppDependencies {
@@ -12,6 +13,12 @@ final class AppDependencies {
     let clientProvider: ClientProvider
 
     private var syncCache: [String: SyncService] = [:]
+    /// Per-session `VerificationServiceLive` cache. Mirrors the iOS
+    /// `AppDependencies.verificationCache` — every consumer (sidebar
+    /// banner, per-bot MacChatView banner, MacDeviceSettingsView, post-
+    /// login gate, Help → Verify This Device…, Help → Show Recovery Key…)
+    /// shares the SAME FlowStore + the SAME registered SDK delegate.
+    private var verificationCache: [String: VerificationServiceLive] = [:]
     /// Per-session `MediaService` cache. See iOS `AppDependencies` for the
     /// full rationale — `MediaServiceLive` owns a 64 MB `NSCache` for
     /// resolved `mxc://` bytes, and a fresh instance per call defeats it.
@@ -53,6 +60,16 @@ final class AppDependencies {
         if let existing = syncCache[session.userID] { return existing }
         let svc = SyncServiceLive(provider: clientProvider, session: session)
         syncCache[session.userID] = svc
+        return svc
+    }
+
+    /// Per-session `VerificationServiceLive` factory. See iOS
+    /// `AppDependencies.verificationService(for:)` for the full caching
+    /// rationale (shared FlowStore + shared registered delegate).
+    func verificationService(for session: UserSession) -> VerificationServiceLive {
+        if let existing = verificationCache[session.userID] { return existing }
+        let svc = VerificationServiceLive(provider: clientProvider, session: session)
+        verificationCache[session.userID] = svc
         return svc
     }
 
@@ -109,6 +126,7 @@ final class AppDependencies {
     func signOut() {
         try? auth.clearSession()
         syncCache.removeAll()
+        verificationCache.removeAll()
         mediaCache.removeAll()
         timelineCache = .init(limit: AppDependencies.timelineCacheLimit)
     }

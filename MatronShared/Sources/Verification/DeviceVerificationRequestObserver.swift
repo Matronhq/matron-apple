@@ -55,45 +55,104 @@ public final class DeviceVerificationRequestObserver: @unchecked Sendable {
     }
 }
 
-/// Production-side delegate that the SDK calls. Translates
-/// `SessionVerificationControllerDelegate.didReceiveVerificationRequest`
-/// (the only callback that surfaces an incoming request in v26.04.01) into the
-/// observer's `handleIncomingRequest` shape.
+/// Routing seam between the SDK delegate and the service that owns the
+/// FlowStore + open continuations. `VerificationServiceLive` conforms to
+/// this in production; tests substitute a fake to assert the delegate
+/// translates each SDK callback into the correct routing entry point.
+///
+/// Each entry point is `async` so the delegate hops onto the FlowStore actor
+/// rather than spinning its own thread state. Held weakly by the delegate
+/// so the SDK's strong reference (via the callback handle map) doesn't
+/// pin the service after `signOut()` clears the AppDependencies cache.
+protocol SessionVerificationFlowRouting: AnyObject, Sendable {
+    func routeIncomingRequest(
+        requestID: String,
+        otherUserID: String,
+        otherDeviceID: String?,
+        controller: SessionVerificationControlling
+    ) async
+    func routeSasStarted() async
+    func routeSasData(_ data: SessionVerificationData) async
+    func routeSasFinished() async
+    func routeSasCancelled() async
+    func routeSasFailed() async
+}
+
+/// Production-side delegate that the SDK calls. Translates each
+/// `SessionVerificationControllerDelegate` callback into the matching
+/// `routeSas…` entry point on the live `VerificationServiceLive`.
 ///
 /// The SDK delegate doesn't hand back a controller per request — the same
 /// `SessionVerificationController` is reused across the session — so we wrap
-/// the shared controller as `LiveSessionVerificationController` and forward.
-/// The remaining lifecycle callbacks (`didStartSasVerification`,
-/// `didReceiveVerificationData`, `didFinish`, `didCancel`, `didFail`) drive
-/// `SasFlowState` transitions on streams already opened by
-/// `VerificationServiceLive.acceptIncoming` / `startSAS`; that wiring lands
-/// with the SAS-state listener in a later task — kept out of scope here so
-/// this commit stays focused on the request-arrival adapter.
+/// the shared controller as `LiveSessionVerificationController` and forward
+/// alongside the request summary so the listener has a working SDK handle.
+///
+/// Concurrency: SDK callbacks come in on the SDK's own callback thread (via
+/// uniffi's vtable). All bodies hop into the router's actor via `Task { await … }`.
+/// `router` is `weak` so the SDK's callback-handle retention doesn't keep
+/// the service alive past `signOut()`.
 final class LiveSessionVerificationDelegate: SessionVerificationControllerDelegate, @unchecked Sendable {
-    private let observer: DeviceVerificationRequestObserver
+    private weak var router: (any SessionVerificationFlowRouting)?
     private let sharedController: MatrixRustSDK.SessionVerificationController
 
-    init(observer: DeviceVerificationRequestObserver, sharedController: MatrixRustSDK.SessionVerificationController) {
-        self.observer = observer
+    init(router: any SessionVerificationFlowRouting, sharedController: MatrixRustSDK.SessionVerificationController) {
+        self.router = router
         self.sharedController = sharedController
     }
 
     func didReceiveVerificationRequest(details: SessionVerificationRequestDetails) {
-        observer.handleIncomingRequest(
-            requestID: details.flowId,
-            otherUserID: details.senderProfile.userId,
-            otherDeviceID: details.deviceId,
-            controller: LiveSessionVerificationController(sharedController)
-        )
+        guard let router else { return }
+        // `deviceId` is non-optional in v26.04.01's `SessionVerificationRequestDetails`,
+        // but the upstream protocol surface accepts `String?` so a future SDK
+        // change to optional won't churn the router contract. An empty deviceId
+        // is treated as "no device binding" because the only way to express that
+        // distinction in the current SDK shape is the empty string.
+        let deviceID = details.deviceId.isEmpty ? nil : details.deviceId
+        let wrapped = LiveSessionVerificationController(sharedController)
+        Task {
+            await router.routeIncomingRequest(
+                requestID: details.flowId,
+                otherUserID: details.senderProfile.userId,
+                otherDeviceID: deviceID,
+                controller: wrapped
+            )
+        }
     }
 
-    // SAS-flow callbacks — wiring them into the open SAS continuation lands with
-    // the dedicated SAS state listener task. Implemented as no-ops here so this
-    // commit stays scoped to the request-arrival adapter.
-    func didAcceptVerificationRequest()                              {}
-    func didStartSasVerification()                                   {}
-    func didReceiveVerificationData(data: SessionVerificationData)   {}
-    func didFail()                                                   {}
-    func didCancel()                                                 {}
-    func didFinish()                                                 {}
+    /// Fires after the SDK accepts the SAS handshake and the underlying
+    /// channel is established. We've already yielded `.requested` on the
+    /// open continuation from `acceptIncoming` / `startSAS`, so this is a
+    /// quiet transition — the next visible state is `.readyForEmoji`
+    /// from `didReceiveVerificationData`.
+    func didAcceptVerificationRequest() {
+        // The router doesn't expose a `didAccept` entry point — the next
+        // SDK callback (`didStartSasVerification`) is what marks the SAS
+        // flow as live. Keeping this body empty (rather than routing to a
+        // no-op) keeps the routing surface focused on user-visible state.
+    }
+
+    func didStartSasVerification() {
+        guard let router else { return }
+        Task { await router.routeSasStarted() }
+    }
+
+    func didReceiveVerificationData(data: SessionVerificationData) {
+        guard let router else { return }
+        Task { await router.routeSasData(data) }
+    }
+
+    func didFail() {
+        guard let router else { return }
+        Task { await router.routeSasFailed() }
+    }
+
+    func didCancel() {
+        guard let router else { return }
+        Task { await router.routeSasCancelled() }
+    }
+
+    func didFinish() {
+        guard let router else { return }
+        Task { await router.routeSasFinished() }
+    }
 }

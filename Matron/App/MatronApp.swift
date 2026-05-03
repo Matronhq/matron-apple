@@ -32,11 +32,13 @@ struct MatronApp: App {
                         // `incomingRequests()` stream doesn't outlive the
                         // host view (Swift 6 strict concurrency forbids a
                         // `@MainActor deinit` reaching isolated state).
+                        // The cached `verificationService(for:)` is
+                        // load-bearing — the SAME instance is later passed
+                        // to `ChatListView`, `ChatView` (per-bot banner),
+                        // and `DeviceSettingsView` so they all share a
+                        // FlowStore + the registered SDK delegate.
                         let verificationCenter = VerificationCenter(
-                            service: VerificationServiceLive(
-                                provider: dependencies.clientProvider,
-                                session: session
-                            )
+                            service: dependencies.verificationService(for: session)
                         )
                         NavigationStack {
                             ChatListView(
@@ -48,6 +50,16 @@ struct MatronApp: App {
                         .environment(\.appDependencies, dependencies)
                         .environment(\.currentSession, session)
                         .task { try? await dependencies.syncService(for: session).start() }
+                        // VerificationServiceLive.start() fetches the SDK's
+                        // session-verification controller and registers the
+                        // `LiveSessionVerificationDelegate` that drives
+                        // `incomingRequests()` + every `.readyForEmoji([…])`
+                        // / `.verified` / `.cancelled` SAS state transition.
+                        // Without it, the chat-list banner is silent and
+                        // every SAS sheet hangs at "Starting verification…"
+                        // (expert-QA finding B1). Idempotent — safe on
+                        // SwiftUI re-mounts.
+                        .task { try? await dependencies.verificationService(for: session).start() }
                     } else {
                         PostLoginVerificationView(
                             dependencies: dependencies,
@@ -62,6 +74,11 @@ struct MatronApp: App {
                         // post-verify branch; the verify-with-other-device flow
                         // would hang because nothing was talking to the server.
                         .task { try? await dependencies.syncService(for: session).start() }
+                        // Mirrors the post-verify branch — without start()
+                        // the post-login verify-with-other-device flow
+                        // hangs at "Starting verification…" because no
+                        // SDK delegate is wired (expert-QA finding B1).
+                        .task { try? await dependencies.verificationService(for: session).start() }
                     }
                 } else {
                     SignInView(

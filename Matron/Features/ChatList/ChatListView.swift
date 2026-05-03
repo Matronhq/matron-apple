@@ -286,10 +286,12 @@ struct ChatListView: View {
         // Reuse the VerificationCenter's service so acceptIncoming hits the
         // SAME FlowStore that registered the incoming request. A fresh
         // VerificationServiceLive would have an empty FlowStore and yield
-        // .cancelled("Unknown request: …") immediately. Falls back to a
-        // fresh instance only if no center is wired (test/preview path).
+        // .cancelled("Unknown request: …") immediately. Falls back to the
+        // cached `verificationService(for:)` only if no center is wired
+        // (test/preview path); the cached instance is itself shared with
+        // every other consumer in the app.
         let svc: any VerificationService = verificationCenter?.service
-            ?? VerificationServiceLive(provider: deps.clientProvider, session: session)
+            ?? deps.verificationService(for: session)
         let stream = svc.acceptIncoming(requestID: summary.id)
         SasView(
             viewModel: SasViewModel(
@@ -318,7 +320,7 @@ struct ChatListView: View {
         session: UserSession
     ) -> some View {
         let svc: VerificationService = verificationCenter?.service
-            ?? VerificationServiceLive(provider: deps.clientProvider, session: session)
+            ?? deps.verificationService(for: session)
         let mgr = RecoveryKeyManager(
             provider: deps.clientProvider,
             session: session,
@@ -361,7 +363,7 @@ struct ChatListView: View {
                 // `sasSheetContent`). Falls back to a fresh instance
                 // when no center is wired (test/preview path).
                 verificationService: verificationCenter?.service
-                    ?? VerificationServiceLive(provider: deps.clientProvider, session: session),
+                    ?? deps.verificationService(for: session),
                 botMatrixID: summary.bot.matrixID
             )
         } else {

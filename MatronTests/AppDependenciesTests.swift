@@ -1,6 +1,7 @@
 import XCTest
 import MatronChat
 import MatronModels
+import MatronVerification
 @testable import Matron
 
 /// Identity-cache coverage for `AppDependencies`. `mediaService(for:)` was
@@ -24,6 +25,44 @@ final class AppDependenciesTests: XCTestCase {
         // empty caches, which is the bug we're guarding against.
         XCTAssertTrue(first as AnyObject === second as AnyObject,
                       "mediaService(for:) must return the same instance for the same session")
+    }
+
+    /// `verificationService(for:)` must return the same instance for the same
+    /// session. The instance owns the FlowStore (per-request controllers +
+    /// open `AsyncStream` continuations) AND the registered SDK delegate;
+    /// returning a fresh instance every call would mean (a) every consumer
+    /// has its own empty FlowStore and (b) only the most-recent caller's
+    /// delegate is wired to the SDK. Both produce the user-visible bug
+    /// expert-QA finding B1 surfaced (SAS sheet hangs, banner silent).
+    func test_verificationService_isCached_perSession() {
+        let deps = AppDependencies()
+        let session = UserSession(
+            userID: "@a:s", deviceID: "D",
+            homeserverURL: URL(string: "https://s")!, accessToken: "t"
+        )
+
+        let first = deps.verificationService(for: session)
+        let second = deps.verificationService(for: session)
+
+        XCTAssertTrue(first === second,
+                      "verificationService(for:) must return the same instance — shared FlowStore + delegate")
+    }
+
+    func test_verificationService_isDistinct_perUser() {
+        let deps = AppDependencies()
+        let s1 = UserSession(userID: "@a:s", deviceID: "D",
+                             homeserverURL: URL(string: "https://s")!, accessToken: "t")
+        let s2 = UserSession(userID: "@b:s", deviceID: "D",
+                             homeserverURL: URL(string: "https://s")!, accessToken: "t")
+
+        let a = deps.verificationService(for: s1)
+        let b = deps.verificationService(for: s2)
+
+        // Sharing a verification service across users would route a second
+        // user's incoming-request delegate callback through the first user's
+        // FlowStore — a privacy bug.
+        XCTAssertFalse(a === b,
+                       "different sessions must get different verification services")
     }
 
     func test_mediaService_isDistinct_perUser() {

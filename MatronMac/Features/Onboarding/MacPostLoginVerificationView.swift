@@ -96,10 +96,13 @@ struct MacPostLoginVerificationView: View {
                         onFinished: onCompleted
                     )
                 case .sasWithOtherDevice:
-                    let svc = VerificationServiceLive(
-                        provider: dependencies.clientProvider,
-                        session: session
-                    )
+                    // Use the cached service so the FlowStore + registered
+                    // SDK delegate are shared with every other consumer
+                    // (sidebar banner, per-bot MacChatView banner,
+                    // MacDeviceSettingsView, Help menu). A fresh instance
+                    // would have an empty FlowStore + an unregistered
+                    // delegate (expert-QA B1).
+                    let svc = dependencies.verificationService(for: session)
                     // Same self-verification cache-key choice as iOS — the
                     // FlowStore entry registered by `startSAS` is keyed by
                     // userID, so confirm/cancel must use the same key.

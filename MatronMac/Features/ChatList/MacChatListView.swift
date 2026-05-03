@@ -276,7 +276,7 @@ struct MacChatListView: View {
                 // (mirrors the iOS `chatDestination` wiring + the
                 // `sasSheetContent` rationale on this view).
                 verificationService: verificationCenter?.service
-                    ?? VerificationServiceLive(provider: deps.clientProvider, session: session),
+                    ?? deps.verificationService(for: session),
                 botMatrixID: summary.bot.matrixID
             )
             .id(summary.id)
@@ -318,7 +318,7 @@ struct MacChatListView: View {
         // SAME FlowStore that registered the incoming request — see iOS
         // ChatListView for the full rationale.
         let svc: any VerificationService = verificationCenter?.service
-            ?? VerificationServiceLive(provider: deps.clientProvider, session: session)
+            ?? deps.verificationService(for: session)
         let stream = svc.acceptIncoming(requestID: summary.id)
         MacSasView(
             viewModel: SasViewModel(
