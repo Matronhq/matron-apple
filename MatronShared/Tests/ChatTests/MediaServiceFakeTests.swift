@@ -11,7 +11,7 @@ final class FakeMediaService: MediaService, @unchecked Sendable {
     private(set) var requested: [URL] = []
     private let lock = NSLock()
     func image(for mxc: URL) async -> Data? {
-        lock.lock(); requested.append(mxc); lock.unlock()
+        lock.withLock { requested.append(mxc) }
         return stubData[mxc]
     }
 }

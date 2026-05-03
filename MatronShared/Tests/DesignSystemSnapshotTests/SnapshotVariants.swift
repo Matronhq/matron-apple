@@ -12,6 +12,12 @@ import SnapshotTesting
 /// only — on macOS the library only exposes an `NSView`-based strategy, so we
 /// host the SwiftUI view in `NSHostingView` ourselves and snapshot that view.
 /// Six baseline files are produced per snapshot test ({iOS,Mac} × {light,dark,XXXL}).
+/// Set `MATRON_SKIP_SNAPSHOT_TESTS=1` in the environment to skip these tests.
+/// CI uses this because the runner's macOS / Xcode versions render
+/// NSHostingView pixels differently from a developer's local machine, and
+/// pixel-equality assertions across macOS versions are inherently fragile.
+/// Snapshots are still useful locally for visual regression review — they
+/// run by default unless the env var opts out.
 func assertVariants<V: View>(
     of view: V,
     named base: String,
@@ -19,6 +25,9 @@ func assertVariants<V: View>(
     testName: String = #function,
     line: UInt = #line
 ) {
+    if ProcessInfo.processInfo.environment["MATRON_SKIP_SNAPSHOT_TESTS"] == "1" {
+        return
+    }
     #if canImport(UIKit) && !os(macOS)
     assertSnapshot(
         of: view,

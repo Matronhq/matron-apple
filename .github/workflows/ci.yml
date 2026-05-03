@@ -18,6 +18,11 @@ jobs:
 
       - name: Run MatronShared package tests (host = macOS)
         working-directory: MatronShared
+        env:
+          # Skip pixel-comparison snapshot tests on CI — NSHostingView renders
+          # differently across macOS / Xcode versions vs. local dev. Snapshots
+          # remain useful for local visual review.
+          MATRON_SKIP_SNAPSHOT_TESTS: "1"
         run: swift test --enable-code-coverage
 
   ios-build-and-test:
