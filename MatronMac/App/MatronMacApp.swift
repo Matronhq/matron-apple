@@ -14,6 +14,14 @@ struct MatronMacApp: App {
     /// See `MacPostLoginVerificationView.verifyDoneKey(for:)` for the
     /// per-user `UserDefaults` scoping.
     @State private var verifyDone = false
+    /// Set by `bootstrap()` when the setup-time `KeychainProbe.run(...)`
+    /// fails (Phase 3 / Task 13). When non-nil, every other UI branch is
+    /// short-circuited and `MacKeychainSetupErrorView` renders the message.
+    /// The recovery-key flow is unusable without working Keychain access,
+    /// so this is intentionally a hard gate rather than a dismissable
+    /// banner — surfacing the error in onboarding is the regression guard
+    /// against shipping a Mac build with broken entitlements.
+    @State private var bootstrapError: String?
     /// Help → Verify This Device… sheet visibility. Flipped by the
     /// `.matronCommand(.verifyDevice)` listener on the WindowGroup root
     /// (Phase 3 / Task 9c). Sheet body builds a fresh self-verification
@@ -32,6 +40,13 @@ struct MatronMacApp: App {
                     ProgressView("Loading…")
                         .frame(width: 480, height: 360)
                         .task { await bootstrap() }
+                } else if let bootstrapError {
+                    // Hard gate: Keychain probe failed (entitlements
+                    // misconfigured). Recovery-key persistence is unusable;
+                    // do not let the user reach the sign-in or recovery-key
+                    // flows where they'd silently lose their key. See
+                    // `bootstrapError`'s declaration for full rationale.
+                    MacKeychainSetupErrorView(message: bootstrapError)
                 } else if let session {
                     if verifyDone {
                         // Build the verification orchestrator once per
@@ -152,6 +167,50 @@ struct MatronMacApp: App {
     }
 
     private func bootstrap() async {
+        // Phase 3 / Task 13: setup-time Keychain probe. The recovery-key
+        // flow writes to a synchronizable `KeychainStore(service:
+        // "chat.matron.recovery", synchronizable: true)`; if the bundle's
+        // `keychain-access-groups` entitlement is missing or misconfigured,
+        // `SecItemAdd` returns `errSecMissingEntitlement` and the user
+        // never realises persistence silently failed. Probe early and
+        // surface a hard error in the UI before the user can sign in.
+        //
+        // Wrapped in a 2s timeout so a hypothetical Keychain unlock prompt
+        // (or system Keychain stall) doesn't leave the app on the
+        // indefinite ProgressView. Plain `Task.sleep` race against the
+        // probe via `withThrowingTaskGroup` — first-finish-wins.
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    try KeychainProbe.run(keychain: KeychainStore(
+                        service: "chat.matron.recovery",
+                        synchronizable: true
+                    ))
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 2_000_000_000)
+                    throw KeychainProbeTimeout()
+                }
+                // First task to finish wins — cancel the loser. If the
+                // probe finished it returns; if the timeout finished it
+                // throws and the catch below fires.
+                try await group.next()
+                group.cancelAll()
+            }
+        } catch let error as KeychainProbeError {
+            bootstrapError = error.localizedDescription
+            bootstrapDone = true
+            return
+        } catch is KeychainProbeTimeout {
+            bootstrapError = "Keychain access timed out — see docs/setup-mac.md"
+            bootstrapDone = true
+            return
+        } catch {
+            bootstrapError = "Keychain probe failed: \(error.localizedDescription) — see docs/setup-mac.md"
+            bootstrapDone = true
+            return
+        }
+
         do {
             session = try await dependencies.auth.restoreSession()
             if let session {
@@ -232,6 +291,48 @@ struct MatronMacApp: App {
             currentRecoveryKey: { try mgr.currentKey() },
             onFinished: { showRecoveryKeySheet = false }
         )
+    }
+}
+
+/// Sentinel error thrown by the timeout branch of `bootstrap()`'s
+/// Keychain probe race (Phase 3 / Task 13). Distinct from
+/// `KeychainProbeError.getFailed` so the catch arms can render a
+/// timeout-specific message without conflating it with an entitlement
+/// failure.
+private struct KeychainProbeTimeout: Error {}
+
+/// Hard-gate UI shown when `KeychainProbe.run(...)` fails at app launch
+/// (Phase 3 / Task 13). The recovery-key flow can't function without
+/// working Keychain access, so we deliberately replace the normal
+/// onboarding chrome rather than render a dismissable banner — the user
+/// must see the error before they can sign in.
+///
+/// Mirrors the visual weight of `MacPostLoginVerificationView` (lock-shield
+/// icon, fixed-size frame) so it reads as part of the onboarding flow
+/// rather than a runtime crash dialog.
+private struct MacKeychainSetupErrorView: View {
+    let message: String
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "exclamationmark.shield")
+                .font(.system(size: 60))
+                .foregroundStyle(.red)
+            Text("Keychain access not configured")
+                .font(.title2)
+                .bold()
+            Text("Matron cannot persist your recovery key without Keychain access. See `docs/setup-mac.md` to fix the entitlement, then relaunch.")
+                .multilineTextAlignment(.center)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Text(message)
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.top, 8)
+        }
+        .padding(32)
+        .frame(width: 480, height: 360)
     }
 }
 
