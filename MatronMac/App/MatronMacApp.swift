@@ -8,6 +8,10 @@ struct MatronMacApp: App {
     @State private var dependencies = AppDependencies()
     @State private var session: UserSession?
     @State private var bootstrapDone = false
+    /// Mac mirror of `MatronApp.verifyDone` — onboarding step-2 gate.
+    /// See `MacPostLoginVerificationView.verifyDoneKey(for:)` for the
+    /// per-user `UserDefaults` scoping.
+    @State private var verifyDone = false
 
     var body: some Scene {
         WindowGroup {
@@ -17,17 +21,32 @@ struct MatronMacApp: App {
                         .frame(width: 480, height: 360)
                         .task { await bootstrap() }
                 } else if let session {
-                    MacChatListView(
-                        viewModel: ChatListViewModel(chat: dependencies.chatService(for: session))
-                    )
-                    .frame(minWidth: 800, minHeight: 600)
-                    .environment(\.appDependencies, dependencies)
-                    .environment(\.currentSession, session)
-                    .task { try? await dependencies.syncService(for: session).start() }
+                    if verifyDone {
+                        MacChatListView(
+                            viewModel: ChatListViewModel(chat: dependencies.chatService(for: session))
+                        )
+                        .frame(minWidth: 800, minHeight: 600)
+                        .environment(\.appDependencies, dependencies)
+                        .environment(\.currentSession, session)
+                        .task { try? await dependencies.syncService(for: session).start() }
+                    } else {
+                        MacPostLoginVerificationView(
+                            dependencies: dependencies,
+                            session: session,
+                            onCompleted: { markVerifyDone(for: session) }
+                        )
+                        .environment(\.appDependencies, dependencies)
+                        .environment(\.currentSession, session)
+                    }
                 } else {
                     MacSignInView(
                         viewModel: SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac"),
-                        onSignedIn: { session in self.session = session }
+                        onSignedIn: { session in
+                            self.session = session
+                            self.verifyDone = UserDefaults.standard.bool(
+                                forKey: MacPostLoginVerificationView.verifyDoneKey(for: session)
+                            )
+                        }
                     )
                 }
             }
@@ -37,10 +56,20 @@ struct MatronMacApp: App {
             // the command bus but nothing observed it — sign-out was
             // silently a no-op (QA finding #2 + #7). Listener lives on
             // the WindowGroup root so it's attached regardless of which
-            // child view (chat list, sign-in) is on screen.
+            // child view (chat list, sign-in, verify gate) is on screen.
+            //
+            // Phase 3 also clears the persisted verify-done flag so a
+            // deliberate sign-out + back-in re-runs the verification gate
+            // (e.g. retrying after a botched verify on the prior login).
             .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.signOut))) { _ in
+                if let session {
+                    UserDefaults.standard.removeObject(
+                        forKey: MacPostLoginVerificationView.verifyDoneKey(for: session)
+                    )
+                }
                 dependencies.signOut()
                 session = nil
+                verifyDone = false
             }
         }
         .windowResizability(.contentMinSize)
@@ -62,10 +91,22 @@ struct MatronMacApp: App {
     private func bootstrap() async {
         do {
             session = try await dependencies.auth.restoreSession()
+            if let session {
+                verifyDone = UserDefaults.standard.bool(
+                    forKey: MacPostLoginVerificationView.verifyDoneKey(for: session)
+                )
+            }
         } catch {
             session = nil
         }
         bootstrapDone = true
+    }
+
+    /// Persists + flips the verify-done flag, mirroring the iOS host's
+    /// `markVerifyDone(for:)`. See `MatronApp` for rationale.
+    private func markVerifyDone(for session: UserSession) {
+        UserDefaults.standard.set(true, forKey: MacPostLoginVerificationView.verifyDoneKey(for: session))
+        verifyDone = true
     }
 }
 
