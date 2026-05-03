@@ -153,8 +153,14 @@ struct MacRecoveryKeyView: View {
                 .keyboardShortcut(.return)
                 .disabled(!viewModel.userAcknowledgedSaved)
         case (.generate, .reenter):
+            // Bugbot caught: Confirm previously only set `generatePhase = .confirmed`
+            // and relied on a 600ms `.task` auto-dismiss, which raced with the
+            // `.onChange(of: reenteredKey)` handler that ALSO sets `.confirmed`.
+            // iOS RecoveryKeyView calls `onFinished()` directly. Mirror that —
+            // single source of truth for "user explicitly confirmed."
             Button("Confirm") {
                 viewModel.generatePhase = .confirmed
+                onFinished()
             }
             .keyboardShortcut(.return)
             .disabled(!viewModel.canFinish)

@@ -63,6 +63,12 @@ struct MatronMacApp: App {
                         )
                         .environment(\.appDependencies, dependencies)
                         .environment(\.currentSession, session)
+                        // Bugbot caught: SAS verification needs the sliding-sync
+                        // session running to exchange to-device events with the
+                        // other device. Previously sync only started on the
+                        // post-verify branch; the verify-with-other-device flow
+                        // would hang because nothing was talking to the server.
+                        .task { try? await dependencies.syncService(for: session).start() }
                     }
                 } else {
                     MacSignInView(

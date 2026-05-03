@@ -23,9 +23,25 @@ public final class RecoveryKeyManager: @unchecked Sendable {
     private let provider: ClientProvider
     private let session: UserSession
     private let keychain: KeychainStore
-    /// Keychain account name for the persisted recovery key. Stable across
-    /// devices because the entry is iCloud-synced.
-    public static let storageKey = "matron.recovery-key"
+    /// Static prefix; per-user storage key is derived in `storageKey(for:)`.
+    /// Was a single shared `"matron.recovery-key"` until bugbot caught the
+    /// multi-account overwrite — a second account on the same device would
+    /// stomp the first user's key, and `synchronizable: true` propagated
+    /// the loss across all iCloud-linked devices. Now keyed by Matrix
+    /// user ID so each user's key lives in its own Keychain entry.
+    public static let storageKeyPrefix = "matron.recovery-key"
+
+    /// Per-user Keychain account name. Stable across devices for the same
+    /// user because the entry is iCloud-synced and the user ID is the
+    /// canonical Matrix identifier.
+    public static func storageKey(for userID: String) -> String {
+        "\(storageKeyPrefix).\(userID)"
+    }
+
+    /// Convenience accessor for this manager's session-scoped key.
+    private var sessionStorageKey: String {
+        Self.storageKey(for: session.userID)
+    }
 
     public init(provider: ClientProvider, session: UserSession, keychain: KeychainStore) {
         self.provider = provider
@@ -54,7 +70,7 @@ public final class RecoveryKeyManager: @unchecked Sendable {
         // RecoveryKeyView's `.show` phase forces explicit user
         // acknowledgement before persisting anyway.
         do {
-            try keychain.set(key, forKey: Self.storageKey)
+            try keychain.set(key, forKey: sessionStorageKey)
         } catch {
             // Don't swallow the error silently — but do return the key. The
             // caller can decide whether the persistence failure is fatal
@@ -80,14 +96,14 @@ public final class RecoveryKeyManager: @unchecked Sendable {
         let client = try await provider.client(for: session)
         let encryption = client.encryption()
         try await encryption.recover(recoveryKey: key)
-        try keychain.set(key, forKey: Self.storageKey)
+        try keychain.set(key, forKey: sessionStorageKey)
     }
 
     /// Returns the locally-stored recovery key (synced from iCloud
     /// Keychain on additional devices) or `nil` if nothing has been
     /// stored. Powers the "show recovery key again" surface in Settings.
     public func currentKey() throws -> String? {
-        try keychain.get(key: Self.storageKey)
+        try keychain.get(key: sessionStorageKey)
     }
 }
 
