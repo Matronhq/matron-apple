@@ -9,6 +9,10 @@ import MatronModels
 /// `FakeAuthForVM`).
 final class FakeTimelineService: TimelineService, @unchecked Sendable {
     var snapshotsToEmit: [[TimelineItem]] = []
+    /// When non-nil, `items()` finishes by throwing this error after
+    /// yielding all queued snapshots. Lets tests pin the error-flow
+    /// added in QA finding #10.
+    var streamError: Error?
     var sentText: [String] = []
     var sentImages: [(filename: String, mime: String, sizeBytes: Int)] = []
     var sentFiles: [(filename: String, mime: String, sizeBytes: Int)] = []
@@ -17,11 +21,16 @@ final class FakeTimelineService: TimelineService, @unchecked Sendable {
     /// When set, the next `sendText`/`sendImage`/`sendFile` call throws this error.
     var nextSendError: Error?
 
-    func items() -> AsyncStream<[TimelineItem]> {
+    func items() -> AsyncThrowingStream<[TimelineItem], Error> {
         let snapshots = snapshotsToEmit
-        return AsyncStream { continuation in
+        let err = streamError
+        return AsyncThrowingStream { continuation in
             for s in snapshots { continuation.yield(s) }
-            continuation.finish()
+            if let err {
+                continuation.finish(throwing: err)
+            } else {
+                continuation.finish()
+            }
         }
     }
 

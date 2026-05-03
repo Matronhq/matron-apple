@@ -14,8 +14,8 @@ final class FakeTimelineForComposer: TimelineService, @unchecked Sendable {
     /// `sendFile` record; a failed write should leave this empty.
     var sentAttachments: [(filename: String, mimeType: String)] = []
 
-    func items() -> AsyncStream<[TimelineItem]> {
-        AsyncStream { $0.finish() }
+    func items() -> AsyncThrowingStream<[TimelineItem], Error> {
+        AsyncThrowingStream { $0.finish() }
     }
     func sendText(_ body: String) async throws { sentText.append(body) }
     func sendImage(_ data: Data, filename: String, mimeType: String) async throws {

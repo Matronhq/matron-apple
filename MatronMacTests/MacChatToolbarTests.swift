@@ -11,8 +11,8 @@ import MatronViewModels
 /// test fakes (those live in `MatronViewModelTests`'s sources, not the
 /// shipped library).
 private final class FakeTimelineForToolbar: TimelineService, @unchecked Sendable {
-    func items() -> AsyncStream<[TimelineItem]> {
-        AsyncStream { $0.finish() }
+    func items() -> AsyncThrowingStream<[TimelineItem], Error> {
+        AsyncThrowingStream { $0.finish() }
     }
     func sendText(_ body: String) async throws {}
     func sendImage(_ data: Data, filename: String, mimeType: String) async throws {}

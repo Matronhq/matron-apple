@@ -13,6 +13,12 @@ public final class ChatListViewModel {
 
     public private(set) var groups: [GroupedSummaries] = []
     public private(set) var isLoading: Bool = true
+    /// Last error raised by the upstream `chatSummaries()` stream. Phase 2
+    /// surfaces this as a banner / `ContentUnavailableView` overlay so a
+    /// `SyncReadyError.timeout` doesn't manifest as an "infinite spinner
+    /// then silent empty" (QA finding #10). Cleared back to nil on the
+    /// next successful snapshot.
+    public private(set) var error: String?
 
     private let chat: ChatService
     private var observationTask: Task<Void, Never>?
@@ -25,10 +31,23 @@ public final class ChatListViewModel {
         observationTask?.cancel()
         observationTask = Task { [weak self] in
             guard let self else { return }
-            for await snapshot in chat.chatSummaries() {
-                let grouped = Self.group(summaries: snapshot)
+            do {
+                for try await snapshot in chat.chatSummaries() {
+                    let grouped = Self.group(summaries: snapshot)
+                    await MainActor.run {
+                        self.groups = grouped
+                        self.isLoading = false
+                        self.error = nil
+                    }
+                }
+            } catch {
+                // Bubble the upstream error to the View. Don't clear
+                // `groups` — the user may have a previous good snapshot
+                // they can still interact with; the banner advises that
+                // a refresh is needed.
+                let message = error.localizedDescription
                 await MainActor.run {
-                    self.groups = grouped
+                    self.error = message
                     self.isLoading = false
                 }
             }
@@ -37,10 +56,11 @@ public final class ChatListViewModel {
 
     /// Cancels the in-flight observation task. Call from `View.onDisappear`,
     /// or when the session changes / user signs out, so the underlying
-    /// AsyncStream's continuation is released. Phase 1's live impl finishes
-    /// the stream after one snapshot so this is mostly defensive; once
-    /// Phase 2 keeps the stream open across diff updates, calling `cancel()`
-    /// is required to avoid Task leaks across re-logins.
+    /// AsyncStream's continuation is released. Phase 2's live impl is
+    /// still single-snapshot per call, so this is mostly defensive — but
+    /// the cancel keeps re-subscribe churn invisible (QA finding #17).
+    /// Phase 3 flips to a long-lived diff stream; at that point this is
+    /// required to avoid Task leaks across re-logins.
     public func cancel() {
         observationTask?.cancel()
         observationTask = nil

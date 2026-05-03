@@ -10,8 +10,8 @@ import MatronViewModels
 private final class FakeChatActionsForList: ChatService, @unchecked Sendable {
     private let snapshots: [[ChatSummary]]
     init(snapshots: [[ChatSummary]]) { self.snapshots = snapshots }
-    func chatSummaries() -> AsyncStream<[ChatSummary]> {
-        AsyncStream { continuation in
+    func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error> {
+        AsyncThrowingStream { continuation in
             for s in snapshots { continuation.yield(s) }
             continuation.finish()
         }

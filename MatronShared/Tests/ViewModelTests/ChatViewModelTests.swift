@@ -265,6 +265,30 @@ final class ChatViewModelTests: XCTestCase {
     }()
 
     @MainActor
+    func test_upstreamStreamError_populates_errorField() async throws {
+        // QA finding #10: `TimelineServiceLive.items()` previously called
+        // `continuation.finish()` on any thrown error → user saw an
+        // infinite spinner that never resolved into a populated timeline.
+        // The stream now rethrows; the VM catches and surfaces the
+        // message via `error` so the View can render an overlay.
+        let fake = FakeTimelineService()
+        struct StreamError: LocalizedError { var errorDescription: String? { "no timeline for room" } }
+        fake.streamError = StreamError()
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        await vm.start()
+        // `start()` returns once the first signal fires (snapshot OR
+        // error path). The error should already be populated by then,
+        // but bound with a short wait for the @MainActor hop to
+        // complete.
+        let start = Date()
+        while vm.error == nil && Date().timeIntervalSince(start) < 2 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(vm.error, "no timeline for room",
+                       "upstream stream error must populate error field")
+    }
+
+    @MainActor
     func test_resolvedImageCache_evicts_oldestEntry_whenLimitExceeded() async {
         // QA finding #4: a long session in a media-heavy room previously
         // accumulated `Image` references in `resolvedImages` for the

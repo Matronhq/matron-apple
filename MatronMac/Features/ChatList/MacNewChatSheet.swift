@@ -73,10 +73,16 @@ struct MacNewChatSheet: View {
 
     private func loadBots() async {
         let chat = deps.chatService(for: session)
-        for await snapshot in chat.chatSummaries() {
-            let unique = Set(snapshot.map(\.bot))
-            bots = Array(unique).sorted { $0.displayName < $1.displayName }
-            break
+        do {
+            for try await snapshot in chat.chatSummaries() {
+                let unique = Set(snapshot.map(\.bot))
+                bots = Array(unique).sorted { $0.displayName < $1.displayName }
+                break
+            }
+        } catch {
+            // Surface the upstream stream error (e.g. SyncReadyError.timeout)
+            // in the same field as createChat failures (QA finding #10).
+            errorMessage = error.localizedDescription
         }
         didLoad = true
     }

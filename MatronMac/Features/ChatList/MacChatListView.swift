@@ -110,6 +110,15 @@ struct MacChatListView: View {
         if viewModel.isLoading {
             ProgressView("Connecting…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let errorMessage = viewModel.error, viewModel.groups.isEmpty {
+            // QA finding #10: mirror the iOS error overlay so a
+            // sliding-sync timeout doesn't leave the user with a silent
+            // empty sidebar.
+            ContentUnavailableView(
+                "Couldn't load chats",
+                systemImage: "exclamationmark.triangle",
+                description: Text(errorMessage)
+            )
         } else if viewModel.groups.isEmpty {
             ContentUnavailableView(
                 "No chats yet",

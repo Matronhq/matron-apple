@@ -64,8 +64,8 @@ public final class ChatServiceLive: ChatService, @unchecked Sendable {
         try await room.forget()
     }
 
-    public func chatSummaries() -> AsyncStream<[ChatSummary]> {
-        AsyncStream { continuation in
+    public func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error> {
+        AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     try await sync.waitUntilReady()
@@ -89,7 +89,11 @@ public final class ChatServiceLive: ChatService, @unchecked Sendable {
                     continuation.yield(summaries)
                     continuation.finish()
                 } catch {
-                    continuation.finish()
+                    // Surface the failure to the consumer instead of
+                    // silently completing — `ChatListViewModel` routes
+                    // this into its `error` field so the View can show
+                    // a banner / overlay (QA finding #10).
+                    continuation.finish(throwing: error)
                 }
             }
             continuation.onTermination = { _ in task.cancel() }

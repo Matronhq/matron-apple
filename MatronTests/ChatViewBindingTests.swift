@@ -12,9 +12,9 @@ private final class FakeTimelineForChat: TimelineService, @unchecked Sendable {
     var paginateCalls: Int = 0
     var markReadCalls: Int = 0
 
-    func items() -> AsyncStream<[TimelineItem]> {
+    func items() -> AsyncThrowingStream<[TimelineItem], Error> {
         let snapshots = snapshotsToEmit
-        return AsyncStream { continuation in
+        return AsyncThrowingStream { continuation in
             for s in snapshots { continuation.yield(s) }
             continuation.finish()
         }

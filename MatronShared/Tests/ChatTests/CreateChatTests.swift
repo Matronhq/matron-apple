@@ -14,8 +14,8 @@ actor FakeChatServiceForCreate: ChatService {
     var mutedRooms: [String] = []
     var leftRooms: [String] = []
 
-    nonisolated func chatSummaries() -> AsyncStream<[ChatSummary]> {
-        AsyncStream { $0.finish() }
+    nonisolated func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error> {
+        AsyncThrowingStream { $0.finish() }
     }
 
     func createChat(with botID: String) async throws -> String {

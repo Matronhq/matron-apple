@@ -78,17 +78,26 @@ struct NewChatSheet: View {
     }
 
     /// Reads the first room-list snapshot to derive the unique-bot set.
-    /// Live `chatSummaries()` keeps the stream open in Phase 2, so we
-    /// `break` after the first snapshot — re-opening the sheet picks up
-    /// any newly-arrived bots from the next subscription. The fake stream
-    /// finishes after yielding queued snapshots, so the `break` keeps
-    /// tests deterministic.
+    /// Phase 2's live `chatSummaries()` is single-snapshot per call (the
+    /// stream finishes after one snapshot — see the protocol doc-comment),
+    /// so the `break` after the first snapshot is defensive: re-opening
+    /// the sheet picks up any newly-arrived bots from a fresh subscription.
+    /// Phase 3 flips the stream to long-lived and the `break` becomes
+    /// load-bearing — keep it.
     private func loadBots() async {
         let chat = deps.chatService(for: session)
-        for await snapshot in chat.chatSummaries() {
-            let unique = Set(snapshot.map(\.bot))
-            bots = Array(unique).sorted { $0.displayName < $1.displayName }
-            break
+        do {
+            for try await snapshot in chat.chatSummaries() {
+                let unique = Set(snapshot.map(\.bot))
+                bots = Array(unique).sorted { $0.displayName < $1.displayName }
+                break
+            }
+        } catch {
+            // Surface the upstream stream error (e.g. SyncReadyError.timeout)
+            // in the same field as createChat failures so the user sees
+            // a meaningful banner instead of an empty bot picker
+            // (QA finding #10).
+            errorMessage = error.localizedDescription
         }
         // Flip *after* the first snapshot processes (or the stream
         // finishes without one) so the empty state shows once we're sure

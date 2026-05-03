@@ -26,6 +26,20 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // QA finding #10: surface upstream stream failures (e.g.
+            // `SyncReadyError.timeout`) in a banner above the timeline
+            // so the user understands why nothing is loading instead
+            // of staring at an empty scroll view.
+            if let errorMessage = viewModel.error {
+                Text(errorMessage)
+                    .font(.callout)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.red.opacity(0.9))
+                    .accessibilityLabel("Chat error: \(errorMessage)")
+            }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 8) {

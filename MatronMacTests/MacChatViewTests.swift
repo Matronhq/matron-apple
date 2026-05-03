@@ -15,8 +15,8 @@ private final class FakeTimelineForChat: TimelineService, @unchecked Sendable {
     var sentImages: [(filename: String, mime: String, sizeBytes: Int)] = []
     var sentFiles: [(filename: String, mime: String, sizeBytes: Int)] = []
 
-    func items() -> AsyncStream<[TimelineItem]> {
-        AsyncStream { $0.finish() }
+    func items() -> AsyncThrowingStream<[TimelineItem], Error> {
+        AsyncThrowingStream { $0.finish() }
     }
     func sendText(_ body: String) async throws {}
     func sendImage(_ data: Data, filename: String, mimeType: String) async throws {

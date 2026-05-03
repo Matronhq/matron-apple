@@ -46,6 +46,18 @@ struct ChatListView: View {
         Group {
             if viewModel.isLoading {
                 ProgressView("Connecting…")
+            } else if let errorMessage = viewModel.error, viewModel.groups.isEmpty {
+                // QA finding #10: surface upstream stream failures
+                // (e.g. `SyncReadyError.timeout`) instead of leaving
+                // the user staring at an empty list. If we have a prior
+                // good snapshot we keep showing it (the banner below
+                // would render too) — this branch only handles the
+                // first-load failure case.
+                ContentUnavailableView(
+                    "Couldn't load chats",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text(errorMessage)
+                )
             } else if viewModel.groups.isEmpty {
                 ContentUnavailableView(
                     "No chats yet",

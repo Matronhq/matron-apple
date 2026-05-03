@@ -7,12 +7,20 @@ public protocol ChatService: Sendable {
     /// sliding sync reaches `.running`, then completes the stream. Callers
     /// that need to refresh must call this method again.
     ///
-    /// **Phase 2 contract:** the live impl will keep the stream open and
-    /// yield a new snapshot any time the underlying room list changes
-    /// (added/updated/removed rooms, latest-event timestamp updates,
-    /// unread-count changes). Test fakes already emit multiple snapshots,
-    /// so consumer ViewModels (`ChatListViewModel`) are diff-tolerant today.
-    func chatSummaries() -> AsyncStream<[ChatSummary]>
+    /// **Phase 2 contract:** Phase 2's live impl is **still single-snapshot
+    /// per call** — the dynamic-adapters API needed for live diffing is
+    /// known-crashy against tuwunel in v26. Phase 3 is when this flips to
+    /// keep-the-stream-open with a snapshot per RoomList change. Test
+    /// fakes already emit multiple snapshots so consumer ViewModels
+    /// (`ChatListViewModel`) are diff-tolerant today (QA finding #6 —
+    /// pinned the doc-comment to what actually ships).
+    ///
+    /// `AsyncThrowingStream` so sliding-sync readiness failures
+    /// (`SyncReadyError.timeout`, `.errored`, `.terminated`) bubble to
+    /// the consumer instead of being swallowed by `continuation.finish()`
+    /// — `ChatListViewModel` displays the message in a banner / empty-state
+    /// overlay (QA finding #10).
+    func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error>
 
     /// Creates a new 1:1 encrypted room with `botID` and returns the new
     /// room ID. The bot is invited via the SDK's `CreateRoomParameters`;

@@ -98,18 +98,32 @@ public final class ChatViewModel {
         // from inside the long-lived Task without value-type copy issues.
         let firstSignal = FirstSnapshotSignal()
         let task = Task { [weak self] in
-            for await snapshot in timeline.items() {
-                guard let self else {
+            do {
+                for try await snapshot in timeline.items() {
+                    guard let self else {
+                        firstSignal.fireOnce()
+                        return
+                    }
+                    await MainActor.run {
+                        self.items = snapshot
+                        // Clear any prior error once a fresh snapshot lands.
+                        self.error = nil
+                    }
                     firstSignal.fireOnce()
-                    return
                 }
-                await MainActor.run { self.items = snapshot }
-                firstSignal.fireOnce()
+            } catch {
+                // Stream threw — surface the message so the View can
+                // render an overlay instead of an infinite spinner
+                // (QA finding #10).
+                let message = error.localizedDescription
+                if let self {
+                    await MainActor.run { self.error = message }
+                }
             }
-            // Stream finished without yielding any snapshot — still
-            // resume so the caller of `start()` doesn't hang on a room
-            // that the live timeline never populates (or a fake set up
-            // with no `snapshotsToEmit`).
+            // Stream finished (or threw) without yielding any snapshot —
+            // still resume so the caller of `start()` doesn't hang on a
+            // room that the live timeline never populates (or a fake set
+            // up with no `snapshotsToEmit`).
             firstSignal.fireOnce()
         }
         observationTask = task

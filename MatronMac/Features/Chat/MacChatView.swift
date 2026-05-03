@@ -35,6 +35,19 @@ struct MacChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // QA finding #10: mirror the iOS error banner. Sliding-sync
+            // timeouts now surface here instead of leaving the user
+            // staring at an empty scroll view.
+            if let errorMessage = viewModel.error {
+                Text(errorMessage)
+                    .font(.callout)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.red.opacity(0.9))
+                    .accessibilityLabel("Chat error: \(errorMessage)")
+            }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 8) {

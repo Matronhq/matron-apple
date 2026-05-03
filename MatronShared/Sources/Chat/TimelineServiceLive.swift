@@ -30,8 +30,8 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
         self.roomID = roomID
     }
 
-    public func items() -> AsyncStream<[TimelineItem]> {
-        AsyncStream { continuation in
+    public func items() -> AsyncThrowingStream<[TimelineItem], Error> {
+        AsyncThrowingStream { continuation in
             // Holder owns both the setup `Task` and the eventual listener
             // `TaskHandle`. Reassigning `continuation.onTermination` had a
             // race window: if the consumer terminated between
@@ -44,7 +44,7 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
                     try await sync.waitUntilReady()
                     let client = try await provider.client(for: session)
                     guard let room = try client.getRoom(roomId: roomID) else {
-                        continuation.finish()
+                        continuation.finish(throwing: TimelineServiceError.roomNotFound(roomID))
                         return
                     }
                     let timeline = try await room.timeline()
@@ -52,7 +52,11 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
                     let handle = await timeline.addListener(listener: listener)
                     holder.setHandle(handle)
                 } catch {
-                    continuation.finish()
+                    // Surface the failure to the consumer instead of
+                    // silently completing — `ChatViewModel` routes this
+                    // into `error` so the View can render a banner /
+                    // overlay (QA finding #10).
+                    continuation.finish(throwing: error)
                 }
             }
             holder.setTask(task)
@@ -213,7 +217,7 @@ final class TimelineLifecycleHolder: @unchecked Sendable {
 /// production switch-statement is regression-protected without standing
 /// up a real SDK.
 final class TimelineSnapshotListener: TimelineListener, @unchecked Sendable {
-    private let continuation: AsyncStream<[TimelineItem]>.Continuation
+    private let continuation: AsyncThrowingStream<[TimelineItem], Error>.Continuation
 
     /// Maintains the current ordered snapshot. Items are keyed by their
     /// stable id (event id once the homeserver has acked, transaction id
@@ -226,7 +230,7 @@ final class TimelineSnapshotListener: TimelineListener, @unchecked Sendable {
     /// knows which events came from us, so we don't need to thread the
     /// user ID through here. (Earlier drafts stored `myID` for a manual
     /// comparison; the property was unused and has been removed.)
-    init(continuation: AsyncStream<[TimelineItem]>.Continuation) {
+    init(continuation: AsyncThrowingStream<[TimelineItem], Error>.Continuation) {
         self.continuation = continuation
     }
 

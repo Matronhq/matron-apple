@@ -8,17 +8,26 @@ import XCTest
 /// and `FakeAuthService`.
 final class FakeTimelineService: TimelineService, @unchecked Sendable {
     var snapshotsToEmit: [[TimelineItem]] = []
+    /// When non-nil, `items()` finishes by throwing this error after
+    /// yielding all queued snapshots. Lets tests pin the error-flow
+    /// added in QA finding #10.
+    var streamError: Error?
     var sentText: [String] = []
     var sentImages: [(filename: String, mime: String, sizeBytes: Int)] = []
     var sentFiles: [(filename: String, mime: String, sizeBytes: Int)] = []
     var paginateCalls: Int = 0
     var markReadCalls: Int = 0
 
-    func items() -> AsyncStream<[TimelineItem]> {
+    func items() -> AsyncThrowingStream<[TimelineItem], Error> {
         let snapshots = snapshotsToEmit
-        return AsyncStream { continuation in
+        let err = streamError
+        return AsyncThrowingStream { continuation in
             for s in snapshots { continuation.yield(s) }
-            continuation.finish()
+            if let err {
+                continuation.finish(throwing: err)
+            } else {
+                continuation.finish()
+            }
         }
     }
 
@@ -51,7 +60,7 @@ final class TimelineServiceFakeTests: XCTestCase {
             ],
         ]
         var received: [[TimelineItem]] = []
-        for await snap in fake.items() { received.append(snap) }
+        for try await snap in fake.items() { received.append(snap) }
         XCTAssertEqual(received.count, 2)
         XCTAssertEqual(received[0].count, 1)
         XCTAssertEqual(received[1].count, 2)

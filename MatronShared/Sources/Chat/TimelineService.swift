@@ -13,7 +13,13 @@ import Foundation
 /// `items()` when the local echo is replaced by the remote event).
 public protocol TimelineService: Sendable {
     /// AsyncStream of full timeline snapshots. Newest item last.
-    func items() -> AsyncStream<[TimelineItem]>
+    ///
+    /// `AsyncThrowingStream` so sync-readiness failures and SDK
+    /// resolution errors (`TimelineServiceError.roomNotFound`) bubble to
+    /// the consumer instead of being swallowed by `continuation.finish()`
+    /// — `ChatViewModel` surfaces the message in `error` so the View can
+    /// render a banner / `ContentUnavailableView` overlay (QA finding #10).
+    func items() -> AsyncThrowingStream<[TimelineItem], Error>
 
     /// Sends a plain text message. Body may include markdown.
     /// Returns when the SDK has accepted the send (not when the server confirms it).
