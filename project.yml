@@ -25,6 +25,14 @@ packages:
   MatrixRustSDK:
     url: https://github.com/matrix-org/matrix-rust-components-swift
     from: "26.04.01"
+  # Phase 3 Task 12: snapshot tests for Mac verification chrome. SPM-side
+  # snapshot suites already use this via MatronShared/Package.swift; declaring
+  # here so the Xcode `MatronMacTests` target can import `SnapshotTesting`
+  # too. Same pinned major as MatronShared (1.x). Resolved transitively at
+  # 1.19.2 today via xcodebuild's package graph.
+  swift-snapshot-testing:
+    url: https://github.com/pointfreeco/swift-snapshot-testing
+    from: "1.17.0"
 
 targets:
   Matron:
@@ -178,6 +186,11 @@ targets:
         product: MatronViewModels
       - package: MatronShared
         product: MatronVerification
+      # Phase 3 Task 12: Mac-side snapshot tests for the verification chrome.
+      # Pixel-equality is gated behind MATRON_SKIP_SNAPSHOT_TESTS=1 on CI to
+      # dodge macOS / Xcode renderer drift; baselines remain useful locally.
+      - package: swift-snapshot-testing
+        product: SnapshotTesting
 
   MatronNSE:
     type: app-extension
