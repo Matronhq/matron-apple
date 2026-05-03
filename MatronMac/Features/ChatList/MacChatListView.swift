@@ -1,6 +1,7 @@
 import SwiftUI
 import MatronChat
 import MatronModels
+import MatronVerification
 import MatronViewModels
 
 /// Mac chat-list screen — the sidebar column of a `NavigationSplitView`
@@ -39,10 +40,23 @@ struct MacChatListView: View {
     /// flip the same state. `.automatic` is the system default (sidebar
     /// shown); `.detailOnly` collapses it.
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+    /// The summary whose "Verify" button on a `MacVerificationBanner`
+    /// was clicked. Drives the `.sheet(item:)` presentation of
+    /// `MacSasView`. Cleared by the sheet's `onFinished` (`.verified`)
+    /// or an explicit dismiss.
+    @State private var sasSummary: VerificationRequestSummary?
+    /// Cross-platform incoming-verification orchestrator (spec §7.1, §5.9).
+    /// Optional so previews / tests that exercise only the chat-list
+    /// rendering can construct the view without standing up a full
+    /// verification stack. When non-nil, `start()` runs in `.onAppear`
+    /// and `stop()` in `.onDisappear` (Swift 6 forbids `@MainActor
+    /// deinit` reaching isolated state — same lesson as
+    /// `ChatListViewModel.cancel()`).
+    var verificationCenter: VerificationCenter? = nil
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            sidebar
+            sidebarColumn
                 .frame(minWidth: 240, idealWidth: 280)
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) {
@@ -101,8 +115,58 @@ struct MacChatListView: View {
                 onDismiss: { botProfileSummary = nil }
             )
         }
+        .sheet(item: $sasSummary) { summary in
+            // SAS sheet driven by the banner's "Verify" click. Build the
+            // service inline (mirrors `MacPostLoginVerificationView`) so
+            // the sheet body owns no long-lived SDK state — when the
+            // sheet dismisses the controller is released. Without `deps`
+            // / `session` we render a minimal placeholder so the binding
+            // is still observable in tests / previews.
+            if let deps, let session {
+                sasSheetContent(for: summary, deps: deps, session: session)
+            } else {
+                Text("Verification unavailable")
+                    .frame(width: 480, height: 200)
+                    .padding()
+            }
+        }
         .task { viewModel.start() }
-        .onDisappear { viewModel.cancel() }
+        // `verificationCenter.start()` belongs in `.onAppear` (Swift 6
+        // forbids `@MainActor deinit` reaching isolated state). Mirrors
+        // `ChatListViewModel.cancel()`. Optional cast lets previews /
+        // tests omit the center entirely.
+        .onAppear { verificationCenter?.start() }
+        .onDisappear {
+            viewModel.cancel()
+            verificationCenter?.stop()
+        }
+    }
+
+    /// Sidebar column wrapper: when the verification center has pending
+    /// requests, stack one `MacVerificationBanner` per summary above the
+    /// existing sidebar content. Empty / no-banner case falls straight
+    /// through to `sidebar`. Plan §9b — banner sits above the chat list
+    /// inside the leading column of `NavigationSplitView`.
+    @ViewBuilder
+    private var sidebarColumn: some View {
+        if let center = verificationCenter, !center.pending.isEmpty {
+            VStack(spacing: 0) {
+                VStack(spacing: 8) {
+                    ForEach(center.pending) { summary in
+                        MacVerificationBanner(
+                            summary: summary,
+                            onAccept: { sasSummary = $0 },
+                            onDismiss: { dismissed in
+                                Task { await center.dismiss(dismissed) }
+                            }
+                        )
+                    }
+                }
+                sidebar
+            }
+        } else {
+            sidebar
+        }
     }
 
     @ViewBuilder
@@ -227,6 +291,33 @@ struct MacChatListView: View {
         guard let deps, let session else { return }
         let chat = deps.chatService(for: session)
         try? await action(chat)
+    }
+
+    /// Builds the SAS sheet shown when a banner's "Verify" is clicked.
+    /// `acceptIncoming(requestID:)` returns an `AsyncStream` that the
+    /// live impl already wires `acceptVerificationRequest` +
+    /// `startSasVerification` into the cached controller for; the cache
+    /// entry was registered when the incoming request landed.
+    /// `onFinished` clears `sasSummary` so `.verified` auto-dismisses
+    /// (mirrors the bug `b0b15d1` fixed for the onboarding gate).
+    @ViewBuilder
+    private func sasSheetContent(
+        for summary: VerificationRequestSummary,
+        deps: AppDependencies,
+        session: UserSession
+    ) -> some View {
+        let svc = VerificationServiceLive(provider: deps.clientProvider, session: session)
+        let stream = svc.acceptIncoming(requestID: summary.id)
+        MacSasView(
+            viewModel: SasViewModel(
+                stream: stream,
+                requestID: summary.id,
+                confirm: { try await svc.confirmEmojiMatch(requestID: summary.id) },
+                cancel: { reason in try await svc.cancel(requestID: summary.id, reason: reason) }
+            ),
+            title: "Verify device",
+            onFinished: { sasSummary = nil }
+        )
     }
 }
 
