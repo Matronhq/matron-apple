@@ -14,6 +14,14 @@ public protocol VerificationService: Sendable {
     /// onboarding banner to decide whether to prompt the user.
     func isThisDeviceVerified() async throws -> Bool
 
+    /// True if the cross-signing identity for `matrixID` is verified by this
+    /// account. Drives the per-bot inline banner shown above the chat
+    /// timeline (spec §7.3, §7.5). Returns `false` when the user identity
+    /// can't be looked up (e.g. unknown user, network unavailable) so the
+    /// banner errs on the side of prompting verification — matches the
+    /// "nothing auto-trusted" trust posture from §7.5.
+    func isUserVerified(matrixID: String) async throws -> Bool
+
     /// Emits incoming verification requests originating from another device
     /// (or a bot) of the same user. The stream terminates when the service
     /// is cancelled. Callers should drive it from a child task scoped to
