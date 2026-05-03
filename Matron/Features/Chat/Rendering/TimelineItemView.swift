@@ -50,6 +50,12 @@ struct TimelineItemView: View {
             ) {
                 MarkdownText(body)
             }
+            // VoiceOver previously announced the body text without sender
+            // context — `.combine` collapses the bubble + label into a
+            // single element with an explicit `"<sender>: <body>"`
+            // label so the listener knows who said it (QA finding #13).
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Self.accessibilityLabel(for: item, body: body))
 
         case .image(let url, let caption, let sizeBytes):
             MessageBubble(
@@ -62,6 +68,8 @@ struct TimelineItemView: View {
                     caption: caption ?? sizeBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
                 )
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Self.accessibilityLabel(for: item, body: caption ?? "Image attachment"))
 
         case .file(_, let filename, let sizeBytes):
             MessageBubble(
@@ -70,6 +78,8 @@ struct TimelineItemView: View {
             ) {
                 AttachmentFile(filename: filename, sizeBytes: sizeBytes)
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Self.accessibilityLabel(for: item, body: "File attachment: \(filename)"))
 
         case .stateChange(let text):
             HStack {
@@ -89,6 +99,14 @@ struct TimelineItemView: View {
             }
             .padding(.vertical, 4)
         }
+    }
+
+    /// Composes the accessibility label for a row. "Me" rather than the
+    /// raw matrix ID so VoiceOver doesn't leak the user's full handle on
+    /// every own-message read-out (QA finding #13).
+    static func accessibilityLabel(for item: TimelineItem, body: String) -> String {
+        let senderName = item.isOwn ? "Me" : displayName(for: item.sender)
+        return "\(senderName): \(body)"
     }
 
     /// Whether a `TimelineItem` should render at all. Returns `false` for

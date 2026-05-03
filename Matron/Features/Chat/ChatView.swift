@@ -2,6 +2,7 @@ import SwiftUI
 import MatronChat
 import MatronModels
 import MatronViewModels
+import MatronDesignSystem
 
 /// iOS chat screen. Hosts a scrollable timeline (LazyVStack rendering each
 /// `TimelineItem` via `TimelineItemView`) above a `ComposerView`. The
@@ -34,7 +35,11 @@ struct ChatView: View {
                                 .contextMenu {
                                     if case .text(let body, _) = item.kind {
                                         Button {
-                                            UIPasteboard.general.string = body
+                                            // Use the cross-platform helper from
+                                            // MatronDesignSystem so iOS and Mac stay
+                                            // on a single Pasteboard surface
+                                            // (QA finding #3).
+                                            Pasteboard.copy(body)
                                         } label: {
                                             Label("Copy", systemImage: "doc.on.doc")
                                         }

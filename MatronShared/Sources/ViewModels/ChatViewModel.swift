@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import MatronChat
 import MatronModels
+import MatronStorage
 
 /// Drives a single chat screen. Subscribes to a room's `TimelineService.items()`
 /// stream, exposes the current snapshot as `items`, and forwards
@@ -25,12 +26,37 @@ import MatronModels
 @Observable
 @MainActor
 public final class ChatViewModel {
+    /// Cap for both `resolvedImages` and `failedRequests`. A long session
+    /// in a media-heavy room previously held a SwiftUI `Image` reference
+    /// per `mxc://` URL it had ever rendered — separate from
+    /// `MediaServiceLive`'s NSCache (which evicts opaquely on memory
+    /// pressure) — so the in-process retain set grew unbounded for the
+    /// lifetime of the room push (QA finding #4). 100 entries is enough
+    /// to cover the visible window plus a generous lookahead while
+    /// keeping the upper bound predictable. Static so tests can pin the
+    /// exact eviction boundary.
+    public static let mediaCacheLimit: Int = 100
+
     public let roomID: String
     public private(set) var items: [TimelineItem] = []
     public private(set) var error: String?
     /// Cache of `mxc://` URL → resolved SwiftUI `Image`. Populated lazily by
     /// `image(for:)` so SwiftUI can re-render the row once the bytes arrive.
-    public private(set) var resolvedImages: [URL: Image] = [:]
+    /// Backed by an `LRUCache` (capped at `mediaCacheLimit`) so a long
+    /// session in a media-heavy room can't grow this set without bound
+    /// (QA finding #4). The value-type `LRUCache` lives directly on the
+    /// view-model — `@MainActor` isolation gives us the required
+    /// single-threaded mutating-get access without extra synchronisation.
+    private var resolvedImages: LRUCache<URL, Image> = LRUCache(limit: ChatViewModel.mediaCacheLimit)
+    /// URLs whose fetch completed but the bytes failed to decode into a
+    /// SwiftUI `Image`. Without this, `image(for:)` would loop forever:
+    /// the call returns nil → `@Observable` re-renders → `image(for:)`
+    /// is called again → cache miss, no in-flight guard → re-fetch.
+    /// Bounded by the same LRU cap as `resolvedImages` so a session that
+    /// hits many decode failures (e.g. broken thumbnails) can't leak
+    /// either (QA finding #4). Stores `()` — only the key membership
+    /// matters.
+    private var failedRequests: LRUCache<URL, Void> = LRUCache(limit: ChatViewModel.mediaCacheLimit)
 
     private let timeline: TimelineService
     private let media: MediaService
@@ -38,11 +64,6 @@ public final class ChatViewModel {
     /// Tracks `mxc://` URLs with a request already in flight so we don't
     /// fire duplicate fetches on every SwiftUI re-render.
     private var inFlightRequests: Set<URL> = []
-    /// URLs whose fetch completed but the bytes failed to decode into a
-    /// SwiftUI `Image`. Without this, `image(for:)` would loop forever:
-    /// the call returns nil → `@Observable` re-renders → `image(for:)`
-    /// is called again → cache miss, no in-flight guard → re-fetch.
-    private var failedRequests: Set<URL> = []
 
     public init(roomID: String, timeline: TimelineService, media: MediaService) {
         self.roomID = roomID
@@ -140,13 +161,33 @@ public final class ChatViewModel {
                 if let img {
                     self.resolvedImages[url] = img
                 } else {
-                    self.failedRequests.insert(url)
+                    // `()` — only the key membership matters; `LRUCache`
+                    // doesn't expose an insert-key-only API so the value
+                    // is the unit type.
+                    self.failedRequests[url] = ()
                 }
                 self.inFlightRequests.remove(url)
             }
         }
         return nil
     }
+
+    /// Read-only view of the resolved-image cache for a single URL. Wraps
+    /// the underlying `LRUCache`'s `mutating get` so external observers
+    /// (tests, debug overlays) can check what's resolved without holding
+    /// a write reference to the view-model. Touching a URL through this
+    /// accessor does promote it to MRU on the underlying LRU — the same
+    /// behaviour `image(for:)` produces, so observation stays aligned
+    /// with rendering.
+    public func resolvedImage(for url: URL) -> Image? { resolvedImages[url] }
+
+    /// Live count of cached resolved images. Test seam for asserting
+    /// LRU eviction without exposing the raw storage.
+    public var resolvedImageCount: Int { resolvedImages.count }
+
+    /// Live count of remembered decode failures. Test seam for asserting
+    /// LRU eviction without exposing the raw storage.
+    public var failedRequestCount: Int { failedRequests.count }
 }
 
 /// Single-shot signal used by `ChatViewModel.start()` to bridge "first
@@ -159,6 +200,12 @@ public final class ChatViewModel {
 /// to call from both the first-snapshot path and the stream-completion
 /// fallback. `wait()` returns immediately if `fireOnce()` already ran;
 /// otherwise it suspends until it does.
+///
+/// `@unchecked Sendable` is required because the `CheckedContinuation` that
+/// `wait()` parks must be flipped from inside the long-lived observation
+/// `Task` (a different actor / thread). Strict concurrency would otherwise
+/// reject capturing `pending` across that hop. The `NSLock` enforces the
+/// safety the type signature elides.
 private final class FirstSnapshotSignal: @unchecked Sendable {
     private let lock = NSLock()
     private var fired = false

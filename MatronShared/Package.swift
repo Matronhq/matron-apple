@@ -60,6 +60,7 @@ let package = Package(
                 "MatronAuth",
                 "MatronChat",
                 "MatronModels",
+                "MatronStorage",
             ],
             path: "Sources/ViewModels"
         ),
@@ -77,7 +78,7 @@ let package = Package(
         .testTarget(name: "AuthTests", dependencies: ["MatronAuth", "MatronModels", "MatronStorage"], path: "Tests/AuthTests"),
         .testTarget(name: "SyncTests", dependencies: ["MatronSync", "MatronModels"], path: "Tests/SyncTests"),
         .testTarget(name: "ChatTests", dependencies: ["MatronChat", "MatronModels", "MatronSync"], path: "Tests/ChatTests"),
-        .testTarget(name: "ViewModelTests", dependencies: ["MatronViewModels", "MatronAuth", "MatronChat", "MatronModels"], path: "Tests/ViewModelTests"),
+        .testTarget(name: "ViewModelTests", dependencies: ["MatronViewModels", "MatronAuth", "MatronChat", "MatronModels", "MatronStorage"], path: "Tests/ViewModelTests"),
         .testTarget(
             name: "DesignSystemSnapshotTests",
             dependencies: [

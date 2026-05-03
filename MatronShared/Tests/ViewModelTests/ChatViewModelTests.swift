@@ -2,6 +2,7 @@ import XCTest
 import SwiftUI
 import MatronChat
 import MatronModels
+import MatronStorage
 @testable import MatronViewModels
 
 /// Test-only fake for `MediaService`. Mirrors the shape declared in
@@ -185,11 +186,11 @@ final class ChatViewModelTests: XCTestCase {
         // Drain the side-effect Task. Bound by 2s so a regression surfaces
         // as a failed test rather than a hang.
         let start = Date()
-        while vm.resolvedImages[url] == nil && Date().timeIntervalSince(start) < 2 {
+        while vm.resolvedImage(for: url) == nil && Date().timeIntervalSince(start) < 2 {
             await Task.yield()
         }
         XCTAssertEqual(media.requested, [url])
-        XCTAssertNotNil(vm.resolvedImages[url], "image cache should populate after fetch")
+        XCTAssertNotNil(vm.resolvedImage(for: url), "image cache should populate after fetch")
     }
 
     @MainActor
@@ -239,7 +240,7 @@ final class ChatViewModelTests: XCTestCase {
         _ = vm.image(for: url)
 
         let start = Date()
-        while vm.resolvedImages[url] == nil && Date().timeIntervalSince(start) < 2 {
+        while vm.resolvedImage(for: url) == nil && Date().timeIntervalSince(start) < 2 {
             await Task.yield()
         }
         XCTAssertEqual(media.requested.count, 1, "multiple synchronous calls should coalesce")
@@ -262,6 +263,74 @@ final class ChatViewModelTests: XCTestCase {
         ]
         return Data(bytes)
     }()
+
+    @MainActor
+    func test_resolvedImageCache_evicts_oldestEntry_whenLimitExceeded() async {
+        // QA finding #4: a long session in a media-heavy room previously
+        // accumulated `Image` references in `resolvedImages` for the
+        // lifetime of the room push, separate from `MediaServiceLive`'s
+        // NSCache (which evicts opaquely on memory pressure). Capping the
+        // backing storage at `mediaCacheLimit` (100) bounds the upper
+        // memory cost of a long-lived chat. This test pins the eviction
+        // boundary so a future refactor that removes the LRU lid surfaces
+        // here.
+        let timeline = FakeTimelineService()
+        let media = FakeMediaService()
+        let vm = ChatViewModel(roomID: "!r:s", timeline: timeline, media: media)
+        // Stub `mediaCacheLimit + 1` distinct URLs with valid image bytes
+        // so each one fully populates the cache, then assert the count is
+        // capped and the oldest URL was evicted.
+        let limit = ChatViewModel.mediaCacheLimit
+        var urls: [URL] = []
+        for i in 0...limit {
+            let url = URL(string: "mxc://example/\(i)")!
+            urls.append(url)
+            media.stubData[url] = Self.tinyPNG
+        }
+        for url in urls {
+            _ = vm.image(for: url)
+        }
+        // Drain all in-flight fetches.
+        let start = Date()
+        while vm.resolvedImageCount < limit && Date().timeIntervalSince(start) < 5 {
+            await Task.yield()
+        }
+        XCTAssertEqual(vm.resolvedImageCount, limit,
+                       "resolved image cache must stay bounded at mediaCacheLimit")
+        XCTAssertNil(vm.resolvedImage(for: urls.first!),
+                     "least-recently-used URL must be evicted once the limit is exceeded")
+        XCTAssertNotNil(vm.resolvedImage(for: urls.last!),
+                        "newest URL must remain cached")
+    }
+
+    @MainActor
+    func test_failedRequestCache_evicts_oldestEntry_whenLimitExceeded() async {
+        // Mirror of the resolved-image LRU test for the failure path —
+        // a session that hits many decode failures (e.g. broken
+        // thumbnails) previously remembered every URL forever via the
+        // raw `Set<URL>`. Capping `failedRequests` at the same lid
+        // bounds the upper memory cost (QA finding #4). Stubbing no
+        // data → `MediaService.image(for:)` returns nil →
+        // `swiftUIImage(for:)` returns nil → URL lands in
+        // `failedRequests`.
+        let timeline = FakeTimelineService()
+        let media = FakeMediaService()
+        let vm = ChatViewModel(roomID: "!r:s", timeline: timeline, media: media)
+        let limit = ChatViewModel.mediaCacheLimit
+        var urls: [URL] = []
+        for i in 0...limit {
+            urls.append(URL(string: "mxc://example/fail/\(i)")!)
+        }
+        for url in urls {
+            _ = vm.image(for: url)
+        }
+        let start = Date()
+        while vm.failedRequestCount < limit && Date().timeIntervalSince(start) < 5 {
+            await Task.yield()
+        }
+        XCTAssertEqual(vm.failedRequestCount, limit,
+                       "failed-request cache must stay bounded at mediaCacheLimit")
+    }
 
     @MainActor
     func test_stop_cancelsObservationTask() async throws {

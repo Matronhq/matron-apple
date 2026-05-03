@@ -20,6 +20,10 @@ struct MacNewChatSheet: View {
     @State private var bots: [BotIdentity] = []
     @State private var creatingFor: BotIdentity?
     @State private var errorMessage: String?
+    /// See iOS `NewChatSheet.didLoad` — gates the empty-state render so
+    /// the first-snapshot in-flight window doesn't flash an
+    /// `ContentUnavailableView` (QA finding #5).
+    @State private var didLoad = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -29,27 +33,38 @@ struct MacNewChatSheet: View {
                     .font(.caption)
                     .foregroundStyle(.red)
             }
-            List {
-                Section("Pick a bot") {
-                    ForEach(bots, id: \.matrixID) { bot in
-                        Button {
-                            Task { await create(with: bot) }
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(bot.displayName).font(.body)
-                                    Text(bot.matrixID).font(.caption2).foregroundStyle(.secondary)
+            // Mirror the chat list's no-rooms state — first-time user
+            // with no rooms sees a `ContentUnavailableView` instead of
+            // a silent empty list (QA finding #5).
+            if didLoad && bots.isEmpty {
+                ContentUnavailableView(
+                    "No bots yet",
+                    systemImage: "bubble.left.and.bubble.right",
+                    description: Text("Provision one via dev-boxer to get started.")
+                )
+            } else {
+                List {
+                    Section("Pick a bot") {
+                        ForEach(bots, id: \.matrixID) { bot in
+                            Button {
+                                Task { await create(with: bot) }
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(bot.displayName).font(.body)
+                                        Text(bot.matrixID).font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if creatingFor == bot { ProgressView().controlSize(.small) }
                                 }
-                                Spacer()
-                                if creatingFor == bot { ProgressView().controlSize(.small) }
                             }
+                            .buttonStyle(.plain)
+                            .disabled(creatingFor != nil)
                         }
-                        .buttonStyle(.plain)
-                        .disabled(creatingFor != nil)
                     }
                 }
+                .listStyle(.inset)
             }
-            .listStyle(.inset)
         }
         .padding(20)
         .frame(width: 420, height: 360)
@@ -63,6 +78,7 @@ struct MacNewChatSheet: View {
             bots = Array(unique).sorted { $0.displayName < $1.displayName }
             break
         }
+        didLoad = true
     }
 
     private func create(with bot: BotIdentity) async {

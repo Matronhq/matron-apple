@@ -20,6 +20,10 @@ struct MacChatToolbar: ToolbarContent {
     let title: String
     let viewModel: ChatViewModel
     let onShowBotProfile: () -> Void
+    // TODO Phase 6: wire this to `SearchService`. Today the binding is
+    // intentionally non-functional — the toolbar field exists so the §5.9
+    // layout is observable end-to-end. Reviewers seeing an unused
+    // `@State` should not "clean it up" (QA finding #14).
     @State private var searchText: String = ""
 
     var body: some ToolbarContent {

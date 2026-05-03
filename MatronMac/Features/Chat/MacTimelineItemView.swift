@@ -41,6 +41,10 @@ struct MacTimelineItemView: View {
             ) {
                 MarkdownText(body)
             }
+            // Mac VoiceOver mirror of the iOS accessibility wiring — see
+            // `TimelineItemView.accessibilityLabel(for:body:)` (QA finding #13).
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Self.accessibilityLabel(for: item, body: body))
 
         case .image(let url, let caption, let sizeBytes):
             MessageBubble(
@@ -53,6 +57,8 @@ struct MacTimelineItemView: View {
                     caption: caption ?? sizeBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
                 )
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Self.accessibilityLabel(for: item, body: caption ?? "Image attachment"))
 
         case .file(_, let filename, let sizeBytes):
             MessageBubble(
@@ -61,6 +67,8 @@ struct MacTimelineItemView: View {
             ) {
                 AttachmentFile(filename: filename, sizeBytes: sizeBytes)
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Self.accessibilityLabel(for: item, body: "File attachment: \(filename)"))
 
         case .stateChange(let text):
             HStack {
@@ -100,6 +108,13 @@ struct MacTimelineItemView: View {
     static func displayName(for senderID: String) -> String {
         let withoutSigil = senderID.hasPrefix("@") ? String(senderID.dropFirst()) : senderID
         return withoutSigil.split(separator: ":").first.map(String.init) ?? senderID
+    }
+
+    /// Mac mirror of `TimelineItemView.accessibilityLabel(for:body:)` —
+    /// see iOS for the rationale (QA finding #13).
+    static func accessibilityLabel(for item: TimelineItem, body: String) -> String {
+        let senderName = item.isOwn ? "Me" : displayName(for: item.sender)
+        return "\(senderName): \(body)"
     }
 
     private func resolvedImage(for url: URL?) -> Image? {
