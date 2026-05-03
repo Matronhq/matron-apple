@@ -91,6 +91,15 @@ jobs:
             CODE_SIGNING_ALLOWED=NO
 
       - name: Run MatronMac tests
+        env:
+          # Phase 3 Task 12 added Mac-side snapshot tests for the verification
+          # chrome. Same rationale as the SPM job: NSHostingView renders
+          # differently across macOS / Xcode versions, so pixel equality is
+          # gated by this env var on CI. `TEST_RUNNER_*` is the documented
+          # xcodebuild prefix that propagates a variable into the test
+          # runner's environment (the helper reads it via `ProcessInfo`).
+          # Snapshots remain useful for local visual review.
+          TEST_RUNNER_MATRON_SKIP_SNAPSHOT_TESTS: "1"
         run: |
           xcodebuild test \
             -project Matron.xcodeproj \
