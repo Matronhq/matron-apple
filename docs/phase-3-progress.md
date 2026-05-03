@@ -64,3 +64,8 @@ See plan for canonical list. Updates land here per push.
   - View uses `Color(.systemGray6)` directly (Task 5 precedent — `Color.matronCodeBg` is `internal` to `MatronDesignSystem`).
   - No `deinit`: `View.task(id:)` auto-cancels the observe task on disappear, and the producing service owns the stream's continuation. No need for an explicit `cancel()` like `ChatListViewModel` since there's no manual `Task` storage.
   - SPM total: 183 (was 178, +5). iOS scheme: 32 (was 29, +3). Mac scheme: 31.
+- [x] **Task 7c — `MacSasView`** (2026-05-03). Mac sheet in `MatronMac/Features/Verification/MacSasView.swift`; 4 binding tests in `MatronMacTests/MacSasViewTests.swift`. Same shared `SasViewModel` from Task 6; only the SwiftUI layer differs. **Plan deviations:**
+  - Plan calls for "no new logic-test in this step" (state machine already covered by `SasViewModelTests`). Added 4 SwiftUI body-composition smoke tests anyway, mirroring the `MacRecoveryKeyViewTests` and `MacBotProfileSheetTests` precedent — body composition is the kind of regression that Mac-side surface bugs (sheet sizing, NSColor on iOS-only types, etc.) tend to manifest as.
+  - Background uses `Color(NSColor.controlBackgroundColor)` (mirrors design-system internal alias on macOS, same pattern as `MacRecoveryKeyView`).
+  - File guarded with `#if os(macOS)` so the test bundle's iOS-leaked sources don't trip on `NSColor`. Same guard pattern as `MacRecoveryKeyViewTests` / `MacChatListViewTests`.
+  - SPM total: 183. iOS scheme: 32. Mac scheme: 35 (was 31, +4).
