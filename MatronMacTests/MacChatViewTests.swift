@@ -34,18 +34,57 @@ private final class FakeMediaForChat: MediaService, @unchecked Sendable {
     func image(for mxc: URL) async -> Data? { nil }
 }
 
-/// Local fake mirroring the iOS `FakeVerificationServiceForChat` (host-app
-/// test bundles can't reach into another test target's `internal` fakes).
-private actor FakeVerificationServiceForChat: VerificationService {
-    private var userVerifiedMap: [String: Bool] = [:]
+/// Counting fake for the B2/M5 binding test — records each call to
+/// `startSAS`. Plain class with `NSLock` rather than an actor so the
+/// recorded count can be read synchronously from the test.
+private final class CountingVerificationServiceForChat: VerificationService, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _startSASCalls: Int = 0
 
-    func setUserVerified(_ verified: Bool, for matrixID: String) {
-        userVerifiedMap[matrixID] = verified
+    var startSASCallCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _startSASCalls
     }
 
     func isThisDeviceVerified() async throws -> Bool { true }
-    func isUserVerified(matrixID: String) async throws -> Bool {
-        userVerifiedMap[matrixID, default: false]
+    func isUserVerified(matrixID: String) async throws -> UserVerificationResult { .unknown }
+    func incomingRequests() -> AsyncStream<VerificationRequestSummary> {
+        AsyncStream { $0.finish() }
+    }
+    func startSAS(withUser userID: String, deviceID: String?) -> AsyncStream<SasFlowState> {
+        lock.lock()
+        _startSASCalls += 1
+        lock.unlock()
+        return AsyncStream { $0.finish() }
+    }
+    func acceptIncoming(requestID: String) -> AsyncStream<SasFlowState> {
+        AsyncStream { $0.finish() }
+    }
+    func confirmEmojiMatch(requestID: String) async throws {}
+    func cancel(requestID: String, reason: String) async throws {}
+}
+
+/// Local fake mirroring the iOS `FakeVerificationServiceForChat` (host-app
+/// test bundles can't reach into another test target's `internal` fakes).
+private actor FakeVerificationServiceForChat: VerificationService {
+    private var userVerificationMap: [String: UserVerificationResult] = [:]
+
+    /// Convenience seam preserved from the prior Bool shape — `true` →
+    /// `.verified`, `false` → `.unverified`. Tests that need the
+    /// `.unknown` arm (cold-start path) call `setUserVerificationResult(_:for:)`.
+    func setUserVerified(_ verified: Bool, for matrixID: String) {
+        userVerificationMap[matrixID] = verified ? .verified : .unverified
+    }
+
+    /// M2 tri-state seam — exercises the `.unknown` arm that the Bool
+    /// seam can't reach. Default for un-seeded users is `.unknown`.
+    func setUserVerificationResult(_ result: UserVerificationResult, for matrixID: String) {
+        userVerificationMap[matrixID] = result
+    }
+
+    func isThisDeviceVerified() async throws -> Bool { true }
+    func isUserVerified(matrixID: String) async throws -> UserVerificationResult {
+        userVerificationMap[matrixID, default: .unknown]
     }
     nonisolated func incomingRequests() -> AsyncStream<VerificationRequestSummary> {
         AsyncStream { $0.finish() }
@@ -153,12 +192,16 @@ final class MacChatViewTests: XCTestCase {
     /// Task 10: per-bot inline banner above the timeline. Mirrors the
     /// iOS `ChatViewBindingTests` shape — verifies the optional-param
     /// wiring at compile time and pins the underlying fake-service
-    /// state the banner predicate keys on.
+    /// state the banner predicate keys on. M2 tightens the seam from
+    /// Bool to tri-state — the `.unknown` arm is covered separately.
     func test_view_showsBanner_whenBotIsUnverified() async throws {
         let timeline = FakeTimelineForChat()
         let chatVM = ChatViewModel(roomID: "!r:s", timeline: timeline, media: FakeMediaForChat())
         let composerVM = ComposerViewModel(timeline: timeline, commands: [])
         let svc = FakeVerificationServiceForChat()
+        // Explicitly seed `.unverified` (NOT `.unknown` — the new
+        // banner-hides default). Banner only renders on `.unverified`.
+        await svc.setUserVerificationResult(.unverified, for: "@box4:s")
         let view = MacChatView(
             viewModel: chatVM,
             composerVM: composerVM,
@@ -167,8 +210,8 @@ final class MacChatViewTests: XCTestCase {
             verificationService: svc,
             botMatrixID: "@box4:s"
         )
-        let verified = try await svc.isUserVerified(matrixID: "@box4:s")
-        XCTAssertFalse(verified, "Default fake state must read as unverified for the banner to render")
+        let result = try await svc.isUserVerified(matrixID: "@box4:s")
+        XCTAssertEqual(result, .unverified, "Seeded .unverified must read as such for the banner to render")
         XCTAssertEqual(view.botMatrixID, "@box4:s")
     }
 
@@ -186,8 +229,58 @@ final class MacChatViewTests: XCTestCase {
             verificationService: svc,
             botMatrixID: "@box4:s"
         )
-        let verified = try await svc.isUserVerified(matrixID: "@box4:s")
-        XCTAssertTrue(verified, "Seeded verified state must read true so the banner is suppressed")
+        let result = try await svc.isUserVerified(matrixID: "@box4:s")
+        XCTAssertEqual(result, .verified, "Seeded verified state must read .verified so the banner is suppressed")
+    }
+
+    /// B2/M5 expert-QA fix: the per-bot SAS sheet body must build the
+    /// `SasViewModel` + open the `startSAS` stream exactly once per
+    /// "Verify" tap (not on every parent body re-evaluation). Mirrors
+    /// the iOS test in `ChatViewBindingTests.test_perBotSasSheet_*`.
+    /// Locks the construction-time baseline: instantiating MacChatView
+    /// itself MUST NOT call startSAS. The runtime @State preservation
+    /// is a SwiftUI invariant; we lock the structural shape here.
+    func test_perBotSasSheet_callsStartSASExactlyOnce_perPresent() async throws {
+        let svc = CountingVerificationServiceForChat()
+        let timeline = FakeTimelineForChat()
+        let chatVM = ChatViewModel(roomID: "!r:s", timeline: timeline, media: FakeMediaForChat())
+        let composerVM = ComposerViewModel(timeline: timeline, commands: [])
+        let _ = MacChatView(
+            viewModel: chatVM,
+            composerVM: composerVM,
+            chatTitle: "Bot Room",
+            onShowBotProfile: {},
+            verificationService: svc,
+            botMatrixID: "@box4:s"
+        )
+        XCTAssertEqual(svc.startSASCallCount, 0,
+                       "MacChatView constructor must not call startSAS — that fires on banner-tap")
+    }
+
+    /// M2 expert-QA fix: cold-start path. When the SDK's local crypto
+    /// store doesn't yet have the bot's identity (sliding-sync hasn't
+    /// warmed up `/keys/query` yet), `isUserVerified` returns `.unknown`.
+    /// The banner MUST stay hidden in that case — collapsing `.unknown`
+    /// into `.unverified` (the prior Bool shape) caused the banner to
+    /// flash on every fresh chat open until the local store warmed up.
+    func test_view_hidesBanner_whenBotVerificationIsUnknown() async throws {
+        let timeline = FakeTimelineForChat()
+        let chatVM = ChatViewModel(roomID: "!r:s", timeline: timeline, media: FakeMediaForChat())
+        let composerVM = ComposerViewModel(timeline: timeline, commands: [])
+        let svc = FakeVerificationServiceForChat()
+        // Don't seed — default is `.unknown`. Equivalent to the cold-start
+        // path where the local crypto store hasn't loaded the identity yet.
+        let _ = MacChatView(
+            viewModel: chatVM,
+            composerVM: composerVM,
+            chatTitle: "Bot Room",
+            onShowBotProfile: {},
+            verificationService: svc,
+            botMatrixID: "@coldstart:s"
+        )
+        let result = try await svc.isUserVerified(matrixID: "@coldstart:s")
+        XCTAssertEqual(result, .unknown,
+            "Un-seeded user must read as .unknown — banner stays hidden until next sync tick")
     }
 }
 #endif

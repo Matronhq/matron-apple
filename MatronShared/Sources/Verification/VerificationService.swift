@@ -14,13 +14,21 @@ public protocol VerificationService: Sendable {
     /// onboarding banner to decide whether to prompt the user.
     func isThisDeviceVerified() async throws -> Bool
 
-    /// True if the cross-signing identity for `matrixID` is verified by this
-    /// account. Drives the per-bot inline banner shown above the chat
-    /// timeline (spec §7.3, §7.5). Returns `false` when the user identity
-    /// can't be looked up (e.g. unknown user, network unavailable) so the
-    /// banner errs on the side of prompting verification — matches the
-    /// "nothing auto-trusted" trust posture from §7.5.
-    func isUserVerified(matrixID: String) async throws -> Bool
+    /// Tri-state trust check for the per-bot inline banner shown above the
+    /// chat timeline (spec §7.3, §7.5). Returns:
+    ///   * `.verified`   — SDK has the identity AND it's cross-signed.
+    ///   * `.unverified` — SDK has the identity, but it's NOT cross-signed.
+    ///   * `.unknown`    — SDK does not yet have the identity in its local
+    ///                     crypto store (cold-start; sliding-sync hasn't
+    ///                     warmed up `/keys/query` yet).
+    ///
+    /// The `.unknown` arm is what makes this tri-state instead of `Bool`:
+    /// collapsing "identity not loaded" into "unverified" caused the
+    /// per-bot banner to flash on every cold-start chat open. Callers
+    /// hide the banner on `.unknown` and re-evaluate on the next
+    /// sliding-sync tick — matches §7.5's "nothing auto-trusted" posture
+    /// without lying about an identity we haven't queried yet.
+    func isUserVerified(matrixID: String) async throws -> UserVerificationResult
 
     /// Emits incoming verification requests originating from another device
     /// (or a bot) of the same user. The stream terminates when the service

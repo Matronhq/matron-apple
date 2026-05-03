@@ -66,15 +66,43 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
         /// `start()` is idempotent — second call no-ops if already set.
         var sdkController: MatrixRustSDK.SessionVerificationController?
 
-        func register(controller: SessionVerificationControlling, for requestID: String) {
+        /// Returns the previous controller (if any) so the caller can
+        /// best-effort cancel it before it falls out of the dict. The
+        /// SDK's session-verification controller is a singleton per
+        /// session, so the typical case is that the previous and new
+        /// controller are the SAME wrapped instance and the cancel is a
+        /// no-op (post-cancel the SDK is in a clean idle state ready to
+        /// re-arm). The return value is documented because M3's caller
+        /// uses it to drive that cancel asynchronously without holding
+        /// the actor lock.
+        func register(controller: SessionVerificationControlling, for requestID: String) -> SessionVerificationControlling? {
+            let previous = controllers[requestID]
             controllers[requestID] = controller
+            return previous
         }
 
         func controller(for requestID: String) -> SessionVerificationControlling? {
             controllers[requestID]
         }
 
+        /// Replacing a continuation must finish the prior one with a
+        /// `.cancelled(reason: "Replaced by new flow")` so the upstream
+        /// `for await` loop terminates instead of silently leaking. M3
+        /// expert-QA fix: when the user taps "Verify with another device",
+        /// cancels the sheet, then taps it again, the second `startSAS`
+        /// re-enters here for the same `requestID`. The prior continuation
+        /// (which the dismissed sheet's view-model is no longer observing
+        /// but which still lives in this dict) used to be silently
+        /// overwritten — its `for await new in stream` loop never
+        /// terminated because the producer never finished it. Surfacing
+        /// `.cancelled(reason:)` then `finish()` is the only way to drain
+        /// that loop. Same risk for any caller doing a retry against the
+        /// same `requestID`.
         func setContinuation(_ continuation: AsyncStream<SasFlowState>.Continuation, for requestID: String) {
+            if let previous = continuations[requestID] {
+                previous.yield(.cancelled(reason: "Replaced by new flow"))
+                previous.finish()
+            }
             continuations[requestID] = continuation
         }
 
@@ -154,7 +182,10 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
 
     /// Test seam: register a controller for a given request ID. Production code
     /// populates this from `IncomingVerificationListening.onUpdate`.
-    func register(controller: SessionVerificationControlling, for requestID: String) async {
+    /// Returns the previously-registered controller (if any) — M3 callers
+    /// best-effort cancel that controller. Tests typically discard.
+    @discardableResult
+    func register(controller: SessionVerificationControlling, for requestID: String) async -> SessionVerificationControlling? {
         await store.register(controller: controller, for: requestID)
     }
 
@@ -218,10 +249,17 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
     /// our own identity to be verified for another user's identity to count
     /// as verified, so the banner correctly hides only when both sides are
     /// trusted). `fallbackToServer: false` avoids blocking the banner on a
-    /// network round-trip; the local crypto store already has the identity
-    /// the SDK needs to make this decision once any prior to-device or
-    /// /keys/query has landed (which the sliding-sync warmup already drives).
-    public func isUserVerified(matrixID: String) async throws -> Bool {
+    /// network round-trip; the local crypto store has the identity once any
+    /// prior to-device or /keys/query has landed (which the sliding-sync
+    /// warmup drives).
+    ///
+    /// Returns `.unknown` when the identity isn't in the local crypto store
+    /// yet — that's the cold-start case where sliding-sync hasn't warmed up.
+    /// The prior `Bool` shape collapsed `.unknown` into "unverified", causing
+    /// the per-bot banner to flash on every fresh chat open until the local
+    /// store warmed up. Callers hide the banner on `.unknown` and re-evaluate
+    /// on the next sync tick (expert-QA finding M2).
+    public func isUserVerified(matrixID: String) async throws -> UserVerificationResult {
         guard let provider, let session else {
             throw VerificationError.notConfigured
         }
@@ -230,11 +268,12 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
             userId: matrixID,
             fallbackToServer: false
         ) else {
-            // Unknown identity → not verified. Caller's banner will prompt
-            // the user to verify, matching §7.5's "nothing auto-trusted".
-            return false
+            // Identity not yet in the local crypto store. Caller hides the
+            // banner and re-checks on the next sync tick — see §7.5 trust
+            // posture in the protocol comment.
+            return .unknown
         }
-        return identity.isVerified()
+        return identity.isVerified() ? .verified : .unverified
     }
 
     public func incomingRequests() -> AsyncStream<VerificationRequestSummary> {
@@ -270,7 +309,22 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
                     let wrapped = LiveSessionVerificationController(controller)
                     // Use the user ID as the cache key for self-verification flows.
                     // Per-flow controllers replace this entry when a delegate fires.
-                    await self.store.register(controller: wrapped, for: userID)
+                    // M3: capture the previous controller (if any) and best-effort
+                    // cancel it on the SDK so a re-tap of "Verify with another
+                    // device" doesn't leave the old SDK request orphaned. The
+                    // SDK's session-verification controller is a singleton per
+                    // session, so the previous and new wrapped instances point
+                    // at the same SDK controller in practice — the cancel is a
+                    // no-op when the SDK is already idle. `try?` because a
+                    // partner-side cancel that already finished the flow would
+                    // throw here, and we don't want a stale-cancel error to
+                    // mask the new flow's setup. `setContinuation` below
+                    // separately finishes the prior continuation — see
+                    // `FlowStore.setContinuation` for that half of the fix.
+                    let priorController = await self.store.register(controller: wrapped, for: userID)
+                    if let priorController {
+                        try? await priorController.cancelVerification()
+                    }
                     await self.store.setContinuation(continuation, for: userID)
                     // Mark this as the in-progress flow so the delegate's
                     // lifecycle callbacks know which continuation to drive.

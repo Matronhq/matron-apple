@@ -31,14 +31,24 @@ struct MacChatView: View {
     /// when the user picks a different row.
     @State private var sourceItem: TimelineItem?
     /// Per-bot verification state (Task 10, spec §7.3, §7.5). `nil` until
-    /// `evaluateBotVerification()` resolves; `false` shows the banner;
-    /// `true` hides it. Three-state to avoid flashing the banner during
-    /// the async query for already-verified bots.
-    @State private var isBotVerified: Bool? = nil
-    /// Drives the per-bot SAS sheet. Mirrors the iOS `ChatView` opt-in
-    /// pattern — the bot's matrixID is captured from `botMatrixID` at
-    /// sheet-build time.
-    @State private var showVerifyBotSheet = false
+    /// `evaluateBotVerification()` resolves; otherwise the tri-state result
+    /// from `VerificationService.isUserVerified(matrixID:)` (M2). Banner
+    /// renders ONLY on `.unverified` — `.verified` and `.unknown`
+    /// (cold-start: identity not yet in the local crypto store) both hide,
+    /// so the banner doesn't flash before sliding-sync warms up
+    /// `/keys/query`. §7.5 trust posture is preserved because the
+    /// `.unknown` arm re-evaluates on the next sync tick.
+    @State private var botVerification: UserVerificationResult? = nil
+    /// Drives the per-bot SAS sheet via `.sheet(item:)`. B2/M5 fix —
+    /// see iOS `ChatView` for full rationale. The wrapper exists so
+    /// `.sheet(item:)` gets a stable `Identifiable` to key on; identity
+    /// is the bot's matrixID itself.
+    @State private var verifyBotContext: VerifyBotSheetContext?
+
+    /// Identifiable wrapper for `.sheet(item:)`. See iOS `ChatView`.
+    fileprivate struct VerifyBotSheetContext: Identifiable, Hashable {
+        let id: String
+    }
 
     let chatTitle: String
     let onShowBotProfile: () -> Void
@@ -52,8 +62,9 @@ struct MacChatView: View {
             // Per-bot verification banner (spec §7.3, §7.5). Mirrors the
             // iOS `ChatView` placement — above the error banner so a
             // user who's both unverified and hit a sliding-sync timeout
-            // sees both signals.
-            if isBotVerified == false {
+            // sees both signals. Only `.unverified` draws — `.unknown`
+            // and `.verified` hide (M2 cold-start posture).
+            if botVerification == .unverified {
                 botVerificationBanner
             }
             // QA finding #10: mirror the iOS error banner. Sliding-sync
@@ -135,11 +146,18 @@ struct MacChatView: View {
             await viewModel.start()
             await viewModel.markAsRead()
         }
-        // Per-bot verification check on appear. Separate `.task` so the
-        // (cheap, synchronous-once-cached) identity lookup doesn't share
-        // a cancellation lifecycle with the long-lived timeline
+        // Per-bot verification check on appear AND each time the
+        // timeline gains its first items — that's the cheapest signal
+        // for "sliding-sync delivered enough state that the local
+        // crypto store probably has the user identity now". Keying on
+        // `items.isEmpty` re-fires exactly once when the empty initial
+        // snapshot transitions to a populated one, so M2's `.unknown`
+        // cold-start result resolves to `.verified` / `.unverified`
+        // without requiring the user to re-open the chat. Separate
+        // `.task` so the (cheap) identity lookup doesn't share a
+        // cancellation lifecycle with the long-lived timeline
         // observation.
-        .task { await evaluateBotVerification() }
+        .task(id: viewModel.items.isEmpty) { await evaluateBotVerification() }
         .onDisappear { viewModel.stop() }
         // ⌘K opens the slash palette without typing `/`. The hidden
         // button is the SwiftUI-recommended pattern for a global keyboard
@@ -168,24 +186,25 @@ struct MacChatView: View {
         .sheet(item: $sourceItem) { item in
             MacEventSourceSheet(item: item, onDismiss: { sourceItem = nil })
         }
-        .sheet(isPresented: $showVerifyBotSheet) {
-            verifyBotSheetBody
+        .sheet(item: $verifyBotContext) { context in
+            verifyBotSheetBody(for: context.id)
         }
     }
 
     /// Per-bot verification evaluation. See iOS `ChatView` for details —
     /// `nil` keeps the banner hidden during the async query; a thrown
-    /// error resolves to `false` so the §7.5 "nothing auto-trusted"
-    /// posture is preserved on a flaky network.
+    /// error resolves to `.unknown` so the next sync tick can re-check
+    /// (was previously `false` under the Bool shape; M2 widens to
+    /// tri-state to avoid the cold-start banner flash).
     private func evaluateBotVerification() async {
         guard let svc = verificationService, let botMatrixID else {
-            isBotVerified = nil
+            botVerification = nil
             return
         }
         do {
-            isBotVerified = try await svc.isUserVerified(matrixID: botMatrixID)
+            botVerification = try await svc.isUserVerified(matrixID: botMatrixID)
         } catch {
-            isBotVerified = false
+            botVerification = .unknown
         }
     }
 
@@ -208,9 +227,13 @@ struct MacChatView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Verify") { showVerifyBotSheet = true }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+            Button("Verify") {
+                if let botMatrixID {
+                    verifyBotContext = VerifyBotSheetContext(id: botMatrixID)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
         }
         .padding(.horizontal)
         .padding(.vertical, 10)
@@ -219,24 +242,18 @@ struct MacChatView: View {
         .accessibilityLabel("This device hasn't been verified. Verify.")
     }
 
-    /// Builds the SAS sheet for verifying the bot user. Mirrors the iOS
-    /// `verifyBotSheetBody` — `requestID` is the bot's matrixID (the
-    /// FlowStore cache key `VerificationServiceLive.startSAS`
-    /// registers under for per-user verification flows).
+    /// Builds the SAS sheet for verifying the bot user. Hands construction
+    /// to the per-present `MacVerifyBotSheet` whose `@State`-stored
+    /// SasViewModel survives parent re-renders (B2/M5 fix; see iOS
+    /// `ChatView` for full rationale).
     @ViewBuilder
-    private var verifyBotSheetBody: some View {
-        if let svc = verificationService, let botMatrixID {
-            let stream = svc.startSAS(withUser: botMatrixID, deviceID: nil)
-            MacSasView(
-                viewModel: SasViewModel(
-                    stream: stream,
-                    requestID: botMatrixID,
-                    confirm: { try await svc.confirmEmojiMatch(requestID: botMatrixID) },
-                    cancel: { reason in try await svc.cancel(requestID: botMatrixID, reason: reason) }
-                ),
-                title: "Verify \(botMatrixID)",
+    private func verifyBotSheetBody(for botMatrixID: String) -> some View {
+        if let svc = verificationService {
+            MacVerifyBotSheet(
+                service: svc,
+                botMatrixID: botMatrixID,
                 onFinished: {
-                    showVerifyBotSheet = false
+                    verifyBotContext = nil
                     Task { await evaluateBotVerification() }
                 }
             )
@@ -245,5 +262,35 @@ struct MacChatView: View {
                 .frame(width: 360, height: 120)
                 .padding()
         }
+    }
+}
+
+/// Per-present SAS sheet body for the per-bot verification flow. Owns
+/// the `SasViewModel` + stream as `@State` so they're constructed
+/// exactly once per present. Mirrors iOS `VerifyBotSheet`. See iOS
+/// `ChatView.swift` for the B2/M5 expert-QA rationale.
+private struct MacVerifyBotSheet: View {
+    @State private var viewModel: SasViewModel
+    private let botMatrixID: String
+    private let onFinished: () -> Void
+
+    init(service: VerificationService, botMatrixID: String, onFinished: @escaping () -> Void) {
+        self.botMatrixID = botMatrixID
+        self.onFinished = onFinished
+        let stream = service.startSAS(withUser: botMatrixID, deviceID: nil)
+        _viewModel = State(initialValue: SasViewModel(
+            stream: stream,
+            requestID: botMatrixID,
+            confirm: { try await service.confirmEmojiMatch(requestID: botMatrixID) },
+            cancel: { reason in try await service.cancel(requestID: botMatrixID, reason: reason) }
+        ))
+    }
+
+    var body: some View {
+        MacSasView(
+            viewModel: viewModel,
+            title: "Verify \(botMatrixID)",
+            onFinished: onFinished
+        )
     }
 }

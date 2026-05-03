@@ -96,31 +96,47 @@ struct MacPostLoginVerificationView: View {
                         onFinished: onCompleted
                     )
                 case .sasWithOtherDevice:
-                    // Use the cached service so the FlowStore + registered
-                    // SDK delegate are shared with every other consumer
-                    // (sidebar banner, per-bot MacChatView banner,
-                    // MacDeviceSettingsView, Help menu). A fresh instance
-                    // would have an empty FlowStore + an unregistered
-                    // delegate (expert-QA B1).
-                    let svc = dependencies.verificationService(for: session)
-                    // Same self-verification cache-key choice as iOS — the
-                    // FlowStore entry registered by `startSAS` is keyed by
-                    // userID, so confirm/cancel must use the same key.
-                    let requestID = session.userID
-                    let stream = svc.startSAS(withUser: session.userID, deviceID: nil)
-                    MacSasView(
-                        viewModel: SasViewModel(
-                            stream: stream,
-                            requestID: requestID,
-                            confirm: { try await svc.confirmEmojiMatch(requestID: requestID) },
-                            cancel: { reason in try await svc.cancel(requestID: requestID, reason: reason) }
-                        ),
-                        title: "Verify this device",
+                    // B2/M5 expert-QA fix mirroring iOS — hand
+                    // construction to `MacSelfVerifySasDestination` so
+                    // the SasViewModel + stream survive parent
+                    // re-renders. See iOS `PostLoginVerificationView`
+                    // for full rationale.
+                    MacSelfVerifySasDestination(
+                        service: dependencies.verificationService(for: session),
+                        userID: session.userID,
                         onFinished: onCompleted
                     )
                 }
             }
         }
+    }
+}
+
+/// Mac self-verify SAS navigation destination. Owns the `SasViewModel`
+/// + stream as `@State` so they're built exactly once per push.
+/// Mirrors iOS `SelfVerifySasDestination`. See iOS view for the
+/// B2/M5 expert-QA rationale.
+private struct MacSelfVerifySasDestination: View {
+    @State private var viewModel: SasViewModel
+    private let onFinished: () -> Void
+
+    init(service: VerificationService, userID: String, onFinished: @escaping () -> Void) {
+        self.onFinished = onFinished
+        let stream = service.startSAS(withUser: userID, deviceID: nil)
+        _viewModel = State(initialValue: SasViewModel(
+            stream: stream,
+            requestID: userID,
+            confirm: { try await service.confirmEmojiMatch(requestID: userID) },
+            cancel: { reason in try await service.cancel(requestID: userID, reason: reason) }
+        ))
+    }
+
+    var body: some View {
+        MacSasView(
+            viewModel: viewModel,
+            title: "Verify this device",
+            onFinished: onFinished
+        )
     }
 }
 #endif

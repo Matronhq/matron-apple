@@ -16,6 +16,21 @@ struct MatronApp: App {
     /// scope lives in the `UserDefaults` key — see
     /// `PostLoginVerificationView.verifyDoneKey(for:)`.
     @State private var verifyDone = false
+    /// Persistent `VerificationCenter` for the active session. B2/M5
+    /// expert-QA fix: previously this was constructed inline as a
+    /// `let verificationCenter = VerificationCenter(...)` inside body.
+    /// Every `@State` mutation in the host (`bootstrapDone`, `session`,
+    /// `verifyDone`, etc.) re-runs `body`, producing a NEW center each
+    /// time. The old center's `start()` task kept running on the stale
+    /// instance (orphaned), and the new center's `start()` was never
+    /// invoked because `ChatListView.onAppear` is per-view-identity, not
+    /// per-render. The chat-list banner went dark and any SAS sheet built
+    /// from the orphaned center hit an empty FlowStore.
+    ///
+    /// Hoisting to `@State` + driving construction from a `.task(id:)`
+    /// keyed on `session.userID` keeps the center stable across body
+    /// re-evaluations and (correctly) rebuilds when the user changes.
+    @State private var verificationCenter: VerificationCenter?
 
     var body: some Scene {
         WindowGroup {
@@ -25,21 +40,14 @@ struct MatronApp: App {
                         .task { await bootstrap() }
                 } else if let session {
                     if verifyDone {
-                        // Build the verification orchestrator once per
-                        // (session, scene) pair. `VerificationCenter`'s
-                        // `start()` / `stop()` lifecycle is wired inside
-                        // `ChatListView` so the long-lived
-                        // `incomingRequests()` stream doesn't outlive the
-                        // host view (Swift 6 strict concurrency forbids a
-                        // `@MainActor deinit` reaching isolated state).
-                        // The cached `verificationService(for:)` is
-                        // load-bearing — the SAME instance is later passed
-                        // to `ChatListView`, `ChatView` (per-bot banner),
-                        // and `DeviceSettingsView` so they all share a
-                        // FlowStore + the registered SDK delegate.
-                        let verificationCenter = VerificationCenter(
-                            service: dependencies.verificationService(for: session)
-                        )
+                        // VerificationCenter is hoisted to `@State` and
+                        // built inside the `.task(id: session.userID)`
+                        // below — see the property's declaration for the
+                        // B2/M5 rationale. Passing the optional through
+                        // is safe: `ChatListView.verificationCenter` is
+                        // already an `Optional<VerificationCenter>` and
+                        // its banner code short-circuits on `nil` until
+                        // the task installs the real instance.
                         NavigationStack {
                             ChatListView(
                                 viewModel: ChatListViewModel(chat: dependencies.chatService(for: session)),
@@ -60,6 +68,27 @@ struct MatronApp: App {
                         // (expert-QA finding B1). Idempotent — safe on
                         // SwiftUI re-mounts.
                         .task { try? await dependencies.verificationService(for: session).start() }
+                        // B2/M5: build the VerificationCenter exactly once
+                        // per session and call `start()` on the same
+                        // instance that's handed to ChatListView. Keying
+                        // on `session.userID` means the task only re-fires
+                        // on a user switch (sign-out + back-in), not on
+                        // unrelated `@State` mutations like `verifyDone`
+                        // or `bootstrapDone` flipping. Stop is wired in
+                        // `.onDisappear` below so the long-lived
+                        // `incomingRequests()` stream doesn't outlive the
+                        // verifyDone branch.
+                        .task(id: session.userID) {
+                            let center = VerificationCenter(
+                                service: dependencies.verificationService(for: session)
+                            )
+                            center.start()
+                            verificationCenter = center
+                        }
+                        .onDisappear {
+                            verificationCenter?.stop()
+                            verificationCenter = nil
+                        }
                     } else {
                         PostLoginVerificationView(
                             dependencies: dependencies,

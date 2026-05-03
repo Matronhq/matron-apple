@@ -53,6 +53,33 @@ public enum SasFlowState: Equatable, Sendable {
     case cancelled(reason: String)
 }
 
+/// Tri-state result for the per-user trust check
+/// (`VerificationService.isUserVerified(matrixID:)`). Tri-state distinguishes
+/// "the SDK's local crypto store hasn't seen this identity yet" from "the
+/// SDK has the identity and it's flagged unverified" — collapsing those
+/// into a single `Bool` (the prior shape) was the M2 expert-QA bug:
+/// cold-start users saw the per-bot banner flash "unverified" on every chat
+/// they opened until sliding-sync warmed up the local crypto store, even
+/// for already-verified bots.
+///
+/// Spec §7.5 trust posture: `.unknown` keeps the banner hidden — the UI
+/// re-evaluates on the next sliding-sync tick rather than promoting an
+/// unloaded identity to "unverified" prematurely. The banner only renders
+/// for `.unverified`.
+public enum UserVerificationResult: Equatable, Sendable {
+    /// SDK's local crypto store has the user's identity and it's
+    /// cross-signed by our master key.
+    case verified
+    /// SDK has the identity, but it's NOT cross-signed (or is signed by a
+    /// key we don't trust). Banner renders; user is prompted to verify.
+    case unverified
+    /// SDK doesn't have the identity in its local crypto store yet — most
+    /// likely the cold-start case where sliding-sync hasn't yet pulled
+    /// the user's `/keys/query`. Banner hides; caller should re-evaluate
+    /// on the next sync tick.
+    case unknown
+}
+
 /// A pending verification request from another device or bot.
 public struct VerificationRequestSummary: Equatable, Identifiable, Sendable {
     public let id: String

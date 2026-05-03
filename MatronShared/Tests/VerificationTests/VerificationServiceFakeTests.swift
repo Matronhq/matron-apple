@@ -64,24 +64,55 @@ final class VerificationServiceFakeTests: XCTestCase {
         XCTAssertTrue(verified)
     }
 
-    func test_isUserVerified_defaultsToFalse_forUnknownUser() async throws {
-        // Spec §7.5: "nothing auto-trusted". Unknown identities — and any
-        // user the test hasn't explicitly seeded as verified — must read
-        // as unverified so the per-bot banner errs on the side of
-        // prompting verification (Task 10 inline banner above the
-        // ChatView timeline).
+    /// M2 expert-QA fix: the default for an un-seeded user is `.unknown`,
+    /// not `.unverified` — collapsing "identity not loaded" into
+    /// "unverified" caused the per-bot banner to flash on every cold-start
+    /// chat open until sliding-sync warmed up the local crypto store.
+    /// Spec §7.5 still applies: callers hide the banner on `.unknown`
+    /// (so nothing is auto-trusted) and re-evaluate on the next sync tick.
+    func test_isUserVerified_returnsUnknown_whenIdentityNotCached() async throws {
         let svc = FakeVerificationService()
-        let verified = try await svc.isUserVerified(matrixID: "@bot:s")
-        XCTAssertFalse(verified)
+        let result = try await svc.isUserVerified(matrixID: "@bot:s")
+        XCTAssertEqual(result, .unknown)
     }
 
-    func test_isUserVerified_returnsSeededValue() async throws {
+    /// `setUserVerified(true, for:)` is the convenience seam — maps to
+    /// `.verified` on the new tri-state map. Locks that the legacy
+    /// boolean-shape seam still drives the `.verified` arm so existing
+    /// callers don't churn.
+    func test_isUserVerified_returnsVerified_whenIdentityVerified() async throws {
         let svc = FakeVerificationService()
         await svc.setUserVerified(true, for: "@bot:s")
-        let verified = try await svc.isUserVerified(matrixID: "@bot:s")
-        XCTAssertTrue(verified)
-        // Other users are unaffected.
+        let result = try await svc.isUserVerified(matrixID: "@bot:s")
+        XCTAssertEqual(result, .verified)
+        // Other users are unaffected — they remain `.unknown`.
         let other = try await svc.isUserVerified(matrixID: "@other:s")
-        XCTAssertFalse(other)
+        XCTAssertEqual(other, .unknown)
+    }
+
+    /// `setUserVerified(false, for:)` maps to `.unverified` (NOT `.unknown`).
+    /// This is the "SDK has the identity AND it's flagged unverified"
+    /// branch — the banner renders on this state.
+    func test_isUserVerified_returnsUnverified_whenSeededFalse() async throws {
+        let svc = FakeVerificationService()
+        await svc.setUserVerified(false, for: "@bot:s")
+        let result = try await svc.isUserVerified(matrixID: "@bot:s")
+        XCTAssertEqual(result, .unverified)
+    }
+
+    /// Exercises the tri-state seam directly so tests can cover the
+    /// `.unknown` arm (which the Bool seam can't reach — Bool only maps
+    /// to `.verified` / `.unverified`).
+    func test_setUserVerificationResult_drivesAllThreeStates() async throws {
+        let svc = FakeVerificationService()
+        await svc.setUserVerificationResult(.verified,   for: "@v:s")
+        await svc.setUserVerificationResult(.unverified, for: "@u:s")
+        await svc.setUserVerificationResult(.unknown,    for: "@k:s")
+        let v = try await svc.isUserVerified(matrixID: "@v:s")
+        let u = try await svc.isUserVerified(matrixID: "@u:s")
+        let k = try await svc.isUserVerified(matrixID: "@k:s")
+        XCTAssertEqual(v, .verified)
+        XCTAssertEqual(u, .unverified)
+        XCTAssertEqual(k, .unknown)
     }
 }

@@ -219,4 +219,91 @@ final class VerificationServiceLiveTests: XCTestCase {
             XCTFail("expected VerificationError.notConfigured, got \(error)")
         }
     }
+
+    /// M3 expert-QA fix: when a second `setContinuation` lands for the
+    /// same `requestID` while the first continuation is still alive
+    /// (e.g. the user taps "Verify with another device", cancels, then
+    /// taps it again — the second `startSAS` re-registers under the
+    /// same `userID` cache key), the FIRST continuation must be drained
+    /// with `.cancelled(reason: "Replaced by new flow")` then `finish()`.
+    /// The prior implementation silently overwrote the dict entry, so
+    /// the first stream's `for await` loop never terminated and the
+    /// dismissed sheet's view-model leaked.
+    ///
+    /// We exercise the fix through `acceptIncoming` (which calls
+    /// `setContinuation` internally) because that's the public surface;
+    /// drives two streams against the same cached controller, asserts
+    /// the first one terminates with the expected reason after the
+    /// second one is opened. Same root-cause coverage as a `startSAS`
+    /// retry against the same userID.
+    func test_secondTap_cancelsPriorContinuation() async throws {
+        let live = VerificationServiceLive()
+        let controller = FakeSessionVerificationController()
+        await live.register(controller: controller, for: "req-replace")
+
+        // First flow: open the stream + consume the `.requested` head
+        // so the continuation is registered against `req-replace`.
+        let first = live.acceptIncoming(requestID: "req-replace")
+        var firstIter = first.makeAsyncIterator()
+        let firstHead = await firstIter.next()
+        XCTAssertEqual(firstHead, .requested,
+                       "first flow must publish .requested before being replaced")
+
+        // Second flow: same requestID. `setContinuation` must drain the
+        // first continuation with `.cancelled(reason: "Replaced by new flow")`
+        // BEFORE installing the second one. We open the stream but don't
+        // consume — the reason-string assertion comes from the FIRST
+        // continuation's drain, not the second.
+        let second = live.acceptIncoming(requestID: "req-replace")
+        var secondIter = second.makeAsyncIterator()
+        // Drive the second stream a single step to ensure its
+        // `setContinuation` actor hop has landed before we drain the
+        // first iterator below — without this the test races.
+        _ = await secondIter.next()
+
+        // The first stream must now be terminated with the M3 reason.
+        // Drain the iterator: should see `.cancelled(reason: "Replaced
+        // by new flow")` and then nil (stream finished).
+        var firstTail: [SasFlowState] = []
+        while let next = await firstIter.next() { firstTail.append(next) }
+        XCTAssertEqual(firstTail, [.cancelled(reason: "Replaced by new flow")],
+                       "prior continuation must be drained with the replacement reason")
+    }
+
+    /// Companion to `test_secondTap_cancelsPriorContinuation`: the
+    /// second stream stays alive after replacing the first. Without
+    /// this assertion a regression that finished BOTH continuations
+    /// (over-eager cleanup) would still pass the M3 invariant test
+    /// above.
+    func test_secondTap_secondContinuationStaysAlive() async throws {
+        let live = VerificationServiceLive()
+        let controller = FakeSessionVerificationController()
+        await live.register(controller: controller, for: "req-alive")
+
+        // Open the first stream + drain its head so it's registered.
+        let first = live.acceptIncoming(requestID: "req-alive")
+        var firstIter = first.makeAsyncIterator()
+        _ = await firstIter.next() // .requested
+
+        // Open the second stream — first one is replaced. The second
+        // continuation must still be live: a subsequent
+        // `routeSasFinished()` must drive the second stream to
+        // `.verified`, not the first one.
+        let second = live.acceptIncoming(requestID: "req-alive")
+        var secondIter = second.makeAsyncIterator()
+        let secondHead = await secondIter.next()
+        XCTAssertEqual(secondHead, .requested,
+                       "second flow must publish .requested as normal")
+
+        // Drive the SDK delegate path against the active flow.
+        // `acceptIncoming` set `activeFlowID = "req-alive"`, so this
+        // routes through the SECOND continuation (the first was
+        // already finished by setContinuation's M3 guard).
+        await live.routeSasFinished()
+
+        var secondTail: [SasFlowState] = []
+        while let next = await secondIter.next() { secondTail.append(next) }
+        XCTAssertEqual(secondTail, [.verified],
+                       "second flow's continuation must still be live after the first was replaced")
+    }
 }

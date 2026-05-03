@@ -122,32 +122,58 @@ struct PostLoginVerificationView: View {
                         onFinished: onCompleted
                     )
                 case .sasWithOtherDevice:
-                    // Use the cached service so the FlowStore + registered
-                    // SDK delegate are shared with every other consumer
-                    // (chat-list banner, per-bot ChatView banner, Settings
-                    // → Device). A fresh instance would have an empty
-                    // FlowStore + an unregistered delegate (expert-QA B1).
-                    let svc = dependencies.verificationService(for: session)
-                    // Synthetic request ID derived from (user, device) so
-                    // SasViewModel's confirm/cancel route back to the
-                    // FlowStore entry that `startSAS` registered. The
-                    // live impl uses `userID` as the FlowStore key for
-                    // self-verification flows; we mirror that here so the
-                    // confirm/cancel closures hit the same entry.
-                    let requestID = session.userID
-                    let stream = svc.startSAS(withUser: session.userID, deviceID: nil)
-                    SasView(
-                        viewModel: SasViewModel(
-                            stream: stream,
-                            requestID: requestID,
-                            confirm: { try await svc.confirmEmojiMatch(requestID: requestID) },
-                            cancel: { reason in try await svc.cancel(requestID: requestID, reason: reason) }
-                        ),
-                        title: "Verify this device",
+                    // B2/M5 expert-QA fix: hand construction to a
+                    // dedicated `SelfVerifySasDestination` that owns
+                    // the `SasViewModel` in `@State`. Inline construction
+                    // here re-built the VM + reopened a fresh
+                    // `startSAS` stream on every parent re-render
+                    // (`@State path: [Path]` on this view changes per
+                    // navigation), so partner-side SAS state transitions
+                    // could reach an orphaned VM whose continuation the
+                    // visible destination was no longer observing.
+                    SelfVerifySasDestination(
+                        service: dependencies.verificationService(for: session),
+                        userID: session.userID,
                         onFinished: onCompleted
                     )
                 }
             }
         }
+    }
+}
+
+/// Self-verify SAS navigation destination. Owns the `SasViewModel` +
+/// stream as `@State` so they're built exactly once per push, surviving
+/// the parent's body re-renders (B2/M5 expert-QA fix). Cache key is
+/// `session.userID` — that's the FlowStore key
+/// `VerificationServiceLive.startSAS` registers under for self-
+/// verification flows, so confirm/cancel hit the same entry.
+///
+/// `service` is captured in `init` and used to construct the VM's
+/// closures; `@State` is seeded once per view-identity, so
+/// SwiftUI ignores subsequent `init` calls' `_viewModel` initial
+/// values during re-renders. That's the load-bearing SwiftUI
+/// behaviour the M5 fix relies on.
+private struct SelfVerifySasDestination: View {
+    @State private var viewModel: SasViewModel
+    private let onFinished: () -> Void
+
+    init(service: VerificationService, userID: String, onFinished: @escaping () -> Void) {
+        self.onFinished = onFinished
+        let stream = service.startSAS(withUser: userID, deviceID: nil)
+        _viewModel = State(initialValue: SasViewModel(
+            stream: stream,
+            requestID: userID,
+            confirm: { try await service.confirmEmojiMatch(requestID: userID) },
+            cancel: { reason in try await service.cancel(requestID: userID, reason: reason) }
+        ))
+    }
+
+    var body: some View {
+        SasView(
+            viewModel: viewModel,
+            title: "Verify this device",
+            onFinished: onFinished
+        )
     }
 }

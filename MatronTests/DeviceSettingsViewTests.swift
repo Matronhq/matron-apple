@@ -17,7 +17,7 @@ private actor FakeVerificationServiceForSettings: VerificationService {
         didCallIsThisDeviceVerified += 1
         return deviceVerifiedReturn
     }
-    func isUserVerified(matrixID: String) async throws -> Bool { false }
+    func isUserVerified(matrixID: String) async throws -> UserVerificationResult { .unknown }
     nonisolated func incomingRequests() -> AsyncStream<VerificationRequestSummary> {
         AsyncStream { $0.finish() }
     }

@@ -14,6 +14,17 @@ struct MatronMacApp: App {
     /// See `MacPostLoginVerificationView.verifyDoneKey(for:)` for the
     /// per-user `UserDefaults` scoping.
     @State private var verifyDone = false
+    /// Persistent `VerificationCenter` for the active session. B2/M5
+    /// expert-QA fix mirroring iOS `MatronApp.verificationCenter` —
+    /// previously a `let` inside body that was rebuilt on every
+    /// `@State` mutation (`bootstrapDone`, `bootstrapError`, `session`,
+    /// `verifyDone`, the Help-menu sheet flags). The orphaned center's
+    /// `start()` task kept running while the new center was never
+    /// started, so the sidebar banner went silent and any sheet built
+    /// from the orphaned center hit an empty FlowStore. Hoisted to
+    /// `@State` and built from a `.task(id: session.userID)` so the
+    /// instance is stable across body re-runs.
+    @State private var verificationCenter: VerificationCenter?
     /// Set by `bootstrap()` when the setup-time `KeychainProbe.run(...)`
     /// fails (Phase 3 / Task 13). When non-nil, every other UI branch is
     /// short-circuited and `MacKeychainSetupErrorView` renders the message.
@@ -49,22 +60,14 @@ struct MatronMacApp: App {
                     MacKeychainSetupErrorView(message: bootstrapError)
                 } else if let session {
                     if verifyDone {
-                        // Build the verification orchestrator once per
-                        // (session, scene) pair. `VerificationCenter`'s
-                        // `start()` / `stop()` lifecycle is wired inside
-                        // `MacChatListView` so the long-lived
-                        // `incomingRequests()` stream doesn't outlive the
-                        // host view (Swift 6 strict concurrency forbids a
-                        // `@MainActor deinit` reaching isolated state).
-                        // The cached `verificationService(for:)` is
-                        // load-bearing — the SAME instance is later passed
-                        // to `MacChatListView`, `MacChatView` (per-bot
-                        // banner), `MacDeviceSettingsView`, and the Help
-                        // menu sheets so they all share a FlowStore + the
-                        // registered SDK delegate.
-                        let verificationCenter = VerificationCenter(
-                            service: dependencies.verificationService(for: session)
-                        )
+                        // VerificationCenter is hoisted to `@State` and
+                        // built inside the `.task(id: session.userID)`
+                        // below — see the property's declaration for the
+                        // B2/M5 rationale. Optional `verificationCenter`
+                        // is nil during the very first body render; the
+                        // sidebar banner short-circuits on nil until the
+                        // task installs the real instance (then SwiftUI
+                        // re-renders).
                         MacChatListView(
                             viewModel: ChatListViewModel(chat: dependencies.chatService(for: session)),
                             verificationCenter: verificationCenter
@@ -81,6 +84,24 @@ struct MatronMacApp: App {
                         // sidebar banner is silent and every SAS sheet
                         // hangs forever (expert-QA finding B1).
                         .task { try? await dependencies.verificationService(for: session).start() }
+                        // B2/M5: build the VerificationCenter exactly
+                        // once per session. Keying on `session.userID`
+                        // means the task only re-fires on a user switch
+                        // (sign-out + back-in), not on the assorted
+                        // `@State` mutations the Mac host carries —
+                        // `verifyDone`, `bootstrapError`,
+                        // `showVerifyDeviceSheet`, `showRecoveryKeySheet`.
+                        .task(id: session.userID) {
+                            let center = VerificationCenter(
+                                service: dependencies.verificationService(for: session)
+                            )
+                            center.start()
+                            verificationCenter = center
+                        }
+                        .onDisappear {
+                            verificationCenter?.stop()
+                            verificationCenter = nil
+                        }
                     } else {
                         MacPostLoginVerificationView(
                             dependencies: dependencies,
@@ -245,13 +266,11 @@ struct MatronMacApp: App {
         verifyDone = true
     }
 
-    /// Help → Verify This Device… sheet body. Builds a fresh
-    /// self-verification SAS flow against the active session, mirroring
-    /// the construction inside `MacPostLoginVerificationView` (Task 7).
-    /// `requestID` is the user's matrix ID — that's the cache key
-    /// `VerificationServiceLive.startSAS` registers under for
-    /// self-verification flows; using it here makes confirm/cancel route
-    /// back to the same FlowStore entry.
+    /// Help → Verify This Device… sheet body. Hands construction to a
+    /// dedicated `HelpMenuVerifyDeviceSheet` whose `@State`-stored
+    /// SasViewModel + stream survive the host's body re-renders
+    /// (B2/M5 expert-QA fix — the prior inline construction here
+    /// rebuilt the VM on every `@State` mutation in `MatronMacApp`).
     ///
     /// Plan §9c describes a "no other device reachable → fall back to
     /// recovery-key restore" branch. Implementing the live device-list
@@ -263,21 +282,13 @@ struct MatronMacApp: App {
     /// key fallback lands with Task 11.
     @ViewBuilder
     private func verifyDeviceSheet(for session: UserSession) -> some View {
-        // Cached service so the FlowStore + registered SDK delegate are
-        // shared with the sidebar banner / Settings / per-bot banner. A
-        // fresh instance would have an empty FlowStore + an unregistered
-        // delegate so the SAS sheet would hang forever (expert-QA B1).
-        let svc = dependencies.verificationService(for: session)
-        let requestID = session.userID
-        let stream = svc.startSAS(withUser: session.userID, deviceID: nil)
-        MacSasView(
-            viewModel: SasViewModel(
-                stream: stream,
-                requestID: requestID,
-                confirm: { try await svc.confirmEmojiMatch(requestID: requestID) },
-                cancel: { reason in try await svc.cancel(requestID: requestID, reason: reason) }
-            ),
-            title: "Verify this device",
+        HelpMenuVerifyDeviceSheet(
+            // Cached service so the FlowStore + registered SDK delegate are
+            // shared with the sidebar banner / Settings / per-bot banner. A
+            // fresh instance would have an empty FlowStore + an unregistered
+            // delegate so the SAS sheet would hang forever (expert-QA B1).
+            service: dependencies.verificationService(for: session),
+            userID: session.userID,
             onFinished: { showVerifyDeviceSheet = false }
         )
     }
@@ -326,6 +337,36 @@ private struct KeychainProbeTimeout: Error {}
 /// Mirrors the visual weight of `MacPostLoginVerificationView` (lock-shield
 /// icon, fixed-size frame) so it reads as part of the onboarding flow
 /// rather than a runtime crash dialog.
+
+/// Help → Verify This Device sheet body. Owns the `SasViewModel` +
+/// stream as `@State` so they're built exactly once per present
+/// (B2/M5 expert-QA fix). Mirrors `MacSelfVerifySasDestination` /
+/// `MacVerifyBotSheet` — see iOS `ChatView.swift` for the full
+/// rationale.
+private struct HelpMenuVerifyDeviceSheet: View {
+    @State private var viewModel: SasViewModel
+    private let onFinished: () -> Void
+
+    init(service: VerificationService, userID: String, onFinished: @escaping () -> Void) {
+        self.onFinished = onFinished
+        let stream = service.startSAS(withUser: userID, deviceID: nil)
+        _viewModel = State(initialValue: SasViewModel(
+            stream: stream,
+            requestID: userID,
+            confirm: { try await service.confirmEmojiMatch(requestID: userID) },
+            cancel: { reason in try await service.cancel(requestID: userID, reason: reason) }
+        ))
+    }
+
+    var body: some View {
+        MacSasView(
+            viewModel: viewModel,
+            title: "Verify this device",
+            onFinished: onFinished
+        )
+    }
+}
+
 private struct MacKeychainSetupErrorView: View {
     let message: String
 

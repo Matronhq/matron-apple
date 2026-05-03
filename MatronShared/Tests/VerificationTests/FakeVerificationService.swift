@@ -10,11 +10,14 @@ actor FakeVerificationService: VerificationService {
     private(set) var didCallStart: [(userID: String, deviceID: String?)] = []
     private(set) var didConfirm: [String] = []
     private(set) var didCancel: [(requestID: String, reason: String)] = []
-    /// Per-user verification map for `isUserVerified(matrixID:)`. Defaults
-    /// to `false` for any user the test hasn't explicitly seeded —
-    /// matches the live impl's "unknown → unverified" branch and the
-    /// §7.5 "nothing auto-trusted" trust posture.
-    private var userVerifiedMap: [String: Bool] = [:]
+    /// Per-user tri-state verification map for `isUserVerified(matrixID:)`.
+    /// Default for any user the test hasn't explicitly seeded is `.unknown`
+    /// (was `.unverified` under the prior Bool shape). This matches the live
+    /// impl's "identity not in the local crypto store yet" branch — the
+    /// per-bot banner hides on `.unknown` and re-evaluates on the next
+    /// sliding-sync tick rather than flashing "unverified" on cold start
+    /// (expert-QA finding M2).
+    private var userVerificationMap: [String: UserVerificationResult] = [:]
 
     /// Routed through the actor (no `nonisolated`) so tests can `await` this
     /// to flush the actor's serial queue — pending `Task { await self.recordX }`
@@ -23,14 +26,23 @@ actor FakeVerificationService: VerificationService {
     /// (bugbot caught it).
     func isThisDeviceVerified() async throws -> Bool { true }
 
-    func isUserVerified(matrixID: String) async throws -> Bool {
-        userVerifiedMap[matrixID, default: false]
+    func isUserVerified(matrixID: String) async throws -> UserVerificationResult {
+        userVerificationMap[matrixID, default: .unknown]
     }
 
-    /// Test seam: pre-seed a user's verification state. Mirrors the
-    /// `injectPending` seam on `VerificationCenter`.
+    /// Bool-shape test seam preserved for callers that want `.verified` /
+    /// `.unverified` only. Mirrors the original `setUserVerified(_:for:)`
+    /// surface so existing tests don't churn — `true` maps to `.verified`
+    /// and `false` maps to `.unverified`. Tests that need to exercise the
+    /// `.unknown` branch should call `setUserVerificationResult(_:for:)`.
     func setUserVerified(_ verified: Bool, for matrixID: String) {
-        userVerifiedMap[matrixID] = verified
+        userVerificationMap[matrixID] = verified ? .verified : .unverified
+    }
+
+    /// Test seam for the tri-state shape — exercises the `.unknown` arm
+    /// that the Bool seam can't reach (M2 cold-start regression coverage).
+    func setUserVerificationResult(_ result: UserVerificationResult, for matrixID: String) {
+        userVerificationMap[matrixID] = result
     }
 
     nonisolated func incomingRequests() -> AsyncStream<VerificationRequestSummary> {
