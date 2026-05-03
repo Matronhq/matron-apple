@@ -137,6 +137,12 @@ public final class VerificationServiceLive: VerificationService, @unchecked Send
                     // `.cancelled`) arrive via the `SessionVerificationControllerDelegate`
                     // wired up by `DeviceVerificationRequestObserver` (Task 4b).
                 } catch {
+                    // Bugbot caught: register/setContinuation happen *before*
+                    // the throwing SDK call. Without `clear()` here, the
+                    // FlowStore retains stale controller + finished-continuation
+                    // entries keyed by userID. Mirrors the cleanup that
+                    // acceptIncoming / confirmEmojiMatch / cancel already do.
+                    await self.store.clear(requestID: userID)
                     continuation.yield(.cancelled(reason: error.localizedDescription))
                     continuation.finish()
                 }

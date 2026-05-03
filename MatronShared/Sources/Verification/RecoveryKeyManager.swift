@@ -44,8 +44,33 @@ public final class RecoveryKeyManager: @unchecked Sendable {
             passphrase: nil,
             progressListener: NoopEnableRecoveryProgressListener()
         )
-        try keychain.set(key, forKey: Self.storageKey)
+        // Bugbot caught: if `keychain.set` throws after the SDK has
+        // generated and registered the recovery key, the plaintext is
+        // irrecoverably lost (the server holds the encrypted form, but
+        // there's no way to retrieve plaintext from the SDK after-the-fact).
+        // Always RETURN the key so the UI can show it to the user even when
+        // local persistence fails — they can copy it manually. Persistence
+        // failure is logged via a comment in the throwing path; the
+        // RecoveryKeyView's `.show` phase forces explicit user
+        // acknowledgement before persisting anyway.
+        do {
+            try keychain.set(key, forKey: Self.storageKey)
+        } catch {
+            // Don't swallow the error silently — but do return the key. The
+            // caller can decide whether the persistence failure is fatal
+            // (typical: surface a "save your key now, we couldn't auto-store
+            // it" warning) or acceptable (typical: ephemeral session).
+            throw RecoveryKeyManager.PersistenceError.keychainWriteFailedButKeyAvailable(key: key, underlying: error)
+        }
         return key
+    }
+
+    /// Thrown by `generateAndPersist` when the SDK has produced a recovery
+    /// key but local persistence failed. Carries the plaintext so the UI
+    /// can still display it to the user — losing the key is worse than
+    /// hitting an "uh-oh, write the key down manually" warning.
+    public enum PersistenceError: Error {
+        case keychainWriteFailedButKeyAvailable(key: String, underlying: Error)
     }
 
     /// Additional-device / restore path: feeds the user's recovery key to
