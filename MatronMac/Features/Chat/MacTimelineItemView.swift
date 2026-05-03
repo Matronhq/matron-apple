@@ -17,6 +17,22 @@ struct MacTimelineItemView: View {
     var resolveImage: ((URL) -> Image?)? = nil
 
     var body: some View {
+        if !Self.shouldRender(item) {
+            // Mac mirror of the iOS `TimelineItemView` round-5 finding #2
+            // fix. Virtual timeline items (`dateDivider`, `readMarker`,
+            // `timelineStart`) collapse to `.stateChange(text: "")` in
+            // `TimelineServiceLive.mapVirtual`, and the padded `HStack`
+            // below renders them as visible 8pt blank rows. Phase 2
+            // closeout: render nothing for these. Phase 3+ can give them
+            // proper visual treatment.
+            EmptyView()
+        } else {
+            renderedBody
+        }
+    }
+
+    @ViewBuilder
+    private var renderedBody: some View {
         switch item.kind {
         case .text(let body, _):
             MessageBubble(
@@ -64,6 +80,18 @@ struct MacTimelineItemView: View {
             }
             .padding(.vertical, 4)
         }
+    }
+
+    /// Mac mirror of `TimelineItemView.shouldRender(_:)` — see iOS for
+    /// the full rationale. Returns `false` for `.stateChange(text: "")`
+    /// (the `mapVirtual` placeholder for date dividers / read markers /
+    /// timeline start) so the renderer emits `EmptyView()` instead of a
+    /// padded blank row.
+    static func shouldRender(_ item: TimelineItem) -> Bool {
+        if case .stateChange(let text) = item.kind, text.isEmpty {
+            return false
+        }
+        return true
     }
 
     /// Phase 2 placeholder for member display names — strips the leading

@@ -103,61 +103,6 @@ final class AppDependencies {
     }
 }
 
-private struct TimelineCacheKey: Hashable {
-    let userID: String
-    let roomID: String
-}
-
-/// Tiny, ordered, fixed-capacity cache. See `Matron/App/AppDependencies.swift`
-/// (iOS) for the full rationale — duplicated here because the Mac
-/// `AppDependencies` is a separate per-target type. If a third caller
-/// ever needs this, hoist into a shared utility module.
-struct LRUCache<Key: Hashable, Value> {
-    private let limit: Int
-    private var values: [Key: Value] = [:]
-    private var recency: [Key] = []
-
-    init(limit: Int) {
-        precondition(limit > 0, "LRU limit must be positive")
-        self.limit = limit
-    }
-
-    var count: Int { values.count }
-
-    func contains(_ key: Key) -> Bool { values[key] != nil }
-
-    subscript(key: Key) -> Value? {
-        mutating get {
-            guard let value = values[key] else { return nil }
-            if let i = recency.firstIndex(of: key) {
-                recency.remove(at: i)
-            }
-            recency.append(key)
-            return value
-        }
-        set {
-            if let newValue {
-                if values[key] == nil {
-                    recency.append(key)
-                } else if let i = recency.firstIndex(of: key) {
-                    recency.remove(at: i)
-                    recency.append(key)
-                }
-                values[key] = newValue
-                while recency.count > limit {
-                    let evict = recency.removeFirst()
-                    values.removeValue(forKey: evict)
-                }
-            } else {
-                values.removeValue(forKey: key)
-                if let i = recency.firstIndex(of: key) {
-                    recency.remove(at: i)
-                }
-            }
-        }
-    }
-}
-
 // MARK: - SwiftUI Environment
 
 /// Environment key carrying the app-wide `AppDependencies` (Mac). The Mac

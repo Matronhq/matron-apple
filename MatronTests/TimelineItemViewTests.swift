@@ -1,4 +1,6 @@
 import XCTest
+import MatronChat
+import MatronModels
 @testable import Matron
 
 /// Pins the formatting of `TimelineItemView.displayName(for:)`. The function
@@ -31,5 +33,62 @@ final class TimelineItemViewTests: XCTestCase {
         // Edge case: just "@" has no local part to extract → fall back
         // to the original input rather than rendering an empty label.
         XCTAssertEqual(TimelineItemView.displayName(for: "@"), "@")
+    }
+
+    // MARK: - shouldRender (round-5 bugbot finding #2)
+
+    /// `TimelineServiceLive.mapVirtual` collapses `dateDivider`,
+    /// `readMarker`, and `timelineStart` virtual items into
+    /// `.stateChange(text: "")`. The renderer's `.stateChange` branch
+    /// wraps the text in a padded `HStack` with `Spacer`s, which produces
+    /// a visible 8pt blank row for these placeholders. `shouldRender(_:)`
+    /// returns `false` for that case so `body` emits `EmptyView()`. Phase
+    /// 3+ can replace this with a real `Kind` case + visual treatment.
+    func test_shouldRender_returnsFalse_forEmptyStateChange() {
+        let item = TimelineItem(
+            id: "virtual-1",
+            sender: "",
+            timestamp: Date(timeIntervalSince1970: 0),
+            kind: .stateChange(text: ""),
+            isOwn: false,
+            sendState: .sent
+        )
+        XCTAssertFalse(TimelineItemView.shouldRender(item),
+                       "virtual placeholders must skip rendering to avoid blank padded rows")
+    }
+
+    /// Real state-change events (member joins, profile updates, …) carry
+    /// non-empty text and must still render. Pinning this guards against
+    /// a regression that over-broad shouldRender to swallow everything.
+    func test_shouldRender_returnsTrue_forPopulatedStateChange() {
+        let item = TimelineItem(
+            id: "join-1",
+            sender: "@alice:s",
+            timestamp: Date(timeIntervalSince1970: 0),
+            kind: .stateChange(text: "alice joined"),
+            isOwn: false,
+            sendState: .sent
+        )
+        XCTAssertTrue(TimelineItemView.shouldRender(item),
+                      "populated state-change rows are real events and must render")
+    }
+
+    /// Sanity: text / image / file / unknown kinds always render.
+    func test_shouldRender_returnsTrue_forContentKinds() {
+        let kinds: [TimelineItem.Kind] = [
+            .text(body: "hi", formattedHTML: nil),
+            .image(url: nil, caption: nil, sizeBytes: nil),
+            .file(url: nil, filename: "x.pdf", sizeBytes: nil),
+            .unknown(eventType: "m.audio"),
+        ]
+        for kind in kinds {
+            let item = TimelineItem(
+                id: "k", sender: "@a:s",
+                timestamp: Date(timeIntervalSince1970: 0),
+                kind: kind, isOwn: false, sendState: .sent
+            )
+            XCTAssertTrue(TimelineItemView.shouldRender(item),
+                          "content kind \(kind) must render")
+        }
     }
 }

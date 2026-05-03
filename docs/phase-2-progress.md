@@ -119,3 +119,5 @@ Cleared the round-4 (final) bugbot findings on top of 67cb21d. One commit on `ph
 - **22 Mac scheme tests** (`MatronMacTests`, macOS) — 0 failures (was 20; +2 new).
 
 No new dependencies; SDK still pinned at `26.04.01`; no project-yml churn (regenerated cleanly). Next step: human review of PR #1, then Phase 3 (E2EE & verification UX) plan.
+
+## Final-final bugbot pass: photo write surfaces / virtual rows hidden / LRUCache extracted to MatronShared

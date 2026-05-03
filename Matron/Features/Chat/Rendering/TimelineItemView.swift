@@ -22,6 +22,26 @@ struct TimelineItemView: View {
     var resolveImage: ((URL) -> Image?)? = nil
 
     var body: some View {
+        if !Self.shouldRender(item) {
+            // Round-5 bugbot finding #2: `TimelineServiceLive.mapVirtual`
+            // collapses `dateDivider`, `readMarker`, and `timelineStart`
+            // virtual items into `.stateChange(text: "")`. The
+            // `.stateChange` branch below wraps the text in a padded
+            // `HStack` with `Spacer`s, which renders as a visible 8pt
+            // empty row for these placeholders. Phase 2 closeout takes
+            // option (a) — render nothing for empty state-change text.
+            // Phase 3+ can extend `TimelineItem.Kind` with proper
+            // `.dateDivider` / `.readMarker` / `.timelineStart` cases and
+            // give them real visual treatment without disturbing the
+            // existing snapshot baselines.
+            EmptyView()
+        } else {
+            renderedBody
+        }
+    }
+
+    @ViewBuilder
+    private var renderedBody: some View {
         switch item.kind {
         case .text(let body, _):
             MessageBubble(
@@ -69,6 +89,22 @@ struct TimelineItemView: View {
             }
             .padding(.vertical, 4)
         }
+    }
+
+    /// Whether a `TimelineItem` should render at all. Returns `false` for
+    /// `.stateChange(text: "")`, which `TimelineServiceLive.mapVirtual`
+    /// emits for `dateDivider`, `readMarker`, and `timelineStart` virtual
+    /// items — these have no Phase-2 visual treatment, and rendering an
+    /// empty `.stateChange` produces a visible 8pt padded blank row. Phase
+    /// 3+ can replace this with a `Kind`-level enum case + dedicated
+    /// renderer; for now skipping them keeps the timeline tight without
+    /// disturbing the existing snapshot baselines. `static internal` so
+    /// `TimelineItemViewTests` can exercise the contract without rendering.
+    static func shouldRender(_ item: TimelineItem) -> Bool {
+        if case .stateChange(let text) = item.kind, text.isEmpty {
+            return false
+        }
+        return true
     }
 
     /// Phase 2 placeholder for member display names: take the local part of

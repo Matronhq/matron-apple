@@ -8,13 +8,22 @@ import MatronViewModels
 /// same plain-final-class pattern is used across the repo's test fakes.
 final class FakeTimelineForComposer: TimelineService, @unchecked Sendable {
     var sentText: [String] = []
+    /// Each `sendImage` / `sendFile` invocation records `(filename, mimeType)`.
+    /// Used by `test_stagePhotoData_*` to confirm whether `attachFiles(_:)`
+    /// was reached: a successful write should result in a `sendImage` /
+    /// `sendFile` record; a failed write should leave this empty.
+    var sentAttachments: [(filename: String, mimeType: String)] = []
 
     func items() -> AsyncStream<[TimelineItem]> {
         AsyncStream { $0.finish() }
     }
     func sendText(_ body: String) async throws { sentText.append(body) }
-    func sendImage(_ data: Data, filename: String, mimeType: String) async throws {}
-    func sendFile(_ data: Data, filename: String, mimeType: String) async throws {}
+    func sendImage(_ data: Data, filename: String, mimeType: String) async throws {
+        sentAttachments.append((filename, mimeType))
+    }
+    func sendFile(_ data: Data, filename: String, mimeType: String) async throws {
+        sentAttachments.append((filename, mimeType))
+    }
     func paginateBackward(requestSize: UInt16) async throws {}
     func markAsRead() async throws {}
 }
@@ -89,6 +98,60 @@ final class ComposerViewBindingTests: XCTestCase {
         XCTAssertTrue(stagedB.lastPathComponent.hasSuffix("report.pdf"))
         let tmp = FileManager.default.temporaryDirectory.path
         XCTAssertTrue(stagedA.path.hasPrefix(tmp))
+    }
+
+    @MainActor
+    func test_stagePhotoData_failedWrite_surfacesViaReportAttachmentError_andSkipsAttach() async {
+        // Round 5 bugbot finding #1: the photo `onChange` previously did
+        // `try? data.write(to: tmp)` and unconditionally called
+        // `attachFiles([tmp])`. If the disk write failed, `attachFiles`
+        // then `Data(contentsOf:)`-failed with a misleading "No such
+        // file" error instead of the real cause (full disk, quota, sandbox
+        // denial). `stagePhotoData(_:to:viewModel:)` now uses do/catch:
+        // surfaces the write error via `reportAttachmentError(_:)` and
+        // skips the doomed `attachFiles` call entirely.
+        let fake = FakeTimelineForComposer()
+        let vm = ComposerViewModel(timeline: fake, commands: [])
+        XCTAssertNil(vm.sendError)
+
+        // Path inside a non-existent parent dir → write throws
+        // NSCocoaErrorDomain. UUID keeps this hermetic across re-runs.
+        let nonExistent = URL(fileURLWithPath: "/var/folders/__matron_does_not_exist_\(UUID().uuidString)__/photo.jpg")
+        let data = Data("doesn't matter".utf8)
+
+        await ComposerView.stagePhotoData(data, to: nonExistent, viewModel: vm)
+
+        XCTAssertNotNil(vm.sendError, "failed write must surface via reportAttachmentError(_:)")
+        XCTAssertTrue(fake.sentAttachments.isEmpty,
+                      "attachFiles must be skipped when the write failed — otherwise the user sees a confusing 'No such file' error from Data(contentsOf:) instead of the real write failure")
+        // The temp file was never created — confirm no stray side effect.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: nonExistent.path))
+    }
+
+    @MainActor
+    func test_stagePhotoData_successfulWrite_proceedsToAttachFiles_andLeavesNoError() async {
+        // Companion to the failure-branch test: a successful write must
+        // hand the resulting URL to `attachFiles(_:)`, surface no error,
+        // and produce a `sendFile` invocation on the timeline. Together
+        // these two tests pin the do/catch split that fixes the round-5
+        // finding without regressing the happy path.
+        let fake = FakeTimelineForComposer()
+        let vm = ComposerViewModel(timeline: fake, commands: [])
+
+        // Use a `.txt` extension so `attachFiles` routes to `sendFile` (no
+        // image-specific MIME setup needed). UUID keeps the path unique.
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("matron-stage-photo-\(UUID().uuidString).txt")
+        let data = Data("hello".utf8)
+
+        await ComposerView.stagePhotoData(data, to: tmp, viewModel: vm)
+
+        XCTAssertNil(vm.sendError, "successful write must not surface an attachment error")
+        XCTAssertEqual(fake.sentAttachments.count, 1,
+                       "successful write must reach attachFiles → sendFile")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tmp.path))
+        // Cleanup so the temp dir doesn't accumulate across re-runs.
+        try? FileManager.default.removeItem(at: tmp)
     }
 
     @MainActor

@@ -73,8 +73,7 @@ struct ComposerView: View {
                 if let data = try? await newItem.loadTransferable(type: Data.self) {
                     let ext = preferredExtension(for: newItem) ?? "jpg"
                     let tmp = ComposerView.photoTempURL(ext: ext)
-                    try? data.write(to: tmp)
-                    await viewModel.attachFiles([tmp])
+                    await ComposerView.stagePhotoData(data, to: tmp, viewModel: viewModel)
                 }
                 photoItem = nil
             }
@@ -135,6 +134,30 @@ struct ComposerView: View {
     static func stagedTempURL(for source: URL) -> URL {
         let filename = "\(UUID().uuidString)-\(source.lastPathComponent)"
         return FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+    }
+
+    /// Writes `data` to `tmp` and hands the resulting URL to
+    /// `ComposerViewModel.attachFiles(_:)`. On write failure, surfaces the
+    /// real error via `reportAttachmentError(_:)` and skips the attach
+    /// call — the previous `try? data.write(to: tmp)` silently swallowed
+    /// disk-full / quota / sandbox-denial failures, then proceeded to
+    /// `attachFiles`, which `Data(contentsOf:)`-failed with a confusing
+    /// "No such file" instead of the original cause. `@MainActor` because
+    /// `ComposerViewModel.reportAttachmentError(_:)` is main-actor-isolated.
+    /// `static internal` so `ComposerViewBindingTests` can exercise the
+    /// success and failure branches without rendering the SwiftUI view.
+    @MainActor
+    static func stagePhotoData(
+        _ data: Data,
+        to tmp: URL,
+        viewModel: ComposerViewModel
+    ) async {
+        do {
+            try data.write(to: tmp)
+            await viewModel.attachFiles([tmp])
+        } catch {
+            viewModel.reportAttachmentError(error.localizedDescription)
+        }
     }
 
     /// Reads each security-scoped URL into a temporary file so
