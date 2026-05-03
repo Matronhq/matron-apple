@@ -11,7 +11,12 @@ actor FakeVerificationService: VerificationService {
     private(set) var didConfirm: [String] = []
     private(set) var didCancel: [(requestID: String, reason: String)] = []
 
-    nonisolated func isThisDeviceVerified() async throws -> Bool { true }
+    /// Routed through the actor (no `nonisolated`) so tests can `await` this
+    /// to flush the actor's serial queue — pending `Task { await self.recordX }`
+    /// hops from the `nonisolated` stream constructors will have run by the
+    /// time this returns. Previous `nonisolated` version gave no flush guarantee
+    /// (bugbot caught it).
+    func isThisDeviceVerified() async throws -> Bool { true }
 
     nonisolated func incomingRequests() -> AsyncStream<VerificationRequestSummary> {
         AsyncStream { $0.finish() }
