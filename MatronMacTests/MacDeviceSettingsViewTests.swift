@@ -85,5 +85,40 @@ final class MacDeviceSettingsViewTests: XCTestCase {
         let verifiedFalse = try await svc.isThisDeviceVerified()
         XCTAssertFalse(verifiedFalse)
     }
+
+    // MARK: - Wave 4 expert-QA #3 — re-auth-gated reveal
+
+    /// Auth-pass path: see iOS `DeviceSettingsViewTests` for rationale.
+    func test_revealKey_succeedsAfterAuthPass() async {
+        let session = makeSession()
+        let svc = FakeVerificationServiceForSettings()
+        let view = MacDeviceSettingsView(
+            session: session,
+            verificationService: svc,
+            currentRecoveryKey: { "STORED-KEY" },
+            requestAuth: { true },
+            onFinished: {}
+        )
+        let authed = await view.requestAuth()
+        XCTAssertTrue(authed)
+    }
+
+    /// Auth-fail path: `requestAuth` returning `false` MUST keep the key
+    /// hidden. Mirrors iOS — construction-level lock on the closure
+    /// signature so a future signature change can't silently drop the
+    /// gate.
+    func test_revealKey_keepsKeyHidden_whenAuthFails() async {
+        let session = makeSession()
+        let svc = FakeVerificationServiceForSettings()
+        let view = MacDeviceSettingsView(
+            session: session,
+            verificationService: svc,
+            currentRecoveryKey: { "STORED-KEY" },
+            requestAuth: { false },
+            onFinished: {}
+        )
+        let authed = await view.requestAuth()
+        XCTAssertFalse(authed)
+    }
 }
 #endif

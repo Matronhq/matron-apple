@@ -142,11 +142,28 @@ public final class RecoveryKeyViewModel {
     /// On success the caller dismisses the sheet via the view's
     /// `onFinished` closure; on failure we surface the error inline so the
     /// user can re-try without re-entering the key.
+    ///
+    /// Wave 4 expert-QA #1: explicit dispatch on `RecoveryKeyManager.RestoreError`
+    /// so the UI gets per-case copy ("That recovery key didn't work" vs
+    /// "Couldn't reach the homeserver") even if a future refactor drops the
+    /// `LocalizedError` conformance on `RestoreError`. Falls through to
+    /// `error.localizedDescription` for any non-translated error so a future
+    /// `restore` closure that throws a different type still renders SOMETHING
+    /// instead of an empty error string.
     public func attemptRestore() async {
         phase = .busy
         do {
             try await restore(enteredKey)
             phase = .done
+        } catch let restoreError as RecoveryKeyManager.RestoreError {
+            switch restoreError {
+            case .invalidKey:
+                phase = .error("That recovery key didn't work — check for typos and try again.")
+            case .network:
+                phase = .error("Couldn't reach the homeserver. Check your connection and try again.")
+            case .other(let underlying):
+                phase = .error("Couldn't restore: \(underlying.localizedDescription)")
+            }
         } catch {
             phase = .error(error.localizedDescription)
         }

@@ -302,12 +302,14 @@ struct MacChatListView: View {
     }
 
     /// Builds the SAS sheet shown when a banner's "Verify" is clicked.
-    /// `acceptIncoming(requestID:)` returns an `AsyncStream` that the
-    /// live impl already wires `acceptVerificationRequest` +
-    /// `startSasVerification` into the cached controller for; the cache
-    /// entry was registered when the incoming request landed.
-    /// `onFinished` clears `sasSummary` so `.verified` auto-dismisses
-    /// (mirrors the bug `b0b15d1` fixed for the onboarding gate).
+    /// Hands construction to the per-present `MacIncomingRequestSasSheet`
+    /// view whose `@State`-stored SasViewModel survives parent re-renders
+    /// (Wave 4 expert-QA #8 — mirrors the iOS `IncomingRequestSasSheet`
+    /// pattern). The prior inline construction here rebuilt the VM +
+    /// reopened a fresh `acceptIncoming` stream on every parent
+    /// `@State` mutation, so partner-side SAS state transitions could
+    /// reach an orphaned VM whose continuation the visible sheet was no
+    /// longer observing.
     @ViewBuilder
     private func sasSheetContent(
         for summary: VerificationRequestSummary,
@@ -319,16 +321,37 @@ struct MacChatListView: View {
         // ChatListView for the full rationale.
         let svc: any VerificationService = verificationCenter?.service
             ?? deps.verificationService(for: session)
-        let stream = svc.acceptIncoming(requestID: summary.id)
-        MacSasView(
-            viewModel: SasViewModel(
-                stream: stream,
-                requestID: summary.id,
-                confirm: { try await svc.confirmEmojiMatch(requestID: summary.id) },
-                cancel: { reason in try await svc.cancel(requestID: summary.id, reason: reason) }
-            ),
-            title: "Verify device",
+        MacIncomingRequestSasSheet(
+            service: svc,
+            requestID: summary.id,
             onFinished: { sasSummary = nil }
+        )
+    }
+}
+
+/// Per-present SAS sheet body for an incoming verification request from
+/// the Mac sidebar banner. Mirrors iOS `IncomingRequestSasSheet`. See
+/// iOS ChatListView for the Wave 4 expert-QA #8 rationale.
+private struct MacIncomingRequestSasSheet: View {
+    @State private var viewModel: SasViewModel
+    private let onFinished: () -> Void
+
+    init(service: VerificationService, requestID: String, onFinished: @escaping () -> Void) {
+        self.onFinished = onFinished
+        let stream = service.acceptIncoming(requestID: requestID)
+        _viewModel = State(initialValue: SasViewModel(
+            stream: stream,
+            requestID: requestID,
+            confirm: { try await service.confirmEmojiMatch(requestID: requestID) },
+            cancel: { reason in try await service.cancel(requestID: requestID, reason: reason) }
+        ))
+    }
+
+    var body: some View {
+        MacSasView(
+            viewModel: viewModel,
+            title: "Verify device",
+            onFinished: onFinished
         )
     }
 }

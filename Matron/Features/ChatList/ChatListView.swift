@@ -267,16 +267,16 @@ struct ChatListView: View {
         }
     }
 
-    /// Builds the SAS sheet shown when a banner's "Verify" is tapped. The
-    /// underlying `acceptIncoming(requestID:)` returns an `AsyncStream`
-    /// that the live impl already wires `acceptVerificationRequest` +
-    /// `startSasVerification` into the cached controller for; the cache
-    /// entry was registered when the incoming request landed. The
-    /// `onFinished` callback clears `sasSummary` so the sheet dismisses
-    /// once the SAS reaches `.verified`. Mirrors the construction inside
-    /// `PostLoginVerificationView` for self-verification, but here the
-    /// `requestID` is the banner summary's own id (an incoming request)
-    /// rather than the user's matrix ID (self-verify).
+    /// Builds the SAS sheet shown when a banner's "Verify" is tapped.
+    /// Hands construction to the per-present `IncomingRequestSasSheet`
+    /// view whose `@State`-stored SasViewModel survives parent re-renders
+    /// (Wave 4 expert-QA #8 — mirrors the Wave 2 fix to `ChatView`'s
+    /// per-bot SAS sheet). The prior inline construction here rebuilt
+    /// the VM + reopened a fresh `acceptIncoming` stream on every parent
+    /// `@State` mutation (`viewModel.groups` updates, `botProfileSummary`
+    /// flips, etc.), so partner-side SAS state transitions could reach
+    /// an orphaned VM whose continuation the visible sheet was no
+    /// longer observing.
     @ViewBuilder
     private func sasSheetContent(
         for summary: VerificationRequestSummary,
@@ -292,15 +292,9 @@ struct ChatListView: View {
         // every other consumer in the app.
         let svc: any VerificationService = verificationCenter?.service
             ?? deps.verificationService(for: session)
-        let stream = svc.acceptIncoming(requestID: summary.id)
-        SasView(
-            viewModel: SasViewModel(
-                stream: stream,
-                requestID: summary.id,
-                confirm: { try await svc.confirmEmojiMatch(requestID: summary.id) },
-                cancel: { reason in try await svc.cancel(requestID: summary.id, reason: reason) }
-            ),
-            title: "Verify device",
+        IncomingRequestSasSheet(
+            service: svc,
+            requestID: summary.id,
             onFinished: { sasSummary = nil }
         )
     }
@@ -432,6 +426,49 @@ private struct ChatRow: View {
                 Circle().fill(.blue).frame(width: 8, height: 8)
             }
         }
+    }
+}
+
+/// Per-present SAS sheet body for an incoming verification request from
+/// the chat-list banner. Owns the `SasViewModel` + stream as `@State` so
+/// they're constructed exactly once per present — `.sheet(item:)` on the
+/// parent guarantees this view itself is built exactly once per present,
+/// and storing the VM in `@State` here keeps it stable across the
+/// parent's body re-evaluations (Wave 4 expert-QA #8). Mirrors the
+/// pattern the Wave 2 fix introduced for `ChatView`'s per-bot SAS sheet
+/// — see `Matron/Features/Chat/ChatView.swift`'s `VerifyBotSheet` for
+/// the full rationale.
+///
+/// Cache key here is the SDK-assigned `requestID` (the banner summary's
+/// id), not the user matrix ID — that's the FlowStore key
+/// `VerificationServiceLive.routeIncomingRequest` registered the
+/// incoming-request controller under.
+private struct IncomingRequestSasSheet: View {
+    @State private var viewModel: SasViewModel
+    private let onFinished: () -> Void
+
+    init(service: VerificationService, requestID: String, onFinished: @escaping () -> Void) {
+        self.onFinished = onFinished
+        // SwiftUI initialises `_viewModel` exactly once per view-identity.
+        // `.sheet(item:)` gives this view a fresh identity per present,
+        // so the VM is created once per "tap → dismiss" cycle. Subsequent
+        // parent re-renders re-init the View struct but SwiftUI ignores
+        // the state's initial value once it's been seeded.
+        let stream = service.acceptIncoming(requestID: requestID)
+        _viewModel = State(initialValue: SasViewModel(
+            stream: stream,
+            requestID: requestID,
+            confirm: { try await service.confirmEmojiMatch(requestID: requestID) },
+            cancel: { reason in try await service.cancel(requestID: requestID, reason: reason) }
+        ))
+    }
+
+    var body: some View {
+        SasView(
+            viewModel: viewModel,
+            title: "Verify device",
+            onFinished: onFinished
+        )
     }
 }
 

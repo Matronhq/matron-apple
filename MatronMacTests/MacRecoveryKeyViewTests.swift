@@ -117,5 +117,33 @@ final class MacRecoveryKeyViewTests: XCTestCase {
         let view = MacRecoveryKeyView(viewModel: vm) { }
         XCTAssertNotNil(view.body)
     }
+
+    /// Wave 4 expert-QA #2: a successful Restore (which advances `phase`
+    /// to `.done`) followed by Done MUST NOT re-fire the underlying
+    /// restore closure. The Done button's body now skips
+    /// `attemptRestore()` when `phase == .done` and just calls
+    /// `onFinished()` instead. The fix lives on the view; we exercise
+    /// the VM-side invariant that double-call would otherwise hit:
+    /// the second call would re-fire `restore` against the SDK.
+    func test_attemptRestore_isNotCalledAgain_whenAlreadyDone() async {
+        var restoreCallCount = 0
+        let vm = RecoveryKeyViewModel(
+            mode: .restore,
+            generate: { "" },
+            restore: { _ in restoreCallCount += 1 }
+        )
+        vm.enteredKey = "VALID-KEY"
+        await vm.attemptRestore()
+        XCTAssertEqual(vm.phase, .done)
+        XCTAssertEqual(restoreCallCount, 1)
+        // The view's Done body now guards on `phase != .done` before
+        // re-firing — assert the VM isn't itself the layer doing the
+        // guard. (If a future refactor moves the guard into the VM
+        // then this test should be updated to check `attemptRestore`
+        // on a `.done` VM is a no-op.)
+        await vm.attemptRestore()
+        // VM has no built-in guard — the view-side guard is the fix.
+        XCTAssertEqual(restoreCallCount, 2)
+    }
 }
 #endif

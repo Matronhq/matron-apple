@@ -172,9 +172,20 @@ struct MacRecoveryKeyView: View {
             // Mirrors iOS: Done both runs the restore and dismisses on
             // success, so the user can't bypass the actual key restore by
             // typing any text and tapping Done.
+            //
+            // Wave 4 expert-QA #2: skip `attemptRestore()` when the VM is
+            // already `.done` so a successful Restore (which advances
+            // phase to `.done`) followed by a Done tap doesn't re-call
+            // `recover()` with the same key. The SDK is probably
+            // idempotent on the second call, but firing a second SDK
+            // round-trip on a "just dismiss me" button is wasteful and
+            // — more importantly — would mask any future SDK behaviour
+            // change that turns the second call into an error.
             Button("Done") {
                 Task {
-                    await viewModel.attemptRestore()
+                    if viewModel.phase != .done {
+                        await viewModel.attemptRestore()
+                    }
                     if viewModel.phase == .done { onFinished() }
                 }
             }

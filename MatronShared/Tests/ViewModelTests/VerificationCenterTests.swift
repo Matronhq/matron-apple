@@ -30,6 +30,41 @@ final class VerificationCenterTests: XCTestCase {
         XCTAssertTrue(center.pending.isEmpty)
     }
 
+    /// Wave 4 expert-QA #5: `dismiss()` MUST complete and remove the
+    /// summary from `pending` even when the service's `cancel()` throws —
+    /// the prior `try?` silently swallowed the error, but a partner
+    /// device showing a stale "waiting" UI is the only observable
+    /// downside, and that's strictly better than leaving an undismissable
+    /// banner stuck on screen. The `os.Logger.error` call inside `dismiss`
+    /// isn't directly asserted (XCTest can't subscribe to OSLog without
+    /// extra plumbing), but the structural guarantee — local removal
+    /// happens regardless of the cancel failure — is the load-bearing
+    /// invariant for the UI.
+    @MainActor
+    func test_dismiss_completesAndRemovesPending_evenWhenCancelThrows() async {
+        let svc = ScriptedVerificationService()
+        await svc.setShouldThrowOnCancel(true)
+        let center = VerificationCenter(service: svc)
+        let summary = VerificationRequestSummary(
+            id: "req-throwing",
+            otherUserID: "@bob:s",
+            otherDeviceID: "DEV",
+            createdAt: Date()
+        )
+        center.injectPending(summary)
+
+        await center.dismiss(summary)
+
+        // Local removal STILL happens — the user's banner-dismiss tap is
+        // never undone by an SDK transport failure.
+        XCTAssertTrue(center.pending.isEmpty)
+        // And the cancel was attempted even though it threw — the
+        // partner-device side at least received the cancel intent before
+        // the transport failed.
+        let attempted = await svc.cancelAttemptedCount()
+        XCTAssertEqual(attempted, 1)
+    }
+
     @MainActor
     func test_start_appendsIncomingSummaryToPending() async {
         let svc = ScriptedVerificationService()
@@ -119,6 +154,11 @@ final class VerificationCenterTests: XCTestCase {
 private actor ScriptedVerificationService: VerificationService {
     private var cancelled: [(id: String, reason: String)] = []
     private var scriptedIncoming: [VerificationRequestSummary] = []
+    /// Wave 4 expert-QA #5 seam: drive the throw-from-cancel arm so the
+    /// `dismiss()` log-and-still-remove behaviour can be exercised in
+    /// the unit test.
+    private var shouldThrowOnCancel: Bool = false
+    private var cancelAttempts: Int = 0
 
     func scheduleIncoming(_ summaries: [VerificationRequestSummary]) {
         scriptedIncoming = summaries
@@ -127,6 +167,16 @@ private actor ScriptedVerificationService: VerificationService {
     func cancelledSnapshot() -> [(id: String, reason: String)] {
         cancelled
     }
+
+    func setShouldThrowOnCancel(_ shouldThrow: Bool) {
+        shouldThrowOnCancel = shouldThrow
+    }
+
+    func cancelAttemptedCount() -> Int {
+        cancelAttempts
+    }
+
+    private struct ScriptedCancelError: Error {}
 
     func isThisDeviceVerified() async throws -> Bool { true }
 
@@ -165,6 +215,10 @@ private actor ScriptedVerificationService: VerificationService {
     func confirmEmojiMatch(requestID: String) async throws {}
 
     func cancel(requestID: String, reason: String) async throws {
+        cancelAttempts += 1
+        if shouldThrowOnCancel {
+            throw ScriptedCancelError()
+        }
         cancelled.append((id: requestID, reason: reason))
     }
 }

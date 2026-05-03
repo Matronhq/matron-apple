@@ -1,4 +1,5 @@
 import Foundation
+import os
 import MatronVerification
 
 /// Cross-platform orchestrator for incoming verification requests (spec
@@ -28,6 +29,15 @@ public final class VerificationCenter {
     /// main actor (the observation task hops back via `await MainActor.run`
     /// when it appends).
     public private(set) var pending: [VerificationRequestSummary] = []
+
+    /// Logger for the dismiss-cancel failure path (Wave 4 expert-QA #5).
+    /// `try?` used to silently swallow `cancel(...)` errors here; the
+    /// next time SDK cancels fail to deliver — in particular Phase 4
+    /// push-flow debugging when a cancel races a notification dismiss
+    /// — we want a breadcrumb in the unified log instead of nothing.
+    /// `subsystem: "chat.matron"` matches the existing logger in
+    /// `MarkdownText` so all app-side logs share the same filter.
+    private static let logger = os.Logger(subsystem: "chat.matron", category: "verification")
 
     /// The underlying service. Exposed so banner-presented sheets can route
     /// `acceptIncoming(requestID:)` / `confirm` / `cancel` calls through the
@@ -83,14 +93,28 @@ public final class VerificationCenter {
     /// still happens even when an error from the service would
     /// short-circuit the local removal.
     ///
-    /// `try?` is intentional — `cancel(requestID:reason:)` is documented
-    /// idempotent on the live impl (already-cancelled requests no-op).
-    /// Surfacing the error here would block local removal, leaving a
-    /// stale banner the user can't dismiss; that's worse than swallowing
-    /// the error since the partner device's "stale waiting" UI is the
-    /// only observable consequence and they can dismiss from their side.
+    /// Cancel errors are caught locally (not propagated) because
+    /// `cancel(requestID:reason:)` is documented idempotent on the live
+    /// impl (already-cancelled requests no-op). Surfacing the error
+    /// here would block local removal, leaving a stale banner the user
+    /// can't dismiss; that's worse than swallowing the error since the
+    /// partner device's "stale waiting" UI is the only observable
+    /// consequence and they can dismiss from their side.
+    ///
+    /// Wave 4 expert-QA #5: log the failure at `.error` so Phase 4 push
+    /// debugging will know when SDK cancels failed to deliver. The
+    /// `try?` silent-swallow used to make this branch invisible.
     public func dismiss(_ summary: VerificationRequestSummary) async {
-        try? await service.cancel(requestID: summary.id, reason: "User dismissed")
+        do {
+            try await service.cancel(requestID: summary.id, reason: "User dismissed")
+        } catch {
+            // Phase 4 push debugging will need to know when SDK cancels
+            // failed to deliver — a partner-device stale-waiting UI
+            // pairs with a logged cancel-fail here. `.public` privacy
+            // is fine: the error message is SDK-bookkeeping text, no
+            // user-content / token leakage.
+            Self.logger.error("VerificationCenter.dismiss: cancel failed for requestID=\(summary.id, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
         pending.removeAll { $0.id == summary.id }
     }
 

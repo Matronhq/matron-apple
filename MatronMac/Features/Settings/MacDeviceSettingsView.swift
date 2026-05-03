@@ -1,6 +1,7 @@
 #if os(macOS)
 import SwiftUI
 import AppKit
+import LocalAuthentication
 import MatronModels
 import MatronVerification
 
@@ -21,6 +22,11 @@ struct MacDeviceSettingsView: View {
     /// Read-only lookup for the recovery-key reveal. See iOS
     /// `DeviceSettingsView.currentRecoveryKey` for the rationale.
     let currentRecoveryKey: () throws -> String?
+    /// Re-authentication closure invoked before `currentRecoveryKey()`.
+    /// Wave 4 expert-QA #3 — see iOS `DeviceSettingsView.requestAuth`
+    /// for the full rationale. On Mac, `.deviceOwnerAuthentication`
+    /// covers Touch ID, Apple Watch unlock, and account password.
+    var requestAuth: () async -> Bool = Self.defaultRequestAuth
     let onFinished: () -> Void
 
     @State private var isVerified: Bool? = nil
@@ -51,7 +57,7 @@ struct MacDeviceSettingsView: View {
                         }
                     }
                     Button("Show recovery key") {
-                        revealKey()
+                        Task { await revealKey() }
                     }
                 }
                 if let key = revealedKey {
@@ -88,11 +94,17 @@ struct MacDeviceSettingsView: View {
         }
     }
 
-    /// Drives the "Show recovery key" tap. Splits the success / nil /
-    /// error branches into distinct UI states (mirrors the iOS
-    /// rationale — don't collapse "no key stored" and "Keychain
-    /// failure" into the same sentinel).
-    private func revealKey() {
+    /// Drives the "Show recovery key" tap. Wave 4 expert-QA #3: gate
+    /// the reveal behind `requestAuth()` so an unattended unlocked Mac
+    /// doesn't expose the key on Settings open. See iOS
+    /// `DeviceSettingsView.revealKey` for the full rationale.
+    private func revealKey() async {
+        let authed = await requestAuth()
+        guard authed else {
+            revealedKey = nil
+            revealError = "Authentication required to show your recovery key."
+            return
+        }
         do {
             if let key = try currentRecoveryKey() {
                 revealedKey = key
@@ -104,6 +116,25 @@ struct MacDeviceSettingsView: View {
         } catch {
             revealedKey = nil
             revealError = "Couldn't read recovery key: \(error.localizedDescription)"
+        }
+    }
+
+    /// Default `requestAuth` closure for the Mac. Mirrors the iOS
+    /// implementation — see `DeviceSettingsView.defaultRequestAuth`
+    /// for the rationale.
+    nonisolated static func defaultRequestAuth() async -> Bool {
+        let context = LAContext()
+        var error: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
+            return false
+        }
+        do {
+            return try await context.evaluatePolicy(
+                .deviceOwnerAuthentication,
+                localizedReason: "Show your recovery key"
+            )
+        } catch {
+            return false
         }
     }
 }

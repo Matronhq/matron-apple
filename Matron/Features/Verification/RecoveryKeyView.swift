@@ -66,9 +66,16 @@ struct RecoveryKeyView: View {
             // and dismisses on success; standalone "Restore" button (in
             // restoreBody) stays for retry-on-error UX so the user can
             // see + correct an error inline before committing.
+            //
+            // Wave 4 expert-QA #2: skip `attemptRestore()` when the VM
+            // is already `.done` so a successful Restore (the inline
+            // button below) followed by a Done tap doesn't re-fire
+            // `recover()` with the same key. Mirrors the Mac fix.
             Button("Done") {
                 Task {
-                    await viewModel.attemptRestore()
+                    if viewModel.phase != .done {
+                        await viewModel.attemptRestore()
+                    }
                     if viewModel.phase == .done { onFinished() }
                 }
             }
