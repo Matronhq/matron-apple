@@ -95,10 +95,22 @@ jobs:
           # Phase 3 Task 12 added Mac-side snapshot tests for the verification
           # chrome. Same rationale as the SPM job: NSHostingView renders
           # differently across macOS / Xcode versions, so pixel equality is
-          # gated by this env var on CI. `TEST_RUNNER_*` is the documented
-          # xcodebuild prefix that propagates a variable into the test
-          # runner's environment (the helper reads it via `ProcessInfo`).
-          # Snapshots remain useful for local visual review.
+          # gated by an env var on CI. Snapshots remain useful for local
+          # visual review.
+          #
+          # We set BOTH names because the `MatronMac` scheme runs two kinds of
+          # snapshot tests under one `xcodebuild test` invocation:
+          #   1. `MatronMacTests/SnapshotHelpers.swift` — Mac-app test bundle.
+          #      Only the `TEST_RUNNER_*`-prefixed var is propagated into the
+          #      runner here (xcodebuild does not inherit the parent shell's
+          #      env into the test runner).
+          #   2. `MatronShared/Tests/DesignSystemSnapshotTests` — SPM tests
+          #      that run transitively because xcodegen wires MatronShared as
+          #      a dep of MatronMac. The unprefixed var is the one that gates
+          #      these (matching the `shared-package-tests` job's `swift test`).
+          # Setting both means both helpers see "skip" regardless of which
+          # propagation path xcodebuild takes for each bundle.
+          MATRON_SKIP_SNAPSHOT_TESTS: "1"
           TEST_RUNNER_MATRON_SKIP_SNAPSHOT_TESTS: "1"
         run: |
           xcodebuild test \

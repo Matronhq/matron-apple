@@ -27,7 +27,10 @@ import SnapshotTesting
 /// inherit the parent shell's env into the test runner. Pass it via the
 /// documented `TEST_RUNNER_*` prefix instead:
 ///   `TEST_RUNNER_MATRON_SKIP_SNAPSHOT_TESTS=1 xcodebuild test …`
-/// CI's `mac-build-and-test` job uses this pattern.
+/// CI's `mac-build-and-test` job uses this pattern. We accept both the
+/// unprefixed and the `TEST_RUNNER_*`-prefixed names so the same call site
+/// works whether this helper is invoked under `swift test` (inherits shell
+/// env) or `xcodebuild test` (only `TEST_RUNNER_*` propagates into the runner).
 func assertVariants<V: View>(
     of view: V,
     named base: String,
@@ -35,7 +38,8 @@ func assertVariants<V: View>(
     testName: String = #function,
     line: UInt = #line
 ) {
-    if ProcessInfo.processInfo.environment["MATRON_SKIP_SNAPSHOT_TESTS"] == "1" {
+    let env = ProcessInfo.processInfo.environment
+    if ["MATRON_SKIP_SNAPSHOT_TESTS", "TEST_RUNNER_MATRON_SKIP_SNAPSHOT_TESTS"].contains(where: { env[$0] == "1" }) {
         return
     }
     assertSnapshot(
