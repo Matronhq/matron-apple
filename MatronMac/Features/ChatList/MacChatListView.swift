@@ -306,7 +306,11 @@ struct MacChatListView: View {
         deps: AppDependencies,
         session: UserSession
     ) -> some View {
-        let svc = VerificationServiceLive(provider: deps.clientProvider, session: session)
+        // Reuse the VerificationCenter's service so acceptIncoming hits the
+        // SAME FlowStore that registered the incoming request — see iOS
+        // ChatListView for the full rationale.
+        let svc: any VerificationService = verificationCenter?.service
+            ?? VerificationServiceLive(provider: deps.clientProvider, session: session)
         let stream = svc.acceptIncoming(requestID: summary.id)
         MacSasView(
             viewModel: SasViewModel(

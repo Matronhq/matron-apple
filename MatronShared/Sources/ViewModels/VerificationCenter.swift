@@ -29,7 +29,13 @@ public final class VerificationCenter {
     /// when it appends).
     public private(set) var pending: [VerificationRequestSummary] = []
 
-    private let service: VerificationService
+    /// The underlying service. Exposed so banner-presented sheets can route
+    /// `acceptIncoming(requestID:)` / `confirm` / `cancel` calls through the
+    /// SAME instance whose FlowStore registered the incoming request —
+    /// building a fresh `VerificationServiceLive` would hit an empty
+    /// FlowStore and immediately yield `.cancelled(reason: "Unknown
+    /// request: …")`. Bugbot caught this on the iOS banner.
+    public let service: VerificationService
     private var observationTask: Task<Void, Never>?
 
     public init(service: VerificationService) {

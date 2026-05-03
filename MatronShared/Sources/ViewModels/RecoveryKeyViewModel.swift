@@ -1,4 +1,5 @@
 import Foundation
+import MatronVerification
 
 /// Cross-platform view-model backing the recovery-key UI (spec §7.2 Scenario A).
 /// Lives in `MatronViewModels` so iOS (`RecoveryKeyView`) and macOS
@@ -110,6 +111,18 @@ public final class RecoveryKeyViewModel {
             generatedKey = key
             phase = .done
             generatePhase = .show
+        } catch let persistenceError as RecoveryKeyManager.PersistenceError {
+            // Bugbot caught: the SDK generated the key successfully but
+            // local persistence (Keychain) failed. Without extracting the
+            // key from the associated value the user would never see it
+            // and the recovery key would be irrecoverably lost. Surface
+            // the key alongside a warning so the user can copy it manually.
+            switch persistenceError {
+            case .keychainWriteFailedButKeyAvailable(let key, let underlying):
+                generatedKey = key
+                generatePhase = .show
+                phase = .error("Couldn't auto-store your recovery key — please copy it now and save it somewhere safe. Underlying: \(underlying.localizedDescription)")
+            }
         } catch {
             phase = .error(error.localizedDescription)
         }

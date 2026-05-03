@@ -241,7 +241,13 @@ struct ChatListView: View {
         deps: AppDependencies,
         session: UserSession
     ) -> some View {
-        let svc = VerificationServiceLive(provider: deps.clientProvider, session: session)
+        // Reuse the VerificationCenter's service so acceptIncoming hits the
+        // SAME FlowStore that registered the incoming request. A fresh
+        // VerificationServiceLive would have an empty FlowStore and yield
+        // .cancelled("Unknown request: …") immediately. Falls back to a
+        // fresh instance only if no center is wired (test/preview path).
+        let svc: any VerificationService = verificationCenter?.service
+            ?? VerificationServiceLive(provider: deps.clientProvider, session: session)
         let stream = svc.acceptIncoming(requestID: summary.id)
         SasView(
             viewModel: SasViewModel(

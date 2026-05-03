@@ -163,11 +163,18 @@ struct MacRecoveryKeyView: View {
         case (.restore, _):
             // Bugbot caught: restore mode previously fell through to
             // EmptyView() — Mac users had no way to finish after restoring.
-            // iOS RecoveryKeyView ships an explicit Done button in the same
-            // spot; mirror it.
-            Button("Done") { onFinished() }
-                .keyboardShortcut(.return)
-                .buttonStyle(.borderedProminent)
+            // Mirrors iOS: Done both runs the restore and dismisses on
+            // success, so the user can't bypass the actual key restore by
+            // typing any text and tapping Done.
+            Button("Done") {
+                Task {
+                    await viewModel.attemptRestore()
+                    if viewModel.phase == .done { onFinished() }
+                }
+            }
+            .keyboardShortcut(.return)
+            .buttonStyle(.borderedProminent)
+            .disabled(viewModel.enteredKey.isEmpty || viewModel.phase == .busy)
         default:
             EmptyView()
         }
