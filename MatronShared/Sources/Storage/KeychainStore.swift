@@ -19,10 +19,24 @@ public enum KeychainError: Error, LocalizedError {
 public struct KeychainStore: SessionStore {
     private let service: String
     private let accessGroup: String?
+    private let synchronizable: Bool
 
-    public init(service: String, accessGroup: String? = nil) {
+    /// - Parameters:
+    ///   - service: Keychain service name (typically the bundle ID).
+    ///   - accessGroup: Optional keychain access group for sharing items
+    ///     across same-team apps and extensions.
+    ///   - synchronizable: When `true`, items are tagged with
+    ///     `kSecAttrSynchronizable=true` so iCloud Keychain replicates them
+    ///     across the user's signed-in devices. Used by `RecoveryKeyManager`
+    ///     so a fresh install on another device can read the recovery key
+    ///     without re-entry. Synchronizable items live in a separate
+    ///     keychain namespace from non-synchronizable ones — the same
+    ///     `service` + key stored with both flags refers to two distinct
+    ///     entries.
+    public init(service: String, accessGroup: String? = nil, synchronizable: Bool = false) {
         self.service = service
         self.accessGroup = accessGroup
+        self.synchronizable = synchronizable
     }
 
     public func set(_ value: String, forKey key: String) throws {
@@ -81,6 +95,10 @@ public struct KeychainStore: SessionStore {
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
         ]
+        if synchronizable {
+            // kCFBooleanTrue!: documented non-null on all platforms we ship.
+            query[kSecAttrSynchronizable as String] = kCFBooleanTrue!
+        }
         if let accessGroup {
             query[kSecAttrAccessGroup as String] = accessGroup
         }
