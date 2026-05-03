@@ -120,3 +120,14 @@ See plan for canonical list. Updates land here per push.
   - iOS host wraps `DeviceSettingsView` in a `NavigationStack` inside the sheet so the navigationTitle renders + the Done toolbar button plumbs cleanly. Settings entry is gated on `deps != nil, session != nil` so previews / tests with no environment stay clean.
   - Imported `MatronStorage` in `ChatListView` (was already a transitive dep via `MatronViewModels`; explicit import keeps the `KeychainStore(...)` call site readable).
   - SPM total: 189. iOS scheme: 44 (was 41, +3 — `DeviceSettingsViewTests`). Mac scheme: 49 (was 46, +3 — `MacDeviceSettingsViewTests`).
+- [x] **Task 14 — manual-tests.md additions** (2026-05-03). Phase 3 section appended to `manual-tests.md` covering first-device generate, second-device restore, multi-device SAS, bot verification, trust posture, Mac chrome, iCloud Keychain auto-restore. **Plan deviations:**
+  - Plan's "Show Recovery Key…" step pointed at `MacRecoveryKeyView` in restore mode. Updated to point at `MacDeviceSettingsView` (Task 11 swapped the menu sheet body).
+  - Added two regression-guard sections beyond the plan: a multi-account section that covers bugbot finding #4 (per-user storage key) and a verification-gate section that covers bugbot finding #2 (sync runs during the gate).
+  - Marked Phase 2's "Verification UX (Phase 3)" placeholder in the "NOT tested" list as struck through with a forward-pointer to the Phase 3 section. The "NOT tested in Phase 3" subsection at the end captures what we still don't cover (live device-list query, Phase 7 Settings reauth, snapshot pixel-mismatch on macos-15 CI).
+  - SPM: 189. iOS: 44. Mac: 49.
+- [x] **Bugbot fix-up — round 4** (2026-05-03). Four findings on PR #2:
+  1. Mac generate-flow Confirm only flipped local phase to `.confirmed` and relied on a 600ms `.task` auto-dismiss racing with `.onChange(of: reenteredKey)`. Mirrors iOS — Confirm now calls `onFinished()` directly.
+  2. Sync service was only started on the post-verify branch in both iOS + Mac hosts. SAS verification needs sliding-sync running to exchange to-device events, so verify-with-other-device hung when `verifyDone == false`. Started sync on the verification-gate branch on both platforms.
+  3. (Already fixed in round-3) Mac restore Done was disabled — confirmed working.
+  4. `RecoveryKeyManager.storageKey` was a single shared `"matron.recovery-key"` constant. With `kSecAttrSynchronizable=true` a second account on the same device would overwrite the first user's recovery key and propagate the loss across all linked devices. Replaced with `storageKey(for: userID)` so each user's key lives in its own scoped Keychain entry. `RecoveryKeyManagerTests` updated to cover per-user scoping.
+  - SPM: 189. iOS: 44. Mac: 49 (no test count changes — bugbot fixes are behavior-only or update existing tests).
