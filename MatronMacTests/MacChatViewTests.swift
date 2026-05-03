@@ -233,13 +233,15 @@ final class MacChatViewTests: XCTestCase {
         XCTAssertEqual(result, .verified, "Seeded verified state must read .verified so the banner is suppressed")
     }
 
-    /// B2/M5 expert-QA fix: the per-bot SAS sheet body must build the
+    /// Wave 5 bugbot #2: the per-bot SAS sheet body must build the
     /// `SasViewModel` + open the `startSAS` stream exactly once per
-    /// "Verify" tap (not on every parent body re-evaluation). Mirrors
-    /// the iOS test in `ChatViewBindingTests.test_perBotSasSheet_*`.
+    /// "Verify" tap. Mirrors `ChatViewBindingTests.test_perBotSasSheet_*` —
+    /// see iOS for the full rationale (Wave 2's `init`-side seed
+    /// re-evaluated `service.startSAS(...)` on every body re-render and
+    /// drained the prior continuation via M3's "Replaced by new flow").
+    /// New shape moves the side effect into `.task(id: botMatrixID)`.
     /// Locks the construction-time baseline: instantiating MacChatView
-    /// itself MUST NOT call startSAS. The runtime @State preservation
-    /// is a SwiftUI invariant; we lock the structural shape here.
+    /// itself MUST NOT call startSAS.
     func test_perBotSasSheet_callsStartSASExactlyOnce_perPresent() async throws {
         let svc = CountingVerificationServiceForChat()
         let timeline = FakeTimelineForChat()

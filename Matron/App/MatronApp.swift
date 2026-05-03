@@ -173,8 +173,11 @@ struct MatronApp: App {
             // Mac probe's `withThrowingTaskGroup` race.
             try await withThrowingTaskGroup(of: Void.self) { group in
                 group.addTask {
-                    // Centralised factory — same service + access group
-                    // the recovery-key flow writes to (B3 invariant).
+                    // Centralised factory — same service the recovery-key
+                    // flow writes to. Wave 5 reverted the explicit
+                    // `accessGroup:` half (the `$(AppIdentifierPrefix)…`
+                    // literal was bug #3 — see `KeychainStore.recoveryStore()`
+                    // for the full rationale).
                     try KeychainProbe.run(keychain: KeychainStore.recoveryStore())
                 }
                 group.addTask {

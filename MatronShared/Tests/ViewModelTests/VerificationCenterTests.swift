@@ -124,6 +124,42 @@ final class VerificationCenterTests: XCTestCase {
         XCTAssertTrue(center.pending.isEmpty)
     }
 
+    /// Wave 5 bugbot #4: `start()` MUST be a no-op when an observation
+    /// task is already running. Two call sites fire `start()` on cold-
+    /// launch — the host's `.task(id: session.userID)` AND the chat-list
+    /// view's `.onAppear` — and the prior cancel-then-restart shape meant
+    /// whichever fired second cancelled the first's observation, silently
+    /// breaking the incoming-request stream depending on scheduler
+    /// ordering. Locks the new contract: first caller wins, second is a
+    /// safe no-op. Asserts via the `hasObservationTask` DEBUG seam (a
+    /// task-identity comparison would need exposing `Task` itself, which
+    /// is more surface than the test needs — installed-or-not is enough
+    /// because the loop only ever ends via `stop()` or stream finish).
+    @MainActor
+    func test_start_isNoOp_whenAlreadyRunning() async {
+        let svc = ScriptedVerificationService()
+        let center = VerificationCenter(service: svc)
+
+        center.start()
+        XCTAssertTrue(center.hasObservationTask, "first start() installs the task")
+
+        // Second call — must NOT replace the running task. Under the
+        // prior shape this cancelled the prior task and started a new one,
+        // which two-call-site coverage would silently break.
+        center.start()
+        XCTAssertTrue(center.hasObservationTask, "second start() must keep the task installed")
+
+        // After stop(), the task is cleared so a future start() can
+        // re-install. This guards against an over-eager fix that turned
+        // start() into a permanent latch.
+        center.stop()
+        XCTAssertFalse(center.hasObservationTask, "stop() clears the task")
+
+        center.start()
+        XCTAssertTrue(center.hasObservationTask, "start() after stop() re-installs the task")
+        center.stop()
+    }
+
     /// Bounded poll — drives the runloop in 5ms slices for up to 1s so
     /// the AsyncStream-backed observation task gets a chance to deliver
     /// scripted summaries. Avoids `Task.sleep(_:)` because that pauses

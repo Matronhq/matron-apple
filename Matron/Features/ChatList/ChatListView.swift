@@ -430,45 +430,51 @@ private struct ChatRow: View {
 }
 
 /// Per-present SAS sheet body for an incoming verification request from
-/// the chat-list banner. Owns the `SasViewModel` + stream as `@State` so
-/// they're constructed exactly once per present — `.sheet(item:)` on the
-/// parent guarantees this view itself is built exactly once per present,
-/// and storing the VM in `@State` here keeps it stable across the
-/// parent's body re-evaluations (Wave 4 expert-QA #8). Mirrors the
-/// pattern the Wave 2 fix introduced for `ChatView`'s per-bot SAS sheet
-/// — see `Matron/Features/Chat/ChatView.swift`'s `VerifyBotSheet` for
-/// the full rationale.
+/// the chat-list banner. Cache key here is the SDK-assigned `requestID`
+/// (the banner summary's id), not the user matrix ID — that's the
+/// FlowStore key `VerificationServiceLive.routeIncomingRequest`
+/// registered the incoming-request controller under.
 ///
-/// Cache key here is the SDK-assigned `requestID` (the banner summary's
-/// id), not the user matrix ID — that's the FlowStore key
-/// `VerificationServiceLive.routeIncomingRequest` registered the
-/// incoming-request controller under.
+/// **Wave 5 bugbot #2 (covers #5).** Earlier waves built the
+/// `SasViewModel` + opened the `service.acceptIncoming(...)` stream in
+/// `init` and seeded it via `_viewModel = State(initialValue: …)`.
+/// SwiftUI does keep the `@State`-stored VM stable across re-inits at
+/// the same view-identity, BUT the right-hand side of
+/// `_viewModel = State(initialValue: …)` still EVALUATES on every
+/// `init` — so `acceptIncoming(...)` fired on every parent body re-render.
+/// Each call hit `FlowStore.setContinuation` (Wave 2 / M3) which drained
+/// the prior continuation with `.cancelled("Replaced by new flow")`, so
+/// the user saw an unexpected cancellation any time the parent re-rendered.
+/// See iOS `ChatView.swift`'s `VerifyBotSheet` for the full rationale.
 private struct IncomingRequestSasSheet: View {
-    @State private var viewModel: SasViewModel
-    private let onFinished: () -> Void
+    let service: VerificationService
+    let requestID: String
+    let onFinished: () -> Void
 
-    init(service: VerificationService, requestID: String, onFinished: @escaping () -> Void) {
-        self.onFinished = onFinished
-        // SwiftUI initialises `_viewModel` exactly once per view-identity.
-        // `.sheet(item:)` gives this view a fresh identity per present,
-        // so the VM is created once per "tap → dismiss" cycle. Subsequent
-        // parent re-renders re-init the View struct but SwiftUI ignores
-        // the state's initial value once it's been seeded.
-        let stream = service.acceptIncoming(requestID: requestID)
-        _viewModel = State(initialValue: SasViewModel(
-            stream: stream,
-            requestID: requestID,
-            confirm: { try await service.confirmEmojiMatch(requestID: requestID) },
-            cancel: { reason in try await service.cancel(requestID: requestID, reason: reason) }
-        ))
-    }
+    @State private var viewModel: SasViewModel?
 
     var body: some View {
-        SasView(
-            viewModel: viewModel,
-            title: "Verify device",
-            onFinished: onFinished
-        )
+        Group {
+            if let vm = viewModel {
+                SasView(
+                    viewModel: vm,
+                    title: "Verify device",
+                    onFinished: onFinished
+                )
+            } else {
+                ProgressView("Starting verification…")
+            }
+        }
+        .task(id: requestID) {
+            guard viewModel == nil else { return }
+            let stream = service.acceptIncoming(requestID: requestID)
+            viewModel = SasViewModel(
+                stream: stream,
+                requestID: requestID,
+                confirm: { try await service.confirmEmojiMatch(requestID: requestID) },
+                cancel: { reason in try await service.cancel(requestID: requestID, reason: reason) }
+            )
+        }
     }
 }
 

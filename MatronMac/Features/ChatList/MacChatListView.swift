@@ -330,29 +330,40 @@ struct MacChatListView: View {
 }
 
 /// Per-present SAS sheet body for an incoming verification request from
-/// the Mac sidebar banner. Mirrors iOS `IncomingRequestSasSheet`. See
-/// iOS ChatListView for the Wave 4 expert-QA #8 rationale.
+/// the Mac sidebar banner. Mirrors iOS `IncomingRequestSasSheet` — see
+/// iOS `ChatView.swift`'s `VerifyBotSheet` for the Wave 5 bugbot #2
+/// rationale (the prior `init`-side `acceptIncoming` call fired on every
+/// parent body re-render and silently cancelled the active continuation
+/// via Wave 2 / M3's "Replaced by new flow" drain).
 private struct MacIncomingRequestSasSheet: View {
-    @State private var viewModel: SasViewModel
-    private let onFinished: () -> Void
+    let service: VerificationService
+    let requestID: String
+    let onFinished: () -> Void
 
-    init(service: VerificationService, requestID: String, onFinished: @escaping () -> Void) {
-        self.onFinished = onFinished
-        let stream = service.acceptIncoming(requestID: requestID)
-        _viewModel = State(initialValue: SasViewModel(
-            stream: stream,
-            requestID: requestID,
-            confirm: { try await service.confirmEmojiMatch(requestID: requestID) },
-            cancel: { reason in try await service.cancel(requestID: requestID, reason: reason) }
-        ))
-    }
+    @State private var viewModel: SasViewModel?
 
     var body: some View {
-        MacSasView(
-            viewModel: viewModel,
-            title: "Verify device",
-            onFinished: onFinished
-        )
+        Group {
+            if let vm = viewModel {
+                MacSasView(
+                    viewModel: vm,
+                    title: "Verify device",
+                    onFinished: onFinished
+                )
+            } else {
+                ProgressView("Starting verification…")
+            }
+        }
+        .task(id: requestID) {
+            guard viewModel == nil else { return }
+            let stream = service.acceptIncoming(requestID: requestID)
+            viewModel = SasViewModel(
+                stream: stream,
+                requestID: requestID,
+                confirm: { try await service.confirmEmojiMatch(requestID: requestID) },
+                cancel: { reason in try await service.cancel(requestID: requestID, reason: reason) }
+            )
+        }
     }
 }
 

@@ -269,30 +269,26 @@ final class ChatViewBindingTests: XCTestCase {
         XCTAssertEqual(result, .verified, "Seeded verified state must read .verified so the banner is suppressed")
     }
 
-    /// B2/M5 expert-QA fix: the per-bot SAS sheet body must build the
+    /// Wave 5 bugbot #2: the per-bot SAS sheet body must build the
     /// `SasViewModel` + open the `startSAS` stream exactly once per
-    /// "Verify" tap, not on every parent body re-evaluation. The fix
-    /// hoists construction into a private `VerifyBotSheet` view whose
-    /// `@State`-stored VM survives the parent's re-renders. SwiftUI's
-    /// State semantics: `_viewModel = State(initialValue: …)` runs in
-    /// `init`, but on subsequent re-instantiations of the View struct
-    /// at the same view-identity, SwiftUI ignores the new initial
-    /// value and keeps the prior state.
+    /// "Verify" tap, not on every parent body re-evaluation.
     ///
-    /// Without rendering the actual SwiftUI hierarchy, we can't directly
-    /// observe @State preservation — but we CAN lock the structural
-    /// invariant the fix relies on: that constructing the per-tap sheet
-    /// body calls `startSAS` exactly once. A regression that re-inlined
-    /// the VM creation into the parent's `@ViewBuilder` body would still
-    /// only call startSAS once per parent body run, so this test alone
-    /// wouldn't catch it — but combined with the structural change
-    /// (`VerifyBotSheet` is now a private struct OUTSIDE `ChatView`),
-    /// it pins the contract.
+    /// Earlier waves seeded the VM via `_viewModel = State(initialValue:
+    /// SasViewModel(stream: service.startSAS(...), …))`. SwiftUI keeps
+    /// the @State value stable across re-inits at the same view-identity,
+    /// BUT the right-hand side of `_viewModel = State(initialValue: …)`
+    /// still EVALUATES on every `init` — so `service.startSAS(...)`
+    /// fired on every parent body re-render. With Wave 2 / M3's
+    /// "Replaced by new flow" drain, this silently cancelled the active
+    /// continuation any time the parent re-rendered.
     ///
-    /// Stronger coverage of the @State preservation lives in the
-    /// VerificationCenter test on the SPM side (re-firing `start()`
-    /// is idempotent + dedupes, which is what the host's `.task(id:)`
-    /// re-fire would expose if it fired on every body eval).
+    /// New shape: VM is `@State private var viewModel: SasViewModel?`
+    /// (nil until set), and `service.startSAS(...)` is invoked from
+    /// `.task(id: botMatrixID)` — fires once per identity value, not per
+    /// body re-eval. That structural change is the load-bearing piece;
+    /// this test pins the construction-time baseline (ChatView's `init`
+    /// MUST NOT call startSAS — the side effect only happens once the
+    /// sheet's `.task(id:)` runs after the user taps Verify).
     @MainActor
     func test_perBotSasSheet_callsStartSASExactlyOnce_perPresent() async throws {
         let svc = CountingVerificationServiceForChat()
@@ -300,10 +296,8 @@ final class ChatViewBindingTests: XCTestCase {
         let chatVM = ChatViewModel(roomID: "!r:s", timeline: timeline, media: FakeMediaForChat())
         let composerVM = ComposerViewModel(timeline: timeline, commands: [])
         // Constructing ChatView itself does NOT call startSAS — that
-        // only happens when the sheet presents (banner-tap path).
-        // Pin the baseline so a regression that fires startSAS at
-        // ChatView init time (e.g. via an `@StateObject` in the wrong
-        // place) would trip here.
+        // only happens when the sheet presents (banner-tap path) and its
+        // `.task(id: botMatrixID)` runs.
         let _ = ChatView(
             viewModel: chatVM,
             composerVM: composerVM,

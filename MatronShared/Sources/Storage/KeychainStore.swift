@@ -89,24 +89,39 @@ public struct KeychainStore: SessionStore {
         }
     }
 
-    /// Recovery-key store factory (Phase 3 / Wave 3 / B3 fix-up). Funnels
-    /// every recovery-key Keychain construction through one place so the
-    /// service name + access group + synchronizable flag stay in lockstep.
+    /// Recovery-key store factory. Funnels every recovery-key Keychain
+    /// construction through one place so the service name +
+    /// synchronizable flag stay in lockstep.
     ///
-    /// Pinning the access group explicitly (rather than letting the system
-    /// default to the first entry in `keychain-access-groups`) is the
-    /// load-bearing piece — Phase 4 adds a second group on iOS for the
-    /// NSE, at which point the implicit default would silently switch and
-    /// items written before the change become unreadable. See
-    /// `KeychainAccessGroups.recovery` for the full rationale + the
-    /// platform-specific group strings.
+    /// **Wave 5 bugbot #3 revert.** Earlier waves passed an explicit
+    /// `accessGroup: KeychainAccessGroups.recovery` (which itself was a
+    /// `$(AppIdentifierPrefix)…` literal). That token only expands inside
+    /// signed entitlement plists, NOT in Swift string literals — so every
+    /// signed build returned `errSecMissingEntitlement` from
+    /// `SecItemAdd` / `SecItemCopyMatching` and the entire recovery-key
+    /// feature was non-functional outside the SPM test host. See
+    /// `KeychainAccessGroups.swift` for the full rationale.
+    ///
+    /// Today both apps declare exactly one entry in
+    /// `keychain-access-groups`, so omitting `kSecAttrAccessGroup` lets the
+    /// system fall back to "the first entry in `keychain-access-groups`" —
+    /// which is ours. That's the pre-Wave-3 shipping shape, and it works.
+    ///
+    /// **TODO Phase 4:** when iOS NSE adds a second access group, EITHER
+    /// keep the recovery group first in the entitlement (cheapest), OR
+    /// resolve the live access-group string at runtime via
+    /// `SecItemCopyMatching` with `kSecReturnAttributes: true` and cache
+    /// it (correct long-term — but requires making this factory async /
+    /// throws so it can wait on the first probe). Do NOT re-introduce a
+    /// `$(AppIdentifierPrefix)…` literal — `KeychainAccessGroups.swift`'s
+    /// docblock and the `RecoveryKeyManagerTests`/`KeychainProbeTests`
+    /// regression-guard tests are the trip-wire for this.
     ///
     /// `synchronizable: true` because recovery keys ride iCloud Keychain
     /// to enable additional-device install without re-entering the key.
     public static func recoveryStore() -> KeychainStore {
         return KeychainStore(
             service: "chat.matron.recovery",
-            accessGroup: KeychainAccessGroups.recovery,
             synchronizable: true
         )
     }

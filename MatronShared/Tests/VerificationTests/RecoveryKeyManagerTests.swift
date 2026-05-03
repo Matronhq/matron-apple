@@ -37,56 +37,63 @@ final class RecoveryKeyManagerTests: XCTestCase {
         XCTAssertEqual(try manager.currentKey(), "EsTk-secret-recovery-key")
     }
 
-    /// Phase 3 / Wave 3 / B3: `KeychainStore.recoveryStore()` is the single
-    /// place that names the recovery service + access group. This test
-    /// pins that the factory uses the platform-specific access group from
-    /// `KeychainAccessGroups.recovery` (NOT the implicit-default-of-first-
-    /// entry fallback that would silently re-target whichever group the
-    /// system happens to pick when Phase 4 adds a second `keychain-access-
-    /// groups` entry on iOS for NSE push decryption).
+    /// Phase 3 / Wave 5 bugbot #3: `KeychainStore.recoveryStore()` is the
+    /// single place that names the recovery service. This test pins TWO
+    /// invariants:
     ///
-    /// We intentionally read the constant from the same enum the prod
-    /// code reads — hard-coding `"$(AppIdentifierPrefix)chat.matron…"`
-    /// here would just be a copy-paste of the factory and miss the case
-    /// where someone changes one but not the other.
-    func test_recoveryStoreFactory_usesCentralisedAccessGroup() throws {
-        // Pin the access-group constant matches the platform's expected
-        // suffix — `$(AppIdentifierPrefix)` is signing-team-dependent so
-        // we only assert the suffix, which IS the part that needs to
-        // match the entitlement file. Mismatch here means a future
-        // entitlement edit (or a rename of the access group) wasn't
-        // mirrored into `KeychainAccessGroups.recovery`.
-        //
-        // We intentionally read the constant from the same enum the prod
-        // code reads (rather than hard-coding the string) — a copy-paste
-        // here would miss the case where someone updates the factory but
-        // forgets the entitlement file (or vice versa).
+    ///   1. `KeychainAccessGroups.recoverySuffix` matches the platform's
+    ///      entitlement-file suffix — that's the part the entitlement
+    ///      plist's `keychain-access-groups` entry ends with after the
+    ///      team-dependent `$(AppIdentifierPrefix)` prefix. Mismatch here
+    ///      means a future entitlement edit (or a rename) wasn't mirrored.
+    ///
+    ///   2. `recoveryStore()` does NOT pass an explicit `accessGroup`
+    ///      string to `KeychainStore(...)`. The Wave-3 shape passed
+    ///      `KeychainAccessGroups.recovery` (which itself was a
+    ///      `$(AppIdentifierPrefix)…` literal that doesn't expand in
+    ///      Swift strings) — every signed build returned
+    ///      `errSecMissingEntitlement`. Wave 5 reverts to implicit-default
+    ///      (system uses the first `keychain-access-groups` entry, which
+    ///      is ours). This test is the regression guard against a future
+    ///      reviewer re-introducing the explicit-string shape.
+    func test_recoveryStoreFactory_usesEntitlementSuffix_andNoExplicitGroup() throws {
+        // Suffix half: pin the entitlement file's expected suffix. We
+        // assert against the centralised constant rather than hard-coding
+        // the string here so a copy-paste between this test and the
+        // entitlement plist can't drift — both sides read from
+        // `KeychainAccessGroups.recoverySuffix`.
         #if os(macOS)
-        XCTAssertTrue(
-            KeychainAccessGroups.recovery.hasSuffix("chat.matron.mac"),
-            "Mac access-group constant must match the suffix in MatronMac/App/MatronMac.entitlements"
+        XCTAssertEqual(
+            KeychainAccessGroups.recoverySuffix, "chat.matron.mac",
+            "Mac suffix must match the entry in MatronMac/App/MatronMac.entitlements"
         )
         #else
-        XCTAssertTrue(
-            KeychainAccessGroups.recovery.hasSuffix("chat.matron"),
-            "iOS access-group constant must match the suffix in Matron/App/Matron.entitlements"
+        XCTAssertEqual(
+            KeychainAccessGroups.recoverySuffix, "chat.matron",
+            "iOS suffix must match the entry in Matron/App/Matron.entitlements"
         )
         // Defence-in-depth: iOS suffix MUST NOT be `chat.matron.mac` —
         // that would cross-wire the iOS app to the Mac access group on
         // Phase 4's iCloud-sync paths.
-        XCTAssertFalse(
-            KeychainAccessGroups.recovery.hasSuffix("chat.matron.mac"),
-            "iOS access-group constant must NOT match the Mac suffix"
+        XCTAssertNotEqual(
+            KeychainAccessGroups.recoverySuffix, "chat.matron.mac",
+            "iOS suffix must NOT match the Mac entitlement"
         )
         #endif
 
-        // The factory is the regression guard against a future caller
-        // re-introducing `KeychainStore(service: "chat.matron.recovery"
-        // /* no accessGroup */)`. Constructing it here proves the surface
-        // exists; the round-trip half is gated behind the iCloud-Keychain
-        // entitlement that the SPM host (and iOS Simulator without a
-        // signing team) doesn't have, so we skip live exercise on hosts
-        // that surface `errSecMissingEntitlement`.
+        // No-explicit-group half: the factory MUST succeed against the
+        // system default (no `accessGroup` passed). Hosts with the right
+        // entitlement (real signed device) pass. Hosts without (SPM
+        // `swift test`, iOS Simulator without a signing team) surface
+        // `errSecMissingEntitlement (-34018)` — that's a HOST limitation,
+        // not a factory bug, so we XCTSkip the live half on those hosts.
+        // The structural assertion (factory exists + is callable) plus
+        // the in-process state of "no explicit group string was passed
+        // through to `kSecAttrAccessGroup`" is locked by the source
+        // shape: `recoveryStore()` no longer takes any access-group
+        // argument, so a future re-introduction of the broken pattern
+        // would be visible at the call site here AND would surface as a
+        // build break on the now-non-existent `KeychainAccessGroups.recovery`.
         let store = KeychainStore.recoveryStore()
         do {
             try store.set("factory-probe", forKey: "test-key")

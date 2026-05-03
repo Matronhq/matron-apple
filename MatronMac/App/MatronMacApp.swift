@@ -221,12 +221,11 @@ struct MatronMacApp: App {
         do {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 group.addTask {
-                    // Phase 3 / Wave 3 / B3: route through the centralised
-                    // factory so the probe targets the SAME service +
-                    // access group that `RecoveryKeyManager` writes to.
-                    // Otherwise the probe could pass against an implicit-
-                    // group store while the actual recovery-key path
-                    // silently fails on the explicit-group store.
+                    // Centralised factory — same service the recovery-key
+                    // flow writes to. Wave 5 reverted the explicit
+                    // `accessGroup:` half (the `$(AppIdentifierPrefix)…`
+                    // literal was bug #3 — see `KeychainStore.recoveryStore()`
+                    // for the full rationale).
                     try KeychainProbe.run(keychain: KeychainStore.recoveryStore())
                 }
                 group.addTask {
@@ -313,8 +312,11 @@ struct MatronMacApp: App {
         let mgr = RecoveryKeyManager(
             provider: dependencies.clientProvider,
             session: session,
-            // Phase 3 / Wave 3 / B3: centralised factory. See
-            // `KeychainAccessGroups.recovery` for the rationale.
+            // Centralised factory — service + synchronizable flag stay
+            // in lockstep across every recovery-key construction site.
+            // See `KeychainStore.recoveryStore()` for the Wave 5 revert
+            // rationale (no explicit `accessGroup`; the system falls back
+            // to the first `keychain-access-groups` entry, which is ours).
             keychain: KeychainStore.recoveryStore()
         )
         MacDeviceSettingsView(
@@ -337,32 +339,41 @@ struct MatronMacApp: App {
 /// failure.
 private struct KeychainProbeTimeout: Error {}
 
-/// Help → Verify This Device sheet body. Owns the `SasViewModel` +
-/// stream as `@State` so they're built exactly once per present
-/// (B2/M5 expert-QA fix). Mirrors `MacSelfVerifySasDestination` /
-/// `MacVerifyBotSheet` — see iOS `ChatView.swift` for the full
-/// rationale.
+/// Help → Verify This Device sheet body. Mirrors
+/// `MacSelfVerifySasDestination` / `MacVerifyBotSheet` — see iOS
+/// `ChatView.swift`'s `VerifyBotSheet` for the Wave 5 bugbot #2
+/// rationale (the prior `init`-side `startSAS` call fired on every
+/// parent body re-render and silently cancelled the active continuation
+/// via Wave 2 / M3's "Replaced by new flow" drain).
 private struct HelpMenuVerifyDeviceSheet: View {
-    @State private var viewModel: SasViewModel
-    private let onFinished: () -> Void
+    let service: VerificationService
+    let userID: String
+    let onFinished: () -> Void
 
-    init(service: VerificationService, userID: String, onFinished: @escaping () -> Void) {
-        self.onFinished = onFinished
-        let stream = service.startSAS(withUser: userID, deviceID: nil)
-        _viewModel = State(initialValue: SasViewModel(
-            stream: stream,
-            requestID: userID,
-            confirm: { try await service.confirmEmojiMatch(requestID: userID) },
-            cancel: { reason in try await service.cancel(requestID: userID, reason: reason) }
-        ))
-    }
+    @State private var viewModel: SasViewModel?
 
     var body: some View {
-        MacSasView(
-            viewModel: viewModel,
-            title: "Verify this device",
-            onFinished: onFinished
-        )
+        Group {
+            if let vm = viewModel {
+                MacSasView(
+                    viewModel: vm,
+                    title: "Verify this device",
+                    onFinished: onFinished
+                )
+            } else {
+                ProgressView("Starting verification…")
+            }
+        }
+        .task(id: userID) {
+            guard viewModel == nil else { return }
+            let stream = service.startSAS(withUser: userID, deviceID: nil)
+            viewModel = SasViewModel(
+                stream: stream,
+                requestID: userID,
+                confirm: { try await service.confirmEmojiMatch(requestID: userID) },
+                cancel: { reason in try await service.cancel(requestID: userID, reason: reason) }
+            )
+        }
     }
 }
 

@@ -282,43 +282,56 @@ struct ChatView: View {
     }
 }
 
-/// Per-present SAS sheet body for the per-bot verification flow. Owns
-/// the `SasViewModel` + stream as `@State` so they're constructed
-/// exactly once per present — `.sheet(item:)` on the parent guarantees
-/// this view itself is built exactly once per present, and storing the
-/// VM in `@State` here keeps it stable across the parent's body re-
-/// evaluations (B2/M5 expert-QA fix). The prior shape rebuilt the VM
-/// inline inside the parent's `@ViewBuilder` sheet body, which fired
-/// fresh on every parent `@State` mutation — partner-side SAS state
-/// transitions reached an orphaned VM whose continuation the visible
-/// sheet was no longer observing.
+/// Per-present SAS sheet body for the per-bot verification flow.
+///
+/// **Wave 5 bugbot #2.** Earlier waves built the `SasViewModel` + opened
+/// the `service.startSAS(...)` stream in `init` and seeded it via
+/// `_viewModel = State(initialValue: …)`. SwiftUI does keep the
+/// `@State`-stored VM stable across re-inits at the same view-identity,
+/// BUT the right-hand side of `_viewModel = State(initialValue: …)` still
+/// EVALUATES on every `init` — so `service.startSAS(...)` fired on every
+/// parent body re-render. Each call hits `FlowStore.setContinuation`
+/// (Wave 2 / M3), which drains the prior continuation with
+/// `.cancelled("Replaced by new flow")`. The `@State`-preserved VM is
+/// observing a now-terminated stream and the user sees an unexpected
+/// cancellation any time the parent re-renders. That effectively unwound
+/// Wave 2's hoisting fix when combined with M3.
+///
+/// New shape: VM is `@State private var viewModel: SasViewModel?` (nil
+/// until the side-effect runs), and `service.startSAS(...)` is invoked
+/// from `.task(id: botMatrixID)` — which SwiftUI guarantees to fire
+/// exactly once per identity value, NOT on every body re-eval. The
+/// `guard viewModel == nil` is belt-and-suspenders against SwiftUI
+/// invoking the id-keyed task once on cold-init AND once on first
+/// body settle (rare in practice; cheap to defend against).
 private struct VerifyBotSheet: View {
-    @State private var viewModel: SasViewModel
-    private let botMatrixID: String
-    private let onFinished: () -> Void
+    let service: VerificationService
+    let botMatrixID: String
+    let onFinished: () -> Void
 
-    init(service: VerificationService, botMatrixID: String, onFinished: @escaping () -> Void) {
-        self.botMatrixID = botMatrixID
-        self.onFinished = onFinished
-        // SwiftUI initialises `_viewModel` exactly once per view-identity.
-        // `.sheet(item:)` gives this view a fresh identity per present,
-        // so the VM is created once per "tap → dismiss" cycle. Subsequent
-        // parent re-renders re-init the View struct but SwiftUI ignores
-        // the state's initial value once it's been seeded.
-        let stream = service.startSAS(withUser: botMatrixID, deviceID: nil)
-        _viewModel = State(initialValue: SasViewModel(
-            stream: stream,
-            requestID: botMatrixID,
-            confirm: { try await service.confirmEmojiMatch(requestID: botMatrixID) },
-            cancel: { reason in try await service.cancel(requestID: botMatrixID, reason: reason) }
-        ))
-    }
+    @State private var viewModel: SasViewModel?
 
     var body: some View {
-        SasView(
-            viewModel: viewModel,
-            title: "Verify \(botMatrixID)",
-            onFinished: onFinished
-        )
+        Group {
+            if let vm = viewModel {
+                SasView(
+                    viewModel: vm,
+                    title: "Verify \(botMatrixID)",
+                    onFinished: onFinished
+                )
+            } else {
+                ProgressView("Starting verification…")
+            }
+        }
+        .task(id: botMatrixID) {
+            guard viewModel == nil else { return }
+            let stream = service.startSAS(withUser: botMatrixID, deviceID: nil)
+            viewModel = SasViewModel(
+                stream: stream,
+                requestID: botMatrixID,
+                confirm: { try await service.confirmEmojiMatch(requestID: botMatrixID) },
+                cancel: { reason in try await service.cancel(requestID: botMatrixID, reason: reason) }
+            )
+        }
     }
 }

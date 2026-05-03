@@ -130,10 +130,16 @@ struct MacRecoveryKeyView: View {
                 }
             }
         }
+        // Wave 5 bugbot #1: NO `.keyboardShortcut(.return)` here.
+        // The bottom-bar Done button is `.borderedProminent` and owns
+        // the Return key for restore mode (see `primaryActionButton`).
+        // Declaring `.return` on both buttons made Return ambiguous —
+        // could trigger either, and combined with Wave 4's Done-double-
+        // call guard (`if phase != .done`) the Restore + Done pair
+        // could race their `attemptRestore()` calls.
         Button("Restore") {
             Task { await viewModel.attemptRestore() }
         }
-        .keyboardShortcut(.return)
         .disabled(viewModel.enteredKey.isEmpty || viewModel.phase == .busy)
         if case .error(let message) = viewModel.phase {
             Text(message)

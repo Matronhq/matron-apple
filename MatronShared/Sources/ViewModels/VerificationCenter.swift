@@ -18,9 +18,16 @@ import MatronVerification
 /// Swift 6 strict concurrency forbids a `@MainActor deinit` reaching into
 /// isolated state, so callers must invoke `stop()` explicitly from
 /// `View.onDisappear` (mirrors the `ChatListViewModel.cancel()` pattern
-/// added in Phase 2). `start()` is idempotent — re-firing it cancels the
-/// prior observation task and starts fresh, so a SwiftUI view remount
-/// that re-calls `start()` won't leak the previous task.
+/// added in Phase 2). `start()` is idempotent — Wave 5 bugbot #4 made
+/// it a no-op when an observation task is already running (was: cancel
+/// + restart). Two call sites fire `start()` on cold-launch — the host's
+/// `.task(id: session.userID)` AND the chat-list's `.onAppear` — and
+/// whichever fired second under the prior shape would cancel the first's
+/// observation task, silently breaking the incoming-request stream.
+/// Both call sites stay (defence in depth: `.task(id:)` keys on session
+/// change; `.onAppear` recovers if the parent task somehow didn't fire,
+/// e.g. in a preview or test bypass) — first one wins, the second is a
+/// safe no-op.
 @Observable
 @MainActor
 public final class VerificationCenter {
@@ -53,13 +60,19 @@ public final class VerificationCenter {
     }
 
     /// Begin observing the service's incoming-request stream. Idempotent:
-    /// a second call cancels the prior task and starts a new one, so a
-    /// view remount that re-fires `start()` doesn't leak the previous
-    /// observation. Dedupes by `summary.id` so a service that re-yields
+    /// a second call while an observation task is already running is a
+    /// safe no-op (Wave 5 bugbot #4). Two call sites fire `start()` on
+    /// cold-launch — the host's `.task(id: session.userID)` AND the
+    /// chat-list view's `.onAppear` — and the prior cancel-then-restart
+    /// shape meant whichever fired second would cancel the first's
+    /// observation, silently breaking the incoming-request stream. The
+    /// first caller wins; a view remount that re-fires `start()` doesn't
+    /// double-observe (no leak) and doesn't replace the running task
+    /// (no race). Dedupes by `summary.id` so a service that re-yields
     /// the same request (e.g. on stream reconnect) doesn't render the
     /// banner twice.
     public func start() {
-        observationTask?.cancel()
+        if observationTask != nil { return }
         observationTask = Task { [weak self] in
             guard let self else { return }
             // Capture the stream before entering the loop so a
@@ -126,5 +139,11 @@ public final class VerificationCenter {
     public func injectPending(_ summary: VerificationRequestSummary) {
         pending.append(summary)
     }
+
+    /// Test seam — exposes whether the observation task is currently
+    /// installed. Used by Wave 5 bugbot #4's idempotency test to assert
+    /// that a second `start()` does not replace the running task.
+    /// Gated behind `#if DEBUG` so release builds don't leak the surface.
+    public var hasObservationTask: Bool { observationTask != nil }
     #endif
 }
