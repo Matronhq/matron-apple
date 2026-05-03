@@ -44,6 +44,14 @@ struct MatronMacApp: App {
     /// root (Phase 3 / Task 9c). Phase 3 wires the menu surface; Task 11
     /// fills in the actual re-auth-then-reveal body.
     @State private var showRecoveryKeySheet = false
+    /// Re-evaluation token bumped when `showVerifyDeviceSheet` flips
+    /// from `true` back to `false` (i.e. the Help → Verify This Device
+    /// sheet was dismissed). Passed into `MacChatListView` and used as
+    /// the `.task(id:)` key for the per-this-device verification check
+    /// so a successful self-verify clears the in-list
+    /// `MacUnverifiedDeviceBanner` without requiring a chat-list
+    /// re-mount. Wave 6 / live-test #3.
+    @State private var verifyDeviceDismissToken = 0
 
     var body: some Scene {
         WindowGroup {
@@ -72,9 +80,25 @@ struct MatronMacApp: App {
                         // sidebar banner short-circuits on nil until the
                         // task installs the real instance (then SwiftUI
                         // re-renders).
+                        //
+                        // Sign-Out / Verify-Device / Show-Recovery-Key
+                        // closures (Wave 6 / live-test #1 + #2). Listeners
+                        // moved INTO `MacChatListView` because the prior
+                        // WindowGroup-root `.onReceive(...)` on a
+                        // type-switching `Group { … }` silently dropped
+                        // notifications on macOS — so the menu items
+                        // posted to the bus but nothing observed them.
+                        // Anchoring listeners on this signed-in branch
+                        // view is the reliable shape; the host still
+                        // owns the side effects via these closures.
                         MacChatListView(
                             viewModel: ChatListViewModel(chat: dependencies.chatService(for: session)),
-                            verificationCenter: verificationCenter
+                            verificationCenter: verificationCenter,
+                            onSignOut: { signOut(activeSession: session) },
+                            onVerifyDevice: { showVerifyDeviceSheet = true },
+                            onShowRecoveryKey: { showRecoveryKeySheet = true },
+                            verificationService: dependencies.verificationService(for: session),
+                            verifyDeviceDismissToken: verifyDeviceDismissToken
                         )
                         .frame(minWidth: 800, minHeight: 600)
                         .environment(\.appDependencies, dependencies)
@@ -136,40 +160,20 @@ struct MatronMacApp: App {
                     )
                 }
             }
-            // Sign Out menu / toolbar: clear the persisted session, drop
-            // in-memory caches, and flip `session = nil` so the SignInView
-            // re-mounts. Without this listener the menu item posted to
-            // the command bus but nothing observed it — sign-out was
-            // silently a no-op (QA finding #2 + #7). Listener lives on
-            // the WindowGroup root so it's attached regardless of which
-            // child view (chat list, sign-in, verify gate) is on screen.
-            //
-            // Phase 3 also clears the persisted verify-done flag so a
-            // deliberate sign-out + back-in re-runs the verification gate
-            // (e.g. retrying after a botched verify on the prior login).
-            .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.signOut))) { _ in
-                if let session {
-                    UserDefaults.standard.removeObject(
-                        forKey: MacPostLoginVerificationView.verifyDoneKey(for: session)
-                    )
-                }
-                dependencies.signOut()
-                session = nil
-                verifyDone = false
-            }
-            // Help → Verify This Device… (Phase 3 / Task 9c). The menu
-            // item posts the notification; the listener flips the sheet
-            // open. Listener lives on the WindowGroup root so it's
-            // attached regardless of which child view is on screen — but
-            // the sheet body short-circuits to a "sign in first" message
-            // when no `session` is set so the menu item is harmless from
-            // the SignInView state. Mirrors `.signOut` listener wiring.
-            .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.verifyDevice))) { _ in
-                showVerifyDeviceSheet = true
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showRecoveryKey))) { _ in
-                showRecoveryKeySheet = true
-            }
+            // Wave 6 / live-test #1 + #2: the `.signOut`, `.verifyDevice`,
+            // and `.showRecoveryKey` `.onReceive` listeners used to live
+            // here on the WindowGroup root. macOS SwiftUI did not
+            // reliably re-install subscriptions on the Group's
+            // type-switching content (sign-in → verify-gate → chat-list),
+            // so the menu items silently posted into the void any time
+            // the user reached the chat list. Listeners now live INSIDE
+            // `MacChatListView` (the signed-in branch view); the host
+            // exposes the side-effect mutators via closures passed into
+            // that view (`onSignOut`, `onVerifyDevice`, `onShowRecoveryKey`).
+            // The host still owns the sheet presentation flags
+            // (`showVerifyDeviceSheet` / `showRecoveryKeySheet`) since
+            // the sheets need session + dependencies that the host
+            // already holds — closure-flips toggle them.
             .sheet(isPresented: $showVerifyDeviceSheet) {
                 if let session {
                     verifyDeviceSheet(for: session)
@@ -178,6 +182,14 @@ struct MatronMacApp: App {
                         .frame(width: 360, height: 120)
                         .padding()
                 }
+            }
+            // Bump the re-eval token whenever the verify-device sheet
+            // closes so `MacChatListView`'s `.task(id: verifyDeviceDismissToken)`
+            // re-runs `isThisDeviceVerified()`. A successful self-verify
+            // clears the in-list `MacUnverifiedDeviceBanner` without
+            // requiring a chat-list re-mount. Wave 6 / live-test #3.
+            .onChange(of: showVerifyDeviceSheet) { _, isPresented in
+                if !isPresented { verifyDeviceDismissToken &+= 1 }
             }
             .sheet(isPresented: $showRecoveryKeySheet) {
                 if let session {
@@ -270,6 +282,23 @@ struct MatronMacApp: App {
     private func markVerifyDone(for session: UserSession) {
         UserDefaults.standard.set(true, forKey: MacPostLoginVerificationView.verifyDoneKey(for: session))
         verifyDone = true
+    }
+
+    /// Sign-out side effect, mirroring the iOS host's `signOut()`.
+    /// Wave 6 / live-test #1: extracted from the prior WindowGroup-root
+    /// `.onReceive(.signOut)` body so `MacChatListView`'s `onSignOut`
+    /// closure can call it. Clears the persisted verify-done flag for
+    /// the active session (so a deliberate sign-out + back-in re-runs
+    /// the verification gate), drops `AppDependencies` caches, and
+    /// flips `session = nil` so the WindowGroup re-mounts the
+    /// `MacSignInView` branch.
+    private func signOut(activeSession: UserSession) {
+        UserDefaults.standard.removeObject(
+            forKey: MacPostLoginVerificationView.verifyDoneKey(for: activeSession)
+        )
+        dependencies.signOut()
+        session = nil
+        verifyDone = false
     }
 
     /// Help → Verify This Device… sheet body. Hands construction to a

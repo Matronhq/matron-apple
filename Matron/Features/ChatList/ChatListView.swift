@@ -41,6 +41,27 @@ struct ChatListView: View {
     /// Cleared back to `nil` by the sheet's `onFinished` (the SAS reaches
     /// `.verified`) or by an explicit dismiss inside the sheet.
     @State private var sasSummary: VerificationRequestSummary?
+    /// Tri-state per-this-device verification state (Wave 6 / live-test
+    /// #3). `nil` until the async query resolves, then `true` (verified)
+    /// or `false` (unverified). The `UnverifiedDeviceBanner` only renders
+    /// on `false` so it doesn't flash for verified devices during the
+    /// initial query — same pattern as the per-bot banner
+    /// (`ChatView.botVerification`). Pre-Phase-3 users (sessions
+    /// predating the post-login verify gate) hit `false` here and get
+    /// the in-app re-verify prompt they otherwise lack.
+    @State private var isThisDeviceVerified: Bool? = nil
+    /// Drives the self-verify SAS sheet via `.sheet(item:)`. Set when
+    /// the user taps the in-list `UnverifiedDeviceBanner` "Verify"
+    /// button. Identifiable wrapper exists so `.sheet(item:)` gets a
+    /// stable id; the encoded value is the user's matrixID (the
+    /// FlowStore cache key `VerificationServiceLive.startSAS` registers
+    /// under for self-verification flows).
+    @State private var verifyThisDeviceContext: VerifyThisDeviceContext?
+
+    /// Identifiable wrapper for `.sheet(item:)`. See `verifyThisDeviceContext`.
+    fileprivate struct VerifyThisDeviceContext: Identifiable, Hashable {
+        let id: String
+    }
     /// Settings → Device sheet visibility (Task 11). Phase 7 will land
     /// the full Settings UI; this Phase-3 surface ships the
     /// device-verification + recovery-key reveal flow inside an
@@ -65,6 +86,22 @@ struct ChatListView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // Wave 6 / live-test #3: in-list "this device hasn't been
+            // verified" banner. Sits above the incoming-verification-
+            // request banners (most actionable first — a user who's
+            // unverified should fix that before responding to other
+            // devices' verification requests). Renders only on
+            // explicit `false`; `nil` (still loading) hides the banner
+            // so verified users never see it flash. Tap → opens the
+            // self-verify SAS sheet via `verifyThisDeviceContext`.
+            if isThisDeviceVerified == false, let session {
+                UnverifiedDeviceBanner(
+                    onVerify: {
+                        verifyThisDeviceContext = VerifyThisDeviceContext(id: session.userID)
+                    }
+                )
+                .padding(.top, 8)
+            }
             // Verification banners surface above whatever list state is
             // showing — loading, error, empty, or populated. One banner
             // per pending request (spec §7.1, §5.9). The host wires
@@ -169,6 +206,30 @@ struct ChatListView: View {
                     .padding()
             }
         }
+        .sheet(item: $verifyThisDeviceContext) { context in
+            // Self-verify SAS sheet driven by the
+            // `UnverifiedDeviceBanner`'s "Verify" tap (Wave 6 /
+            // live-test #3). Hand construction to the per-present
+            // `SelfVerifyThisDeviceSheet` so the SasViewModel + stream
+            // survive parent re-renders (Wave 5 bugbot #2 pattern). Re-
+            // evaluates the per-this-device verification on close so a
+            // successful verify clears the banner without requiring a
+            // full chat-list re-mount.
+            if let deps, let session {
+                SelfVerifyThisDeviceSheet(
+                    service: verificationCenter?.service
+                        ?? deps.verificationService(for: session),
+                    userID: context.id,
+                    onFinished: {
+                        verifyThisDeviceContext = nil
+                        Task { await evaluateThisDeviceVerification() }
+                    }
+                )
+            } else {
+                Text("Verification unavailable")
+                    .padding()
+            }
+        }
         .sheet(isPresented: $showingDeviceSettings) {
             // Settings → Device. Wraps `DeviceSettingsView` in a
             // `NavigationStack` so the navigationTitle renders + the
@@ -205,6 +266,37 @@ struct ChatListView: View {
         .onDisappear {
             viewModel.cancel()
             verificationCenter?.stop()
+        }
+        // Wave 6 / live-test #3: per-this-device verification check.
+        // Pre-Phase-3 users skipped the post-login verify gate
+        // (`verifyDone` was never set on their session) so they have
+        // no in-app prompt to verify. The async result drives
+        // `UnverifiedDeviceBanner` visibility. See the property
+        // declaration for the tri-state rationale.
+        .task { await evaluateThisDeviceVerification() }
+    }
+
+    /// Resolves `isThisDeviceVerified` from the active session's
+    /// verification service (preferring the `VerificationCenter`'s
+    /// cached service so the FlowStore stays shared with the
+    /// incoming-request banner). Failure resolves to `nil` (banner
+    /// stays hidden) so a transient SDK error doesn't prompt a
+    /// verified user to re-verify — same posture as the per-bot
+    /// banner's `.unknown` arm. The next sync tick / sheet dismiss
+    /// triggers a re-evaluate (`SelfVerifyThisDeviceSheet.onFinished`
+    /// fires this same closure so a successful verify clears the
+    /// banner without requiring a full chat-list re-mount).
+    private func evaluateThisDeviceVerification() async {
+        guard let deps, let session else {
+            isThisDeviceVerified = nil
+            return
+        }
+        let svc: VerificationService = verificationCenter?.service
+            ?? deps.verificationService(for: session)
+        do {
+            isThisDeviceVerified = try await svc.isThisDeviceVerified()
+        } catch {
+            isThisDeviceVerified = nil
         }
     }
 
@@ -473,6 +565,47 @@ private struct IncomingRequestSasSheet: View {
                 requestID: requestID,
                 confirm: { try await service.confirmEmojiMatch(requestID: requestID) },
                 cancel: { reason in try await service.cancel(requestID: requestID, reason: reason) }
+            )
+        }
+    }
+}
+
+/// Per-present SAS sheet body for the "verify this device" self-verify
+/// flow triggered by `UnverifiedDeviceBanner` (Wave 6 / live-test #3).
+/// Mirrors `SelfVerifySasDestination` (the post-login verify-gate
+/// version) — same `service.startSAS(withUser: userID, deviceID: nil)`
+/// shape, where `userID` is the SIGNED-IN USER's matrixID (NOT a bot's),
+/// which is the FlowStore cache key `VerificationServiceLive.startSAS`
+/// registers under for self-verification flows. See iOS `ChatView.swift`'s
+/// `VerifyBotSheet` for the Wave 5 bugbot #2 rationale (the `.task(id:)`
+/// shape vs. the prior `init`-side seed that fired on every re-render).
+private struct SelfVerifyThisDeviceSheet: View {
+    let service: VerificationService
+    let userID: String
+    let onFinished: () -> Void
+
+    @State private var viewModel: SasViewModel?
+
+    var body: some View {
+        Group {
+            if let vm = viewModel {
+                SasView(
+                    viewModel: vm,
+                    title: "Verify this device",
+                    onFinished: onFinished
+                )
+            } else {
+                ProgressView("Starting verification…")
+            }
+        }
+        .task(id: userID) {
+            guard viewModel == nil else { return }
+            let stream = service.startSAS(withUser: userID, deviceID: nil)
+            viewModel = SasViewModel(
+                stream: stream,
+                requestID: userID,
+                confirm: { try await service.confirmEmojiMatch(requestID: userID) },
+                cancel: { reason in try await service.cancel(requestID: userID, reason: reason) }
             )
         }
     }
