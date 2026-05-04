@@ -26,6 +26,7 @@ require ARTIFACTS_DIR
 require ROOT
 
 SIM_UDID="${MATRON_SIM_UDID:-337C3A3A-4191-4A51-9513-93F5805276EC}"
+TRACE_MARKER='verificationStateListener: fired with verified'
 CONFIG_FILE="/tmp/matron-test-config.json"
 READY_FILE="/tmp/matron-mac-ready"
 
@@ -48,6 +49,11 @@ sleep 1
 rm -rf "$HOME/Library/Application Support/chat.matron.mac"
 defaults delete chat.matron.mac >/dev/null 2>&1 || true
 xcrun simctl boot "$SIM_UDID" >/dev/null 2>&1 || true
+if ! xcrun simctl list devices | grep -q "$SIM_UDID"; then
+    log "✗ Simulator $SIM_UDID not found on this machine. Set MATRON_SIM_UDID env var to override."
+    exit 1
+fi
+xcrun simctl terminate "$SIM_UDID" chat.matron.app >/dev/null 2>&1 || true
 xcrun simctl uninstall "$SIM_UDID" chat.matron.app >/dev/null 2>&1 || true
 
 # --- Build both UI test bundles in parallel ---
@@ -92,6 +98,14 @@ cat > "$CONFIG_FILE" <<EOF
 }
 EOF
 
+cleanup() {
+    [ -n "${MAC_LOG_PID:-}" ] && kill "$MAC_LOG_PID" 2>/dev/null || true
+    [ -n "${IOS_LOG_PID:-}" ] && kill "$IOS_LOG_PID" 2>/dev/null || true
+    pkill -x MatronMac 2>/dev/null || true
+    rm -f "$CONFIG_FILE" "$READY_FILE"
+}
+trap cleanup EXIT INT TERM
+
 # --- Capture os.Logger streams from both sides ---
 /usr/bin/log stream --predicate 'subsystem == "chat.matron"' --style compact --level info \
     > "$MAC_RUNTIME_LOG" 2>&1 &
@@ -101,13 +115,9 @@ xcrun simctl spawn "$SIM_UDID" log stream --predicate 'subsystem == "chat.matron
     > "$IOS_RUNTIME_LOG" 2>&1 &
 IOS_LOG_PID=$!
 
-cleanup() {
-    [ -n "${MAC_LOG_PID:-}" ] && kill "$MAC_LOG_PID" 2>/dev/null || true
-    [ -n "${IOS_LOG_PID:-}" ] && kill "$IOS_LOG_PID" 2>/dev/null || true
-    pkill -x MatronMac 2>/dev/null || true
-    rm -f "$CONFIG_FILE" "$READY_FILE"
-}
-trap cleanup EXIT
+# Give the log streams a moment to attach before tests start firing
+# log lines we want to capture.
+sleep 2
 
 # --- Fork both tests in parallel ---
 log "Running both UI tests in parallel (Mac trust-anchor + iOS requester)…"
@@ -149,12 +159,12 @@ if [ $IOS_RC -ne 0 ]; then
     log "✗ iOS xcodebuild test failed"
     PASS=0
 fi
-if ! grep -q 'verificationStateListener: fired with verified' "$MAC_RUNTIME_LOG"; then
-    log "✗ Mac os.Logger never logged verificationStateListener: fired with verified"
+if ! grep -q "$TRACE_MARKER" "$MAC_RUNTIME_LOG"; then
+    log "✗ Mac os.Logger never logged: $TRACE_MARKER"
     PASS=0
 fi
-if ! grep -q 'verificationStateListener: fired with verified' "$IOS_RUNTIME_LOG"; then
-    log "✗ iOS os.Logger never logged verificationStateListener: fired with verified"
+if ! grep -q "$TRACE_MARKER" "$IOS_RUNTIME_LOG"; then
+    log "✗ iOS os.Logger never logged: $TRACE_MARKER"
     PASS=0
 fi
 
@@ -174,4 +184,8 @@ echo "--- last 60 lines of Mac test log ---"
 tail -60 "$MAC_TEST_LOG" || true
 echo "--- last 60 lines of iOS test log ---"
 tail -60 "$IOS_TEST_LOG" || true
+echo "--- last 30 lines of Mac runtime log ---"
+tail -30 "$MAC_RUNTIME_LOG" 2>/dev/null || true
+echo "--- last 30 lines of iOS runtime log ---"
+tail -30 "$IOS_RUNTIME_LOG" 2>/dev/null || true
 exit 1
