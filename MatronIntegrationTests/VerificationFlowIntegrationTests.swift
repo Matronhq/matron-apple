@@ -283,16 +283,26 @@ final class VerificationFlowIntegrationTests: XCTestCase {
         }
         XCTAssertTrue(startReady, "verification.start() never succeeded — user identity didn't load within 30s")
 
-        // 4. Wait for partner to discover matron's device + send request.
+        // 4. Set up the incomingRequests stream BEFORE partner sends
+        //    .request. Otherwise routeIncomingRequest may fire and
+        //    drop the yield (the `setIncomingContinuation` call is
+        //    async, so there's a window after `incomingRequests()`
+        //    returns but before the continuation is actually
+        //    registered on the FlowStore actor).
+        let incomingStream = verification.incomingRequests()
+        var iterator = incomingStream.makeAsyncIterator()
+        // Give the FlowStore's setIncomingContinuation Task a beat
+        // to actually register before we move on.
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        // 5. Wait for partner to discover matron's device + send request.
         //    Partner emits `other_device_seen` then `verify_requested`
         //    once it dispatches the to-device .request event.
         try await waitForPartnerEvent(.event("other_device_seen"), timeout: 60)
         try await waitForPartnerEvent(.event("verify_requested"), timeout: 30)
 
-        // 5. matron receives the incoming request via incomingRequests()
+        // 6. matron receives the incoming request via incomingRequests()
         //    and accepts it.
-        let incomingStream = verification.incomingRequests()
-        var iterator = incomingStream.makeAsyncIterator()
         let incoming = try await withThrowingTaskGroup(of: VerificationRequestSummary?.self) { group in
             group.addTask {
                 try await Task.sleep(nanoseconds: 30_000_000_000)
