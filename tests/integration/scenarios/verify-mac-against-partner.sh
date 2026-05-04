@@ -76,9 +76,9 @@ end tell
 EOF
 
 # 6. Have partner auto-accept the verification
-log "Partner auto-verifying (timeout 60s)…"
-$PARTNER_CLI auto-verify --store "$PARTNER_STORE" --timeout 60 \
-    | tee "$ARTIFACTS_DIR/partner-auto-verify.jsonl"
+log "Partner waiting + auto-confirming SAS (timeout 60s)…"
+$PARTNER_CLI wait-verify --store-file "$PARTNER_STORE" --timeout 60 \
+    | tee "$ARTIFACTS_DIR/partner-wait-verify.jsonl"
 
 # 7. Tap "Confirm" on the Mac (return key on the SAS sheet's default action)
 sleep 1

@@ -10,13 +10,17 @@ verification + recovery requests.
   (Tuwunel fork) on `127.0.0.1:6167` with registration enabled and a
   fixed registration token (`matron-test-only`). Federation off, encryption
   on, ephemeral volume.
-- `partner/partner.py` — Python `matrix-nio` partner client. Sub-commands:
-  - `register` — create a fresh user via the registration-token auth flow
-  - `login` — sign in + persist session/crypto state to a store directory
-  - `setup-recovery` — wait for a sync + report the partner's identity keys
-  - `auto-verify` — listen for an incoming SAS request and auto-confirm it
-  - `create-dm` / `send-message` — plumb a room so Matron's chat list has
-    something to render
+- `partner/partner.mjs` — Node `matrix-js-sdk` + `matrix-sdk-crypto-wasm`
+  partner client. Mirrors `claude-matrix-bridge/add-bot.mjs`'s patterns —
+  same SDK, full cross-signing bootstrap. Sub-commands:
+  - `register` — create a fresh user via the registration-token flow
+  - `bootstrap-anchor` — login + bootstrap SSSS + cross-signing, persists
+    creds + recovery key to a store file. Makes the partner a real trust
+    anchor that Matron can verify against.
+  - `wait-verify` — listen for an incoming SAS request and auto-confirm
+    when the verifier fires `ShowSas`
+  - `send-message` — send a test message into a room (decryption check)
+  - `create-dm` — create an encrypted DM with a target user
 - `scenarios/verify-mac-against-partner.sh` — first scripted scenario:
   wipes Mac state, builds + launches the Mac app, drives sign-in via
   AppleScript, taps "Verify with another device", has the partner
@@ -31,7 +35,7 @@ verification + recovery requests.
 ## Prerequisites (one-time)
 
 ```bash
-brew install uv docker
+brew install node docker     # node ≥20
 # Open Docker Desktop or `colima start`
 ```
 
@@ -64,11 +68,9 @@ from a clean slate.
 - AppleScript UI driving is brittle; **needs accessibility identifiers**
   on Matron's verify/sign-in views and an XCUITest target for robust
   interaction. Tracked as Phase 3.5 follow-up.
-- Partner setup only verifies identity-key presence; full cross-signing
-  bootstrap requires either a separate priming step (Element Web)
-  or a richer matrix-nio version with cross-signing API exposed.
 - iOS sim driving not yet wired (same XCUITest gap).
-- No CI integration yet — harness assumes Docker Desktop is running.
+- No CI integration yet — harness assumes Docker Desktop / colima is
+  running locally.
 
 ## Why a separate test homeserver
 
