@@ -63,13 +63,16 @@ struct MacRecoveryKeyView: View {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(key, forType: .string)
                     }
+                    .accessibilityIdentifier("recoverykey.copy")
                 }
                 Toggle("I've saved this key somewhere safe", isOn: $viewModel.userAcknowledgedSaved)
+                    .accessibilityIdentifier("recoverykey.acknowledgeSaved")
             } else {
                 Button("Generate recovery key") {
                     Task { await viewModel.generate() }
                 }
                 .disabled(viewModel.phase == .busy)
+                .accessibilityIdentifier("recoverykey.generate")
             }
         case .reenter:
             Text("Re-enter your recovery key, or paste it from the clipboard.")
@@ -80,6 +83,7 @@ struct MacRecoveryKeyView: View {
                     .font(.system(.title3, design: .monospaced))
                     .textFieldStyle(.roundedBorder)
                 Button("Paste") { detector?.checkClipboardAndApply() }
+                    .accessibilityIdentifier("recoverykey.paste")
             }
             // Auto-advance is also driven by `onChange` so typing the key
             // by hand works just like pasting it.
@@ -158,6 +162,7 @@ struct MacRecoveryKeyView: View {
             Button("Continue") { viewModel.advanceFromShow() }
                 .keyboardShortcut(.return)
                 .disabled(!viewModel.userAcknowledgedSaved)
+                .accessibilityIdentifier("recoverykey.continue")
         case (.generate, .reenter):
             // Bugbot caught: Confirm previously only set `generatePhase = .confirmed`
             // and relied on a 600ms `.task` auto-dismiss, which raced with the

@@ -40,6 +40,7 @@ struct MacVerificationBanner: View {
             Button("Verify") { onAccept(summary) }
                 .controlSize(.small)
                 .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("verifybanner.accept")
             Button {
                 onDismiss(summary)
             } label: {
