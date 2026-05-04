@@ -1,5 +1,4 @@
 import XCTest
-import UIKit
 
 /// XCUITest scenario driver for the matron-vs-matron UI integration test
 /// (iOS half — requester role).
@@ -16,10 +15,12 @@ import UIKit
 final class MatronVsMatronIOSUITests: XCTestCase {
 
     var app: XCUIApplication!
+    private var runStartedAt = Date()
 
     override func setUp() {
         super.setUp()
         continueAfterFailure = false
+        runStartedAt = Date()
         app = XCUIApplication()
         app.launch()
     }
@@ -100,10 +101,18 @@ final class MatronVsMatronIOSUITests: XCTestCase {
     // MARK: - Synchronization
 
     /// Polls for the Mac peer's ready signal at `/tmp/matron-mac-ready`.
+    /// Rejects the file if its mtime predates this test run — guards
+    /// against a stale signal from a prior failed run when the iOS test
+    /// is invoked standalone (the harness wrapper wipes the file but
+    /// standalone-iteration runs from Xcode UI may not).
     private func waitForReadyFile(timeout: TimeInterval) -> Bool {
+        let path = "/tmp/matron-mac-ready"
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if FileManager.default.fileExists(atPath: "/tmp/matron-mac-ready") {
+            if FileManager.default.fileExists(atPath: path),
+               let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+               let mtime = attrs[.modificationDate] as? Date,
+               mtime >= runStartedAt {
                 return true
             }
             Thread.sleep(forTimeInterval: 1)
@@ -122,19 +131,10 @@ final class MatronVsMatronIOSUITests: XCTestCase {
     }
 
     private func clickAndPaste(_ field: XCUIElement, value: String) {
-        UIPasteboard.general.string = value
         field.tap()
-        usleep(250_000)
-        // If the field already has content, long-press → Select All to clear
-        // before typing the new value.
-        if let existing = field.value as? String, !existing.isEmpty {
-            field.press(forDuration: 1.2)
-            if app.menuItems["Select All"].waitForExistence(timeout: 1) {
-                app.menuItems["Select All"].tap()
-            }
-        }
+        usleep(250_000)  // let the field settle as first responder
         field.typeText(value)
-        usleep(150_000)
+        usleep(150_000)  // let the binding update propagate
     }
 
     // MARK: - Diagnostics
