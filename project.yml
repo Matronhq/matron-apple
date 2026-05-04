@@ -131,14 +131,11 @@ targets:
           CODE_SIGN_ENTITLEMENTS: MatronMac/App/MatronMac.Debug.entitlements
         Release:
           CODE_SIGN_ENTITLEMENTS: MatronMac/App/MatronMac.entitlements
-    entitlements:
-      path: MatronMac/App/MatronMac.entitlements
-      properties:
-        com.apple.security.app-sandbox: true
-        com.apple.security.network.client: true
-        com.apple.security.files.user-selected.read-only: true
-        keychain-access-groups:
-          - $(AppIdentifierPrefix)chat.matron.mac
+    # Note: the target-level `entitlements:` block (xcodegen) is intentionally
+    # NOT set — it overrides per-config CODE_SIGN_ENTITLEMENTS. We manage
+    # the two entitlements files (MatronMac.entitlements +
+    # MatronMac.Debug.entitlements) by hand and let `settings.configs` route
+    # to the right one per build configuration.
     # See the iOS target's `scheme.testTargets` comment — same rationale.
     scheme:
       testTargets:
@@ -191,6 +188,7 @@ targets:
     settings:
       base:
         SUPPORTED_PLATFORMS: macosx
+        GENERATE_INFOPLIST_FILE: YES
     dependencies:
       - target: MatronMac
       - package: MatronShared
@@ -221,8 +219,41 @@ targets:
     settings:
       base:
         SUPPORTED_PLATFORMS: macosx
+        GENERATE_INFOPLIST_FILE: YES
     dependencies:
       - target: MatronMac
+
+  # Phase 3.5 — SDK integration tests. Drives `MatronShared`'s public
+  # surface (AuthService, VerificationServiceLive, RecoveryKeyManager)
+  # directly against a live homeserver. Bypasses the UI, so it catches
+  # protocol/lifecycle/SDK bugs without the App Sandbox + XCUITest
+  # complexity. Skipped by default; enabled via env var
+  # `MATRON_INTEGRATION_HOMESERVER` (set by `tests/integration/scenarios/*.sh`).
+  MatronIntegrationTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: MatronIntegrationTests
+    settings:
+      base:
+        SUPPORTED_PLATFORMS: macosx
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: MatronMac
+      - package: MatronShared
+        product: MatronAuth
+      - package: MatronShared
+        product: MatronModels
+      - package: MatronShared
+        product: MatronStorage
+      - package: MatronShared
+        product: MatronSync
+      - package: MatronShared
+        product: MatronVerification
+      - package: MatronShared
+        product: MatronChat
+      - package: MatronShared
+        product: MatronViewModels
 
   MatronNSE:
     type: app-extension

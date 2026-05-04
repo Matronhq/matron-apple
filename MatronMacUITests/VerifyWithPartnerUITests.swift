@@ -1,4 +1,5 @@
 import XCTest
+import AppKit  // NSPasteboard for reliable URL pasting
 
 /// XCUITest scenario driver for the integration harness.
 ///
@@ -22,10 +23,17 @@ final class VerifyWithPartnerUITests: XCTestCase {
         super.setUp()
         continueAfterFailure = false
         app = XCUIApplication()
-        // Hand the launch arguments to the app so it doesn't need any
-        // UserDefaults seeding — but the app itself ignores them today,
-        // so the harness wipes Application Support before each run.
         app.launch()
+        app.activate()
+        // SwiftUI WindowGroup launched from XCUITest sometimes doesn't open
+        // its initial window — the app comes up as a background process with
+        // only the menu bar visible. Send File > New Window manually to force
+        // a window to exist. Wait briefly first so the menu bar is populated.
+        sleep(1)
+        if app.windows.count == 0 {
+            app.typeKey("n", modifierFlags: [.command])
+            sleep(1)
+        }
     }
 
     override func tearDown() {
@@ -34,34 +42,79 @@ final class VerifyWithPartnerUITests: XCTestCase {
     }
 
     func testSignInAndVerifyWithPartner() throws {
-        let env = ProcessInfo.processInfo.environment
-        guard let homeserver = env["MATRON_HOMESERVER"] else {
-            throw XCTSkip("MATRON_HOMESERVER not set — run via tests/integration/scenarios/")
+        // env-vars don't propagate cleanly to Mac XCUITest runners (neither
+        // direct nor TEST_RUNNER_*-prefixed), so the harness writes a JSON
+        // config to a known path. See tests/integration/scenarios/*.sh.
+        let configPath = "/tmp/matron-test-config.json"
+        guard FileManager.default.fileExists(atPath: configPath),
+              let data = FileManager.default.contents(atPath: configPath),
+              let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let homeserver = json["homeserver"] as? String else {
+            throw XCTSkip("\(configPath) not present — run via tests/integration/scenarios/")
         }
-        let user = env["MATRON_USER"] ?? "matron"
-        let password = env["MATRON_PW"] ?? "matron-test-pw"
-        let verifyTimeout = TimeInterval(env["MATRON_VERIFY_TIMEOUT"].flatMap(Double.init) ?? 30)
+        let user = (json["user"] as? String) ?? "matron"
+        let password = (json["password"] as? String) ?? "matron-test-pw"
+        let verifyTimeout = TimeInterval((json["verify_timeout"] as? Double) ?? 30)
 
         // --- Sign in ---
         let server = app.textFields["signin.server"]
-        XCTAssertTrue(server.waitForExistence(timeout: 10), "sign-in form did not appear")
+        if !server.waitForExistence(timeout: 15) {
+            try? app.debugDescription.write(toFile: "/tmp/matron-test-debug.txt",
+                                            atomically: true, encoding: .utf8)
+            let screenshot = XCUIScreen.main.screenshot()
+            let attachment = XCTAttachment(screenshot: screenshot)
+            attachment.name = "signin-form-not-found"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            XCTFail("sign-in form did not appear — see /tmp/matron-test-debug.txt")
+            return
+        }
+        // typeText on Mac mangles `:` and `/`. Use clipboard paste, and Tab
+        // between fields rather than clicks (which sometimes don't reliably
+        // re-focus when one field is still in edit mode).
+        let pb = NSPasteboard.general
+        func clipboardSet(_ value: String) {
+            pb.clearContents()
+            pb.setString(value, forType: .string)
+        }
         server.click()
-        server.typeText(homeserver)
-
-        let username = app.textFields["signin.username"]
-        username.click()
-        username.typeText(user)
-
-        let passwordField = app.secureTextFields["signin.password"]
-        passwordField.click()
-        passwordField.typeText(password)
-
+        usleep(300_000)
+        clipboardSet(homeserver)
+        app.typeKey("a", modifierFlags: [.command])
+        app.typeKey("v", modifierFlags: [.command])
+        // Tab to username
+        app.typeKey(.tab, modifierFlags: [])
+        usleep(200_000)
+        clipboardSet(user)
+        app.typeKey("a", modifierFlags: [.command])
+        app.typeKey("v", modifierFlags: [.command])
+        // Tab to password
+        app.typeKey(.tab, modifierFlags: [])
+        usleep(200_000)
+        clipboardSet(password)
+        app.typeKey("a", modifierFlags: [.command])
+        app.typeKey("v", modifierFlags: [.command])
+        usleep(200_000)
         app.buttons["signin.submit"].click()
 
         // --- Verify gate ---
         let verifyButton = app.buttons["verifygate.verifyWithOtherDevice"]
-        XCTAssertTrue(verifyButton.waitForExistence(timeout: 30),
-                      "verify gate didn't appear within 30s of sign-in")
+        if !verifyButton.waitForExistence(timeout: 30) {
+            // Diagnostic dump so future runs aren't blind.
+            let screenshot = XCUIScreen.main.screenshot()
+            let attachment = XCTAttachment(screenshot: screenshot)
+            attachment.name = "verify-gate-not-found"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            let tree = XCTAttachment(string: app.debugDescription)
+            tree.name = "accessibility-tree"
+            tree.lifetime = .keepAlways
+            add(tree)
+            try? app.debugDescription.write(toFile: "/tmp/matron-test-debug.txt",
+                                            atomically: true, encoding: .utf8)
+            XCTFail("verify gate didn't appear within 30s of sign-in — see /tmp/matron-test-debug.txt")
+            return
+        }
         verifyButton.click()
 
         // --- SAS sheet → emojis → match ---
