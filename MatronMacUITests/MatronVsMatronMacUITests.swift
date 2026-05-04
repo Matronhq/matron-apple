@@ -12,7 +12,7 @@ import AppKit  // NSPasteboard for reliable URL pasting
 ///   4. RecoveryKeyView .show → Copy + acknowledge + Continue
 ///   5. RecoveryKeyView .reenter → Paste → PasteDetector matches → auto-advances
 ///      to .confirmed → 600ms auto-dismiss → onFinished → chat list visible
-///   6. Write `/tmp/matron-mac-ready` (signals iOS to sign in)
+///   6. Write `/Users/Shared/matron-mac-ready` (signals iOS to sign in)
 ///   7. Wait up to 120s for incoming-verify banner from iOS peer
 ///   8. Tap Verify on banner → MacSasView sheet → "They match"
 ///   9. Wait for sheet dismissal as proxy for .verified
@@ -34,8 +34,10 @@ final class MatronVsMatronMacUITests: XCTestCase {
             sleep(1)
         }
         // Clean any prior ready-file from an earlier run so the iOS peer
-        // doesn't see a stale signal.
-        try? FileManager.default.removeItem(atPath: "/tmp/matron-mac-ready")
+        // doesn't see a stale signal. Use /Users/Shared (unsandboxed
+        // cross-app shared dir) — Mac UI test runner can't write to /tmp
+        // (sandbox/TCC denies "Operation not permitted" on /tmp writes).
+        try? FileManager.default.removeItem(atPath: "/Users/Shared/matron-mac-ready")
     }
 
     override func tearDown() {
@@ -147,7 +149,11 @@ final class MatronVsMatronMacUITests: XCTestCase {
                        "Recovery-key sheet never dismissed after Paste — auto-advance to .confirmed didn't fire")
 
         // --- Mac is now verified + bootstrapped. Signal iOS. ---
-        try "ready".write(toFile: "/tmp/matron-mac-ready",
+        // /Users/Shared is the standard cross-app writable location
+        // (sticky world-writable). The Mac UI test runner sandbox/TCC
+        // policy denies /tmp writes with EPERM, so /tmp can't be the
+        // synchronization point.
+        try "ready".write(toFile: "/Users/Shared/matron-mac-ready",
                           atomically: true,
                           encoding: .utf8)
 
@@ -217,7 +223,9 @@ final class MatronVsMatronMacUITests: XCTestCase {
         tree.lifetime = .keepAlways
         add(tree)
 
-        try? app.debugDescription.write(toFile: "/tmp/matron-mac-debug.txt",
+        // /Users/Shared rather than /tmp — sandbox blocks /tmp writes from
+        // the Mac UI test runner (see ready-file write above).
+        try? app.debugDescription.write(toFile: "/Users/Shared/matron-mac-debug.txt",
                                         atomically: true, encoding: .utf8)
 
         var fieldsSummary = ""
@@ -231,7 +239,7 @@ final class MatronVsMatronMacUITests: XCTestCase {
         let pb = NSPasteboard.general.string(forType: .string) ?? "<nil>"
         fieldsSummary += "NSPasteboard.string = \(pb.debugDescription)\n"
         fieldsSummary += "signin.submit.isEnabled = \(app.buttons["signin.submit"].isEnabled)\n"
-        try? fieldsSummary.write(toFile: "/tmp/matron-mac-fields.txt",
+        try? fieldsSummary.write(toFile: "/Users/Shared/matron-mac-fields.txt",
                                  atomically: true, encoding: .utf8)
 
         let fieldsAttachment = XCTAttachment(string: fieldsSummary)
@@ -239,6 +247,6 @@ final class MatronVsMatronMacUITests: XCTestCase {
         fieldsAttachment.lifetime = .keepAlways
         add(fieldsAttachment)
 
-        XCTFail("\(message). See /tmp/matron-mac-debug.txt + /tmp/matron-mac-fields.txt.")
+        XCTFail("\(message). See /Users/Shared/matron-mac-debug.txt + /Users/Shared/matron-mac-fields.txt.")
     }
 }

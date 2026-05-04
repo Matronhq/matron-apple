@@ -5,7 +5,7 @@
 # :6167. No partner.mjs.
 #
 # Synchronization: Mac signs in first, runs the recovery-key
-# generate flow, then writes /tmp/matron-mac-ready. iOS polls that
+# generate flow, then writes /Users/Shared/matron-mac-ready. iOS polls that
 # file before signing in (XCTSkip after 90s). Both reach the SAS
 # sheet via XCUIElement.waitForExistence; "They match" on both sides
 # completes SAS; auto-cross-signing flips both to verified.
@@ -28,7 +28,7 @@ require ROOT
 SIM_UDID="${MATRON_SIM_UDID:-337C3A3A-4191-4A51-9513-93F5805276EC}"
 TRACE_MARKER='verificationStateListener: fired with verified'
 CONFIG_FILE="/tmp/matron-test-config.json"
-READY_FILE="/tmp/matron-mac-ready"
+READY_FILE="/Users/Shared/matron-mac-ready"
 
 MAC_BUILD_LOG="$ARTIFACTS_DIR/mac-build.log"
 IOS_BUILD_LOG="$ARTIFACTS_DIR/ios-build.log"

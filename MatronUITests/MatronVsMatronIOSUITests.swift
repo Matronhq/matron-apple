@@ -4,7 +4,7 @@ import XCTest
 /// (iOS half — requester role).
 ///
 /// Reads `/tmp/matron-test-config.json` like the Mac counterpart. Polls
-/// `/tmp/matron-mac-ready` to gate sign-in until the Mac peer has
+/// `/Users/Shared/matron-mac-ready` to gate sign-in until the Mac peer has
 /// bootstrapped cross-signing, then drives sign-in → "Verify with another
 /// device" → SAS confirm → wait for sheet dismissal as proxy for
 /// `.verified`.
@@ -44,7 +44,7 @@ final class MatronVsMatronIOSUITests: XCTestCase {
 
         // --- Wait for Mac peer to bootstrap ---
         guard waitForReadyFile(timeout: 90) else {
-            throw XCTSkip("Mac peer never wrote /tmp/matron-mac-ready within 90s")
+            throw XCTSkip("Mac peer never wrote /Users/Shared/matron-mac-ready within 90s")
         }
 
         // --- Sign in ---
@@ -100,13 +100,16 @@ final class MatronVsMatronIOSUITests: XCTestCase {
 
     // MARK: - Synchronization
 
-    /// Polls for the Mac peer's ready signal at `/tmp/matron-mac-ready`.
+    /// Polls for the Mac peer's ready signal at `/Users/Shared/matron-mac-ready`.
+    /// (Was `/tmp/matron-mac-ready` until we discovered the Mac UI test
+    /// runner can't write to /tmp under its sandbox/TCC profile —
+    /// /Users/Shared is the standard cross-app writable path.)
     /// Rejects the file if its mtime predates this test run — guards
     /// against a stale signal from a prior failed run when the iOS test
     /// is invoked standalone (the harness wrapper wipes the file but
     /// standalone-iteration runs from Xcode UI may not).
     private func waitForReadyFile(timeout: TimeInterval) -> Bool {
-        let path = "/tmp/matron-mac-ready"
+        let path = "/Users/Shared/matron-mac-ready"
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if FileManager.default.fileExists(atPath: path),
