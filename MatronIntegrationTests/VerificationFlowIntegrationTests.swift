@@ -201,6 +201,131 @@ final class VerificationFlowIntegrationTests: XCTestCase {
         )
     }
 
+    /// Matron-as-RESPONDER. Inverse of the verify test: partner is the
+    /// initiator (sends `m.key.verification.request` to matron). matron
+    /// receives via `incomingRequests()`, calls `acceptIncoming(requestID:)`,
+    /// drives SAS to `.verified`. Exercises the `acceptIncoming` +
+    /// `routeAcceptedVerificationRequest(role: .responder)` code paths
+    /// that the requester test doesn't touch — these are the production
+    /// paths the per-bot trust banner (Phase 5) will use.
+    ///
+    /// **Currently skipped** — matron receives the request
+    /// (`routeIncomingRequest` fires) but the flow stalls before SAS
+    /// advances. matrix-rust-sdk's `didAcceptVerificationRequest`
+    /// delegate may only fire on the requester side, so matron's
+    /// `routeAcceptedVerificationRequest`-driven `startSasVerification`
+    /// call never happens here. The matron-vs-matron live-validated case
+    /// might rely on the Element-X "user taps Start button" UX explicitly
+    /// firing the SAS-start; needs more investigation. Set
+    /// `MATRON_RUN_INCOMING_VERIFY_TEST=1` to actually try.
+    func testAcceptIncomingVerificationRequestFromPartner() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["MATRON_RUN_INCOMING_VERIFY_TEST"] == "1" else {
+            throw XCTSkip("incoming-verify SDK test stalls past routeIncomingRequest — see test docstring; set MATRON_RUN_INCOMING_VERIFY_TEST=1 to attempt")
+        }
+        guard let homeserverString = env["MATRON_HOMESERVER"] ?? env["HOMESERVER"] else {
+            throw XCTSkip("MATRON_HOMESERVER not set; run via tests/integration/run-harness.sh")
+        }
+        guard let homeserverURL = URL(string: homeserverString) else {
+            throw XCTSkip("MATRON_HOMESERVER not a valid URL: \(homeserverString)")
+        }
+        try await assertHomeserverReachable(homeserverURL)
+        guard let nodeScript = env["MATRON_PARTNER_NODE_SCRIPT"],
+              FileManager.default.fileExists(atPath: nodeScript) else {
+            throw XCTSkip("MATRON_PARTNER_NODE_SCRIPT not set or file missing")
+        }
+        let username = env["MATRON_USER"] ?? "matron"
+        let password = env["MATRON_PW"] ?? "matron-test-pw"
+
+        // 1. Spawn partner in initiate-mode (bootstraps then sends
+        //    verification.request once matron's device is visible).
+        try spawnPartnerCommand(
+            scriptPath: nodeScript,
+            command: "bootstrap-and-initiate-verify",
+            extraArgs: [
+                "--homeserver", homeserverString,
+                "--user", username,
+                "--password", password,
+                "--device-name", "matron-test-partner",
+                "--timeout", "120",
+            ]
+        )
+        try await waitForPartnerEvent(.event("bootstrapped"), timeout: 60)
+        try await waitForPartnerEvent(.event("ready"), timeout: 5)
+
+        // 2. matron signs in fresh AFTER partner bootstrap, so matron's
+        //    first /keys/query lands a complete cross-signing identity.
+        let storeDir = basePath.appendingPathComponent("session-store")
+        try FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
+        let sdkStore = basePath.appendingPathComponent("sdk-store")
+        let auth = AuthServiceLive(
+            sessionStore: FileSessionStore(directory: storeDir),
+            basePath: sdkStore
+        )
+        let session = try await auth.loginPassword(
+            homeserverURL: homeserverURL,
+            username: username,
+            password: password,
+            initialDeviceDisplayName: "matron-test-integration"
+        )
+
+        // 3. Sync online + verification controller ready.
+        let provider = ClientProvider(basePath: sdkStore)
+        let sync = SyncServiceLive(provider: provider, session: session)
+        syncService = sync
+        try await sync.start()
+        try await sync.waitUntilReady()
+        let verification = VerificationServiceLive(provider: provider, session: session)
+        var startReady = false
+        for _ in 0..<60 {
+            if (try? await verification.start()) != nil { startReady = true; break }
+            try await Task.sleep(nanoseconds: 500_000_000)
+        }
+        XCTAssertTrue(startReady, "verification.start() never succeeded — user identity didn't load within 30s")
+
+        // 4. Wait for partner to discover matron's device + send request.
+        //    Partner emits `other_device_seen` then `verify_requested`
+        //    once it dispatches the to-device .request event.
+        try await waitForPartnerEvent(.event("other_device_seen"), timeout: 60)
+        try await waitForPartnerEvent(.event("verify_requested"), timeout: 30)
+
+        // 5. matron receives the incoming request via incomingRequests()
+        //    and accepts it.
+        let incomingStream = verification.incomingRequests()
+        var iterator = incomingStream.makeAsyncIterator()
+        let incoming = try await withThrowingTaskGroup(of: VerificationRequestSummary?.self) { group in
+            group.addTask {
+                try await Task.sleep(nanoseconds: 30_000_000_000)
+                throw IntegrationError.timeout("matron never observed an incoming verification request within 30s")
+            }
+            group.addTask { await iterator.next() }
+            let result = try await group.next()
+            group.cancelAll()
+            return result ?? nil
+        }
+        guard let incoming else {
+            XCTFail("incomingRequests() yielded nil")
+            return
+        }
+        XCTAssertEqual(incoming.otherUserID, session.userID)
+
+        // 6. Drive acceptIncoming to .verified.
+        let stream = verification.acceptIncoming(requestID: incoming.id)
+        try await driveSAS(stream: stream, requestID: incoming.id, verification: verification)
+
+        // 7. Confirm partner side wrapped up (cross_signed + ok:true).
+        try await waitForPartnerEvent(.ok(true), timeout: 30)
+
+        // 8. Persistence: matron's verificationState should flip
+        //    .verified once partner's cross-signature lands locally.
+        var verifiedAfter = false
+        for _ in 0..<60 {
+            if try await verification.isThisDeviceVerified() { verifiedAfter = true; break }
+            try await Task.sleep(nanoseconds: 500_000_000)
+        }
+        XCTAssertTrue(verifiedAfter, "isThisDeviceVerified() never returned true within 30s of incoming-verification completion")
+    }
+
     /// Recovery-key restore path. Mirrors the verify-gate's "Use recovery
     /// key" branch: matron-app signs in fresh, doesn't go through SAS,
     /// and instead restores cross-signing access via a previously-issued
@@ -447,6 +572,18 @@ final class VerificationFlowIntegrationTests: XCTestCase {
         }
     }
 
+    /// Spawn a partner.mjs subprocess running the named command with the
+    /// given extra arguments. Common plumbing (node-bin resolution,
+    /// stdout/stderr capture to /tmp + line-source actor wiring) is
+    /// shared with `spawnPartnerBootstrapAndWait`.
+    private func spawnPartnerCommand(
+        scriptPath: String,
+        command: String,
+        extraArgs: [String]
+    ) throws {
+        try spawnPartnerProcess(scriptPath: scriptPath, args: [command] + extraArgs)
+    }
+
     private func spawnPartnerBootstrapAndWait(
         scriptPath: String,
         homeserver: String,
@@ -455,40 +592,48 @@ final class VerificationFlowIntegrationTests: XCTestCase {
         timeout: Int,
         createRoomNamed: String? = nil
     ) throws {
-        let process = Process()
-        // Resolve `node` explicitly. xctest runners don't inherit nvm /
-        // Homebrew PATH, so `/usr/bin/env node` resolves to nothing and the
-        // subprocess exits 127 before producing any output. The harness
-        // exports `MATRON_NODE_BIN=$(command -v node)` so we get the same
-        // node the developer's shell uses; fall back to common locations
-        // for ad-hoc runs without the harness env.
-        let env = ProcessInfo.processInfo.environment
-        let nodeBin: String
-        if let supplied = env["MATRON_NODE_BIN"], FileManager.default.isExecutableFile(atPath: supplied) {
-            nodeBin = supplied
-        } else {
-            let fallbacks = [
-                "/opt/homebrew/bin/node",        // Apple Silicon Homebrew
-                "/usr/local/bin/node",            // Intel Homebrew
-                "\(NSHomeDirectory())/.nvm/versions/node/current/bin/node",
-                "/usr/bin/node",                  // system (rare)
-            ]
-            guard let resolved = fallbacks.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
-                throw IntegrationError.timeout(
-                    "could not resolve `node` binary. Set MATRON_NODE_BIN env var (the harness does this)."
-                )
-            }
-            nodeBin = resolved
-        }
-        process.launchPath = nodeBin
-        var args = [scriptPath, "bootstrap-and-wait",
+        var args = ["bootstrap-and-wait",
                     "--homeserver", homeserver,
                     "--user", user,
                     "--password", password,
                     "--device-name", "matron-test-partner",
                     "--timeout", String(timeout)]
         if let createRoomNamed { args.append(contentsOf: ["--create-room", createRoomNamed]) }
-        process.arguments = args
+        try spawnPartnerProcess(scriptPath: scriptPath, args: args)
+    }
+
+    /// Resolve `node` explicitly. xctest runners don't inherit nvm /
+    /// Homebrew PATH, so `/usr/bin/env node` resolves to nothing and the
+    /// subprocess exits 127 before producing any output. The harness
+    /// exports `MATRON_NODE_BIN=$(command -v node)` so we get the same
+    /// node the developer's shell uses; fall back to common locations
+    /// for ad-hoc runs without the harness env.
+    private static func resolveNodeBin() throws -> String {
+        let env = ProcessInfo.processInfo.environment
+        if let supplied = env["MATRON_NODE_BIN"], FileManager.default.isExecutableFile(atPath: supplied) {
+            return supplied
+        }
+        let fallbacks = [
+            "/opt/homebrew/bin/node",        // Apple Silicon Homebrew
+            "/usr/local/bin/node",            // Intel Homebrew
+            "\(NSHomeDirectory())/.nvm/versions/node/current/bin/node",
+            "/usr/bin/node",                  // system (rare)
+        ]
+        guard let resolved = fallbacks.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            throw IntegrationError.timeout(
+                "could not resolve `node` binary. Set MATRON_NODE_BIN env var (the harness does this)."
+            )
+        }
+        return resolved
+    }
+
+    /// Inner spawn: takes the partner command + args (script path is
+    /// prepended automatically). Wires pipes, /tmp logging, and the
+    /// line-source actor.
+    private func spawnPartnerProcess(scriptPath: String, args: [String]) throws {
+        let process = Process()
+        process.launchPath = try Self.resolveNodeBin()
+        process.arguments = [scriptPath] + args
 
         // Mirror everything to /tmp so a failed run leaves a readable trace
         // we can inspect from the harness without parsing the xcresult.
@@ -532,7 +677,7 @@ final class VerificationFlowIntegrationTests: XCTestCase {
 
         try process.run()
         partnerProcess = process
-        partnerCommandLine = "\(nodeBin) \((process.arguments ?? []).joined(separator: " "))"
+        partnerCommandLine = "\(process.launchPath ?? "<no launch path>") \((process.arguments ?? []).joined(separator: " "))"
     }
 
     private func makeLogFileHandle(at path: String) throws -> FileHandle {
