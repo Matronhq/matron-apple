@@ -25,7 +25,6 @@ require() { [ -n "${!1:-}" ] || { echo "missing env: $1"; exit 1; }; }
 require HOMESERVER
 require MATRON_USER
 require MATRON_PW
-require PARTNER_STORE
 require PARTNER_CLI
 require ARTIFACTS_DIR
 require ROOT
@@ -74,14 +73,37 @@ EOF
 /usr/bin/log stream --predicate 'subsystem == "chat.matron"' --style compact --level info > "$MATRON_LOG" 2>&1 &
 LOG_PID=$!
 
-# Spawn partner.mjs wait-verify in the background — it auto-confirms SAS
-# the moment matron initiates the verification.
-log "Spawning partner.mjs wait-verify (timeout 90s)…"
-$PARTNER_CLI wait-verify \
-    --store-file "$PARTNER_STORE" \
-    --timeout 90 \
+# Spawn partner.mjs `bootstrap-and-wait` — bootstrap cross-signing AND
+# wait for verification in one long-running process so all post-bootstrap
+# crypto state stays in memory (mirrors the working SDK scenario; the
+# split bootstrap-anchor → wait-verify shape leaks state and trips MAC).
+# run-harness.sh auto-skips its own bootstrap-anchor for this scenario.
+log "Spawning partner.mjs bootstrap-and-wait (timeout 120s)…"
+$PARTNER_CLI bootstrap-and-wait \
+    --homeserver "$HOMESERVER" \
+    --user "$MATRON_USER" \
+    --password "$MATRON_PW" \
+    --device-name "matron-test-partner" \
+    --timeout 120 \
     > "$PARTNER_LOG" 2>&1 &
 PARTNER_PID=$!
+
+# Wait for partner to bootstrap + start listening before the Mac app
+# signs in. Otherwise matron's .request might land before partner has a
+# crypto.verificationRequestReceived listener attached.
+log "Waiting for partner to emit 'ready' (up to 60s)…"
+for i in {1..60}; do
+    if grep -q '"event":"ready"' "$PARTNER_LOG" 2>/dev/null; then
+        log "  partner ready at ${i}s"
+        break
+    fi
+    sleep 1
+    if [ "$i" = "60" ]; then
+        log "  ✗ partner never reached ready — see $PARTNER_LOG"
+        tail -20 "$PARTNER_LOG"
+        exit 1
+    fi
+done
 
 cleanup() {
     [ -n "${LOG_PID:-}" ] && kill "$LOG_PID" 2>/dev/null || true
@@ -90,9 +112,6 @@ cleanup() {
     rm -f "$CONFIG_FILE"
 }
 trap cleanup EXIT
-
-# Brief pause so the partner is subscribed before matron sends the .request.
-sleep 2
 
 log "Running VerifyWithPartnerUITests…"
 set +e

@@ -80,7 +80,9 @@ $PARTNER_CLI register \
 # MATRON_SKIP_BOOTSTRAP_ANCHOR=1.
 SCENARIO_NAME="${1:-}"
 case "$SCENARIO_NAME" in
-    verify-sdk-against-partner.sh) MATRON_SKIP_BOOTSTRAP_ANCHOR="${MATRON_SKIP_BOOTSTRAP_ANCHOR:-1}" ;;
+    verify-sdk-against-partner.sh|verify-mac-ui-against-partner.sh)
+        MATRON_SKIP_BOOTSTRAP_ANCHOR="${MATRON_SKIP_BOOTSTRAP_ANCHOR:-1}"
+        ;;
 esac
 if [ "${MATRON_SKIP_BOOTSTRAP_ANCHOR:-}" = "1" ]; then
     log "Skipping bootstrap-anchor (inline-bootstrap scenario) — partner will bootstrap itself."
