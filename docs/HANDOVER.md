@@ -74,8 +74,9 @@ re-litigate without reading the spec):
 
 - **PR #3** (`phase-3-e2ee-verification` → `main`) carries Phase 3 (E2EE +
   verification UX) **plus** seven post-Phase-3 fix-up waves built around
-  expert-QA + bugbot findings + live debugging against a real homeserver.
-  Latest SHA: `b0e3f4f`. CI on main was last green at PR #3 wave 6.
+  expert-QA + bugbot findings + live debugging against a real homeserver,
+  **plus** the integration-harness scaffolding.
+  Latest SHA: **`cd57415`** (XCUITest infrastructure unblocked).
 - **SAS verification works end-to-end** for the requester path against a
   real partner client (live-validated: emojis appeared on both sides,
   user pressed Yes on Mac, partner pressed Yes, both sides got
@@ -86,13 +87,23 @@ re-litigate without reading the spec):
      deliver rooms. Existed pre-Wave-7 too. Not yet diagnosed.
   2. **No visible feedback on the "Verify with another device" tap** —
      minor UX (button doesn't show pressed state). Post-Wave-7.
-- **Integration harness scaffolded** under `tests/integration/`:
-  Docker matron-server + Node `matrix-js-sdk` partner with full
-  cross-signing + recovery key bootstrap + auto-SAS-confirm. Foundation
-  proven (homeserver boots, partner becomes a real trust anchor in
-  ~10s). UI driver layer is the open piece — XCUITest blocked on Mac
-  App Sandbox + runner-connection issue, AppleScript fallback works
-  interactively but not headless from a non-GUI shell.
+- **Integration harness foundation proven**:
+  - Docker matron-server boots on `:6167` ✓
+  - Node `matrix-js-sdk` partner registers + bootstraps cross-signing +
+    generates a real recovery key in ~10s ✓
+  - SAS auto-confirm via `VerifierEvent.ShowSas` (mirrors `add-bot.mjs`) ✓
+- **XCUITest infrastructure unblocked** (was the day's last battle):
+  - App Sandbox stripped from Debug entitlements (Release keeps it)
+  - Ad-hoc signing path works (`CODE_SIGN_IDENTITY=-`)
+  - Test bundles get auto-generated Info.plist
+  - Apple Dev account signed in (YEARBOOK MACHINE LIMITED, team `4LJ7WRRRFD`,
+    plus Personal Team `T87DM9X88P`)
+  - XCUITest runner connects in ~3s (was hanging 5+ minutes)
+  - SwiftUI WindowGroup-not-opening-on-launch worked around with
+    activate() + `⌘N` fallback
+  - **One remaining issue**: SwiftUI `TextField`s in the sign-in form
+    don't accept clipboard-paste reliably across Tab navigation
+    (server URL works, username stays empty). See "Pick up here" below.
 
 ---
 
@@ -103,7 +114,10 @@ Branch: `phase-3-e2ee-verification`. Open at https://github.com/Matronhq/matron-
 ### Wave history (newest first)
 
 ```
-b0e3f4f test: harness scenario v1 (AppleScript-driven) + XCUITest scaffolding   ← in-flight
+cd57415 test: XCUITest infrastructure unblocked — Mac sandbox + signing solved   ← latest
+d1a7953 docs: HANDOVER — add wider-ecosystem context section up front
+760f31e docs: handover doc for fresh-session pickup
+b0e3f4f test: harness scenario v1 (AppleScript-driven) + XCUITest scaffolding
 94f3666 test: rewrite partner client in matrix-js-sdk (mirrors add-bot.mjs)
 f911f57 test: integration harness scaffolding (homeserver + partner + scenario)
 76b8bd4 fix(wave-7): rewrite verification per Element X iOS pattern
@@ -240,25 +254,60 @@ tests/integration/
   `matron` and `partner` users, bootstraps the partner trust anchor.
   Hands off to a scenario or stays up for ad-hoc testing.
 
-### Open piece: UI driver
+### XCUITest path — now structurally working (post-`cd57415`)
 
-Two paths attempted, both with caveats:
+End-to-end XCUITest invocation that connects to the host app:
 
-- **XCUITest** (`MatronMacUITests/VerifyWithPartnerUITests.swift`):
-  fully written, scheme wired (`project.yml` `scheme.testTargets`).
-  Blocked on **App Sandbox + UI testing** — XCUITest runner can't
-  establish XPC connection to the sandboxed host, hangs ~5min.
-  **Latest fix attempt (committed in `b0e3f4f`)**: per-config
-  `CODE_SIGN_ENTITLEMENTS` so Debug uses
-  `MatronMac.Debug.entitlements` (drops `app-sandbox`). **Not yet
-  re-tested.** Next step: `xcodegen && xcodebuild build-for-testing
-  -scheme MatronMac -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO`,
-  then run the scenario again.
-- **AppleScript** (`scenarios/verify-mac-against-partner.sh` v1):
-  works in an interactive session if Terminal/Claude has Accessibility
-  permission. Doesn't work from Claude Code's Bash tool — `open` runs
-  but the Mac app doesn't actually launch the SwiftUI Scene in that
-  context. Verifying that interactively requires a real terminal.
+```bash
+# Reset Mac state
+pkill -x MatronMac 2>/dev/null
+rm -rf ~/Library/Application\ Support/chat.matron.mac
+defaults delete chat.matron.mac 2>/dev/null
+
+# Build + test (ad-hoc signed, sandbox-off via Debug entitlements)
+xcodebuild build-for-testing -scheme MatronMac -destination 'platform=macOS' \
+    CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO \
+    AD_HOC_CODE_SIGNING_ALLOWED=YES
+
+xcodebuild test-without-building -scheme MatronMac -destination 'platform=macOS' \
+    -only-testing:MatronMacUITests/VerifyWithPartnerUITests/testSignInAndVerifyWithPartner \
+    CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO \
+    AD_HOC_CODE_SIGNING_ALLOWED=YES
+```
+
+**Test config flow**: harness writes `/tmp/matron-test-config.json` →
+the test reads it (env vars don't propagate cleanly to Mac UI test
+runners). Format:
+```json
+{ "homeserver": "http://localhost:6167", "user": "matron",
+  "password": "matron-test-pw", "verify_timeout": 60 }
+```
+
+**Open issue**: SwiftUI `TextField` in `MacSignInView` accepts a
+clipboard-paste into the server-URL field (which has special chars `:`
+and `/`) but the username field stays empty when filled via the same
+paste-after-Tab pattern. Working hypothesis: SwiftUI's TextField
+doesn't fire its binding update when a paste happens after Tab-induced
+focus change — only after a click-induced focus change. Three things
+worth trying:
+1. Replace Tab navigation with explicit `.click()` + `usleep` per field
+   (already tried in `cd57415`; didn't work for username — probably
+   something about the form's submit-button-disabled-state racing).
+2. Use `XCUIElement.coordinate(...).tap()` instead of `click()` to
+   force a precise click coordinate.
+3. Bypass the UI for the SDK layer entirely — write
+   `MatronIntegrationTests` (target scaffolded, source dir empty) that
+   drives `AuthService.signIn` + `VerificationServiceLive` directly
+   without the SwiftUI layer. **Recommended path** since the bugs
+   we've been catching are all SDK-layer.
+
+### AppleScript path (v1 fallback)
+
+`scenarios/verify-mac-against-partner.sh` drives the Mac via System
+Events keystrokes. Works in an interactive session with Accessibility
+permission granted to Terminal. Does NOT work from Claude Code's Bash
+tool — `open` runs but the Mac app's SwiftUI Scene doesn't show.
+Useful as a backup if XCUITest path proves intractable.
 
 ### Accessibility identifiers (already plumbed)
 
@@ -275,28 +324,49 @@ For when XCUITest works:
 
 In rough priority order:
 
-### 1. Validate Wave 7's per-config entitlements (XCUITest unblock)
+### 1. Scaffold `MatronIntegrationTests` (xctest, drives SDK directly)
 
-```bash
-xcodegen
-xcodebuild build-for-testing -scheme MatronMac \
-    -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO 2>&1 | tail -5
+The target is wired in `project.yml` but the source dir is empty
+(`MatronIntegrationTests/.gitkeep`). Strong recommendation: this is
+the highest-value next thing because **every bug we burned the day
+on was at the SDK layer**, not the UI layer. xctest catches them
+without the UI driving complexity.
+
+Sketch:
+```swift
+// MatronIntegrationTests/VerificationFlowIntegrationTests.swift
+import XCTest
+import MatronAuth
+import MatronModels
+import MatronVerification
+import MatronSync
+
+final class VerificationFlowIntegrationTests: XCTestCase {
+    func testFullSasFlowAgainstLiveHomeserver() async throws {
+        // Skip unless harness is running
+        let hs = ProcessInfo.processInfo.environment["MATRON_HOMESERVER"]
+            ?? "http://localhost:6167"
+        guard (try? await URLSession.shared.data(from: URL(string: "\(hs)/_matrix/client/versions")!)) != nil else {
+            throw XCTSkip("homeserver not available — run via tests/integration/run-harness.sh")
+        }
+        // Sign in via AuthService
+        // Drive VerificationServiceLive.startSAS
+        // Drive partner.mjs auto-verify in parallel
+        // Assert on AsyncStream<SasFlowState> transitions
+    }
+}
 ```
 
-Should succeed without the previous `app-sandbox` issues. Then:
+Add to MatronMac scheme's `testTargets` in `project.yml`. Re-enable the
+removed line from `cd57415`.
 
-```bash
-docker info >/dev/null  # make sure Docker is up
-gh auth token | docker login ghcr.io -u danbarker --password-stdin
-tests/integration/run-harness.sh verify-mac-against-partner.sh
-```
+### 2. Solve the SwiftUI form-fill issue (lower priority)
 
-If XCUITest now works, swap `verify-mac-against-partner.sh` to the
-XCUITest variant (`xcodebuild test-without-building -only-testing:
-MatronMacUITests/...`) — the previous version of that script is in
-git history at SHA `94f3666`.
+If you do want to keep XCUITest as a path: try the three approaches
+listed in the "XCUITest path" section above. Most likely answer is
+coordinate-tap + per-field deliberate focus.
 
-### 2. Diagnose the empty-chats regression
+### 3. Diagnose the empty-chats regression
 
 Add `os.Logger` instrumentation to `SyncServiceLive` (and
 `ChatServiceLive` if needed) — same pattern as
@@ -322,7 +392,7 @@ Watch the trace. Likely root cause: sync starts but the snapshot poll
 misses initial-sync rooms, or the `chatSummaries()` AsyncStream isn't
 re-firing on first sync settle.
 
-### 3. Verify iOS flows post-Wave-7
+### 4. Verify iOS flows post-Wave-7
 
 iOS sim wasn't retested after Wave 7. With the matron-server harness
 running:
@@ -341,7 +411,7 @@ Sign in as `matron` against the Docker homeserver. Try recovery key
 flow + verify-with-another-device. If they no longer crash/bounce,
 Wave 7 fully fixes the iOS bugs.
 
-### 4. Decide on PR #3 disposition
+### 5. Decide on PR #3 disposition
 
 PR #3 has accumulated 7 fix-up waves on top of the Phase 3 base. It's
 substantial but coherent (each wave is self-contained). Two options:
@@ -355,7 +425,7 @@ substantial but coherent (each wave is self-contained). Two options:
 User's stated preference earlier was to merge stacked when possible
 but they accepted squash for PR #1 (Phase 2). I'd vote merge-as-is.
 
-### 5. Long-running: build a CI hook for the harness
+### 6. Long-running: build a CI hook for the harness
 
 After XCUITest works locally, wire it into a GitHub Actions workflow.
 Will need a self-hosted Mac runner (the harness drives Mac UI), or a
@@ -377,6 +447,29 @@ GitHub-hosted macOS runner with Docker (which costs $$).
 - **Crash report from iOS sim** (still in repo root): `ios-crash-report.txt`
   — pre-Wave-5; can probably be deleted now.
 
+### Apple Developer accounts (Xcode → Settings → Accounts)
+
+- **Personal Team** — team ID `T87DM9X88P` ("DANIEL JOHN B BARKER")
+- **YEARBOOK MACHINE LIMITED** — team ID `4LJ7WRRRFD`, **Admin role**
+  (this is the Matron-org parent; matronhq GH org belongs here)
+- The iOS device `Dan's MacBook Pro` is **not registered** under
+  YEARBOOK MACHINE LIMITED yet — would need to be added at
+  https://developer.apple.com/account/resources/devices for full
+  Apple-signed local testing. Ad-hoc signing (`CODE_SIGN_IDENTITY=-`)
+  bypasses this and is what the integration harness uses.
+- Two Mac development certs available locally (run `security
+  find-identity -p codesigning -v`):
+  - `Apple Development: DANIEL JOHN B BARKER (T87DM9X88P)`
+  - `Apple Development: Dan Barker (MHQ4X3KS8L)`
+
+### ghcr.io image pull
+
+`ghcr.io/matronhq/matron-server:latest` is **private**. Auth before
+running the harness:
+```bash
+gh auth token | docker login ghcr.io -u danbarker --password-stdin
+```
+
 ---
 
 ## Things to NOT do
@@ -394,6 +487,18 @@ GitHub-hosted macOS runner with Docker (which costs $$).
 6. **Don't add a parallel boot-time verification controller fetch** —
    we tried that and it caused multi-controller races. Single
    controller, lazy build via `verificationStateListener`.
+7. **Don't put `entitlements:` block at target level in `project.yml`
+   when you also have per-config `CODE_SIGN_ENTITLEMENTS`** — the
+   target-level block overrides per-config and breaks Debug-vs-Release
+   entitlement variants.
+8. **Don't fight Mac SwiftUI form-fill via XCUITest typeText for URLs**
+   — typeText mangles `:` and `/`. Use `NSPasteboard` + ⌘V. For other
+   fields, the binding-update-on-paste isn't reliable across Tab
+   navigation (see "XCUITest path" section).
+9. **Don't expect Mac apps launched from XCUITest to show a window**
+   — they often come up as menu-bar-only background processes.
+   Workaround: `app.activate()` + `app.typeKey("n", modifierFlags:
+   [.command])` to send File→New Window.
 
 ---
 
