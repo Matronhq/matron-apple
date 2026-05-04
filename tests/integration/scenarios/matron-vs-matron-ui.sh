@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# Scenario: drive Mac (trust-anchor responder) + iOS sim (requester)
+# end-to-end via XCUITest, both running matron's matrix-rust-sdk
+# build, both signed in as @matron against the Docker harness on
+# :6167. No partner.mjs.
+#
+# Synchronization: Mac signs in first, runs the recovery-key
+# generate flow, then writes /tmp/matron-mac-ready. iOS polls that
+# file before signing in (XCTSkip after 90s). Both reach the SAS
+# sheet via XCUIElement.waitForExistence; "They match" on both sides
+# completes SAS; auto-cross-signing flips both to verified.
+#
+# Pass criteria: both `xcodebuild test` exit 0 AND both runtime
+# os.Logger streams contain "verificationStateListener: fired with
+# verified".
+#
+# Driven by run-harness.sh which exports HOMESERVER, MATRON_USER,
+# MATRON_PW, ARTIFACTS_DIR, ROOT.
+set -euo pipefail
+
+require() { [ -n "${!1:-}" ] || { echo "missing env: $1"; exit 1; }; }
+require HOMESERVER
+require MATRON_USER
+require MATRON_PW
+require ARTIFACTS_DIR
+require ROOT
+
+SIM_UDID="${MATRON_SIM_UDID:-337C3A3A-4191-4A51-9513-93F5805276EC}"
+CONFIG_FILE="/tmp/matron-test-config.json"
+READY_FILE="/tmp/matron-mac-ready"
+
+MAC_BUILD_LOG="$ARTIFACTS_DIR/mac-build.log"
+IOS_BUILD_LOG="$ARTIFACTS_DIR/ios-build.log"
+MAC_TEST_LOG="$ARTIFACTS_DIR/mac-test.log"
+IOS_TEST_LOG="$ARTIFACTS_DIR/ios-test.log"
+MAC_RUNTIME_LOG="$ARTIFACTS_DIR/matron-mac.log"
+IOS_RUNTIME_LOG="$ARTIFACTS_DIR/matron-ios.log"
+MAC_XCRESULT="$ARTIFACTS_DIR/mac.xcresult"
+IOS_XCRESULT="$ARTIFACTS_DIR/ios.xcresult"
+
+log() { echo "[scenario] $*" | tee -a "$ARTIFACTS_DIR/harness.log"; }
+
+# --- Wipe stale signals + app state ---
+log "Wiping app state (Mac + iOS sim) and stale ready-file…"
+rm -f "$READY_FILE"
+pkill -x MatronMac >/dev/null 2>&1 || true
+sleep 1
+rm -rf "$HOME/Library/Application Support/chat.matron.mac"
+defaults delete chat.matron.mac >/dev/null 2>&1 || true
+xcrun simctl boot "$SIM_UDID" >/dev/null 2>&1 || true
+xcrun simctl uninstall "$SIM_UDID" chat.matron.app >/dev/null 2>&1 || true
+
+# --- Build both UI test bundles in parallel ---
+log "Building MatronMacUITests + MatronUITests for testing (parallel)…"
+(cd "$ROOT" && xcodebuild build-for-testing \
+    -scheme MatronMac \
+    -destination 'platform=macOS' \
+    -only-testing:MatronMacUITests/MatronVsMatronMacUITests \
+    CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual \
+    CODE_SIGNING_REQUIRED=NO AD_HOC_CODE_SIGNING_ALLOWED=YES \
+    > "$MAC_BUILD_LOG" 2>&1) &
+MAC_BUILD_PID=$!
+
+(cd "$ROOT" && xcodebuild build-for-testing \
+    -scheme Matron \
+    -destination "platform=iOS Simulator,id=$SIM_UDID" \
+    -only-testing:MatronUITests/MatronVsMatronIOSUITests \
+    CODE_SIGNING_ALLOWED=NO \
+    > "$IOS_BUILD_LOG" 2>&1) &
+IOS_BUILD_PID=$!
+
+if ! wait $MAC_BUILD_PID; then
+    log "✗ Mac build-for-testing failed"
+    tail -50 "$MAC_BUILD_LOG"
+    exit 1
+fi
+if ! wait $IOS_BUILD_PID; then
+    log "✗ iOS build-for-testing failed"
+    tail -50 "$IOS_BUILD_LOG"
+    exit 1
+fi
+log "  builds OK"
+
+# --- Write XCUITest config ---
+log "Writing $CONFIG_FILE…"
+cat > "$CONFIG_FILE" <<EOF
+{
+  "homeserver": "$HOMESERVER",
+  "user": "$MATRON_USER",
+  "password": "$MATRON_PW",
+  "verify_timeout": 60
+}
+EOF
+
+# --- Capture os.Logger streams from both sides ---
+/usr/bin/log stream --predicate 'subsystem == "chat.matron"' --style compact --level info \
+    > "$MAC_RUNTIME_LOG" 2>&1 &
+MAC_LOG_PID=$!
+
+xcrun simctl spawn "$SIM_UDID" log stream --predicate 'subsystem == "chat.matron"' --style compact --level info \
+    > "$IOS_RUNTIME_LOG" 2>&1 &
+IOS_LOG_PID=$!
+
+cleanup() {
+    [ -n "${MAC_LOG_PID:-}" ] && kill "$MAC_LOG_PID" 2>/dev/null || true
+    [ -n "${IOS_LOG_PID:-}" ] && kill "$IOS_LOG_PID" 2>/dev/null || true
+    pkill -x MatronMac 2>/dev/null || true
+    rm -f "$CONFIG_FILE" "$READY_FILE"
+}
+trap cleanup EXIT
+
+# --- Fork both tests in parallel ---
+log "Running both UI tests in parallel (Mac trust-anchor + iOS requester)…"
+set +e
+(cd "$ROOT" && xcodebuild test-without-building \
+    -scheme MatronMac \
+    -destination 'platform=macOS' \
+    -only-testing:MatronMacUITests/MatronVsMatronMacUITests \
+    -resultBundlePath "$MAC_XCRESULT" \
+    CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual \
+    CODE_SIGNING_REQUIRED=NO AD_HOC_CODE_SIGNING_ALLOWED=YES \
+    > "$MAC_TEST_LOG" 2>&1) &
+MAC_TEST_PID=$!
+
+(cd "$ROOT" && xcodebuild test-without-building \
+    -scheme Matron \
+    -destination "platform=iOS Simulator,id=$SIM_UDID" \
+    -only-testing:MatronUITests/MatronVsMatronIOSUITests \
+    -resultBundlePath "$IOS_XCRESULT" \
+    CODE_SIGNING_ALLOWED=NO \
+    > "$IOS_TEST_LOG" 2>&1) &
+IOS_TEST_PID=$!
+
+wait $MAC_TEST_PID
+MAC_RC=$?
+wait $IOS_TEST_PID
+IOS_RC=$?
+set -e
+
+log "  Mac rc=$MAC_RC, iOS rc=$IOS_RC"
+
+# --- Trace assertions ---
+PASS=1
+if [ $MAC_RC -ne 0 ]; then
+    log "✗ Mac xcodebuild test failed"
+    PASS=0
+fi
+if [ $IOS_RC -ne 0 ]; then
+    log "✗ iOS xcodebuild test failed"
+    PASS=0
+fi
+if ! grep -q 'verificationStateListener: fired with verified' "$MAC_RUNTIME_LOG"; then
+    log "✗ Mac os.Logger never logged verificationStateListener: fired with verified"
+    PASS=0
+fi
+if ! grep -q 'verificationStateListener: fired with verified' "$IOS_RUNTIME_LOG"; then
+    log "✗ iOS os.Logger never logged verificationStateListener: fired with verified"
+    PASS=0
+fi
+
+if [ $PASS -eq 1 ]; then
+    log "✓ Scenario PASSED"
+    exit 0
+fi
+
+log "✗ Scenario FAILED — collecting diagnostics"
+log "  Mac test log: $MAC_TEST_LOG"
+log "  iOS test log: $IOS_TEST_LOG"
+log "  Mac runtime: $MAC_RUNTIME_LOG"
+log "  iOS runtime: $IOS_RUNTIME_LOG"
+log "  Mac xcresult: $MAC_XCRESULT"
+log "  iOS xcresult: $IOS_XCRESULT"
+echo "--- last 60 lines of Mac test log ---"
+tail -60 "$MAC_TEST_LOG" || true
+echo "--- last 60 lines of iOS test log ---"
+tail -60 "$IOS_TEST_LOG" || true
+exit 1
