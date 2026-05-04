@@ -88,7 +88,7 @@ fi
 log "  builds OK"
 
 # --- Write XCUITest config ---
-log "Writing $CONFIG_FILE…"
+log "Writing ${CONFIG_FILE}…"
 cat > "$CONFIG_FILE" <<EOF
 {
   "homeserver": "$HOMESERVER",
