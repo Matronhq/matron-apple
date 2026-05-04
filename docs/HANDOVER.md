@@ -263,26 +263,38 @@ Integration tests are gated behind the harness — see the
    Minor — not a blocker.
 
 4. **`testAcceptIncomingVerificationRequestFromPartner`** SDK test
-   still skip-gated. The matron-side responder fix landed in commit
-   `03d7c30` — `acceptIncoming` now synthesises
-   `routeAcceptedVerificationRequest` after a successful
-   `acceptVerificationRequest()`, mirroring Element X iOS's
-   pattern (`SessionVerificationScreenViewModel.swift:169-171`).
-   matrix-rust-sdk's `didAcceptVerificationRequest` delegate
-   confirmed to fire **only on the requester side**, so the
-   responder has to synthesise the event itself.
+   still skip-gated. matron-side code is correct as-is:
+   `acceptIncoming` only calls `acceptVerificationRequest` (sends
+   `.ready`); matrix-rust-sdk auto-progresses SAS when the
+   initiator's `.start` arrives via `didStartSasVerification` +
+   `didReceiveVerificationData` callbacks. (Commit `03d7c30`
+   added a synthesised `startSasVerification` call here; reverted
+   in commit `4bdca06` — the SDK throws "Verification request
+   missing" when called immediately after accept, before the
+   initiator's `.start` arrives. Element X's "user taps Start"
+   pattern works because the user-tap gives the SDK time; we
+   can't synthesise that delay programmatically without flake.)
 
-   The integration test is still skip-gated because it requires
-   `cmdBootstrapAndInitiateVerify` in `partner.mjs` — adding that
-   function previously broke the verify scenario via a
-   matrix-js-sdk module-load side effect (the RustCrypto layer
-   started ignoring incoming requests with `"Ignoring
-   just-received verification request which did not start a
-   rust-side verification"`). The function was reverted out of
-   `partner.mjs` (commit `7034ba0`). To fully unblock the test,
-   re-add the partner-side function and figure out why its
-   presence affects matrix-js-sdk's request tracking. The
-   matron-side stall is no longer a blocker.
+   The blocker is partner-side: `partner.mjs`'s matrix-js-sdk
+   `cmdBootstrapAndInitiateVerify` (the partner-as-initiator
+   command) doesn't reliably send `m.key.verification.start`.
+   `request.startVerification("m.sas.v1")` throws "other device
+   is unknown" even though `requestDeviceVerification(userId,
+   deviceId)` succeeded with the same device moments earlier.
+   Likely a `/keys/query` priming issue inside matrix-js-sdk —
+   needs a deeper dive than was in scope. The Swift-side
+   scaffolding (test method, scenario script, FlowStore-actor
+   continuation race fixes) is all in place and ready for when
+   the partner-side initiator flow works end-to-end. The
+   `cmdBootstrapAndInitiateVerify` function was reverted out of
+   partner.mjs (commit `7034ba0`) so its presence doesn't
+   affect the verify scenario — re-add when investigating.
+
+   Also: an earlier theory that defining
+   `cmdBootstrapAndInitiateVerify` in partner.mjs broke the
+   verify scenario via a matrix-js-sdk module-load side effect
+   was disproven (verify scenario passes either way; the flake
+   is just the documented matrix-js-sdk RustCrypto race).
 
 5. **UI test (`verify-mac-ui-against-partner.sh`)** structurally
    works but the XCUITest runner init blocks on a macOS biometric /
