@@ -77,20 +77,31 @@ struct NewChatSheet: View {
         }
     }
 
-    /// Reads the first room-list snapshot to derive the unique-bot set.
-    /// Phase 2's live `chatSummaries()` is single-snapshot per call (the
-    /// stream finishes after one snapshot — see the protocol doc-comment),
-    /// so the `break` after the first snapshot is defensive: re-opening
-    /// the sheet picks up any newly-arrived bots from a fresh subscription.
-    /// Phase 3 flips the stream to long-lived and the `break` becomes
-    /// load-bearing — keep it.
+    /// Reads room-list snapshots to derive the unique-bot set. Re-polls
+    /// on empty (1s × 30 attempts) for the same race that bit
+    /// `ChatListViewModel`: `chatSummaries()` is single-shot per call
+    /// (Phase 1/2 contract), and the first snapshot lands as soon as
+    /// `sync.waitUntilReady()` returns — but `.running` doesn't
+    /// guarantee any rooms have been downloaded. A user opening the
+    /// New Chat sheet right after sign-in would otherwise see an
+    /// empty bot picker until they re-opened the sheet manually.
     private func loadBots() async {
         let chat = deps.chatService(for: session)
         do {
-            for try await snapshot in chat.chatSummaries() {
-                let unique = Set(snapshot.map(\.bot))
-                bots = Array(unique).sorted { $0.displayName < $1.displayName }
-                break
+            for attempt in 0..<30 {
+                if Task.isCancelled { return }
+                var lastSnapshot: [ChatSummary] = []
+                for try await snapshot in chat.chatSummaries() {
+                    lastSnapshot = snapshot
+                }
+                if !lastSnapshot.isEmpty {
+                    let unique = Set(lastSnapshot.map(\.bot))
+                    bots = Array(unique).sorted { $0.displayName < $1.displayName }
+                    break
+                }
+                if attempt < 29 {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                }
             }
         } catch {
             // Surface the upstream stream error (e.g. SyncReadyError.timeout)
@@ -99,9 +110,9 @@ struct NewChatSheet: View {
             // (QA finding #10).
             errorMessage = error.localizedDescription
         }
-        // Flip *after* the first snapshot processes (or the stream
-        // finishes without one) so the empty state shows once we're sure
-        // there are no bots — not during the in-flight window.
+        // Flip *after* the polling completes (or the stream throws) so the
+        // empty state shows once we're sure there are no bots, not during
+        // the in-flight window.
         didLoad = true
     }
 
