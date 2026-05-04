@@ -131,14 +131,20 @@ final class MatronVsMatronMacUITests: XCTestCase {
         pasteBtn.click()
 
         // After paste matches, view auto-advances to .confirmed which
-        // auto-dismisses 600ms later via .task. Most reliable signal: the
-        // verifygate.generateNew button (which we left ages ago) GOES AWAY
-        // again — the recovery flow has fully wrapped up and the chat
-        // list is visible.
-        let goneExp = NSPredicate(format: "exists == false")
-        let goneWait = expectation(for: goneExp, evaluatedWith: generateNew, handler: nil)
-        XCTAssertEqual(XCTWaiter().wait(for: [goneWait], timeout: 15), .completed,
-                       "Recovery-key flow never advanced past the verify gate")
+        // auto-dismisses 600ms later via .task. Wait for the Paste button
+        // to stop existing as proof the sheet has fully dismissed (not just
+        // for the verify-gate to disappear — the gate left the screen the
+        // moment the sheet *appeared* a few clicks ago, so that signal isn't
+        // load-bearing).
+        //
+        // NOTE: this relies on MacRecoveryKeyView.swift's `.reenter` onChange
+        // handler auto-advancing to `.confirmed` when canFinish flips. If
+        // that auto-advance is ever removed, the test must be updated to
+        // click the bottom-bar Confirm button explicitly.
+        let pasteGone = NSPredicate(format: "exists == false")
+        let pasteGoneWait = expectation(for: pasteGone, evaluatedWith: pasteBtn, handler: nil)
+        XCTAssertEqual(XCTWaiter().wait(for: [pasteGoneWait], timeout: 15), .completed,
+                       "Recovery-key sheet never dismissed after Paste — auto-advance to .confirmed didn't fire")
 
         // --- Mac is now verified + bootstrapped. Signal iOS. ---
         try "ready".write(toFile: "/tmp/matron-mac-ready",
@@ -222,9 +228,16 @@ final class MatronVsMatronMacUITests: XCTestCase {
         if let pw = app.secureTextFields["signin.password"].value as? String {
             fieldsSummary += "signin.password.value = \(pw.debugDescription) (count=\(pw.count))\n"
         }
+        let pb = NSPasteboard.general.string(forType: .string) ?? "<nil>"
+        fieldsSummary += "NSPasteboard.string = \(pb.debugDescription)\n"
         fieldsSummary += "signin.submit.isEnabled = \(app.buttons["signin.submit"].isEnabled)\n"
         try? fieldsSummary.write(toFile: "/tmp/matron-mac-fields.txt",
                                  atomically: true, encoding: .utf8)
+
+        let fieldsAttachment = XCTAttachment(string: fieldsSummary)
+        fieldsAttachment.name = "field-readbacks"
+        fieldsAttachment.lifetime = .keepAlways
+        add(fieldsAttachment)
 
         XCTFail("\(message). See /tmp/matron-mac-debug.txt + /tmp/matron-mac-fields.txt.")
     }
