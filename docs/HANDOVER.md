@@ -6,6 +6,113 @@ everything.
 
 ---
 
+## Session 2 update — 2026-05-04 PM (read this first)
+
+A second working session built out the integration harness, fixed the
+empty-chats regression, and reverted a piece of Wave 7. Latest tip:
+**`1fbdea8`** (`fix: re-poll chatSummaries() in NewChatSheet`).
+13 commits since `cd57415`.
+
+### What's now green
+
+- **3 SDK-level integration tests passing in their own scenarios**:
+  - `verify-sdk-against-partner.sh` — full SAS round-trip → `.verified`
+    + `isThisDeviceVerified()` flips true. Mirrors the Verify-with-
+    Other-Device button at the SDK layer.
+  - `chat-list-sdk.sh` — partner creates a room before matron signs
+    in; asserts `chatSummaries()` yields the room. **Proved
+    empty-chats is NOT in the SDK layer.**
+  - `recovery-key-sdk.sh` — recovery-key restore unlocks cross-signing
+    → `isThisDeviceVerified()` true. Re-validates Wave 7's
+    `recoverAndFixBackup` switch.
+  - Wrapper `tests/integration/scenarios/run-all-sdk.sh` runs all
+    three sequentially against fresh harnesses.
+- **Empty-chats UI bug FIXED** (commit `e8c57b6`). Was in
+  `ChatListViewModel.start()` consuming the first single-shot snapshot
+  from `chatSummaries()` — and that first snapshot lands when
+  `sync.waitUntilReady()` returns, before sliding sync has actually
+  downloaded any rooms. VM now re-polls (1s × 30 attempts) until
+  non-empty. Same fix applied to `NewChatSheet.loadBots()` (iOS + Mac)
+  in commit `1fbdea8` — same race.
+- **SPM tests at 225** (was 224, +1 — `test_retriesOnEmptySnapshot_until_populated`).
+
+### Wave 7 inversion + open risk
+
+- `routeAcceptedVerificationRequest` no longer skips for the
+  requester role (commit `59b3180`). Both roles call
+  `startSasVerification`. Element X iOS does the same
+  (`SessionVerificationScreenStateMachine.swift:89`); matrix-rust-sdk
+  dedupes internally. Without this change, SAS deadlocks at
+  phase=Ready against any matrix-js-sdk peer.
+- **Open risk: matron-vs-matron not yet re-validated.** Wave 7 was
+  added to fix a live-debugged "MAC mismatch" symptom in same-SDK
+  flows. Best guess is that one matron-side was always issuing
+  `.start` (the responder via Wave 7's logic) and matron-vs-matron
+  worked by accident; the requester-also-issuing case may dedupe
+  fine in matrix-rust-sdk. **Needs your live re-test against your
+  real homeserver before merging.**
+
+### Other findings
+
+- **matrix-js-sdk doesn't auto-cross-sign after SAS** —
+  `verifier.verify()` resolving doesn't upload a cross-signature for
+  the verified device. Need explicit `cryptoApi.crossSignDevice()`.
+  partner.mjs's `bootstrap-and-wait` calls it from the Done branch.
+  Without it, matron's `verificationStateListener` never fires
+  `verified` even though SAS itself succeeded.
+- **Cross-SDK MAC interop required state preservation.** The split
+  `bootstrap-anchor → wait-verify` partner.mjs lifecycle leaked
+  in-memory crypto state on resume; the new combined
+  `bootstrap-and-wait` command (mirrors
+  `claude-matrix-bridge/add-bot.mjs`) keeps it in one process.
+- **Sync race**: `verificationStateListener: fired with .unverified`
+  is necessary but NOT sufficient — `getSessionVerificationController`
+  may still throw "Failed retrieving user identity" while the full
+  identity finishes landing. Tests retry `verification.start()` to
+  gate.
+
+### Still open
+
+- **"No visible feedback on Verify-with-other-device tap"** UX bug
+  from the original handover. Not touched.
+- **`testAcceptIncomingVerificationRequestFromPartner`** —
+  matron-as-responder SDK test scaffolded but skip-gated. Two issues:
+  (a) matron receives the request but flow stalls past
+  `routeIncomingRequest` — possibly matrix-rust-sdk's
+  `didAcceptVerificationRequest` only fires on the requester side;
+  (b) merely defining the partner-side
+  `cmdBootstrapAndInitiateVerify` function in partner.mjs broke the
+  verify scenario via some matrix-js-sdk module-load side effect, so
+  it's been reverted out of partner.mjs. Both need investigation.
+- **UI test (XCUITest) blocked on macOS auth prompt** when invoked
+  from non-interactive Bash. Works structurally; needs an
+  interactive Terminal session to dismiss TouchID/Accessibility
+  prompts. SDK code path it exercises is now proven green.
+- **iOS sim flows post-Wave-7** still not re-tested. Same VM
+  changes that fixed Mac empty-chats apply to iOS automatically
+  (shared `ChatListViewModel`); UI verify-with-other-device flow on
+  iOS sim hasn't been driven yet.
+- **`tests/integration/.gitignore`** patterns were broken (full path
+  prefix instead of relative); fixed in commit `ec03bc4`.
+
+### How to run the new SDK tests
+
+```bash
+gh auth token | docker login ghcr.io -u danbarker --password-stdin   # if image not cached
+tests/integration/run-harness.sh verify-sdk-against-partner.sh
+tests/integration/run-harness.sh chat-list-sdk.sh
+tests/integration/run-harness.sh recovery-key-sdk.sh
+# Or all three in sequence:
+tests/integration/scenarios/run-all-sdk.sh
+```
+
+`run-harness.sh` auto-skips its own `bootstrap-anchor` for these
+scenarios (the partner bootstraps inline via `bootstrap-and-wait`).
+
+---
+
+---
+
 ## Wider context (read these first if you're cold)
 
 **What Matron is.** Native Matrix client for iOS and macOS, bot-first,
