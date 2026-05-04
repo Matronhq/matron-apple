@@ -9,15 +9,18 @@ import XCTest
 /// points (`routeSas…`) directly to simulate what the production delegate
 /// would call.
 final class VerificationServiceLiveTests: XCTestCase {
-    /// Wave 7 bug #5 fix: `acceptIncoming` now calls ONLY
-    /// `acceptVerificationRequest()`. The SDK's
-    /// `didAcceptVerificationRequest` callback (routed via
-    /// `routeAcceptedVerificationRequest()` on the live impl) is what
-    /// later calls `startSasVerification()` for the responder. Calling
-    /// `startSasVerification()` immediately after `acceptVerificationRequest()`
-    /// raced the SDK's internal state and tripped the partner-side MAC
-    /// verification (live-debugged).
-    func test_acceptIncoming_callsAcceptOnly_notStartSas() async throws {
+    /// `acceptIncoming` calls `acceptVerificationRequest` AND then
+    /// synthesises `routeAcceptedVerificationRequest` to call
+    /// `startSasVerification` for the responder. matrix-rust-sdk's
+    /// `didAcceptVerificationRequest` delegate fires only on the
+    /// requester side (when the responder's accept comes back) — not
+    /// on the responder's own side after a successful local accept,
+    /// so without the synthesised route the responder-side flow stalls
+    /// past `acceptVerificationRequest`. Mirrors Element X iOS's
+    /// pattern (`SessionVerificationScreenViewModel.swift:169-171`,
+    /// the `stateMachine.processEvent(.didAcceptVerificationRequest)`
+    /// after success).
+    func test_acceptIncoming_callsAccept_andSynthesisesStartSas() async throws {
         let live = VerificationServiceLive()
         let controller = FakeSessionVerificationController()
         await live.register(controller: controller, for: "req-1")
@@ -28,13 +31,23 @@ final class VerificationServiceLiveTests: XCTestCase {
         if let first = await iterator.next() {
             collected.append(first)
         }
+        // The synthesised `routeAcceptedVerificationRequest` is awaited
+        // inside the stream's Task AFTER yielding .requested, so the
+        // test needs to give that await a beat before asserting (and
+        // before cancelling, otherwise cancel races the route's
+        // startSas call). Poll up to ~500ms.
+        var startedSas = false
+        for _ in 0..<50 {
+            startedSas = await controller.didStartSas
+            if startedSas { break }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
         try await live.cancel(requestID: "req-1", reason: "test-teardown")
 
         XCTAssertEqual(collected, [.requested])
         let accepted = await controller.didAccept
-        let startedSas = await controller.didStartSas
         XCTAssertTrue(accepted, "acceptIncoming must call acceptVerificationRequest")
-        XCTAssertFalse(startedSas, "Wave 7: acceptIncoming MUST NOT call startSasVerification — the delegate's didAcceptVerificationRequest does")
+        XCTAssertTrue(startedSas, "acceptIncoming must synthesise the responder-side startSasVerification (matrix-rust-sdk's didAcceptVerificationRequest delegate doesn't fire on the responder)")
     }
 
     /// Wave 7 bug #5: when the SDK's `didAcceptVerificationRequest`
@@ -94,14 +107,14 @@ final class VerificationServiceLiveTests: XCTestCase {
     func test_routeAcceptedVerificationRequest_doubleFire_isSafe() async throws {
         let live = VerificationServiceLive()
         let controller = FakeSessionVerificationController()
+        // Skip acceptIncoming (which now synthesises the route once)
+        // and drive the route entry point directly. Sets up the flow
+        // store the way the requester-side path does so we get a
+        // clean count of how many times routeAcceptedVerificationRequest
+        // calls startSasVerification.
         await live.register(controller: controller, for: "req-double")
         await live.setActiveFlowID("req-double")
-        await live.setFlowRole(.responder, for: "req-double")
-
-        // Open a stream so a continuation is registered for req-double.
-        let stream = live.acceptIncoming(requestID: "req-double")
-        var iterator = stream.makeAsyncIterator()
-        _ = await iterator.next() // .requested
+        await live.setFlowRole(.requester, for: "req-double")
 
         await live.routeAcceptedVerificationRequest()
         await live.routeAcceptedVerificationRequest()
@@ -110,8 +123,6 @@ final class VerificationServiceLiveTests: XCTestCase {
         XCTAssertEqual(count, 2, "double-fire of routeAcceptedVerificationRequest must call startSasVerification both times — the SDK is the dedupe boundary, not the wrapper")
         let cached = await live.activeFlowsSnapshot()
         XCTAssertNotNil(cached["req-double"], "controller must remain in the cache after double-fire — losing it would orphan the open continuation")
-
-        try await live.cancel(requestID: "req-double", reason: "test-teardown")
     }
 
     /// Defensive: if the SDK fires `didAcceptVerificationRequest` for

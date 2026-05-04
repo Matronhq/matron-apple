@@ -404,22 +404,26 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
                     await self.store.clearContinuation(for: requestID)
                     return
                 }
-                // Wave 7 bug #5 fix: only call `acceptVerificationRequest()`
-                // here. The SDK fires `didAcceptVerificationRequest` after
-                // the partner has accepted (or after the local accept lands,
-                // depending on the flow direction); the delegate then calls
-                // `startSasVerification()` for us. Calling
-                // `startSasVerification()` immediately races the SDK's
-                // internal state and trips the partner-side MAC verification.
                 await self.store.setRole(.responder, for: requestID)
                 await self.store.setActiveFlowID(requestID)
                 do {
                     try await controller.acceptVerificationRequest()
                     continuation.yield(.requested)
-                    // No `startSasVerification()` here. See
-                    // `LiveSessionVerificationDelegate.didAcceptVerificationRequest`
-                    // → `routeAcceptedVerificationRequest()` for the
-                    // responder-side SAS-start call.
+                    // matrix-rust-sdk's `didAcceptVerificationRequest`
+                    // delegate fires ONLY on the requester side (when
+                    // the responder's accept comes back) — not on the
+                    // responder's own side after a successful accept.
+                    // Element X iOS works around this by manually
+                    // synthesising the state-machine event after
+                    // `acceptVerificationRequest()` returns
+                    // (SessionVerificationScreenViewModel.swift:169-171).
+                    // Mirror that here: route directly into
+                    // `routeAcceptedVerificationRequest` so
+                    // `startSasVerification` actually fires for the
+                    // responder. Without this, the responder-side flow
+                    // stalls past `acceptVerificationRequest` because
+                    // nothing ever drives SAS forward.
+                    await self.routeAcceptedVerificationRequest()
                 } catch {
                     continuation.yield(.cancelled(reason: error.localizedDescription))
                     continuation.finish()
