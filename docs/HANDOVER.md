@@ -78,10 +78,13 @@ re-litigate without reading the spec):
 - **PR #3** (`phase-3-e2ee-verification` → `main`) carries Phase 3
   (E2EE + verification UX) plus seven post-Phase-3 fix-up waves and
   the integration-harness work. Latest SHA: **`ba7f4fa`**.
-- **3 SDK-level integration tests passing** end-to-end against
-  partner.mjs (matron's second device): verify-with-other-device,
-  chat list (post-sync), recovery-key restore. See "Integration
-  harness" section.
+- **3 SDK-level integration tests + 1 UI XCUITest scenario
+  passing** end-to-end against partner.mjs (matron's second
+  device): verify-with-other-device (SDK and UI), chat list
+  (post-sync), recovery-key restore. See "Integration harness"
+  section. Run all four with
+  `tests/integration/scenarios/run-all-sdk.sh` (3-attempt retry
+  on the verify scenarios for the matrix-js-sdk flake).
 - **Empty chat list on fresh sign-in: FIXED** (commits `e8c57b6` +
   `1fbdea8`). Was a single-shot AsyncStream race in `ChatListViewModel`
   / `NewChatSheet` consuming the first snapshot before sliding sync
@@ -308,13 +311,30 @@ Integration tests are gated behind the harness — see the
    was disproven (verify scenario passes either way; the flake
    is just the documented matrix-js-sdk RustCrypto race).
 
-5. **UI test (`verify-mac-ui-against-partner.sh`)** structurally
-   works but the XCUITest runner init blocks on a macOS biometric /
-   Accessibility prompt when invoked from non-interactive Bash.
-   Run from an interactive Terminal session and dismiss the prompts
-   to actually exercise it. Same SDK code path as
-   `verify-sdk-against-partner.sh`, so once unblocked it should
-   reach `.verified`.
+5. **UI test (`verify-mac-ui-against-partner.sh`) — now passing
+   end-to-end automated** (commit `b660f6a`). Two unblocks
+   landed:
+   - **`sudo DevToolsSecurity -enable`** (one-time per Mac
+     account) turns off the TouchID prompt that XCUITest
+     runner-init triggers. Without it the runner-init fails with
+     "Authentication cancelled. System authentication is
+     running." from non-interactive Bash. Required setup; not
+     something that can be done from CI without a human present
+     for the sudo prompt the first time.
+   - **ServerURLValidator localhost carve-out**: plain `http://`
+     is now allowed for `localhost` / `127.0.0.1` / `::1` only.
+     The Docker test homeserver runs on `http://localhost:6167`;
+     before this fix the UI test's submit triggered "That
+     doesn't look like a valid server URL." The carve-out
+     mirrors Element Web; production homeservers always run
+     behind HTTPS so it can't expose remote credentials.
+
+   The full chain now runs from XCUITest: sign-in form-fill →
+   submit → verify gate → tap "Verify with another device" →
+   SAS sheet shows emojis → tap "They match" → verified. Subject
+   to the same matrix-js-sdk RustCrypto flake as the SDK verify
+   scenario (~1-in-3) — `run-all-sdk.sh` wraps the UI scenario
+   with the same 3-attempt retry.
 
 6. **`verify-sdk-against-partner.sh` is intermittently flaky.**
    Roughly 1-in-3 runs fails with matron's SAS stream timing out
