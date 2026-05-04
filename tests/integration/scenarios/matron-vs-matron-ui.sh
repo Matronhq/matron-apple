@@ -108,6 +108,7 @@ EOF
 cleanup() {
     [ -n "${MAC_LOG_PID:-}" ] && kill "$MAC_LOG_PID" 2>/dev/null || true
     [ -n "${IOS_LOG_PID:-}" ] && kill "$IOS_LOG_PID" 2>/dev/null || true
+    [ -n "${WATCHER_PID:-}" ] && kill "$WATCHER_PID" 2>/dev/null || true
     pkill -x MatronMac 2>/dev/null || true
     rm -f "$CONFIG_FILE" "$READY_FILE"
 }
@@ -128,6 +129,22 @@ sleep 2
 
 # --- Fork both tests in parallel ---
 log "Running both UI tests in parallel (Mac trust-anchor + iOS requester)…"
+# Pre-create the empty test log so the tail-watcher can attach before
+# xcodebuild creates it.
+: > "$MAC_TEST_LOG"
+
+# Watcher: when the Mac test prints MATRON_MAC_TRUST_ANCHOR_READY (the
+# stdout marker the test emits after recovery-key bootstrap completes),
+# touch the host-side ready file. We have to do this on the host side
+# because the Mac UI test runner sandbox denies all filesystem writes
+# outside its container — see the print() rationale in the test class.
+( tail -F "$MAC_TEST_LOG" 2>/dev/null \
+    | grep -m1 -F 'MATRON_MAC_TRUST_ANCHOR_READY' >/dev/null \
+    && touch "$READY_FILE" \
+    && log "  watcher: Mac trust-anchor ready, signalled iOS via $READY_FILE"
+) &
+WATCHER_PID=$!
+
 set +e
 (cd "$ROOT" && xcodebuild test-without-building \
     -scheme MatronMac \

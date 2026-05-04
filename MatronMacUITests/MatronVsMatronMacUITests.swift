@@ -149,13 +149,16 @@ final class MatronVsMatronMacUITests: XCTestCase {
                        "Recovery-key sheet never dismissed after Paste — auto-advance to .confirmed didn't fire")
 
         // --- Mac is now verified + bootstrapped. Signal iOS. ---
-        // /Users/Shared is the standard cross-app writable location
-        // (sticky world-writable). The Mac UI test runner sandbox/TCC
-        // policy denies /tmp writes with EPERM, so /tmp can't be the
-        // synchronization point.
-        try "ready".write(toFile: "/Users/Shared/matron-mac-ready",
-                          atomically: true,
-                          encoding: .utf8)
+        // The Mac UI test runner is heavily sandboxed and gets EPERM
+        // ("Operation not permitted") writing to /tmp AND /Users/Shared.
+        // We can't find a filesystem path it can write to that's also
+        // visible to the iOS UI test. Workaround: emit a stdout marker
+        // that xcodebuild captures into the test log; the scenario
+        // script's tail-watcher sees it and creates
+        // /Users/Shared/matron-mac-ready on the host (where the iOS
+        // runner can read it).
+        print("MATRON_MAC_TRUST_ANCHOR_READY")
+        fflush(stdout)
 
         // --- Wait up to 120s for incoming-verify banner from iOS peer ---
         let acceptBtn = app.buttons["verifybanner.accept"]
