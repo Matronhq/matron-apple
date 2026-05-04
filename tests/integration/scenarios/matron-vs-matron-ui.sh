@@ -138,7 +138,10 @@ log "Running both UI tests in parallel (Mac trust-anchor + iOS requester)…"
 # touch the host-side ready file. We have to do this on the host side
 # because the Mac UI test runner sandbox denies all filesystem writes
 # outside its container — see the print() rationale in the test class.
-( tail -F "$MAC_TEST_LOG" 2>/dev/null \
+# `tail -F` defaults to the last 10 lines, which would skip the marker
+# entirely once xcodebuild's preamble has scrolled past. Use `-n +1` to
+# stream from line 1 + follow.
+( tail -n +1 -F "$MAC_TEST_LOG" 2>/dev/null \
     | grep -m1 -F 'MATRON_MAC_TRUST_ANCHOR_READY' >/dev/null \
     && touch "$READY_FILE" \
     && log "  watcher: Mac trust-anchor ready, signalled iOS via $READY_FILE"
