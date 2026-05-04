@@ -329,7 +329,8 @@ async function cmdCreateDm(args) {
 // MAC interop failure we keep hitting.
 async function cmdBootstrapAndWait(args) {
   const { homeserver, user, password, "device-name": deviceName,
-          "store-file": storeFile, timeout = "120" } = args;
+          "store-file": storeFile, "create-room": createRoom,
+          timeout = "120" } = args;
   const timeoutMs = parseInt(timeout, 10) * 1000;
   const session = await loginAndStartClient(homeserver, user, password, deviceName);
   await bootstrap(session, password);
@@ -357,6 +358,29 @@ async function cmdBootstrapAndWait(args) {
     device_id: session.loginData.device_id,
     recovery_key: recoveryKey,
   });
+
+  // Optionally create an encrypted room before going into wait-mode.
+  // Used by the chat-list test to seed a room on the server *before*
+  // matron-app signs in, so the test can assert chatSummaries() yields
+  // it. Both partner-device and any other matron-device see the room
+  // (same Matrix user, all rooms are matron's rooms).
+  if (createRoom) {
+    try {
+      const created = await session.client.createRoom({
+        name: createRoom,
+        preset: "private_chat",
+        initial_state: [{
+          type: "m.room.encryption",
+          state_key: "",
+          content: { algorithm: "m.megolm.v1.aes-sha2" },
+        }],
+      });
+      emit({ event: "room_created", room_id: created.room_id, name: createRoom });
+    } catch (e) {
+      emit({ event: "room_create_error", error: String(e?.message ?? e) });
+    }
+  }
+
   emit({ event: "ready", waiting_for: "incoming verification request" });
 
   const start = Date.now();

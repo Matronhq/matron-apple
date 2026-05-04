@@ -1,6 +1,7 @@
 import XCTest
 import Foundation
 import MatronAuth
+import MatronChat
 import MatronModels
 import MatronStorage
 import MatronSync
@@ -87,7 +88,32 @@ final class VerificationFlowIntegrationTests: XCTestCase {
         let username = env["MATRON_USER"] ?? "matron"
         let password = env["MATRON_PW"] ?? "matron-test-pw"
 
-        // 1. Sign in fresh (mirrors the Mac app's first-launch path).
+        // ORDER MATTERS: partner must bootstrap cross-signing on the
+        // server BEFORE matron-app signs in. Otherwise matron's first
+        // /keys/query lands an empty user-identity into its local
+        // crypto store, and `requestDeviceVerification` later fails
+        // with `Failed retrieving user identity` even though the
+        // listener fires `.unverified`. (Earlier runs that signed in
+        // first happened to work by accident — the second sync round
+        // sometimes picked up partner's bootstrap before the test
+        // called startSAS, but it's a race.)
+
+        // 1. Spawn partner.mjs in `bootstrap-and-wait` mode — bootstraps
+        //    cross-signing AND waits for verification in one
+        //    long-running process so all post-bootstrap in-memory
+        //    crypto state stays loaded (mirrors
+        //    claude-matrix-bridge/add-bot.mjs).
+        try spawnPartnerBootstrapAndWait(
+            scriptPath: nodeScript,
+            homeserver: homeserverString,
+            user: username,
+            password: password,
+            timeout: 120
+        )
+        try await waitForPartnerEvent(.event("bootstrapped"), timeout: 60)
+        try await waitForPartnerEvent(.event("ready"), timeout: 5)
+
+        // 2. Sign in fresh (mirrors the Mac app's first-launch path).
         let storeDir = basePath.appendingPathComponent("session-store")
         try FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
         let sdkStore = basePath.appendingPathComponent("sdk-store")
@@ -102,35 +128,44 @@ final class VerificationFlowIntegrationTests: XCTestCase {
             initialDeviceDisplayName: "matron-test-integration"
         )
 
-        // 2. Bring sync online — verification needs the user identity loaded
-        //    (`installVerificationStateListener` only builds the controller
-        //    once the SDK fires `!= .unknown`).
+        // 3. Bring sync online — verification needs the user identity
+        //    loaded (`installVerificationStateListener` only builds the
+        //    controller once the SDK fires `!= .unknown`).
         let provider = ClientProvider(basePath: sdkStore)
         let sync = SyncServiceLive(provider: provider, session: session)
         syncService = sync
         try await sync.start()
         try await sync.waitUntilReady()
 
-        // 3. Spawn partner.mjs in `bootstrap-and-wait` mode — this
-        //    bootstraps cross-signing AND waits for verification in
-        //    the same long-running process, so all post-bootstrap
-        //    in-memory crypto state stays loaded for the verification
-        //    (mirrors claude-matrix-bridge/add-bot.mjs's working
-        //    pattern; the split bootstrap-anchor + wait-verify shape
-        //    we tried before consistently failed MAC interop).
-        try spawnPartnerBootstrapAndWait(
-            scriptPath: nodeScript,
-            homeserver: homeserverString,
-            user: username,
-            password: password,
-            timeout: 120
-        )
-        // bootstrap completes first (~10s), then partner emits "ready"
-        try await waitForPartnerEvent(.event("bootstrapped"), timeout: 60)
-        try await waitForPartnerEvent(.event("ready"), timeout: 5)
-
         // 4. Drive startSAS through to .verified.
+        //
+        //    Wait for matron's local crypto store to have a complete
+        //    user identity before calling startSAS. The
+        //    `verificationStateListener` firing `.unverified` is
+        //    necessary but NOT sufficient — partner's freshly-uploaded
+        //    cross-signing identity needs another /keys/query round
+        //    before `getSessionVerificationController` can resolve it.
+        //    Without this wait we get
+        //    `ClientError.Generic("Failed retrieving user identity")`.
+        //    Retry verification.start() (which blocks on awaitController)
+        //    until it succeeds, then proceed.
         let verification = VerificationServiceLive(provider: provider, session: session)
+        var startReady = false
+        var lastStartError: Error?
+        for _ in 0..<60 {
+            do {
+                try await verification.start()
+                startReady = true
+                break
+            } catch {
+                lastStartError = error
+                try await Task.sleep(nanoseconds: 500_000_000)
+            }
+        }
+        XCTAssertTrue(
+            startReady,
+            "verification.start() never succeeded within 30s — last error: \(String(describing: lastStartError))"
+        )
         let stream = verification.startSAS(withUser: session.userID, deviceID: nil)
         try await driveSAS(stream: stream, requestID: session.userID, verification: verification)
 
@@ -163,6 +198,88 @@ final class VerificationFlowIntegrationTests: XCTestCase {
         XCTAssertTrue(
             persisted,
             "SAS yielded .verified but isThisDeviceVerified() never returned true within 15s (last value: \(lastState))"
+        )
+    }
+
+    /// Reproduces (or rules out) the "empty chat list after fresh sign-in"
+    /// regression noted in HANDOVER.md. Partner creates an encrypted room
+    /// on the server BEFORE matron-app signs in; matron-app then signs in
+    /// and asks for `chatSummaries()`, which should yield a snapshot
+    /// containing the room. If the snapshot is empty, the bug reproduces
+    /// at the SDK / sliding-sync layer; if it lands fine, the bug is in
+    /// the UI binding above ChatService.
+    func testChatListShowsRoomCreatedByOtherDevice() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let homeserverString = env["MATRON_HOMESERVER"] ?? env["HOMESERVER"] else {
+            throw XCTSkip("MATRON_HOMESERVER not set; run via tests/integration/run-harness.sh")
+        }
+        guard let homeserverURL = URL(string: homeserverString) else {
+            throw XCTSkip("MATRON_HOMESERVER not a valid URL: \(homeserverString)")
+        }
+        try await assertHomeserverReachable(homeserverURL)
+        guard let nodeScript = env["MATRON_PARTNER_NODE_SCRIPT"],
+              FileManager.default.fileExists(atPath: nodeScript) else {
+            throw XCTSkip("MATRON_PARTNER_NODE_SCRIPT not set or file missing")
+        }
+        let username = env["MATRON_USER"] ?? "matron"
+        let password = env["MATRON_PW"] ?? "matron-test-pw"
+        let roomName = "Integration test room \(UUID().uuidString.prefix(8))"
+
+        // 1. Partner: bootstrap + create room BEFORE matron signs in.
+        try spawnPartnerBootstrapAndWait(
+            scriptPath: nodeScript,
+            homeserver: homeserverString,
+            user: username,
+            password: password,
+            timeout: 120,
+            createRoomNamed: roomName
+        )
+        try await waitForPartnerEvent(.event("bootstrapped"), timeout: 60)
+        try await waitForPartnerEvent(.event("room_created"), timeout: 30)
+
+        // 2. matron-app fresh sign-in — same first-launch path the verify
+        //    test exercises.
+        let storeDir = basePath.appendingPathComponent("session-store")
+        try FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
+        let sdkStore = basePath.appendingPathComponent("sdk-store")
+        let auth = AuthServiceLive(
+            sessionStore: FileSessionStore(directory: storeDir),
+            basePath: sdkStore
+        )
+        let session = try await auth.loginPassword(
+            homeserverURL: homeserverURL,
+            username: username,
+            password: password,
+            initialDeviceDisplayName: "matron-test-integration"
+        )
+
+        // 3. Sync online — chatSummaries() blocks on this.
+        let provider = ClientProvider(basePath: sdkStore)
+        let sync = SyncServiceLive(provider: provider, session: session)
+        syncService = sync
+        try await sync.start()
+        try await sync.waitUntilReady()
+
+        // 4. Pull a chat-list snapshot. ChatServiceLive.chatSummaries()
+        //    is single-shot per call — yields one snapshot then finishes.
+        //    Sliding sync may not have downloaded the room on the first
+        //    call (it's eventually consistent), so retry with backoff
+        //    before declaring the bug reproduced.
+        let chatService = ChatServiceLive(provider: provider, session: session, sync: sync)
+        var lastSnapshot: [ChatSummary] = []
+        var observed = false
+        for _ in 0..<30 {  // up to 30 * 1s = 30s
+            for try await snapshot in chatService.chatSummaries() {
+                lastSnapshot = snapshot
+                if !snapshot.isEmpty { observed = true }
+                break  // single-shot stream — first value is the snapshot
+            }
+            if observed { break }
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        XCTAssertTrue(
+            observed,
+            "chatSummaries() never yielded a non-empty snapshot within 30s of sync ready — empty-chats regression reproduces at the SDK layer (lastSnapshot: \(lastSnapshot))"
         )
     }
 
@@ -230,7 +347,8 @@ final class VerificationFlowIntegrationTests: XCTestCase {
         homeserver: String,
         user: String,
         password: String,
-        timeout: Int
+        timeout: Int,
+        createRoomNamed: String? = nil
     ) throws {
         let process = Process()
         // Resolve `node` explicitly. xctest runners don't inherit nvm /
@@ -258,12 +376,14 @@ final class VerificationFlowIntegrationTests: XCTestCase {
             nodeBin = resolved
         }
         process.launchPath = nodeBin
-        process.arguments = [scriptPath, "bootstrap-and-wait",
-                             "--homeserver", homeserver,
-                             "--user", user,
-                             "--password", password,
-                             "--device-name", "matron-test-partner",
-                             "--timeout", String(timeout)]
+        var args = [scriptPath, "bootstrap-and-wait",
+                    "--homeserver", homeserver,
+                    "--user", user,
+                    "--password", password,
+                    "--device-name", "matron-test-partner",
+                    "--timeout", String(timeout)]
+        if let createRoomNamed { args.append(contentsOf: ["--create-room", createRoomNamed]) }
+        process.arguments = args
 
         // Mirror everything to /tmp so a failed run leaves a readable trace
         // we can inspect from the harness without parsing the xcresult.

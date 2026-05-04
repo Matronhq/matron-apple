@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
-# Scenario: drive the verify-with-other-device SAS flow through the
-# `MatronIntegrationTests/VerificationFlowIntegrationTests` xctest target.
-# Hits `VerificationServiceLive.startSAS` directly — no SwiftUI, no
-# AppleScript, no XCUITest form-fill — and asserts the
-# `AsyncStream<SasFlowState>` reaches `.verified`. The partner is the
-# matron-second-device bootstrapped by run-harness.sh.
+# Scenario: drive the chat-list test that targets the "empty chat list
+# after fresh sign-in (Mac)" regression noted in HANDOVER.md.
 #
-# This is the canonical headless scenario. The AppleScript-driven
-# verify-mac-against-partner.sh stays around as a UI smoke check.
+# partner.mjs bootstraps cross-signing AND creates an encrypted room
+# BEFORE matron-app signs in. matron-app then signs in fresh, brings
+# sync online, and asks for `chatSummaries()`. If the snapshot is
+# empty, the bug reproduces at the SDK / sliding-sync layer; if it
+# yields the room, the bug is in the UI binding above ChatService.
+#
+# Same harness shape as `chat-list-sdk-against-partner.sh` (auto-skips
+# bootstrap-anchor; partner runs inline via `bootstrap-and-wait`).
 #
 # Driven by run-harness.sh which exports HOMESERVER, MATRON_USER,
-# MATRON_PW, PARTNER_STORE, PARTNER_CLI, ARTIFACTS_DIR, ROOT.
+# MATRON_PW, ARTIFACTS_DIR, ROOT.
 set -euo pipefail
 
 require() { [ -n "${!1:-}" ] || { echo "missing env: $1"; exit 1; }; }
@@ -20,9 +22,9 @@ require MATRON_PW
 require ARTIFACTS_DIR
 require ROOT
 
-XCRESULT="$ARTIFACTS_DIR/verify-sdk.xcresult"
-BUILD_LOG="$ARTIFACTS_DIR/verify-sdk-build.log"
-TEST_LOG="$ARTIFACTS_DIR/verify-sdk-test.log"
+XCRESULT="$ARTIFACTS_DIR/chat-list-sdk.xcresult"
+BUILD_LOG="$ARTIFACTS_DIR/chat-list-sdk-build.log"
+TEST_LOG="$ARTIFACTS_DIR/chat-list-sdk-test.log"
 
 log() { echo "[scenario] $*" | tee -a "$ARTIFACTS_DIR/harness.log"; }
 
@@ -39,7 +41,7 @@ log "Building MatronIntegrationTests for testing…"
     > "$BUILD_LOG" 2>&1) \
     || { echo "build-for-testing failed; see $BUILD_LOG"; tail -50 "$BUILD_LOG"; exit 1; }
 
-log "Running VerificationFlowIntegrationTests…"
+log "Running testChatListShowsRoomCreatedByOtherDevice…"
 # Capture matron's os.Logger output alongside the test so partner-vs-matron
 # trace correlation is possible. `log stream` starts emitting when sub_log
 # is launched; we backstop by also dumping `log show --start` after the test
@@ -62,7 +64,7 @@ TEST_RUNNER_MATRON_NODE_BIN="$(command -v node)" \
 xcodebuild test-without-building \
     -scheme MatronMac \
     -destination 'platform=macOS' \
-    -only-testing:MatronIntegrationTests/VerificationFlowIntegrationTests/testVerifyWithOtherDeviceAgainstPartner \
+    -only-testing:MatronIntegrationTests/VerificationFlowIntegrationTests/testChatListShowsRoomCreatedByOtherDevice \
     -resultBundlePath "$XCRESULT" \
     CODE_SIGN_IDENTITY=- \
     CODE_SIGN_STYLE=Manual \
