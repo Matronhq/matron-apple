@@ -6,6 +6,70 @@ everything.
 
 ---
 
+## Wider context (read these first if you're cold)
+
+**What Matron is.** Native Matrix client for iOS and macOS, bot-first,
+App Store distributable on both platforms. Built on
+[matrix-rust-sdk](https://github.com/matrix-org/matrix-rust-sdk) via
+`matrix-rust-components-swift v26.04.01`. Part of the
+[Matron ecosystem](https://github.com/matronhq) — sister projects:
+
+| Repo | Role | Local path |
+|------|------|------|
+| `matronhq/matron-iOS-app` | iOS + macOS clients (this repo) | `/Users/danbarker/Dev/matron-iOS-app` |
+| `matronhq/matron-server` | Matrix homeserver (Tuwunel/conduwuit fork) | `/Users/danbarker/Dev/matron-server` |
+| `matronhq/matron-web` | Web client | `/Users/danbarker/Dev/matron-web` |
+| `matronhq/matron-desktop` | Desktop (Electron) client | n/a locally |
+| `matronhq/dev-boxer` | One-command Ubuntu VPS provisioner for the whole stack | `/Users/danbarker/Dev/dev-boxer` |
+| `claude-matrix-bridge` | Bridges Claude Code agents to Matrix rooms; SDK reference | `/Users/danbarker/Dev/claude-matrix-bridge` |
+
+**Roadmap.** Seven phases. Plans live at `docs/superpowers/plans/`. Each
+phase gets its own plan with task-level checkboxes:
+
+| Phase | Title | Output | Status |
+|-------|-------|--------|--------|
+| 1 | Foundation | App scaffolds, sign-in, sliding sync, room list | **Shipped** (PR #1, squashed into main) |
+| 2 | Chat experience | Timeline, composer, attachments, slash commands | **Shipped** (PR #1, same merge) |
+| 3 | E2EE & verification UX | Recovery key, SAS, per-bot trust banners | **In flight on PR #3** |
+| 4 | Push & NSE | iOS push notifications, encrypted notif decryption | Plan only |
+| 5 | Custom event types | `tool_call`, `ask_user`, `session_meta` rendering | Plan only |
+| 6 | Search | Encrypted message search | Plan only |
+| 7 | Polish | Settings UI, font sizing, App Store prep | Plan only |
+
+**Authoritative design spec**:
+[`docs/superpowers/specs/2026-05-02-matron-ios-design.md`](superpowers/specs/2026-05-02-matron-ios-design.md).
+Read this before making architectural decisions — it covers
+everything from target structure (4 Xcode targets,
+`MatronShared` SPM package), through E2EE trust posture
+(§7.5 "nothing auto-trusted"), through Mac chrome (§5.9
+fixed-size sheets, ⌘ shortcuts).
+
+**Per-task progress** for shipped phases:
+- Phase 2: [`docs/phase-2-progress.md`](phase-2-progress.md)
+- Phase 3: [`docs/phase-3-progress.md`](phase-3-progress.md) — see this
+  for the full per-task account of Phase 3, including all the bugbot
+  rounds + expert-QA waves recorded inline.
+
+**Repo README**: [`README.md`](../README.md) — toolchain prereqs
+(Xcode 16+, macOS 14+), `xcodegen generate`, license (AGPL-3.0 +
+commercial dual).
+
+**Architectural commitments** that apply across all phases (don't
+re-litigate without reading the spec):
+- SwiftUI + MVVM with `@Observable` view models in `MatronShared`
+- Swift 6 strict concurrency (no `@MainActor deinit` reaching isolated
+  state — expose `cancel()` / `stop()` and call from `.onDisappear`)
+- Sliding sync only — `slidingSyncVersionBuilder(.native)` REQUIRED on
+  every `ClientBuilder()`
+- AGPL-3.0 + commercial dual license; CLA workflow on PRs
+- App Store-submittable on both platforms; Mac uses App Sandbox in
+  Release (Debug drops it for XCUITest)
+- Per-user Keychain entries (`matron.recovery-key.<userID>`) so
+  multi-account on the same device doesn't trample
+- `xcodegen` is the source of truth; `Matron.xcodeproj` is gitignored
+
+---
+
 ## TL;DR
 
 - **PR #3** (`phase-3-e2ee-verification` → `main`) carries Phase 3 (E2EE +
