@@ -131,9 +131,12 @@ cd57415 test: XCUITest infrastructure unblocked — Mac sandbox + signing
 
 ### Test counts
 
-- **SPM:** 225 (4 skipped — those need iCloud Keychain entitlement
-  the SPM host doesn't have). Was 224 pre-session-2; +1 for
-  `test_retriesOnEmptySnapshot_until_populated`.
+- **SPM:** 228 (4 skipped — those need iCloud Keychain entitlement
+  the SPM host doesn't have). Was 224 pre-session-2; +4 across
+  `test_retriesOnEmptySnapshot_until_populated`,
+  `test_routeAcceptedVerificationRequest_doubleFire_isSafe`,
+  `test_routeAcceptedVerificationRequest_noRole_stillCallsStartSas`,
+  and `test_routeAcceptedVerificationRequest_startSasThrows_cleansUp`.
 - **iOS scheme:** 53.
 - **Mac scheme:** 66.
 - **MatronIntegrationTests** (Mac scheme): 4 tests — 3 pass when run
@@ -284,6 +287,18 @@ Integration tests are gated behind the harness — see the
    to actually exercise it. Same SDK code path as
    `verify-sdk-against-partner.sh`, so once unblocked it should
    reach `.verified`.
+
+6. **`verify-sdk-against-partner.sh` is intermittently flaky.**
+   Roughly 1-in-3 runs fails with matron's SAS stream timing out
+   at 60s — partner.mjs's matrix-js-sdk RustCrypto layer logs
+   `"Ignoring just-received verification request which did not
+   start a rust-side verification"` and silently drops matron's
+   `.request`. The other two SDK scenarios (chat-list, recovery-key)
+   don't hit this because they don't initiate verification. Likely
+   a matrix-js-sdk timing race in its incoming-request tracker.
+   Workaround: re-run the scenario; the next fresh partner instance
+   usually accepts the request fine. Worth investigating if the
+   flake affects CI signal once that's wired up.
 
 ---
 

@@ -82,6 +82,90 @@ final class VerificationServiceLiveTests: XCTestCase {
         XCTAssertTrue(startedSas, "requester must call startSasVerification per Matrix spec — initiator sends .start")
     }
 
+    /// matrix-rust-sdk has been observed firing
+    /// `didAcceptVerificationRequest` twice in close succession (live-
+    /// debugged in the SDK integration test, session 2). The
+    /// FlowStore + continuation must survive double-fire — second call
+    /// re-issues startSasVerification (the SDK is the dedupe boundary,
+    /// not us), continuation stays alive for downstream
+    /// readyForEmoji / verified yields. Without this invariant a
+    /// matron-vs-matron flow could lose its continuation between the
+    /// two callbacks and the user would see SAS appear to hang.
+    func test_routeAcceptedVerificationRequest_doubleFire_isSafe() async throws {
+        let live = VerificationServiceLive()
+        let controller = FakeSessionVerificationController()
+        await live.register(controller: controller, for: "req-double")
+        await live.setActiveFlowID("req-double")
+        await live.setFlowRole(.responder, for: "req-double")
+
+        // Open a stream so a continuation is registered for req-double.
+        let stream = live.acceptIncoming(requestID: "req-double")
+        var iterator = stream.makeAsyncIterator()
+        _ = await iterator.next() // .requested
+
+        await live.routeAcceptedVerificationRequest()
+        await live.routeAcceptedVerificationRequest()
+
+        let count = await controller.startSasCount
+        XCTAssertEqual(count, 2, "double-fire of routeAcceptedVerificationRequest must call startSasVerification both times — the SDK is the dedupe boundary, not the wrapper")
+        let cached = await live.activeFlowsSnapshot()
+        XCTAssertNotNil(cached["req-double"], "controller must remain in the cache after double-fire — losing it would orphan the open continuation")
+
+        try await live.cancel(requestID: "req-double", reason: "test-teardown")
+    }
+
+    /// Defensive: if the SDK fires `didAcceptVerificationRequest` for
+    /// a flow that was registered without a role somehow, the route
+    /// should still call startSasVerification (the post-Wave-7 contract
+    /// is "always call, role is informational"). Pre-revert this would
+    /// have silently skipped — we want the new behaviour explicit.
+    func test_routeAcceptedVerificationRequest_noRole_stillCallsStartSas() async throws {
+        let live = VerificationServiceLive()
+        let controller = FakeSessionVerificationController()
+        await live.register(controller: controller, for: "req-noRole")
+        await live.setActiveFlowID("req-noRole")
+        // Deliberately NOT calling setFlowRole.
+
+        await live.routeAcceptedVerificationRequest()
+
+        let started = await controller.didStartSas
+        XCTAssertTrue(started, "no role on the flow must NOT silently skip startSasVerification — the post-Wave-7 contract is unconditional")
+    }
+
+    /// If `startSasVerification` throws inside the route, the
+    /// open continuation must be drained with `.cancelled(...)` and
+    /// the FlowStore entry cleared — otherwise the caller hangs on a
+    /// stream that the SDK can no longer drive.
+    func test_routeAcceptedVerificationRequest_startSasThrows_cleansUp() async throws {
+        let live = VerificationServiceLive()
+        let controller = FakeSessionVerificationController()
+        await controller.setNextStartSasError(VerificationError.notConfigured)
+        await live.register(controller: controller, for: "req-throw")
+        await live.setActiveFlowID("req-throw")
+        await live.setFlowRole(.responder, for: "req-throw")
+
+        let stream = live.acceptIncoming(requestID: "req-throw")
+        var iterator = stream.makeAsyncIterator()
+        _ = await iterator.next() // .requested
+
+        await live.routeAcceptedVerificationRequest()
+
+        // Continuation should have been yielded `.cancelled(...)`
+        // followed by `finish()` — for-await reads cancelled then
+        // returns nil.
+        let next = await iterator.next()
+        switch next {
+        case .cancelled:
+            break  // expected
+        default:
+            XCTFail("expected .cancelled after startSasVerification throw, got \(String(describing: next))")
+        }
+        let after = await iterator.next()
+        XCTAssertNil(after, "continuation should be finished after the throw cleanup")
+        let cached = await live.activeFlowsSnapshot()
+        XCTAssertNil(cached["req-throw"], "flow must be cleared from the cache after a startSasVerification throw")
+    }
+
     /// `confirmEmojiMatch` must call `approveVerification` on the SDK
     /// controller but MUST NOT synthesise `.verified` — that's the delegate's
     /// `didFinish` callback's job (routed via `routeSasFinished()`). The

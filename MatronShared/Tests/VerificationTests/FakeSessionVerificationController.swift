@@ -16,12 +16,30 @@ final class FakeSessionVerificationController: SessionVerificationControlling, @
         var didApprove = false
         var didDecline = false
         var didCancel = false
+        /// Call counters — useful for asserting idempotency / double-fire
+        /// behaviour where the SDK fires its callbacks more than once
+        /// (matrix-rust-sdk has been observed to fire
+        /// `didAcceptVerificationRequest` twice in succession; tests use
+        /// these counts to assert the wrapper handles it safely).
+        var startSasCount = 0
+        var acceptCount = 0
+        /// Configurable error for the next `startSasVerification` call
+        /// (cleared on first throw). Lets the cleanup-path test simulate
+        /// "the SDK threw during route" without requiring a real client.
+        var nextStartSasError: Error?
 
-        func recordAccept()   { didAccept = true }
-        func recordStartSas() { didStartSas = true }
+        func recordAccept()   { didAccept = true; acceptCount += 1 }
+        func recordStartSas() throws {
+            didStartSas = true; startSasCount += 1
+            if let err = nextStartSasError {
+                nextStartSasError = nil
+                throw err
+            }
+        }
         func recordApprove()  { didApprove = true }
         func recordDecline()  { didDecline = true }
         func recordCancel()   { didCancel = true }
+        func setNextStartSasError(_ err: Error) { nextStartSasError = err }
     }
 
     private let recorder = Recorder()
@@ -41,9 +59,21 @@ final class FakeSessionVerificationController: SessionVerificationControlling, @
     var didCancel: Bool {
         get async { await recorder.didCancel }
     }
+    var startSasCount: Int {
+        get async { await recorder.startSasCount }
+    }
+    var acceptCount: Int {
+        get async { await recorder.acceptCount }
+    }
+
+    /// Set the error the NEXT `startSasVerification` call should throw.
+    /// One-shot — cleared on first throw.
+    func setNextStartSasError(_ error: Error) async {
+        await recorder.setNextStartSasError(error)
+    }
 
     func acceptVerificationRequest() async throws { await recorder.recordAccept() }
-    func startSasVerification()      async throws { await recorder.recordStartSas() }
+    func startSasVerification()      async throws { try await recorder.recordStartSas() }
     func approveVerification()       async throws { await recorder.recordApprove() }
     func declineVerification()       async throws { await recorder.recordDecline() }
     func cancelVerification()        async throws { await recorder.recordCancel() }
