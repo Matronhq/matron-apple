@@ -118,5 +118,6 @@ else
     log "Partner store: $PARTNER_STORE (recovery_key inside)"
     log "Artifacts: $ARTIFACTS_DIR"
     log "Press ctrl-C to tear down."
-    sleep infinity
+    # macOS BSD sleep doesn't accept `infinity`; tail -f works cross-platform.
+    tail -f /dev/null
 fi
