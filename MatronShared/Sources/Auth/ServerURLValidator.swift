@@ -16,11 +16,26 @@ public enum ServerURLValidator {
         guard let components = URLComponents(string: withScheme) else {
             throw ValidationError.malformed
         }
-        guard let scheme = components.scheme, scheme == "https" else {
-            throw ValidationError.insecureScheme
+        guard let scheme = components.scheme else {
+            throw ValidationError.malformed
         }
         guard let host = components.host, !host.isEmpty else {
             throw ValidationError.noHost
+        }
+        // `https://` everywhere except localhost-ish dev hosts. Plain http
+        // to localhost is the standard pattern for talking to a local dev
+        // homeserver (Docker matron-server in tests/integration runs on
+        // http://localhost:6167; Element Web + matrix-js-sdk accept the
+        // same exception). Production matron-server always runs behind
+        // HTTPS, so the carve-out can't expose remote credentials over
+        // plaintext.
+        let isLocalhostHost = host == "localhost"
+            || host == "127.0.0.1"
+            || host == "::1"
+        if scheme == "http" {
+            guard isLocalhostHost else { throw ValidationError.insecureScheme }
+        } else if scheme != "https" {
+            throw ValidationError.insecureScheme
         }
 
         var rebuilt = components

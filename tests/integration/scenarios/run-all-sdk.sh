@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Convenience: run every SDK integration scenario in sequence, each
-# against its own fresh harness (Docker homeserver torn down + brought
-# back up between scenarios — required for per-test isolation since
-# scenarios that bootstrap inline pollute server-side cross-signing
-# state for any test that follows in the same homeserver).
+# Convenience: run every integration scenario (SDK + UI) in sequence,
+# each against its own fresh harness (Docker homeserver torn down +
+# brought back up between scenarios — required for per-test isolation
+# since scenarios that bootstrap inline pollute server-side cross-
+# signing state for any test that follows in the same homeserver).
 #
 # Usage:
 #   tests/integration/scenarios/run-all-sdk.sh
@@ -11,24 +11,30 @@
 # Each scenario must be invokable as
 #   tests/integration/run-harness.sh <scenario>.sh
 # from the repo root.
+#
+# Prerequisite for the UI scenario: run `sudo DevToolsSecurity -enable`
+# once per Mac account. Without it, XCUITest runner-init triggers a
+# TouchID prompt which "cancels" from non-interactive Bash, failing
+# with "Authentication cancelled. System authentication is running."
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 HARNESS="$ROOT/tests/integration/run-harness.sh"
 
-# Each scenario maps to "max attempts". The verify scenario flakes
-# ~1-in-3 due to a matrix-js-sdk RustCrypto request-tracker race
-# ("Ignoring just-received verification request which did not start
-# a rust-side verification") — partner's olm machine emits the
-# `crypto.verificationRequestReceived` event before it's registered
+# Each scenario maps to "max attempts". Verify scenarios (both SDK
+# and UI) flake ~1-in-3 due to a matrix-js-sdk RustCrypto request-
+# tracker race ("Ignoring just-received verification request which
+# did not start a rust-side verification") — partner's olm machine
+# emits `crypto.verificationRequestReceived` before it's registered
 # the request internally, so the JS-side handler asks the olm
 # machine, gets nothing, and drops it. Each retry gets a completely
-# fresh Docker harness, so the next partner instance usually
-# accepts. Until matrix-js-sdk fixes the race upstream, we retry.
+# fresh Docker harness, so the next partner instance usually accepts.
+# Until matrix-js-sdk fixes the race upstream, we retry.
 SCENARIOS=(
     "verify-sdk-against-partner.sh:3"
     "chat-list-sdk.sh:1"
     "recovery-key-sdk.sh:1"
+    "verify-mac-ui-against-partner.sh:3"
 )
 
 declare -a results
