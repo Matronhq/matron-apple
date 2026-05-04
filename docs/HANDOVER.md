@@ -1,11 +1,15 @@
 # Handover — Matron iOS+Mac, Phase 3 + integration harness
 
-**As of 2026-05-04 PM**, after two working sessions on
+**As of 2026-05-04 evening**, after three working sessions on
 `phase-3-e2ee-verification`. This document catches a fresh session up so
 it can keep going without re-deriving everything.
 
-Latest tip: **`ba7f4fa`** (`docs: HANDOVER session-2 update`).
-Branch sits 14 commits ahead of `cd57415` (the previous handover anchor).
+Latest tip: **`879f44e`** (`fix(test/scenario): poll-grep watcher instead of tail|grep -m1`).
+Session 3 added the matron-vs-matron UI test scenario (Mac + iOS sim,
+both running matrix-rust-sdk, no partner.mjs) — 19 commits, ending in a
+**concrete reproducer of the matron-vs-matron responder bug** (Mac
+chat-list-view doesn't render the incoming-verify banner when iOS sends
+a verification request). See "Session 3" section.
 
 ---
 
@@ -76,8 +80,9 @@ re-litigate without reading the spec):
 ## TL;DR
 
 - **PR #3** (`phase-3-e2ee-verification` → `main`) carries Phase 3
-  (E2EE + verification UX) plus seven post-Phase-3 fix-up waves and
-  the integration-harness work. Latest SHA: **`ba7f4fa`**.
+  (E2EE + verification UX) plus seven post-Phase-3 fix-up waves, the
+  integration-harness work, and (session 3) the matron-vs-matron UI
+  test scenario. Latest SHA: **`879f44e`**.
 - **3 SDK-level integration tests + 1 UI XCUITest scenario
   passing** end-to-end against partner.mjs (matron's second
   device): verify-with-other-device (SDK and UI), chat list
@@ -85,6 +90,17 @@ re-litigate without reading the spec):
   section. Run all four with
   `tests/integration/scenarios/run-all-sdk.sh` (3-attempt retry
   on the verify scenarios for the matrix-js-sdk flake).
+- **Session 3: new `matron-vs-matron-ui.sh` scenario** drives Mac (trust-
+  anchor responder) + iOS sim (requester) end-to-end via XCUITest, both
+  running matrix-rust-sdk against the Docker harness — **NOT yet
+  green**. Mac signs in + drives the full multi-phase recovery-key
+  bootstrap, iOS signs in + taps "Verify with another device" + calls
+  `startSAS`, but Mac's chat list never renders the incoming-verify
+  banner so iOS hangs at "starting verification" and times out. This
+  is a concrete repro of HANDOVER open-risk #1 (matron-vs-matron
+  responder broken post-Wave-7-revert) — see "Session 3 — current
+  state of matron-vs-matron-ui" below for the full debug trail and
+  next-step suggestions.
 - **Empty chat list on fresh sign-in: FIXED** (commits `e8c57b6` +
   `1fbdea8`). Was a single-shot AsyncStream race in `ChatListViewModel`
   / `NewChatSheet` consuming the first snapshot before sliding sync
@@ -102,8 +118,235 @@ re-litigate without reading the spec):
   can render.
 - **iOS sim flows post-Wave-7** still not re-tested. Mac empty-chats
   fix is in shared `ChatListViewModel`, so iOS gets the same fix
-  automatically; UI verify-with-other-device flow on iOS sim hasn't
-  been driven yet.
+  automatically; the new matron-vs-matron-ui scenario (session 3) does
+  drive the iOS verify-with-other-device flow, and confirmed that
+  iOS-as-requester signs in, taps the verify-gate button, calls
+  `startSAS`, and sends `m.key.verification.request` over to-device
+  successfully — i.e., the iOS requester half is working end-to-end.
+
+---
+
+## Session 3 — current state of `matron-vs-matron-ui`
+
+**TL;DR for the next agent:** the test scaffolding is built and
+executes both peers fully through SAS *initiation*. The remaining
+blocker is *Mac doesn't render the incoming-verify banner*, which is
+either a real product bug (HANDOVER open risk #1) or a
+sync/lifecycle race between recovery-key bootstrap completing and
+`VerificationCenter` registering its delegate. Before iterating
+further on the test wrapper, focus on the Mac responder code path.
+
+### What got built (commits since `ba7f4fa`)
+
+```
+879f44e fix(test/scenario): poll-grep watcher instead of tail|grep -m1
+56672ab fix(test/scenario): tail watcher must start from line 1
+62d10b0 fix(test): stdout marker + host-side ready-file watcher
+7aef48d fix(test): synchronize via /Users/Shared instead of /tmp
+2559f1f fix(test/scenario): aggressive Mac defaults wipe via plist + cfprefsd
+ad3f424 fix(test/scenario): brace-quote $CONFIG_FILE before unicode ellipsis
+8db0d7c test: register matron-vs-matron-ui.sh in run-harness auto-skip
+7cbf8f8 fix(test/scenario): matron-vs-matron-ui.sh polish
+213566d test: add matron-vs-matron-ui.sh scenario
+7df0464 fix(test/mac): meaningful sheet-dismiss signal + pasteboard diagnostic
+4cea75a test(mac): MatronVsMatronMacUITests — drive Mac as trust anchor
+b783f96 fix(test/ios): clickAndPaste cleanup + stale-ready-file guard
+aa3bef0 test(ios): MatronVsMatronIOSUITests — drive iOS as verify requester
+208b379 fix(harness): tail -f /dev/null instead of sleep infinity
+4197549 test(ios): add MatronUITests XCUITest target
+bb66d8a feat(mac): plumb XCUITest accessibility identifiers
+46394a8 feat(ios): plumb XCUITest accessibility identifiers
+552d4a4 docs: implementation plan for matron-vs-matron UI test
+5c1c81f docs: spec for matron-vs-matron UI test scenario
+```
+
+Plus:
+- Spec: [`docs/superpowers/specs/2026-05-04-matron-vs-matron-ui-test-design.md`](superpowers/specs/2026-05-04-matron-vs-matron-ui-test-design.md)
+- Plan: [`docs/superpowers/plans/2026-05-04-matron-vs-matron-ui-test.md`](superpowers/plans/2026-05-04-matron-vs-matron-ui-test.md)
+
+### Files added / modified
+
+| Path | What it does |
+|------|------|
+| `MatronUITests/MatronVsMatronIOSUITests.swift` | iOS XCUITest — sign in, tap "Verify with another device", confirm SAS emojis. Reads `/tmp/matron-test-config.json`, polls `/Users/Shared/matron-mac-ready` with mtime gate. |
+| `MatronMacUITests/MatronVsMatronMacUITests.swift` | Mac XCUITest — sign in, drive multi-phase `MacRecoveryKeyView` (Generate → Copy → ack toggle → Continue → Paste → auto-confirm), wait for chat list to mount, `print("MATRON_MAC_TRUST_ANCHOR_READY")`, wait for `verifybanner.accept`, click, confirm SAS emojis. |
+| `tests/integration/scenarios/matron-vs-matron-ui.sh` | Orchestrator — wipes state (defaults plist + cfprefsd kill, sandbox container nuke, simctl uninstall), parallel `xcodebuild build-for-testing`, parallel `test-without-building`, captures both runtime os.Logger streams, runs a 1s-poll watcher that turns Mac's stdout marker into `/Users/Shared/matron-mac-ready`, asserts both rc=0 AND both runtime logs contain `verificationStateListener: fired with verified`. |
+| `tests/integration/run-harness.sh` | (1) `tail -f /dev/null` instead of `sleep infinity` (BSD `sleep` rejects `infinity`), (2) added `matron-vs-matron-ui.sh` to the inline-bootstrap auto-skip list (no partner.mjs in this scenario). |
+| `Matron/Features/Onboarding/SignInView.swift` | +4 a11y IDs: `signin.{server,username,password,submit}` |
+| `Matron/Features/Onboarding/PostLoginVerificationView.swift` | +3 a11y IDs: `verifygate.{verifyWithOtherDevice,useRecoveryKey,generateNew}` |
+| `Matron/Features/Verification/SasView.swift` | +2 a11y IDs: `sas.{match,dontMatch}` |
+| `MatronMac/Features/Verification/MacVerificationBanner.swift` | +1 a11y ID: `verifybanner.accept` (the "Verify" button on the incoming-request sidebar banner) |
+| `MatronMac/Features/Verification/MacRecoveryKeyView.swift` | +5 a11y IDs across the multi-phase generate flow: `recoverykey.{generate,copy,acknowledgeSaved,continue,paste}` |
+| `project.yml` | Added `MatronUITests` target (mirrors `MatronMacUITests`, iOS sim, no signing). Added to `Matron` scheme's `testTargets`. |
+
+### Run it
+
+```bash
+tests/integration/run-harness.sh matron-vs-matron-ui.sh
+```
+
+`run-harness.sh` boots Docker tuwunel, registers `@matron`, skips
+partner-bootstrap (auto-detected from scenario name), then hands off.
+The scenario script handles all UI-runner state wiping, parallel build,
+parallel test runs, log capture, and trace assertions. Total wall time
+for a clean run: ~3-5 minutes (most of it is parallel xcodebuild
+compile + waits).
+
+### Observed test results — where it stops
+
+Latest run (commit `879f44e`):
+
+| Side | Outcome |
+|------|---------|
+| Mac sign-in | ✅ form found, server/user/pw pasted, submit clicked, post-login screen reached |
+| Mac recovery-key bootstrap | ✅ all 4 phases drive cleanly (`recoverykey.generate` → `.copy` → ack toggle → `.continue` → `.paste` → auto-advance to `.confirmed` → 600ms `.task` fires `onFinished()` → `verifyDone=true` → MacChatListView mounts → `MATRON_MAC_TRUST_ANCHOR_READY` printed) |
+| Synchronization | ✅ scenario watcher catches the stdout marker via 1s poll-grep, touches `/Users/Shared/matron-mac-ready` |
+| iOS sign-in | ✅ form found, server/user/pw typed, submit tapped, verify-gate reached |
+| iOS verify-with-other-device | ✅ button tapped, SAS controller built, `startSAS: enter userID=@matron:localhost` logged → `m.key.verification.request` sent over to-device |
+| Mac receives request | ❌ **FAILS HERE.** `verificationStateListener` fires twice on Mac (initial-after-signin + post-bootstrap), but `MacVerificationBanner` never renders. iOS waits 60s for SAS sheet, gives up; Mac waits 120s for `verifybanner.accept`, gives up. |
+
+UI hierarchy at Mac timeout (extracted from xcresult): chat list is
+fully mounted with sidebar + Compose toolbar + the
+`MacUnverifiedDeviceBanner` ("This device hasn't been verified.
+Verify."), but no `MacVerificationBanner` for the incoming request.
+
+### Specific debugging hypotheses to chase next
+
+1. **Sync-restart race on `verifyDone` flip.** `MatronMacApp` swaps
+   between the verify-gate branch and the chat-list branch when
+   `verifyDone` becomes true. Both branches have a
+   `.task { try? await dependencies.syncService(for: session).start() }`,
+   but the swap cancels the gate-branch's `.task` and starts the
+   chat-list branch's. If `syncService.start()` is non-idempotent or
+   the cancellation interrupts mid-`/sync`, the to-device event from
+   iOS could land in a window where neither task is actively
+   processing. Worth: instrument `SyncServiceLive.start()` with
+   os.Logger entry/exit + cancellation traces, run the scenario,
+   and check whether iOS's request arrives during a sync gap.
+
+2. **VerificationCenter delegate registration timing.**
+   `MacChatListView` builds + starts `VerificationCenter` in
+   `.task(id: session.userID)` (lines 124-130 of `MatronMacApp.swift`).
+   That `.task` runs *after* the view body — there's a window between
+   `verifyDone=true` flipping and the center being live. If iOS's
+   request arrives in that window, the `verificationService` may
+   process it but no delegate is attached to surface it as a
+   `VerificationRequestSummary` for the banner. Worth: log the exact
+   moment `center.start()` returns + any `didReceiveVerificationRequest`
+   delegate fires; compare against iOS's `startSAS` timestamp.
+
+3. **`verificationService(for: session)` instance churn.** The verify
+   gate branch and the chat-list branch both pass through
+   `dependencies.verificationService(for: session)` — but if that
+   factory rebuilds the service per-call rather than caching by
+   session, the chat-list branch gets a fresh service whose internal
+   state didn't observe the gate-time events. Worth: confirm the
+   factory caches; log the service identity (e.g. `ObjectIdentifier`)
+   from both branches to verify it's the same instance.
+
+4. **Wave 7 lazy-controller pattern + matrix-rust-sdk responder
+   semantics.** The handover open-risk #1 specifically warned this.
+   Wave 7 made the controller build lazily via
+   `verificationStateListener`. If the listener fires with
+   `unverified` *before* the SDK has cached an incoming request, the
+   built controller might miss subsequent request events. The
+   `acceptIncoming` path was the original Wave 7 #6 territory. Worth
+   reading: `MatronShared/Sources/Verification/VerificationServiceLive.swift`
+   alongside ElementX iOS's reference impl in
+   `/Users/danbarker/Dev/yearbook-messages-ios/ElementX`.
+
+5. **Server-side cross-signing replay.** When iOS signs in second, it
+   inherits the cross-signing identity Mac just uploaded. The
+   `requestDeviceVerification` to-device event might land before
+   Mac's local crypto store has finished processing iOS's `/keys/upload`
+   reply, so the to-device event fails an internal lookup
+   ("device unknown") and the SDK silently drops it. Workaround: have
+   iOS test wait an extra ~5s after signing in before tapping verify,
+   to let device-list propagation settle.
+
+### Gotchas worth knowing (do NOT re-derive)
+
+- **Mac UI test runner is sandboxed.** Filesystem writes to `/tmp` AND
+  `/Users/Shared` both fail with POSIX EPERM ("Operation not
+  permitted"). Synchronization between Mac UI test and iOS UI test
+  cannot be done via the runner's filesystem. We use `print()` →
+  xcodebuild captures stdout in test log → host bash polls the log
+  with `grep -q` and writes the ready-file (host bash CAN write
+  `/Users/Shared`). See commit `62d10b0` for the rationale block.
+- **`tail -F` defaults to last 10 lines.** A naive `tail -F log | grep
+  marker` will skip the marker entirely if it's already past the
+  10-line tail when the watcher starts. Use `tail -n +1 -F` to start
+  from line 1. (We then switched to a poll-grep loop because BSD
+  `grep -m1` doesn't exit promptly when reading from a still-live
+  pipe — see commits `56672ab` + `879f44e`.)
+- **`defaults delete chat.matron.mac` is unreliable.** cfprefsd
+  caches the in-memory domain and serves stale `verifyDone` flags
+  even after `defaults delete`. Belt + braces: `rm` the plist file
+  AND `killall cfprefsd`. See commit `2559f1f`.
+- **macOS BSD `sleep infinity` doesn't exist.** Use `tail -f
+  /dev/null`. See commit `208b379`.
+- **`xcodegen generate` must be run after adding new test files.**
+  Even though `sources: [{ path: ... }]` should auto-discover, the
+  pbxproj doesn't update until you re-run xcodegen. We saw this
+  silently produce "Executed 0 tests" with `** TEST EXECUTE
+  SUCCEEDED **" because the new test class wasn't in the bundle —
+  always run `xcodegen generate` after dropping a new
+  `*UITests.swift` file in.
+- **iOS sim's `/tmp` is NOT host's `/tmp`.** They're separate
+  filesystems. `xcrun simctl spawn UDID ls /tmp/foo` will not see
+  host /tmp. *However*, the **iOS UI test runner** runs on the
+  host (not in the sim) — the runner uses `XCUIApplication` to drive
+  the simulated app via XPC, but the test code itself executes on
+  the host. So host `/tmp` IS readable from the iOS test code (which
+  is how the iOS test reads `/tmp/matron-test-config.json` and
+  `/Users/Shared/matron-mac-ready`).
+- **Stale `testmanagerd` from a wedged prior run** can hold the
+  LocalAuthentication subsystem hostage and any subsequent Mac
+  XCUITest run will fail with `LAErrorSystemCancel` ("System
+  authentication is running"). Fix:
+  `pkill -x testmanagerd` (only the host one — the simruntime
+  testmanagerd inside CoreSimulator is fine).
+- **`MacRecoveryKeyView` generate flow is 4 phases**, not 2 like the
+  spec originally assumed: `.notStarted` (Generate button), `.show`
+  (Copy + Toggle + Continue), `.reenter` (TextField + Paste, with
+  auto-advance via `.onChange`), `.confirmed` (auto-dismiss after
+  600ms). The Mac UI test must drive each phase explicitly.
+- **`pasteBtn.exists==false` is *not* a sufficient signal that the
+  recovery-key sheet has fully dismissed**, because the SwiftUI
+  switch-case transitions to `.confirmed` first (paste button stops
+  rendering immediately), THEN the `.confirmed` view's `.task`
+  waits 600ms before calling `onFinished()` which actually flips
+  `verifyDone` and dismisses the sheet. The Mac test currently
+  treats `pasteBtn` disappearance as the synchronization point;
+  `verifybanner.accept` not appearing on time may be partly because
+  iOS races the chat-list mount. Consider waiting for a chat-list
+  element (e.g. the Compose toolbar `square.and.pencil` button) to
+  exist before printing the ready marker.
+
+### Test infra status
+
+- `MatronTests` (iOS host SPM-style): **228 passing, 4 skipped** (unchanged)
+- `Matron` scheme tests: **53 passing** (unchanged)
+- `MatronMac` scheme tests: **66 passing** (unchanged)
+- `MatronIntegrationTests`: 4 (3 pass + 1 skipped, unchanged)
+- `MatronMacUITests`: now contains 2 classes — `VerifyWithPartnerUITests` (passes via existing scenario) + `MatronVsMatronMacUITests` (new, fails as documented above)
+- `MatronUITests`: new target, 1 class — `MatronVsMatronIOSUITests` (test currently XCTSkips on standalone runs since the synchronization file isn't there; passes as far as `startSAS` when run via the scenario)
+
+### Where the next agent should pick up
+
+Order by load-bearingness:
+
+1. **Debug Mac responder path.** Add os.Logger entries to
+   `MacChatListView`'s VerificationCenter wiring + `VerificationCenter.start()`
+   + `VerificationServiceLive`'s `didReceiveVerificationRequest`
+   delegate, run the scenario, find where iOS's request gets dropped.
+   This is the actual matron-vs-matron bug; the test infrastructure
+   is now sufficient to reproduce it deterministically every run.
+2. Once Mac receives the request, the rest of the test should sail
+   through to green — both sides reach SAS emojis, both sides confirm,
+   both sides land at `verificationStateListener: fired with verified`.
+3. (Stretch.) Wire `matron-vs-matron-ui.sh` into a future
+   `run-all-ui.sh` once it's stably green.
 
 ---
 
@@ -237,14 +480,32 @@ Integration tests are gated behind the harness — see the
 
 ## Open risks + unknowns
 
-1. **matron-vs-matron not yet re-validated** after the Wave 7 bug #6
-   revert. Wave 7 was added to fix a live-debugged "MAC mismatch"
-   symptom in same-SDK flows. Best guess: matron-vs-matron worked
-   because one matron-side was always issuing `.start` (the
-   responder via Wave 7's logic); with both sides now issuing,
-   matrix-rust-sdk should dedupe (Element X relies on this in
-   production). **Needs a manual re-test against your real
-   homeserver before merging.**
+1. **matron-vs-matron responder appears broken (session 3 finding).**
+   The session-3 `matron-vs-matron-ui.sh` scenario reproduces this
+   deterministically: iOS-as-requester reaches `startSAS` and sends
+   `m.key.verification.request` over to-device, but Mac-as-responder
+   never renders the incoming-verify banner — `MacVerificationBanner`
+   doesn't appear in the chat-list sidebar. iOS hangs at "starting
+   verification" and times out waiting for SAS emojis. Mac's
+   `verificationStateListener` *does* fire (twice, including once
+   right around iOS's `startSAS` timestamp), but no
+   `didReceiveVerificationRequest` delegate callback follows.
+
+   The original Wave 7 was added to fix a live-debugged "MAC mismatch"
+   symptom in same-SDK flows. The Wave 7 #6 revert restored both sides
+   issuing `.start`, but it's now plausible that the responder side
+   has a separate latent bug (possibly a sync/lifecycle race when the
+   chat-list view mounts immediately after `verifyDone` flips). See
+   the "Specific debugging hypotheses" subsection of the Session 3
+   block above for the five candidate root causes ranked by
+   plausibility — start with #2 (VerificationCenter delegate
+   registration timing).
+
+   The scenario is the way to debug this: run
+   `tests/integration/run-harness.sh matron-vs-matron-ui.sh`,
+   instrument the suspect code path with os.Logger entries (subsystem
+   `chat.matron`, any category), the runtime log will be captured at
+   `tests/integration/artifacts/<ts>/matron-mac.log`.
 
 2. **iOS sim flows post-Wave-7** not re-tested. Pre-Wave-7
    observations (last live-tested):
@@ -365,7 +626,8 @@ tests/integration/
 │   ├── chat-list-sdk.sh                       ← chat-list / sync test ✓
 │   ├── recovery-key-sdk.sh                    ← recovery-key restore test ✓
 │   ├── incoming-verify-sdk.sh                 ← responder SDK test (gated)
-│   ├── verify-mac-ui-against-partner.sh       ← XCUITest scenario
+│   ├── verify-mac-ui-against-partner.sh       ← XCUITest scenario ✓
+│   ├── matron-vs-matron-ui.sh                 ← Mac+iOS XCUITest, no partner.mjs (NEW, session 3, fails at Mac receiving incoming verify — see Session 3 block above)
 │   ├── verify-mac-against-partner.sh          ← AppleScript scenario (legacy)
 │   └── run-all-sdk.sh                         ← wrapper: run all 3 SDK scenarios
 └── run-harness.sh                             ← orchestrator
