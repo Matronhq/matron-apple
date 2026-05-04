@@ -275,20 +275,32 @@ Integration tests are gated behind the harness — see the
    pattern works because the user-tap gives the SDK time; we
    can't synthesise that delay programmatically without flake.)
 
-   The blocker is partner-side: `partner.mjs`'s matrix-js-sdk
-   `cmdBootstrapAndInitiateVerify` (the partner-as-initiator
-   command) doesn't reliably send `m.key.verification.start`.
-   `request.startVerification("m.sas.v1")` throws "other device
-   is unknown" even though `requestDeviceVerification(userId,
-   deviceId)` succeeded with the same device moments earlier.
-   Likely a `/keys/query` priming issue inside matrix-js-sdk —
-   needs a deeper dive than was in scope. The Swift-side
-   scaffolding (test method, scenario script, FlowStore-actor
-   continuation race fixes) is all in place and ready for when
-   the partner-side initiator flow works end-to-end. The
-   `cmdBootstrapAndInitiateVerify` function was reverted out of
-   partner.mjs (commit `7034ba0`) so its presence doesn't
-   affect the verify scenario — re-add when investigating.
+   The blocker is partner-side and it's **upstream**:
+   `request.startVerification("m.sas.v1")` from matrix-js-sdk's
+   RustCrypto throws `"startVerification(): other device is
+   unknown"` because the rust olm machine doesn't have matron's
+   device cached, even after `cryptoApi.getUserDeviceInfo(...,
+   downloadUncached: true)` was called moments earlier (which
+   does return the device — the data is just somewhere matrix-js-sdk
+   doesn't read from for verification). matrix-js-sdk's source
+   explicitly references this as
+   [`matrix-rust-sdk` issue 2896](https://github.com/matrix-org/matrix-rust-sdk/issues/2896)
+   in `tests/integration/partner/node_modules/matrix-js-sdk/lib/rust-crypto/verification.js:341`
+   — the workaround in matrix-js-sdk only covers detection, not
+   resolution. Tried explicit `/keys/query` refresh immediately
+   before `startVerification` — same error. Without an upstream
+   fix or a more invasive workaround (manually priming the rust
+   olm machine via `markAllTrackedUsersAsDirty` + manual sync
+   trigger, then waiting), the responder integration test stays
+   blocked.
+
+   The Swift-side scaffolding (test method, scenario script,
+   FlowStore-actor continuation race fix from commit `9314331`,
+   diagnostic logging in `acceptIncoming` from commit `4bdca06`)
+   is all in place and ready for when the partner side works
+   end-to-end. `cmdBootstrapAndInitiateVerify` is currently
+   **not** in partner.mjs — re-add the function (see git history
+   for commit `ebdffe0`'s additions) when investigating.
 
    Also: an earlier theory that defining
    `cmdBootstrapAndInitiateVerify` in partner.mjs broke the
