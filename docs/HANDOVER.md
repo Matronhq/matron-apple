@@ -263,22 +263,26 @@ Integration tests are gated behind the harness — see the
    Minor — not a blocker.
 
 4. **`testAcceptIncomingVerificationRequestFromPartner`** SDK test
-   skip-gated. Two issues to investigate before unskipping:
-   - Matron receives the request (`routeIncomingRequest` fires) but
-     the flow stalls before SAS advances. matrix-rust-sdk's
-     `didAcceptVerificationRequest` may only fire on the requester
-     side, so matron's `routeAcceptedVerificationRequest`-driven
-     `startSasVerification` never runs in the responder case.
-   - Merely defining the partner-side
-     `cmdBootstrapAndInitiateVerify` function in `partner.mjs`
-     broke the verify scenario via some matrix-js-sdk module-load
-     side effect (matrix-js-sdk's RustCrypto layer started ignoring
-     incoming requests with `"Ignoring just-received verification
-     request which did not start a rust-side verification"`).
-     The function was reverted out of `partner.mjs` (commit
-     `7034ba0`); the Swift-side scaffolding stays in
-     `MatronIntegrationTests/VerificationFlowIntegrationTests.swift`,
-     gated by `MATRON_RUN_INCOMING_VERIFY_TEST=1`.
+   still skip-gated. The matron-side responder fix landed in commit
+   `03d7c30` — `acceptIncoming` now synthesises
+   `routeAcceptedVerificationRequest` after a successful
+   `acceptVerificationRequest()`, mirroring Element X iOS's
+   pattern (`SessionVerificationScreenViewModel.swift:169-171`).
+   matrix-rust-sdk's `didAcceptVerificationRequest` delegate
+   confirmed to fire **only on the requester side**, so the
+   responder has to synthesise the event itself.
+
+   The integration test is still skip-gated because it requires
+   `cmdBootstrapAndInitiateVerify` in `partner.mjs` — adding that
+   function previously broke the verify scenario via a
+   matrix-js-sdk module-load side effect (the RustCrypto layer
+   started ignoring incoming requests with `"Ignoring
+   just-received verification request which did not start a
+   rust-side verification"`). The function was reverted out of
+   `partner.mjs` (commit `7034ba0`). To fully unblock the test,
+   re-add the partner-side function and figure out why its
+   presence affects matrix-js-sdk's request tracking. The
+   matron-side stall is no longer a blocker.
 
 5. **UI test (`verify-mac-ui-against-partner.sh`)** structurally
    works but the XCUITest runner init blocks on a macOS biometric /
