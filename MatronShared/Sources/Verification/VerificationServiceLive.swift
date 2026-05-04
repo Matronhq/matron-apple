@@ -394,11 +394,13 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
     }
 
     public func acceptIncoming(requestID: String) -> AsyncStream<SasFlowState> {
-        AsyncStream { continuation in
+        Self.logger.notice("acceptIncoming: enter requestID=\(requestID, privacy: .public)")
+        return AsyncStream { continuation in
             let task = Task { [weak self] in
                 guard let self else { return }
                 await self.store.setContinuation(continuation, for: requestID)
                 guard let controller = await self.store.controller(for: requestID) else {
+                    Self.logger.error("acceptIncoming: NO CONTROLLER for requestID=\(requestID, privacy: .public)")
                     continuation.yield(.cancelled(reason: "Unknown request: \(requestID)"))
                     continuation.finish()
                     await self.store.clearContinuation(for: requestID)
@@ -407,24 +409,26 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
                 await self.store.setRole(.responder, for: requestID)
                 await self.store.setActiveFlowID(requestID)
                 do {
+                    Self.logger.notice("acceptIncoming: calling acceptVerificationRequest")
                     try await controller.acceptVerificationRequest()
+                    Self.logger.notice("acceptIncoming: acceptVerificationRequest returned OK — yielding .requested")
                     continuation.yield(.requested)
-                    // matrix-rust-sdk's `didAcceptVerificationRequest`
-                    // delegate fires ONLY on the requester side (when
-                    // the responder's accept comes back) — not on the
-                    // responder's own side after a successful accept.
-                    // Element X iOS works around this by manually
-                    // synthesising the state-machine event after
-                    // `acceptVerificationRequest()` returns
-                    // (SessionVerificationScreenViewModel.swift:169-171).
-                    // Mirror that here: route directly into
-                    // `routeAcceptedVerificationRequest` so
-                    // `startSasVerification` actually fires for the
-                    // responder. Without this, the responder-side flow
-                    // stalls past `acceptVerificationRequest` because
-                    // nothing ever drives SAS forward.
-                    await self.routeAcceptedVerificationRequest()
+                    // No `startSasVerification()` call here — the
+                    // Matrix spec puts `m.key.verification.start` on
+                    // the *initiator*. The responder only sends
+                    // `.ready` (via acceptVerificationRequest) and
+                    // then waits for the initiator to send `.start`,
+                    // which matrix-rust-sdk receives + processes
+                    // automatically: `didStartSasVerification` fires,
+                    // then `didReceiveVerificationData` fires with the
+                    // emoji set, which `routeSasData` turns into
+                    // `.readyForEmoji`. No responder-side
+                    // `startSasVerification` is needed (or, indeed,
+                    // possible — calling it before the initiator
+                    // sends `.start` throws "Verification request
+                    // missing").
                 } catch {
+                    Self.logger.error("acceptIncoming: acceptVerificationRequest threw: \(error.localizedDescription, privacy: .public)")
                     continuation.yield(.cancelled(reason: error.localizedDescription))
                     continuation.finish()
                     await self.store.clearContinuation(for: requestID)
