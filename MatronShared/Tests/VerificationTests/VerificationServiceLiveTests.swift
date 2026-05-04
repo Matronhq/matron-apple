@@ -65,14 +65,11 @@ final class VerificationServiceLiveTests: XCTestCase {
         try await live.cancel(requestID: "req-resp", reason: "test-teardown")
     }
 
-    /// Wave 7 bug #6: the requester side MUST NOT call
-    /// `startSasVerification()` from `routeAcceptedVerificationRequest()`.
-    /// Both sides issuing `m.key.verification.start` sends two
-    /// `m.key.verification.start` events and trips the SAS MAC check
-    /// (live-debugged). The role is set to `.requester` by `startSAS`;
-    /// this test sets it manually via the test seam and drives the
-    /// routing entry point.
-    func test_routeAcceptedVerificationRequest_requester_doesNotCallStartSas() async throws {
+    /// Both requester and responder must call startSasVerification — see
+    /// the docstring on routeAcceptedVerificationRequest. Wave 7's
+    /// "requester does not call" rule was reverted after live debugging
+    /// against partner.mjs proved SAS deadlocks at phase=Ready otherwise.
+    func test_routeAcceptedVerificationRequest_requester_callsStartSas() async throws {
         let live = VerificationServiceLive()
         let controller = FakeSessionVerificationController()
         await live.register(controller: controller, for: "req-init")
@@ -82,7 +79,7 @@ final class VerificationServiceLiveTests: XCTestCase {
         await live.routeAcceptedVerificationRequest()
 
         let startedSas = await controller.didStartSas
-        XCTAssertFalse(startedSas, "Wave 7: requester side MUST NOT call startSasVerification — only the responder may")
+        XCTAssertTrue(startedSas, "requester must call startSasVerification per Matrix spec — initiator sends .start")
     }
 
     /// `confirmEmojiMatch` must call `approveVerification` on the SDK

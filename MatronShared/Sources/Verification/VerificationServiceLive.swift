@@ -489,29 +489,32 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
     }
 
     /// Routes the SDK delegate's `didAcceptVerificationRequest` callback.
-    /// Wave 7 bug #5+#6 fix: this is where the responder side issues
-    /// `startSasVerification()`. The requester side must NOT issue it
-    /// here (only the responder may, otherwise both sides send
-    /// `m.key.verification.start` and the SAS MAC fails).
     ///
-    /// The role is set by `acceptIncoming` (responder),
-    /// `routeIncomingRequest` (responder, before accept lands), or
-    /// `startSAS` (requester).
+    /// Both roles call `startSasVerification()` — Element X iOS does the
+    /// same (`SessionVerificationScreenStateMachine.swift:89` route is
+    /// fired by both requester and responder UIs after the request is
+    /// accepted). The Matrix spec puts the burden of `m.key.verification.start`
+    /// on the initiator (requester); matrix-rust-sdk's
+    /// `startSasVerification()` is the API to issue it.
+    ///
+    /// Wave 7 bug #6 originally added a `role == .responder` guard here
+    /// citing "double-start trips MAC", but live debugging against the
+    /// integration harness showed the requester MUST call this for SAS
+    /// to advance past phase=Ready against any peer. Reverted again
+    /// (second attempt, this time alongside in-process partner
+    /// bootstrap-and-wait so any state-preservation issue is also
+    /// addressed).
     func routeAcceptedVerificationRequest() async {
         Self.logger.notice("routeAcceptedVerificationRequest: enter")
         let role = await store.activeRole()
         let activeID = await store.activeFlowIDValue()
         Self.logger.notice("routeAcceptedVerificationRequest: role=\(String(describing: role), privacy: .public) activeFlowID=\(activeID ?? "nil", privacy: .public)")
-        guard role == .responder else {
-            Self.logger.notice("routeAcceptedVerificationRequest: skip startSasVerification — not responder")
-            return
-        }
         guard let activeID, let controller = await store.controller(for: activeID) else {
             Self.logger.error("routeAcceptedVerificationRequest: NO CONTROLLER for active flow")
             return
         }
         do {
-            Self.logger.notice("routeAcceptedVerificationRequest: calling startSasVerification() (responder)")
+            Self.logger.notice("routeAcceptedVerificationRequest: calling startSasVerification() (role=\(String(describing: role), privacy: .public))")
             try await controller.startSasVerification()
             Self.logger.notice("routeAcceptedVerificationRequest: startSasVerification() returned OK")
         } catch {

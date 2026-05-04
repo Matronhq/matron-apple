@@ -72,14 +72,28 @@ $PARTNER_CLI register \
     | tee "$ARTIFACTS_DIR/register-matron.json"
 
 # --- Bring partner online as a second device of @matron + bootstrap trust anchor ---
-log "Bootstrapping partner device (SSSS + cross-signing + recovery key) as @${MATRON_USER}…"
-$PARTNER_CLI bootstrap-anchor \
-    --homeserver "$HOMESERVER" \
-    --user "$MATRON_USER" \
-    --password "$MATRON_PW" \
-    --device-name "$PARTNER_DEVICE_NAME" \
-    --store-file "$PARTNER_STORE" \
-    | tee "$ARTIFACTS_DIR/bootstrap-partner.json"
+# Skippable: scenarios that bootstrap inline (e.g. `bootstrap-and-wait` in
+# the same long-running partner process — see `verify-sdk-against-partner.sh`)
+# don't want a pre-bootstrapped master key uploaded by run-harness, otherwise
+# the inline bootstrap races to replace it. Auto-skip when the scenario name
+# matches the inline-bootstrap pattern; can also be forced via
+# MATRON_SKIP_BOOTSTRAP_ANCHOR=1.
+SCENARIO_NAME="${1:-}"
+case "$SCENARIO_NAME" in
+    verify-sdk-against-partner.sh) MATRON_SKIP_BOOTSTRAP_ANCHOR="${MATRON_SKIP_BOOTSTRAP_ANCHOR:-1}" ;;
+esac
+if [ "${MATRON_SKIP_BOOTSTRAP_ANCHOR:-}" = "1" ]; then
+    log "Skipping bootstrap-anchor (inline-bootstrap scenario) — partner will bootstrap itself."
+else
+    log "Bootstrapping partner device (SSSS + cross-signing + recovery key) as @${MATRON_USER}…"
+    $PARTNER_CLI bootstrap-anchor \
+        --homeserver "$HOMESERVER" \
+        --user "$MATRON_USER" \
+        --password "$MATRON_PW" \
+        --device-name "$PARTNER_DEVICE_NAME" \
+        --store-file "$PARTNER_STORE" \
+        | tee "$ARTIFACTS_DIR/bootstrap-partner.json"
+fi
 
 # --- Export env for scenarios ---
 export HOMESERVER="$HOMESERVER"

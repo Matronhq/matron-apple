@@ -316,9 +316,111 @@ async function cmdCreateDm(args) {
   }
 }
 
+// --- bootstrap-and-wait ---
+//
+// Mirrors `claude-matrix-bridge/add-bot.mjs` exactly: one long-running
+// process bootstraps cross-signing, then immediately listens for an
+// incoming verification request and auto-confirms SAS — without
+// stopping/restarting the client in between. The split form
+// (`bootstrap-anchor` followed later by `wait-verify`) loses all
+// post-bootstrap in-memory crypto state when the first process exits,
+// even with SSSS unlock on resume — and we have a strong suspicion that
+// the missing state is the trigger for the same-user device-verification
+// MAC interop failure we keep hitting.
+async function cmdBootstrapAndWait(args) {
+  const { homeserver, user, password, "device-name": deviceName,
+          "store-file": storeFile, timeout = "120" } = args;
+  const timeoutMs = parseInt(timeout, 10) * 1000;
+  const session = await loginAndStartClient(homeserver, user, password, deviceName);
+  await bootstrap(session, password);
+  const recoveryKey = session.recoveryKeyRef();
+  if (!recoveryKey) throw new Error("bootstrap did not yield a recovery key");
+
+  // Persist creds + recovery key for any downstream consumer that still
+  // wants the store file (matches bootstrap-anchor's output shape).
+  if (storeFile) {
+    const dir = storeFile.replace(/[^/]+$/, "");
+    if (dir && !existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(storeFile, JSON.stringify({
+      homeserver,
+      user_id: session.loginData.user_id,
+      device_id: session.loginData.device_id,
+      access_token: session.loginData.access_token,
+      password,
+      recovery_key: recoveryKey,
+    }, null, 2));
+  }
+
+  emit({
+    event: "bootstrapped",
+    user_id: session.loginData.user_id,
+    device_id: session.loginData.device_id,
+    recovery_key: recoveryKey,
+  });
+  emit({ event: "ready", waiting_for: "incoming verification request" });
+
+  const start = Date.now();
+  let resolved = false;
+  return new Promise((resolve) => {
+    const finish = (payload, code) => {
+      if (resolved) return;
+      resolved = true;
+      emit(payload);
+      session.client.stopClient();
+      resolve(code);
+    };
+    const interval = setInterval(() => {
+      if (Date.now() - start > timeoutMs) {
+        clearInterval(interval);
+        finish({ ok: false, error: "timeout" }, 3);
+      }
+    }, 1000);
+
+    session.client.on("crypto.verificationRequestReceived", (request) => {
+      emit({ event: "request_received", from: request.otherUserId });
+      request.accept().catch((e) => emit({ event: "accept_error", error: String(e) }));
+
+      let verifierBound = false;
+      request.on(VerificationRequestEvent.Change, () => {
+        const phase = request.phase;
+        emit({ event: "phase_change", phase });
+        if (phase === VerificationPhase.Done) {
+          clearInterval(interval);
+          finish({ ok: true, verified: true }, 0);
+          return;
+        }
+        if (phase === VerificationPhase.Cancelled) {
+          clearInterval(interval);
+          finish({ ok: false, error: "cancelled", code: request.cancellationCode }, 2);
+          return;
+        }
+        if (request.verifier && !verifierBound) {
+          verifierBound = true;
+          request.verifier.on(VerifierEvent.ShowSas, async (sas) => {
+            emit({ event: "show_sas", method: sas.sasEvent?.method ?? "emoji" });
+            try {
+              await sas.confirm();
+              emit({ event: "sas_confirmed" });
+            } catch (e) {
+              emit({ event: "sas_confirm_error", error: String(e) });
+            }
+          });
+          request.verifier.verify().catch((e) => {
+            const msg = String(e?.message ?? e);
+            if (!msg.toLowerCase().includes("cancel")) {
+              emit({ event: "verifier_error", error: msg });
+            }
+          });
+        }
+      });
+    });
+  });
+}
+
 const commands = {
   register: cmdRegister,
   "bootstrap-anchor": cmdBootstrapAnchor,
+  "bootstrap-and-wait": cmdBootstrapAndWait,
   "wait-verify": cmdWaitVerify,
   "send-message": cmdSendMessage,
   "create-dm": cmdCreateDm,

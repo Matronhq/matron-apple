@@ -72,29 +72,7 @@ final class VerificationFlowIntegrationTests: XCTestCase {
     }
 
     func testVerifyWithOtherDeviceAgainstPartner() async throws {
-        // KNOWN INTEROP GAP: matron-rust-sdk vs matrix-js-sdk for the
-        // *same-user device verification* flow consistently fails MAC
-        // verification on matron's side after a full SAS round-trip
-        // (`m.mismatched_sas` cancel). Reproduced exhaustively against
-        // partner.mjs (run-harness.sh `verify-sdk-against-partner.sh`):
-        // every combination of who-sends-`.start` (requester only,
-        // responder only, both, neither), with/without confirm dedupe,
-        // with/without sync-settle delay, with/without partner SSSS
-        // unlock — all end the same way. The protocol completes through
-        // .accept → .key → .mac → .done from partner; matron's SDK then
-        // rejects partner's MAC. Likely a cross-SDK protocol-encoding
-        // gap that needs upstream investigation (matrix-rust-sdk vs
-        // matrix-js-sdk) — not a matron app bug. The test scaffolding
-        // is left in place because (a) the harness, partner subprocess
-        // plumbing, and SDK driver are still useful for the cross-USER
-        // verification path (Phase 5 bot-trust UX), and (b) once the
-        // SDK gap closes, removing this skip is the only change needed.
-        // Set MATRON_RUN_SDK_INTEROP_TEST=1 to actually attempt the run.
         let env = ProcessInfo.processInfo.environment
-        guard env["MATRON_RUN_SDK_INTEROP_TEST"] == "1" else {
-            throw XCTSkip("matrix-rust-sdk ↔ matrix-js-sdk same-user device verification MAC interop is broken — see test docstring")
-        }
-
         guard let homeserverString = env["MATRON_HOMESERVER"] ?? env["HOMESERVER"] else {
             throw XCTSkip("MATRON_HOMESERVER not set; run via tests/integration/run-harness.sh")
         }
@@ -102,10 +80,6 @@ final class VerificationFlowIntegrationTests: XCTestCase {
             throw XCTSkip("MATRON_HOMESERVER not a valid URL: \(homeserverString)")
         }
         try await assertHomeserverReachable(homeserverURL)
-        guard let storeFile = env["MATRON_PARTNER_STORE"],
-              FileManager.default.fileExists(atPath: storeFile) else {
-            throw XCTSkip("MATRON_PARTNER_STORE not set or file missing — run via run-harness.sh")
-        }
         guard let nodeScript = env["MATRON_PARTNER_NODE_SCRIPT"],
               FileManager.default.fileExists(atPath: nodeScript) else {
             throw XCTSkip("MATRON_PARTNER_NODE_SCRIPT not set or file missing")
@@ -137,9 +111,23 @@ final class VerificationFlowIntegrationTests: XCTestCase {
         try await sync.start()
         try await sync.waitUntilReady()
 
-        // 3. Spawn partner.mjs wait-verify and wait for it to be listening.
-        try spawnPartnerWaitVerify(scriptPath: nodeScript, storeFile: storeFile, timeout: 90)
-        try await waitForPartnerEvent(.event("ready"), timeout: 30)
+        // 3. Spawn partner.mjs in `bootstrap-and-wait` mode — this
+        //    bootstraps cross-signing AND waits for verification in
+        //    the same long-running process, so all post-bootstrap
+        //    in-memory crypto state stays loaded for the verification
+        //    (mirrors claude-matrix-bridge/add-bot.mjs's working
+        //    pattern; the split bootstrap-anchor + wait-verify shape
+        //    we tried before consistently failed MAC interop).
+        try spawnPartnerBootstrapAndWait(
+            scriptPath: nodeScript,
+            homeserver: homeserverString,
+            user: username,
+            password: password,
+            timeout: 120
+        )
+        // bootstrap completes first (~10s), then partner emits "ready"
+        try await waitForPartnerEvent(.event("bootstrapped"), timeout: 60)
+        try await waitForPartnerEvent(.event("ready"), timeout: 5)
 
         // 4. Drive startSAS through to .verified.
         let verification = VerificationServiceLive(provider: provider, session: session)
@@ -209,7 +197,13 @@ final class VerificationFlowIntegrationTests: XCTestCase {
         }
     }
 
-    private func spawnPartnerWaitVerify(scriptPath: String, storeFile: String, timeout: Int) throws {
+    private func spawnPartnerBootstrapAndWait(
+        scriptPath: String,
+        homeserver: String,
+        user: String,
+        password: String,
+        timeout: Int
+    ) throws {
         let process = Process()
         // Resolve `node` explicitly. xctest runners don't inherit nvm /
         // Homebrew PATH, so `/usr/bin/env node` resolves to nothing and the
@@ -236,8 +230,12 @@ final class VerificationFlowIntegrationTests: XCTestCase {
             nodeBin = resolved
         }
         process.launchPath = nodeBin
-        process.arguments = [scriptPath, "wait-verify",
-                             "--store-file", storeFile, "--timeout", String(timeout)]
+        process.arguments = [scriptPath, "bootstrap-and-wait",
+                             "--homeserver", homeserver,
+                             "--user", user,
+                             "--password", password,
+                             "--device-name", "matron-test-partner",
+                             "--timeout", String(timeout)]
 
         // Mirror everything to /tmp so a failed run leaves a readable trace
         // we can inspect from the harness without parsing the xcresult.

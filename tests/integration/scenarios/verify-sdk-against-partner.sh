@@ -17,7 +17,6 @@ require() { [ -n "${!1:-}" ] || { echo "missing env: $1"; exit 1; }; }
 require HOMESERVER
 require MATRON_USER
 require MATRON_PW
-require PARTNER_STORE
 require ARTIFACTS_DIR
 require ROOT
 
@@ -58,7 +57,6 @@ set +e
 TEST_RUNNER_MATRON_HOMESERVER="$HOMESERVER" \
 TEST_RUNNER_MATRON_USER="$MATRON_USER" \
 TEST_RUNNER_MATRON_PW="$MATRON_PW" \
-TEST_RUNNER_MATRON_PARTNER_STORE="$PARTNER_STORE" \
 TEST_RUNNER_MATRON_PARTNER_NODE_SCRIPT="$ROOT/tests/integration/partner/partner.mjs" \
 TEST_RUNNER_MATRON_NODE_BIN="$(command -v node)" \
 xcodebuild test-without-building \
