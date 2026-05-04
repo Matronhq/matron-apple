@@ -3,10 +3,12 @@ import XCTest
 import MatrixRustSDK
 @testable import MatronVerification
 
-/// Routing-shape tests for `LiveSessionVerificationDelegate`. Each SDK
-/// callback (`didReceiveVerificationRequest`, `didStartSasVerification`,
-/// `didReceiveVerificationData`, `didFinish`, `didCancel`, `didFail`)
-/// must dispatch to the correct `routeSas…` entry point on the
+/// Routing-shape tests for `WeakSessionVerificationControllerProxy`
+/// (Wave 7 rename — was `LiveSessionVerificationDelegate`). Each SDK
+/// callback (`didReceiveVerificationRequest`, `didAcceptVerificationRequest`,
+/// `didStartSasVerification`, `didReceiveVerificationData`, `didFinish`,
+/// `didCancel`, `didFail`) must dispatch to the correct `routeSas…` /
+/// `routeAcceptedVerificationRequest` entry point on the
 /// `SessionVerificationFlowRouting` protocol so the live impl's
 /// FlowStore + open continuations advance through the SAS state machine.
 ///
@@ -30,6 +32,7 @@ final class LiveSessionVerificationDelegateTests: XCTestCase {
         }
 
         private(set) var incomingCalls: [IncomingCall] = []
+        private(set) var acceptedRequestCount = 0
         private(set) var sasStartedCount = 0
         private(set) var sasDataPayloads: [SessionVerificationData] = []
         private(set) var sasFinishedCount = 0
@@ -49,6 +52,7 @@ final class LiveSessionVerificationDelegateTests: XCTestCase {
             ))
         }
 
+        func routeAcceptedVerificationRequest() async { acceptedRequestCount += 1 }
         func routeSasStarted() async { sasStartedCount += 1 }
         func routeSasData(_ data: SessionVerificationData) async { sasDataPayloads.append(data) }
         func routeSasFinished() async { sasFinishedCount += 1 }
@@ -60,9 +64,9 @@ final class LiveSessionVerificationDelegateTests: XCTestCase {
     /// SDK explicitly provides via `SessionVerificationController(noHandle:)`).
     /// The routing methods don't call back into the controller, so the
     /// missing FFI handle is safe.
-    private func makeDelegate(router: FakeRouter) -> LiveSessionVerificationDelegate {
+    private func makeDelegate(router: FakeRouter) -> WeakSessionVerificationControllerProxy {
         let sdkController = MatrixRustSDK.SessionVerificationController(noHandle: .init())
-        return LiveSessionVerificationDelegate(router: router, sharedController: sdkController)
+        return WeakSessionVerificationControllerProxy(router: router, sharedController: sdkController)
     }
 
     private func makeDetails(
@@ -127,7 +131,8 @@ final class LiveSessionVerificationDelegateTests: XCTestCase {
         // handle (SessionVerificationEmoji wraps a uniffi handle). The route
         // method receives the same enum case the delegate forwarded, which is
         // what we're asserting.
-        delegate.didReceiveVerificationData(data: .decimals(values: [1, 2, 3]))
+        let payload: SessionVerificationData = .decimals(values: [1, 2, 3])
+        delegate.didReceiveVerificationData(data: payload)
 
         try await waitUntil { await router.sasDataPayloads.count == 1 }
         let payloads = await router.sasDataPayloads
@@ -159,17 +164,30 @@ final class LiveSessionVerificationDelegateTests: XCTestCase {
         try await waitUntil { await router.sasFailedCount == 1 }
     }
 
-    /// `didAcceptVerificationRequest` is intentionally a no-op on our
-    /// delegate — the SDK fires it after request acceptance but before SAS
-    /// transitions, and the next user-visible state comes from
-    /// `didStartSasVerification` / `didReceiveVerificationData`. Asserting
-    /// that it doesn't reach the router locks the silence in.
-    func test_didAcceptVerificationRequest_doesNotReachRouter() async throws {
+    /// Wave 7 bug #5 inversion: `didAcceptVerificationRequest` MUST now
+    /// reach the router via `routeAcceptedVerificationRequest()`. The
+    /// router's branch on responder vs requester (recorded in the
+    /// FlowStore role table) is what decides whether to issue the
+    /// follow-up `startSasVerification()` SDK call. Routing the callback
+    /// is the precondition; the role-branching test lives on
+    /// `VerificationServiceLiveTests`.
+    ///
+    /// Prior shape: `didAcceptVerificationRequest` was a delegate-side
+    /// no-op and `acceptIncoming` called `startSasVerification()`
+    /// inline. That raced the SDK's own state machine — partner side
+    /// would intermittently see a duplicate `m.key.verification.start`
+    /// and trip the SAS MAC check. See file-scope docblock for the full
+    /// six-bug list.
+    func test_didAcceptVerificationRequest_routesAcceptedRequest() async throws {
         let router = FakeRouter()
         let delegate = makeDelegate(router: router)
         delegate.didAcceptVerificationRequest()
-        // Give any erroneously-spawned task a chance to land.
-        try await Task.sleep(nanoseconds: 50_000_000)
+        try await waitUntil { await router.acceptedRequestCount == 1 }
+
+        // Defensive: none of the OTHER lifecycle entry-points should
+        // fire from this single delegate callback. Locks the routing
+        // shape — a regression that broadcast to the wrong route would
+        // pass the count==1 assertion above but fail here.
         let started = await router.sasStartedCount
         let finished = await router.sasFinishedCount
         let cancelled = await router.sasCancelledCount

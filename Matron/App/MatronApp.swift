@@ -81,16 +81,20 @@ struct MatronApp: App {
                         .environment(\.appDependencies, dependencies)
                         .environment(\.currentSession, session)
                         .task { try? await dependencies.syncService(for: session).start() }
-                        // VerificationServiceLive.start() fetches the SDK's
-                        // session-verification controller and registers the
-                        // `LiveSessionVerificationDelegate` that drives
-                        // `incomingRequests()` + every `.readyForEmoji([…])`
-                        // / `.verified` / `.cancelled` SAS state transition.
-                        // Without it, the chat-list banner is silent and
-                        // every SAS sheet hangs at "Starting verification…"
-                        // (expert-QA finding B1). Idempotent — safe on
-                        // SwiftUI re-mounts.
-                        .task { try? await dependencies.verificationService(for: session).start() }
+                        // Wave 7 bug #1+#7: dropped the eager
+                        // `verificationService(for: session).start()`
+                        // call here. The service now subscribes to
+                        // `client.encryption().verificationStateListener(...)`
+                        // in its `init`; the SDK controller is built
+                        // lazily the first time the listener fires
+                        // `!= .unknown` (i.e. after `/keys/query` lands).
+                        // The eager call would race the listener and
+                        // hang for 7+ seconds against an empty key
+                        // store (live debugging confirmed). Mirrors
+                        // Element X's `ClientProxy.updateVerificationState`
+                        // → `buildSessionVerificationControllerProxyIfPossible`
+                        // pattern (see
+                        // `ElementX/Sources/Services/Client/ClientProxy.swift`).
                         // B2/M5: build the VerificationCenter exactly once
                         // per session and call `start()` on the same
                         // instance that's handed to ChatListView. Keying
@@ -126,11 +130,12 @@ struct MatronApp: App {
                         // post-verify branch; the verify-with-other-device flow
                         // would hang because nothing was talking to the server.
                         .task { try? await dependencies.syncService(for: session).start() }
-                        // Mirrors the post-verify branch — without start()
-                        // the post-login verify-with-other-device flow
-                        // hangs at "Starting verification…" because no
-                        // SDK delegate is wired (expert-QA finding B1).
-                        .task { try? await dependencies.verificationService(for: session).start() }
+                        // Wave 7 bug #1+#7: dropped the eager
+                        // `verificationService(for: session).start()`
+                        // call. See the post-verify branch above for
+                        // the full rationale — the service now
+                        // initialises reactively via the SDK's
+                        // verification-state listener.
                     }
                 } else {
                     SignInView(

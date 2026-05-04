@@ -9,27 +9,80 @@ import XCTest
 /// points (`routeSas…`) directly to simulate what the production delegate
 /// would call.
 final class VerificationServiceLiveTests: XCTestCase {
-    func test_acceptIncoming_callsAcceptThenStartSas_andYieldsRequested() async throws {
+    /// Wave 7 bug #5 fix: `acceptIncoming` now calls ONLY
+    /// `acceptVerificationRequest()`. The SDK's
+    /// `didAcceptVerificationRequest` callback (routed via
+    /// `routeAcceptedVerificationRequest()` on the live impl) is what
+    /// later calls `startSasVerification()` for the responder. Calling
+    /// `startSasVerification()` immediately after `acceptVerificationRequest()`
+    /// raced the SDK's internal state and tripped the partner-side MAC
+    /// verification (live-debugged).
+    func test_acceptIncoming_callsAcceptOnly_notStartSas() async throws {
         let live = VerificationServiceLive()
         let controller = FakeSessionVerificationController()
         await live.register(controller: controller, for: "req-1")
 
         var collected: [SasFlowState] = []
         let stream = live.acceptIncoming(requestID: "req-1")
-        // Collect the first emission (`.requested`) — the stream stays open waiting for
-        // SDK delegate callbacks that won't arrive in this isolated test, so cancel
-        // explicitly after the first state to terminate iteration.
         var iterator = stream.makeAsyncIterator()
         if let first = await iterator.next() {
             collected.append(first)
         }
-        try await live.cancel(requestID: "req-1", reason: "test-teardown") // drains continuation
+        try await live.cancel(requestID: "req-1", reason: "test-teardown")
 
         XCTAssertEqual(collected, [.requested])
         let accepted = await controller.didAccept
         let startedSas = await controller.didStartSas
-        XCTAssertTrue(accepted)
-        XCTAssertTrue(startedSas)
+        XCTAssertTrue(accepted, "acceptIncoming must call acceptVerificationRequest")
+        XCTAssertFalse(startedSas, "Wave 7: acceptIncoming MUST NOT call startSasVerification — the delegate's didAcceptVerificationRequest does")
+    }
+
+    /// Wave 7 bug #5: when the SDK's `didAcceptVerificationRequest`
+    /// callback fires (routed to `routeAcceptedVerificationRequest()`),
+    /// the responder side issues `startSasVerification()`. The flow
+    /// role is set to `.responder` by `acceptIncoming`; this test
+    /// drives the routing entry point directly and asserts the SDK
+    /// SAS-start happened.
+    func test_routeAcceptedVerificationRequest_responder_callsStartSas() async throws {
+        let live = VerificationServiceLive()
+        let controller = FakeSessionVerificationController()
+        await live.register(controller: controller, for: "req-resp")
+
+        let stream = live.acceptIncoming(requestID: "req-resp")
+        var iterator = stream.makeAsyncIterator()
+        _ = await iterator.next() // .requested
+
+        // Pre-condition: acceptIncoming has NOT fired startSasVerification.
+        let startedBefore = await controller.didStartSas
+        XCTAssertFalse(startedBefore)
+
+        await live.routeAcceptedVerificationRequest()
+
+        // Post-condition: the routing entry point fired startSasVerification.
+        let startedAfter = await controller.didStartSas
+        XCTAssertTrue(startedAfter, "Wave 7: routeAcceptedVerificationRequest must call startSasVerification for responder role")
+
+        try await live.cancel(requestID: "req-resp", reason: "test-teardown")
+    }
+
+    /// Wave 7 bug #6: the requester side MUST NOT call
+    /// `startSasVerification()` from `routeAcceptedVerificationRequest()`.
+    /// Both sides issuing `m.key.verification.start` sends two
+    /// `m.key.verification.start` events and trips the SAS MAC check
+    /// (live-debugged). The role is set to `.requester` by `startSAS`;
+    /// this test sets it manually via the test seam and drives the
+    /// routing entry point.
+    func test_routeAcceptedVerificationRequest_requester_doesNotCallStartSas() async throws {
+        let live = VerificationServiceLive()
+        let controller = FakeSessionVerificationController()
+        await live.register(controller: controller, for: "req-init")
+        await live.setActiveFlowID("req-init")
+        await live.setFlowRole(.requester, for: "req-init")
+
+        await live.routeAcceptedVerificationRequest()
+
+        let startedSas = await controller.didStartSas
+        XCTAssertFalse(startedSas, "Wave 7: requester side MUST NOT call startSasVerification — only the responder may")
     }
 
     /// `confirmEmojiMatch` must call `approveVerification` on the SDK

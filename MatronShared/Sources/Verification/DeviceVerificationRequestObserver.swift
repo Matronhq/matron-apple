@@ -1,5 +1,6 @@
 import Foundation
 import MatrixRustSDK
+import os
 
 /// Adapts SDK verification-request callbacks into events `VerificationServiceLive`
 /// already consumes via its `register(controller:for:)` cache.
@@ -17,9 +18,9 @@ public protocol IncomingVerificationListening: AnyObject, Sendable {
 }
 
 /// Pure forwarding shim around the SDK's session-verification delegate. Owns no
-/// state of its own. `LiveSessionVerificationDelegate` (below) is the production
-/// adapter that the SDK actually calls; tests drive `handleIncomingRequest`
-/// directly with a `FakeSessionVerificationController`.
+/// state of its own. `WeakSessionVerificationControllerProxy` (below) is the
+/// production adapter that the SDK actually calls; tests drive
+/// `handleIncomingRequest` directly with a `FakeSessionVerificationController`.
 public final class DeviceVerificationRequestObserver: @unchecked Sendable {
     private let listener: IncomingVerificationListening
 
@@ -27,18 +28,6 @@ public final class DeviceVerificationRequestObserver: @unchecked Sendable {
         self.listener = listener
     }
 
-    /// Pure entry point used by tests + the production delegate.
-    /// - Parameters:
-    ///   - requestID: the SDK's flow ID for this verification request. Used as
-    ///     the summary's `id` so downstream consumers can correlate the
-    ///     subsequent `acceptIncoming(requestID:)` / `cancel(requestID:)` calls.
-    ///   - otherUserID: Matrix user ID of the requesting party.
-    ///   - otherDeviceID: device ID of the requesting party (optional — the SDK
-    ///     may surface verification requests without a device-level binding for
-    ///     user-to-user verification).
-    ///   - controller: the per-request SDK controller (wrapped in
-    ///     `LiveSessionVerificationController` from the production delegate, or
-    ///     a `FakeSessionVerificationController` from tests).
     public func handleIncomingRequest(
         requestID: String,
         otherUserID: String,
@@ -64,6 +53,14 @@ public final class DeviceVerificationRequestObserver: @unchecked Sendable {
 /// rather than spinning its own thread state. Held weakly by the delegate
 /// so the SDK's strong reference (via the callback handle map) doesn't
 /// pin the service after `signOut()` clears the AppDependencies cache.
+///
+/// Wave 7 added `routeAcceptedVerificationRequest()`. The prior shape made
+/// `didAcceptVerificationRequest` a no-op on the delegate; that was correct
+/// only when both sides were forced to manually advance state via a
+/// "Start verification" button click (Element X's UX). Our flow auto-
+/// advances, so the responder side issues `startSasVerification()` from
+/// inside this delegate callback. The branch on responder vs requester
+/// lives in `VerificationServiceLive.routeAcceptedVerificationRequest`.
 protocol SessionVerificationFlowRouting: AnyObject, Sendable {
     func routeIncomingRequest(
         requestID: String,
@@ -71,6 +68,7 @@ protocol SessionVerificationFlowRouting: AnyObject, Sendable {
         otherDeviceID: String?,
         controller: SessionVerificationControlling
     ) async
+    func routeAcceptedVerificationRequest() async
     func routeSasStarted() async
     func routeSasData(_ data: SessionVerificationData) async
     func routeSasFinished() async
@@ -82,16 +80,28 @@ protocol SessionVerificationFlowRouting: AnyObject, Sendable {
 /// `SessionVerificationControllerDelegate` callback into the matching
 /// `routeSas…` entry point on the live `VerificationServiceLive`.
 ///
-/// The SDK delegate doesn't hand back a controller per request — the same
-/// `SessionVerificationController` is reused across the session — so we wrap
-/// the shared controller as `LiveSessionVerificationController` and forward
-/// alongside the request summary so the listener has a working SDK handle.
+/// Wave 7 — `WeakSessionVerificationControllerProxy`:
+///
+/// Mirrors Element X iOS's
+/// `WeakSessionVerificationControllerProxy` (see
+/// `ElementX/Sources/Services/SessionVerification/SessionVerificationControllerProxy.swift`).
+/// The SDK retains the delegate strongly via its callback-handle map; if
+/// the delegate held a strong back-reference to the routing service that
+/// owns the SDK controller, we'd have a retain cycle. Holding `router`
+/// weakly breaks the cycle — `signOut()` can drop the
+/// `VerificationServiceLive` instance and the SDK's now-orphaned delegate
+/// no-ops cleanly when the next callback arrives.
+///
+/// `sharedController` is held strongly. That's safe because the
+/// retain-cycle break is on the OTHER edge (delegate → router weak); the
+/// SDK controller doesn't hold a strong reference back to its delegate
+/// in a way Swift's ARC can see (uniffi's callback handle map is a Rust
+/// data structure, not part of the Swift retain graph). Element X follows
+/// the same shape — see `SessionVerificationControllerProxy.swift`.
 ///
 /// Concurrency: SDK callbacks come in on the SDK's own callback thread (via
 /// uniffi's vtable). All bodies hop into the router's actor via `Task { await … }`.
-/// `router` is `weak` so the SDK's callback-handle retention doesn't keep
-/// the service alive past `signOut()`.
-final class LiveSessionVerificationDelegate: SessionVerificationControllerDelegate, @unchecked Sendable {
+final class WeakSessionVerificationControllerProxy: SessionVerificationControllerDelegate, @unchecked Sendable {
     private weak var router: (any SessionVerificationFlowRouting)?
     private let sharedController: MatrixRustSDK.SessionVerificationController
 
@@ -100,16 +110,18 @@ final class LiveSessionVerificationDelegate: SessionVerificationControllerDelega
         self.sharedController = sharedController
     }
 
+    // MARK: - SessionVerificationControllerDelegate
+
     func didReceiveVerificationRequest(details: SessionVerificationRequestDetails) {
-        guard let router else { return }
-        // `deviceId` is non-optional in v26.04.01's `SessionVerificationRequestDetails`,
-        // but the upstream protocol surface accepts `String?` so a future SDK
-        // change to optional won't churn the router contract. An empty deviceId
-        // is treated as "no device binding" because the only way to express that
-        // distinction in the current SDK shape is the empty string.
+        Self.logger.notice("SDK→didReceiveVerificationRequest: flowId=\(details.flowId, privacy: .public) from=\(details.senderProfile.userId, privacy: .public)")
+        guard let router else {
+            Self.logger.error("SDK→didReceiveVerificationRequest: router is nil — DROPPED")
+            return
+        }
         let deviceID = details.deviceId.isEmpty ? nil : details.deviceId
         let wrapped = LiveSessionVerificationController(sharedController)
-        Task {
+        Task { [weak router] in
+            guard let router else { return }
             await router.routeIncomingRequest(
                 requestID: details.flowId,
                 otherUserID: details.senderProfile.userId,
@@ -119,40 +131,64 @@ final class LiveSessionVerificationDelegate: SessionVerificationControllerDelega
         }
     }
 
-    /// Fires after the SDK accepts the SAS handshake and the underlying
-    /// channel is established. We've already yielded `.requested` on the
-    /// open continuation from `acceptIncoming` / `startSAS`, so this is a
-    /// quiet transition — the next visible state is `.readyForEmoji`
-    /// from `didReceiveVerificationData`.
+    /// Wave 7 bug #5 fix: this used to be a silent no-op. It now routes
+    /// to the service so the responder side can issue
+    /// `startSasVerification()` (the requester side is excluded inside
+    /// `routeAcceptedVerificationRequest` based on the role recorded in
+    /// the FlowStore).
     func didAcceptVerificationRequest() {
-        // The router doesn't expose a `didAccept` entry point — the next
-        // SDK callback (`didStartSasVerification`) is what marks the SAS
-        // flow as live. Keeping this body empty (rather than routing to a
-        // no-op) keeps the routing surface focused on user-visible state.
+        Self.logger.notice("SDK→didAcceptVerificationRequest")
+        guard let router else {
+            Self.logger.error("SDK→didAcceptVerificationRequest: router is nil — DROPPED")
+            return
+        }
+        Task { await router.routeAcceptedVerificationRequest() }
     }
 
     func didStartSasVerification() {
-        guard let router else { return }
+        Self.logger.notice("SDK→didStartSasVerification")
+        guard let router else {
+            Self.logger.error("SDK→didStartSasVerification: router is nil — DROPPED")
+            return
+        }
         Task { await router.routeSasStarted() }
     }
 
     func didReceiveVerificationData(data: SessionVerificationData) {
-        guard let router else { return }
+        Self.logger.notice("SDK→didReceiveVerificationData: \(String(describing: data), privacy: .public)")
+        guard let router else {
+            Self.logger.error("SDK→didReceiveVerificationData: router is nil — DROPPED")
+            return
+        }
         Task { await router.routeSasData(data) }
     }
 
     func didFail() {
-        guard let router else { return }
+        Self.logger.notice("SDK→didFail")
+        guard let router else {
+            Self.logger.error("SDK→didFail: router is nil — DROPPED")
+            return
+        }
         Task { await router.routeSasFailed() }
     }
 
     func didCancel() {
-        guard let router else { return }
+        Self.logger.notice("SDK→didCancel")
+        guard let router else {
+            Self.logger.error("SDK→didCancel: router is nil — DROPPED")
+            return
+        }
         Task { await router.routeSasCancelled() }
     }
 
     func didFinish() {
-        guard let router else { return }
+        Self.logger.notice("SDK→didFinish")
+        guard let router else {
+            Self.logger.error("SDK→didFinish: router is nil — DROPPED")
+            return
+        }
         Task { await router.routeSasFinished() }
     }
+
+    static let logger = os.Logger(subsystem: "chat.matron", category: "verification-delegate")
 }

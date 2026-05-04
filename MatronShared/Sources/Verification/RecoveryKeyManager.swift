@@ -3,6 +3,7 @@ import MatrixRustSDK
 import MatronModels
 import MatronStorage
 import MatronSync
+import os
 
 /// Wraps the SDK's recovery-key surface (`Encryption.enableRecovery` /
 /// `Encryption.recover`) and persists the plaintext key to Keychain so a
@@ -125,15 +126,53 @@ public final class RecoveryKeyManager: @unchecked Sendable {
     /// but the SDK has already unlocked encryption so the restore itself
     /// succeeded.
     public func restore(usingKey key: String) async throws {
+        Self.logger.notice("restore: enter (key length=\(key.count, privacy: .public))")
         do {
             if let sdkRecoverOverride {
+                Self.logger.notice("restore: using sdkRecoverOverride (test seam)")
                 try await sdkRecoverOverride(key)
             } else {
+                Self.logger.notice("restore: fetching client")
                 let client = try await provider.client(for: session)
+                // Wave 7 bug #4 fix: switch from `recover(recoveryKey:)`
+                // to `recoverAndFixBackup(recoveryKey:)`. From the SDK
+                // docstring (verified at
+                // `MatronShared/.build/checkouts/matrix-rust-components-swift/Sources/MatrixRustSDK/matrix_sdk_ffi.swift`
+                // line 4068+):
+                //
+                //   "Download identity and key backup information from
+                //    Recovery, and, if the key backup information is
+                //    inconsistent, create a new key backup. This will
+                //    create a new key backup if: key backup is enabled
+                //    and the backup decryption key is missing from
+                //    Recovery, or key backup is enabled and the backup
+                //    decryption key does not match the public key."
+                //
+                // The plain `recover()` left a previously-installed
+                // recovery key in a state where historical UTDs would
+                // not auto-fetch their keys from the server backup —
+                // the user observed "recovery key restore looks like
+                // it succeeds but historical messages don't decrypt."
+                // `recoverAndFixBackup` fixes the inconsistent backup
+                // pointer so the SDK's UTD recovery path can find and
+                // decrypt the historical room keys.
+                //
+                // (Element X iOS additionally configures
+                // `backupDownloadStrategy(.afterDecryptionFailure)` on
+                // their ClientBuilder — see
+                // `ElementX/Sources/Other/Extensions/ClientBuilder.swift`
+                // line 43 — which makes UTD-driven backup downloads
+                // automatic. That's a separate ClientBuilder change we
+                // are deliberately NOT bundling into this Wave;
+                // `recoverAndFixBackup` is the more conservative half
+                // and matches the spec's guidance for restore.)
+                Self.logger.notice("restore: calling encryption().recoverAndFixBackup(recoveryKey:)")
                 let encryption = client.encryption()
-                try await encryption.recover(recoveryKey: key)
+                try await encryption.recoverAndFixBackup(recoveryKey: key)
+                Self.logger.notice("restore: SDK recoverAndFixBackup() returned OK — verificationState now: \(String(describing: encryption.verificationState()), privacy: .public)")
             }
         } catch let recoveryError as RecoveryError {
+            Self.logger.error("restore: SDK threw RecoveryError: \(String(describing: recoveryError), privacy: .public)")
             switch recoveryError {
             case .SecretStorage, .Import:
                 // Both surface when the key is wrong: SecretStorage when the
@@ -161,11 +200,19 @@ public final class RecoveryKeyManager: @unchecked Sendable {
             // SDK round-trip succeeded — encryption is unlocked on this
             // device — but local persistence failed. The user's recovery
             // key is still valid; we just can't show it back to them in
-            // Settings. Surface as `.other` so the UI doesn't tell them
-            // the key was wrong.
-            throw RestoreError.other(underlying: error)
+            // Settings. Don't throw: the meaningful work succeeded, and
+            // throwing here would tell the user the restore failed when
+            // it didn't. Common dev-build cause: unsigned local builds
+            // have no `keychain-access-groups` entitlement loaded so
+            // `SecItemAdd` returns `errSecMissingEntitlement (-34018)`.
+            // Production builds with proper signing should never hit
+            // this. Logged at error level so it's visible in Console.app
+            // / xcrun simctl spawn ... log if it does.
+            Self.logger.error("RecoveryKeyManager.restore: SDK recovery succeeded but local persist failed: \(error.localizedDescription, privacy: .public)")
         }
     }
+
+    private static let logger = os.Logger(subsystem: "chat.matron", category: "recovery-key")
 
     /// Classifies a `ClientError` from the SDK into the appropriate
     /// `RestoreError`. The SDK's `ClientError.Generic(msg:details:)` and

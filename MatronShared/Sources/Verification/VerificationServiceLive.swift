@@ -2,29 +2,65 @@ import Foundation
 import MatrixRustSDK
 import MatronModels
 import MatronSync
+import os
 
 /// Production implementation of `VerificationService`. Wraps the SDK's session
 /// verification surface (`MatrixRustSDK.SessionVerificationController`) behind a
 /// per-request controller cache so the UI can drive accept / confirm / cancel
 /// against an `AsyncStream<SasFlowState>` without holding raw SDK delegate objects.
 ///
+/// # Wave 7 — Element X-aligned rewrite
+///
+/// This file was rewritten to mirror the canonical patterns Element X iOS
+/// uses against the same SDK (matrix-rust-components-swift v26.04.01). Live
+/// integration debugging surfaced six concrete bugs in the prior shape:
+///
+///   1. Eager `client.getSessionVerificationController()` from a `.task` at
+///      sign-in raced ahead of the SDK's first `/keys/query` response, hung
+///      for 7+ seconds, then collided with the lazy fetch from `startSAS`.
+///   2. Multiple concurrent `start()` callers each fetched their own
+///      controller (the `hasSDKController()` idempotency check raced with
+///      itself).
+///   3. The strong delegate retained the service via `sharedController`,
+///      and the SDK retained the delegate — a mild cycle that Element X
+///      explicitly works around with a weak wrapper.
+///   4. `acceptIncoming` called `startSasVerification()` immediately after
+///      `acceptVerificationRequest()`, racing the SDK's internal state
+///      transition and tripping MAC mismatches when emojis appeared.
+///   5. The `MatronApp` hosts fired two parallel `.task` calls (one for
+///      sync, one for verification) where the verification call required
+///      sync to have run first.
+///
+/// Element X's pattern:
+///   * Subscribe to `client.encryption().verificationStateListener(listener:)`
+///     in `init`. Build the SessionVerificationController exactly once, the
+///     first time the listener fires `!= .unknown` (which is the SDK's
+///     proxy for "the user identity is loaded — `getSessionVerificationController`
+///     will not hang"). Cache it.
+///   * Wrap the delegate in a `WeakSessionVerificationControllerProxy` so
+///     the SDK's strong retention of the delegate doesn't pin us.
+///   * On the responder side: `acceptVerificationRequest()` only. The SDK
+///     fires `didAcceptVerificationRequest` when the partner has accepted;
+///     the delegate then calls `startSasVerification()`. (See
+///     `LiveSessionVerificationDelegate.didAcceptVerificationRequest` for
+///     the responder/requester branch.)
+///   * On the requester side: `requestDeviceVerification()` /
+///     `requestUserVerification()` only. NEVER call `startSasVerification()`
+///     (only the responder may, otherwise both sides send
+///     `m.key.verification.start` and the SAS MAC fails).
+///
+/// Element X reference files (read locally, do not WebFetch):
+///   * `ElementX/Sources/Services/Client/ClientProxy.swift` —
+///     `verificationStateListener` + `buildSessionVerificationControllerProxyIfPossible`.
+///   * `ElementX/Sources/Services/SessionVerification/SessionVerificationControllerProxy.swift`
+///     — `WeakSessionVerificationControllerProxy` + delegate set in init / nil in deinit.
+///   * `ElementX/Sources/Screens/Onboarding/SessionVerificationScreen/SessionVerificationScreenStateMachine.swift`
+///     — when `startSasVerification` is fired in the SAS state machine.
+///
 /// Concurrency model: the per-request `controllers` (controllers) and
 /// `continuations` (open SAS streams) are stored on a private `actor` so
 /// reads + writes from accept / confirm / cancel are serialised. The class
 /// itself is `@unchecked Sendable` because all mutation hops through the actor.
-///
-/// Delegate wiring: `start()` fetches `client.getSessionVerificationController()`,
-/// retains it, constructs a `LiveSessionVerificationDelegate`, and registers it
-/// against the SDK. Subsequent SDK callbacks
-/// (`didReceiveVerificationRequest`, `didStartSasVerification`,
-/// `didReceiveVerificationData`, `didFinish`, `didCancel`, `didFail`) route
-/// through this service's `route…` entry points so the UI's open
-/// `AsyncStream<SasFlowState>` continuations advance through the SAS flow.
-/// Without `start()` the service still satisfies its protocol shape (test
-/// surface) but `incomingRequests()` finishes empty and SAS flows hang at
-/// `.requested` because no delegate ever fires `.readyForEmoji([…])`. The
-/// production hosts (`MatronApp` / `MatronMacApp`) call `start()` from a
-/// `.task` block alongside `syncService.start()`.
 ///
 /// Test surface: callers can construct `VerificationServiceLive()` with no args
 /// for unit tests that exercise the controller-cache flow against
@@ -32,8 +68,9 @@ import MatronSync
 /// (`isThisDeviceVerified`, `incomingRequests`, `startSAS`) require a live
 /// `Client` and throw / return empty when the no-arg init was used; they are
 /// integration-tested in Phase 7 against a real homeserver. Tests can also
-/// drive the delegate-routed paths via `routeSasStarted()` / `routeSasData(_:)`
-/// / `routeSasFinished()` / `routeSasCancelled()` directly.
+/// drive the delegate-routed paths via `routeSasStarted()` /
+/// `routeSasData(_:)` / `routeSasFinished()` / `routeSasCancelled()` / the
+/// new `routeAcceptedVerificationRequest()` directly.
 public final class VerificationServiceLive: VerificationService, SessionVerificationFlowRouting, @unchecked Sendable {
     private let provider: ClientProvider?
     private let session: UserSession?
@@ -49,32 +86,32 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
     /// don't carry a flow ID. `acceptIncoming` / `startSAS` set this pointer
     /// when they enter the flow; the delegate looks it up to find the right
     /// continuation to yield against.
+    ///
+    /// `roles[requestID]` records whether THIS side originated the SAS as a
+    /// responder (we accepted an incoming request) or a requester (we sent
+    /// the request). Wave 7: only the responder calls `startSasVerification`
+    /// from `didAcceptVerificationRequest`. The SDK's state machine is
+    /// asymmetric on which side issues `m.key.verification.start`, and
+    /// double-issuing trips the MAC verification on both sides.
     private actor FlowStore {
         var controllers: [String: SessionVerificationControlling] = [:]
         var continuations: [String: AsyncStream<SasFlowState>.Continuation] = [:]
         var activeFlowID: String?
+        var roles: [String: FlowRole] = [:]
         /// Continuation for the long-lived `incomingRequests()` stream. One per
         /// service instance — the SDK's delegate fires
         /// `didReceiveVerificationRequest` for every incoming request the
         /// session sees, and the `VerificationCenter` orchestrator drains
-        /// them into its `pending` array. Set by `incomingRequests()`,
-        /// cleared on `stop()`.
+        /// them into its `pending` array.
         var incomingContinuation: AsyncStream<VerificationRequestSummary>.Continuation?
         /// The SDK's shared `SessionVerificationController`. Retained here so
         /// the registered delegate (which the SDK only weakly tracks via the
-        /// callback table) outlives the `start()` call site. Cached so
-        /// `start()` is idempotent — second call no-ops if already set.
+        /// callback table) outlives the construction site. Cached so we never
+        /// fetch a second controller for the same session.
         var sdkController: MatrixRustSDK.SessionVerificationController?
 
         /// Returns the previous controller (if any) so the caller can
-        /// best-effort cancel it before it falls out of the dict. The
-        /// SDK's session-verification controller is a singleton per
-        /// session, so the typical case is that the previous and new
-        /// controller are the SAME wrapped instance and the cancel is a
-        /// no-op (post-cancel the SDK is in a clean idle state ready to
-        /// re-arm). The return value is documented because M3's caller
-        /// uses it to drive that cancel asynchronously without holding
-        /// the actor lock.
+        /// best-effort cancel it before it falls out of the dict.
         func register(controller: SessionVerificationControlling, for requestID: String) -> SessionVerificationControlling? {
             let previous = controllers[requestID]
             controllers[requestID] = controller
@@ -90,14 +127,7 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
         /// `for await` loop terminates instead of silently leaking. M3
         /// expert-QA fix: when the user taps "Verify with another device",
         /// cancels the sheet, then taps it again, the second `startSAS`
-        /// re-enters here for the same `requestID`. The prior continuation
-        /// (which the dismissed sheet's view-model is no longer observing
-        /// but which still lives in this dict) used to be silently
-        /// overwritten — its `for await new in stream` loop never
-        /// terminated because the producer never finished it. Surfacing
-        /// `.cancelled(reason:)` then `finish()` is the only way to drain
-        /// that loop. Same risk for any caller doing a retry against the
-        /// same `requestID`.
+        /// re-enters here for the same `requestID`.
         func setContinuation(_ continuation: AsyncStream<SasFlowState>.Continuation, for requestID: String) {
             if let previous = continuations[requestID] {
                 previous.yield(.cancelled(reason: "Replaced by new flow"))
@@ -117,6 +147,7 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
         func clear(requestID: String) {
             controllers.removeValue(forKey: requestID)
             continuations.removeValue(forKey: requestID)
+            roles.removeValue(forKey: requestID)
             if activeFlowID == requestID {
                 activeFlowID = nil
             }
@@ -135,17 +166,28 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
             return (id, cont)
         }
 
+        func activeRole() -> FlowRole? {
+            guard let id = activeFlowID else { return nil }
+            return roles[id]
+        }
+
+        func activeFlowIDValue() -> String? { activeFlowID }
+
+        func setRole(_ role: FlowRole, for requestID: String) {
+            roles[requestID] = role
+        }
+
         func setIncomingContinuation(_ continuation: AsyncStream<VerificationRequestSummary>.Continuation?) {
-            // Finishing the previous continuation (if any) keeps a re-entered
-            // `incomingRequests()` consumer from leaking the old stream. The
-            // production VerificationCenter only calls this once per session,
-            // but tests / preview re-mounts could drive a second call.
             incomingContinuation?.finish()
             incomingContinuation = continuation
         }
 
         func setSDKController(_ controller: MatrixRustSDK.SessionVerificationController?) {
             sdkController = controller
+        }
+
+        func getSDKController() -> MatrixRustSDK.SessionVerificationController? {
+            sdkController
         }
 
         func hasSDKController() -> Bool {
@@ -156,34 +198,60 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
     private let store = FlowStore()
 
     /// Strong reference to the registered SDK delegate. The SDK retains the
-    /// delegate via its callback handle map, but holding it here too keeps the
-    /// reference graph explicit and lets `start()` no-op cleanly on a second
-    /// call (we test for the SDK controller having been fetched, not for the
-    /// delegate being non-nil — same idempotency check, but stored separately
-    /// so the `weak` link from the delegate back to `self` doesn't risk
-    /// premature deallocation if the SDK ever drops its callback handle).
-    private var registeredDelegate: LiveSessionVerificationDelegate?
+    /// delegate via its callback handle map; we hold it here too so deinit
+    /// can call `setDelegate(nil)` cleanly. Element X's
+    /// `WeakSessionVerificationControllerProxy` already breaks the back-edge
+    /// (the wrapper holds `weak proxy`), so this strong reference does not
+    /// create a cycle.
+    private var registeredDelegate: WeakSessionVerificationControllerProxy?
 
-    /// Production init. Pass the shared `ClientProvider` + the active `UserSession`.
+    /// Retains the verification-state listener handle. Released on deinit.
+    /// `periphery:ignore` style — only kept for retention.
+    private var verificationStateListenerHandle: TaskHandle?
+
+    /// Dedupe handle for the controller-build path. Wave 7 bug #2 fix:
+    /// concurrent `awaitController()` callers all await the same Task<>,
+    /// so we only ever fetch + register the SDK controller once.
+    private var buildTask: Task<Void, Error>?
+
+    /// Production init. Subscribes to the SDK's verification-state listener;
+    /// the controller is built lazily the first time the listener fires
+    /// `!= .unknown` (i.e. when the user identity is in the local crypto
+    /// store and `getSessionVerificationController()` will not hang).
     public init(provider: ClientProvider, session: UserSession) {
         self.provider = provider
         self.session = session
+        Task { [weak self] in
+            await self?.installVerificationStateListener()
+        }
     }
 
-    /// Test-only init: no SDK client. Use this when exercising the controller-cache
-    /// flow against `FakeSessionVerificationController`. SDK-bound surfaces will
-    /// throw / produce empty streams.
+    /// Test-only init: no SDK client. Use this when exercising the
+    /// controller-cache flow against `FakeSessionVerificationController`.
+    /// SDK-bound surfaces will throw / produce empty streams.
     init() {
         self.provider = nil
         self.session = nil
     }
 
+    deinit {
+        // Tear down the listener so the SDK doesn't keep firing into a
+        // deallocated service. The weak-wrapper delegate (held by the
+        // SDK's callback handle map) already tolerates the service
+        // disappearing — its `weak router` nils out and every callback
+        // becomes a clean no-op. We can't `setDelegate(nil)` from here
+        // because the SDK controller lives on the FlowStore actor and
+        // deinit isn't `async`; the cached controller drops with the
+        // actor when the service is released, which detaches the
+        // delegate as a side-effect of the SDK's own retain-graph
+        // teardown.
+        verificationStateListenerHandle?.cancel()
+    }
+
     // MARK: - Test surface
 
     /// Test seam: register a controller for a given request ID. Production code
-    /// populates this from `IncomingVerificationListening.onUpdate`.
-    /// Returns the previously-registered controller (if any) — M3 callers
-    /// best-effort cancel that controller. Tests typically discard.
+    /// populates this from the SDK delegate's `didReceiveVerificationRequest`.
     @discardableResult
     func register(controller: SessionVerificationControlling, for requestID: String) async -> SessionVerificationControlling? {
         await store.register(controller: controller, for: requestID)
@@ -195,43 +263,40 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
     }
 
     /// Test seam: set the in-progress flow ID so subsequent `routeSas…`
-    /// callbacks find the right continuation. Production code sets this
-    /// inside `acceptIncoming` / `startSAS` once those flows have opened
-    /// their continuation.
+    /// callbacks find the right continuation.
     func setActiveFlowID(_ id: String?) async {
         await store.setActiveFlowID(id)
     }
 
+    /// Test seam: set a flow role so `routeAcceptedVerificationRequest`
+    /// can branch responder/requester deterministically in unit tests.
+    func setFlowRole(_ role: FlowRole, for requestID: String) async {
+        await store.setRole(role, for: requestID)
+    }
+
     // MARK: - Lifecycle
 
-    /// Idempotent. Fetches the SDK's session-verification controller, retains
-    /// it on the FlowStore, and registers `LiveSessionVerificationDelegate`
-    /// so subsequent SDK callbacks
-    /// (`didReceiveVerificationRequest` / `didStartSasVerification` /
-    /// `didReceiveVerificationData` / `didFinish` / `didCancel` / `didFail`)
-    /// route through this service. Without this call, `incomingRequests()`
-    /// finishes empty and SAS flows hang at `.requested` (the delegate is
-    /// the only producer of `.readyForEmoji([…])` / `.verified` / `.cancelled`).
+    /// Backward-compat helper retained for the `MatronApp` host's
+    /// `.task { try? await dependencies.verificationService(for: session).start() }`
+    /// blocks. Wave 7 made this a thin wait-for-controller wrapper —
+    /// the actual subscription is installed in `init` and the controller
+    /// builds reactively when the SDK's verification-state listener fires
+    /// `!= .unknown`. Calling this is no longer required for correctness;
+    /// the hosts now drop the `.task` calls (Wave 7 bug #7 fix).
     ///
-    /// Production hosts (`MatronApp` / `MatronMacApp`) call this from a
-    /// `.task` alongside `syncService.start()`. Safe to call from any actor —
-    /// hops to the FlowStore for the idempotency check.
+    /// Kept for the test surface and any future caller that explicitly
+    /// wants to block until the controller is wired.
     public func start() async throws {
-        guard let provider, let session else {
+        Self.logger.notice("start: enter (Wave 7 — wait-for-controller helper)")
+        guard provider != nil, session != nil else {
+            Self.logger.error("start: notConfigured (provider/session nil)")
             throw VerificationError.notConfigured
         }
-        // Idempotency: if the SDK controller is already cached, the delegate is
-        // already wired. Re-firing on a SwiftUI view remount or a `.task`
-        // re-trigger must not double-register, which would cause two delegate
-        // notifications per SDK event.
-        if await store.hasSDKController() { return }
-        let client = try await provider.client(for: session)
-        let controller = try await client.getSessionVerificationController()
-        await store.setSDKController(controller)
-        let delegate = LiveSessionVerificationDelegate(router: self, sharedController: controller)
-        self.registeredDelegate = delegate
-        controller.setDelegate(delegate: delegate)
+        try await awaitController()
+        Self.logger.notice("start: controller ready — exit")
     }
+
+    static let logger = os.Logger(subsystem: "chat.matron", category: "verification-live")
 
     // MARK: - VerificationService
 
@@ -243,22 +308,6 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
         return client.encryption().verificationState() == .verified
     }
 
-    /// Per-user verification check for the chat-view banner (spec §7.3, §7.5).
-    /// Looks up the SDK's `UserIdentity` for `matrixID` and reads its
-    /// `isVerified()` flag — that's already account-scoped (the SDK requires
-    /// our own identity to be verified for another user's identity to count
-    /// as verified, so the banner correctly hides only when both sides are
-    /// trusted). `fallbackToServer: false` avoids blocking the banner on a
-    /// network round-trip; the local crypto store has the identity once any
-    /// prior to-device or /keys/query has landed (which the sliding-sync
-    /// warmup drives).
-    ///
-    /// Returns `.unknown` when the identity isn't in the local crypto store
-    /// yet — that's the cold-start case where sliding-sync hasn't warmed up.
-    /// The prior `Bool` shape collapsed `.unknown` into "unverified", causing
-    /// the per-bot banner to flash on every fresh chat open until the local
-    /// store warmed up. Callers hide the banner on `.unknown` and re-evaluate
-    /// on the next sync tick (expert-QA finding M2).
     public func isUserVerified(matrixID: String) async throws -> UserVerificationResult {
         guard let provider, let session else {
             throw VerificationError.notConfigured
@@ -268,21 +317,12 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
             userId: matrixID,
             fallbackToServer: false
         ) else {
-            // Identity not yet in the local crypto store. Caller hides the
-            // banner and re-checks on the next sync tick — see §7.5 trust
-            // posture in the protocol comment.
             return .unknown
         }
         return identity.isVerified() ? .verified : .unverified
     }
 
     public func incomingRequests() -> AsyncStream<VerificationRequestSummary> {
-        // Stash a continuation on the FlowStore so the SDK delegate's
-        // `didReceiveVerificationRequest` can yield into it. Without `start()`
-        // having been called, no delegate exists and the stream never produces
-        // — that's the test-no-arg-init / not-configured branch the protocol
-        // contract already documents. `onTermination` clears the FlowStore
-        // pointer so a cancelled stream doesn't hold the continuation alive.
         AsyncStream { continuation in
             let store = self.store
             Task {
@@ -295,8 +335,10 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
     }
 
     public func startSAS(withUser userID: String, deviceID: String?) -> AsyncStream<SasFlowState> {
-        AsyncStream { continuation in
-            guard let provider, let session else {
+        Self.logger.notice("startSAS: enter userID=\(userID, privacy: .public) deviceID=\(deviceID ?? "nil", privacy: .public)")
+        return AsyncStream { continuation in
+            guard provider != nil, session != nil else {
+                Self.logger.error("startSAS: notConfigured")
                 continuation.yield(.cancelled(reason: "VerificationServiceLive not configured with a Client"))
                 continuation.finish()
                 return
@@ -304,52 +346,44 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
             let task = Task { [weak self] in
                 guard let self else { return }
                 do {
-                    let client = try await provider.client(for: session)
-                    let controller = try await client.getSessionVerificationController()
+                    // Wait for the SDK controller to be wired (Wave 7
+                    // bug #1 + #2 fix: lazy + deduped). The
+                    // verification-state listener installed in init
+                    // builds the controller the first time the listener
+                    // fires `!= .unknown`; if the listener hasn't
+                    // landed yet, this awaits it.
+                    try await self.awaitController()
+                    guard let controller = await self.store.getSDKController() else {
+                        throw VerificationError.notConfigured
+                    }
+                    Self.logger.notice("startSAS: using cached SDK controller (handle: \(ObjectIdentifier(controller).hashValue, privacy: .public))")
                     let wrapped = LiveSessionVerificationController(controller)
-                    // Use the user ID as the cache key for self-verification flows.
-                    // Per-flow controllers replace this entry when a delegate fires.
-                    // M3: capture the previous controller (if any) and best-effort
-                    // cancel it on the SDK so a re-tap of "Verify with another
-                    // device" doesn't leave the old SDK request orphaned. The
-                    // SDK's session-verification controller is a singleton per
-                    // session, so the previous and new wrapped instances point
-                    // at the same SDK controller in practice — the cancel is a
-                    // no-op when the SDK is already idle. `try?` because a
-                    // partner-side cancel that already finished the flow would
-                    // throw here, and we don't want a stale-cancel error to
-                    // mask the new flow's setup. `setContinuation` below
-                    // separately finishes the prior continuation — see
-                    // `FlowStore.setContinuation` for that half of the fix.
                     let priorController = await self.store.register(controller: wrapped, for: userID)
                     if let priorController {
                         try? await priorController.cancelVerification()
                     }
                     await self.store.setContinuation(continuation, for: userID)
-                    // Mark this as the in-progress flow so the delegate's
-                    // lifecycle callbacks know which continuation to drive.
-                    // The SDK's session-verification controller is a singleton
-                    // per session, so only one flow can be active at a time —
-                    // the same activeFlowID slot is reused across flows.
+                    // Wave 7 bug #6: the requester side must NEVER call
+                    // `startSasVerification()`. Mark this flow as a
+                    // requester so the delegate's
+                    // `didAcceptVerificationRequest` handler skips the
+                    // SAS-start call for this flow.
+                    await self.store.setRole(.requester, for: userID)
                     await self.store.setActiveFlowID(userID)
                     if let deviceID, !deviceID.isEmpty {
-                        // Targeting a specific user/device pair: request user verification
-                        // (the SDK's per-device targeting happens through the verification
-                        // request payload, not this method's signature in v26).
+                        Self.logger.notice("startSAS: calling requestUserVerificationIfPossible(\(userID, privacy: .public))")
                         try await wrapped.requestUserVerificationIfPossible(userID: userID)
                     } else {
+                        Self.logger.notice("startSAS: calling requestDeviceVerificationIfPossible()")
                         try await wrapped.requestDeviceVerificationIfPossible()
                     }
+                    Self.logger.notice("startSAS: SDK request returned — yielding .requested")
                     continuation.yield(.requested)
                     // Further state transitions (`.readyForEmoji`, `.verified`,
-                    // `.cancelled`) arrive via the `SessionVerificationControllerDelegate`
-                    // wired by `start()` and routed through `routeSas…`.
+                    // `.cancelled`) arrive via the SDK delegate registered
+                    // by `installVerificationStateListener`'s build path
+                    // and routed through `routeSas…`.
                 } catch {
-                    // Bugbot caught: register/setContinuation happen *before*
-                    // the throwing SDK call. Without `clear()` here, the
-                    // FlowStore retains stale controller + finished-continuation
-                    // entries keyed by userID. Mirrors the cleanup that
-                    // acceptIncoming / confirmEmojiMatch / cancel already do.
                     await self.store.clear(requestID: userID)
                     continuation.yield(.cancelled(reason: error.localizedDescription))
                     continuation.finish()
@@ -370,16 +404,22 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
                     await self.store.clearContinuation(for: requestID)
                     return
                 }
-                // Mark this as the in-progress flow so the delegate's
-                // lifecycle callbacks know which continuation to drive.
+                // Wave 7 bug #5 fix: only call `acceptVerificationRequest()`
+                // here. The SDK fires `didAcceptVerificationRequest` after
+                // the partner has accepted (or after the local accept lands,
+                // depending on the flow direction); the delegate then calls
+                // `startSasVerification()` for us. Calling
+                // `startSasVerification()` immediately races the SDK's
+                // internal state and trips the partner-side MAC verification.
+                await self.store.setRole(.responder, for: requestID)
                 await self.store.setActiveFlowID(requestID)
                 do {
                     try await controller.acceptVerificationRequest()
                     continuation.yield(.requested)
-                    try await controller.startSasVerification()
-                    // Further `.readyForEmoji` / `.awaitingConfirmation` updates arrive
-                    // via the SDK delegate (wired by `start()`). Stream stays open until
-                    // the delegate's `didFinish` / `didCancel` finishes it.
+                    // No `startSasVerification()` here. See
+                    // `LiveSessionVerificationDelegate.didAcceptVerificationRequest`
+                    // → `routeAcceptedVerificationRequest()` for the
+                    // responder-side SAS-start call.
                 } catch {
                     continuation.yield(.cancelled(reason: error.localizedDescription))
                     continuation.finish()
@@ -391,23 +431,19 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
     }
 
     public func confirmEmojiMatch(requestID: String) async throws {
+        Self.logger.notice("confirmEmojiMatch: enter requestID=\(requestID, privacy: .public)")
         guard let controller = await store.controller(for: requestID) else {
+            Self.logger.error("confirmEmojiMatch: NO CONTROLLER for requestID")
             throw VerificationError.unknownRequest(requestID)
         }
-        // Tell the SDK we approve. The SDK fires `didFinish` (or `didFail`/
-        // `didCancel`) which `routeSasFinished` translates into `.verified`
-        // on the open continuation. We deliberately do NOT yield `.verified`
-        // here — that would lie to the caller about an SDK round-trip that
-        // hasn't completed yet, and it's the security AND UX bug B1 surfaced
-        // (a hypothetical "confirm before emoji compare" path would let the
-        // user "verify" without the SDK signing anything).
+        Self.logger.notice("confirmEmojiMatch: calling approveVerification()")
         try await controller.approveVerification()
+        Self.logger.notice("confirmEmojiMatch: approveVerification() returned OK")
     }
 
     public func cancel(requestID: String, reason: String) async throws {
+        Self.logger.notice("cancel: enter requestID=\(requestID, privacy: .public) reason=\(reason, privacy: .public)")
         guard let controller = await store.controller(for: requestID) else {
-            // Nothing to cancel — drain any waiting continuation and exit. Idempotent
-            // by design: cancel() is safe to call after the flow already ended.
             if let continuation = await store.continuation(for: requestID) {
                 continuation.yield(.cancelled(reason: reason))
                 continuation.finish()
@@ -415,14 +451,6 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
             await store.clearContinuation(for: requestID)
             return
         }
-        // We yield `.cancelled` locally with the caller-supplied reason
-        // before awaiting the SDK so the UI can dismiss immediately even if
-        // the SDK's network round-trip is slow or the SDK silently drops the
-        // delegate's `didCancel` (the SDK doesn't always re-fire `didCancel`
-        // for a cancellation we initiated locally — its source-of-truth for
-        // the user-facing reason is whatever string we pass in, not the
-        // delegate's argless callback). The delegate's `didCancel` is still
-        // wired so partner-side cancellations also reach the UI.
         if let continuation = await store.continuation(for: requestID) {
             continuation.yield(.cancelled(reason: reason))
             continuation.finish()
@@ -435,8 +463,9 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
 
     /// Routes the SDK delegate's `didReceiveVerificationRequest` callback
     /// into the FlowStore: registers the (single, shared) SDK controller
-    /// under the new flow ID, marks it active, and yields a summary on the
-    /// long-lived `incomingRequests()` stream so the
+    /// under the new flow ID, marks it active, marks the role as responder
+    /// (we are receiving someone else's request), and yields a summary on
+    /// the long-lived `incomingRequests()` stream so the
     /// `VerificationCenter` banner picks it up.
     func routeIncomingRequest(
         requestID: String,
@@ -444,89 +473,216 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
         otherDeviceID: String?,
         controller: SessionVerificationControlling
     ) async {
+        Self.logger.notice("routeIncomingRequest: requestID=\(requestID, privacy: .public) from=\(otherUserID, privacy: .public)")
         let summary = VerificationRequestSummary(
             id: requestID,
             otherUserID: otherUserID,
             otherDeviceID: otherDeviceID,
             createdAt: Date()
         )
-        await store.register(controller: controller, for: requestID)
-        // The arriving request is now the active flow. The user accepting
-        // the banner via `acceptIncoming(requestID:)` is what opens a
-        // continuation against this entry; `setActiveFlowID` here means the
-        // delegate's subsequent `didStartSasVerification` /
-        // `didReceiveVerificationData` find the right continuation.
+        _ = await store.register(controller: controller, for: requestID)
+        await store.setRole(.responder, for: requestID)
         await store.setActiveFlowID(requestID)
         if let cont = await store.incomingContinuation {
             cont.yield(summary)
         }
     }
 
-    /// Routes the SDK delegate's `didStartSasVerification` callback. The flow
-    /// has transitioned from request-acknowledged into SAS-active; no
-    /// state change to surface to the UI yet (the next `didReceiveVerificationData`
-    /// is what drives `.readyForEmoji([…])`). Kept as a routing entry point
-    /// for symmetry with the rest of the delegate surface and to give tests
-    /// a clear hook for asserting the lifecycle progressed.
+    /// Routes the SDK delegate's `didAcceptVerificationRequest` callback.
+    /// Wave 7 bug #5+#6 fix: this is where the responder side issues
+    /// `startSasVerification()`. The requester side must NOT issue it
+    /// here (only the responder may, otherwise both sides send
+    /// `m.key.verification.start` and the SAS MAC fails).
+    ///
+    /// The role is set by `acceptIncoming` (responder),
+    /// `routeIncomingRequest` (responder, before accept lands), or
+    /// `startSAS` (requester).
+    func routeAcceptedVerificationRequest() async {
+        Self.logger.notice("routeAcceptedVerificationRequest: enter")
+        let role = await store.activeRole()
+        let activeID = await store.activeFlowIDValue()
+        Self.logger.notice("routeAcceptedVerificationRequest: role=\(String(describing: role), privacy: .public) activeFlowID=\(activeID ?? "nil", privacy: .public)")
+        guard role == .responder else {
+            Self.logger.notice("routeAcceptedVerificationRequest: skip startSasVerification — not responder")
+            return
+        }
+        guard let activeID, let controller = await store.controller(for: activeID) else {
+            Self.logger.error("routeAcceptedVerificationRequest: NO CONTROLLER for active flow")
+            return
+        }
+        do {
+            Self.logger.notice("routeAcceptedVerificationRequest: calling startSasVerification() (responder)")
+            try await controller.startSasVerification()
+            Self.logger.notice("routeAcceptedVerificationRequest: startSasVerification() returned OK")
+        } catch {
+            Self.logger.error("routeAcceptedVerificationRequest: startSasVerification() threw: \(error.localizedDescription, privacy: .public)")
+            if let cont = await store.continuation(for: activeID) {
+                cont.yield(.cancelled(reason: error.localizedDescription))
+                cont.finish()
+            }
+            await store.clear(requestID: activeID)
+        }
+    }
+
+    /// Routes the SDK delegate's `didStartSasVerification` callback.
     func routeSasStarted() async {
-        // Intentionally no continuation yield: `.requested` was already
-        // yielded by `acceptIncoming` / `startSAS` after we knew the SDK
-        // had accepted the flow. The next visible-to-UI state is
-        // `.readyForEmoji([…])` from `routeSasData`.
+        let active = await store.activeContinuation()
+        Self.logger.notice("routeSasStarted: activeFlowID=\(active?.id ?? "nil", privacy: .public)")
     }
 
     /// Routes the SDK delegate's `didReceiveVerificationData(SessionVerificationData)`.
-    /// Only the `.emojis` variant is mapped — the `.decimals` variant exists
-    /// in the SDK for legacy fallback but the spec mandates emoji SAS, so we
-    /// surface that path as `.cancelled(reason:)` rather than silently
-    /// rendering nothing.
     func routeSasData(_ data: SessionVerificationData) async {
-        guard let active = await store.activeContinuation() else { return }
+        Self.logger.notice("routeSasData: enter")
+        guard let active = await store.activeContinuation() else {
+            Self.logger.error("routeSasData: NO ACTIVE CONTINUATION — drop on floor")
+            return
+        }
+        Self.logger.notice("routeSasData: activeFlowID=\(active.id, privacy: .public)")
         switch data {
         case .emojis(let emojis, _):
             let mapped = emojis.map { SasEmoji(symbol: $0.symbol(), description: $0.description()) }
+            Self.logger.notice("routeSasData: yielding .readyForEmoji(count: \(mapped.count, privacy: .public))")
             active.continuation.yield(.readyForEmoji(mapped))
         case .decimals:
-            // Phase 3 ships emoji-only SAS per spec §7.1. The SDK's decimal
-            // fallback is reserved for very old peers; surface as a
-            // cancellation so the UI dismisses cleanly rather than hanging.
             active.continuation.yield(.cancelled(reason: "Decimal SAS is not supported; use a peer that speaks emoji SAS."))
             active.continuation.finish()
             await store.clear(requestID: active.id)
         }
     }
 
-    /// Routes the SDK delegate's `didFinish` callback. The SAS flow has
-    /// completed successfully; the SDK has signed the cross-signing
-    /// material on both sides. Yield `.verified` and clear the FlowStore
-    /// entry for this flow.
+    /// Routes the SDK delegate's `didFinish` callback.
     func routeSasFinished() async {
-        guard let active = await store.activeContinuation() else { return }
+        Self.logger.notice("routeSasFinished: enter")
+        guard let active = await store.activeContinuation() else {
+            Self.logger.error("routeSasFinished: NO ACTIVE CONTINUATION")
+            return
+        }
+        Self.logger.notice("routeSasFinished: yielding .verified for \(active.id, privacy: .public)")
         active.continuation.yield(.verified)
         active.continuation.finish()
         await store.clear(requestID: active.id)
     }
 
-    /// Routes the SDK delegate's `didCancel` callback. Either side
-    /// cancelled the flow. The SDK doesn't surface a reason on this
-    /// callback, so we use a generic string — the local-cancel path
-    /// (`cancel(requestID:reason:)`) yields its own reason before this
-    /// fires, so this branch only matters for partner-initiated cancels.
+    /// Routes the SDK delegate's `didCancel` callback.
     func routeSasCancelled() async {
-        guard let active = await store.activeContinuation() else { return }
+        Self.logger.notice("routeSasCancelled: enter")
+        guard let active = await store.activeContinuation() else {
+            Self.logger.error("routeSasCancelled: NO ACTIVE CONTINUATION")
+            return
+        }
+        Self.logger.notice("routeSasCancelled: yielding for \(active.id, privacy: .public)")
         active.continuation.yield(.cancelled(reason: "Verification cancelled"))
         active.continuation.finish()
         await store.clear(requestID: active.id)
     }
 
-    /// Routes the SDK delegate's `didFail` callback. Surfaced as a
-    /// `.cancelled(reason:)` with a fail-specific string so the UI
-    /// distinguishes failure from explicit cancellation in error logs.
+    /// Routes the SDK delegate's `didFail` callback.
     func routeSasFailed() async {
-        guard let active = await store.activeContinuation() else { return }
+        Self.logger.notice("routeSasFailed: enter")
+        guard let active = await store.activeContinuation() else {
+            Self.logger.error("routeSasFailed: NO ACTIVE CONTINUATION")
+            return
+        }
+        Self.logger.notice("routeSasFailed: yielding for \(active.id, privacy: .public)")
         active.continuation.yield(.cancelled(reason: "Verification failed"))
         active.continuation.finish()
         await store.clear(requestID: active.id)
+    }
+
+    // MARK: - Private — Wave 7 verification-state listener + lazy controller build
+
+    /// Subscribes to `client.encryption().verificationStateListener(...)`
+    /// and keeps the `TaskHandle` alive for the lifetime of the service.
+    /// On every non-`.unknown` state change, attempts to build the
+    /// SessionVerificationController (idempotent — only the first call
+    /// actually fetches; subsequent calls no-op via the dedupe Task<>).
+    ///
+    /// `.unknown` is the SDK's way of saying "the user identity isn't yet
+    /// in the local crypto store — `getSessionVerificationController()`
+    /// would hang waiting for `/keys/query`." Element X uses this exact
+    /// signal as the "safe to fetch" gate
+    /// (see `ClientProxy.updateVerificationState`).
+    private func installVerificationStateListener() async {
+        guard let provider, let session else { return }
+        do {
+            let client = try await provider.client(for: session)
+            // Snapshot the current state in case the listener is slow to
+            // fire its initial value — Element X's
+            // `await updateVerificationState(client.encryption().verificationState())`
+            // does the same one-shot poll alongside the listener install.
+            let initial = client.encryption().verificationState()
+            Self.logger.notice("installVerificationStateListener: initial state=\(String(describing: initial), privacy: .public)")
+            if initial != .unknown {
+                Task { [weak self] in
+                    try? await self?.awaitController()
+                }
+            }
+            verificationStateListenerHandle = client.encryption().verificationStateListener(
+                listener: VerificationStateSDKListener { [weak self] state in
+                    Self.logger.notice("verificationStateListener: fired with \(String(describing: state), privacy: .public)")
+                    guard state != .unknown else { return }
+                    Task { [weak self] in
+                        try? await self?.awaitController()
+                    }
+                }
+            )
+        } catch {
+            Self.logger.error("installVerificationStateListener: failed to fetch client: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Idempotent + concurrent-safe controller-build path. Every caller
+    /// awaits the same in-flight `Task<Void, Error>?` so the SDK is never
+    /// asked for a second `getSessionVerificationController()` (Wave 7
+    /// bug #2 fix). MainActor-isolated so the `buildTask` mutation is
+    /// safe without an extra lock.
+    @MainActor
+    private func awaitController() async throws {
+        if await store.hasSDKController() {
+            return
+        }
+        if let buildTask {
+            try await buildTask.value
+            return
+        }
+        let task = Task<Void, Error> { [weak self] in
+            guard let self else { return }
+            try await self.buildController()
+        }
+        buildTask = task
+        do {
+            try await task.value
+            buildTask = nil
+        } catch {
+            buildTask = nil
+            throw error
+        }
+    }
+
+    /// Single-shot SDK-controller fetch + delegate registration. Called
+    /// only from `awaitController` (which dedupes concurrent callers via
+    /// `buildTask`). Mirrors Element X's
+    /// `buildSessionVerificationControllerProxyIfPossible`.
+    private func buildController() async throws {
+        guard let provider, let session else {
+            throw VerificationError.notConfigured
+        }
+        if await store.hasSDKController() {
+            Self.logger.notice("buildController: idempotent — controller already cached")
+            return
+        }
+        let client = try await provider.client(for: session)
+        Self.logger.notice("buildController: fetching SessionVerificationController")
+        let controller = try await client.getSessionVerificationController()
+        Self.logger.notice("buildController: fetched (handle: \(ObjectIdentifier(controller).hashValue, privacy: .public))")
+        await store.setSDKController(controller)
+        let weakDelegate = WeakSessionVerificationControllerProxy(
+            router: self,
+            sharedController: controller
+        )
+        self.registeredDelegate = weakDelegate
+        controller.setDelegate(delegate: weakDelegate)
+        Self.logger.notice("buildController: setDelegate completed")
     }
 }
 
@@ -535,6 +691,18 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
 public enum VerificationError: Error, Equatable {
     case unknownRequest(String)
     case notConfigured
+}
+
+/// Whether THIS side of an in-progress SAS originated as a responder (we
+/// accepted an incoming request) or a requester (we sent the request).
+/// Wave 7 bug #6: only the responder may call `startSasVerification()`
+/// from the SDK's `didAcceptVerificationRequest` callback. Both sides
+/// calling it sends two `m.key.verification.start` events and trips the
+/// SAS MAC verification on both ends. File-scoped so the FlowStore actor
+/// and the public test seam can share the same nominal type.
+enum FlowRole {
+    case responder
+    case requester
 }
 
 /// Production adapter — bridges our protocol to the real SDK type. The SDK's
@@ -551,14 +719,27 @@ final class LiveSessionVerificationController: SessionVerificationControlling, @
     func declineVerification()       async throws { try await inner.declineVerification() }
     func cancelVerification()        async throws { try await inner.cancelVerification() }
 
-    /// Convenience for `startSAS` when targeting the current user's other devices.
-    /// Kept on the live adapter (not the protocol) because tests don't need this
-    /// path — they exercise accept/confirm/cancel against `FakeSessionVerificationController`.
     func requestDeviceVerificationIfPossible() async throws {
         try await inner.requestDeviceVerification()
     }
 
     func requestUserVerificationIfPossible(userID: String) async throws {
         try await inner.requestUserVerification(userId: userID)
+    }
+}
+
+/// Single-purpose `VerificationStateListener` adapter. We don't import
+/// Element X's generic `SDKListener<T>` (it's tied to the `MXLog` style +
+/// the rest of their helper graph); a one-shot adapter is simpler and
+/// mirrors the small surface we use.
+final class VerificationStateSDKListener: VerificationStateListener, @unchecked Sendable {
+    private let onUpdateClosure: (VerificationState) -> Void
+
+    init(_ onUpdateClosure: @escaping (VerificationState) -> Void) {
+        self.onUpdateClosure = onUpdateClosure
+    }
+
+    func onUpdate(status: VerificationState) {
+        onUpdateClosure(status)
     }
 }

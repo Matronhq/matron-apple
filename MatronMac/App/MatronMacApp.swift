@@ -104,14 +104,16 @@ struct MatronMacApp: App {
                         .environment(\.appDependencies, dependencies)
                         .environment(\.currentSession, session)
                         .task { try? await dependencies.syncService(for: session).start() }
-                        // See iOS `MatronApp` for full rationale —
-                        // VerificationServiceLive.start() registers the
-                        // SDK delegate that drives `incomingRequests()` +
-                        // every `.readyForEmoji([…])` / `.verified` /
-                        // `.cancelled` SAS transition. Without it, the
-                        // sidebar banner is silent and every SAS sheet
-                        // hangs forever (expert-QA finding B1).
-                        .task { try? await dependencies.verificationService(for: session).start() }
+                        // Wave 7 bug #1+#7: dropped the eager
+                        // `verificationService(for: session).start()`
+                        // call. The service now subscribes to
+                        // `client.encryption().verificationStateListener(...)`
+                        // in its `init` and builds the SDK controller
+                        // lazily once the listener fires
+                        // `!= .unknown`. See iOS `MatronApp` for full
+                        // rationale — same pattern, mirrors Element X's
+                        // `ClientProxy.updateVerificationState` →
+                        // `buildSessionVerificationControllerProxyIfPossible`.
                         // B2/M5: build the VerificationCenter exactly
                         // once per session. Keying on `session.userID`
                         // means the task only re-fires on a user switch
@@ -144,9 +146,10 @@ struct MatronMacApp: App {
                         // post-verify branch; the verify-with-other-device flow
                         // would hang because nothing was talking to the server.
                         .task { try? await dependencies.syncService(for: session).start() }
-                        // Mirrors the post-verify branch — see iOS
-                        // `MatronApp` for full rationale (expert-QA B1).
-                        .task { try? await dependencies.verificationService(for: session).start() }
+                        // Wave 7 bug #1+#7: dropped the eager
+                        // `verificationService(for: session).start()`
+                        // call. See the post-verify branch above for
+                        // full rationale.
                     }
                 } else {
                     MacSignInView(
@@ -226,42 +229,62 @@ struct MatronMacApp: App {
         // never realises persistence silently failed. Probe early and
         // surface a hard error in the UI before the user can sign in.
         //
-        // Wrapped in a 2s timeout so a hypothetical Keychain unlock prompt
-        // (or system Keychain stall) doesn't leave the app on the
-        // indefinite ProgressView. Plain `Task.sleep` race against the
-        // probe via `withThrowingTaskGroup` — first-finish-wins.
-        do {
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                group.addTask {
-                    // Centralised factory — same service the recovery-key
-                    // flow writes to. Wave 5 reverted the explicit
-                    // `accessGroup:` half (the `$(AppIdentifierPrefix)…`
-                    // literal was bug #3 — see `KeychainStore.recoveryStore()`
-                    // for the full rationale).
-                    try KeychainProbe.run(keychain: KeychainStore.recoveryStore())
+        // Skip the probe when the bundle has no `keychain-access-groups`
+        // entitlement loaded. Two cases hit this path:
+        //  - Unsigned local-dev builds (`xcodebuild ... CODE_SIGNING_ALLOWED=NO`):
+        //    the entitlement file declares the group correctly but the
+        //    unsigned bundle carries no entitlements at runtime, so every
+        //    Keychain op fails with `-34018`. The probe would block local
+        //    dev sign-in for no real reason — recovery-key persistence
+        //    legitimately won't work on this build, but the failure mode
+        //    is well-known and the dev hasn't shipped anything.
+        //  - Mac Catalyst / future ad-hoc builds with no entitlements.
+        // Production builds (TestFlight / signed Release) retain the
+        // entitlement, so the probe still catches genuinely-broken
+        // production entitlement plists.
+        let hasEntitlement: Bool = {
+            guard let task = SecTaskCreateFromSelf(nil) else { return false }
+            let value = SecTaskCopyValueForEntitlement(task, "keychain-access-groups" as CFString, nil)
+            return value != nil
+        }()
+        if hasEntitlement {
+            // Wrapped in a 2s timeout so a hypothetical Keychain unlock prompt
+            // (or system Keychain stall) doesn't leave the app on the
+            // indefinite ProgressView. Plain `Task.sleep` race against the
+            // probe via `withThrowingTaskGroup` — first-finish-wins.
+            do {
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    group.addTask {
+                        // Centralised factory — same service the recovery-key
+                        // flow writes to. Wave 5 reverted the explicit
+                        // `accessGroup:` half (the `$(AppIdentifierPrefix)…`
+                        // literal was bug #3 — see `KeychainStore.recoveryStore()`
+                        // for the full rationale).
+                        try KeychainProbe.run(keychain: KeychainStore.recoveryStore())
+                    }
+                    group.addTask {
+                        try await Task.sleep(nanoseconds: 2_000_000_000)
+                        throw KeychainProbeTimeout()
+                    }
+                    // First task to finish wins — cancel the loser. If the
+                    // probe finished it returns; if the timeout finished it
+                    // throws and the catch below fires.
+                    try await group.next()
+                    group.cancelAll()
                 }
-                group.addTask {
-                    try await Task.sleep(nanoseconds: 2_000_000_000)
-                    throw KeychainProbeTimeout()
-                }
-                // First task to finish wins — cancel the loser. If the
-                // probe finished it returns; if the timeout finished it
-                // throws and the catch below fires.
-                try await group.next()
-                group.cancelAll()
+            } catch let error as KeychainProbeError {
+                bootstrapError = error.localizedDescription
+                bootstrapDone = true
+                return
+            } catch is KeychainProbeTimeout {
+                bootstrapError = "Keychain access timed out — see docs/setup-mac.md"
+                bootstrapDone = true
+                return
+            } catch {
+                bootstrapError = "Keychain probe failed: \(error.localizedDescription) — see docs/setup-mac.md"
+                bootstrapDone = true
+                return
             }
-        } catch let error as KeychainProbeError {
-            bootstrapError = error.localizedDescription
-            bootstrapDone = true
-            return
-        } catch is KeychainProbeTimeout {
-            bootstrapError = "Keychain access timed out — see docs/setup-mac.md"
-            bootstrapDone = true
-            return
-        } catch {
-            bootstrapError = "Keychain probe failed: \(error.localizedDescription) — see docs/setup-mac.md"
-            bootstrapDone = true
-            return
         }
 
         do {
