@@ -85,6 +85,7 @@ targets:
     scheme:
       testTargets:
         - MatronTests
+        - MatronUITests
     dependencies:
       - package: MatronShared
         product: MatronAuth
@@ -223,6 +224,23 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
     dependencies:
       - target: MatronMac
+
+  # Phase 3.5+ — iOS XCUITest target for the matron-vs-matron UI scenario.
+  # Drives the iOS sim app via XCUITest exactly like MatronMacUITests
+  # drives the Mac app. iOS sim doesn't have App Sandbox so no
+  # entitlement carve-outs needed.
+  MatronUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: MatronUITests
+    settings:
+      base:
+        SUPPORTED_PLATFORMS: iphonesimulator
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+    dependencies:
+      - target: Matron
 
   # Phase 3.5 — SDK integration tests. Drives `MatronShared`'s public
   # surface (AuthService, VerificationServiceLive, RecoveryKeyManager)
