@@ -1,2 +1,2 @@
-tests/integration/artifacts/
-tests/integration/partner/node_modules/
+artifacts/
+partner/node_modules/
