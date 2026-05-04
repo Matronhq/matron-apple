@@ -106,12 +106,14 @@ struct MacSasView: View {
                 Task { await viewModel.cancel() }
             }
             .keyboardShortcut(.escape, modifiers: [])
+            .accessibilityIdentifier("sas.dontMatch")
             Spacer()
             Button("They match") {
                 Task { await viewModel.confirm() }
             }
             .keyboardShortcut(.return)
             .buttonStyle(.borderedProminent)
+            .accessibilityIdentifier("sas.match")
         }
     }
 }

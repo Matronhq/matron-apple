@@ -50,6 +50,7 @@ struct MacPostLoginVerificationView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.return)
+                .accessibilityIdentifier("verifygate.verifyWithOtherDevice")
 
                 Button {
                     path.append(.restoreWithRecoveryKey)
@@ -57,11 +58,13 @@ struct MacPostLoginVerificationView: View {
                     Label("Use recovery key", systemImage: "key")
                 }
                 .buttonStyle(.bordered)
+                .accessibilityIdentifier("verifygate.useRecoveryKey")
 
                 Button("This is my first device — generate a key") {
                     path.append(.generate)
                 }
                 .padding(.top, 8)
+                .accessibilityIdentifier("verifygate.generateNew")
             }
             .padding(32)
             .frame(width: 480, height: 400)

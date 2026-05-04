@@ -119,8 +119,18 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: chat.matron.mac
-        CODE_SIGN_ENTITLEMENTS: MatronMac/App/MatronMac.entitlements
         SUPPORTED_PLATFORMS: macosx
+      configs:
+        # Debug builds use a sandbox-OFF entitlements file so XCUITest's
+        # runner can establish its XPC connection to the host app for the
+        # integration harness. Sandboxed Mac apps can't be UI-tested
+        # without ad-hoc signing + provisioning gymnastics; for local-dev
+        # + harness builds we just turn the sandbox off. Release builds
+        # keep the full sandbox entitlement for App Store distribution.
+        Debug:
+          CODE_SIGN_ENTITLEMENTS: MatronMac/App/MatronMac.Debug.entitlements
+        Release:
+          CODE_SIGN_ENTITLEMENTS: MatronMac/App/MatronMac.entitlements
     entitlements:
       path: MatronMac/App/MatronMac.entitlements
       properties:
@@ -133,6 +143,7 @@ targets:
     scheme:
       testTargets:
         - MatronMacTests
+        - MatronMacUITests
     dependencies:
       - package: MatronShared
         product: MatronAuth
@@ -197,6 +208,21 @@ targets:
       # dodge macOS / Xcode renderer drift; baselines remain useful locally.
       - package: swift-snapshot-testing
         product: SnapshotTesting
+
+  # Phase 3.5 — XCUITest target for the integration harness. Drives the
+  # Mac app through real UI flows (sign-in, verify, recovery) so the harness
+  # in `tests/integration/` can exercise end-to-end scenarios without a
+  # human in the loop. Driven by `tests/integration/scenarios/*.sh`.
+  MatronMacUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: MatronMacUITests
+    settings:
+      base:
+        SUPPORTED_PLATFORMS: macosx
+    dependencies:
+      - target: MatronMac
 
   MatronNSE:
     type: app-extension
