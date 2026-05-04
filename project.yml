@@ -141,6 +141,7 @@ targets:
       testTargets:
         - MatronMacTests
         - MatronMacUITests
+        - MatronIntegrationTests
     dependencies:
       - package: MatronShared
         product: MatronAuth

@@ -3,18 +3,27 @@ import AppKit  // NSPasteboard for reliable URL pasting
 
 /// XCUITest scenario driver for the integration harness.
 ///
-/// Configurable via environment variables passed by `run-harness.sh` and
-/// scenario scripts under `tests/integration/scenarios/`:
+/// Configurable via `/tmp/matron-test-config.json`, written by the harness
+/// before launch (env vars don't propagate cleanly to Mac UI test runners,
+/// even with `TEST_RUNNER_*` prefixes). Format:
 ///
-/// - `MATRON_HOMESERVER` — homeserver URL to type into the sign-in form
-/// - `MATRON_USER` / `MATRON_PW` — credentials for this Matron client
-/// - `MATRON_VERIFY_TIMEOUT` — seconds to wait for emoji-compare screen
+///     { "homeserver": "http://localhost:6167",
+///       "user": "matron", "password": "matron-test-pw",
+///       "verify_timeout": 60 }
 ///
 /// The test taps Sign In → Verify-with-Other-Device → They-Match. The
-/// harness drives the partner client (matrix-js-sdk) on the other side to
-/// auto-confirm the SAS, and asserts on Matron's `os.Logger` trace. This
-/// XCUITest leg is just the UI half; protocol assertions live in the
-/// shell scenario.
+/// harness drives the partner client (matrix-js-sdk, running as a second
+/// device of @matron) on the other side to auto-confirm the SAS, and
+/// asserts on Matron's `os.Logger` trace. This XCUITest leg is just the
+/// UI half; protocol assertions live in the shell scenario.
+///
+/// Form-fill diagnostics: each paste reads back the field value and
+/// dumps both the readback and a screenshot if it doesn't match what we
+/// pasted. The previous diagnosis (binding-update-on-paste failing
+/// across Tab navigation) was wrong — the live attempt got "Invalid
+/// credentials" back from the homeserver, which means all three fields
+/// had content but one of them was wrong. The readback identifies
+/// which field is wrong instead of guessing.
 final class VerifyWithPartnerUITests: XCTestCase {
 
     var app: XCUIApplication!
@@ -42,9 +51,6 @@ final class VerifyWithPartnerUITests: XCTestCase {
     }
 
     func testSignInAndVerifyWithPartner() throws {
-        // env-vars don't propagate cleanly to Mac XCUITest runners (neither
-        // direct nor TEST_RUNNER_*-prefixed), so the harness writes a JSON
-        // config to a known path. See tests/integration/scenarios/*.sh.
         let configPath = "/tmp/matron-test-config.json"
         guard FileManager.default.fileExists(atPath: configPath),
               let data = FileManager.default.contents(atPath: configPath),
@@ -59,60 +65,50 @@ final class VerifyWithPartnerUITests: XCTestCase {
         // --- Sign in ---
         let server = app.textFields["signin.server"]
         if !server.waitForExistence(timeout: 15) {
-            try? app.debugDescription.write(toFile: "/tmp/matron-test-debug.txt",
-                                            atomically: true, encoding: .utf8)
-            let screenshot = XCUIScreen.main.screenshot()
-            let attachment = XCTAttachment(screenshot: screenshot)
-            attachment.name = "signin-form-not-found"
-            attachment.lifetime = .keepAlways
-            add(attachment)
-            XCTFail("sign-in form did not appear — see /tmp/matron-test-debug.txt")
+            failWithDiagnostics("sign-in form did not appear", screenshotName: "signin-form-not-found")
             return
         }
-        // typeText on Mac mangles `:` and `/`. Use clipboard paste, and Tab
-        // between fields rather than clicks (which sometimes don't reliably
-        // re-focus when one field is still in edit mode).
-        let pb = NSPasteboard.general
-        func clipboardSet(_ value: String) {
-            pb.clearContents()
-            pb.setString(value, forType: .string)
+
+        // Switched from Tab-based to click-based field focus. The previous
+        // version used Tab between fields and got "Invalid credentials" from
+        // the server — meaning all fields had content but one was wrong. The
+        // most plausible cause: Tab on macOS without explicit `@FocusState`
+        // doesn't reliably move between SwiftUI TextFields, so the second or
+        // third paste was landing in the previous field, overwriting its
+        // value and leaving a field empty (or doubled). Clicking each field
+        // directly removes that ambiguity.
+        let username = app.textFields["signin.username"]
+        let passwordField = app.secureTextFields["signin.password"]
+        XCTAssertTrue(username.waitForExistence(timeout: 5), "username field missing")
+        XCTAssertTrue(passwordField.waitForExistence(timeout: 5), "password field missing")
+
+        pasteIntoTextField(server, value: homeserver, label: "server")
+        pasteIntoTextField(username, value: user, label: "username")
+        pasteIntoSecureField(passwordField, value: password, label: "password")
+
+        // Submit-enabled is the last sanity check — `.disabled` on the
+        // button checks `serverURL.isEmpty || username.isEmpty || password.isEmpty`,
+        // so an enabled button proves all three fields have content.
+        let submit = app.buttons["signin.submit"]
+        if !submit.isEnabled {
+            failWithDiagnostics(
+                "submit button still disabled after pasting all three fields — at least one is empty",
+                screenshotName: "submit-disabled"
+            )
+            return
         }
-        server.click()
-        usleep(300_000)
-        clipboardSet(homeserver)
-        app.typeKey("a", modifierFlags: [.command])
-        app.typeKey("v", modifierFlags: [.command])
-        // Tab to username
-        app.typeKey(.tab, modifierFlags: [])
-        usleep(200_000)
-        clipboardSet(user)
-        app.typeKey("a", modifierFlags: [.command])
-        app.typeKey("v", modifierFlags: [.command])
-        // Tab to password
-        app.typeKey(.tab, modifierFlags: [])
-        usleep(200_000)
-        clipboardSet(password)
-        app.typeKey("a", modifierFlags: [.command])
-        app.typeKey("v", modifierFlags: [.command])
-        usleep(200_000)
-        app.buttons["signin.submit"].click()
+        submit.click()
 
         // --- Verify gate ---
         let verifyButton = app.buttons["verifygate.verifyWithOtherDevice"]
         if !verifyButton.waitForExistence(timeout: 30) {
-            // Diagnostic dump so future runs aren't blind.
-            let screenshot = XCUIScreen.main.screenshot()
-            let attachment = XCTAttachment(screenshot: screenshot)
-            attachment.name = "verify-gate-not-found"
-            attachment.lifetime = .keepAlways
-            add(attachment)
-            let tree = XCTAttachment(string: app.debugDescription)
-            tree.name = "accessibility-tree"
-            tree.lifetime = .keepAlways
-            add(tree)
-            try? app.debugDescription.write(toFile: "/tmp/matron-test-debug.txt",
-                                            atomically: true, encoding: .utf8)
-            XCTFail("verify gate didn't appear within 30s of sign-in — see /tmp/matron-test-debug.txt")
+            // Surface the in-form error text, if any, so we don't have to
+            // guess whether the homeserver rejected us.
+            let errorText = inFormErrorMessage()
+            failWithDiagnostics(
+                "verify gate didn't appear within 30s of sign-in. In-form error: \(errorText ?? "<none>")",
+                screenshotName: "verify-gate-not-found"
+            )
             return
         }
         verifyButton.click()
@@ -121,21 +117,123 @@ final class VerifyWithPartnerUITests: XCTestCase {
         let match = app.buttons["sas.match"]
         XCTAssertTrue(match.waitForExistence(timeout: verifyTimeout),
                       "SAS emoji-compare screen never appeared (timeout: \(Int(verifyTimeout))s)")
-        // Quick sanity: confirm 7 emoji cells rendered (each is a VStack of
-        // symbol + caption; we look for the symbol text-elements).
-        // SwiftUI exposes them as static texts; we don't have unique IDs
-        // per cell, but the existence of `sas.match` is enough proof for
-        // v1. Future: add accessibility identifiers per emoji cell.
         match.click()
 
-        // After the partner also confirms, the SDK fires `didFinish`.
-        // The view dismisses and the parent flips `verifyDone = true`,
-        // landing the user on `MacChatListView`. The chat list's
-        // `MacUnverifiedDeviceBanner` should now be gone.
-        let banner = app.staticTexts["banner.unverifiedDevice"]
-        // We don't assert it's absent — sliding sync may take a moment
-        // to re-evaluate `verificationState` after the SDK update. The
-        // shell scenario does the more reliable log-based assertion.
-        _ = banner
+        // After the partner also confirms, the SDK fires `didFinish`. The
+        // view dismisses and the parent flips `verifyDone = true`, landing
+        // on `MacChatListView`. Don't assert on the unverified-banner being
+        // gone here — sliding sync may take a moment to re-evaluate
+        // `verificationState` after the SDK update; the shell scenario does
+        // the more reliable log-based assertion.
+        _ = app.staticTexts["banner.unverifiedDevice"]
+    }
+
+    // MARK: - Field helpers
+
+    /// Clicks the field, selects-all, pastes the clipboard, reads back the
+    /// field's value, and fails (with diagnostics) on mismatch.
+    private func pasteIntoTextField(_ field: XCUIElement, value: String, label: String) {
+        clickAndPaste(field, value: value)
+        let actual = (field.value as? String) ?? ""
+        if actual != value {
+            failWithDiagnostics(
+                "\(label) field readback mismatch — expected \(value.debugDescription), got \(actual.debugDescription)",
+                screenshotName: "field-mismatch-\(label)"
+            )
+        }
+    }
+
+    /// Same as `pasteIntoTextField` but for SecureField. SecureField's
+    /// `value` on macOS doesn't reliably return the typed string (some
+    /// macOS versions return an obfuscated bullet string of the right
+    /// length, others return empty). We can't readback exactly, so the
+    /// real check happens via the submit button's `.isEnabled` state in
+    /// the caller.
+    private func pasteIntoSecureField(_ field: XCUIElement, value: String, label: String) {
+        clickAndPaste(field, value: value)
+        // Best-effort length check: if the SecureField returns bullets, the
+        // count should match. If it returns "" we silently skip — caller
+        // checks submit-enabled.
+        if let visible = field.value as? String, !visible.isEmpty, visible.count != value.count {
+            failWithDiagnostics(
+                "\(label) field length mismatch — expected \(value.count) chars, got \(visible.count) (\"\(visible)\")",
+                screenshotName: "field-length-\(label)"
+            )
+        }
+    }
+
+    private func clickAndPaste(_ field: XCUIElement, value: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(value, forType: .string)
+        field.click()
+        usleep(250_000)  // let the field settle as first responder
+        app.typeKey("a", modifierFlags: [.command])
+        app.typeKey("v", modifierFlags: [.command])
+        usleep(150_000)  // let the binding update propagate
+    }
+
+    /// Best-effort scrape of the form's red error text, used when the
+    /// verify gate fails to appear so we know whether the homeserver
+    /// rejected us. Matches whatever `SignInViewModel.message(for:)`
+    /// produced — currently one of "Invalid credentials.",
+    /// "Couldn't reach that server.", "SSO is not supported by this server.",
+    /// or "That doesn't look like a valid server URL.".
+    private func inFormErrorMessage() -> String? {
+        let candidates = [
+            "Invalid credentials.",
+            "Couldn't reach that server.",
+            "SSO is not supported by this server.",
+            "That doesn't look like a valid server URL.",
+        ]
+        for needle in candidates {
+            if app.staticTexts[needle].exists { return needle }
+        }
+        // Fallback — any static text under the form that starts with
+        // "Unexpected error:".
+        for st in app.staticTexts.allElementsBoundByIndex {
+            if let s = st.value as? String, s.hasPrefix("Unexpected error:") { return s }
+            if st.label.hasPrefix("Unexpected error:") { return st.label }
+        }
+        return nil
+    }
+
+    // MARK: - Diagnostics
+
+    private func failWithDiagnostics(_ message: String, screenshotName: String) {
+        let screenshot = XCUIScreen.main.screenshot()
+        let attachment = XCTAttachment(screenshot: screenshot)
+        attachment.name = screenshotName
+        attachment.lifetime = .keepAlways
+        add(attachment)
+
+        let tree = XCTAttachment(string: app.debugDescription)
+        tree.name = "accessibility-tree"
+        tree.lifetime = .keepAlways
+        add(tree)
+
+        // Mirror the tree to /tmp so iteration without xcresult parsing works.
+        try? app.debugDescription.write(toFile: "/tmp/matron-test-debug.txt",
+                                        atomically: true, encoding: .utf8)
+
+        // Snapshot field readbacks too, so the next iteration sees what was
+        // actually in each field at the moment of failure.
+        var fieldsSummary = ""
+        for id in ["signin.server", "signin.username"] {
+            let v = (app.textFields[id].value as? String) ?? "<not present>"
+            fieldsSummary += "\(id) = \(v.debugDescription)\n"
+        }
+        if let pw = app.secureTextFields["signin.password"].value as? String {
+            fieldsSummary += "signin.password.value = \(pw.debugDescription) (count=\(pw.count))\n"
+        }
+        fieldsSummary += "signin.submit.isEnabled = \(app.buttons["signin.submit"].isEnabled)\n"
+        let fieldsAttachment = XCTAttachment(string: fieldsSummary)
+        fieldsAttachment.name = "field-readbacks"
+        fieldsAttachment.lifetime = .keepAlways
+        add(fieldsAttachment)
+        try? fieldsSummary.write(toFile: "/tmp/matron-test-fields.txt",
+                                 atomically: true, encoding: .utf8)
+
+        XCTFail("\(message). See /tmp/matron-test-debug.txt + /tmp/matron-test-fields.txt and the test result bundle.")
     }
 }

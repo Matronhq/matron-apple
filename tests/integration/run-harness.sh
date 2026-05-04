@@ -21,8 +21,13 @@ HOMESERVER="http://localhost:6167"
 REG_TOKEN="matron-test-only"
 MATRON_USER="matron"
 MATRON_PW="matron-test-pw"
-PARTNER_USER="partner"
-PARTNER_PW="partner-test-pw"
+# `partner.mjs` runs as a SECOND DEVICE of @matron — not a separate user.
+# This mirrors what the in-app "Verify with another device" button actually
+# does: `requestDeviceVerification()` is a same-user-different-device to-device
+# flow. A separate Matrix user wouldn't see the request. The partner device
+# bootstraps cross-signing first so it stands as the trust anchor that the
+# Mac app verifies against on its first sign-in.
+PARTNER_DEVICE_NAME="matron-test-partner"
 
 mkdir -p "$ARTIFACTS_DIR"
 
@@ -57,8 +62,8 @@ fi
 PARTNER_CLI="node $PARTNER_DIR/partner.mjs"
 PARTNER_STORE="$ARTIFACTS_DIR/partner-store.json"
 
-# --- Register users ---
-log "Registering @${MATRON_USER}:localhost (Matron user)…"
+# --- Register the matron user ---
+log "Registering @${MATRON_USER}:localhost…"
 $PARTNER_CLI register \
     --homeserver "$HOMESERVER" \
     --user "$MATRON_USER" \
@@ -66,26 +71,19 @@ $PARTNER_CLI register \
     --token "$REG_TOKEN" \
     | tee "$ARTIFACTS_DIR/register-matron.json"
 
-log "Registering @${PARTNER_USER}:localhost (partner trust anchor)…"
-$PARTNER_CLI register \
-    --homeserver "$HOMESERVER" \
-    --user "$PARTNER_USER" \
-    --password "$PARTNER_PW" \
-    --token "$REG_TOKEN" \
-    | tee "$ARTIFACTS_DIR/register-partner.json"
-
-# --- Bring partner online + bootstrap trust anchor ---
-log "Bootstrapping partner trust anchor (SSSS + cross-signing + recovery key)…"
+# --- Bring partner online as a second device of @matron + bootstrap trust anchor ---
+log "Bootstrapping partner device (SSSS + cross-signing + recovery key) as @${MATRON_USER}…"
 $PARTNER_CLI bootstrap-anchor \
     --homeserver "$HOMESERVER" \
-    --user "$PARTNER_USER" \
-    --password "$PARTNER_PW" \
+    --user "$MATRON_USER" \
+    --password "$MATRON_PW" \
+    --device-name "$PARTNER_DEVICE_NAME" \
     --store-file "$PARTNER_STORE" \
     | tee "$ARTIFACTS_DIR/bootstrap-partner.json"
 
 # --- Export env for scenarios ---
 export HOMESERVER="$HOMESERVER"
-export MATRON_USER MATRON_PW PARTNER_USER PARTNER_PW
+export MATRON_USER MATRON_PW PARTNER_DEVICE_NAME
 export PARTNER_CLI PARTNER_STORE
 export ARTIFACTS_DIR ROOT
 

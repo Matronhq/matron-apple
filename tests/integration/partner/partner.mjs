@@ -24,6 +24,7 @@ import {
   VerificationRequestEvent,
   VerifierEvent,
 } from "matrix-js-sdk/lib/crypto-api/verification.js";
+import { decodeRecoveryKey } from "matrix-js-sdk/lib/crypto-api/recovery-key.js";
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
 
 // Quiet matrix-js-sdk's chatty default logging — keep only flow-relevant lines.
@@ -179,9 +180,15 @@ function loadStore(path) {
 async function resumeSession(storeFile) {
   const data = loadStore(storeFile);
   // We re-login (matrix-js-sdk's restoreFromCredentials path is finicky with
-  // rust-crypto). Same access token is fine; the store file's password is the
-  // SSSS unlock secret elsewhere.
-  const secretKey = { privateKey: null };
+  // rust-crypto). Decode the persisted recovery_key so the resumed crypto
+  // store can unlock SSSS — without it, partner doesn't have access to its
+  // own self-signing material and same-user device-verification MAC checks
+  // against this peer fail with `m.mismatched_sas`. (add-bot.mjs sidesteps
+  // this by bootstrapping + verifying in one process — the privateKey is
+  // already in memory then. Our harness splits the two phases.)
+  const secretKey = {
+    privateKey: data.recovery_key ? decodeRecoveryKey(data.recovery_key) : null,
+  };
   const client = sdk.createClient({
     baseUrl: data.homeserver,
     accessToken: data.access_token,

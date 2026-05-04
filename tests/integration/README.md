@@ -12,11 +12,15 @@ verification + recovery requests.
   on, ephemeral volume.
 - `partner/partner.mjs` — Node `matrix-js-sdk` + `matrix-sdk-crypto-wasm`
   partner client. Mirrors `claude-matrix-bridge/add-bot.mjs`'s patterns —
-  same SDK, full cross-signing bootstrap. Sub-commands:
+  same SDK, full cross-signing bootstrap. Runs as a **second device of
+  @matron** (not a separate Matrix user), because the in-app
+  "Verify with another device" button calls `requestDeviceVerification()`
+  — a same-user-different-device to-device flow. A different user
+  wouldn't see the request. Sub-commands:
   - `register` — create a fresh user via the registration-token flow
   - `bootstrap-anchor` — login + bootstrap SSSS + cross-signing, persists
-    creds + recovery key to a store file. Makes the partner a real trust
-    anchor that Matron can verify against.
+    creds + recovery key to a store file. The bootstrapped device stands
+    as the trust anchor that the Mac app verifies against on first sign-in.
   - `wait-verify` — listen for an incoming SAS request and auto-confirm
     when the verifier fires `ShowSas`
   - `send-message` — send a test message into a room (decryption check)
@@ -55,8 +59,8 @@ from a clean slate.
 ## Adding a scenario
 
 1. Create `scenarios/your-scenario.sh`, `chmod +x` it.
-2. Use the env vars exported by the runner: `MATRON_HOMESERVER`,
-   `MATRON_USER`, `MATRON_PW`, `PARTNER_USER`, `PARTNER_PW`,
+2. Use the env vars exported by the runner: `HOMESERVER`,
+   `MATRON_USER`, `MATRON_PW`, `PARTNER_DEVICE_NAME`,
    `PARTNER_CLI`, `PARTNER_STORE`, `ARTIFACTS_DIR`, `ROOT`.
 3. Use AppleScript / `osascript` to drive Mac UI today; XCUITest will
    replace this once the targets are wired (Phase 3.5 follow-up).
