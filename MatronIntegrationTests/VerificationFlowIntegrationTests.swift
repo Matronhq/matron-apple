@@ -136,6 +136,34 @@ final class VerificationFlowIntegrationTests: XCTestCase {
 
         // 5. Confirm the partner side wrapped up cleanly.
         try await waitForPartnerEvent(.ok(true), timeout: 30)
+
+        // 6. Persistence check: the SDK's `verificationState()` should
+        //    flip to verified now that SAS completed and partner has
+        //    cross-signed matron's device. Catches a class of bugs
+        //    where the AsyncStream yields .verified but the
+        //    cross-signature never lands on this side — the spec §7.5
+        //    posture is "nothing auto-trusted", so a stream-only
+        //    success without persistence would be a security bug.
+        //    `verifyDone` in the verify gate also reads this state.
+        //
+        //    Race note: matron must download partner's freshly-uploaded
+        //    cross-signature via /keys/query before its local
+        //    verificationState transitions. Allow generous polling.
+        var persisted = false
+        var lastState = "(uncalled)"
+        for _ in 0..<150 {
+            let state = (try? await verification.isThisDeviceVerified()) ?? false
+            lastState = state ? "true" : "false"
+            if state {
+                persisted = true
+                break
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertTrue(
+            persisted,
+            "SAS yielded .verified but isThisDeviceVerified() never returned true within 15s (last value: \(lastState))"
+        )
     }
 
     // MARK: - Helpers

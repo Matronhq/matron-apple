@@ -377,14 +377,47 @@ async function cmdBootstrapAndWait(args) {
     }, 1000);
 
     session.client.on("crypto.verificationRequestReceived", (request) => {
-      emit({ event: "request_received", from: request.otherUserId });
+      emit({ event: "request_received", from: request.otherUserId, device: request.otherDeviceId });
       request.accept().catch((e) => emit({ event: "accept_error", error: String(e) }));
 
       let verifierBound = false;
-      request.on(VerificationRequestEvent.Change, () => {
+      let donePathRun = false;
+      request.on(VerificationRequestEvent.Change, async () => {
         const phase = request.phase;
         emit({ event: "phase_change", phase });
         if (phase === VerificationPhase.Done) {
+          if (donePathRun) return;  // Change can fire multiple times in Done
+          donePathRun = true;
+          // After SAS completes, matrix-js-sdk does NOT automatically
+          // upload a cross-signature for the verified device — that's
+          // a separate `crossSignDevice` call. Without it, matron's
+          // `verificationState()` stays `unverified` even though SAS
+          // itself succeeded. Mirror what Element Web does after a
+          // successful self-verify.
+          //
+          // `request.otherDeviceId` is null after Done in matrix-js-sdk
+          // 41.x, so resolve matron's device by querying user devices
+          // and picking the one that isn't ours.
+          let otherDeviceId = request.otherDeviceId || request.verifier?.deviceId;
+          if (!otherDeviceId) {
+            const devices = await session.cryptoApi.getUserDeviceInfo([request.otherUserId]);
+            const userDevices = devices.get(request.otherUserId);
+            if (userDevices) {
+              for (const [id] of userDevices) {
+                if (id !== session.loginData.device_id) { otherDeviceId = id; break; }
+              }
+            }
+          }
+          if (otherDeviceId) {
+            try {
+              await session.cryptoApi.crossSignDevice(otherDeviceId);
+              emit({ event: "cross_signed", device: otherDeviceId });
+            } catch (e) {
+              emit({ event: "cross_sign_error", error: String(e?.message ?? e) });
+            }
+          } else {
+            emit({ event: "cross_sign_skipped", reason: "could not resolve matron's device id" });
+          }
           clearInterval(interval);
           finish({ ok: true, verified: true }, 0);
           return;
