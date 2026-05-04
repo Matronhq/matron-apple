@@ -15,12 +15,15 @@ struct SignInView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
+                        .accessibilityIdentifier("signin.server")
                 }
                 Section("Credentials") {
                     TextField("Username", text: $viewModel.username)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .accessibilityIdentifier("signin.username")
                     SecureField("Password", text: $viewModel.password)
+                        .accessibilityIdentifier("signin.password")
                 }
                 if case .error(let message) = viewModel.state {
                     Section {
@@ -41,6 +44,7 @@ struct SignInView: View {
                         if case .busy = viewModel.state { return true }
                         return viewModel.serverURL.isEmpty || viewModel.username.isEmpty || viewModel.password.isEmpty
                     }())
+                    .accessibilityIdentifier("signin.submit")
                 }
             }
             .navigationTitle("Sign in to Matron")

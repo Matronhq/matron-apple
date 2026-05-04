@@ -98,11 +98,13 @@ struct SasView: View {
                 Task { await viewModel.cancel() }
             }
             .buttonStyle(.bordered)
+            .accessibilityIdentifier("sas.dontMatch")
             Spacer()
             Button("They match") {
                 Task { await viewModel.confirm() }
             }
             .buttonStyle(.borderedProminent)
+            .accessibilityIdentifier("sas.match")
         }
     }
 }

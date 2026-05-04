@@ -77,6 +77,7 @@ struct PostLoginVerificationView: View {
                     Label("Verify with another device", systemImage: "iphone")
                 }
                 .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("verifygate.verifyWithOtherDevice")
 
                 Button {
                     path.append(.restoreWithRecoveryKey)
@@ -84,11 +85,13 @@ struct PostLoginVerificationView: View {
                     Label("Use recovery key", systemImage: "key")
                 }
                 .buttonStyle(.bordered)
+                .accessibilityIdentifier("verifygate.useRecoveryKey")
 
                 Button("This is my first device — generate a key") {
                     path.append(.generate)
                 }
                 .padding(.top, 8)
+                .accessibilityIdentifier("verifygate.generateNew")
             }
             .padding()
             .navigationDestination(for: Path.self) { destination in
