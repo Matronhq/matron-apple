@@ -47,7 +47,14 @@ rm -f "$READY_FILE"
 pkill -x MatronMac >/dev/null 2>&1 || true
 sleep 1
 rm -rf "$HOME/Library/Application Support/chat.matron.mac"
+# `defaults delete` alone is unreliable: cfprefsd caches the in-memory
+# domain and subsequent reads return the stale values, so the Mac app
+# still sees `matron.verify-done.<userID>=1` from a prior run and
+# bypasses the verify gate. Belt + braces: nuke the plist file too,
+# then restart cfprefsd to flush the cache.
+rm -f "$HOME/Library/Preferences/chat.matron.mac.plist"
 defaults delete chat.matron.mac >/dev/null 2>&1 || true
+killall cfprefsd 2>/dev/null || true
 xcrun simctl boot "$SIM_UDID" >/dev/null 2>&1 || true
 if ! xcrun simctl list devices | grep -q "$SIM_UDID"; then
     log "✗ Simulator $SIM_UDID not found on this machine. Set MATRON_SIM_UDID env var to override."
