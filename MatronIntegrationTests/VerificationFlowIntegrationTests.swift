@@ -201,6 +201,111 @@ final class VerificationFlowIntegrationTests: XCTestCase {
         )
     }
 
+    /// Recovery-key restore path. Mirrors the verify-gate's "Use recovery
+    /// key" branch: matron-app signs in fresh, doesn't go through SAS,
+    /// and instead restores cross-signing access via a previously-issued
+    /// recovery key. After restore, `isThisDeviceVerified()` should
+    /// return true (cross-signing private keys are now available locally
+    /// and matron's device gets self-signed).
+    ///
+    /// Re-validates the Wave 7 fix that switched the SDK call from
+    /// `recover` to `recoverAndFixBackup` — the docstring says the
+    /// former left historical messages undecryptable, but it hasn't been
+    /// automated. This test exercises the API path; full historical-
+    /// decryption coverage would need a follow-up that also asserts on
+    /// post-restore message decryption.
+    func testRecoveryKeyRestoreVerifiesThisDevice() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let homeserverString = env["MATRON_HOMESERVER"] ?? env["HOMESERVER"] else {
+            throw XCTSkip("MATRON_HOMESERVER not set; run via tests/integration/run-harness.sh")
+        }
+        guard let homeserverURL = URL(string: homeserverString) else {
+            throw XCTSkip("MATRON_HOMESERVER not a valid URL: \(homeserverString)")
+        }
+        try await assertHomeserverReachable(homeserverURL)
+        guard let nodeScript = env["MATRON_PARTNER_NODE_SCRIPT"],
+              FileManager.default.fileExists(atPath: nodeScript) else {
+            throw XCTSkip("MATRON_PARTNER_NODE_SCRIPT not set or file missing")
+        }
+        let username = env["MATRON_USER"] ?? "matron"
+        let password = env["MATRON_PW"] ?? "matron-test-pw"
+
+        // 1. Partner bootstraps + emits recovery_key on `bootstrapped`.
+        try spawnPartnerBootstrapAndWait(
+            scriptPath: nodeScript,
+            homeserver: homeserverString,
+            user: username,
+            password: password,
+            timeout: 120
+        )
+        let bootstrapped = try await waitForPartnerEvent(.event("bootstrapped"), timeout: 60)
+        guard let recoveryKey = bootstrapped["recovery_key"] as? String else {
+            XCTFail("partner did not include recovery_key in bootstrapped payload: \(bootstrapped)")
+            return
+        }
+        try await waitForPartnerEvent(.event("ready"), timeout: 5)
+
+        // 2. matron signs in fresh.
+        let storeDir = basePath.appendingPathComponent("session-store")
+        try FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
+        let sdkStore = basePath.appendingPathComponent("sdk-store")
+        let auth = AuthServiceLive(
+            sessionStore: FileSessionStore(directory: storeDir),
+            basePath: sdkStore
+        )
+        let session = try await auth.loginPassword(
+            homeserverURL: homeserverURL,
+            username: username,
+            password: password,
+            initialDeviceDisplayName: "matron-test-recovery"
+        )
+
+        // 3. Sync ready (so the SDK's identity machinery is wired).
+        let provider = ClientProvider(basePath: sdkStore)
+        let sync = SyncServiceLive(provider: provider, session: session)
+        syncService = sync
+        try await sync.start()
+        try await sync.waitUntilReady()
+
+        // 4. Wait for matron's user identity to be loaded
+        //    (`verification.start()` blocks on `awaitController` which
+        //    waits for the listener to fire `!= .unknown`). Same race
+        //    we saw in the verify test.
+        let verification = VerificationServiceLive(provider: provider, session: session)
+        var startReady = false
+        for _ in 0..<60 {
+            if (try? await verification.start()) != nil {
+                startReady = true
+                break
+            }
+            try await Task.sleep(nanoseconds: 500_000_000)
+        }
+        XCTAssertTrue(startReady, "verification.start() never succeeded — user identity didn't load within 30s")
+
+        // 5. Restore via the recovery key. RecoveryKeyManager uses
+        //    plain-Keychain (non-iCloud) here so the test bundle
+        //    doesn't need iCloud-Keychain entitlements.
+        let keychain = KeychainStore(service: "chat.matron.test-recovery.\(UUID().uuidString.prefix(8))")
+        let manager = RecoveryKeyManager(provider: provider, session: session, keychain: keychain)
+        try await manager.restore(usingKey: recoveryKey)
+
+        // 6. After restore, the device should be considered verified.
+        //    Wave 7 used `recoverAndFixBackup` so cross-signing private
+        //    keys land locally and matron self-signs its device.
+        var verifiedAfterRestore = false
+        for _ in 0..<60 {  // up to 30s
+            if try await verification.isThisDeviceVerified() {
+                verifiedAfterRestore = true
+                break
+            }
+            try await Task.sleep(nanoseconds: 500_000_000)
+        }
+        XCTAssertTrue(
+            verifiedAfterRestore,
+            "isThisDeviceVerified() never returned true within 30s of recovery-key restore — Wave 7 recoverAndFixBackup may have regressed"
+        )
+    }
+
     /// Reproduces (or rules out) the "empty chat list after fresh sign-in"
     /// regression noted in HANDOVER.md. Partner creates an encrypted room
     /// on the server BEFORE matron-app signs in; matron-app then signs in
@@ -471,15 +576,16 @@ final class VerificationFlowIntegrationTests: XCTestCase {
         case ok(Bool)                 // matches `obj["ok"] == bool`
     }
 
+    @discardableResult
     private func waitForPartnerEvent(
         _ expectation: PartnerExpectation,
         timeout: TimeInterval
-    ) async throws {
+    ) async throws -> [String: Any] {
         guard let lines = partnerLines else {
             throw IntegrationError.partnerNotSpawned
         }
         do {
-            try await withThrowingTaskGroup(of: Void.self) { group in
+            return try await withThrowingTaskGroup(of: [String: Any].self) { group in
                 group.addTask {
                     try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
                     throw IntegrationError.timeout(
@@ -494,15 +600,16 @@ final class VerificationFlowIntegrationTests: XCTestCase {
                         }
                         switch expectation {
                         case .event(let name):
-                            if let event = obj["event"] as? String, event == name { return }
+                            if let event = obj["event"] as? String, event == name { return obj }
                         case .ok(let expected):
-                            if let actual = obj["ok"] as? Bool, actual == expected { return }
+                            if let actual = obj["ok"] as? Bool, actual == expected { return obj }
                         }
                     }
                     throw IntegrationError.partnerExited
                 }
-                try await group.next()
+                let payload = try await group.next() ?? [:]
                 group.cancelAll()
+                return payload
             }
         } catch {
             // Give the readability handlers a beat to drain the final
