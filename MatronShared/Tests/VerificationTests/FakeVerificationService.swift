@@ -24,7 +24,7 @@ actor FakeVerificationService: VerificationService {
     /// hops from the `nonisolated` stream constructors will have run by the
     /// time this returns. Previous `nonisolated` version gave no flush guarantee
     /// (bugbot caught it).
-    func isThisDeviceVerified() async throws -> Bool { true }
+    func isThisDeviceVerified() async throws -> Bool? { true }
 
     /// Test-tunable result for `hasOtherVerifiedDevices`. Default `true`
     /// matches the old test posture (callers that don't care about the

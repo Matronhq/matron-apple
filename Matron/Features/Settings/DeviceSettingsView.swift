@@ -98,7 +98,12 @@ struct DeviceSettingsView: View {
             // runtime state). Falling back to `false` keeps the
             // ⚠ icon visible so the user is prompted to verify rather
             // than seeing a perpetual spinner.
-            isVerified = (try? await verificationService.isThisDeviceVerified()) ?? false
+            // Tri-state: `nil` (SDK hasn't loaded the identity yet) falls
+            // back to `false` so the ⚠ icon stays visible until a
+            // subsequent `.task` re-fire reads a settled state. Same
+            // posture as the Phase 1/2 boolean version — settings shows
+            // the worst-case until proven verified.
+            isVerified = ((try? await verificationService.isThisDeviceVerified()) ?? nil) == true
         }
     }
 

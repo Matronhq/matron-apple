@@ -121,9 +121,12 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
         _ = try timeline.sendFile(params: params, fileInfo: info)
     }
 
-    public func paginateBackward(requestSize: UInt16) async throws {
+    public func paginateBackward(requestSize: UInt16) async throws -> Bool {
         let timeline = try await timeline()
-        _ = try await timeline.paginateBackwards(numEvents: requestSize)
+        // SDK's `paginateBackwards` returns `true` when the timeline has
+        // reached the start of history. Forward that so the view-model
+        // can stop firing paginate from the topmost-row `.onAppear`.
+        return try await timeline.paginateBackwards(numEvents: requestSize)
     }
 
     public func markAsRead() async throws {

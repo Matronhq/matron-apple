@@ -23,7 +23,7 @@ private final class FakeTimelineForChat: TimelineService, @unchecked Sendable {
     func sendText(_ body: String) async throws {}
     func sendImage(_ data: Data, filename: String, mimeType: String) async throws {}
     func sendFile(_ data: Data, filename: String, mimeType: String) async throws {}
-    func paginateBackward(requestSize: UInt16) async throws { paginateCalls += 1 }
+    func paginateBackward(requestSize: UInt16) async throws -> Bool { paginateCalls += 1; return false }
     func markAsRead() async throws { markReadCalls += 1 }
 }
 
@@ -54,7 +54,7 @@ private final class CountingVerificationServiceForChat: VerificationService, @un
         _userVerificationMap[matrixID] = result
     }
 
-    func isThisDeviceVerified() async throws -> Bool { true }
+    func isThisDeviceVerified() async throws -> Bool? { true }
     func isUserVerified(matrixID: String) async throws -> UserVerificationResult {
         lock.lock(); defer { lock.unlock() }
         return _userVerificationMap[matrixID, default: .unknown]
@@ -95,7 +95,7 @@ private actor FakeVerificationServiceForChat: VerificationService {
         userVerificationMap[matrixID] = result
     }
 
-    func isThisDeviceVerified() async throws -> Bool { true }
+    func isThisDeviceVerified() async throws -> Bool? { true }
     func isUserVerified(matrixID: String) async throws -> UserVerificationResult {
         userVerificationMap[matrixID, default: .unknown]
     }

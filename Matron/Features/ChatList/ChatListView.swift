@@ -1,5 +1,6 @@
 import SwiftUI
 import MatronChat
+import MatronDesignSystem
 import MatronModels
 import MatronStorage
 import MatronVerification
@@ -562,7 +563,7 @@ private struct ChatRow: View {
             }
             Spacer()
             if let lastActivity = summary.lastActivity {
-                Text(lastActivity, style: .relative)
+                RelativeMinuteTimeView(lastActivity)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -664,8 +665,12 @@ private struct SelfVerifyThisDeviceSheet: View {
             // render and the user tapping Verify, short-circuit to
             // `.alreadyVerified` so we don't run a redundant SAS.
             // Mirrors Mac `HelpMenuVerifyDeviceSheet` (PR #3 review #6).
-            let verified = (try? await service.isThisDeviceVerified()) ?? false
-            if verified {
+            // Tri-state probe: only short-circuit on an explicit `true`.
+            // `nil` (unknown) and `false` (unverified) both fall through
+            // to the chooser — falsy unknown would have falsely shown
+            // "already verified" before the SDK loaded the identity.
+            let verified = try? await service.isThisDeviceVerified()
+            if verified == true {
                 phase = .alreadyVerified
                 return
             }

@@ -24,7 +24,7 @@ final class FakeTimelineForComposer: TimelineService, @unchecked Sendable {
     func sendFile(_ data: Data, filename: String, mimeType: String) async throws {
         sentAttachments.append((filename, mimeType))
     }
-    func paginateBackward(requestSize: UInt16) async throws {}
+    func paginateBackward(requestSize: UInt16) async throws -> Bool { false }
     func markAsRead() async throws {}
 }
 

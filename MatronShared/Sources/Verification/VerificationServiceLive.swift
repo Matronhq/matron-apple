@@ -358,12 +358,16 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
 
     // MARK: - VerificationService
 
-    public func isThisDeviceVerified() async throws -> Bool {
+    public func isThisDeviceVerified() async throws -> Bool? {
         guard let provider, let session else {
             throw VerificationError.notConfigured
         }
         let client = try await provider.client(for: session)
-        return client.encryption().verificationState() == .verified
+        switch client.encryption().verificationState() {
+        case .verified: return true
+        case .unverified: return false
+        case .unknown: return nil
+        }
     }
 
     public func hasOtherVerifiedDevices() async throws -> Bool {

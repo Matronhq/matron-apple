@@ -509,8 +509,12 @@ private struct HelpMenuVerifyDeviceSheet: View {
         }
         .task(id: userID) {
             guard phase == .probing else { return }
-            let verified = (try? await service.isThisDeviceVerified()) ?? false
-            if verified {
+            // Tri-state probe: only short-circuit on an explicit `true`.
+            // `nil` (unknown / SDK still loading the identity) falls
+            // through to the chooser; collapsing it into `false` would
+            // make the chooser flash before the SDK has populated state.
+            let verified = try? await service.isThisDeviceVerified()
+            if verified == true {
                 phase = .alreadyVerified
                 return
             }

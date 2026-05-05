@@ -13,7 +13,7 @@ private actor FakeVerificationServiceForSettings: VerificationService {
 
     func setDeviceVerified(_ verified: Bool) { deviceVerifiedReturn = verified }
 
-    func isThisDeviceVerified() async throws -> Bool {
+    func isThisDeviceVerified() async throws -> Bool? {
         didCallIsThisDeviceVerified += 1
         return deviceVerifiedReturn
     }

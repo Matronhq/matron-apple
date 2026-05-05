@@ -106,6 +106,15 @@ struct ChatView: View {
                         ForEach(viewModel.items) { item in
                             TimelineItemView(item: item, resolveImage: { viewModel.image(for: $0) })
                                 .id(item.id)
+                                // Infinite-scroll backward pagination
+                                // trigger: when the topmost row mounts,
+                                // request older messages. The view-model
+                                // guards against re-entry + reached-start.
+                                .onAppear {
+                                    if item.id == viewModel.items.first?.id {
+                                        Task { await viewModel.paginateBackward() }
+                                    }
+                                }
                                 .contextMenu {
                                     if case .text(let body, _) = item.kind {
                                         Button {

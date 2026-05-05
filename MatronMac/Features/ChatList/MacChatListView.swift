@@ -1,5 +1,6 @@
 import SwiftUI
 import MatronChat
+import MatronDesignSystem
 import MatronModels
 import MatronVerification
 import MatronViewModels
@@ -479,7 +480,7 @@ private struct MacChatRow: View {
                     Text(summary.bot.displayName).font(.caption).foregroundStyle(.secondary)
                     if let lastActivity = summary.lastActivity {
                         Text("·").foregroundStyle(.secondary)
-                        Text(lastActivity, style: .relative)
+                        RelativeMinuteTimeView(lastActivity)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

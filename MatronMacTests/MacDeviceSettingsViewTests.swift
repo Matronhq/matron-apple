@@ -10,7 +10,7 @@ private actor FakeVerificationServiceForSettings: VerificationService {
 
     func setDeviceVerified(_ verified: Bool) { deviceVerifiedReturn = verified }
 
-    func isThisDeviceVerified() async throws -> Bool { deviceVerifiedReturn }
+    func isThisDeviceVerified() async throws -> Bool? { deviceVerifiedReturn }
     func isUserVerified(matrixID: String) async throws -> UserVerificationResult { .unknown }
     func hasOtherVerifiedDevices() async throws -> Bool { false }
     nonisolated func incomingRequests() -> AsyncStream<VerificationRequestSummary> {
@@ -84,10 +84,10 @@ final class MacDeviceSettingsViewTests: XCTestCase {
         let svc = FakeVerificationServiceForSettings()
         await svc.setDeviceVerified(true)
         let verifiedTrue = try await svc.isThisDeviceVerified()
-        XCTAssertTrue(verifiedTrue)
+        XCTAssertEqual(verifiedTrue, true)
         await svc.setDeviceVerified(false)
         let verifiedFalse = try await svc.isThisDeviceVerified()
-        XCTAssertFalse(verifiedFalse)
+        XCTAssertEqual(verifiedFalse, false)
     }
 
     // MARK: - Wave 4 expert-QA #3 — re-auth-gated reveal

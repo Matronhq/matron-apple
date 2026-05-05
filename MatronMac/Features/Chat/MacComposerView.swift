@@ -64,7 +64,11 @@ struct MacComposerView: View {
                 .buttonStyle(.plain)
                 .disabled(!isSendable || viewModel.isSending)
                 .padding(.trailing, 4)
-                .keyboardShortcut(.return, modifiers: .command)
+                // Enter sends; Shift+Enter / Option+Enter inserts a
+                // newline (the TextField handles the modifier path
+                // natively — only plain Return is intercepted by this
+                // shortcut, matching Slack / Discord conventions).
+                .keyboardShortcut(.return, modifiers: [])
             }
             .padding()
         }

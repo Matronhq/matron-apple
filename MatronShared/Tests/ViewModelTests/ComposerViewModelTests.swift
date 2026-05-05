@@ -46,7 +46,7 @@ final class FakeTimelineService: TimelineService, @unchecked Sendable {
         if let err = nextSendError { nextSendError = nil; throw err }
         sentFiles.append((filename, mimeType, data.count))
     }
-    func paginateBackward(requestSize: UInt16) async throws { paginateCalls += 1 }
+    func paginateBackward(requestSize: UInt16) async throws -> Bool { paginateCalls += 1; return false }
     func markAsRead() async throws { markReadCalls += 1 }
 }
 

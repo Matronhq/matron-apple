@@ -40,6 +40,16 @@ public final class ChatViewModel {
     public let roomID: String
     public private(set) var items: [TimelineItem] = []
     public private(set) var error: String?
+    /// `true` while a `paginateBackward()` call is in flight. Surfaces to
+    /// the view so the topmost row's `.onAppear` trigger can guard
+    /// against re-entering the paginate loop on every re-layout, and so
+    /// the view can show a tiny "loading earlier…" spinner if it wants.
+    public private(set) var isPaginatingBackward: Bool = false
+    /// `true` once the SDK reports the timeline has reached the head of
+    /// history (or once a paginate call yields zero new events for the
+    /// duration of the request). Prevents endless no-op pagination
+    /// requests once the user has scrolled to the start of the room.
+    public private(set) var reachedHistoryStart: Bool = false
     /// Cache of `mxc://` URL → resolved SwiftUI `Image`. Populated lazily by
     /// `image(for:)` so SwiftUI can re-render the row once the bytes arrive.
     /// Backed by an `LRUCache` (capped at `mediaCacheLimit`) so a long
@@ -139,8 +149,16 @@ public final class ChatViewModel {
     }
 
     public func paginateBackward() async {
+        // Re-entrancy guard. The view fires this from the topmost row's
+        // `.onAppear`, which can fire repeatedly during scroll bounces;
+        // without the guard a single scroll-up would queue up a dozen
+        // overlapping paginate requests.
+        guard !isPaginatingBackward, !reachedHistoryStart else { return }
+        isPaginatingBackward = true
+        defer { isPaginatingBackward = false }
         do {
-            try await timeline.paginateBackward(requestSize: 30)
+            let reachedStart = try await timeline.paginateBackward(requestSize: 30)
+            if reachedStart { reachedHistoryStart = true }
         } catch {
             self.error = error.localizedDescription
         }

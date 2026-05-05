@@ -288,7 +288,7 @@ private actor ScriptedVerificationService: VerificationService {
 
     private struct ScriptedCancelError: Error {}
 
-    func isThisDeviceVerified() async throws -> Bool { true }
+    func isThisDeviceVerified() async throws -> Bool? { true }
 
     func hasOtherVerifiedDevices() async throws -> Bool { true }
 

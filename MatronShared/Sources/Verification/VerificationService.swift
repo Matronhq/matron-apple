@@ -9,10 +9,23 @@ import Foundation
 /// unit tests, prefer `FakeVerificationService` (in `Tests/VerificationTests/`)
 /// which yields a scripted state sequence.
 public protocol VerificationService: Sendable {
-    /// True if this device's signing keys are present on the server and have
-    /// been signed by the user's master cross-signing key. Used by the
-    /// onboarding banner to decide whether to prompt the user.
-    func isThisDeviceVerified() async throws -> Bool
+    /// Tri-state self-device verification status. Returns:
+    ///   * `true`  — this device's signing keys are present on the server
+    ///               AND signed by the user's master cross-signing key.
+    ///   * `false` — sliding-sync has loaded the identity AND this device
+    ///               is NOT cross-signed.
+    ///   * `nil`   — SDK hasn't loaded the verification state yet
+    ///               (cold-start `.unknown`). Callers MUST treat this as
+    ///               "loading, no banner yet" — collapsing it into
+    ///               `false` makes the unverified banner flash on every
+    ///               sign-in / chat-list mount before the SDK has had a
+    ///               chance to populate its local crypto store.
+    ///
+    /// Mirrors `isUserVerified(matrixID:)`'s tri-state semantics (spec
+    /// §7.3, §7.5 — "nothing auto-trusted" without lying about an
+    /// identity we haven't queried yet). Used by the onboarding banner +
+    /// the chat-list / Help-menu chooser's "already-verified" short-circuit.
+    func isThisDeviceVerified() async throws -> Bool?
 
     /// Tri-state trust check for the per-bot inline banner shown above the
     /// chat timeline (spec §7.3, §7.5). Returns:
