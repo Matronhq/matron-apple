@@ -15,7 +15,7 @@ struct MatronApp: App {
     /// in this view-model; once `verifyDone` flips true (either after a
     /// successful verification flow or because the persisted flag was
     /// already set on relaunch), the chat list becomes reachable. Per-user
-    /// scope lives in the `UserDefaults` key — see `UserSession.verifyDoneKey`.
+    /// `UserDefaults` scoping via `UserSession.verifyDoneKey`.
     @State private var verifyDone = false
     /// Persistent `VerificationCenter` for the active session. B2/M5
     /// expert-QA fix: previously this was constructed inline as a
@@ -152,7 +152,7 @@ struct MatronApp: App {
                             // Restore any prior verifyDone state for this
                             // user so a re-sign-in doesn't re-prompt them.
                             self.verifyDone = UserDefaults.standard.bool(
-                                forKey: PostLoginVerificationView.verifyDoneKey(for: session)
+                                forKey: session.verifyDoneKey
                             )
                         }
                     )
@@ -242,7 +242,7 @@ struct MatronApp: App {
             // the chat list rather than the verification gate.
             if let session {
                 verifyDone = UserDefaults.standard.bool(
-                    forKey: PostLoginVerificationView.verifyDoneKey(for: session)
+                    forKey: session.verifyDoneKey
                 )
             }
         } catch {
@@ -256,7 +256,7 @@ struct MatronApp: App {
     /// to the chat list. Per-user scoping lives in the key — multi-account
     /// scenarios won't trample each other's flags.
     private func markVerifyDone(for session: UserSession) {
-        UserDefaults.standard.set(true, forKey: PostLoginVerificationView.verifyDoneKey(for: session))
+        UserDefaults.standard.set(true, forKey: session.verifyDoneKey)
         verifyDone = true
     }
 
@@ -275,7 +275,7 @@ struct MatronApp: App {
     /// to retry verification.
     private func signOut() {
         if let session {
-            UserDefaults.standard.removeObject(forKey: PostLoginVerificationView.verifyDoneKey(for: session))
+            UserDefaults.standard.removeObject(forKey: session.verifyDoneKey)
         }
         dependencies.signOut()
         session = nil

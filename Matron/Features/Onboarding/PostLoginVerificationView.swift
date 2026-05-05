@@ -23,8 +23,8 @@ import MatronViewModels
 /// Once the user finishes any of those flows, `onCompleted()` flips the
 /// `verifyDone` flag in the host (`MatronApp`) so the chat list is
 /// reachable. The flag is also persisted in `UserDefaults` so the gate
-/// only fires once per `(app, user)` pair — multi-account scoping uses
-/// `verifyDoneKey(for:)`.
+/// only fires once per `(app, user)` pair — multi-account scoping via
+/// `UserSession.verifyDoneKey`.
 ///
 /// The view itself owns no SDK state. Each `navigationDestination` builds
 /// the right manager / service inline using the injected `dependencies`
@@ -45,17 +45,6 @@ struct PostLoginVerificationView: View {
     let onCompleted: () -> Void
 
     @State private var path: [Path] = []
-
-    /// Per-user `UserDefaults` key for the persisted "this user has
-    /// completed the post-login verification gate" flag. Scoped by
-    /// `userID` so signing into a second account on the same device
-    /// re-runs the gate for that account. Exposed `internal` so the test
-    /// suite can lock the key shape — a future rename without test
-    /// coverage would silently leave gated users perpetually staring at
-    /// this screen.
-    static func verifyDoneKey(for session: UserSession) -> String {
-        "matron.verify-done.\(session.userID)"
-    }
 
     var body: some View {
         NavigationStack(path: $path) {

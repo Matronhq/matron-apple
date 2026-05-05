@@ -40,7 +40,7 @@ final class PostLoginVerificationViewTests: XCTestCase {
             homeserverURL: URL(string: "https://s")!, accessToken: "t"
         )
         XCTAssertEqual(
-            PostLoginVerificationView.verifyDoneKey(for: session),
+            session.verifyDoneKey,
             "matron.verify-done.@alice:s"
         )
     }

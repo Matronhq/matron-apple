@@ -164,7 +164,7 @@ struct MatronMacApp: App {
                         onSignedIn: { session in
                             self.session = session
                             self.verifyDone = UserDefaults.standard.bool(
-                                forKey: MacPostLoginVerificationView.verifyDoneKey(for: session)
+                                forKey: session.verifyDoneKey
                             )
                         }
                     )
@@ -319,7 +319,7 @@ struct MatronMacApp: App {
             session = try await dependencies.auth.restoreSession()
             if let session {
                 verifyDone = UserDefaults.standard.bool(
-                    forKey: MacPostLoginVerificationView.verifyDoneKey(for: session)
+                    forKey: session.verifyDoneKey
                 )
             }
         } catch {
@@ -331,7 +331,7 @@ struct MatronMacApp: App {
     /// Persists + flips the verify-done flag, mirroring the iOS host's
     /// `markVerifyDone(for:)`. See `MatronApp` for rationale.
     private func markVerifyDone(for session: UserSession) {
-        UserDefaults.standard.set(true, forKey: MacPostLoginVerificationView.verifyDoneKey(for: session))
+        UserDefaults.standard.set(true, forKey: session.verifyDoneKey)
         verifyDone = true
     }
 
@@ -345,7 +345,7 @@ struct MatronMacApp: App {
     /// `MacSignInView` branch.
     private func signOut(activeSession: UserSession) {
         UserDefaults.standard.removeObject(
-            forKey: MacPostLoginVerificationView.verifyDoneKey(for: activeSession)
+            forKey: activeSession.verifyDoneKey
         )
         dependencies.signOut()
         session = nil

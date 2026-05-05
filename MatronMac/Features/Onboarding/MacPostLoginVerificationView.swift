@@ -22,13 +22,6 @@ struct MacPostLoginVerificationView: View {
 
     @State private var path: [Path] = []
 
-    /// Per-user `UserDefaults` key — same shape as the iOS gate so a
-    /// future shared-default migration (Phase 7) doesn't have to reconcile
-    /// two differently-named keys. See `PostLoginVerificationView`.
-    static func verifyDoneKey(for session: UserSession) -> String {
-        "matron.verify-done.\(session.userID)"
-    }
-
     var body: some View {
         NavigationStack(path: $path) {
             VStack(spacing: 16) {

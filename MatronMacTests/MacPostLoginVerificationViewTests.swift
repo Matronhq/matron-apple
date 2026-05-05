@@ -34,7 +34,7 @@ final class MacPostLoginVerificationViewTests: XCTestCase {
             homeserverURL: URL(string: "https://s")!, accessToken: "t"
         )
         XCTAssertEqual(
-            MacPostLoginVerificationView.verifyDoneKey(for: session),
+            session.verifyDoneKey,
             "matron.verify-done.@alice:s"
         )
     }
