@@ -55,6 +55,10 @@ actor FakeVerificationService: VerificationService {
         AsyncStream { $0.finish() }
     }
 
+    nonisolated func cancelledRequests() -> AsyncStream<String> {
+        AsyncStream { $0.finish() }
+    }
+
     nonisolated func startSAS(withUser userID: String, deviceID: String?) -> AsyncStream<SasFlowState> {
         Task { await self.recordStart(userID: userID, deviceID: deviceID) }
         let states: [SasFlowState] = [

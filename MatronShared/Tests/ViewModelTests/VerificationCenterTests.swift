@@ -236,6 +236,10 @@ private actor ScriptedVerificationService: VerificationService {
         }
     }
 
+    nonisolated func cancelledRequests() -> AsyncStream<String> {
+        AsyncStream { $0.finish() }
+    }
+
     private func takeIncoming() -> [VerificationRequestSummary] {
         let queue = scriptedIncoming
         scriptedIncoming = []

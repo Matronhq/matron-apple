@@ -113,6 +113,13 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
         /// session sees, and the `VerificationCenter` orchestrator drains
         /// them into its `pending` array.
         var incomingContinuation: AsyncStream<VerificationRequestSummary>.Continuation?
+        /// Continuation for the long-lived `cancelledRequests()` stream.
+        /// One per service instance. `routeSasCancelled` emits to it when
+        /// the SDK fires `didCancel` for a flow that has no local SAS
+        /// continuation observing it (e.g. partner cancelled before our
+        /// user clicked the banner). `VerificationCenter` drains its
+        /// pending list on each emission so stale banners disappear.
+        var cancelledContinuation: AsyncStream<String>.Continuation?
         /// The SDK's shared `SessionVerificationController`. Retained here so
         /// the registered delegate (which the SDK only weakly tracks via the
         /// callback table) outlives the construction site. Cached so we never
@@ -198,6 +205,11 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
         func setIncomingContinuation(_ continuation: AsyncStream<VerificationRequestSummary>.Continuation?) {
             incomingContinuation?.finish()
             incomingContinuation = continuation
+        }
+
+        func setCancelledContinuation(_ continuation: AsyncStream<String>.Continuation?) {
+            cancelledContinuation?.finish()
+            cancelledContinuation = continuation
         }
 
         func setSDKController(_ controller: MatrixRustSDK.SessionVerificationController?) {
@@ -373,6 +385,18 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
             }
             continuation.onTermination = { _ in
                 Task { await store.setIncomingContinuation(nil) }
+            }
+        }
+    }
+
+    public func cancelledRequests() -> AsyncStream<String> {
+        AsyncStream { continuation in
+            let store = self.store
+            Task {
+                await store.setCancelledContinuation(continuation)
+            }
+            continuation.onTermination = { _ in
+                Task { await store.setCancelledContinuation(nil) }
             }
         }
     }
@@ -686,16 +710,35 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
     }
 
     /// Routes the SDK delegate's `didCancel` callback.
+    ///
+    /// Two paths: when there's an active continuation (a SAS sheet is
+    /// currently observing the flow), yield `.cancelled` so the UI
+    /// renders the red shield + Close button. When there's no active
+    /// continuation (the partner cancelled before our user opened the
+    /// banner, or the SDK's inactivity timeout fired), broadcast the
+    /// flow ID on the `cancelledRequests()` stream so
+    /// `VerificationCenter` drains its pending list and the chat-list
+    /// banner disappears. Either way, clear the FlowStore entry so a
+    /// subsequent `acceptIncoming` for the same ID can't accidentally
+    /// reuse stale state.
     func routeSasCancelled() async {
         Self.logger.notice("routeSasCancelled: enter")
-        guard let active = await store.activeContinuation() else {
-            Self.logger.error("routeSasCancelled: NO ACTIVE CONTINUATION")
+        if let active = await store.activeContinuation() {
+            Self.logger.notice("routeSasCancelled: yielding for \(active.id, privacy: .public)")
+            active.continuation.yield(.cancelled(reason: "Verification cancelled"))
+            active.continuation.finish()
+            await store.clear(requestID: active.id)
             return
         }
-        Self.logger.notice("routeSasCancelled: yielding for \(active.id, privacy: .public)")
-        active.continuation.yield(.cancelled(reason: "Verification cancelled"))
-        active.continuation.finish()
-        await store.clear(requestID: active.id)
+        if let activeID = await store.activeFlowIDValue() {
+            Self.logger.notice("routeSasCancelled: no active continuation; broadcasting cancel for \(activeID, privacy: .public) so banner can drain")
+            if let cont = await store.cancelledContinuation {
+                cont.yield(activeID)
+            }
+            await store.clear(requestID: activeID)
+            return
+        }
+        Self.logger.error("routeSasCancelled: NO ACTIVE CONTINUATION and no activeFlowID — cancel arrived for an unknown flow")
     }
 
     /// Routes the SDK delegate's `didFail` callback.

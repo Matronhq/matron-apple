@@ -54,6 +54,14 @@ public final class VerificationCenter {
     /// request: …")`. Bugbot caught this on the iOS banner.
     public let service: VerificationService
     private var observationTask: Task<Void, Never>?
+    /// Parallel observation task for `service.cancelledRequests()` — drains
+    /// `pending` when the SDK fires a cancel for a flow that had no SAS
+    /// sheet observing it (e.g. partner cancelled before the user clicked
+    /// our banner). Without this the banner outlives the underlying flow
+    /// and the user is left tapping a Verify button that opens a sheet
+    /// which immediately closes (the cancel propagated server-side
+    /// already) or hangs (worse, depending on SDK state).
+    private var cancelObservationTask: Task<Void, Never>?
 
     public init(service: VerificationService) {
         self.service = service
@@ -88,6 +96,18 @@ public final class VerificationCenter {
                 }
             }
         }
+        if cancelObservationTask == nil {
+            cancelObservationTask = Task { [weak self] in
+                guard let self else { return }
+                let stream = await self.service.cancelledRequests()
+                for await flowID in stream {
+                    if Task.isCancelled { break }
+                    await MainActor.run {
+                        self.pending.removeAll { $0.id == flowID }
+                    }
+                }
+            }
+        }
     }
 
     /// Cancel the observation task. Safe to call without a prior `start()`
@@ -97,6 +117,8 @@ public final class VerificationCenter {
     public func stop() {
         observationTask?.cancel()
         observationTask = nil
+        cancelObservationTask?.cancel()
+        cancelObservationTask = nil
     }
 
     /// Dismissing a banner must also cancel the underlying SDK

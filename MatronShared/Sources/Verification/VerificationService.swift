@@ -69,4 +69,18 @@ public protocol VerificationService: Sendable {
     /// signed by the user's cross-signing key, must have an identity,
     /// and must not be a dehydrated device).
     func hasOtherVerifiedDevices() async throws -> Bool
+
+    /// Emits the request ID of an inbound verification flow whose
+    /// SDK-side state transitioned to cancelled while no local SAS
+    /// sheet was observing it (e.g. the partner cancelled before
+    /// our user clicked the banner, or the SDK's internal
+    /// inactivity timeout fired). Lets the chat-list banner
+    /// consumer drain its `pending` list so a stale "Verify this
+    /// device" banner doesn't outlive the underlying flow.
+    ///
+    /// Distinct from per-SAS cancellation already surfaced via
+    /// `acceptIncoming(requestID:)`'s stream emitting `.cancelled` —
+    /// that path requires a continuation to be open. This stream
+    /// covers the no-continuation case.
+    func cancelledRequests() -> AsyncStream<String>
 }
