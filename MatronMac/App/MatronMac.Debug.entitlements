@@ -6,5 +6,24 @@
 	<true/>
 	<key>com.apple.security.files.user-selected.read-only</key>
 	<true/>
+	<!--
+		Keychain access group, parity with Release. Required for
+		`RecoveryKeyManager.generateAndPersist` to write the recovery
+		key into the user's Keychain — without it, `SecItemAdd` returns
+		errSecMissingEntitlement (-34018) on every call and the user
+		sees "Couldn't auto-store your recovery key" inline. The group
+		string uses Xcode's `$(AppIdentifierPrefix)` build-time
+		substitution; ad-hoc-signed harness builds (which set
+		CODE_SIGN_IDENTITY=-) won't validate it (the entitlement is
+		checked against the AppID at runtime), so they'll still hit
+		-34018 — but the view-model already handles that path via
+		`PersistenceError.keychainWriteFailedButKeyAvailable`. Properly
+		signed dev builds (Personal Team or YEARBOOK MACHINE LIMITED)
+		get a working Keychain write at runtime.
+	-->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)chat.matron.mac</string>
+	</array>
 </dict>
 </plist>
