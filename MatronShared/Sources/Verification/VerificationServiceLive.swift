@@ -309,6 +309,17 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
         await store.snapshot()
     }
 
+    /// Test seam: returns true once the `cancelledRequests()` stream's
+    /// continuation has been installed in the FlowStore actor. The
+    /// AsyncStream initializer schedules a fire-and-forget Task to do
+    /// the actor-hop registration; on a slow scheduler (CI) a test that
+    /// triggers `routeSasCancelled` immediately after subscribing can
+    /// race that Task and miss the broadcast. Tests poll this until
+    /// true before exercising the cancel path.
+    func cancelledContinuationIsRegistered() async -> Bool {
+        await store.cancelledContinuation != nil
+    }
+
     /// Test seam: set the in-progress flow ID so subsequent `routeSas…`
     /// callbacks find the right continuation.
     func setActiveFlowID(_ id: String?) async {

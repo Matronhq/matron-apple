@@ -283,6 +283,17 @@ final class VerificationServiceLiveTests: XCTestCase {
         let stream = live.cancelledRequests()
         var iterator = stream.makeAsyncIterator()
 
+        // Wait for the registration Task scheduled by `cancelledRequests()`
+        // to complete its actor hop. On CI's slow scheduler the Task may
+        // not have run yet by the time we trigger the cancel below, which
+        // would leave `routeSasCancelled` finding `cancelledContinuation`
+        // still nil and silently no-op'ing the broadcast (CI flake repro:
+        // run #25382616782 / commit 3c6c0a8).
+        for _ in 0..<100 {
+            if await live.cancelledContinuationIsRegistered() { break }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+
         await live.routeSasCancelled()
 
         // Bounded poll for the emission. AsyncStream's continuation
