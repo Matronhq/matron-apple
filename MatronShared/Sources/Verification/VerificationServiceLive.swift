@@ -343,6 +343,14 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
         return client.encryption().verificationState() == .verified
     }
 
+    public func hasOtherVerifiedDevices() async throws -> Bool {
+        guard let provider, let session else {
+            throw VerificationError.notConfigured
+        }
+        let client = try await provider.client(for: session)
+        return try await client.encryption().hasDevicesToVerifyAgainst()
+    }
+
     public func isUserVerified(matrixID: String) async throws -> UserVerificationResult {
         guard let provider, let session else {
             throw VerificationError.notConfigured

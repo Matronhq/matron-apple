@@ -79,7 +79,7 @@ struct MacRecoveryKeyView: View {
                 .font(.callout)
                 .frame(maxWidth: .infinity, alignment: .leading)
             HStack {
-                TextField("XXXX-XXXX-XXXX-XXXX", text: $viewModel.reenteredKey)
+                TextField("Re-enter recovery key", text: $viewModel.reenteredKey)
                     .font(.system(.title3, design: .monospaced))
                     .textFieldStyle(.roundedBorder)
                 Button("Paste") { detector?.checkClipboardAndApply() }
@@ -125,7 +125,7 @@ struct MacRecoveryKeyView: View {
             .font(.callout)
             .frame(maxWidth: .infinity, alignment: .leading)
         HStack {
-            TextField("XXXX-XXXX-XXXX-XXXX", text: $viewModel.enteredKey)
+            TextField("Enter recovery key", text: $viewModel.enteredKey)
                 .font(.system(.title3, design: .monospaced))
                 .textFieldStyle(.roundedBorder)
             Button("Paste") {
@@ -134,17 +134,15 @@ struct MacRecoveryKeyView: View {
                 }
             }
         }
-        // Wave 5 bugbot #1: NO `.keyboardShortcut(.return)` here.
-        // The bottom-bar Done button is `.borderedProminent` and owns
-        // the Return key for restore mode (see `primaryActionButton`).
-        // Declaring `.return` on both buttons made Return ambiguous —
-        // could trigger either, and combined with Wave 4's Done-double-
-        // call guard (`if phase != .done`) the Restore + Done pair
-        // could race their `attemptRestore()` calls.
-        Button("Restore") {
-            Task { await viewModel.attemptRestore() }
-        }
-        .disabled(viewModel.enteredKey.isEmpty || viewModel.phase == .busy)
+        // The standalone "Restore" button used to live here for retry-
+        // after-error UX, paired with a "Done" button at the bottom that
+        // ALSO ran restore + dismissed. Two buttons doing approximately
+        // the same thing was confusing — pressing Restore showed no
+        // visible feedback, so users pressed Done after, which (because
+        // phase wasn't `.done` yet) ran restore a second time. The
+        // primary action button below is now the single
+        // "Restore"-and-dismiss action with a `.busy` ProgressView while
+        // the SDK round-trips. Errors render here.
         if case .error(let message) = viewModel.phase {
             Text(message)
                 .foregroundStyle(.red)
@@ -178,26 +176,27 @@ struct MacRecoveryKeyView: View {
         case (.generate, .confirmed):
             EmptyView()        // auto-dismisses via the .task delay
         case (.restore, _):
-            // Bugbot caught: restore mode previously fell through to
-            // EmptyView() — Mac users had no way to finish after restoring.
-            // Mirrors iOS: Done both runs the restore and dismisses on
-            // success, so the user can't bypass the actual key restore by
-            // typing any text and tapping Done.
-            //
-            // Wave 4 expert-QA #2: skip `attemptRestore()` when the VM is
-            // already `.done` so a successful Restore (which advances
-            // phase to `.done`) followed by a Done tap doesn't re-call
-            // `recover()` with the same key. The SDK is probably
-            // idempotent on the second call, but firing a second SDK
-            // round-trip on a "just dismiss me" button is wasteful and
-            // — more importantly — would mask any future SDK behaviour
-            // change that turns the second call into an error.
-            Button("Done") {
+            // Single Restore-and-dismiss action — runs the SDK
+            // restore, swaps to a ProgressView while busy, fires
+            // `onFinished` once the VM lands at `.done`. Wave 4
+            // expert-QA #2's skip-when-already-done guard stays so a
+            // double-tap doesn't re-fire `recover()` after success.
+            Button {
                 Task {
                     if viewModel.phase != .done {
                         await viewModel.attemptRestore()
                     }
                     if viewModel.phase == .done { onFinished() }
+                }
+            } label: {
+                if viewModel.phase == .busy {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Restoring…")
+                    }
+                } else {
+                    Text("Restore")
                 }
             }
             .keyboardShortcut(.return)

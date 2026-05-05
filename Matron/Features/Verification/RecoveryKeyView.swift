@@ -59,24 +59,33 @@ struct RecoveryKeyView: View {
             .buttonStyle(.borderedProminent)
             .disabled(!viewModel.canFinish)
         case (.restore, _):
-            // Bugbot caught: previously enabled whenever `enteredKey`
-            // non-empty, letting the user tap Done without ever invoking
-            // attemptRestore — passing the verification gate without
-            // unlocking encryption keys. Now Done both runs the restore
-            // and dismisses on success; standalone "Restore" button (in
-            // restoreBody) stays for retry-on-error UX so the user can
-            // see + correct an error inline before committing.
-            //
-            // Wave 4 expert-QA #2: skip `attemptRestore()` when the VM
-            // is already `.done` so a successful Restore (the inline
-            // button below) followed by a Done tap doesn't re-fire
-            // `recover()` with the same key. Mirrors the Mac fix.
-            Button("Done") {
+            // Single Restore-and-dismiss action — runs the SDK
+            // restore, swaps to a ProgressView while busy, fires
+            // `onFinished` once the VM lands at `.done`. The prior
+            // shape had a separate inline "Restore" button + this
+            // bottom "Done" button, which was confusing: pressing
+            // Restore showed no visible feedback, so users pressed
+            // Done after, which (because phase wasn't `.done` yet)
+            // ran restore a second time. Now there's just one
+            // button. Wave 4 expert-QA #2's skip-when-already-done
+            // guard stays so a double-tap doesn't re-fire
+            // `recover()` after success.
+            Button {
                 Task {
                     if viewModel.phase != .done {
                         await viewModel.attemptRestore()
                     }
                     if viewModel.phase == .done { onFinished() }
+                }
+            } label: {
+                if viewModel.phase == .busy {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Restoring…")
+                    }
+                } else {
+                    Text("Restore")
                 }
             }
             .buttonStyle(.borderedProminent)
@@ -122,7 +131,7 @@ struct RecoveryKeyView: View {
         case .reenter:
             Text("Re-enter your recovery key to confirm you've saved it correctly.")
                 .font(.callout)
-            TextField("XXXX-XXXX-XXXX-XXXX", text: $viewModel.reenteredKey)
+            TextField("Re-enter recovery key", text: $viewModel.reenteredKey)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .font(.system(.title3, design: .monospaced))
@@ -148,18 +157,21 @@ struct RecoveryKeyView: View {
     private var restoreBody: some View {
         Text("Enter your recovery key to unlock encrypted history on this device.")
             .font(.callout)
-        TextField("XXXX-XXXX-XXXX-XXXX", text: $viewModel.enteredKey)
+        TextField("Enter recovery key", text: $viewModel.enteredKey)
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
             .font(.system(.title3, design: .monospaced))
             .padding()
             .background(Color(.systemGray6))
             .clipShape(RoundedRectangle(cornerRadius: 8))
-        Button("Restore") {
-            Task { await viewModel.attemptRestore() }
-        }
-        .buttonStyle(.bordered)
-        .disabled(viewModel.enteredKey.isEmpty || viewModel.phase == .busy)
+        // The standalone inline Restore button used to live here for
+        // retry-after-error, paired with the bottom Done button (which
+        // ALSO ran restore). Two buttons doing approximately the same
+        // thing was confusing — pressing Restore showed no visible
+        // feedback, so users pressed Done after, which ran restore a
+        // second time. The primaryActionButton below is now the single
+        // "Restore"-and-dismiss action with a `.busy` ProgressView
+        // while the SDK round-trips. Errors render here.
         if case .error(let message) = viewModel.phase {
             Text(message)
                 .foregroundStyle(.red)

@@ -623,14 +623,24 @@ private struct SelfVerifyThisDeviceSheet: View {
     /// it the only path the chat-list `UnverifiedDeviceBanner` surfaced
     /// was SAS, which strands users when no other verified device is
     /// online (e.g. both devices' SDK stores got wiped on re-login).
-    enum Phase { case chooser, sas, recoveryKey }
-    @State private var phase: Phase = .chooser
+    enum Phase { case probing, chooser, sas, recoveryKey }
+    @State private var phase: Phase = .probing
     @State private var sasViewModel: SasViewModel?
     @State private var recoveryKeyViewModel: RecoveryKeyViewModel?
+    /// `nil` while the probe is in flight; `true` if the SDK reports
+    /// at least one other already-verified device of the same user
+    /// (`Encryption.hasDevicesToVerifyAgainst()`); `false` if there's
+    /// nothing online to SAS-verify against. Drives the disabled
+    /// state on the "Verify with another device" button — without
+    /// this, users with no other verified peer get stranded waiting
+    /// on a SAS that can never complete.
+    @State private var hasOtherDevices: Bool? = nil
 
     var body: some View {
         Group {
             switch phase {
+            case .probing:
+                ProgressView("Loading…")
             case .chooser:
                 chooserView
             case .sas:
@@ -655,34 +665,48 @@ private struct SelfVerifyThisDeviceSheet: View {
                 }
             }
         }
+        .task(id: userID) {
+            guard phase == .probing else { return }
+            hasOtherDevices = (try? await service.hasOtherVerifiedDevices()) ?? false
+            phase = .chooser
+        }
     }
 
     private var chooserView: some View {
-        VStack(spacing: 16) {
+        let sasAvailable = hasOtherDevices ?? false
+        return VStack(spacing: 16) {
             Image(systemName: "lock.shield")
                 .font(.system(size: 60))
                 .foregroundStyle(.tint)
             Text("Verify this device")
                 .font(.title2).bold()
-            Text("Choose how to verify. SAS needs another already-verified device online.")
+            Text("Choose how to verify this device.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Button {
-                let stream = service.startSAS(withUser: userID, deviceID: nil)
-                sasViewModel = SasViewModel(
-                    stream: stream,
-                    requestID: userID,
-                    confirm: { try await service.confirmEmojiMatch(requestID: userID) },
-                    cancel: { reason in try await service.cancel(requestID: userID, reason: reason) }
-                )
-                phase = .sas
-            } label: {
-                Label("Verify with another device", systemImage: "laptopcomputer")
-                    .frame(maxWidth: .infinity)
+            VStack(spacing: 4) {
+                Button {
+                    let stream = service.startSAS(withUser: userID, deviceID: nil)
+                    sasViewModel = SasViewModel(
+                        stream: stream,
+                        requestID: userID,
+                        confirm: { try await service.confirmEmojiMatch(requestID: userID) },
+                        cancel: { reason in try await service.cancel(requestID: userID, reason: reason) }
+                    )
+                    phase = .sas
+                } label: {
+                    Label("Verify with another device", systemImage: "laptopcomputer")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!sasAvailable)
+                .accessibilityIdentifier("verifychooser.sas")
+                if !sasAvailable {
+                    Text("No other verified devices found for your account.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
-            .buttonStyle(.borderedProminent)
-            .accessibilityIdentifier("verifychooser.sas")
             Button {
                 recoveryKeyViewModel = RecoveryKeyViewModel(
                     mode: .restore,

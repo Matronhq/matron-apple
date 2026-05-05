@@ -26,6 +26,12 @@ actor FakeVerificationService: VerificationService {
     /// (bugbot caught it).
     func isThisDeviceVerified() async throws -> Bool { true }
 
+    /// Test-tunable result for `hasOtherVerifiedDevices`. Default `true`
+    /// matches the old test posture (callers that don't care about the
+    /// chooser's SAS-availability gating get the existing behaviour).
+    var hasOtherVerifiedDevicesValue: Bool = true
+    func hasOtherVerifiedDevices() async throws -> Bool { hasOtherVerifiedDevicesValue }
+
     func isUserVerified(matrixID: String) async throws -> UserVerificationResult {
         userVerificationMap[matrixID, default: .unknown]
     }

@@ -55,4 +55,18 @@ public protocol VerificationService: Sendable {
     /// Cancels the flow with a free-form reason (e.g. "user-cancelled",
     /// "mismatch"). Idempotent — safe to call after the flow already ended.
     func cancel(requestID: String, reason: String) async throws
+
+    /// True if the user has another already-verified device that this
+    /// device could SAS-verify against. Used by the chat-list verify
+    /// chooser to decide whether to enable the "Verify with another
+    /// device" option — if there's no other verified peer (e.g. both
+    /// devices' SDK stores got wiped on re-login), SAS would hang
+    /// indefinitely waiting for a partner that doesn't exist, and
+    /// the user needs to use their recovery key instead.
+    ///
+    /// Wraps matrix-rust-sdk's
+    /// `Encryption.hasDevicesToVerifyAgainst()` (the device must be
+    /// signed by the user's cross-signing key, must have an identity,
+    /// and must not be a dehydrated device).
+    func hasOtherVerifiedDevices() async throws -> Bool
 }
