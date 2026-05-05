@@ -146,43 +146,41 @@ re-litigate without reading the spec):
 
 **TL;DR for the next agent:** Bugbot pass 1–4 cleanup on PR #3
 (9 findings → fixes) → admin-squash-merged to `main` as `3f10451`.
-Phase 2.5 (`phase-2-5-live-chat-list` branch off `main`) implements
-the long-lived chat-list subscription end-to-end: a new
+Phase 2.5 (`phase-2-5-live-chat-list` branch off `main`, opened as
+PR #4) implements the long-lived chat-list subscription end-to-end:
 `RoomListSubscription` with diff-application + per-room
-`Room.subscribeToRoomInfoUpdates` state subs, a `ChatSummaryBroadcaster`
+`Room.subscribeToRoomInfoUpdates` state subs, `ChatSummaryBroadcaster`
 fan-out actor, `ChatServiceLive.chatSummaries()` flipped from
 one-shot snapshot to broadcaster-registered long-lived stream,
 `ChatListViewModel` retry loop dropped + multi-yield consumer,
 `NewChatSheet.loadBots()` retry loop dropped, and `refresh()` rebound
 through a new `ChatService.forceSnapshot()` so iOS pull-to-refresh +
 Mac `⌘R` add a snapshot to the live pipe instead of being no-ops.
-Integration scenario `chat-list-live-updates-sdk.sh` written but
-**NOT YET RUN** in this session — Docker harness not booted. Local
-SPM (261 tests) + iOS + Mac builds all GREEN.
+
+**Both integration scenarios passed end-to-end against tuwunel:**
+`tests/integration/run-harness.sh chat-list-live-updates-sdk.sh`
+(scenario PASSED — live chat-list subscription delivers new room
+within 10s) and the spike scenario (Task 1 + Task 3 Step 0). The
+Step 0 per-room scaling probe surfaced an empirical finding worth
+recording: `subscribeToRoomInfoUpdates` does NOT fire on subscribe
+(0 callbacks across 12 rooms × 30s) — it only fires when `RoomInfo`
+actually changes. Initial state comes from the diff stream; per-room
+subs are purely incremental. No thundering herd at page-100 scale.
+Spike artefacts (`RoomListSubscriptionSpikeTests.swift` +
+`roomlist-spike-sdk.sh`) deleted per Task 6 housekeeping. Local
+SPM (261 tests) + iOS + Mac builds GREEN.
 
 ### Open work for session 10
 
-1. **Run the live-update integration scenario.**
-   `tests/integration/run-harness.sh chat-list-live-updates-sdk.sh`
-   If green: delete the Phase 2.5 spike artefacts
-   (`MatronIntegrationTests/RoomListSubscriptionSpikeTests.swift` and
-   `tests/integration/scenarios/roomlist-spike-sdk.sh`) per Task 1's
-   "spike artefacts to delete after the production implementation +
-   integration scenario lands and is green" note. Both were left in
-   place this session because we couldn't actually run the new scenario.
-2. **Run the Step 0 per-room subscription scaling spike**
-   (`testRoomSubscribeToRoomInfoUpdates_scalesAtPage100` in
-   `RoomListSubscriptionSpikeTests`) and document the outcome inline
-   at `RoomListSubscription.swift`. The scaling spike was added
-   alongside the per-room state work but never run end-to-end.
-3. **Open the Phase 2.5 PR.** `gh pr create` with branch
-   `phase-2-5-live-chat-list` → `main`. The CLA workflow on `main`
+1. **Address bugbot on PR #4** if it surfaces real issues; defer
+   cosmetic findings per the user's session-9 stance ("fix all
+   medium+ ones, defer Lows").
+2. **Decide merge timing for PR #4.** The CLA workflow on `main`
    is still broken (`@v2` action pin from session 8); it'll fail.
-   User authorized admin-merge for the merge gate during session 9
-   for PR #3 — same playbook applies here.
-4. **Address bugbot if it surfaces real issues**; defer cosmetic
-   findings per the user's session-9 stance ("fix all medium+ ones,
-   defer Lows").
+   User authorized admin-merge during session 9 for PR #3 — same
+   playbook applies here once bugbot is satisfied.
+3. **Phase 4 onwards** — push notifications + NSE per the roadmap
+   (`docs/superpowers/specs/2026-05-02-matron-ios-design.md`).
 
 ### Things to NOT undo (Phase 2.5)
 

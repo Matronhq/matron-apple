@@ -184,16 +184,18 @@ enum RoomListEntriesAlgorithm {
 /// Reset / Clear / Truncate (i.e. for every ID returned in
 /// `RoomListEntriesAlgorithm.ApplyResult.dropped`).
 ///
-/// **Phase 2.5 Task 3 Step 0 — scaling spike outcome:** the test
-/// `RoomListSubscriptionSpikeTests.testRoomSubscribeToRoomInfoUpdates_scalesAtPage100`
-/// exercises 10×`subscribeToRoomInfoUpdates` over 30s and asserts the
-/// callback rate stays ≤ 5N. NOT RUN in this session — the integration
-/// harness wasn't booted. Future sessions can run it via
-/// `tests/integration/run-harness.sh roomlist-spike-sdk.sh` (the
-/// existing scenario script picks up both spike test methods). Step 1
-/// (per-room wiring) proceeds optimistically at page-100; if the spike
-/// later surfaces churn that dwarfs user-driven mutation, scope the
-/// listener window to a sliding top-N (~20) per the plan.
+/// **Phase 2.5 Task 3 Step 0 — scaling spike outcome (run 2026-05-05,
+/// then deleted):** ran the (now-removed) `testRoomSubscribeToRoom-
+/// InfoUpdates_scalesAtPage100` against tuwunel with 12 rooms over
+/// 30s. Total RoomInfo callbacks: 0. Empirical finding:
+/// `subscribeToRoomInfoUpdates` does NOT fire on subscribe — it only
+/// fires when the room's `RoomInfo` actually changes. Initial
+/// chat-list state comes from the diff stream
+/// (`entriesWithDynamicAdapters`); per-room subscriptions are purely
+/// incremental. No thundering herd at page-100 scale, no flood under
+/// quiet conditions. Page-100 wiring is safe. The integration scenario
+/// `tests/integration/scenarios/chat-list-live-updates-sdk.sh` covers
+/// the end-to-end live-update path going forward.
 ///
 /// **History note (do not delete without re-confirming):** Phase 1's
 /// `ChatServiceLive.chatSummaries()` blamed a crash inside the SDK's
