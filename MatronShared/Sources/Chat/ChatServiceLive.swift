@@ -63,12 +63,25 @@ public final class ChatServiceLive: ChatService, @unchecked Sendable {
     /// return. The SDK doesn't expose a `forceSyncOnce`-style trigger in
     /// v26, and sliding sync is continuous in the background, so the
     /// meaningful work is making sure the next call to `chatSummaries()`
-    /// won't race the initial sync. `ChatService.forceSnapshot()` (Task 4
-    /// Step 4) will replace this for the iOS pull-to-refresh / Mac ⌘R
-    /// gesture by feeding a one-shot snapshot through the live broadcaster
-    /// without tearing the listener down.
+    /// won't race the initial sync. View-layer pull-to-refresh / `⌘R`
+    /// gestures now route through `ChatListViewModel.refresh()` →
+    /// `ChatService.forceSnapshot()`; this method stays for any direct
+    /// caller that just wants to block on readiness.
     public func refresh() async throws {
         try await sync.waitUntilReady()
+    }
+
+    /// Polls `client.rooms()` once and feeds the resulting summaries
+    /// through the same broadcaster the live `RoomListSubscription`
+    /// publishes to. Every registered `chatSummaries()` consumer sees
+    /// one extra yield; the listener and its per-room subscriptions
+    /// stay alive. Used by `ChatListViewModel.refresh()` (iOS
+    /// pull-to-refresh + Mac `⌘R`).
+    public func forceSnapshot() async throws {
+        try await sync.waitUntilReady()
+        let client = try await provider.client(for: session)
+        let summaries = await ChatSummaryMapper.summaries(for: client.rooms(), client: client)
+        await broadcaster.broadcast(summaries)
     }
 
     public func mute(roomID: String) async throws {

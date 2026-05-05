@@ -102,6 +102,7 @@ private final class LocalFakeChatActions: ChatService, @unchecked Sendable {
     }
     func createChat(with botID: String) async throws -> String { "!stub:server" }
     func refresh() async throws {}
+    func forceSnapshot() async throws {}
     func mute(roomID: String) async throws {}
     func leave(roomID: String) async throws {}
 }

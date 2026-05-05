@@ -36,6 +36,15 @@ public protocol ChatService: Sendable {
     /// responsible for kicking off a new subscription.
     func refresh() async throws
 
+    /// Phase 2.5: feeds a fresh one-shot `client.rooms()` snapshot through
+    /// the same broadcaster pipe the live `RoomListSubscription` uses, so
+    /// every registered `chatSummaries()` consumer sees an extra yield.
+    /// Bound to the iOS pull-to-refresh and Mac `⌘R` gestures via
+    /// `ChatListViewModel.refresh()`. Does NOT tear down the live listener
+    /// — accumulated diff state and per-room subscription handles stay
+    /// intact.
+    func forceSnapshot() async throws
+
     /// Mutes notifications for `roomID` by setting the SDK's
     /// `NotificationSettings` room mode to `.mute`. Idempotent — calling
     /// twice for an already-muted room is a no-op on the server.
