@@ -216,6 +216,8 @@ private actor ScriptedVerificationService: VerificationService {
 
     func isThisDeviceVerified() async throws -> Bool { true }
 
+    func hasOtherVerifiedDevices() async throws -> Bool { true }
+
     func isUserVerified(matrixID: String) async throws -> UserVerificationResult { .unknown }
 
     nonisolated func incomingRequests() -> AsyncStream<VerificationRequestSummary> {
