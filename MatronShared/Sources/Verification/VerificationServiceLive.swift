@@ -98,6 +98,15 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
         var continuations: [String: AsyncStream<SasFlowState>.Continuation] = [:]
         var activeFlowID: String?
         var roles: [String: FlowRole] = [:]
+        /// Sender's user ID per inbound flow ID. Captured in
+        /// `routeIncomingRequest` from the SDK delegate's
+        /// `didReceiveVerificationRequest` callback; consumed by
+        /// `acceptIncoming` to call
+        /// `controller.acknowledgeVerificationRequest(senderId:flowId:)`
+        /// before `acceptVerificationRequest()`. The SDK requires this
+        /// ack call to register which inbound request the next
+        /// `accept` applies to — without it the accept silently no-ops.
+        var senderIDs: [String: String] = [:]
         /// Continuation for the long-lived `incomingRequests()` stream. One per
         /// service instance — the SDK's delegate fires
         /// `didReceiveVerificationRequest` for every incoming request the
@@ -148,6 +157,7 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
             controllers.removeValue(forKey: requestID)
             continuations.removeValue(forKey: requestID)
             roles.removeValue(forKey: requestID)
+            senderIDs.removeValue(forKey: requestID)
             if activeFlowID == requestID {
                 activeFlowID = nil
             }
@@ -175,6 +185,14 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
 
         func setRole(_ role: FlowRole, for requestID: String) {
             roles[requestID] = role
+        }
+
+        func setSenderID(_ senderID: String, for requestID: String) {
+            senderIDs[requestID] = senderID
+        }
+
+        func senderID(for requestID: String) -> String? {
+            senderIDs[requestID]
         }
 
         func setIncomingContinuation(_ continuation: AsyncStream<VerificationRequestSummary>.Continuation?) {
@@ -251,10 +269,27 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
     // MARK: - Test surface
 
     /// Test seam: register a controller for a given request ID. Production code
-    /// populates this from the SDK delegate's `didReceiveVerificationRequest`.
+    /// populates this from the SDK delegate's `didReceiveVerificationRequest`,
+    /// which also captures the sender's user ID; tests can pass `senderID:` to
+    /// override the default placeholder. The default keeps existing tests
+    /// (that only care about controller routing) compiling, while
+    /// `acceptIncoming`'s production-required `acknowledgeVerificationRequest`
+    /// call still has a non-nil senderID to use.
     @discardableResult
-    func register(controller: SessionVerificationControlling, for requestID: String) async -> SessionVerificationControlling? {
-        await store.register(controller: controller, for: requestID)
+    func register(
+        controller: SessionVerificationControlling,
+        for requestID: String,
+        senderID: String = "@test-sender:test"
+    ) async -> SessionVerificationControlling? {
+        await store.setSenderID(senderID, for: requestID)
+        return await store.register(controller: controller, for: requestID)
+    }
+
+    /// Test seam: explicitly set the senderID for an in-progress flow.
+    /// Useful when a test needs to verify the senderID is forwarded to
+    /// `acknowledgeVerificationRequest`.
+    func setSenderID(_ senderID: String, for requestID: String) async {
+        await store.setSenderID(senderID, for: requestID)
     }
 
     /// Test seam: snapshot the activeFlows cache so tests can assert removal.
@@ -409,6 +444,27 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
                 await self.store.setRole(.responder, for: requestID)
                 await self.store.setActiveFlowID(requestID)
                 do {
+                    // Element X parity: register the inbound flow with the
+                    // SDK BEFORE accepting. Without this call, the SDK's
+                    // session-verification controller has no current
+                    // active inbound request, and `acceptVerificationRequest`
+                    // silently no-ops (returns OK without queuing the
+                    // outgoing `m.key.verification.ready` to-device event).
+                    // The senderID was captured in `routeIncomingRequest`
+                    // from `didReceiveVerificationRequest`; if it's
+                    // missing here something has gone wrong with the
+                    // route bookkeeping — log + bail rather than send a
+                    // garbage placeholder.
+                    guard let senderID = await self.store.senderID(for: requestID) else {
+                        Self.logger.error("acceptIncoming: NO SENDER_ID stored for requestID — cannot acknowledge")
+                        continuation.yield(.cancelled(reason: "Missing senderID for request \(requestID)"))
+                        continuation.finish()
+                        await self.store.clearContinuation(for: requestID)
+                        return
+                    }
+                    Self.logger.notice("acceptIncoming: calling acknowledgeVerificationRequest(senderId=\(senderID, privacy: .public), flowId=\(requestID, privacy: .public))")
+                    try await controller.acknowledgeVerificationRequest(senderId: senderID, flowId: requestID)
+                    Self.logger.notice("acceptIncoming: acknowledgeVerificationRequest returned OK")
                     Self.logger.notice("acceptIncoming: calling acceptVerificationRequest")
                     try await controller.acceptVerificationRequest()
                     Self.logger.notice("acceptIncoming: acceptVerificationRequest returned OK — yielding .requested")
@@ -490,6 +546,7 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
         )
         _ = await store.register(controller: controller, for: requestID)
         await store.setRole(.responder, for: requestID)
+        await store.setSenderID(otherUserID, for: requestID)
         await store.setActiveFlowID(requestID)
         if let cont = await store.incomingContinuation {
             cont.yield(summary)
@@ -684,8 +741,35 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
         }
         let client = try await provider.client(for: session)
         Self.logger.notice("buildController: fetching SessionVerificationController")
-        let controller = try await client.getSessionVerificationController()
-        Self.logger.notice("buildController: fetched (handle: \(ObjectIdentifier(controller).hashValue, privacy: .public))")
+        // `getSessionVerificationController()` can throw
+        // `ClientError.Generic("Failed retrieving user identity")` when
+        // `verificationStateListener` has fired `!= .unknown` but
+        // `/keys/query` hasn't yet returned the cross-signing identity
+        // for this user. Retry on transient errors —
+        // `MatronIntegrationTests/VerificationFlowIntegrationTests.testVerifyWithOtherDeviceAgainstPartner`
+        // documents the same behaviour at the test level (60 × 500ms);
+        // production code needs the same backoff so a fresh second-device
+        // sign-in doesn't strand the verify-gate's `startSAS` task on a
+        // silently-swallowed error. Log every attempt so next-time
+        // diagnosis isn't another archaeology trip through `try?`.
+        let controller: MatrixRustSDK.SessionVerificationController = try await {
+            let maxAttempts = 60
+            var attempt = 0
+            while true {
+                attempt += 1
+                do {
+                    return try await client.getSessionVerificationController()
+                } catch {
+                    if attempt >= maxAttempts {
+                        Self.logger.error("buildController: getSessionVerificationController() failed after \(attempt, privacy: .public) attempts: \(error.localizedDescription, privacy: .public)")
+                        throw error
+                    }
+                    Self.logger.notice("buildController: getSessionVerificationController() threw on attempt \(attempt, privacy: .public)/\(maxAttempts, privacy: .public): \(error.localizedDescription, privacy: .public) — retrying in 500ms")
+                    try await Task.sleep(nanoseconds: 500_000_000)
+                }
+            }
+        }()
+        Self.logger.notice("buildController: fetched (handle: \(ObjectIdentifier(controller).hashValue, privacy: .public)) on attempt path")
         await store.setSDKController(controller)
         let weakDelegate = WeakSessionVerificationControllerProxy(
             router: self,
@@ -724,6 +808,9 @@ final class LiveSessionVerificationController: SessionVerificationControlling, @
     let inner: MatrixRustSDK.SessionVerificationController
     init(_ inner: MatrixRustSDK.SessionVerificationController) { self.inner = inner }
 
+    func acknowledgeVerificationRequest(senderId: String, flowId: String) async throws {
+        try await inner.acknowledgeVerificationRequest(senderId: senderId, flowId: flowId)
+    }
     func acceptVerificationRequest() async throws { try await inner.acceptVerificationRequest() }
     func startSasVerification()      async throws { try await inner.startSasVerification() }
     func approveVerification()       async throws { try await inner.approveVerification() }

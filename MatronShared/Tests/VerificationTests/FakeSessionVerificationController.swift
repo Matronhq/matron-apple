@@ -11,6 +11,9 @@ import Foundation
 /// observation properties block on the actor to read.
 final class FakeSessionVerificationController: SessionVerificationControlling, @unchecked Sendable {
     private actor Recorder {
+        var didAcknowledge = false
+        var acknowledgedSenderID: String?
+        var acknowledgedFlowID: String?
         var didAccept = false
         var didStartSas = false
         var didApprove = false
@@ -28,6 +31,11 @@ final class FakeSessionVerificationController: SessionVerificationControlling, @
         /// "the SDK threw during route" without requiring a real client.
         var nextStartSasError: Error?
 
+        func recordAcknowledge(senderID: String, flowID: String) {
+            didAcknowledge = true
+            acknowledgedSenderID = senderID
+            acknowledgedFlowID = flowID
+        }
         func recordAccept()   { didAccept = true; acceptCount += 1 }
         func recordStartSas() throws {
             didStartSas = true; startSasCount += 1
@@ -44,6 +52,15 @@ final class FakeSessionVerificationController: SessionVerificationControlling, @
 
     private let recorder = Recorder()
 
+    var didAcknowledge: Bool {
+        get async { await recorder.didAcknowledge }
+    }
+    var acknowledgedSenderID: String? {
+        get async { await recorder.acknowledgedSenderID }
+    }
+    var acknowledgedFlowID: String? {
+        get async { await recorder.acknowledgedFlowID }
+    }
     var didAccept: Bool {
         get async { await recorder.didAccept }
     }
@@ -72,6 +89,9 @@ final class FakeSessionVerificationController: SessionVerificationControlling, @
         await recorder.setNextStartSasError(error)
     }
 
+    func acknowledgeVerificationRequest(senderId: String, flowId: String) async throws {
+        await recorder.recordAcknowledge(senderID: senderId, flowID: flowId)
+    }
     func acceptVerificationRequest() async throws { await recorder.recordAccept() }
     func startSasVerification()      async throws { try await recorder.recordStartSas() }
     func approveVerification()       async throws { await recorder.recordApprove() }
