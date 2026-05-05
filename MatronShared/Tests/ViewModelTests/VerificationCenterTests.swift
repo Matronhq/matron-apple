@@ -160,6 +160,71 @@ final class VerificationCenterTests: XCTestCase {
         center.stop()
     }
 
+    /// Regression for `453e9a9` — `VerificationCenter.start()` now
+    /// observes `service.cancelledRequests()` in parallel and drains
+    /// `pending` for any flow ID that's emitted. Covers the "remote
+    /// partner cancelled before our user clicked the banner" case;
+    /// without this, the chat-list banner outlived the underlying flow
+    /// and the user was left tapping a banner that opened a sheet
+    /// which immediately cancelled.
+    @MainActor
+    func test_start_drainsPendingOnCancelledStreamEmission() async {
+        let svc = ScriptedVerificationService()
+        let summary = VerificationRequestSummary(
+            id: "req-stale",
+            otherUserID: "@bob:s",
+            otherDeviceID: "DEV",
+            createdAt: Date()
+        )
+        // Inject the request so `pending` has the summary, then schedule
+        // the same id on the cancelled stream — VerificationCenter
+        // should drain it.
+        await svc.scheduleCancelledIDs(["req-stale"])
+        let center = VerificationCenter(service: svc)
+        center.injectPending(summary)
+        XCTAssertEqual(center.pending, [summary])
+
+        center.start()
+        try? await waitUntil { center.pending.isEmpty }
+
+        XCTAssertTrue(center.pending.isEmpty,
+                      "Center should have drained the pending entry when cancelledRequests emitted its id")
+        center.stop()
+    }
+
+    /// Cancelled stream emitting an id NOT in `pending` is a safe no-op
+    /// — the center filters by id, so a stale cancel for a flow we
+    /// never showed a banner for can't accidentally remove a different
+    /// banner.
+    @MainActor
+    func test_start_cancelledStreamForUnknownId_isHarmless() async {
+        let svc = ScriptedVerificationService()
+        let summary = VerificationRequestSummary(
+            id: "req-still-pending",
+            otherUserID: "@bob:s",
+            otherDeviceID: "DEV",
+            createdAt: Date()
+        )
+        // Center has one pending summary. Cancelled stream emits a
+        // DIFFERENT id. The pending entry must survive.
+        await svc.scheduleCancelledIDs(["req-not-in-pending"])
+        let center = VerificationCenter(service: svc)
+        center.injectPending(summary)
+
+        center.start()
+        // Bounded poll just to give the observation task time to
+        // process the unrelated cancel emission.
+        for _ in 0..<10 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+            if !center.pending.isEmpty { continue }
+            break
+        }
+
+        XCTAssertEqual(center.pending, [summary],
+                       "Cancel for an unrelated id must not drain the still-valid pending entry")
+        center.stop()
+    }
+
     /// Bounded poll — drives the runloop in 5ms slices for up to 1s so
     /// the AsyncStream-backed observation task gets a chance to deliver
     /// scripted summaries. Avoids `Task.sleep(_:)` because that pauses
@@ -190,6 +255,11 @@ final class VerificationCenterTests: XCTestCase {
 private actor ScriptedVerificationService: VerificationService {
     private var cancelled: [(id: String, reason: String)] = []
     private var scriptedIncoming: [VerificationRequestSummary] = []
+    /// Scripted IDs to emit on the `cancelledRequests()` stream. Lets
+    /// tests drive the "remote partner cancelled before our user
+    /// clicked the banner" path that `routeSasCancelled` broadcasts
+    /// when there's no active continuation observing the flow.
+    private var scriptedCancelledIDs: [String] = []
     /// Wave 4 expert-QA #5 seam: drive the throw-from-cancel arm so the
     /// `dismiss()` log-and-still-remove behaviour can be exercised in
     /// the unit test.
@@ -198,6 +268,10 @@ private actor ScriptedVerificationService: VerificationService {
 
     func scheduleIncoming(_ summaries: [VerificationRequestSummary]) {
         scriptedIncoming = summaries
+    }
+
+    func scheduleCancelledIDs(_ ids: [String]) {
+        scriptedCancelledIDs = ids
     }
 
     func cancelledSnapshot() -> [(id: String, reason: String)] {
@@ -237,12 +311,30 @@ private actor ScriptedVerificationService: VerificationService {
     }
 
     nonisolated func cancelledRequests() -> AsyncStream<String> {
-        AsyncStream { $0.finish() }
+        AsyncStream { continuation in
+            Task { [weak self] in
+                guard let self else {
+                    continuation.finish()
+                    return
+                }
+                let queue = await self.takeCancelled()
+                for id in queue {
+                    continuation.yield(id)
+                }
+                continuation.finish()
+            }
+        }
     }
 
     private func takeIncoming() -> [VerificationRequestSummary] {
         let queue = scriptedIncoming
         scriptedIncoming = []
+        return queue
+    }
+
+    private func takeCancelled() -> [String] {
+        let queue = scriptedCancelledIDs
+        scriptedCancelledIDs = []
         return queue
     }
 

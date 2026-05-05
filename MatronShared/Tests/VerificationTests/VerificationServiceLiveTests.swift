@@ -262,6 +262,75 @@ final class VerificationServiceLiveTests: XCTestCase {
         XCTAssertNil(cached["req-cxl"])
     }
 
+    /// Regression for `453e9a9` — when `routeSasCancelled` fires
+    /// without an active SAS continuation (the partner cancelled
+    /// before our user opened the banner), the flow ID is broadcast
+    /// on the long-lived `cancelledRequests()` stream so
+    /// `VerificationCenter` can drain its pending list. Pre-fix the
+    /// cancel was logged at error level and silently dropped, leaving
+    /// the chat-list banner stuck on a now-dead flow.
+    func test_routeSasCancelled_noActiveContinuation_emitsToCancelledStream() async throws {
+        let live = VerificationServiceLive()
+        let controller = FakeSessionVerificationController()
+        await live.register(controller: controller, for: "req-stale")
+        // Set the active flow ID without opening a continuation —
+        // mirrors `routeIncomingRequest` running before the user has
+        // tapped the banner.
+        await live.setActiveFlowID("req-stale")
+
+        // Subscribe to the cancelled stream BEFORE routing the cancel
+        // so the continuation is in place when the route fires.
+        let stream = live.cancelledRequests()
+        var iterator = stream.makeAsyncIterator()
+
+        await live.routeSasCancelled()
+
+        // Bounded poll for the emission. AsyncStream's continuation
+        // is set inside an actor hop; we may need a runloop tick.
+        let next = await withTimeout(seconds: 1) { await iterator.next() }
+        XCTAssertEqual(next, "req-stale",
+                       "routeSasCancelled with no active continuation must broadcast the flow ID on cancelledRequests")
+        let cached = await live.activeFlowsSnapshot()
+        XCTAssertNil(cached["req-stale"], "FlowStore entry must be cleared after the broadcast")
+    }
+
+    /// `routeSasCancelled` with no active continuation AND no
+    /// activeFlowID is a defensive case — log at error level, do
+    /// nothing else. Asserting the no-crash path here protects
+    /// against a future refactor that turns this branch into a
+    /// force-unwrap or accidentally broadcasts an empty string.
+    func test_routeSasCancelled_noActiveAtAll_isHarmless() async throws {
+        let live = VerificationServiceLive()
+        // Don't register anything; activeFlowID stays nil.
+
+        await live.routeSasCancelled()
+
+        // Just survive — no exceptions, no broadcasts. Snapshot the
+        // empty store to make sure nothing got created as a side
+        // effect.
+        let cached = await live.activeFlowsSnapshot()
+        XCTAssertTrue(cached.isEmpty, "Defensive no-active branch must not create FlowStore entries")
+    }
+
+    /// Tiny timeout helper for awaiting a single AsyncStream emission
+    /// without hanging the test. Returns the value or `nil` if the
+    /// timeout fires first.
+    private func withTimeout<T: Sendable>(
+        seconds: Double,
+        _ work: @escaping @Sendable () async -> T?
+    ) async -> T? {
+        await withTaskGroup(of: T?.self) { group in
+            group.addTask { await work() }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                return nil
+            }
+            let result = await group.next() ?? nil
+            group.cancelAll()
+            return result
+        }
+    }
+
     /// `routeSasFailed` (delegate's `didFail`) surfaces a fail-specific
     /// reason string so error logs distinguish between explicit
     /// cancellation and an SDK-internal failure.
