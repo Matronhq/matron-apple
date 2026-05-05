@@ -1,18 +1,16 @@
 # Handover — Matron iOS+Mac, Phase 3 + integration harness
 
-**As of 2026-05-05 early afternoon (session 7)**, after seven working
-sessions on `phase-3-e2ee-verification`. Session 7 picked up the
-"Open work for session 7 — Priority A" list session 6 left, and
-closed all three items end-to-end. Two new scenario scripts +
-a Node orchestrator + one SwiftUI snapshot test on the Mac side.
-A real iOS production bug was uncovered + fixed by the new
-reverse-direction test (nested `NavigationStack` inside iOS
-`RecoveryKeyView` was breaking pushed navigation from the verify
-gate — the user manually reproduced "switches to empty screen, then
-immediately switches back"). All session-7 work is **uncommitted on
-disk** as of handover — see "Open work for session 8" below for the
-commit ordering recommendation. Previous block (session 6) is also
-worth reading for the broader Phase 3 story.
+**As of 2026-05-05 late afternoon (session 8)**, after eight working
+sessions on `phase-3-e2ee-verification`. Session 8 was a long
+review-feedback + CI cleanup pass on top of session 7's Priority A
+work, plus the start of Phase 2.5 (live chat-list subscription) —
+which is **net-new work** that needs to land before PR #3's Phase 3
+ships in any honest sense. Session 7's block is preserved below.
+The branch is clean, all 28 commits since session 6 close-out are
+pushed (`73ffd0b..c2e238a`), and CI's shared-package-tests +
+ios-build-and-test + mac-build-and-test are green. The CLA check
+is red because of a workflow infrastructure issue (`@v2` action pin
+that needs to be fixed on `main` — see session 8 block).
 
 **Session 5** closed out with `matron-vs-matron-ui` GREEN end-to-end
 alongside the 3 SDK scenarios — full SAS round trip with both peers
@@ -141,6 +139,280 @@ re-litigate without reading the spec):
   iOS-as-requester signs in, taps the verify-gate button, calls
   `startSAS`, and sends `m.key.verification.request` over to-device
   successfully — i.e., the iOS requester half is working end-to-end.
+
+---
+
+## Session 8 — PR review-comment audits, CI fixes, Phase 2.5 plan + spike
+
+**TL;DR for the next agent:** session 7 closed out with all three
+Priority A items green. Session 8 took that landing pad and (1)
+audited every outstanding `cursor[bot]` review comment on PRs #1
+and #3, (2) shipped fixes for the substantive ones, (3) hardened
+the test suite against a real CI flake, (4) attempted a CI-infra
+fix for the broken CLA check (blocked by `pull_request_target`
+semantics — see below), and (5) opened a brand-new "Phase 2.5"
+front for the live chat-list subscription gap that's been hiding
+in plain sight since Phase 1+2 merged. The Phase 2.5 SDK spike
+**passed** — `RoomList.entriesWithDynamicAdapters` works against
+tuwunel today, no crash; the historical blocker (matrix-rust-sdk
+v26 + tuwunel) is gone in 26.4.1. That unblocks the production
+implementation, which is open work for session 9.
+
+All session 8 work is committed and pushed.
+
+### Setup state for the next agent (deltas from session 7)
+
+- Same Docker harness + Node orchestrator as session 7. Run
+  `node tests/integration/run-all-ui.mjs` for the UI scenario batch
+  (still ~3 min wall-clock end-to-end).
+- New scenario `tests/integration/scenarios/roomlist-spike-sdk.sh`
+  runs the Phase 2.5 spike test (`RoomListSubscriptionSpikeTests`)
+  against a fresh harness. Expected to pass; will be deleted once
+  the production `RoomListSubscription.swift` lands and its diff-
+  application unit tests cover the same surface.
+- HEAD is `c2e238a`. CI: `shared-package-tests` ✓, `ios-build-and-test`
+  ✓, `mac-build-and-test` ✓, `Cursor Bugbot` neutral, `cla` ✗ (infra,
+  not code — see "CI / CLA" below).
+- Phase 2.5 plan lives at
+  `docs/superpowers/plans/2026-05-05-matron-ios-phase-2-5-live-chat-list.md`.
+  Six tasks; Task 1 (the SDK spike) is **done**; Tasks 2–6 are open
+  for session 9.
+
+### What was delivered
+
+**PR #3 review-comment audit + fixes (10 commits — 8 substantive
+issues addressed):**
+
+A `cursor[bot]` audit on PR #3 surfaced 18 inline review comments,
+of which the audit found 9 already addressed by Wave-N work and 8
+substantive findings still outstanding (1 was deferred as a refactor
+nit). All 8 outstanding plus 2 follow-on bot reviews from this
+session were fixed:
+
+| Commit | Severity | What |
+|---|---|---|
+| `be6d8aa` | High | `VerifyBotSheet` / `MacVerifyBotSheet` were calling `startSAS(withUser: botMatrixID, deviceID: nil)` which `VerificationServiceLive.startSAS` routed via the nil-deviceID branch to `requestDeviceVerificationIfPossible()` (self-device SAS). Bot identity was never trusted — banner re-appeared post-flow. **Fix changes the dispatch axis** from "deviceID present?" to "is this my own user?" (`userID == session.userID` → device-verify path; otherwise → `requestUserVerificationIfPossible(userID:)`). Zero call-site / fake churn — all existing self-user callers stay on the device path; only bot callers re-route. |
+| `3fa8600` | Medium ×2 | Mac `MacRecoveryKeyView` Confirm button double-fired `onFinished()` (button + .confirmed `.task` race), AND auto-advanced from `.reenter` → `.confirmed` on paste / fast-typing — bypassing explicit Confirm gesture. Both auto-advance paths (the `.onChange` and the one in `PasteDetector.checkClipboardAndApply`) dropped; `.task` auto-dismiss dropped. Confirm tap is now the single source of truth, matching iOS. Cascading test updates in `MatronVsMatronMacUITests`, `RecoveryKeyRestoreUITests`, `MacRecoveryKeyViewTests` to tap an explicit `recoverykey.confirm` (new accessibility identifier) instead of waiting for auto-dismiss. |
+| `168a878` | Low (latent) | `NewChatSheet.loadBots` lost a load-bearing `break` after the first non-empty snapshot. Today's one-shot `chatSummaries()` makes the omission benign (stream finishes after one yield), but Phase 3's doc-comment promises long-lived semantics that would hang the loop forever without the break. Defensive insurance restored. |
+| `1e763fb` | High (latent) | `bootstrap()`'s keychain probe race used `withThrowingTaskGroup`. On the success path the cancelled timeout task could rethrow `CancellationError` from the implicit body-exit drain, falling into the generic `catch` arm and triggering a false bootstrap failure. Defensive `catch is CancellationError { return }` arm added before the generic catch on both Mac and iOS bootstrap. |
+| `3c6c0a8` | Low ×2 | iOS `ChatListView.body` always wrapped content in `VStack(spacing: 0)`, breaking vertical centering of `ProgressView("Connecting…")`. Mirrored the Mac `sidebarColumn` pattern: gate the wrapping VStack on `hasIncoming \|\| showUnverified`. Plus added the missing `any` keyword on two existential `VerificationService` declarations. |
+| `0a96538` | Medium | `VerifyBotSheet` / `MacVerifyBotSheet` plumbed `onFinished` to the SAS sheet but omitted `onCancelled`, so the prominent "Close" button on a `.cancelled` SAS state was a no-op. Mirror of `onFinished` (clear `verifyBotContext`, re-evaluate bot trust). |
+| `c2e238a` | Low | `NewChatSheet.loadBots`'s 30-attempt retry loop had `for try await` propagating any stream error directly to the outer catch, bypassing all remaining retries. Per-attempt `do/catch`; surface the error only if all 30 fail with empty snapshots. |
+| `2fb09ed` | Medium | PR #1 cursor[bot] findings #32 + #34 — File → New Chat / `⌘N` posted `.matronCommand(.newChat)` to a bus with no listener. `MacChatListView` had every other matronCommand wired but missed this one. Listener added; menu-bar `⌘N` now opens the New Chat sheet correctly. |
+
+**CI deflake (1 commit):**
+
+| Commit | What |
+|---|---|
+| `96d7dcf` | `test_routeSasCancelled_noActiveContinuation_emitsToCancelledStream` (added in session 6 commit `d76e085`) was flaking on CI's slower scheduler. Root cause: `cancelledRequests()` schedules a fire-and-forget Task to actor-hop the AsyncStream continuation into the FlowStore; the test called `routeSasCancelled()` immediately after subscribing; on CI the Task hadn't run yet so the broadcast no-op'd. Test seam `cancelledContinuationIsRegistered()` added on `VerificationServiceLive`; test polls (10ms × 100 = 1s budget) before invoking the cancel. Production isn't affected — `VerificationCenter.start()` subscribes once and consumes for the session lifetime, so the race window is microseconds in real flow. |
+
+**CLA workflow (1 commit + open issue):**
+
+| Commit | What |
+|---|---|
+| `9ec58a8` | `.github/workflows/cla.yml` was pinned to `contributor-assistant/github-action@v2`, but that action only ships point versions (v2.6.1, v2.6.0, …), no rolling `v2`. Every PR's CLA check failed with "Unable to resolve action". Pinned to `@v2.6.1` and fixed the `path-to-document` URL (was `matronhq/matron-ios`, repo is `matron-iOS-app`). |
+
+**Open issue:** the fix is on the PR branch, but the workflow uses
+`on: pull_request_target` which **always reads the workflow YAML
+from the BASE branch (main)**, not the PR's HEAD. Main still has
+the broken pin. Fix needs to land on main directly (cherry-pick
+`9ec58a8`'s `cla.yml` change, push to main) — direct push is
+appropriate for workflow infra; this is documented in
+"Open work for session 9 — Priority A" below.
+
+**Phase 2.5 launch (1 commit):**
+
+| Commit | What |
+|---|---|
+| `393faa1` | New plan doc at `docs/superpowers/plans/2026-05-05-matron-ios-phase-2-5-live-chat-list.md` covering six tasks to close the live-chat-list gap: SDK spike → long-lived RoomList subscription → per-room state → ChatListViewModel cleanup → tests → housekeeping. **Task 1 (SDK spike) is done in this commit.** New `MatronIntegrationTests/RoomListSubscriptionSpikeTests.swift` + `tests/integration/scenarios/roomlist-spike-sdk.sh` empirically confirm `RoomList.entriesWithDynamicAdapters` works against tuwunel today on `matrix-rust-components-swift 26.4.1`. Captured diff variants from tuwunel: `.reset`, `.pushFront`, `.set`, `.pushBack`. The historical "v26 crashes inside `VectorDiff::map / BaseStateStore`" blocker is gone. |
+
+### Why Phase 2.5 was opened
+
+Phase 1+2 supposedly shipped (PR #1, squashed to main per session-6
+handover). But `ChatServiceLive.chatSummaries()` shipped as a
+**one-shot snapshot** with a `// Phase 2 (timeline view) can revisit
+this with a real subscription once the SDK path is stable` deferral.
+**Phase 2 didn't revisit.** No subsequent phase plan picks it up.
+Result: the iOS + Mac chat list doesn't see new rooms / mute / leave /
+room-rename events from other devices until sign-out + back-in.
+Pull-to-refresh on iOS and `⌘R` on Mac call `ChatService.refresh()`
+which is a no-op once sliding-sync is running.
+
+The user pushed back on this gap and asked: *"is the plan missing
+parts?"* — the answer is yes. The Phase 2.5 plan is the formal
+catch-up. Things confirmed working in the audit (so don't worry):
+- Per-room timeline live updates ✓ (Phase 2 Task 5 wired
+  `TimelineSnapshotListener`).
+- Backwards pagination ✓ (`paginateBackwards`).
+- Send + render attachments + E2EE for attachments ✓.
+
+Things confirmed missing:
+- Live chat-list updates ✗ (one-shot polling).
+- Live room metadata updates for non-active rooms ✗ (mute changes,
+  topic / name renames don't propagate without re-mount).
+
+### How to validate the branch
+
+```bash
+# All passing as of c2e238a:
+swift test                                               # SPM tests
+node tests/integration/run-all-ui.mjs                    # UI batch (~3 min)
+tests/integration/run-harness.sh roomlist-spike-sdk.sh   # Phase 2.5 SDK spike
+```
+
+For the Mac test bundle build alone:
+```bash
+xcodebuild build-for-testing \
+    -scheme MatronMac -destination 'platform=macOS' \
+    -allowProvisioningUpdates
+```
+
+For the iOS test bundle build alone:
+```bash
+xcodebuild build-for-testing \
+    -scheme Matron \
+    -destination "platform=iOS Simulator,id=337C3A3A-4191-4A51-9513-93F5805276EC" \
+    CODE_SIGNING_ALLOWED=NO
+```
+
+### Open work for session 9
+
+**Priority A — Phase 2.5 production implementation (Tasks 2–6 from
+the plan):**
+
+1. Implement `MatronShared/Sources/Chat/RoomListSubscription.swift`
+   — encapsulate the dynamic-adapters listener + the evolving
+   `[String: ChatSummary]` map + `apply(_ diff: RoomListEntriesUpdate)`
+   for each variant. Plan covers the variant matrix.
+2. Re-implement `ChatServiceLive.chatSummaries()` to delegate to
+   `RoomListSubscription`, with the polling fallback wrapped in a
+   "first-yield within 5s race" (kept defensively even though Task 1
+   confirmed the dynamic-adapters path works — different homeservers
+   may regress in the future).
+3. Per-room `Room.subscribeToUpdates()` for the rooms in the
+   page-100 window, so mute / latestEvent / displayName changes
+   propagate live without a full RoomList re-walk.
+4. Drop the 30-attempt retry loop from `ChatListViewModel.start()`
+   AND from `NewChatSheet.loadBots()` (both are workarounds for
+   the one-shot snapshot race that no longer apply once the
+   long-lived stream lands).
+5. Tests: `RoomListSubscriptionTests` (diff-application unit
+   tests, one per variant) + `chat-list-live-updates-sdk.sh`
+   integration scenario (partner.mjs creates a room post-mount;
+   matron app's stream yields the new room within 10s). Add the
+   new scenario to `run-all-ui.mjs`.
+6. Strike the deferred TODO from in-code comments. Replace with
+   pointers to the Phase 2.5 plan.
+
+After 2–6 land, delete `RoomListSubscriptionSpikeTests.swift` +
+`roomlist-spike-sdk.sh` (they're redundant with the new unit tests +
+integration scenario).
+
+**Priority B — CLA workflow fix on main:**
+
+7. Cherry-pick `9ec58a8`'s `.github/workflows/cla.yml` change onto
+   `main` directly (one commit, two-line diff). After it lands, the
+   CLA check on PR #3 will retrigger and either (a) pass if Dan is
+   already in `signatures/v1/cla.json` or (b) prompt for Dan to
+   comment "I have read the CLA Document and I hereby sign the CLA"
+   on PR #3, which then signs and passes. Either way unblocks
+   merge of PR #3.
+
+**Priority C — pre-merge hygiene for PR #3:**
+
+8. Once Priority B unblocks, decide whether to merge PR #3 first
+   (Phase 3 lands, branch closes) and start Phase 2.5 on a fresh
+   branch off main, OR fold Phase 2.5 into PR #3 directly. Plan
+   Priority A above is independent of the Phase 3 surface, so
+   either flow works. Branch-off-main is cleaner.
+
+**Priority D — defer to Phase 7 polish:**
+
+9. Cleanup of dead code surfaces session-7 audit identified —
+   `MacUnverifiedDeviceBanner` + the iOS chat-list inline chooser
+   are unreachable for new users in a never-released app. Same
+   judgment call from session 7 still applies: defer or delete.
+
+### Things to NOT undo (specific to session 8)
+
+- **Don't revert the bot-SAS dispatch fix** in `be6d8aa`. The
+  `VerificationServiceLive.startSAS` routing is now keyed on
+  "is this my own user" rather than "is deviceID present" — that
+  was the right axis. Reverting brings back the unverified-bot
+  banner re-appearing immediately post-flow.
+- **Don't re-add the `.task { onFinished() }` auto-dismiss to Mac
+  `.confirmed` branch** in `MacRecoveryKeyView`. It double-fired
+  with the Confirm button's own `onFinished()`. Confirm tap is
+  the single source of truth.
+- **Don't re-add the `.onChange` auto-advance** on Mac `.reenter`,
+  and don't re-add the auto-advance inside
+  `PasteDetector.checkClipboardAndApply`. iOS requires explicit
+  Confirm; Mac now matches. Required cascading test changes are
+  already in `MatronVsMatronMacUITests` /
+  `RecoveryKeyRestoreUITests` / `MacRecoveryKeyViewTests`.
+- **Don't drop the `recoverykey.confirm` accessibility identifier**
+  on the Mac `.reenter` Confirm button. The XCUITest scenarios tap
+  it explicitly.
+- **Don't drop the `catch is CancellationError` arm** before the
+  generic catch in `bootstrap()` (both Mac + iOS). Defensive
+  against the keychain-probe success-path race.
+- **Don't re-introduce the broken `@v2` action pin** in
+  `.github/workflows/cla.yml`. The action only ships point
+  versions; pin to `@v2.6.1` (or whatever's latest).
+- **Don't delete the Phase 2.5 plan or the spike** until the
+  production implementation lands. The plan captures the design
+  decisions; the spike is the empirical answer to whether the
+  SDK path is viable. After Phase 2.5 Task 2–6 land, both can
+  be removed.
+
+### Files changed this session (~600 LOC across product + tests + plan)
+
+**Product code (committed):**
+- `MatronShared/Sources/Verification/VerificationServiceLive.swift`
+  — bot-SAS dispatch axis change; `cancelledContinuationIsRegistered()`
+  test seam.
+- `Matron/Features/Chat/ChatView.swift` + `MatronMac/Features/Chat/MacChatView.swift`
+  — bot banner copy fix; `onCancelled` plumb-through; bot-verify
+  dispatch fix.
+- `MatronMac/Features/Verification/MacRecoveryKeyView.swift` — drop
+  `.task` auto-dismiss + `.onChange` auto-advance; add
+  `recoverykey.confirm` identifier.
+- `MatronMac/Features/Verification/NSPasteboardWrapper.swift` —
+  drop auto-advance from `PasteDetector.checkClipboardAndApply`.
+- `Matron/Features/ChatList/ChatListView.swift` — `chatListColumn`
+  helper for ProgressView centering; `any VerificationService`
+  consistency.
+- `Matron/Features/ChatList/NewChatSheet.swift` — load-bearing
+  `break` restored; per-attempt error catch in retry loop.
+- `MatronMac/Features/ChatList/MacChatListView.swift` — `⌘N` New
+  Chat listener.
+- `MatronMac/App/MatronMacApp.swift` + `Matron/App/MatronApp.swift`
+  — `catch is CancellationError` arm in bootstrap.
+
+**Tests (committed):**
+- `MatronShared/Tests/VerificationTests/VerificationServiceLiveTests.swift`
+  — deflake of cancelled-stream broadcast test.
+- `MatronMacTests/MacRecoveryKeyViewTests.swift` — auto-advance
+  test inverted to assert no auto-advance.
+- `MatronMacUITests/MatronVsMatronMacUITests.swift`,
+  `MatronMacUITests/RecoveryKeyRestoreUITests.swift` — explicit
+  Confirm tap after Paste.
+- `MatronIntegrationTests/RoomListSubscriptionSpikeTests.swift`
+  (new) — Phase 2.5 SDK spike.
+
+**Harness + CI (committed):**
+- `tests/integration/scenarios/roomlist-spike-sdk.sh` (new) —
+  Phase 2.5 spike scenario.
+- `tests/integration/run-harness.sh` — added `roomlist-spike-sdk.sh`
+  to auto-skip-bootstrap-anchor list.
+- `.github/workflows/cla.yml` — pin to `@v2.6.1`, fix repo URL
+  (PR-branch fix only; main still needs the same change — see
+  "Open work for session 9 Priority B").
+- `.gitignore` — added `.claude/` (Claude Code session lock files).
+
+**Docs (committed):**
+- `docs/superpowers/plans/2026-05-05-matron-ios-phase-2-5-live-chat-list.md`
+  (new) — Phase 2.5 plan.
 
 ---
 
