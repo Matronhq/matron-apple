@@ -133,6 +133,7 @@ struct MacRecoveryKeyView: View {
                     viewModel.enteredKey = s
                 }
             }
+            .accessibilityIdentifier("recoverykey.restorePaste")
         }
         // The standalone "Restore" button used to live here for retry-
         // after-error UX, paired with a "Done" button at the bottom that
@@ -202,6 +203,7 @@ struct MacRecoveryKeyView: View {
             .keyboardShortcut(.return)
             .buttonStyle(.borderedProminent)
             .disabled(viewModel.enteredKey.isEmpty || viewModel.phase == .busy)
+            .accessibilityIdentifier("recoverykey.restore")
         default:
             EmptyView()
         }

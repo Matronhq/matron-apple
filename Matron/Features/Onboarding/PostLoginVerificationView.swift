@@ -90,6 +90,11 @@ struct PostLoginVerificationView: View {
                 Button("This is my first device — generate a key") {
                     path.append(.generate)
                 }
+                // Was a plain-text button. iOS 26 Simulator XCUITest tap on
+                // ~20pt-tall plain-text Buttons doesn't reliably trigger
+                // the action, leaving the gate stuck. `.bordered` gives a
+                // clear hit target without changing the destination flow.
+                .buttonStyle(.bordered)
                 .padding(.top, 8)
                 .accessibilityIdentifier("verifygate.generateNew")
             }

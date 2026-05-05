@@ -36,6 +36,7 @@ struct VerificationBanner: View {
             Button("Verify") { onAccept(summary) }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
+                .accessibilityIdentifier("verifybanner.accept")
             Button {
                 onDismiss(summary)
             } label: {

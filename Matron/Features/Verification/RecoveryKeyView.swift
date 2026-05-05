@@ -24,19 +24,26 @@ struct RecoveryKeyView: View {
     let onFinished: () -> Void
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 16) {
-                switch viewModel.mode {
-                case .generate: generateBody
-                case .restore:  restoreBody
-                }
-                Spacer()
-                primaryActionButton
+        // No inner NavigationStack — this view is always rendered inside a
+        // parent NavigationStack (PostLoginVerificationView's
+        // navigationDestination, or ChatListView's chooser sheet which
+        // wraps it in its own NavStack at the call site). Nesting a
+        // second NavigationStack here causes iOS to immediately pop the
+        // outer push: the destination view briefly mounts then
+        // disappears, stranding the user back at the verify gate.
+        // (`navigationTitle` + `navigationBarTitleDisplayMode` are picked
+        // up by the parent NavigationStack.)
+        VStack(spacing: 16) {
+            switch viewModel.mode {
+            case .generate: generateBody
+            case .restore:  restoreBody
             }
-            .padding()
-            .navigationTitle("Recovery key")
-            .navigationBarTitleDisplayMode(.inline)
+            Spacer()
+            primaryActionButton
         }
+        .padding()
+        .navigationTitle("Recovery key")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     /// Continue / Confirm / Restore — label + action vary by mode + phase.
@@ -51,6 +58,7 @@ struct RecoveryKeyView: View {
             Button("Continue") { viewModel.advanceFromShow() }
                 .buttonStyle(.borderedProminent)
                 .disabled(!viewModel.userAcknowledgedSaved)
+                .accessibilityIdentifier("recoverykey.continue")
         case (.generate, .reenter):
             Button("Confirm") {
                 viewModel.generatePhase = .confirmed
@@ -58,6 +66,7 @@ struct RecoveryKeyView: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(!viewModel.canFinish)
+            .accessibilityIdentifier("recoverykey.confirm")
         case (.restore, _):
             // Single Restore-and-dismiss action — runs the SDK
             // restore, swaps to a ProgressView while busy, fires
@@ -111,6 +120,7 @@ struct RecoveryKeyView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(Color(.systemGray6))
                         .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .accessibilityIdentifier("recoverykey.generatedKey")
                     Button {
                         Pasteboard.copy(key)
                     } label: {
@@ -119,14 +129,17 @@ struct RecoveryKeyView: View {
                     }
                     .buttonStyle(.borderless)
                     .accessibilityLabel("Copy recovery key")
+                    .accessibilityIdentifier("recoverykey.copy")
                 }
                 Toggle("I've saved this key somewhere safe", isOn: $viewModel.userAcknowledgedSaved)
+                    .accessibilityIdentifier("recoverykey.acknowledgeSaved")
             } else {
                 Button("Generate recovery key") {
                     Task { await viewModel.generate() }
                 }
                 .buttonStyle(.bordered)
                 .disabled(viewModel.phase == .busy)
+                .accessibilityIdentifier("recoverykey.generate")
             }
         case .reenter:
             Text("Re-enter your recovery key to confirm you've saved it correctly.")
@@ -138,6 +151,7 @@ struct RecoveryKeyView: View {
                 .padding()
                 .background(Color(.systemGray6))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                .accessibilityIdentifier("recoverykey.reenterField")
             if !viewModel.reenteredKey.isEmpty && !viewModel.canFinish {
                 Text("Doesn't match the key above.")
                     .foregroundStyle(.orange)

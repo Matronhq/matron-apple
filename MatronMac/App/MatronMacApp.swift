@@ -515,57 +515,33 @@ private struct HelpMenuVerifyDeviceSheet: View {
     }
 
     private var chooserView: some View {
-        let sasAvailable = hasOtherDevices ?? false
-        return VStack(spacing: 16) {
-            Image(systemName: "lock.shield")
-                .font(.system(size: 60))
-                .foregroundStyle(.tint)
-            Text("Verify this device")
-                .font(.title2).bold()
-            Text("Choose how to verify this device.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            VStack(spacing: 4) {
-                Button {
-                    let stream = service.startSAS(withUser: userID, deviceID: nil)
-                    sasViewModel = SasViewModel(
-                        stream: stream,
-                        requestID: userID,
-                        confirm: { try await service.confirmEmojiMatch(requestID: userID) },
-                        cancel: { reason in try await service.cancel(requestID: userID, reason: reason) }
-                    )
-                    phase = .sas
-                } label: {
-                    Label("Verify with another device", systemImage: "laptopcomputer")
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!sasAvailable)
-                .accessibilityIdentifier("verifychooser.sas")
-                if !sasAvailable {
-                    Text("No other verified devices found for your account.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Button {
+        // View body extracted to `MacVerifyDeviceChooser` so the disabled-
+        // when-no-other-devices branch can be snapshot-tested in isolation.
+        // This sheet still owns the post-pick state mutations
+        // (constructing SasViewModel / RecoveryKeyViewModel and flipping
+        // `phase`); the chooser just dispatches the user's choice.
+        MacVerifyDeviceChooser(
+            hasOtherDevices: hasOtherDevices ?? false,
+            onSAS: {
+                let stream = service.startSAS(withUser: userID, deviceID: nil)
+                sasViewModel = SasViewModel(
+                    stream: stream,
+                    requestID: userID,
+                    confirm: { try await service.confirmEmojiMatch(requestID: userID) },
+                    cancel: { reason in try await service.cancel(requestID: userID, reason: reason) }
+                )
+                phase = .sas
+            },
+            onRecoveryKey: {
                 recoveryKeyViewModel = RecoveryKeyViewModel(
                     mode: .restore,
                     generate: { "" },
                     restore: recoveryKeyRestore
                 )
                 phase = .recoveryKey
-            } label: {
-                Label("Use recovery key", systemImage: "key")
-            }
-            .buttonStyle(.bordered)
-            .accessibilityIdentifier("verifychooser.recoveryKey")
-            Button("Close") { onFinished() }
-                .keyboardShortcut(.escape, modifiers: [])
-                .padding(.top, 8)
-        }
-        .padding(32)
-        .frame(width: 480, height: 380)
+            },
+            onClose: { onFinished() }
+        )
     }
 }
 

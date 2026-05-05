@@ -656,10 +656,18 @@ private struct SelfVerifyThisDeviceSheet: View {
                 }
             case .recoveryKey:
                 if let vm = recoveryKeyViewModel {
-                    RecoveryKeyView(
-                        viewModel: vm,
-                        onFinished: onFinished
-                    )
+                    // Wrap in NavigationStack here because RecoveryKeyView
+                    // itself no longer hosts one (would nest with the
+                    // PostLoginVerificationView outer NavStack and break
+                    // pushed navigation). This sheet has no parent
+                    // NavStack, so we provide the navigation chrome
+                    // (title bar) at the call site.
+                    NavigationStack {
+                        RecoveryKeyView(
+                            viewModel: vm,
+                            onFinished: onFinished
+                        )
+                    }
                 } else {
                     ProgressView("Loading…")
                 }
