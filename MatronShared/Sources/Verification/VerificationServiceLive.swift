@@ -458,12 +458,33 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
                             fallbackToServer: true
                         )
                     }
-                    if let deviceID, !deviceID.isEmpty {
-                        Self.logger.notice("startSAS: calling requestUserVerificationIfPossible(\(userID, privacy: .public))")
-                        try await wrapped.requestUserVerificationIfPossible(userID: userID)
-                    } else {
-                        Self.logger.notice("startSAS: calling requestDeviceVerificationIfPossible()")
+                    // Dispatch: user-verification vs self-device verification.
+                    //
+                    // PR #3 review #16 — the per-bot verify path
+                    // (`VerifyBotSheet` / `MacVerifyBotSheet`) calls
+                    // `startSAS(withUser: botMatrixID, deviceID: nil)` for a
+                    // foreign user. Under the previous shape (`deviceID
+                    // != nil` → user-verify, `deviceID == nil` →
+                    // device-verify) this incorrectly routed bot
+                    // verification to the self-device path. The bot's
+                    // identity was never trusted, so the unverified-bot
+                    // banner re-appeared immediately post-flow.
+                    //
+                    // The correct branch is user vs self, not deviceID
+                    // presence: if the requested userID is someone else
+                    // we always want user-verification; if it is our own
+                    // user we want self-device verification (SAS against
+                    // another of OUR devices). `deviceID` is currently
+                    // unused on either SDK call (the SDK chooses targets
+                    // internally) — kept on the protocol for future use
+                    // once we expose per-device targeting in the UI.
+                    let selfUserID = self.session?.userID
+                    if let selfUserID, userID == selfUserID {
+                        Self.logger.notice("startSAS: self-user — calling requestDeviceVerificationIfPossible()")
                         try await wrapped.requestDeviceVerificationIfPossible()
+                    } else {
+                        Self.logger.notice("startSAS: foreign user — calling requestUserVerificationIfPossible(\(userID, privacy: .public))")
+                        try await wrapped.requestUserVerificationIfPossible(userID: userID)
                     }
                     Self.logger.notice("startSAS: SDK request returned — yielding .requested")
                     continuation.yield(.requested)

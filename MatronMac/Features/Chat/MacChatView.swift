@@ -219,7 +219,11 @@ struct MacChatView: View {
             Image(systemName: "exclamationmark.shield.fill")
                 .foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 2) {
-                Text("This device hasn't been verified")
+                // PR #3 review #13 — copy reflects bot identity, not
+                // device. The banner renders when `botVerification ==
+                // .unverified`; tapping triggers user-verification SAS
+                // against the bot's matrixID.
+                Text("This bot's identity hasn't been verified")
                     .font(.callout)
                     .bold()
                 Text("Messages may show a warning until you verify.")
@@ -239,7 +243,7 @@ struct MacChatView: View {
         .padding(.vertical, 10)
         .background(Color(NSColor.controlBackgroundColor))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("This device hasn't been verified. Verify.")
+        .accessibilityLabel("This bot's identity hasn't been verified. Verify.")
     }
 
     /// Builds the SAS sheet for verifying the bot user. Hands construction
