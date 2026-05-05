@@ -356,6 +356,14 @@ struct MatronMacApp: App {
             // delegate so the SAS sheet would hang forever (expert-QA B1).
             service: dependencies.verificationService(for: session),
             userID: session.userID,
+            recoveryKeyRestore: { key in
+                let mgr = RecoveryKeyManager(
+                    provider: dependencies.clientProvider,
+                    session: session,
+                    keychain: KeychainStore.recoveryStore()
+                )
+                try await mgr.restore(usingKey: key)
+            },
             onFinished: { showVerifyDeviceSheet = false }
         )
     }
@@ -409,67 +417,130 @@ private struct KeychainProbeTimeout: Error {}
 private struct HelpMenuVerifyDeviceSheet: View {
     let service: VerificationService
     let userID: String
+    /// Closure that runs `RecoveryKeyManager.restore(usingKey:)` against
+    /// the host's session — the sheet itself doesn't construct a
+    /// manager so it stays free of `RecoveryKeyManager` /
+    /// `KeychainStore` dependencies; the caller wires the right
+    /// instance based on the active session.
+    let recoveryKeyRestore: (String) async throws -> Void
     let onFinished: () -> Void
 
-    @State private var viewModel: SasViewModel?
-    /// `true` once the verified-state probe has resolved AND this device
-    /// is already verified; in that branch we render an "already verified"
-    /// confirmation instead of initiating a fresh SAS. `nil` while the
-    /// probe is in flight so the loading state stays neutral.
-    @State private var alreadyVerified: Bool? = nil
+    /// Sheet phase. `.probing` while we check `isThisDeviceVerified()`.
+    /// `.alreadyVerified` short-circuits the chooser when there's
+    /// nothing to do. `.chooser` renders the two-button picker —
+    /// without it, the only path the chat-list `MacUnverifiedDeviceBanner`
+    /// surfaced was SAS, which strands users when no other verified
+    /// device is online (e.g. both devices' SDK stores got wiped on
+    /// re-login). `.sas` and `.recoveryKey` are the post-pick states.
+    enum Phase {
+        case probing, alreadyVerified, chooser, sas, recoveryKey
+    }
+    @State private var phase: Phase = .probing
+    @State private var sasViewModel: SasViewModel?
+    @State private var recoveryKeyViewModel: RecoveryKeyViewModel?
 
     var body: some View {
         Group {
-            if alreadyVerified == true {
-                // Tapping Help → Verify This Device on an already-verified
-                // device used to silently kick off a redundant SAS — the
-                // user's correct mental model is "this menu item is
-                // contextual; if I'm verified it should tell me so."
-                VStack(spacing: 16) {
-                    Image(systemName: "checkmark.shield.fill")
-                        .font(.system(size: 60))
-                        .foregroundStyle(.green)
-                    Text("This device is already verified")
-                        .font(.title2).bold()
-                    Text("If you want to verify a different device, sign in there and start the verification from that device's onboarding gate.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                    Button("Close") { onFinished() }
-                        .keyboardShortcut(.return)
-                        .buttonStyle(.borderedProminent)
+            switch phase {
+            case .probing:
+                ProgressView("Loading…")
+                    .frame(width: 480, height: 320)
+            case .alreadyVerified:
+                alreadyVerifiedView
+            case .chooser:
+                chooserView
+            case .sas:
+                if let vm = sasViewModel {
+                    MacSasView(
+                        viewModel: vm,
+                        title: "Verify this device",
+                        onFinished: onFinished,
+                        onCancelled: onFinished
+                    )
+                } else {
+                    ProgressView("Starting verification…")
                 }
-                .padding(24)
-                .frame(width: 480, height: 320)
-            } else if let vm = viewModel {
-                MacSasView(
-                    viewModel: vm,
-                    title: "Verify this device",
-                    onFinished: onFinished,
-                    onCancelled: onFinished
-                )
-            } else {
-                ProgressView("Starting verification…")
+            case .recoveryKey:
+                if let vm = recoveryKeyViewModel {
+                    MacRecoveryKeyView(
+                        viewModel: vm,
+                        onFinished: onFinished
+                    )
+                } else {
+                    ProgressView("Loading…")
+                }
             }
         }
         .task(id: userID) {
-            guard viewModel == nil, alreadyVerified == nil else { return }
-            // Probe verified state before starting the SAS dance — see
-            // `alreadyVerified`'s declaration for rationale.
+            guard phase == .probing else { return }
             let verified = (try? await service.isThisDeviceVerified()) ?? false
-            if verified {
-                alreadyVerified = true
-                return
-            }
-            alreadyVerified = false
-            let stream = service.startSAS(withUser: userID, deviceID: nil)
-            viewModel = SasViewModel(
-                stream: stream,
-                requestID: userID,
-                confirm: { try await service.confirmEmojiMatch(requestID: userID) },
-                cancel: { reason in try await service.cancel(requestID: userID, reason: reason) }
-            )
+            phase = verified ? .alreadyVerified : .chooser
         }
+    }
+
+    private var alreadyVerifiedView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "checkmark.shield.fill")
+                .font(.system(size: 60))
+                .foregroundStyle(.green)
+            Text("This device is already verified")
+                .font(.title2).bold()
+            Text("If you want to verify a different device, sign in there and start the verification from that device's onboarding gate.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button("Close") { onFinished() }
+                .keyboardShortcut(.return)
+                .buttonStyle(.borderedProminent)
+        }
+        .padding(24)
+        .frame(width: 480, height: 320)
+    }
+
+    private var chooserView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "lock.shield")
+                .font(.system(size: 60))
+                .foregroundStyle(.tint)
+            Text("Verify this device")
+                .font(.title2).bold()
+            Text("Choose how to verify. SAS needs another already-verified device online.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button {
+                let stream = service.startSAS(withUser: userID, deviceID: nil)
+                sasViewModel = SasViewModel(
+                    stream: stream,
+                    requestID: userID,
+                    confirm: { try await service.confirmEmojiMatch(requestID: userID) },
+                    cancel: { reason in try await service.cancel(requestID: userID, reason: reason) }
+                )
+                phase = .sas
+            } label: {
+                Label("Verify with another device", systemImage: "laptopcomputer")
+            }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.return)
+            .accessibilityIdentifier("verifychooser.sas")
+            Button {
+                recoveryKeyViewModel = RecoveryKeyViewModel(
+                    mode: .restore,
+                    generate: { "" },
+                    restore: recoveryKeyRestore
+                )
+                phase = .recoveryKey
+            } label: {
+                Label("Use recovery key", systemImage: "key")
+            }
+            .buttonStyle(.bordered)
+            .accessibilityIdentifier("verifychooser.recoveryKey")
+            Button("Close") { onFinished() }
+                .keyboardShortcut(.escape, modifiers: [])
+                .padding(.top, 8)
+        }
+        .padding(32)
+        .frame(width: 480, height: 380)
     }
 }
 

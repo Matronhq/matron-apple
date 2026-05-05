@@ -220,6 +220,14 @@ struct ChatListView: View {
                     service: verificationCenter?.service
                         ?? deps.verificationService(for: session),
                     userID: context.id,
+                    recoveryKeyRestore: { key in
+                        let mgr = RecoveryKeyManager(
+                            provider: deps.clientProvider,
+                            session: session,
+                            keychain: KeychainStore.recoveryStore()
+                        )
+                        try await mgr.restore(usingKey: key)
+                    },
                     onFinished: {
                         verifyThisDeviceContext = nil
                         Task { await evaluateThisDeviceVerification() }
@@ -602,34 +610,96 @@ private struct IncomingRequestSasSheet: View {
 private struct SelfVerifyThisDeviceSheet: View {
     let service: VerificationService
     let userID: String
+    /// Closure that runs `RecoveryKeyManager.restore(usingKey:)` against
+    /// the host's session — the sheet itself doesn't construct a manager
+    /// so it stays free of `RecoveryKeyManager` / `KeychainStore`
+    /// dependencies; the caller wires the right instance based on the
+    /// active session.
+    let recoveryKeyRestore: (String) async throws -> Void
     let onFinished: () -> Void
     let onCancelled: () -> Void
 
-    @State private var viewModel: SasViewModel?
+    /// Sheet phase. `.chooser` renders the two-button picker — without
+    /// it the only path the chat-list `UnverifiedDeviceBanner` surfaced
+    /// was SAS, which strands users when no other verified device is
+    /// online (e.g. both devices' SDK stores got wiped on re-login).
+    enum Phase { case chooser, sas, recoveryKey }
+    @State private var phase: Phase = .chooser
+    @State private var sasViewModel: SasViewModel?
+    @State private var recoveryKeyViewModel: RecoveryKeyViewModel?
 
     var body: some View {
         Group {
-            if let vm = viewModel {
-                SasView(
-                    viewModel: vm,
-                    title: "Verify this device",
-                    onFinished: onFinished,
-                    onCancelled: onCancelled
-                )
-            } else {
-                ProgressView("Starting verification…")
+            switch phase {
+            case .chooser:
+                chooserView
+            case .sas:
+                if let vm = sasViewModel {
+                    SasView(
+                        viewModel: vm,
+                        title: "Verify this device",
+                        onFinished: onFinished,
+                        onCancelled: onCancelled
+                    )
+                } else {
+                    ProgressView("Starting verification…")
+                }
+            case .recoveryKey:
+                if let vm = recoveryKeyViewModel {
+                    RecoveryKeyView(
+                        viewModel: vm,
+                        onFinished: onFinished
+                    )
+                } else {
+                    ProgressView("Loading…")
+                }
             }
         }
-        .task(id: userID) {
-            guard viewModel == nil else { return }
-            let stream = service.startSAS(withUser: userID, deviceID: nil)
-            viewModel = SasViewModel(
-                stream: stream,
-                requestID: userID,
-                confirm: { try await service.confirmEmojiMatch(requestID: userID) },
-                cancel: { reason in try await service.cancel(requestID: userID, reason: reason) }
-            )
+    }
+
+    private var chooserView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "lock.shield")
+                .font(.system(size: 60))
+                .foregroundStyle(.tint)
+            Text("Verify this device")
+                .font(.title2).bold()
+            Text("Choose how to verify. SAS needs another already-verified device online.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button {
+                let stream = service.startSAS(withUser: userID, deviceID: nil)
+                sasViewModel = SasViewModel(
+                    stream: stream,
+                    requestID: userID,
+                    confirm: { try await service.confirmEmojiMatch(requestID: userID) },
+                    cancel: { reason in try await service.cancel(requestID: userID, reason: reason) }
+                )
+                phase = .sas
+            } label: {
+                Label("Verify with another device", systemImage: "laptopcomputer")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .accessibilityIdentifier("verifychooser.sas")
+            Button {
+                recoveryKeyViewModel = RecoveryKeyViewModel(
+                    mode: .restore,
+                    generate: { "" },
+                    restore: recoveryKeyRestore
+                )
+                phase = .recoveryKey
+            } label: {
+                Label("Use recovery key", systemImage: "key")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .accessibilityIdentifier("verifychooser.recoveryKey")
+            Button("Close") { onCancelled() }
+                .padding(.top, 8)
         }
+        .padding(32)
     }
 }
 
