@@ -12,6 +12,32 @@ settings:
     SWIFT_VERSION: "5.10"
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     APP_GROUP_ID: group.chat.matron
+    # Sticky signing config so `xcodegen generate` doesn't wipe the
+    # team selection that Xcode's Signing & Capabilities UI writes
+    # into Matron.xcodeproj (which is gitignored). Team-signed dev
+    # builds let `keychain-access-groups` validate at runtime so the
+    # recovery-key flow can persist to Keychain without surfacing
+    # "Couldn't auto-save your recovery key".
+    #
+    # `4LJ7WRRRFD` is YEARBOOK MACHINE LIMITED — the org team that
+    # owns the matronhq GitHub org and ships Matron to the App Store.
+    # The local Dan Barker individual cert (`MHQ4X3KS8L`) is also
+    # registered on this team, so dev-machine signing resolves to a
+    # local "Apple Development" cert under the Yearbook team.
+    #
+    # The integration harness scripts override these on the
+    # `xcodebuild` command line with `CODE_SIGN_STYLE=Manual
+    # CODE_SIGN_IDENTITY=- AD_HOC_CODE_SIGNING_ALLOWED=YES
+    # CODE_SIGNING_REQUIRED=NO`, so harness builds bypass the team
+    # entirely (ad-hoc) — these settings only kick in for Xcode-Run
+    # dev builds and signed archive builds.
+    #
+    # CLI-side `xcodebuild` invocations against this team need
+    # `-allowProvisioningUpdates` so Xcode can fetch / generate a
+    # profile for the bundle ID; Xcode.app already does this
+    # automatically on Run / Archive.
+    DEVELOPMENT_TEAM: 4LJ7WRRRFD
+    CODE_SIGN_STYLE: Automatic
   configs:
     Debug:
       SWIFT_OPTIMIZATION_LEVEL: -Onone

@@ -36,6 +36,7 @@ log "Building MatronIntegrationTests for testing…"
     CODE_SIGN_STYLE=Manual \
     CODE_SIGNING_REQUIRED=NO \
     AD_HOC_CODE_SIGNING_ALLOWED=YES \
+    CODE_SIGN_ENTITLEMENTS="$ROOT/MatronMac/App/MatronMac.Debug.AdHoc.entitlements" \
     > "$BUILD_LOG" 2>&1) \
     || { echo "build-for-testing failed; see $BUILD_LOG"; tail -50 "$BUILD_LOG"; exit 1; }
 
@@ -68,6 +69,7 @@ xcodebuild test-without-building \
     CODE_SIGN_STYLE=Manual \
     CODE_SIGNING_REQUIRED=NO \
     AD_HOC_CODE_SIGNING_ALLOWED=YES \
+    CODE_SIGN_ENTITLEMENTS="$ROOT/MatronMac/App/MatronMac.Debug.AdHoc.entitlements" \
     > "$TEST_LOG" 2>&1
 RC=$?
 set -e

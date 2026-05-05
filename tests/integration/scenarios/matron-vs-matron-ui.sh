@@ -97,6 +97,7 @@ log "Building MatronMacUITests + MatronUITests for testing (parallel)…"
     -only-testing:MatronMacUITests/MatronVsMatronMacUITests \
     CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual \
     CODE_SIGNING_REQUIRED=NO AD_HOC_CODE_SIGNING_ALLOWED=YES \
+    CODE_SIGN_ENTITLEMENTS="$ROOT/MatronMac/App/MatronMac.Debug.AdHoc.entitlements" \
     > "$MAC_BUILD_LOG" 2>&1) &
 MAC_BUILD_PID=$!
 
@@ -188,6 +189,7 @@ set +e
     -resultBundlePath "$MAC_XCRESULT" \
     CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual \
     CODE_SIGNING_REQUIRED=NO AD_HOC_CODE_SIGNING_ALLOWED=YES \
+    CODE_SIGN_ENTITLEMENTS="$ROOT/MatronMac/App/MatronMac.Debug.AdHoc.entitlements" \
     > "$MAC_TEST_LOG" 2>&1) &
 MAC_TEST_PID=$!
 
