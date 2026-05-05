@@ -139,7 +139,7 @@ enum RoomListEntriesAlgorithm {
                 touched.insert(index)
 
             case .truncate(let length):
-                guard length >= 0, length < rooms.count else { continue }
+                guard length < rooms.count else { continue }
                 let dropping = rooms[length...]
                 for room in dropping { dropped.append(room.id()) }
                 rooms.removeLast(rooms.count - length)
@@ -189,6 +189,12 @@ enum RoomListEntriesAlgorithm {
 /// crash. The construction-throw fallback in `ChatServiceLive` exists
 /// for future SDK or homeserver regressions only.
 final class RoomListSubscription: @unchecked Sendable {
+
+    /// Default page size for the `entriesWithDynamicAdapters` window.
+    /// Matches the Phase 2.5 spike (`393faa1`). Task 3 evaluates whether
+    /// `Room.subscribeToUpdates()` is feasible at this scale; if not, a
+    /// follow-up may shrink the window to the top ~20 rooms.
+    static let defaultPageSize: UInt32 = 100
 
     /// Snapshot delivery callback. Invoked from the internal serial
     /// batch-processing Task; the broadcaster is itself an actor so it
@@ -242,7 +248,7 @@ final class RoomListSubscription: @unchecked Sendable {
     init(
         client: Client,
         roomList: RoomList,
-        pageSize: UInt32 = 100,
+        pageSize: UInt32 = RoomListSubscription.defaultPageSize,
         logger: Logger,
         onSnapshot: @escaping SnapshotHandler
     ) {

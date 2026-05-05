@@ -174,8 +174,12 @@ private actor BootstrapState {
             await bootstrap.value
             return
         }
-        let task: Task<Void, Never> = Task { [weak self] in
-            guard let self else { return }
+        // Strong self capture — `BootstrapState` is owned by `ChatServiceLive`
+        // for its full lifetime, so the task can't outlive a deallocated
+        // actor. Weak capture would silently no-op the bootstrap if the
+        // actor were ever released early, leaving every registered consumer
+        // stalled indefinitely without diagnostic.
+        let task: Task<Void, Never> = Task {
             await self.runBootstrap(
                 sync: sync,
                 provider: provider,

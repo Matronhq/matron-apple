@@ -12,6 +12,13 @@ import XCTest
 ///   stored failure.
 /// - Rapid register/unregister doesn't leak continuations or block
 ///   delivery to surviving consumers.
+///
+/// All tests use `AsyncThrowingStream.makeStream()` to obtain the
+/// continuation outside the stream's init closure, then `await
+/// broadcaster.register(continuation)` directly. This avoids the
+/// fire-and-forget `Task { register }` pattern's registration race —
+/// no `Task.sleep` synchronisation barriers, deterministic on any
+/// scheduler.
 final class ChatSummaryBroadcasterTests: XCTestCase {
 
     private static let bot = BotIdentity(matrixID: "@b:s", displayName: "B", avatarURL: nil)
@@ -26,26 +33,17 @@ final class ChatSummaryBroadcasterTests: XCTestCase {
         let broadcaster = ChatSummaryBroadcaster()
         await broadcaster.broadcast([Self.summary("a")])
 
-        let stream = AsyncThrowingStream<[ChatSummary], Error> { continuation in
-            Task {
-                _ = await broadcaster.register(continuation)
-            }
-        }
+        let (stream, continuation) = AsyncThrowingStream<[ChatSummary], Error>.makeStream()
+        _ = await broadcaster.register(continuation)
 
-        var received: [[String]] = []
-        let collector = Task {
-            for try await snapshot in stream {
-                received.append(snapshot.map { $0.id })
-                if received.count == 3 { break }
-            }
-        }
-
-        // Wait briefly for the registration Task to complete and the
-        // immediate snapshot to land.
-        try await Task.sleep(nanoseconds: 50_000_000)
         await broadcaster.broadcast([Self.summary("a"), Self.summary("b")])
         await broadcaster.broadcast([Self.summary("a"), Self.summary("b"), Self.summary("c")])
-        try await collector.value
+
+        var received: [[String]] = []
+        for try await snapshot in stream {
+            received.append(snapshot.map { $0.id })
+            if received.count == 3 { break }
+        }
 
         XCTAssertEqual(received, [["a"], ["a", "b"], ["a", "b", "c"]])
     }
@@ -55,14 +53,10 @@ final class ChatSummaryBroadcasterTests: XCTestCase {
     func test_twoConsumers_bothReceiveSameSequence() async throws {
         let broadcaster = ChatSummaryBroadcaster()
 
-        let s1 = AsyncThrowingStream<[ChatSummary], Error> { c in
-            Task { _ = await broadcaster.register(c) }
-        }
-        let s2 = AsyncThrowingStream<[ChatSummary], Error> { c in
-            Task { _ = await broadcaster.register(c) }
-        }
-        // Allow both registrations to land before broadcasting.
-        try await Task.sleep(nanoseconds: 50_000_000)
+        let (s1, c1) = AsyncThrowingStream<[ChatSummary], Error>.makeStream()
+        let (s2, c2) = AsyncThrowingStream<[ChatSummary], Error>.makeStream()
+        _ = await broadcaster.register(c1)
+        _ = await broadcaster.register(c2)
 
         let collected1 = Task<[[String]], Error> {
             var out: [[String]] = []
@@ -93,21 +87,20 @@ final class ChatSummaryBroadcasterTests: XCTestCase {
     func test_cancellingOneConsumer_doesNotAffectOthers() async throws {
         let broadcaster = ChatSummaryBroadcaster()
 
-        // Capture the token so we can unregister directly without
-        // depending on stream-iteration cancellation timing.
-        let tokenBox = TokenHolder()
-        let cancelStream = AsyncThrowingStream<[ChatSummary], Error> { c in
-            Task {
-                if let t = await broadcaster.register(c) {
-                    await tokenBox.set(t)
-                }
-            }
-        }
-        let surviveStream = AsyncThrowingStream<[ChatSummary], Error> { c in
-            Task { _ = await broadcaster.register(c) }
-        }
+        let (cancelStream, cancelCont) = AsyncThrowingStream<[ChatSummary], Error>.makeStream()
+        let (surviveStream, surviveCont) = AsyncThrowingStream<[ChatSummary], Error>.makeStream()
+        let cancelToken = await broadcaster.register(cancelCont)
+        _ = await broadcaster.register(surviveCont)
 
-        try await Task.sleep(nanoseconds: 50_000_000)
+        // Drop the cancel-stream's continuation. The survive-stream must
+        // still receive both broadcasts.
+        let cancelCollector = Task<Void, Error> {
+            for try await _ in cancelStream { }
+        }
+        if let token = cancelToken {
+            await broadcaster.unregister(token: token)
+        }
+        _ = try await cancelCollector.value
 
         let surviveCollector = Task<[[String]], Error> {
             var out: [[String]] = []
@@ -117,16 +110,6 @@ final class ChatSummaryBroadcasterTests: XCTestCase {
             }
             return out
         }
-
-        // Drop the cancel-stream's continuation. The survive-stream must
-        // still receive both broadcasts.
-        let cancelCollector = Task<Void, Error> {
-            for try await _ in cancelStream { }
-        }
-        if let token = await tokenBox.get() {
-            await broadcaster.unregister(token: token)
-        }
-        _ = try await cancelCollector.value
 
         await broadcaster.broadcast([Self.summary("a")])
         await broadcaster.broadcast([Self.summary("a"), Self.summary("b")])
@@ -139,13 +122,10 @@ final class ChatSummaryBroadcasterTests: XCTestCase {
 
     func test_failTerminatesAllConsumers_withSameError() async throws {
         let broadcaster = ChatSummaryBroadcaster()
-        let s1 = AsyncThrowingStream<[ChatSummary], Error> { c in
-            Task { _ = await broadcaster.register(c) }
-        }
-        let s2 = AsyncThrowingStream<[ChatSummary], Error> { c in
-            Task { _ = await broadcaster.register(c) }
-        }
-        try await Task.sleep(nanoseconds: 50_000_000)
+        let (s1, c1) = AsyncThrowingStream<[ChatSummary], Error>.makeStream()
+        let (s2, c2) = AsyncThrowingStream<[ChatSummary], Error>.makeStream()
+        _ = await broadcaster.register(c1)
+        _ = await broadcaster.register(c2)
 
         let collect1 = Task<Error?, Never> {
             do {
@@ -172,9 +152,9 @@ final class ChatSummaryBroadcasterTests: XCTestCase {
         let broadcaster = ChatSummaryBroadcaster()
         await broadcaster.fail(with: TestError.boom)
 
-        let stream = AsyncThrowingStream<[ChatSummary], Error> { c in
-            Task { _ = await broadcaster.register(c) }
-        }
+        let (stream, continuation) = AsyncThrowingStream<[ChatSummary], Error>.makeStream()
+        _ = await broadcaster.register(continuation)
+
         do {
             for try await _ in stream { XCTFail("expected stream to terminate, got snapshot") }
             XCTFail("expected stream to throw, got clean finish")
@@ -189,31 +169,23 @@ final class ChatSummaryBroadcasterTests: XCTestCase {
         let broadcaster = ChatSummaryBroadcaster()
 
         // Survivor we'll measure end-to-end against.
-        let survivor = AsyncThrowingStream<[ChatSummary], Error> { c in
-            Task { _ = await broadcaster.register(c) }
-        }
-        try await Task.sleep(nanoseconds: 30_000_000)
+        let (survivor, survivorCont) = AsyncThrowingStream<[ChatSummary], Error>.makeStream()
+        _ = await broadcaster.register(survivorCont)
 
         // Churn 50 register/unregister pairs in parallel.
         await withTaskGroup(of: Void.self) { group in
             for _ in 0..<50 {
                 group.addTask {
-                    let tokenBox = TokenHolder()
-                    let local = AsyncThrowingStream<[ChatSummary], Error> { c in
-                        Task {
-                            if let t = await broadcaster.register(c) {
-                                await tokenBox.set(t)
-                                await broadcaster.unregister(token: t)
-                            }
-                        }
+                    let (local, localCont) = AsyncThrowingStream<[ChatSummary], Error>.makeStream()
+                    if let t = await broadcaster.register(localCont) {
+                        await broadcaster.unregister(token: t)
                     }
-                    // Drain whatever we got (likely 0 or 1 element + finish).
+                    // Drain whatever we got (likely 0 elements + finish).
                     // Errors here would mean the broadcaster failed
                     // mid-flight — tolerable for the churn test.
                     do {
                         for try await _ in local { }
                     } catch { }
-                    _ = await tokenBox.get()
                 }
             }
         }
@@ -235,11 +207,3 @@ final class ChatSummaryBroadcasterTests: XCTestCase {
 }
 
 private enum TestError: Error, Equatable { case boom }
-
-/// Tiny actor-backed slot for tests that need to share a token between
-/// the registration Task and the test body.
-private actor TokenHolder {
-    private var token: UUID?
-    func set(_ t: UUID) { token = t }
-    func get() -> UUID? { token }
-}
