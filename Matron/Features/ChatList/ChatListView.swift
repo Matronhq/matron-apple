@@ -85,44 +85,7 @@ struct ChatListView: View {
     var verificationCenter: VerificationCenter? = nil
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Wave 6 / live-test #3: in-list "this device hasn't been
-            // verified" banner. Sits above the incoming-verification-
-            // request banners (most actionable first — a user who's
-            // unverified should fix that before responding to other
-            // devices' verification requests). Renders only on
-            // explicit `false`; `nil` (still loading) hides the banner
-            // so verified users never see it flash. Tap → opens the
-            // self-verify SAS sheet via `verifyThisDeviceContext`.
-            if isThisDeviceVerified == false, let session {
-                UnverifiedDeviceBanner(
-                    onVerify: {
-                        verifyThisDeviceContext = VerifyThisDeviceContext(id: session.userID)
-                    }
-                )
-                .padding(.top, 8)
-            }
-            // Verification banners surface above whatever list state is
-            // showing — loading, error, empty, or populated. One banner
-            // per pending request (spec §7.1, §5.9). The host wires
-            // `verificationCenter` from `MatronApp`; tests / previews
-            // omit it and the `if let` short-circuits.
-            if let center = verificationCenter, !center.pending.isEmpty {
-                VStack(spacing: 8) {
-                    ForEach(center.pending) { summary in
-                        VerificationBanner(
-                            summary: summary,
-                            onAccept: { sasSummary = $0 },
-                            onDismiss: { dismissed in
-                                Task { await center.dismiss(dismissed) }
-                            }
-                        )
-                    }
-                }
-                .padding(.top, 8)
-            }
-            chatListContent
-        }
+        chatListColumn
         .navigationTitle("Matron")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -308,12 +271,69 @@ struct ChatListView: View {
             isThisDeviceVerified = nil
             return
         }
-        let svc: VerificationService = verificationCenter?.service
+        let svc: any VerificationService = verificationCenter?.service
             ?? deps.verificationService(for: session)
         do {
             isThisDeviceVerified = try await svc.isThisDeviceVerified()
         } catch {
             isThisDeviceVerified = nil
+        }
+    }
+
+    /// Column wrapper: when the verification center has pending requests
+    /// OR this device is explicitly unverified, stack the relevant
+    /// banner(s) above the existing chat-list content. Banner order:
+    /// unverified-device (most actionable) → incoming requests → list.
+    /// Empty / no-banner case falls straight through to `chatListContent`
+    /// so the loading `ProgressView` keeps its full-screen vertical
+    /// centering — wrapping the content in a top-down `VStack`
+    /// unconditionally (the prior shape) collapsed the progress view to
+    /// the top of the column. Mirrors `MacChatListView.sidebarColumn`.
+    @ViewBuilder
+    private var chatListColumn: some View {
+        let hasIncoming = (verificationCenter?.pending.isEmpty == false)
+        let showUnverified = (isThisDeviceVerified == false) && (session != nil)
+        if hasIncoming || showUnverified {
+            VStack(spacing: 0) {
+                // Wave 6 / live-test #3: in-list "this device hasn't been
+                // verified" banner. Sits above the incoming-verification-
+                // request banners (most actionable first — a user who's
+                // unverified should fix that before responding to other
+                // devices' verification requests). Renders only on
+                // explicit `false`; `nil` (still loading) hides the banner
+                // so verified users never see it flash. Tap → opens the
+                // self-verify SAS sheet via `verifyThisDeviceContext`.
+                if showUnverified, let session {
+                    UnverifiedDeviceBanner(
+                        onVerify: {
+                            verifyThisDeviceContext = VerifyThisDeviceContext(id: session.userID)
+                        }
+                    )
+                    .padding(.top, 8)
+                }
+                // Verification banners surface above whatever list state
+                // is showing — loading, error, empty, or populated. One
+                // banner per pending request (spec §7.1, §5.9). The host
+                // wires `verificationCenter` from `MatronApp`; tests /
+                // previews omit it and the `if let` short-circuits.
+                if let center = verificationCenter, !center.pending.isEmpty {
+                    VStack(spacing: 8) {
+                        ForEach(center.pending) { summary in
+                            VerificationBanner(
+                                summary: summary,
+                                onAccept: { sasSummary = $0 },
+                                onDismiss: { dismissed in
+                                    Task { await center.dismiss(dismissed) }
+                                }
+                            )
+                        }
+                    }
+                    .padding(.top, 8)
+                }
+                chatListContent
+            }
+        } else {
+            chatListContent
         }
     }
 
@@ -431,7 +451,7 @@ struct ChatListView: View {
         for deps: AppDependencies,
         session: UserSession
     ) -> some View {
-        let svc: VerificationService = verificationCenter?.service
+        let svc: any VerificationService = verificationCenter?.service
             ?? deps.verificationService(for: session)
         let mgr = RecoveryKeyManager(
             provider: deps.clientProvider,
