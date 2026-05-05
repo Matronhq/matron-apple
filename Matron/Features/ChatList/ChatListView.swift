@@ -237,16 +237,14 @@ struct ChatListView: View {
             chatDestination(for: id)
         }
         .task { viewModel.start() }
-        // `verificationCenter.start()` belongs in `.onAppear`, not
-        // `.task`: Swift 6 strict concurrency forbids a `@MainActor deinit`
-        // touching isolated state, so the explicit `start` / `stop` pair
-        // is the lifecycle. Mirrors `ChatListViewModel.cancel()`. Optional
-        // cast lets previews / tests omit the center entirely.
-        .onAppear { verificationCenter?.start() }
-        .onDisappear {
-            viewModel.cancel()
-            verificationCenter?.stop()
-        }
+        // VerificationCenter lifecycle is owned by `MatronApp`'s
+        // `.task(id: session.userID)` + `.onDisappear` on the verifyDone
+        // branch (B2/M5). ChatListView only consumes the binding — no
+        // start/stop here, just the view-model cancel. Earlier code had
+        // a defensive `verificationCenter?.start()` in `.onAppear` but
+        // the binding is always nil at that point (the task runs after
+        // onAppear), so it was unreachable.
+        .onDisappear { viewModel.cancel() }
         // Wave 6 / live-test #3: per-this-device verification check.
         // Pre-Phase-3 users skipped the post-login verify gate
         // (`verifyDone` was never set on their session) so they have
@@ -594,7 +592,11 @@ private struct SelfVerifyThisDeviceSheet: View {
     /// it the only path the chat-list `UnverifiedDeviceBanner` surfaced
     /// was SAS, which strands users when no other verified device is
     /// online (e.g. both devices' SDK stores got wiped on re-login).
-    enum Phase { case probing, chooser, sas, recoveryKey }
+    /// `.alreadyVerified` short-circuits the chooser when the device
+    /// is already verified by the time the user taps the banner —
+    /// avoids running a redundant SAS for a verified device. Mirrors
+    /// the Mac `HelpMenuVerifyDeviceSheet` pattern (PR #3 review #6).
+    enum Phase { case probing, alreadyVerified, chooser, sas, recoveryKey }
     @State private var phase: Phase = .probing
     @State private var recoveryKeyViewModel: RecoveryKeyViewModel?
     /// `nil` while the probe is in flight; `true` if the SDK reports
@@ -611,13 +613,15 @@ private struct SelfVerifyThisDeviceSheet: View {
             switch phase {
             case .probing:
                 ProgressView("Loading…")
+            case .alreadyVerified:
+                alreadyVerifiedView
             case .chooser:
                 chooserView
             case .sas:
                 // SAS sub-flow delegated to `SasSheetWrapper` (PR #3
                 // review #1). The phase state machine (chooser /
-                // recovery-key / probing) stays here; only the SAS
-                // surface is the wrapped pattern.
+                // recovery-key / probing / alreadyVerified) stays here;
+                // only the SAS surface is the wrapped pattern.
                 SasSheetWrapper(
                     service: service,
                     requestID: userID,
@@ -647,9 +651,39 @@ private struct SelfVerifyThisDeviceSheet: View {
         }
         .task(id: userID) {
             guard phase == .probing else { return }
+            // Re-probe verification status on tap. The chat-list
+            // banner's evaluation can lag (it runs on `.task` of the
+            // ChatListView's appearance and only re-runs on sheet
+            // dismiss). If the device became verified between banner
+            // render and the user tapping Verify, short-circuit to
+            // `.alreadyVerified` so we don't run a redundant SAS.
+            // Mirrors Mac `HelpMenuVerifyDeviceSheet` (PR #3 review #6).
+            let verified = (try? await service.isThisDeviceVerified()) ?? false
+            if verified {
+                phase = .alreadyVerified
+                return
+            }
             hasOtherDevices = (try? await service.hasOtherVerifiedDevices()) ?? false
             phase = .chooser
         }
+    }
+
+    private var alreadyVerifiedView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "checkmark.shield.fill")
+                .font(.system(size: 60))
+                .foregroundStyle(.green)
+            Text("This device is already verified")
+                .font(.title2).bold()
+            Text("If you want to verify a different device, sign in there and start the verification from that device's onboarding gate.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button("Close") { onFinished() }
+                .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("verifychooser.alreadyVerified.close")
+        }
+        .padding()
     }
 
     private var chooserView: some View {

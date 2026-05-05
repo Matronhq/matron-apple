@@ -210,15 +210,11 @@ struct MacChatListView: View {
             }
         }
         .task { viewModel.start() }
-        // `verificationCenter.start()` belongs in `.onAppear` (Swift 6
-        // forbids `@MainActor deinit` reaching isolated state). Mirrors
-        // `ChatListViewModel.cancel()`. Optional cast lets previews /
-        // tests omit the center entirely.
-        .onAppear { verificationCenter?.start() }
-        .onDisappear {
-            viewModel.cancel()
-            verificationCenter?.stop()
-        }
+        // VerificationCenter lifecycle is owned by `MatronMacApp`'s
+        // `.task(id: session.userID)` + `.onDisappear` on the verifyDone
+        // branch (B2/M5). MacChatListView only consumes the binding — no
+        // start/stop here, just the view-model cancel.
+        .onDisappear { viewModel.cancel() }
         // Wave 6 / live-test #3: per-this-device verification check.
         // Pre-Phase-3 users skipped the post-login verify gate
         // (`verifyDone` was never set on their session) so they have
