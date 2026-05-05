@@ -328,7 +328,13 @@ struct MacChatListView: View {
             }
             .listStyle(.sidebar)
             .refreshable {
-                await runChatActionAwaiting { try await $0.refresh() }
+                // Phase 2.5: `⌘R` / sidebar pull drives a one-shot
+                // `client.rooms()` snapshot through the live broadcaster
+                // pipe via `ChatListViewModel.refresh()` →
+                // `ChatService.forceSnapshot()`. Pre-2.5 this called
+                // `chat.refresh()`, a `sync.waitUntilReady()` no-op once
+                // running, so the gesture was purely cosmetic.
+                await viewModel.refresh()
             }
         }
     }
