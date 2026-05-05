@@ -17,12 +17,19 @@ private final class FakePasteboard: MatronPasteboardReading {
 /// Mac-specific paste-detection on `MacRecoveryKeyView`. The shared
 /// `RecoveryKeyViewModel` state machine is covered by the SPM
 /// `RecoveryKeyViewModelTests`; here we just prove `PasteDetector`
-/// drives the model's `reenteredKey` and auto-advances to `.confirmed`
-/// when the clipboard matches the generated key.
+/// populates the model's `reenteredKey` from the clipboard. Advancing
+/// to `.confirmed` is driven by an explicit Confirm button tap (matches
+/// iOS RecoveryKeyView) — the detector itself does not auto-advance.
 @MainActor
 final class MacRecoveryKeyViewTests: XCTestCase {
 
-    func test_pasteOfMatchingKey_autoAdvancesToConfirmed() {
+    /// Paste populates `reenteredKey` and leaves the phase on `.reenter`
+    /// so the user must tap Confirm. `canFinish` flips true so the
+    /// Confirm button enables. PR review issue #14: the previous
+    /// auto-advance to `.confirmed` on a paste-match was a regression
+    /// vs. iOS — paste alone could skip the deliberate confirmation
+    /// gesture.
+    func test_pasteOfMatchingKey_populatesField_doesNotAdvance() {
         let vm = RecoveryKeyViewModel(
             mode: .generate,
             generate: { "MOCK-KEY-1234" },
@@ -38,14 +45,10 @@ final class MacRecoveryKeyViewTests: XCTestCase {
         detector.checkClipboardAndApply()
 
         XCTAssertEqual(vm.reenteredKey, "MOCK-KEY-1234")
-        XCTAssertEqual(vm.generatePhase, .confirmed)
-        // `canFinish` returns `false` once `generatePhase` advances out of
-        // `.reenter` — the gate is by design (it's the "primary action
-        // enabled?" predicate, and after auto-advance the Confirm button
-        // is gone). Plan test asserts `canFinish == true` here, which only
-        // holds momentarily inside `PasteDetector.checkClipboardAndApply`
-        // before the advance fires.
-        XCTAssertFalse(vm.canFinish)
+        XCTAssertEqual(vm.generatePhase, .reenter,
+                       "Paste must NOT auto-advance — Confirm tap is the only trigger.")
+        XCTAssertTrue(vm.canFinish,
+                      "canFinish should be true so the Confirm button enables.")
     }
 
     func test_pasteOfNonMatchingKey_doesNotAdvance() {

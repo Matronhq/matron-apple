@@ -9,12 +9,14 @@ import MatronViewModels
 ///     inside their parent window rather than partially covering it.
 ///   - `.textSelection(.enabled)` on the displayed key so the user can
 ///     drag-select + ⌘C in addition to the explicit Copy button.
-///   - `NSPasteboard`-based paste detection (`PasteDetector`) auto-advances
-///     to `.confirmed` when the clipboard matches the generated key, so
-///     users pasting from a password manager don't need an extra tap.
-///   - Success state (`.generate / .confirmed`) renders a checkmark +
-///     auto-dismisses after a short delay; iOS dismisses straight from
-///     `.reenter`.
+///   - `NSPasteboard`-based paste detection (`PasteDetector`) populates
+///     `reenteredKey` from the clipboard so users pasting from a password
+///     manager don't have to type. Like iOS, advancing to `.confirmed`
+///     still requires an explicit Confirm tap — no auto-advance.
+///   - Success state (`.generate / .confirmed`) renders a checkmark
+///     briefly while the parent host responds to `onFinished()` and tears
+///     the sheet down. Same dismissal trigger as iOS — the Confirm tap
+///     fires `onFinished()` directly.
 ///
 /// > iCloud Keychain auto-restore: spec §7.1 notes that a Mac install can
 /// > read the recovery key written by the iOS install (Task 3 wired
@@ -85,11 +87,9 @@ struct MacRecoveryKeyView: View {
                 Button("Paste") { detector?.checkClipboardAndApply() }
                     .accessibilityIdentifier("recoverykey.paste")
             }
-            // Auto-advance is also driven by `onChange` so typing the key
-            // by hand works just like pasting it.
-            .onChange(of: viewModel.reenteredKey) { _, _ in
-                if viewModel.canFinish { viewModel.generatePhase = .confirmed }
-            }
+            // No auto-advance on `reenteredKey` change — match iOS, which
+            // requires an explicit Confirm tap. Auto-advancing on paste /
+            // fast-typing would skip the deliberate confirmation gesture.
             if !viewModel.reenteredKey.isEmpty && !viewModel.canFinish {
                 Text("Doesn't match the key above.")
                     .foregroundStyle(.orange)
@@ -104,13 +104,13 @@ struct MacRecoveryKeyView: View {
                 Text("Recovery key confirmed")
                     .font(.title2).bold()
             }
-            // Brief pause so the success affordance is visible before the
-            // sheet closes. `.task` is one-shot per identity which is fine
-            // here (we only enter `.confirmed` once per flow).
-            .task {
-                try? await Task.sleep(nanoseconds: 600_000_000)
-                onFinished()
-            }
+            // No `.task` auto-dismiss here. The Confirm button (in
+            // `primaryActionButton` below) sets `generatePhase = .confirmed`
+            // AND calls `onFinished()` in the same tap — single source of
+            // truth. The success view is briefly visible between the
+            // assignment and the parent host's response to `onFinished()`.
+            // Previously a 600ms `.task` dismissal raced with the button's
+            // own `onFinished()` and double-fired the parent callback.
         }
         if case .error(let message) = viewModel.phase {
             Text(message)
@@ -152,8 +152,9 @@ struct MacRecoveryKeyView: View {
     }
 
     /// Bottom-bar primary action — varies by mode + phase. The
-    /// `.confirmed` branch returns `EmptyView` because the success view
-    /// auto-dismisses via the `.task` delay above.
+    /// `.confirmed` branch returns `EmptyView`; the Confirm button on
+    /// `.reenter` already fired `onFinished()`, so the success view only
+    /// renders momentarily before the parent host tears the sheet down.
     @ViewBuilder
     private var primaryActionButton: some View {
         switch (viewModel.mode, viewModel.generatePhase) {
@@ -163,19 +164,21 @@ struct MacRecoveryKeyView: View {
                 .disabled(!viewModel.userAcknowledgedSaved)
                 .accessibilityIdentifier("recoverykey.continue")
         case (.generate, .reenter):
-            // Bugbot caught: Confirm previously only set `generatePhase = .confirmed`
-            // and relied on a 600ms `.task` auto-dismiss, which raced with the
-            // `.onChange(of: reenteredKey)` handler that ALSO sets `.confirmed`.
-            // iOS RecoveryKeyView calls `onFinished()` directly. Mirror that —
-            // single source of truth for "user explicitly confirmed."
+            // Single source of truth for "user explicitly confirmed": the
+            // Confirm button flips to `.confirmed` AND fires `onFinished()`
+            // in the same tap. No auto-advance on `reenteredKey` change,
+            // and no `.task` auto-dismiss in `.confirmed` — both used to
+            // exist and double-fired this callback (PR review issues #1
+            // and #14). Matches iOS `RecoveryKeyView`.
             Button("Confirm") {
                 viewModel.generatePhase = .confirmed
                 onFinished()
             }
             .keyboardShortcut(.return)
             .disabled(!viewModel.canFinish)
+            .accessibilityIdentifier("recoverykey.confirm")
         case (.generate, .confirmed):
-            EmptyView()        // auto-dismisses via the .task delay
+            EmptyView()        // Confirm button already fired onFinished()
         case (.restore, _):
             // Single Restore-and-dismiss action — runs the SDK
             // restore, swaps to a ProgressView while busy, fires

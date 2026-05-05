@@ -17,11 +17,12 @@ struct LiveNSPasteboard: MatronPasteboardReading {
     }
 }
 
-/// Bridges clipboard contents into `RecoveryKeyViewModel.reenteredKey` and
-/// auto-advances to `.confirmed` when the value matches the displayed
-/// recovery key. Mac users will likely paste the key from a password
-/// manager (or from clipboard having copied it on iOS), so this saves them
-/// the explicit "Confirm" tap.
+/// Bridges clipboard contents into `RecoveryKeyViewModel.reenteredKey`.
+/// Mac users will likely paste the key from a password manager (or from
+/// the clipboard having copied it on iOS), so the Paste button saves them
+/// the typing. Advancing to `.confirmed` still requires an explicit
+/// Confirm tap — matches iOS `RecoveryKeyView` and avoids paste skipping
+/// the deliberate confirmation gesture (PR review issue #14).
 ///
 /// Defensively no-op outside `.generate / .reenter` so a stray "Paste"
 /// button press in another phase is a safe affordance.
@@ -36,15 +37,11 @@ final class PasteDetector {
     }
 
     /// Reads the current clipboard string and, if non-empty and we're in
-    /// the right phase, copies it into the view-model's `reenteredKey`. If
-    /// that triggers `canFinish`, advance to `.confirmed` so the view can
-    /// run its success animation.
+    /// the right phase, copies it into the view-model's `reenteredKey`.
+    /// Does NOT advance to `.confirmed`; the user must tap Confirm.
     func checkClipboardAndApply() {
         guard viewModel.mode == .generate, viewModel.generatePhase == .reenter else { return }
         guard let candidate = pasteboard.string(forType: .string), !candidate.isEmpty else { return }
         viewModel.reenteredKey = candidate
-        if viewModel.canFinish {
-            viewModel.generatePhase = .confirmed
-        }
     }
 }

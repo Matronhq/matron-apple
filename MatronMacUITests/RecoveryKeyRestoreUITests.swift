@@ -18,7 +18,7 @@ import AppKit  // NSPasteboard
 ///   3. Generate flow → captures the recovery key off `NSPasteboard`
 ///      and into a local variable so subsequent paste-into-field
 ///      operations that overwrite the pasteboard don't lose it
-///   4. Acknowledge → Continue → Paste-back → sheet auto-dismisses
+///   4. Acknowledge → Continue → Paste-back → tap Confirm → sheet dismisses
 ///   5. File → Sign Out…  (clears `verifyDone` + drops session)
 ///   6. Sign in again with the same credentials
 ///   7. Verify gate now offers "Use recovery key"
@@ -114,14 +114,27 @@ final class RecoveryKeyRestoreUITests: XCTestCase {
                       "Paste button on .reenter didn't appear")
         pasteBtn.click()
 
-        // Sheet auto-dismisses 600ms after .reenter → .confirmed via
-        // `MacRecoveryKeyView`'s onChange handler. Wait for the Paste
-        // button to stop existing as proof the sheet has fully torn
-        // down (same proxy as `MatronVsMatronMacUITests`).
+        // Paste populates `reenteredKey`; Confirm is the explicit dismissal
+        // trigger (PR review fixes #1/#14 dropped the onChange auto-advance
+        // and the 600ms `.task` auto-dismiss to match iOS RecoveryKeyView).
+        let confirmBtn = app.buttons["recoverykey.confirm"]
+        XCTAssertTrue(confirmBtn.waitForExistence(timeout: 5),
+                      "Confirm button on .reenter didn't appear after Paste")
+        let confirmEnabled = expectation(
+            for: NSPredicate(format: "isEnabled == true"),
+            evaluatedWith: confirmBtn,
+            handler: nil
+        )
+        XCTAssertEqual(XCTWaiter().wait(for: [confirmEnabled], timeout: 5), .completed,
+                       "Confirm stayed disabled after Paste — reenteredKey didn't match generatedKey")
+        confirmBtn.click()
+
+        // Wait for the Paste button to stop existing as proof the sheet
+        // has fully torn down (same proxy as `MatronVsMatronMacUITests`).
         let pasteGone = NSPredicate(format: "exists == false")
         let pasteGoneWait = expectation(for: pasteGone, evaluatedWith: pasteBtn, handler: nil)
         XCTAssertEqual(XCTWaiter().wait(for: [pasteGoneWait], timeout: 15), .completed,
-                       "Recovery-key sheet never dismissed after Paste — auto-advance to .confirmed didn't fire")
+                       "Recovery-key sheet never dismissed after Confirm")
 
         // ---- Phase 2: sign out via File menu ----
 

@@ -10,8 +10,8 @@ import AppKit  // NSPasteboard for reliable URL pasting
 ///   2. Verify gate → "This is my first device — generate a key"
 ///   3. RecoveryKeyView .notStarted → tap Generate
 ///   4. RecoveryKeyView .show → Copy + acknowledge + Continue
-///   5. RecoveryKeyView .reenter → Paste → PasteDetector matches → auto-advances
-///      to .confirmed → 600ms auto-dismiss → onFinished → chat list visible
+///   5. RecoveryKeyView .reenter → Paste → PasteDetector populates field →
+///      tap Confirm → onFinished → chat list visible
 ///   6. Write `/Users/Shared/matron-mac-ready` (signals iOS to sign in)
 ///   7. Wait up to 120s for incoming-verify banner from iOS peer
 ///   8. Tap Verify on banner → MacSasView sheet → "They match"
@@ -126,27 +126,40 @@ final class MatronVsMatronMacUITests: XCTestCase {
                        "Continue stayed disabled after acknowledging saved")
         continueBtn.click()
 
-        // --- .reenter phase: tap Paste → PasteDetector matches → auto-advances ---
+        // --- .reenter phase: tap Paste → PasteDetector fills field → tap Confirm ---
         let pasteBtn = app.buttons["recoverykey.paste"]
         XCTAssertTrue(pasteBtn.waitForExistence(timeout: 10),
                       "Paste button on .reenter didn't appear")
         pasteBtn.click()
 
-        // After paste matches, view auto-advances to .confirmed which
-        // auto-dismisses 600ms later via .task. Wait for the Paste button
-        // to stop existing as proof the sheet has fully dismissed (not just
-        // for the verify-gate to disappear — the gate left the screen the
-        // moment the sheet *appeared* a few clicks ago, so that signal isn't
-        // load-bearing).
-        //
-        // NOTE: this relies on MacRecoveryKeyView.swift's `.reenter` onChange
-        // handler auto-advancing to `.confirmed` when canFinish flips. If
-        // that auto-advance is ever removed, the test must be updated to
-        // click the bottom-bar Confirm button explicitly.
+        // The Paste button populates `reenteredKey` from the clipboard.
+        // Confirm is `.disabled(!canFinish)`, so we wait for it to enable
+        // (canFinish flips true once `reenteredKey == generatedKey`) and
+        // then click it. The Confirm tap is the single source of truth for
+        // "user explicitly confirmed" — it sets `.confirmed` AND fires
+        // `onFinished()` in the same handler. Auto-advance on text change
+        // and the 600ms `.task` auto-dismiss in `.confirmed` were both
+        // removed in PR review fixes #1/#14 (double-fire of `onFinished`).
+        let confirmBtn = app.buttons["recoverykey.confirm"]
+        XCTAssertTrue(confirmBtn.waitForExistence(timeout: 5),
+                      "Confirm button on .reenter didn't appear after Paste")
+        let confirmEnabled = expectation(
+            for: NSPredicate(format: "isEnabled == true"),
+            evaluatedWith: confirmBtn,
+            handler: nil
+        )
+        XCTAssertEqual(XCTWaiter().wait(for: [confirmEnabled], timeout: 5), .completed,
+                       "Confirm stayed disabled after Paste — reenteredKey didn't match generatedKey")
+        confirmBtn.click()
+
+        // Wait for the Paste button to stop existing as proof the sheet
+        // has fully dismissed (not just for the verify-gate to disappear —
+        // the gate left the screen the moment the sheet *appeared* a few
+        // clicks ago, so that signal isn't load-bearing).
         let pasteGone = NSPredicate(format: "exists == false")
         let pasteGoneWait = expectation(for: pasteGone, evaluatedWith: pasteBtn, handler: nil)
         XCTAssertEqual(XCTWaiter().wait(for: [pasteGoneWait], timeout: 15), .completed,
-                       "Recovery-key sheet never dismissed after Paste — auto-advance to .confirmed didn't fire")
+                       "Recovery-key sheet never dismissed after Confirm")
 
         // --- Mac is now verified + bootstrapped. Signal iOS. ---
         // The Mac UI test runner is heavily sandboxed and gets EPERM
