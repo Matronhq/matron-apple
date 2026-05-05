@@ -413,6 +413,27 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
                     // SAS-start call for this flow.
                     await self.store.setRole(.requester, for: userID)
                     await self.store.setActiveFlowID(userID)
+                    // Prime the local identity cache via /keys/query
+                    // before sending the verification request. Without
+                    // this, a brand-new sign-in (or a session whose
+                    // local crypto store hasn't yet seen the partner's
+                    // current device_id) sends `.request` against a
+                    // stale device list — the partner's `.ready`
+                    // response then arrives from a `from_device` the
+                    // local rust olm verification machine doesn't
+                    // recognise and gets silently dropped, leaving
+                    // the requester stuck at "Starting verification…"
+                    // forever. `userIdentity(fallbackToServer: true)`
+                    // mirrors Element X's `ClientProxy.swift:1231` shape
+                    // and forces the SDK to issue a `/keys/query` for
+                    // the user before we proceed.
+                    if let provider = self.provider, let session = self.session {
+                        let client = try? await provider.client(for: session)
+                        _ = try? await client?.encryption().userIdentity(
+                            userId: userID,
+                            fallbackToServer: true
+                        )
+                    }
                     if let deviceID, !deviceID.isEmpty {
                         Self.logger.notice("startSAS: calling requestUserVerificationIfPossible(\(userID, privacy: .public))")
                         try await wrapped.requestUserVerificationIfPossible(userID: userID)
