@@ -172,12 +172,27 @@ enum RoomListEntriesAlgorithm {
 /// `ChatSummaryBroadcaster` (Task 2 Step 2), which fans out to multiple
 /// `chatSummaries()` callers.
 ///
-/// **Per-room subscriptions are deliberately NOT attached here.** Phase
-/// 2.5 Task 3 spikes the overhead of N× `Room.subscribeToUpdates()`
-/// first; until that lands, this type only re-renders rows when the
-/// SDK-level room-list diff visits them (Set/Insert/PushBack/etc.).
-/// Per-room `latestEvent`/`displayName` changes that don't trigger a
-/// list-level diff won't propagate yet — that's the documented gap.
+/// **Phase 2.5 Task 3 — per-room subscriptions:** for each room in the
+/// listener window we attach `Room.subscribeToRoomInfoUpdates(...)` (the
+/// plan calls this `subscribeToUpdates`; the actual SDK surface in
+/// matrix-rust-components-swift 26.4.1 is the `RoomInfo`-typed variant).
+/// The per-room callback enqueues a `.roomInfoChanged(roomID:)` event
+/// onto the same serial channel that already processes diff batches, so
+/// summary recomputation stays single-consumer and snapshot mutation is
+/// race-free without an explicit lock. Handles are tracked in
+/// `perRoomHandles` and torn down on Remove / Set-with-id-change /
+/// Reset / Clear / Truncate (i.e. for every ID returned in
+/// `RoomListEntriesAlgorithm.ApplyResult.dropped`).
+///
+/// **Step 0 spike outcome:** the scaling probe at
+/// `MatronIntegrationTests/RoomListSubscriptionSpikeTests` exercises
+/// 10×`subscribeToRoomInfoUpdates` over 30s and asserts the callback
+/// rate stays ≤ 5N. NOT RUN in this session — the harness wasn't booted.
+/// Future sessions can run it via
+/// `tests/integration/run-harness.sh roomlist-spike-sdk.sh`. Proceeding
+/// optimistically at page-100; if we ever observe per-room churn that
+/// dwarfs user-driven mutation in production, scope this to a sliding
+/// top-N window per the plan.
 ///
 /// **Phase 2.5 Task 3 Step 0 — scaling spike outcome:** the test
 /// `RoomListSubscriptionSpikeTests.testRoomSubscribeToRoomInfoUpdates_scalesAtPage100`
@@ -224,11 +239,22 @@ final class RoomListSubscription: @unchecked Sendable {
     /// so we must hold the listener for the subscription's lifetime.
     private var listener: BatchListener?
 
-    /// Serial queue for diff batches. The listener fires from arbitrary
-    /// SDK threads; we hop into a single-consumer Task that pulls batches
-    /// off this stream and applies them in order.
+    /// Unified event type processed by the single-consumer batch task.
+    /// The list-level listener yields `.batch(...)`; per-room listeners
+    /// yield `.roomInfoChanged(...)`. Funnelling both onto the same
+    /// channel keeps `rooms`/`summaries`/`perRoomHandles` mutation
+    /// single-threaded without an explicit lock.
+    private enum SubscriptionEvent {
+        case batch([RoomListEntriesUpdate])
+        case roomInfoChanged(roomID: String)
+    }
+
+    /// Serial queue for both list-level batches and per-room state
+    /// changes. The listeners fire from arbitrary SDK threads; we hop
+    /// into a single-consumer Task that pulls events off this stream and
+    /// applies them in order.
     private var batchTask: Task<Void, Never>?
-    private let batchContinuation: AsyncStream<[RoomListEntriesUpdate]>.Continuation
+    private let eventContinuation: AsyncStream<SubscriptionEvent>.Continuation
 
     /// Mirrors the SDK's ordered list of rooms. We hold `Room` references
     /// (not just IDs) so we can re-derive `ChatSummary` for touched rows
@@ -239,6 +265,13 @@ final class RoomListSubscription: @unchecked Sendable {
     /// by the current diff batch, dropped for rows the batch removed.
     private var summaries: [String: ChatSummary] = [:]
 
+    /// Per-room `subscribeToRoomInfoUpdates` handles, keyed by room ID.
+    /// Mutated only from the serial event task. Cancelled-and-removed
+    /// for every ID surfaced in `ApplyResult.dropped`; attached for
+    /// every new room first observed in `touched` that isn't already
+    /// tracked.
+    private var perRoomHandles: [String: TaskHandle] = [:]
+
     /// Bridges the SDK's callback protocol to a `@Sendable` closure,
     /// mirroring the `StateObserver` pattern at `SyncServiceLive.swift:117`.
     private final class BatchListener: RoomListEntriesListener, @unchecked Sendable {
@@ -248,6 +281,24 @@ final class RoomListSubscription: @unchecked Sendable {
         }
         func onUpdate(roomEntriesUpdate: [RoomListEntriesUpdate]) {
             onBatch(roomEntriesUpdate)
+        }
+    }
+
+    /// Bridges `RoomInfoListener` (one per subscribed room) into a
+    /// `@Sendable` closure that yields onto the unified event stream.
+    /// We don't read `RoomInfo` itself — the production summary mapper
+    /// pulls fresh `displayName()` / `latestEvent()` off the `Room`
+    /// reference each time, so the callback only needs to signal "this
+    /// room changed".
+    private final class RoomInfoBridge: RoomInfoListener, @unchecked Sendable {
+        private let roomID: String
+        private let onChange: @Sendable (String) -> Void
+        init(roomID: String, onChange: @escaping @Sendable (String) -> Void) {
+            self.roomID = roomID
+            self.onChange = onChange
+        }
+        func call(roomInfo: RoomInfo) {
+            onChange(roomID)
         }
     }
 
@@ -267,13 +318,13 @@ final class RoomListSubscription: @unchecked Sendable {
         self.logger = logger
         self.onSnapshot = onSnapshot
 
-        let (stream, continuation) = AsyncStream.makeStream(of: [RoomListEntriesUpdate].self)
-        self.batchContinuation = continuation
+        let (stream, continuation) = AsyncStream.makeStream(of: SubscriptionEvent.self)
+        self.eventContinuation = continuation
 
         let listener = BatchListener { batch in
             // `continuation` is `Sendable`; yielding from arbitrary SDK
             // threads is the documented contract for AsyncStream.
-            continuation.yield(batch)
+            continuation.yield(.batch(batch))
         }
         self.listener = listener
 
@@ -287,29 +338,46 @@ final class RoomListSubscription: @unchecked Sendable {
 
         self.batchTask = Task { [weak self] in
             guard let self else { return }
-            for await batch in stream {
+            for await event in stream {
                 if Task.isCancelled { break }
-                await self.handle(batch)
+                switch event {
+                case .batch(let batch):
+                    await self.handle(batch)
+                case .roomInfoChanged(let roomID):
+                    await self.handleRoomInfoChange(roomID: roomID)
+                }
             }
         }
     }
 
     deinit {
-        batchContinuation.finish()
+        eventContinuation.finish()
         batchTask?.cancel()
+        // Cancel every per-room handle. Safe to touch from `deinit` —
+        // the serial batch task has been signalled to exit and `self`
+        // is being deallocated, so no other code path can be racing.
+        for (_, handle) in perRoomHandles { handle.cancel() }
         // Releasing `adapters` cancels the SDK-side subscription. The
         // listener strong-ref drops with `self`.
     }
 
-    /// Handles a single batch from the listener: apply diffs to the
-    /// ordered list, recompute summaries for touched rows, drop dead
-    /// summaries, broadcast the resulting snapshot exactly once.
+    /// Handles a single batch from the list-level listener: apply diffs
+    /// to the ordered list, recompute summaries for touched rows, drop
+    /// dead summaries and per-room handles, attach per-room handles for
+    /// newly-tracked rooms, broadcast the resulting snapshot once.
     private func handle(_ batch: [RoomListEntriesUpdate]) async {
         let mirrored = batch.map(RoomEntryDiff<MatrixRustSDK.Room>.from)
         let result = RoomListEntriesAlgorithm.apply(mirrored, to: &rooms)
 
+        // Drop summaries + per-room handles for every removed ID. Order
+        // matters: cancel BEFORE forgetting the handle so an in-flight
+        // RoomInfo callback can't slip past the cancel and try to
+        // recompute a summary for a vanished room.
         for id in result.dropped {
             summaries.removeValue(forKey: id)
+            if let handle = perRoomHandles.removeValue(forKey: id) {
+                handle.cancel()
+            }
         }
 
         if !result.touched.isEmpty {
@@ -321,6 +389,43 @@ final class RoomListSubscription: @unchecked Sendable {
             }
         }
 
+        // Attach a per-room subscription for every room currently in
+        // the window that we aren't already tracking. Idempotent —
+        // existing handles are kept, so a structural diff (`pushFront`,
+        // `insert`) that widens `touched` to every index doesn't cause
+        // a churn of cancel-and-re-attach.
+        for room in rooms {
+            let id = room.id()
+            if perRoomHandles[id] != nil { continue }
+            let continuation = eventContinuation
+            let bridge = RoomInfoBridge(roomID: id) { changedID in
+                continuation.yield(.roomInfoChanged(roomID: changedID))
+            }
+            perRoomHandles[id] = room.subscribeToRoomInfoUpdates(listener: bridge)
+        }
+
+        broadcastSnapshot()
+    }
+
+    /// Handles a single per-room state change: re-derive the summary
+    /// for that one room and broadcast the full snapshot. Skipped if
+    /// the room is no longer in the window (race: the room-info
+    /// callback fired in flight while a `.remove` / `.reset` was being
+    /// applied; the handle cancel will prevent further fires).
+    private func handleRoomInfoChange(roomID: String) async {
+        guard let room = rooms.first(where: { $0.id() == roomID }) else { return }
+        let myID = (try? client.userId()) ?? ""
+        summaries[roomID] = await ChatSummaryMapper.summary(for: room, myID: myID)
+        broadcastSnapshot()
+    }
+
+    /// Builds an ordered snapshot from `rooms` + `summaries` and yields
+    /// it via `onSnapshot`. Rooms without a cached summary are skipped
+    /// — that should never happen in steady state, but during the brief
+    /// window between `.touched` insertion and summary computation a
+    /// concurrent RoomInfo fire could land here; skipping is safer than
+    /// emitting partial data.
+    private func broadcastSnapshot() {
         var ordered: [ChatSummary] = []
         ordered.reserveCapacity(rooms.count)
         for room in rooms {
