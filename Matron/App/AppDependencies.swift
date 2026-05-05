@@ -5,6 +5,7 @@ import MatronChat
 import MatronModels
 import MatronStorage
 import MatronSync
+import MatronVerification
 
 @MainActor
 final class AppDependencies {
@@ -12,6 +13,15 @@ final class AppDependencies {
     let clientProvider: ClientProvider
 
     private var syncCache: [String: SyncService] = [:]
+    /// Per-session `VerificationServiceLive` cache. The service owns the
+    /// FlowStore (in-flight SAS controllers + open `AsyncStream` continuations)
+    /// AND the registered `LiveSessionVerificationDelegate`. Returning a fresh
+    /// instance every call would (a) hand the SAS UI an empty FlowStore so
+    /// `acceptIncoming(requestID:)` would immediately yield
+    /// `.cancelled("Unknown request: …")`, and (b) fail to register the
+    /// delegate so `incomingRequests()` would never produce. Caching per
+    /// `userID` mirrors `syncCache`.
+    private var verificationCache: [String: VerificationServiceLive] = [:]
     /// Per-session `MediaService` cache. `MediaServiceLive` owns its own
     /// 64 MB `NSCache` for resolved `mxc://` bytes; returning a fresh
     /// instance every call (the prior behaviour) defeated that cache and
@@ -69,6 +79,27 @@ final class AppDependencies {
         if let existing = syncCache[session.userID] { return existing }
         let svc = SyncServiceLive(provider: clientProvider, session: session)
         syncCache[session.userID] = svc
+        return svc
+    }
+
+    /// Per-session `VerificationServiceLive` factory. Cached by `session.userID`
+    /// so every consumer (chat-list banner, per-bot ChatView banner, Settings
+    /// → Device, post-login gate, Mac Help menu) shares the SAME FlowStore
+    /// + the SAME registered SDK delegate. Without this cache, each
+    /// inline `VerificationServiceLive(...)` construction would have its
+    /// own empty FlowStore (so any `acceptIncoming(requestID:)` would yield
+    /// `.cancelled("Unknown request: …")`) AND its own un-registered
+    /// delegate (so `incomingRequests()` would never produce). Mirrors the
+    /// `syncCache` per-session strategy.
+    ///
+    /// `start()` must still be called on the returned service to fetch the
+    /// SDK's session-verification controller and register the delegate; the
+    /// cache only guarantees identity, not lifecycle. `MatronApp` drives
+    /// `start()` from a `.task` block alongside `syncService.start()`.
+    func verificationService(for session: UserSession) -> VerificationServiceLive {
+        if let existing = verificationCache[session.userID] { return existing }
+        let svc = VerificationServiceLive(provider: clientProvider, session: session)
+        verificationCache[session.userID] = svc
         return svc
     }
 
@@ -143,6 +174,7 @@ final class AppDependencies {
     func signOut() {
         try? auth.clearSession()
         syncCache.removeAll()
+        verificationCache.removeAll()
         mediaCache.removeAll()
         timelineCache = .init(limit: AppDependencies.timelineCacheLimit)
     }

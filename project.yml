@@ -12,6 +12,32 @@ settings:
     SWIFT_VERSION: "5.10"
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     APP_GROUP_ID: group.chat.matron
+    # Sticky signing config so `xcodegen generate` doesn't wipe the
+    # team selection that Xcode's Signing & Capabilities UI writes
+    # into Matron.xcodeproj (which is gitignored). Team-signed dev
+    # builds let `keychain-access-groups` validate at runtime so the
+    # recovery-key flow can persist to Keychain without surfacing
+    # "Couldn't auto-save your recovery key".
+    #
+    # `4LJ7WRRRFD` is YEARBOOK MACHINE LIMITED — the org team that
+    # owns the matronhq GitHub org and ships Matron to the App Store.
+    # The local Dan Barker individual cert (`MHQ4X3KS8L`) is also
+    # registered on this team, so dev-machine signing resolves to a
+    # local "Apple Development" cert under the Yearbook team.
+    #
+    # The integration harness scripts override these on the
+    # `xcodebuild` command line with `CODE_SIGN_STYLE=Manual
+    # CODE_SIGN_IDENTITY=- AD_HOC_CODE_SIGNING_ALLOWED=YES
+    # CODE_SIGNING_REQUIRED=NO`, so harness builds bypass the team
+    # entirely (ad-hoc) — these settings only kick in for Xcode-Run
+    # dev builds and signed archive builds.
+    #
+    # CLI-side `xcodebuild` invocations against this team need
+    # `-allowProvisioningUpdates` so Xcode can fetch / generate a
+    # profile for the bundle ID; Xcode.app already does this
+    # automatically on Run / Archive.
+    DEVELOPMENT_TEAM: 4LJ7WRRRFD
+    CODE_SIGN_STYLE: Automatic
   configs:
     Debug:
       SWIFT_OPTIMIZATION_LEVEL: -Onone
@@ -25,6 +51,14 @@ packages:
   MatrixRustSDK:
     url: https://github.com/matrix-org/matrix-rust-components-swift
     from: "26.04.01"
+  # Phase 3 Task 12: snapshot tests for Mac verification chrome. SPM-side
+  # snapshot suites already use this via MatronShared/Package.swift; declaring
+  # here so the Xcode `MatronMacTests` target can import `SnapshotTesting`
+  # too. Same pinned major as MatronShared (1.x). Resolved transitively at
+  # 1.19.2 today via xcodebuild's package graph.
+  swift-snapshot-testing:
+    url: https://github.com/pointfreeco/swift-snapshot-testing
+    from: "1.17.0"
 
 targets:
   Matron:
@@ -56,12 +90,18 @@ targets:
       properties:
         com.apple.security.application-groups:
           - group.chat.matron
-        # keychain-access-groups intentionally absent in Phase 1. iOS Simulator
-        # rejects keychain ops without a signing-team-resolved access group
-        # ($(AppIdentifierPrefix) doesn't expand without a team). Phase 1 stores
-        # the post-login session as a JSON file via FileSessionStore (in the
-        # SDK's basePath alongside its own SQLite store). Phase 3 will add
-        # Keychain back when signing is wired.
+        # Phase 3 / Wave 3 / M1: explicit keychain-access-group for the
+        # recovery-key store. Mirrors the Mac entitlement's group entry.
+        # `chat.matron` (NOT `chat.matron.app`) so Phase 4's NSE share +
+        # any future MatronShared extension can be granted the same group
+        # without invalidating recovery keys written today (B3 rationale).
+        # iOS Simulator without a signing team cannot resolve
+        # `$(AppIdentifierPrefix)` and surfaces `errSecMissingEntitlement
+        # (-34018)` on every keychain op — `MatronApp.bootstrap()`'s probe
+        # is gated `#if !targetEnvironment(simulator)` so dev runs stay
+        # green. Real-device + signed-CI builds get the probe.
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)chat.matron
     # `scheme.testTargets` populates `<Testables>` on the auto-generated
     # `Matron.xcscheme`. Without this, `xcodebuild test -scheme Matron`
     # fails with "Scheme is not currently configured for the test action"
@@ -71,6 +111,7 @@ targets:
     scheme:
       testTargets:
         - MatronTests
+        - MatronUITests
     dependencies:
       - package: MatronShared
         product: MatronAuth
@@ -86,6 +127,8 @@ targets:
         product: MatronViewModels
       - package: MatronShared
         product: MatronDesignSystem
+      - package: MatronShared
+        product: MatronVerification
       - package: MatrixRustSDK
         product: MatrixRustSDK
 
@@ -103,20 +146,29 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: chat.matron.mac
-        CODE_SIGN_ENTITLEMENTS: MatronMac/App/MatronMac.entitlements
         SUPPORTED_PLATFORMS: macosx
-    entitlements:
-      path: MatronMac/App/MatronMac.entitlements
-      properties:
-        com.apple.security.app-sandbox: true
-        com.apple.security.network.client: true
-        com.apple.security.files.user-selected.read-only: true
-        keychain-access-groups:
-          - $(AppIdentifierPrefix)chat.matron.mac
+      configs:
+        # Debug builds use a sandbox-OFF entitlements file so XCUITest's
+        # runner can establish its XPC connection to the host app for the
+        # integration harness. Sandboxed Mac apps can't be UI-tested
+        # without ad-hoc signing + provisioning gymnastics; for local-dev
+        # + harness builds we just turn the sandbox off. Release builds
+        # keep the full sandbox entitlement for App Store distribution.
+        Debug:
+          CODE_SIGN_ENTITLEMENTS: MatronMac/App/MatronMac.Debug.entitlements
+        Release:
+          CODE_SIGN_ENTITLEMENTS: MatronMac/App/MatronMac.entitlements
+    # Note: the target-level `entitlements:` block (xcodegen) is intentionally
+    # NOT set — it overrides per-config CODE_SIGN_ENTITLEMENTS. We manage
+    # the two entitlements files (MatronMac.entitlements +
+    # MatronMac.Debug.entitlements) by hand and let `settings.configs` route
+    # to the right one per build configuration.
     # See the iOS target's `scheme.testTargets` comment — same rationale.
     scheme:
       testTargets:
         - MatronMacTests
+        - MatronMacUITests
+        - MatronIntegrationTests
     dependencies:
       - package: MatronShared
         product: MatronAuth
@@ -132,6 +184,8 @@ targets:
         product: MatronViewModels
       - package: MatronShared
         product: MatronDesignSystem
+      - package: MatronShared
+        product: MatronVerification
 
   MatronTests:
     type: bundle.unit-test
@@ -151,6 +205,8 @@ targets:
         product: MatronModels
       - package: MatronShared
         product: MatronViewModels
+      - package: MatronShared
+        product: MatronVerification
 
   MatronMacTests:
     type: bundle.unit-test
@@ -160,6 +216,7 @@ targets:
     settings:
       base:
         SUPPORTED_PLATFORMS: macosx
+        GENERATE_INFOPLIST_FILE: YES
     dependencies:
       - target: MatronMac
       - package: MatronShared
@@ -168,6 +225,78 @@ targets:
         product: MatronChat
       - package: MatronShared
         product: MatronModels
+      - package: MatronShared
+        product: MatronViewModels
+      - package: MatronShared
+        product: MatronVerification
+      # Phase 3 Task 12: Mac-side snapshot tests for the verification chrome.
+      # Pixel-equality is gated behind MATRON_SKIP_SNAPSHOT_TESTS=1 on CI to
+      # dodge macOS / Xcode renderer drift; baselines remain useful locally.
+      - package: swift-snapshot-testing
+        product: SnapshotTesting
+
+  # Phase 3.5 — XCUITest target for the integration harness. Drives the
+  # Mac app through real UI flows (sign-in, verify, recovery) so the harness
+  # in `tests/integration/` can exercise end-to-end scenarios without a
+  # human in the loop. Driven by `tests/integration/scenarios/*.sh`.
+  MatronMacUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: MatronMacUITests
+    settings:
+      base:
+        SUPPORTED_PLATFORMS: macosx
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: MatronMac
+
+  # Phase 3.5+ — iOS XCUITest target for the matron-vs-matron UI scenario.
+  # Drives the iOS sim app via XCUITest exactly like MatronMacUITests
+  # drives the Mac app. iOS sim doesn't have App Sandbox so no
+  # entitlement carve-outs needed.
+  MatronUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: MatronUITests
+    settings:
+      base:
+        SUPPORTED_PLATFORMS: iphonesimulator
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+    dependencies:
+      - target: Matron
+
+  # Phase 3.5 — SDK integration tests. Drives `MatronShared`'s public
+  # surface (AuthService, VerificationServiceLive, RecoveryKeyManager)
+  # directly against a live homeserver. Bypasses the UI, so it catches
+  # protocol/lifecycle/SDK bugs without the App Sandbox + XCUITest
+  # complexity. Skipped by default; enabled via env var
+  # `MATRON_INTEGRATION_HOMESERVER` (set by `tests/integration/scenarios/*.sh`).
+  MatronIntegrationTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: MatronIntegrationTests
+    settings:
+      base:
+        SUPPORTED_PLATFORMS: macosx
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: MatronMac
+      - package: MatronShared
+        product: MatronAuth
+      - package: MatronShared
+        product: MatronModels
+      - package: MatronShared
+        product: MatronStorage
+      - package: MatronShared
+        product: MatronSync
+      - package: MatronShared
+        product: MatronVerification
+      - package: MatronShared
+        product: MatronChat
       - package: MatronShared
         product: MatronViewModels
 

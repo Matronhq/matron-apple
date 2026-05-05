@@ -26,6 +26,7 @@ public final class AuthServiceLive: AuthService, @unchecked Sendable {
                 .serverNameOrHomeserverUrl(serverNameOrUrl: url.absoluteString)
                 .sessionPaths(dataPath: basePath.path, cachePath: basePath.path)
                 .slidingSyncVersionBuilder(versionBuilder: .native)
+                .autoEnableCrossSigning(autoEnableCrossSigning: true)
                 .build()
             let loginTypes = await client.homeserverLoginDetails()
             return ServerCapabilities(
@@ -56,10 +57,26 @@ public final class AuthServiceLive: AuthService, @unchecked Sendable {
 
         let client: Client
         do {
+            // `.autoEnableCrossSigning(true)` makes the SDK upload cross-
+            // signing keys (master, self-signing, user-signing) the first
+            // time it sees a fresh login. Without it, the local crypto
+            // store carries only an "empty cross signing identity stub"
+            // and `client.getSessionVerificationController()` throws
+            // `ClientError.Generic("Failed retrieving user identity")`
+            // until the user manually triggers cross-signing — which
+            // strands every verification flow including the matron-vs-
+            // matron responder path. Mirrors Element X iOS
+            // (`ElementX/Sources/Other/Extensions/ClientBuilder.swift:42`).
+            // Pairs with `RecoveryKeyManager.generateAndPersist`'s
+            // recoveryState branching: once cross-signing is auto-
+            // bootstrapped, calling the bootstrap-shaped `enableRecovery`
+            // on a non-`.disabled` state hangs, so the recovery-key path
+            // calls `resetRecoveryKey` instead in that branch.
             client = try await ClientBuilder()
                 .serverNameOrHomeserverUrl(serverNameOrUrl: homeserverURL.absoluteString)
                 .sessionPaths(dataPath: basePath.path, cachePath: basePath.path)
                 .slidingSyncVersionBuilder(versionBuilder: .native)
+                .autoEnableCrossSigning(autoEnableCrossSigning: true)
                 .build()
         } catch {
             throw AuthError.unexpected("ClientBuilder.build failed: \(error)")

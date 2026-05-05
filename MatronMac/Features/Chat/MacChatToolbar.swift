@@ -4,9 +4,6 @@ import MatronModels
 import MatronViewModels
 
 /// Mac chat detail column toolbar (per spec §5.9). Layout:
-/// - Left: sidebar toggle (mirrors ⌘⇧S — the menu item in Task 14e fires
-///   the same `.toggleSidebar` notification, so trackpad-only Macs without
-///   the hardware shortcut still have a click-target)
 /// - Center: chat title + `session_meta` strip (model · workdir, etc) —
 ///   the metadata strip is a placeholder until Phase 5 wires session meta
 /// - Right: refresh button (⌘R), search field placeholder, ⓘ info button
@@ -15,6 +12,14 @@ import MatronViewModels
 /// menu bar uses, but also calls `viewModel.refresh()` directly so the
 /// trackpad path doesn't depend on the listener being attached. Search is
 /// a placeholder text field — full search lands in Phase 6.
+///
+/// Wave 6 / live-test #4: removed the leading `ToolbarItem(.navigation)`
+/// sidebar-toggle button. `NavigationSplitView` already renders its own
+/// system sidebar-toggle button inside the sidebar column on macOS;
+/// duplicating it on the detail column's toolbar produced two toggle
+/// buttons in the window header. The menu-bar entry (`Commands.swift`)
+/// + the ⌘⇧S shortcut still reach the same `.toggleSidebar` listener on
+/// `MacChatListView`.
 @MainActor
 struct MacChatToolbar: ToolbarContent {
     let title: String
@@ -27,19 +32,6 @@ struct MacChatToolbar: ToolbarContent {
     @State private var searchText: String = ""
 
     var body: some ToolbarContent {
-        // Left: sidebar toggle. Posts to the command bus so the menu-bar
-        // entry (Task 14e) and this button stay in sync via a single
-        // observer site (typically `MatronMacApp` on `MacChatListView`'s
-        // `NavigationSplitView` column visibility — Phase 5+ wiring).
-        ToolbarItem(placement: .navigation) {
-            Button {
-                NotificationCenter.default.post(name: .matronCommand(.toggleSidebar), object: nil)
-            } label: {
-                Image(systemName: "sidebar.left")
-            }
-            .help("Toggle Sidebar (⌘⇧S)")
-        }
-
         // Center: chat title + session_meta strip placeholder.
         ToolbarItem(placement: .principal) {
             VStack(spacing: 2) {

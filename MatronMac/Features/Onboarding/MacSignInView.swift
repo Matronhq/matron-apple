@@ -17,15 +17,18 @@ struct MacSignInView: View {
                     TextField("https://matrix.example.com", text: $viewModel.serverURL)
                         .textFieldStyle(.roundedBorder)
                         .autocorrectionDisabled()
+                        .accessibilityIdentifier("signin.server")
                 }
                 LabeledField(label: "Username") {
                     TextField("alice", text: $viewModel.username)
                         .textFieldStyle(.roundedBorder)
                         .autocorrectionDisabled()
+                        .accessibilityIdentifier("signin.username")
                 }
                 LabeledField(label: "Password") {
                     SecureField("", text: $viewModel.password)
                         .textFieldStyle(.roundedBorder)
+                        .accessibilityIdentifier("signin.password")
                 }
             }
 
@@ -47,6 +50,7 @@ struct MacSignInView: View {
                 }
             }
             .keyboardShortcut(.defaultAction)
+            .accessibilityIdentifier("signin.submit")
             .disabled({
                 if case .busy = viewModel.state { return true }
                 return viewModel.serverURL.isEmpty || viewModel.username.isEmpty || viewModel.password.isEmpty

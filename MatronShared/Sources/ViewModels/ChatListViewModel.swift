@@ -31,24 +31,57 @@ public final class ChatListViewModel {
         observationTask?.cancel()
         observationTask = Task { [weak self] in
             guard let self else { return }
-            do {
-                for try await snapshot in chat.chatSummaries() {
-                    let grouped = Self.group(summaries: snapshot)
-                    await MainActor.run {
-                        self.groups = grouped
-                        self.isLoading = false
-                        self.error = nil
+            // `ChatService.chatSummaries()` is single-shot per call (Phase 1/2
+            // contract). The first snapshot lands as soon as sliding sync
+            // reaches `.running` — but `.running` doesn't guarantee rooms
+            // have actually been downloaded yet. Sliding sync delivers rooms
+            // incrementally; the first snapshot is often empty even for a
+            // user with rooms on the server.
+            //
+            // Re-poll until we either get a non-empty snapshot or the task
+            // is cancelled (`onDisappear` / sign-out). Live-validated bug:
+            // user signed in fresh on Mac → list was empty → stayed empty
+            // because the VM stopped subscribing after the first (empty)
+            // snapshot. Phase 3 SDK-side fix is to flip chatSummaries() to
+            // a long-lived diff stream; until then this re-poll keeps the
+            // user from being stranded on an empty list.
+            //
+            // Polling cadence: 1s, capped at 30 attempts (~30s total). After
+            // 30s we stop and leave whatever the last snapshot was; the user
+            // can pull-to-refresh / ⌘R to retry. Matches the integration
+            // test's polling shape (`testChatListShowsRoomCreatedByOtherDevice`).
+            let maxAttempts = 30
+            for attempt in 0..<maxAttempts {
+                if Task.isCancelled { return }
+                do {
+                    var lastSnapshot: [ChatSummary] = []
+                    // Drain the stream fully so a `finish(throwing:)` after
+                    // the snapshot yields propagates as an error rather than
+                    // being silently swallowed by an early break (the
+                    // production stream is single-shot, but tests assert on
+                    // the throw + stream error).
+                    for try await snapshot in chat.chatSummaries() {
+                        lastSnapshot = snapshot
+                        let grouped = Self.group(summaries: snapshot)
+                        await MainActor.run {
+                            self.groups = grouped
+                            self.isLoading = false
+                            self.error = nil
+                        }
                     }
+                    if !lastSnapshot.isEmpty { return }  // populated — done
+                } catch {
+                    let message = error.localizedDescription
+                    await MainActor.run {
+                        self.error = message
+                        self.isLoading = false
+                    }
+                    return  // upstream errored; no point retrying this session
                 }
-            } catch {
-                // Bubble the upstream error to the View. Don't clear
-                // `groups` — the user may have a previous good snapshot
-                // they can still interact with; the banner advises that
-                // a refresh is needed.
-                let message = error.localizedDescription
-                await MainActor.run {
-                    self.error = message
-                    self.isLoading = false
+                // Empty snapshot — wait then retry. Skip the sleep on the
+                // last attempt so the loop exits immediately.
+                if attempt < maxAttempts - 1 {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
                 }
             }
         }

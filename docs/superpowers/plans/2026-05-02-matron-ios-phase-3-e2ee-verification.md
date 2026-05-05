@@ -1292,7 +1292,7 @@ struct MacRecoveryKeyView: View {
 - [ ] **Step 4: Verify**
 
 ```bash
-xcodebuild test -scheme MatronMac -only-testing:MatronMacTests/MacRecoveryKeyViewTests
+xcodebuild test -project Matron.xcodeproj -scheme MatronMac -destination 'platform=macOS' -only-testing:MatronMacTests/MacRecoveryKeyViewTests CODE_SIGNING_ALLOWED=NO
 ```
 
 - [ ] **Step 5: Commit**
@@ -2232,8 +2232,10 @@ final class MacRecoveryKeyViewSnapshotTests: XCTestCase {
 - [ ] **Step 3: Run + commit**
 
 ```bash
-xcodebuild test -scheme MatronMac -only-testing:MatronMacTests/MacSasViewSnapshotTests \
-                                  -only-testing:MatronMacTests/MacRecoveryKeyViewSnapshotTests
+xcodebuild test -project Matron.xcodeproj -scheme MatronMac -destination 'platform=macOS' \
+                -only-testing:MatronMacTests/MacSasViewSnapshotTests \
+                -only-testing:MatronMacTests/MacRecoveryKeyViewSnapshotTests \
+                CODE_SIGNING_ALLOWED=NO
 git add MatronMacTests/MacSasViewSnapshotTests.swift \
         MatronMacTests/MacRecoveryKeyViewSnapshotTests.swift \
         MatronMacTests/__Snapshots__/

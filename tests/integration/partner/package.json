@@ -1,0 +1,14 @@
+{
+  "name": "matron-test-partner",
+  "version": "0.1.0",
+  "description": "Scriptable matrix-js-sdk partner for Matron integration tests",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "private": true,
+  "dependencies": {
+    "@matrix-org/matrix-sdk-crypto-wasm": "^15.0.0",
+    "matrix-js-sdk": "^41.4.0"
+  }
+}

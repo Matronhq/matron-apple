@@ -1,0 +1,25 @@
+services:
+  matron-server:
+    image: ghcr.io/matronhq/matron-server:latest
+    container_name: matron-test-server
+    restart: "no"
+    ports:
+      - "127.0.0.1:6167:6167"
+    volumes:
+      - matron_test_data:/var/lib/tuwunel
+    environment:
+      TUWUNEL_SERVER_NAME: "localhost"
+      TUWUNEL_DATABASE_PATH: /var/lib/tuwunel
+      TUWUNEL_PORT: 6167
+      TUWUNEL_ADDRESS: 0.0.0.0
+      TUWUNEL_ALLOW_REGISTRATION: "true"
+      TUWUNEL_ALLOW_FEDERATION: "false"
+      TUWUNEL_ALLOW_ENCRYPTION: "true"
+      TUWUNEL_REGISTRATION_TOKEN: "matron-test-only"
+      TUWUNEL_TRUSTED_SERVERS: '[]'
+      TUWUNEL_MAX_REQUEST_SIZE: 20000000
+      TUWUNEL_LOG: "warn"
+      TUWUNEL_NEW_USER_DISPLAYNAME_SUFFIX: ""
+
+volumes:
+  matron_test_data:

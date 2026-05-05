@@ -71,13 +71,27 @@ struct MacNewChatSheet: View {
         .task { await loadBots() }
     }
 
+    /// Reads room-list snapshots to derive the unique-bot set. Re-polls
+    /// on empty (1s × 30 attempts) for the same race that bit
+    /// `ChatListViewModel` — see iOS `NewChatSheet.loadBots()` for the
+    /// full rationale.
     private func loadBots() async {
         let chat = deps.chatService(for: session)
         do {
-            for try await snapshot in chat.chatSummaries() {
-                let unique = Set(snapshot.map(\.bot))
-                bots = Array(unique).sorted { $0.displayName < $1.displayName }
-                break
+            for attempt in 0..<30 {
+                if Task.isCancelled { return }
+                var lastSnapshot: [ChatSummary] = []
+                for try await snapshot in chat.chatSummaries() {
+                    lastSnapshot = snapshot
+                }
+                if !lastSnapshot.isEmpty {
+                    let unique = Set(lastSnapshot.map(\.bot))
+                    bots = Array(unique).sorted { $0.displayName < $1.displayName }
+                    break
+                }
+                if attempt < 29 {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                }
             }
         } catch {
             // Surface the upstream stream error (e.g. SyncReadyError.timeout)
