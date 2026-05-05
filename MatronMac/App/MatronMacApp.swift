@@ -268,6 +268,10 @@ struct MatronMacApp: App {
             // (or system Keychain stall) doesn't leave the app on the
             // indefinite ProgressView. Plain `Task.sleep` race against the
             // probe via `withThrowingTaskGroup` — first-finish-wins.
+            // Tracked across `do`/`catch` so the `CancellationError` arm can
+            // distinguish race-loser drain from a real external cancellation.
+            // See the catch arm below for the full rationale.
+            var probeSucceeded = false
             do {
                 try await withThrowingTaskGroup(of: Void.self) { group in
                     group.addTask {
@@ -286,6 +290,7 @@ struct MatronMacApp: App {
                     // probe finished it returns; if the timeout finished it
                     // throws and the catch below fires.
                     try await group.next()
+                    probeSucceeded = true
                     group.cancelAll()
                 }
             } catch let error as KeychainProbeError {
@@ -297,17 +302,19 @@ struct MatronMacApp: App {
                 bootstrapDone = true
                 return
             } catch is CancellationError {
-                // Defensive: when the probe wins the race, `group.cancelAll()`
-                // cancels the still-pending `Task.sleep` in the timeout child.
-                // The cancelled sleep throws `CancellationError`, which the
-                // task group's implicit drain on body-return can rethrow out
-                // of `withThrowingTaskGroup`. Without this arm the success
-                // path would fall into the generic catch below and surface a
-                // bogus "Keychain probe failed" error. No-op when the loser's
-                // cancellation is silently swallowed (Swift version
-                // dependent); critical-fix when it isn't.
-                // Probe success has already been observed via `group.next()`,
-                // so it's safe to fall through to the post-probe bootstrap.
+                // Two sources can throw `CancellationError` here: (a) the loser
+                // of the race (the timeout's `Task.sleep` cancelled by
+                // `group.cancelAll()` once the probe returned) — its drain on
+                // body-return rethrows out of `withThrowingTaskGroup`; (b) the
+                // bootstrap task itself being cancelled externally before the
+                // probe completes. Only (a) is safe to swallow — `probeSucceeded`
+                // distinguishes the two so we don't silently mark bootstrap
+                // done on a real external cancel and let the user into flows
+                // with broken Keychain access.
+                if !probeSucceeded {
+                    bootstrapDone = true
+                    return
+                }
             } catch {
                 bootstrapError = "Keychain probe failed: \(error.localizedDescription) — see docs/setup-mac.md"
                 bootstrapDone = true
@@ -550,11 +557,7 @@ private struct HelpMenuVerifyDeviceSheet: View {
                 phase = .sas
             },
             onRecoveryKey: {
-                recoveryKeyViewModel = RecoveryKeyViewModel(
-                    mode: .restore,
-                    generate: { "" },
-                    restore: recoveryKeyRestore
-                )
+                recoveryKeyViewModel = .restoring(restore: recoveryKeyRestore)
                 phase = .recoveryKey
             },
             onClose: { onFinished() }
