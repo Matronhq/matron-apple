@@ -142,6 +142,134 @@ re-litigate without reading the spec):
 
 ---
 
+## Session 9 — PR #3 closeout + Phase 2.5 implementation
+
+**TL;DR for the next agent:** Bugbot pass 1–4 cleanup on PR #3
+(9 findings → fixes) → admin-squash-merged to `main` as `3f10451`.
+Phase 2.5 (`phase-2-5-live-chat-list` branch off `main`) implements
+the long-lived chat-list subscription end-to-end: a new
+`RoomListSubscription` with diff-application + per-room
+`Room.subscribeToRoomInfoUpdates` state subs, a `ChatSummaryBroadcaster`
+fan-out actor, `ChatServiceLive.chatSummaries()` flipped from
+one-shot snapshot to broadcaster-registered long-lived stream,
+`ChatListViewModel` retry loop dropped + multi-yield consumer,
+`NewChatSheet.loadBots()` retry loop dropped, and `refresh()` rebound
+through a new `ChatService.forceSnapshot()` so iOS pull-to-refresh +
+Mac `⌘R` add a snapshot to the live pipe instead of being no-ops.
+Integration scenario `chat-list-live-updates-sdk.sh` written but
+**NOT YET RUN** in this session — Docker harness not booted. Local
+SPM (261 tests) + iOS + Mac builds all GREEN.
+
+### Open work for session 10
+
+1. **Run the live-update integration scenario.**
+   `tests/integration/run-harness.sh chat-list-live-updates-sdk.sh`
+   If green: delete the Phase 2.5 spike artefacts
+   (`MatronIntegrationTests/RoomListSubscriptionSpikeTests.swift` and
+   `tests/integration/scenarios/roomlist-spike-sdk.sh`) per Task 1's
+   "spike artefacts to delete after the production implementation +
+   integration scenario lands and is green" note. Both were left in
+   place this session because we couldn't actually run the new scenario.
+2. **Run the Step 0 per-room subscription scaling spike**
+   (`testRoomSubscribeToRoomInfoUpdates_scalesAtPage100` in
+   `RoomListSubscriptionSpikeTests`) and document the outcome inline
+   at `RoomListSubscription.swift`. The scaling spike was added
+   alongside the per-room state work but never run end-to-end.
+3. **Open the Phase 2.5 PR.** `gh pr create` with branch
+   `phase-2-5-live-chat-list` → `main`. The CLA workflow on `main`
+   is still broken (`@v2` action pin from session 8); it'll fail.
+   User authorized admin-merge for the merge gate during session 9
+   for PR #3 — same playbook applies here.
+4. **Address bugbot if it surfaces real issues**; defer cosmetic
+   findings per the user's session-9 stance ("fix all medium+ ones,
+   defer Lows").
+
+### Things to NOT undo (Phase 2.5)
+
+- **Don't re-add the 30-attempt retry loops** in
+  `ChatListViewModel.start()` or `NewChatSheet.loadBots()`. The
+  long-lived broadcaster stream replaces them: a registered consumer
+  immediately gets the latest snapshot (which may be `[]`), then
+  receives every subsequent broadcast as the listener reports diffs.
+  The retry-and-poll workaround was masking the empty-first-snapshot
+  race that no longer exists.
+- **Don't tear down the `RoomListSubscription` on individual consumer
+  cancellation.** The broadcaster pattern means cancellation only
+  removes one continuation; the upstream listener stays alive for
+  the lifetime of `ChatServiceLive` (one per signed-in user via DI).
+- **Don't gate the live path on a "first-yield within 5s" race.**
+  Task 1's spike confirmed `.reset` arrives immediately on subscribe,
+  so any always-true 5s check would mask a genuinely broken listener
+  that fires `.reset` then dies. Construction-throw fallback only
+  (the historical SDK-crash signature).
+- **Don't merge `RoomListEntriesAlgorithm` back into
+  `RoomListSubscription`.** The test seam (`RoomLike` protocol +
+  generic algorithm) is what makes the diff-application unit suite
+  testable without standing up a real homeserver.
+- **Don't promote `SyncService.sdkService()` to the protocol surface.**
+  `ChatServiceLive` does an `as? SyncServiceLive` downcast that
+  degrades to the fallback poll path for fakes; this is deliberate
+  (keeps `MatrixRustSDK` dep out of the `MatronSync` protocol and
+  out of test fakes).
+- **Don't drop `[weak self]` on `RoomListSubscription`'s internal
+  task captures.** They capture self weakly intentionally; the
+  subscription is value-semantic-equivalent within `ChatServiceLive`'s
+  `BootstrapState`. (Different from `BootstrapState`'s task which
+  uses strong self per the Task 2 review fix.)
+
+### What was delivered (commits since session 8 close-out `c2e238a`)
+
+14 commits on `phase-2-5-live-chat-list`:
+
+- `d37b52f` plan revision after review concerns
+- `6ba1b84` `RoomListSubscription` + `RoomListEntriesAlgorithm` +
+  unit tests for every `RoomListEntriesUpdate` variant
+- `03c940f` `ChatSummaryBroadcaster` actor + multi-consumer fan-out
+  unit tests (single, dual, fail, register/unregister-no-leak)
+- `8080249` `ChatServiceLive.chatSummaries()` long-lived broadcaster
+  wiring + lazy `RoomListSubscription` construction +
+  construction-throw poll fallback
+- `58e2c5c` Task 2 review feedback (`BootstrapState` task strong-self
+  capture)
+- `afab9f1` 100× `Room.subscribeToRoomInfoUpdates()` scaling spike
+  (added but not yet run end-to-end)
+- `837f114` per-room state subscription wired into
+  `RoomListSubscription` with Reset/Remove teardown
+- `dcd409a` Step 0 spike outcome doc cleanup (paragraph dedupe)
+- `348bc48` `ChatService.forceSnapshot()` — one-shot
+  `client.rooms()` poll fed through the live broadcaster pipe
+- `9858901` `ChatListViewModel.start()` flipped to multi-yield
+  consumer; new `refresh()` calls `forceSnapshot()`; retry loop
+  deleted
+- `e56ec35` `NewChatSheet.loadBots()` retry loop deleted (single
+  for-try-await break-on-non-empty)
+- `0eba6bf` `.refreshable` and `⌘R` rebound to
+  `viewModel.refresh()` (no longer no-ops)
+- `4fa95a3` integration scenario + SDK test
+  (`ChatListLiveUpdatesTests` — not yet run end-to-end)
+- `1d7ef96` doc-comment cleanup on `ChatService.chatSummaries()` +
+  `refresh()` (Task 6 Step 1)
+
+### State at close
+
+- **Tip:** `1d7ef96` on `phase-2-5-live-chat-list`. Tree clean.
+- **Local verification (this session):** SPM `swift test` → 261 tests,
+  4 skipped, 0 failures. iOS `xcodebuild build-for-testing -scheme
+  Matron` → `TEST BUILD SUCCEEDED`. Mac `xcodebuild build-for-testing
+  -scheme MatronMac` → `TEST BUILD SUCCEEDED`.
+- **CI (last session 8 push):** `shared-package-tests` ✓,
+  `ios-build-and-test` ✓, `mac-build-and-test` ✓, `cla` ✗ (still
+  the `@v2` infra issue on main; not a code problem).
+- **Phase 2.5 plan checkbox state:** Tasks 1–4 complete; Task 5
+  Steps 1–4 complete (unit tests for diff variants, broadcaster
+  fan-out, multi-yield ChatServiceLive); Step 5 (integration
+  scenario file) and Step 6 (`run-all-ui.mjs` entry) committed but
+  not yet run. Task 6 Step 1 (in-code comment cleanup) complete;
+  Step 2 (delete spike artefacts) deferred to session 10 per
+  "don't delete the spike artefacts yet" guidance.
+
+---
+
 ## Session 8 — PR review-comment audits, CI fixes, Phase 2.5 plan + spike
 
 **TL;DR for the next agent:** session 7 closed out with all three
