@@ -62,13 +62,47 @@ public final class RecoveryKeyManager: @unchecked Sendable {
     /// recovery key, persists it to (iCloud) Keychain, returns the
     /// plaintext for one-time display to the user.
     public func generateAndPersist() async throws -> String {
+        Self.logger.notice("generate: enter")
+        Self.logger.notice("generate: fetching client")
         let client = try await provider.client(for: session)
         let encryption = client.encryption()
-        let key = try await encryption.enableRecovery(
-            waitForBackupsToUpload: false,
-            passphrase: nil,
-            progressListener: NoopEnableRecoveryProgressListener()
-        )
+        // Branch on `recoveryState()` — mirrors Element X's
+        // `SecureBackupController.generateRecoveryKey`
+        // (`ElementX/Sources/Services/SecureBackup/SecureBackupController.swift:113-145`).
+        // With `ClientBuilder.autoEnableCrossSigning(true)` set in
+        // `AuthServiceLive` / `ClientProvider`, the SDK auto-bootstraps
+        // cross-signing on first sign-in. After that bootstrap the
+        // recovery state is no longer `.disabled` and calling the
+        // bootstrap-shaped `enableRecovery` against a non-`.disabled`
+        // state hangs (the SDK's recovery state machine assumes
+        // `enableRecovery` is the first call into the subsystem).
+        // `resetRecoveryKey` is the right API once cross-signing exists
+        // — it issues a fresh recovery key against the existing
+        // identity instead of trying to bootstrap one.
+        let state = encryption.recoveryState()
+        Self.logger.notice("generate: recoveryState=\(String(describing: state), privacy: .public)")
+        let key: String
+        switch state {
+        case .disabled:
+            Self.logger.notice("generate: state=.disabled — calling encryption().enableRecovery(waitForBackupsToUpload: false)")
+            key = try await encryption.enableRecovery(
+                waitForBackupsToUpload: false,
+                passphrase: nil,
+                progressListener: NoopEnableRecoveryProgressListener()
+            )
+            Self.logger.notice("generate: enableRecovery returned (keyLength=\(key.count, privacy: .public))")
+        case .enabled, .incomplete, .unknown:
+            // Element X uses the same fallthrough-to-reset for both
+            // `.enabled` (recovery already set up; user is regenerating
+            // a fresh key) and `.incomplete` (cross-signing exists but
+            // recovery flow was interrupted partway through). `.unknown`
+            // is the SDK's transient pre-listener-fire state; calling
+            // resetRecoveryKey from `.unknown` is still safe — the SDK
+            // serialises the call against its internal state machine.
+            Self.logger.notice("generate: state != .disabled — calling encryption().resetRecoveryKey()")
+            key = try await encryption.resetRecoveryKey()
+            Self.logger.notice("generate: resetRecoveryKey returned (keyLength=\(key.count, privacy: .public))")
+        }
         // Bugbot caught: if `keychain.set` throws after the SDK has
         // generated and registered the recovery key, the plaintext is
         // irrecoverably lost (the server holds the encrypted form, but
@@ -80,7 +114,9 @@ public final class RecoveryKeyManager: @unchecked Sendable {
         // acknowledgement before persisting anyway.
         do {
             try keychain.set(key, forKey: sessionStorageKey)
+            Self.logger.notice("generate: keychain.set OK — exit")
         } catch {
+            Self.logger.error("generate: keychain.set threw: \(error.localizedDescription, privacy: .public)")
             // Don't swallow the error silently — but do return the key. The
             // caller can decide whether the persistence failure is fatal
             // (typical: surface a "save your key now, we couldn't auto-store
