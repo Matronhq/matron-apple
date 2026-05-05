@@ -1,10 +1,23 @@
 # Handover — Matron iOS+Mac, Phase 3 + integration harness
 
-**As of 2026-05-04 evening**, after three working sessions on
-`phase-3-e2ee-verification`. This document catches a fresh session up so
-it can keep going without re-deriving everything.
+**As of 2026-05-05 early morning (session 5 close-out)**, after five
+working sessions on `phase-3-e2ee-verification`. **Session 5 closed
+out with `matron-vs-matron-ui` GREEN end-to-end** alongside the
+3 SDK scenarios — full SAS round trip with both peers reaching
+`verificationStateListener: fired with verified`. The session-5 win
+required four product-code changes layered on top of session 4's
+groundwork: `autoEnableCrossSigning(true)`, Element X recoveryState
+branching in `RecoveryKeyManager`, calling
+`acknowledgeVerificationRequest(senderId:flowId:)` before
+`acceptVerificationRequest()`, and re-introducing the responder-skip
+guard in `routeAcceptedVerificationRequest`. Plus an entire logging
+stack (SDK `initPlatform` tracing, `RecoveryKeyManager` os.Logger
+entries, scenario `log show` fallback + SDK trace file collection)
+that made the diagnosis tractable. See "Session 5" block below.
 
-Latest tip: **`879f44e`** (`fix(test/scenario): poll-grep watcher instead of tail|grep -m1`).
+Latest tip: **`879f44e`** (`fix(test/scenario): poll-grep watcher instead of tail|grep -m1`),
+plus an uncommitted retry+logging diagnostic in
+`VerificationServiceLive.buildController`.
 Session 3 added the matron-vs-matron UI test scenario (Mac + iOS sim,
 both running matrix-rust-sdk, no partner.mjs) — 19 commits, ending in a
 **concrete reproducer of the matron-vs-matron responder bug** (Mac
@@ -123,6 +136,328 @@ re-litigate without reading the spec):
   iOS-as-requester signs in, taps the verify-gate button, calls
   `startSAS`, and sends `m.key.verification.request` over to-device
   successfully — i.e., the iOS requester half is working end-to-end.
+
+---
+
+## Session 5 — matron-vs-matron-ui ✓ GREEN end-to-end
+
+**TL;DR for the next agent:** matron-vs-matron-ui passes — both peers
+reach `verificationStateListener: fired with verified`. Latest run:
+`tests/integration/artifacts/20260505-071320/`. The fix landed in four
+layers, each one revealing the next blocker:
+
+1. **`autoEnableCrossSigning(true)` on every `ClientBuilder()`** —
+   without this the local crypto store carries only an "empty cross
+   signing identity stub" and `getSessionVerificationController()`
+   throws "Failed retrieving user identity" forever (no retry budget
+   was ever enough). Element X parity.
+2. **Element X `recoveryState` branching in `RecoveryKeyManager.generateAndPersist`** —
+   once cross-signing auto-bootstraps on first sign-in, the recovery
+   state may not be `.disabled`, and calling `enableRecovery()` on a
+   non-`.disabled` state hangs. Branch to `resetRecoveryKey()`
+   otherwise. Element X `SecureBackupController.generateRecoveryKey:113-145`
+   parity.
+3. **`acknowledgeVerificationRequest(senderId:flowId:)` before
+   `acceptVerificationRequest()`** in `acceptIncoming` — this was the
+   actual reason `acceptVerificationRequest()` silently no-op'd
+   originally (the early "30 s sliding-sync long-poll" hypothesis was
+   wrong; the SDK was waiting for the ack, not for the sync round).
+   Element X `SessionVerificationControllerProxy.acknowledgeVerificationRequest:71-80`
+   parity. The `senderId` is captured in `routeIncomingRequest` from
+   the SDK's `didReceiveVerificationRequest` callback and stashed in
+   `FlowStore.senderIDs`.
+4. **Responder-skip guard in `routeAcceptedVerificationRequest`** —
+   only the requester (initiator) calls `startSasVerification()`. With
+   both sides calling, matrix-rust-sdk's verification machine sees
+   duplicate `m.key.verification.start` events on each peer and fires
+   `didCancel` within milliseconds. Wave 7's original guard was
+   correct; the post-Wave-7 revert (commit 59b3180) was a regression
+   driven by misdiagnosis of an unrelated partner.mjs flake.
+
+Plus the diagnostic stack that made all four diagnoses tractable:
+
+- `MatronSDKTracing.setup()` → `MatrixRustSDK.initPlatform(...)` with
+  file output to `<cachesDirectory>/matron-sdk-trace/`. Every
+  rust-side verification / sliding-sync / `/keys/query` event is now
+  observable. Without this we were flying blind for three sessions.
+- `RecoveryKeyManager.generateAndPersist` os.Logger entries
+  (mirroring `restore`'s coverage).
+- `matron-vs-matron-ui.sh` collects `log show` fallback (live
+  `log stream` is unreliable) and pulls the SDK trace files for
+  both Mac and iOS sim into the artifact dir.
+
+### Working tree (uncommitted)
+
+| File | What changed |
+|------|------|
+| `MatronShared/Sources/Auth/AuthServiceLive.swift` | `.autoEnableCrossSigning(autoEnableCrossSigning: true)` on both `ClientBuilder()` sites (probe + login). |
+| `MatronShared/Sources/Sync/ClientProvider.swift` | Same — `.autoEnableCrossSigning(autoEnableCrossSigning: true)` on the resume-session ClientBuilder. |
+| `MatronShared/Sources/Auth/SDKTracing.swift` | New file. `MatronSDKTracing.setup()` wraps `MatrixRustSDK.initPlatform(config:useLightweightTokioRuntime:)` with file output to `<cachesDirectory>/matron-sdk-trace/`. Idempotent. |
+| `Matron/App/MatronApp.swift`, `MatronMac/App/MatronMacApp.swift` | Call `MatronSDKTracing.setup()` as the first line of `bootstrap()` so the SDK is wired BEFORE the first ClientBuilder lands. |
+| `MatronShared/Sources/Verification/RecoveryKeyManager.swift` | `generateAndPersist` now branches on `encryption.recoveryState()`: `.disabled` → `enableRecovery()`, otherwise → `resetRecoveryKey()`. Plus entry/SDK-call/exit logging mirroring `restore`. |
+| `MatronShared/Sources/Verification/VerificationServiceLive.swift` | The 60 × 500 ms retry from session 4 stays — kept as belt-and-braces in case `autoEnableCrossSigning` doesn't propagate identity in time on the first listener fire. With autoEnableCrossSigning the retry is now a no-op (succeeds on attempt 1). |
+| `MatronUITests/MatronVsMatronIOSUITests.swift` | `waitForReadyFile` mtime gate widened from `runStartedAt` to `runStartedAt - 5min`. Mac bootstrap is now fast enough (~30 s post-fix) that Mac writes the marker BEFORE iOS's `setUp()` fires; the strict gate was rejecting fresh files. |
+| `tests/integration/scenarios/matron-vs-matron-ui.sh` | Added `log show` fallback + SDK-trace file collection. The scenario now writes `matron-mac-show.log`, `matron-ios-show.log` (unified-log replay over the run window), `matron-mac-sdk.log`, `matron-ios-sdk.log` (rotated SDK trace files). Trace assertion accepts a marker in EITHER live stream OR show fallback. |
+
+### Confirmed evidence (run `tests/integration/artifacts/20260504-213538/`)
+
+Mac's chat.matron + SDK trace, in order:
+```
+21:36:51.770  recovery-key   generate: enter
+21:36:51.770  recovery-key   generate: recoveryState=disabled
+21:36:51.770  recovery-key   generate: state=.disabled — calling encryption().enableRecovery
+21:36:51.836  recovery-key   generate: enableRecovery returned (keyLength=59)
+21:36:51.842  recovery-key   generate: keychain.set threw -34018 (expected for unsigned Debug)
+21:37:00.611  verification   verificationStateListener: fired with verified  ← cross-signing live
+21:37:00.756  verification   buildController: fetched (handle: …) on attempt path  ← attempt 1!
+21:37:14.019  verification   SDK→didReceiveVerificationRequest from=@matron:localhost
+21:37:15.327  verification   acceptIncoming: enter
+21:37:15.328  verification   acceptIncoming: acceptVerificationRequest returned OK
+[then silence — no SDK→didStartSasVerification, no didReceiveVerificationData]
+```
+
+iOS's chat.matron, in order:
+```
+21:37:13.897  verification   installVerificationStateListener: initial state=unverified
+21:37:13.984  verification   buildController: fetched (handle: …) on attempt path  ← attempt 1!
+21:37:13.984  verification   startSAS: calling requestDeviceVerificationIfPossible
+21:37:13.994  verification   startSAS: SDK request returned — yielding .requested
+[then silence — no SDK→didAcceptVerificationRequest]
+```
+
+### Why this took so long — false leads worth recording
+
+**False lead 1: "30 s sliding sync long-poll delays outgoing
+`m.key.verification.ready`."** This was a plausible-looking
+explanation in the session-5-mid notes — Mac's encryption-conn
+position would tick once every 30 s, suggesting outgoing requests
+also got drained at that cadence. **The actual issue was that
+`acceptVerificationRequest()` was a no-op because we'd never
+called `acknowledgeVerificationRequest(senderId:flowId:)` to
+register the active inbound flow.** Mac's outgoing queue was
+empty, not waiting; Mac never had anything to send. Lesson: when
+"pipeline blocked" looks like a credible stall hypothesis, also
+check whether the work was ever actually queued.
+
+**False lead 2: "Wave 7 was wrong, both sides must call
+`startSasVerification`."** Session 2's revert (commit 59b3180)
+was driven by a misdiagnosed partner.mjs flake. Session 5 reproed
+the same flake while exercising the correct (responder-skip) shape
+in matron-vs-matron-ui — confirming partner.mjs's matrix-js-sdk
+RustCrypto race is unrelated to matron's startSas behaviour. The
+correct shape is what Wave 7 originally landed: only the requester
+(initiator) calls `startSasVerification`, per the Matrix spec.
+
+### What's been ruled IN (and stays)
+
+1. `autoEnableCrossSigning(true)` makes cross-signing auto-bootstrap.
+   Live evidence: SDK trace contains the cross-signing keys upload
+   AND `verificationStateListener: fired with verified` for Mac's own
+   device.
+2. `RecoveryKeyManager.generateAndPersist`'s recoveryState branching
+   means session 4's recovery-key-stall regression DOES NOT recur —
+   the flow now completes in ~70 ms (state=.disabled → enableRecovery
+   returns synchronously).
+3. SDK-internal tracing via `initPlatform` is the right shape — both
+   apps now produce ~500-line debug-level trace files captured by the
+   harness. Element X's pattern; works for us.
+4. `log show` fallback in the scenario is essential. Live `log stream`
+   intermittently captures zero entries for reasons not pinned down,
+   but the unified-log replay is reliable. Use it as the primary
+   diagnostic surface; `log stream` is now belt-and-braces.
+
+### What's been ruled OUT
+
+1. The session 4 hypothesis "autoEnableCrossSigning regresses
+   recoverykey.generate" — not real. The session 4 stall was a
+   stale-state artifact (multiple back-to-back UI test runs without
+   environment cleanup); after `simctl shutdown all` + `pkill -x
+   testmanagerd` (host only) + wiping defaults plist, the recovery-key
+   flow runs cleanly with autoEnableCrossSigning enabled.
+2. Session 3 "Mac doesn't render banner" — also not real. With the
+   crypto identity properly bootstrapped, Mac DOES render the banner
+   AND the test clicks it (timeline: t=42.27s click on
+   `verifybanner.accept`). The session 3 framing was correct
+   (something downstream stalls) but wrong about the layer (it was
+   `getSessionVerificationController` failing, not the banner UI).
+
+### Concrete next steps (ranked)
+
+1. **Live-validate matron-vs-matron against the user's real
+   homeserver.** The scenario is green against a fresh Docker
+   homeserver; the next test is an actual sign-in on
+   `https://matrix-dev2.yearbooks.be` with two real matron devices.
+2. **iOS sim verify-with-other-device retest.** The Mac side of
+   matron-vs-matron-ui exercises Mac-as-responder; the iOS side
+   exercises iOS-as-requester. Both green via the harness, but the
+   iOS sim was not driven through the Help-menu / Settings paths
+   yet — that's a small follow-up.
+3. **Decide on PR #3 disposition.** PR #3 has accumulated 7 fix-up
+   waves + the session-5 close-out commits on top of the Phase 3
+   base. Merge-as-is is the pragmatic call; Phase 4+ work picks up
+   from main.
+4. **(Stretch.)** Investigate the matrix-js-sdk RustCrypto race so
+   verify-sdk-against-partner.sh and verify-mac-ui-against-partner.sh
+   come back green — see the test infra status section below for
+   the partner-side workaround sketch.
+
+### Test infra status (delta vs session 4)
+
+- Mac+iOS UI test runners now produce `matron-{mac,ios}-{stream,show,sdk}.log`
+  artifacts per run. Stream files often empty (TCC throttle); show files
+  reliable; SDK files reliable.
+- `matron-vs-matron-ui.sh`: ✓ PASS (run `20260505-071320`).
+- `chat-list-sdk.sh`, `recovery-key-sdk.sh`: ✓ PASS (regression test post-fix).
+- `verify-sdk-against-partner.sh` and `verify-mac-ui-against-partner.sh`:
+  ✗ FAIL — both depend on partner.mjs's matrix-js-sdk RustCrypto, which
+  has an upstream same-user-verification lookup bug
+  (`"Ignoring just-received verification request which did not start a
+  rust-side verification"`). The rust olm machine logs
+  `INFO matrix_sdk_crypto::verification::machine: Received a new
+  verification request` so it definitely processed matron's request —
+  but matrix-js-sdk's wrapper at
+  `node_modules/matrix-js-sdk/lib/rust-crypto/rust-crypto.js:1768`
+  then calls `olmMachine.getVerificationRequest(sender, txnId)` and
+  gets `null`. The wrapper's lookup doesn't find requests where
+  `sender == ourOwnUserID` (same-user verifications, which is exactly
+  what matron-vs-partner is — both are devices of `@matron:localhost`).
+  Pre-fix this scenario flaked ~1-in-3, "self-resolving" sometimes
+  because matron was slow enough that the rust olm machine had
+  wallclock time to settle whatever internal indexing made the lookup
+  work; post-fix matron is faster (`autoEnableCrossSigning` removed
+  a bootstrap step) and the lookup misses every time. matrix-rust-sdk
+  issue 2896 references the same surface. **Trade-off accepted:**
+  matron-vs-matron-ui (real-product flow) is more load-bearing than
+  matron-vs-matrix-js-sdk (test-harness interop). If this needs to
+  come back green, the path is a partner-side workaround in
+  `bootstrap-and-wait` — poll the olm machine until
+  `getVerificationRequest` returns the request, before signalling
+  "ready"; or hold the request via the lower-level
+  `olmMachine.receiveSyncChanges` callback rather than going through
+  matrix-js-sdk's high-level wrapper.
+
+---
+
+## Session 4 — root cause confirmed: SDK identity isn't loaded
+
+**TL;DR for the next agent:** session 3's "Mac doesn't render banner"
+framing was the symptom, not the cause. The actual blocker is
+**`client.getSessionVerificationController()` throws
+`ClientError.Generic("Failed retrieving user identity")` on iOS** —
+so iOS never reaches `requestDeviceVerification()` and Mac never
+receives anything to render. Both sides hit this; on Mac it surfaces
+when the chat-list mounts, on iOS when the user taps "Verify with
+another device".
+
+The SDK integration test at
+`MatronIntegrationTests/VerificationFlowIntegrationTests.swift:140-168`
+**already documents the same error** (read its docstring carefully) and
+works around it with a 60 × 500ms retry. The UI flow has no equivalent
+retry. The error is silently swallowed by `try?` in
+`installVerificationStateListener`'s callback path.
+
+### What's in the working tree (uncommitted)
+
+`MatronShared/Sources/Verification/VerificationServiceLive.swift` now
+has a 60 × 500ms retry + per-attempt `os.Logger.notice` inside
+`buildController()`. Without this you don't see the error at all (it
+hits `try?`) — keep this even if you change the fix shape, because the
+next time this stalls you'll want the trace.
+
+### Confirmed evidence (run `tests/integration/artifacts/20260504-203040/matron-mac.log`)
+
+After retry-only fix, both sides log:
+```
+buildController: getSessionVerificationController() threw on attempt N/60:
+  MatrixRustSDK.ClientError.Generic(msg: "Failed retrieving user identity", ...) — retrying in 500ms
+... (60 attempts) ...
+buildController: getSessionVerificationController() failed after 60 attempts
+```
+
+i.e., 30s of retries does NOT clear the error in this scenario. The
+identity never lands in the local crypto store. Compare with the SDK
+test which usually clears within a few attempts — the difference is
+how the cross-signing identity gets into the SDK's local store, which
+is the next thread to pull.
+
+### Tried and ruled out (DO NOT re-attempt without understanding)
+
+1. **`autoEnableCrossSigning(true)` on `ClientBuilder`** (the
+   Element-X-iOS-parity fix at
+   `ElementX/Sources/Other/Extensions/ClientBuilder.swift:42`).
+   *Diagnostic value:* Element X explicitly relies on this flag to
+   bootstrap cross-signing on first sign-in; without it the SDK's
+   "Failed retrieving user identity" path never resolves on the
+   trust-anchor side. *Why it didn't land:* it caused a regression in
+   the recovery-key generate flow — the click on `recoverykey.generate`
+   takes ~12s to deliver (XCUITest's "Falling back to element center
+   point" diagnostic shows the runner couldn't find a precise
+   hit-test target for ~5s after the click was synthesised, then
+   another ~5s before the app went idle), and `enableRecovery` never
+   appears to return inside that window. Whether enableRecovery is
+   genuinely hanging or whether it's an unrelated test-runner artefact
+   wasn't conclusively determined — the chat.matron logs went
+   completely silent in those runs (no `RecoveryKeyManager` log
+   either, even with explicit logging added) which points at a deeper
+   interaction.
+
+2. **`waitForE2eeInitializationTasks()` + `userIdentity(fallbackToServer: true)`
+   inside `buildController` before the retry.** The intuition was that
+   waiting for E2EE init would cover the trust-anchor side and the
+   identity prefetch would force `/keys/query` for the responder side
+   without changing ClientBuilder behaviour. *Result:* same failure mode
+   as autoEnableCrossSigning — recovery-key flow stalls at the Generate
+   click, no diagnostic logs from anywhere in the chat.matron subsystem
+   even though the binary contains the strings (verified via
+   `strings .../MatronVerification.framework/.../MatronVerification`).
+   Reverted.
+
+3. **Stale `testmanagerd` from prior wedged runs.** Killed
+   (`pkill -x testmanagerd`) between attempts; no behavioural change.
+   The host testmanagerd is not the proximate cause of the regression.
+
+### Concrete next steps (ranked)
+
+1. **Reproduce on a clean Mac state.** Kill Docker, `simctl shutdown
+   all`, restart Mac if practical. The recovery-key click delay is
+   environmental in some way that wasn't pinned down — multiple runs
+   in a row exhibit it identically, suggesting cumulative state, but
+   restarts may clear it. Without that baseline restored, you can't
+   tell whether autoEnableCrossSigning's regression is real or a
+   stale-state artefact.
+
+2. **If autoEnableCrossSigning's regression is real:** the Element X
+   shape uses `autoEnableCrossSigning(true)` AND has a more elaborate
+   recovery state machine in `SecureBackupController.swift`. Their
+   `generateRecoveryKey` checks `recoveryState.value == .disabled` and
+   calls `resetRecoveryKey()` instead of `enableRecovery` if cross-
+   signing is already bootstrapped (lines 113-145). Mirror this:
+   inspect `client.encryption().recoveryState()` and pick
+   `enableRecovery` vs `resetRecoveryKey` accordingly. This is the
+   missing piece — once cross-signing is auto-enabled, calling the
+   bootstrap-shaped `enableRecovery` is the wrong API.
+
+3. **Don't trust the HANDOVER's hypothesis ranking from session 3.**
+   All five hypotheses (sync race, delegate timing, factory churn,
+   Wave-7 lazy controller, server replay) assumed iOS was sending the
+   request. iOS's `m.key.verification.request` was never sent in any
+   recorded run. The whole responder-side investigation is downstream
+   of fixing iOS's controller fetch first.
+
+### Test infrastructure note
+
+The matron-vs-matron-ui scenario's runtime os.Logger collection
+intermittently captures zero `chat.matron` entries even when the
+test runs to completion. The streams do attach (filter line is
+written), but no log entries appear. Multiple runs across late
+session 4 had this empty-log behaviour despite the binary being
+known-correct (verified by `strings` against the linked
+`MatronVerification.framework`). Whether this is an os.Logger
+buffering issue, a TCC/sandbox throttle, or something else wasn't
+nailed down. Workaround: query the unified log directly with
+`/usr/bin/log show --predicate 'subsystem == "chat.matron"' --last 5m
+--info` after a failing run, AND grep the test bundle log for any
+verification-related output.
 
 ---
 
