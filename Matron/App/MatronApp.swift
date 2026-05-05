@@ -15,8 +15,7 @@ struct MatronApp: App {
     /// in this view-model; once `verifyDone` flips true (either after a
     /// successful verification flow or because the persisted flag was
     /// already set on relaunch), the chat list becomes reachable. Per-user
-    /// scope lives in the `UserDefaults` key — see
-    /// `PostLoginVerificationView.verifyDoneKey(for:)`.
+    /// scope lives in the `UserDefaults` key — see `UserSession.verifyDoneKey`.
     @State private var verifyDone = false
     /// Persistent `VerificationCenter` for the active session. B2/M5
     /// expert-QA fix: previously this was constructed inline as a
@@ -106,6 +105,14 @@ struct MatronApp: App {
                         // `incomingRequests()` stream doesn't outlive the
                         // verifyDone branch.
                         .task(id: session.userID) {
+                            // If `session.userID` flips while the verifyDone branch stays
+                            // mounted (multi-account switch), `.onDisappear` won't fire —
+                            // stop the prior center explicitly so its long-lived
+                            // `incomingRequests()` stream doesn't outlive its session.
+                            if let prior = verificationCenter {
+                                prior.stop()
+                                verificationCenter = nil
+                            }
                             let center = VerificationCenter(
                                 service: dependencies.verificationService(for: session)
                             )

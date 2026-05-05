@@ -12,8 +12,7 @@ struct MatronMacApp: App {
     @State private var session: UserSession?
     @State private var bootstrapDone = false
     /// Mac mirror of `MatronApp.verifyDone` — onboarding step-2 gate.
-    /// See `MacPostLoginVerificationView.verifyDoneKey(for:)` for the
-    /// per-user `UserDefaults` scoping.
+    /// Per-user `UserDefaults` scoping lives in `UserSession.verifyDoneKey`.
     @State private var verifyDone = false
     /// Persistent `VerificationCenter` for the active session. B2/M5
     /// expert-QA fix mirroring iOS `MatronApp.verificationCenter` —
@@ -122,6 +121,14 @@ struct MatronMacApp: App {
                         // `verifyDone`, `bootstrapError`,
                         // `showVerifyDeviceSheet`, `showRecoveryKeySheet`.
                         .task(id: session.userID) {
+                            // If `session.userID` flips while the verifyDone branch stays
+                            // mounted (multi-account switch), `.onDisappear` won't fire —
+                            // stop the prior center explicitly so its long-lived
+                            // `incomingRequests()` stream doesn't outlive its session.
+                            if let prior = verificationCenter {
+                                prior.stop()
+                                verificationCenter = nil
+                            }
                             let center = VerificationCenter(
                                 service: dependencies.verificationService(for: session)
                             )
