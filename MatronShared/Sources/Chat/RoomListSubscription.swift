@@ -179,6 +179,17 @@ enum RoomListEntriesAlgorithm {
 /// Per-room `latestEvent`/`displayName` changes that don't trigger a
 /// list-level diff won't propagate yet — that's the documented gap.
 ///
+/// **Phase 2.5 Task 3 Step 0 — scaling spike outcome:** the test
+/// `RoomListSubscriptionSpikeTests.testRoomSubscribeToRoomInfoUpdates_scalesAtPage100`
+/// exercises 10×`subscribeToRoomInfoUpdates` over 30s and asserts the
+/// callback rate stays ≤ 5N. NOT RUN in this session — the integration
+/// harness wasn't booted. Future sessions can run it via
+/// `tests/integration/run-harness.sh roomlist-spike-sdk.sh` (the
+/// existing scenario script picks up both spike test methods). Step 1
+/// (per-room wiring) proceeds optimistically at page-100; if the spike
+/// later surfaces churn that dwarfs user-driven mutation, scope the
+/// listener window to a sliding top-N (~20) per the plan.
+///
 /// **History note (do not delete without re-confirming):** Phase 1's
 /// `ChatServiceLive.chatSummaries()` blamed a crash inside the SDK's
 /// `VectorDiff::map / BaseStateStore` pipeline when this API was called

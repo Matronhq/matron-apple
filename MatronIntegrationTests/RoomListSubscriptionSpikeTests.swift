@@ -181,6 +181,181 @@ final class RoomListSubscriptionSpikeTests: XCTestCase {
 
         // Finished. Tear-down handles cleanup.
     }
+
+    /// Phase 2.5 Task 3 Step 0 — does N×`Room.subscribeToRoomInfoUpdates()`
+    /// scale, or does the per-room callback storm dwarf any benefit?
+    ///
+    /// The plan calls the API `subscribeToUpdates` informally, but the
+    /// actual SDK surface (matrix-rust-components-swift 26.4.1) is
+    /// `Room.subscribeToRoomInfoUpdates(listener: RoomInfoListener) ->
+    /// TaskHandle` with an immediate-on-subscribe `RoomInfo` emit, so this
+    /// probe is on the right method.
+    ///
+    /// Probe shape:
+    ///   1. Sign in fresh, start sync, attach the dynamic-adapters
+    ///      listener, wait for the initial `.reset`.
+    ///   2. Create N synthetic rooms (N=10 in CI; 100 would be expensive
+    ///      and tuwunel-bound, and the callback-rate question is the same
+    ///      shape regardless of cohort size — what we're testing is "does
+    ///      one user-driven mutation produce O(1) callbacks per room, or
+    ///      does the listener storm").
+    ///   3. Wait for those rooms to land in the listener's window.
+    ///   4. Take every Room reference the listener handed us, call
+    ///      `subscribeToRoomInfoUpdates` on each, wait 30s of quiescent
+    ///      time.
+    ///   5. Assert: total callbacks across all subscriptions is bounded
+    ///      (≤ ~N × 5 — generous). The lower bound is N (the SDK emits
+    ///      once on subscribe). Anything dramatically higher would
+    ///      indicate per-room state churn that would tank UI responsiveness
+    ///      at page-100 scale.
+    ///   6. Cancel every TaskHandle cleanly.
+    ///
+    /// Skips silently when MATRON_HOMESERVER is unset (mirrors the other
+    /// spike test). Run via:
+    ///     tests/integration/run-harness.sh roomlist-spike-sdk.sh
+    func testRoomSubscribeToRoomInfoUpdates_scalesAtPage100() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let homeserverString = env["MATRON_HOMESERVER"] ?? env["HOMESERVER"] else {
+            throw XCTSkip("MATRON_HOMESERVER not set; run via tests/integration/run-harness.sh")
+        }
+        guard let homeserverURL = URL(string: homeserverString) else {
+            throw XCTSkip("MATRON_HOMESERVER not a valid URL: \(homeserverString)")
+        }
+        let username = env["MATRON_USER"] ?? "matron"
+        let password = env["MATRON_PW"] ?? "matron-test-pw"
+
+        // 1. Sign in fresh.
+        let storeDir = basePath.appendingPathComponent("session-store")
+        try FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
+        let sdkStore = basePath.appendingPathComponent("sdk-store")
+        let auth = AuthServiceLive(
+            sessionStore: FileSessionStore(directory: storeDir),
+            basePath: sdkStore
+        )
+        let session = try await auth.loginPassword(
+            homeserverURL: homeserverURL,
+            username: username,
+            password: password,
+            initialDeviceDisplayName: "matron-rl-scale-spike"
+        )
+
+        // 2. Start sync.
+        let provider = ClientProvider(basePath: sdkStore)
+        let sync = SyncServiceLive(provider: provider, session: session)
+        syncService = sync
+        try await sync.start()
+        try await sync.waitUntilReady()
+
+        guard let sdkSync = await sync.sdkService() else {
+            XCTFail("sync.sdkService() returned nil after waitUntilReady")
+            return
+        }
+
+        // 3. Pre-create N rooms BEFORE attaching the listener so the
+        //    initial `.reset` carries them all in one batch. Faster than
+        //    racing per-room push-backs across sliding-sync.
+        let client = try await provider.client(for: session)
+        let cohortSize = 10
+        var createdIDs: [String] = []
+        for i in 0..<cohortSize {
+            let request = CreateRoomParameters(
+                name: "scale-spike-\(i)-\(UUID().uuidString.prefix(6))",
+                topic: nil,
+                isEncrypted: false,
+                isDirect: false,
+                visibility: .private,
+                preset: .privateChat,
+                invite: nil,
+                avatar: nil
+            )
+            createdIDs.append(try await client.createRoom(request: request))
+        }
+        print("[RoomListSpike] created \(createdIDs.count) cohort rooms")
+
+        // 4. Attach the dynamic-adapters listener.
+        let captured = ListenerCapture()
+        let listener = CapturingRoomListEntriesListener { update in
+            Task { await captured.append(update) }
+        }
+        let roomListService = sdkSync.roomListService()
+        let allRooms: RoomList
+        do {
+            allRooms = try await roomListService.allRooms()
+        } catch {
+            XCTFail("allRooms() threw: \(error)")
+            return
+        }
+        let result = allRooms.entriesWithDynamicAdapters(pageSize: 100, listener: listener)
+        defer { _ = result }
+        _ = result.controller().setFilter(kind: .all(filters: []))
+
+        // 5. Wait until the listener has reported at least `cohortSize`
+        //    rooms across all captured diffs. Sliding sync may fan them
+        //    out across multiple batches.
+        var observedRooms: [MatrixRustSDK.Room] = []
+        for _ in 0..<300 {
+            observedRooms = await captured.allRooms()
+            if observedRooms.count >= cohortSize { break }
+            try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+        }
+        XCTAssertGreaterThanOrEqual(
+            observedRooms.count, cohortSize,
+            "Expected at least \(cohortSize) rooms in listener window after pre-creation, saw \(observedRooms.count)"
+        )
+
+        // 6. Subscribe to RoomInfo updates on every observed room (cap
+        //    at the SDK page size of 100 — anything beyond that wouldn't
+        //    be visible to the chat list anyway).
+        let subscribeTarget = Array(observedRooms.prefix(100))
+        print("[RoomListSpike] subscribing to RoomInfo updates on \(subscribeTarget.count) rooms")
+        let counter = CallbackCounter()
+        var handles: [TaskHandle] = []
+        for room in subscribeTarget {
+            let infoListener = CountingRoomInfoListener { _ in
+                Task { await counter.tick() }
+            }
+            let handle = room.subscribeToRoomInfoUpdates(listener: infoListener)
+            handles.append(handle)
+        }
+
+        // 7. Wait 30s. The SDK is documented to emit once immediately on
+        //    subscribe (so we expect at least N callbacks straight away);
+        //    everything beyond that is genuine room-state churn or storm.
+        try? await Task.sleep(nanoseconds: 30_000_000_000) // 30s
+
+        let totalCallbacks = await counter.value()
+        let perRoom = Double(totalCallbacks) / Double(subscribeTarget.count)
+        print("[RoomListSpike] 30s observation: total RoomInfo callbacks=\(totalCallbacks) across \(subscribeTarget.count) rooms (avg=\(perRoom)/room)")
+
+        // Expectation: ≥ N (one per room on subscribe), ≤ N × 5 (generous
+        // upper bound — anything more would indicate per-room churn that
+        // would degrade UI at page-100 scale and force us to scope to a
+        // sliding window).
+        XCTAssertGreaterThanOrEqual(totalCallbacks, subscribeTarget.count,
+                                    "Expected ≥ N=\(subscribeTarget.count) callbacks (one per room on subscribe)")
+        XCTAssertLessThanOrEqual(totalCallbacks, subscribeTarget.count * 5,
+                                 "Expected ≤ 5N=\(subscribeTarget.count * 5) callbacks; saw \(totalCallbacks). Per-room churn is too high; consider sliding-window scoping (top ~20).")
+
+        // 8. Drop handles cleanly.
+        for handle in handles { handle.cancel() }
+        handles.removeAll()
+    }
+}
+
+private actor CallbackCounter {
+    private var n: Int = 0
+    func tick() { n += 1 }
+    func value() -> Int { n }
+}
+
+private final class CountingRoomInfoListener: RoomInfoListener, @unchecked Sendable {
+    private let onInfo: (RoomInfo) -> Void
+    init(onInfo: @escaping (RoomInfo) -> Void) {
+        self.onInfo = onInfo
+    }
+    func call(roomInfo: RoomInfo) {
+        onInfo(roomInfo)
+    }
 }
 
 private actor ListenerCapture {
@@ -190,6 +365,41 @@ private actor ListenerCapture {
     }
     func count() -> Int { stored.count }
     func diffs() -> [[RoomListEntriesUpdate]] { stored }
+
+    /// Walks every captured batch, applies it to a synthetic ordered
+    /// vector, and returns the resulting `Room` references. Mirrors the
+    /// production diff-application algorithm at a coarse level so the
+    /// scaling spike can subscribe to whatever the listener actually
+    /// surfaced (rather than re-asking the SDK and racing sliding-sync).
+    func allRooms() -> [MatrixRustSDK.Room] {
+        var rooms: [MatrixRustSDK.Room] = []
+        for batch in stored {
+            for diff in batch {
+                switch diff {
+                case .append(let values): rooms.append(contentsOf: values)
+                case .pushBack(let v):    rooms.append(v)
+                case .pushFront(let v):   rooms.insert(v, at: 0)
+                case .popBack:            if !rooms.isEmpty { rooms.removeLast() }
+                case .popFront:           if !rooms.isEmpty { rooms.removeFirst() }
+                case .insert(let i, let v):
+                    let idx = Int(i)
+                    if idx >= 0, idx <= rooms.count { rooms.insert(v, at: idx) }
+                case .set(let i, let v):
+                    let idx = Int(i)
+                    if idx >= 0, idx < rooms.count { rooms[idx] = v }
+                case .remove(let i):
+                    let idx = Int(i)
+                    if idx >= 0, idx < rooms.count { rooms.remove(at: idx) }
+                case .truncate(let n):
+                    let len = Int(n)
+                    if len < rooms.count { rooms.removeLast(rooms.count - len) }
+                case .clear:              rooms.removeAll()
+                case .reset(let values):  rooms = values
+                }
+            }
+        }
+        return rooms
+    }
 }
 
 private final class CapturingRoomListEntriesListener: RoomListEntriesListener, @unchecked Sendable {
