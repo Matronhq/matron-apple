@@ -10,21 +10,16 @@ struct SignInView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section {
+                Section("Server") {
                     // Placeholder kept URL-shape-free because iOS Form's
                     // data detection styles `https://…` placeholders as
                     // tappable blue link text — looks like an error /
-                    // link, not a hint. The example URL lives in the
-                    // section footer below.
+                    // link, not a hint.
                     TextField("Homeserver URL", text: $viewModel.serverURL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
                         .accessibilityIdentifier("signin.server")
-                } header: {
-                    Text("Server")
-                } footer: {
-                    Text("e.g. https://matrix.example.com")
                 }
                 Section("Credentials") {
                     TextField("Username", text: $viewModel.username)
