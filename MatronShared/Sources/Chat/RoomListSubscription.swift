@@ -184,16 +184,6 @@ enum RoomListEntriesAlgorithm {
 /// Reset / Clear / Truncate (i.e. for every ID returned in
 /// `RoomListEntriesAlgorithm.ApplyResult.dropped`).
 ///
-/// **Step 0 spike outcome:** the scaling probe at
-/// `MatronIntegrationTests/RoomListSubscriptionSpikeTests` exercises
-/// 10×`subscribeToRoomInfoUpdates` over 30s and asserts the callback
-/// rate stays ≤ 5N. NOT RUN in this session — the harness wasn't booted.
-/// Future sessions can run it via
-/// `tests/integration/run-harness.sh roomlist-spike-sdk.sh`. Proceeding
-/// optimistically at page-100; if we ever observe per-room churn that
-/// dwarfs user-driven mutation in production, scope this to a sliding
-/// top-N window per the plan.
-///
 /// **Phase 2.5 Task 3 Step 0 — scaling spike outcome:** the test
 /// `RoomListSubscriptionSpikeTests.testRoomSubscribeToRoomInfoUpdates_scalesAtPage100`
 /// exercises 10×`subscribeToRoomInfoUpdates` over 30s and asserts the
