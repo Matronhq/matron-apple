@@ -43,8 +43,19 @@ struct MacPostLoginVerificationView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
 
+                // The .borderedProminent button's press animation runs
+                // on mouse-up; if the action mutates `path` synchronously,
+                // NavigationStack unmounts the host view before the
+                // press-up frame renders and the click looks like it
+                // did nothing. Defer the path mutation by one runloop +
+                // ~120 ms so the button visibly compresses + releases
+                // first. (`.bordered` and the plain text button below
+                // are subtler visually and don't need the same defer.)
                 Button {
-                    path.append(.sasWithOtherDevice)
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 120_000_000)
+                        path.append(.sasWithOtherDevice)
+                    }
                 } label: {
                     Label("Verify with another device", systemImage: "laptopcomputer")
                 }

@@ -815,32 +815,16 @@ Integration tests are gated behind the harness — see the
 
 ## Open risks + unknowns
 
-1. **matron-vs-matron responder appears broken (session 3 finding).**
-   The session-3 `matron-vs-matron-ui.sh` scenario reproduces this
-   deterministically: iOS-as-requester reaches `startSAS` and sends
-   `m.key.verification.request` over to-device, but Mac-as-responder
-   never renders the incoming-verify banner — `MacVerificationBanner`
-   doesn't appear in the chat-list sidebar. iOS hangs at "starting
-   verification" and times out waiting for SAS emojis. Mac's
-   `verificationStateListener` *does* fire (twice, including once
-   right around iOS's `startSAS` timestamp), but no
-   `didReceiveVerificationRequest` delegate callback follows.
-
-   The original Wave 7 was added to fix a live-debugged "MAC mismatch"
-   symptom in same-SDK flows. The Wave 7 #6 revert restored both sides
-   issuing `.start`, but it's now plausible that the responder side
-   has a separate latent bug (possibly a sync/lifecycle race when the
-   chat-list view mounts immediately after `verifyDone` flips). See
-   the "Specific debugging hypotheses" subsection of the Session 3
-   block above for the five candidate root causes ranked by
-   plausibility — start with #2 (VerificationCenter delegate
-   registration timing).
-
-   The scenario is the way to debug this: run
-   `tests/integration/run-harness.sh matron-vs-matron-ui.sh`,
-   instrument the suspect code path with os.Logger entries (subsystem
-   `chat.matron`, any category), the runtime log will be captured at
-   `tests/integration/artifacts/<ts>/matron-mac.log`.
+1. **matron-vs-matron responder broken (session 3 finding).**
+   ✓ RESOLVED in session 5 — see Session 5 block at top of this file.
+   Root cause was missing `acknowledgeVerificationRequest` before
+   `acceptVerificationRequest` in `acceptIncoming`, plus duplicate
+   `m.key.verification.start` from both peers calling
+   `startSasVerification`. Both fixed; matron-vs-matron-ui ✓ green
+   end-to-end (run `20260505-071320`). The session-3 hypotheses
+   ranked above were investigating the wrong layer — the chat-list
+   delegate registration was fine; the SDK was silently no-op'ing
+   `acceptVerificationRequest`. Kept here as historical record.
 
 2. **iOS sim flows post-Wave-7** not re-tested. Pre-Wave-7
    observations (last live-tested):
@@ -855,11 +839,11 @@ Integration tests are gated behind the harness — see the
    iOS sim before merging.
 
 3. **No visible feedback on Mac "Verify with another device" tap**.
-   Click registers (verification flow starts) but the button never
-   shows a pressed state. Likely `path.append(.sasWithOtherDevice)`
-   transitions the screen before the press animation can render.
-   Probably needs a small loading state between tap and navigation.
-   Minor — not a blocker.
+   ✓ RESOLVED in session 5 close-out. `MacPostLoginVerificationView`
+   now defers the `path.append(.sasWithOtherDevice)` mutation by
+   ~120 ms inside a `Task { @MainActor in … }` so the button's
+   press-up animation visibly completes before NavigationStack
+   unmounts the host view.
 
 4. **`testAcceptIncomingVerificationRequestFromPartner`** SDK test
    still skip-gated. matron-side code is correct as-is:
@@ -962,7 +946,7 @@ tests/integration/
 │   ├── recovery-key-sdk.sh                    ← recovery-key restore test ✓
 │   ├── incoming-verify-sdk.sh                 ← responder SDK test (gated)
 │   ├── verify-mac-ui-against-partner.sh       ← XCUITest scenario ✓
-│   ├── matron-vs-matron-ui.sh                 ← Mac+iOS XCUITest, no partner.mjs (NEW, session 3, fails at Mac receiving incoming verify — see Session 3 block above)
+│   ├── matron-vs-matron-ui.sh                 ← Mac+iOS XCUITest, no partner.mjs ✓ (session 5 close-out — see Session 5 block above)
 │   ├── verify-mac-against-partner.sh          ← AppleScript scenario (legacy)
 │   └── run-all-sdk.sh                         ← wrapper: run all 3 SDK scenarios
 └── run-harness.sh                             ← orchestrator
@@ -1064,19 +1048,18 @@ For the XCUITest scenarios:
 
 ## Where to pick up
 
-### 1. Live-validate matron-vs-matron after Wave 7 bug #6 revert
+The session-5 close-out block at the top of this file ("Session 5 —
+matron-vs-matron-ui ✓ GREEN end-to-end") has the canonical ranked
+next steps. Below is the residual list of items NOT covered there
+that pre-date session 5 and remain open — read both lists before
+picking work.
 
-Highest-priority before merging. Sign in to your real homeserver on
-Mac as a user with another already-verified device. Tap "Verify with
-another device". The flow should reach `verified`. If it MAC-fails,
-Wave 7 bug #6 was right and we need a different strategy for the
-matrix-js-sdk interop case (e.g., role-conditional behaviour).
+### A. iOS sim — drive the user-tap paths post-fix
 
-### 2. iOS sim retest
-
-Mac empty-chats fix automatically applies to iOS via shared
-`ChatListViewModel`, but the iOS verify-with-other-device flow
-hasn't been driven post-Wave-7. With the harness running:
+The harness exercises iOS-as-requester end-to-end (matron-vs-matron-ui
+✓), but the manual user-tap paths (Help menu, Settings → Encryption,
+per-bot banner) haven't been driven by hand post-session-5. Quick
+local validation:
 
 ```bash
 xcodebuild -scheme Matron -configuration Debug \
@@ -1088,58 +1071,39 @@ xcrun simctl install 337C3A3A-4191-4A51-9513-93F5805276EC \
 xcrun simctl launch 337C3A3A-4191-4A51-9513-93F5805276EC chat.matron.app
 ```
 
-Sign in as `matron` / `matron-test-pw`. Try the recovery-key + verify-
-with-other-device flows.
+Sign in as `matron` / `matron-test-pw`. Try recovery-key + verify-
+with-other-device flows. Walk through Settings → Encryption +
+per-bot banner.
 
-### 3. Fix the visual-feedback bug on Mac Verify button
-
-`MacPostLoginVerificationView`'s "Verify with another device"
-button: `path.append(.sasWithOtherDevice)` happens immediately on
-tap, transitioning the screen before SwiftUI renders the press
-animation. Fix probably wants either a brief loading state or
-`.task`-driven pre-flight before navigation. Minor visible polish.
-
-### 4. Run the UI scenario from an interactive Terminal
-
-`tests/integration/run-harness.sh verify-mac-ui-against-partner.sh`
-from a Terminal session, dismissing any TouchID / Accessibility
-prompts. The XCUITest runner-init blocks from non-interactive Bash;
-once dismissed, the test exercises the same SDK code path the
-SDK scenario already proves green, so it should land at `.verified`.
-
-### 5. Investigate the responder test stall
+### B. Investigate the responder SDK test stall
 
 `testAcceptIncomingVerificationRequestFromPartner` is gated behind
-`MATRON_RUN_INCOMING_VERIFY_TEST=1`. Two angles to dig into:
-- matrix-rust-sdk's `didAcceptVerificationRequest` delegate firing
-  semantics (does it fire only on the requester side?)
-- The matrix-js-sdk module-load side effect that breaks the verify
-  scenario when `cmdBootstrapAndInitiateVerify` is present in
-  `partner.mjs`
+`MATRON_RUN_INCOMING_VERIFY_TEST=1`. With session 5's
+`acknowledgeVerificationRequest` fix the matron-side wiring is now
+correct — the remaining blocker is the matrix-js-sdk
+same-user-verification lookup bug (see Session 5 block's "Test
+infra status" section). Phase 5 (per-bot trust UX) will exercise
+the same `acceptIncoming` path so coverage matters before then.
 
-Both block the test from passing. Phase 5 (per-bot trust UX) will
-exercise the same `acceptIncoming` code path so the responder
-coverage matters before then.
+### C. Decide on PR #3 disposition
 
-### 6. Decide on PR #3 disposition
-
-PR #3 has accumulated 7 fix-up waves + 14 session-2 commits on top
-of the Phase 3 base. It's substantial but coherent (each commit is
-self-contained). Two options:
-- **Merge as-is** once #1+#2 above pass. Phase 3 ships, remaining
-  open items become Phase 4 work.
+PR #3 has accumulated 7 fix-up waves + 5 session-5 commits + the
+Mac entitlements fix on top of the Phase 3 base. Self-contained
+commits but substantial. Options:
+- **Merge as-is** once real-homeserver validation passes. Phase 3
+  ships, remaining open items become Phase 4 work.
 - **Split into stacked PRs** for cleaner review history.
 
 User's stated preference earlier was to merge stacked when possible
 but accepted squash for PR #1 (Phase 2). Merge-as-is is the
 pragmatic call.
 
-### 7. Long-running: build a CI hook for the harness
+### D. Long-running: build a CI hook for the harness
 
-After matron-vs-matron is validated, wire the SDK scenarios into a
-GitHub Actions workflow. Will need a self-hosted Mac runner (the
-harness builds the app) or a GitHub-hosted macOS runner with Docker
-(which costs $$).
+Wire the green scenarios (`matron-vs-matron-ui.sh`, `chat-list-sdk.sh`,
+`recovery-key-sdk.sh`) into a GitHub Actions workflow. Needs either a
+self-hosted Mac runner (the harness builds the app) or a GitHub-
+hosted macOS runner with Docker (which costs $$).
 
 ---
 

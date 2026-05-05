@@ -121,7 +121,16 @@ public final class RecoveryKeyViewModel {
             case .keychainWriteFailedButKeyAvailable(let key, let underlying):
                 generatedKey = key
                 generatePhase = .show
-                phase = .error("Couldn't auto-store your recovery key — please copy it now and save it somewhere safe. Underlying: \(underlying.localizedDescription)")
+                // The recovery key itself is fine — it's been generated
+                // and registered server-side; only the local Keychain
+                // write-back failed (typically `errSecMissingEntitlement`
+                // on unsigned dev builds). Tell the user what to do
+                // (copy it manually) without surfacing the raw
+                // `Keychain error -34018` text. The underlying error
+                // is logged via `RecoveryKeyManager.logger` for
+                // dev-side inspection in Console.app.
+                _ = underlying
+                phase = .error("Couldn't auto-save your recovery key — please copy it now and keep it somewhere safe.")
             }
         } catch {
             phase = .error(error.localizedDescription)
