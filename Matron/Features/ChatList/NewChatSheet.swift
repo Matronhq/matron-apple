@@ -87,10 +87,17 @@ struct NewChatSheet: View {
     /// empty bot picker until they re-opened the sheet manually.
     private func loadBots() async {
         let chat = deps.chatService(for: session)
-        do {
-            for attempt in 0..<30 {
-                if Task.isCancelled { return }
-                var lastSnapshot: [ChatSummary] = []
+        // Track the most recent stream error per-attempt so a transient
+        // failure on attempt 1 (e.g. SyncReadyError.timeout while sync
+        // is still warming up) doesn't bypass the remaining 29 retries
+        // — the original PR #1 cursor[bot] finding had us aborting
+        // outright on first throw. The error is only surfaced after
+        // all 30 attempts fail to yield a non-empty snapshot.
+        var lastError: Error?
+        for attempt in 0..<30 {
+            if Task.isCancelled { return }
+            var lastSnapshot: [ChatSummary] = []
+            do {
                 for try await snapshot in chat.chatSummaries() {
                     lastSnapshot = snapshot
                     // Load-bearing once `chatSummaries()` flips to a
@@ -103,25 +110,32 @@ struct NewChatSheet: View {
                     // the outer retry below.
                     if !snapshot.isEmpty { break }
                 }
-                if !lastSnapshot.isEmpty {
-                    let unique = Set(lastSnapshot.map(\.bot))
-                    bots = Array(unique).sorted { $0.displayName < $1.displayName }
-                    break
-                }
-                if attempt < 29 {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                }
+                // Stream completed cleanly. Clear any error remembered
+                // from a prior attempt so we don't surface a stale one.
+                lastError = nil
+            } catch {
+                lastError = error
             }
-        } catch {
-            // Surface the upstream stream error (e.g. SyncReadyError.timeout)
-            // in the same field as createChat failures so the user sees
-            // a meaningful banner instead of an empty bot picker
-            // (QA finding #10).
-            errorMessage = error.localizedDescription
+            if !lastSnapshot.isEmpty {
+                let unique = Set(lastSnapshot.map(\.bot))
+                bots = Array(unique).sorted { $0.displayName < $1.displayName }
+                break
+            }
+            if attempt < 29 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
         }
-        // Flip *after* the polling completes (or the stream throws) so the
-        // empty state shows once we're sure there are no bots, not during
-        // the in-flight window.
+        // If all 30 attempts produced empty snapshots AND the last one
+        // threw, surface the upstream error in the same field as
+        // createChat failures (QA finding #10). The empty-but-no-error
+        // case (genuinely zero bots provisioned) keeps falling through
+        // to the empty state below.
+        if bots.isEmpty, let lastError {
+            errorMessage = lastError.localizedDescription
+        }
+        // Flip *after* the polling completes so the empty state shows
+        // once we're sure there are no bots, not during the in-flight
+        // window.
         didLoad = true
     }
 
