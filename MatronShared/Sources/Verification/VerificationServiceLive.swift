@@ -503,6 +503,19 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
         Self.logger.notice("confirmEmojiMatch: calling approveVerification()")
         try await controller.approveVerification()
         Self.logger.notice("confirmEmojiMatch: approveVerification() returned OK")
+        // Yield `.awaitingConfirmation` so the SAS view can swap from the
+        // "They match / They don't match" buttons to a "Waiting for the
+        // other device…" ProgressView while we wait for the other peer
+        // to also approve. Without this yield the view stays at
+        // `.readyForEmoji` until the SDK fires `didFinish` (which only
+        // happens after the OTHER peer also approves), making local
+        // confirmation feel unresponsive — the user clicks "They match"
+        // and the UI doesn't acknowledge the click. The `.verified` /
+        // `.cancelled` transition still arrives via the SDK delegate
+        // through `routeSasFinished` / `routeSasCancelled`.
+        if let continuation = await store.continuation(for: requestID) {
+            continuation.yield(.awaitingConfirmation)
+        }
     }
 
     public func cancel(requestID: String, reason: String) async throws {

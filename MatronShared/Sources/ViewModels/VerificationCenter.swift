@@ -117,6 +117,23 @@ public final class VerificationCenter {
     /// Wave 4 expert-QA #5: log the failure at `.error` so Phase 4 push
     /// debugging will know when SDK cancels failed to deliver. The
     /// `try?` silent-swallow used to make this branch invisible.
+    /// Drain a flow from `pending` after it reached `.verified` —
+    /// counterpart to `dismiss(_:)` minus the SDK cancel call. The SAS
+    /// sheet's `onFinished` callback fires when the per-flow stream
+    /// yields `.verified`, at which point the SDK has already completed
+    /// the verification and a `cancelVerification()` call would be both
+    /// nonsensical and potentially trip the SDK's "verification request
+    /// missing" path. So this method just removes the entry locally so
+    /// the sidebar banner clears.
+    ///
+    /// Without this, the user finishes a successful SAS round trip but
+    /// the chat-list sidebar still shows "Verify this device — Verify"
+    /// for the now-completed request until they manually dismiss it
+    /// (which would attempt an SDK cancel against a finished flow).
+    public func markCompleted(_ summary: VerificationRequestSummary) {
+        pending.removeAll { $0.id == summary.id }
+    }
+
     public func dismiss(_ summary: VerificationRequestSummary) async {
         do {
             try await service.cancel(requestID: summary.id, reason: "User dismissed")

@@ -387,7 +387,16 @@ struct ChatListView: View {
         IncomingRequestSasSheet(
             service: svc,
             requestID: summary.id,
-            onFinished: { sasSummary = nil }
+            onFinished: {
+                // Drain the now-completed flow from the center's
+                // pending list so the chat-list banner clears. Without
+                // this, a successful SAS leaves a stale "Verify this
+                // device" banner the user has to dismiss manually
+                // (and that dismissal would try to cancel an
+                // already-finished flow on the SDK).
+                verificationCenter?.markCompleted(summary)
+                sasSummary = nil
+            }
         )
     }
 
