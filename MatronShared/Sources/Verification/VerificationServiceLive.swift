@@ -471,8 +471,9 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
                     }
                     // Dispatch: user-verification vs self-device verification.
                     //
-                    // PR #3 review #16 — the per-bot verify path
-                    // (`VerifyBotSheet` / `MacVerifyBotSheet`) calls
+                    // PR #3 review #16 — the per-bot verify path (the
+                    // bot-verify call site, now via `SasSheetWrapper` /
+                    // `MacSasSheetWrapper`) calls
                     // `startSAS(withUser: botMatrixID, deviceID: nil)` for a
                     // foreign user. Under the previous shape (`deviceID
                     // != nil` → user-verify, `deviceID == nil` →
