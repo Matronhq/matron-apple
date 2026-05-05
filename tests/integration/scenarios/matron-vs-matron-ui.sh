@@ -36,10 +36,31 @@ MAC_TEST_LOG="$ARTIFACTS_DIR/mac-test.log"
 IOS_TEST_LOG="$ARTIFACTS_DIR/ios-test.log"
 MAC_RUNTIME_LOG="$ARTIFACTS_DIR/matron-mac.log"
 IOS_RUNTIME_LOG="$ARTIFACTS_DIR/matron-ios.log"
+# Belt-and-braces fallback: live `log stream` intermittently captures
+# zero entries even when the app is logging (TCC/buffering/throttle —
+# session 4 saw this repeatedly). Re-query the unified log via
+# `log show` against the run window after the test ends. If
+# `log stream` worked, these files are duplicates; if it didn't, these
+# are our only diagnostic.
+MAC_RUNTIME_SHOW_LOG="$ARTIFACTS_DIR/matron-mac-show.log"
+IOS_RUNTIME_SHOW_LOG="$ARTIFACTS_DIR/matron-ios-show.log"
+# matrix-rust-sdk's `initPlatform`-configured file output. Default
+# directory matches `MatronSDKTracing.defaultLogsDirectory` —
+# `<cachesDirectory>/matron-sdk-trace`. Mac unsandboxed Debug build
+# resolves to ~/Library/Caches; iOS sim resolves inside the app's
+# data container.
+MAC_SDK_TRACE_DIR="$HOME/Library/Caches/matron-sdk-trace"
+MAC_SDK_TRACE_ARTIFACT="$ARTIFACTS_DIR/matron-mac-sdk.log"
+IOS_SDK_TRACE_ARTIFACT="$ARTIFACTS_DIR/matron-ios-sdk.log"
 MAC_XCRESULT="$ARTIFACTS_DIR/mac.xcresult"
 IOS_XCRESULT="$ARTIFACTS_DIR/ios.xcresult"
 
 log() { echo "[scenario] $*" | tee -a "$ARTIFACTS_DIR/harness.log"; }
+
+# Capture scenario start time as ISO-ish format `log show` accepts
+# ("YYYY-MM-DD HH:MM:SS"). Used by the post-run `log show` fallback
+# to scope the unified-log query to just this run.
+SCENARIO_START_TS="$(date '+%Y-%m-%d %H:%M:%S')"
 
 # --- Wipe stale signals + app state ---
 log "Wiping app state (Mac + iOS sim) and stale ready-file…"
@@ -55,6 +76,11 @@ rm -rf "$HOME/Library/Application Support/chat.matron.mac"
 rm -f "$HOME/Library/Preferences/chat.matron.mac.plist"
 defaults delete chat.matron.mac >/dev/null 2>&1 || true
 killall cfprefsd 2>/dev/null || true
+# Wipe the matrix-rust-sdk trace directory so each run gets a clean
+# log file for post-mortem (`MatronSDKTracing.defaultLogsDirectory`).
+# iOS-side trace dir is wiped implicitly by the `simctl uninstall`
+# below — that drops the entire app data container.
+rm -rf "$MAC_SDK_TRACE_DIR" 2>/dev/null || true
 xcrun simctl boot "$SIM_UDID" >/dev/null 2>&1 || true
 if ! xcrun simctl list devices | grep -q "$SIM_UDID"; then
     log "✗ Simulator $SIM_UDID not found on this machine. Set MATRON_SIM_UDID env var to override."
@@ -182,6 +208,49 @@ set -e
 
 log "  Mac rc=$MAC_RC, iOS rc=$IOS_RC"
 
+# --- Belt-and-braces: replay the unified log via `log show` ---
+# The live `log stream` capture above intermittently produces empty
+# files (TCC throttle / buffering — session 4 saw this repeatedly,
+# blocking diagnosis). `log show --start <ts>` reads the persisted
+# unified-log buffer so we always have a record even when the stream
+# missed events. Captures debug+info levels so DEBUG-level os.Logger
+# entries (notice() does not require --debug, but trace()/debug()
+# would be silently dropped at the default level) survive.
+log "Collecting unified-log fallback via log show…"
+/usr/bin/log show --predicate 'subsystem == "chat.matron"' \
+    --start "$SCENARIO_START_TS" \
+    --info --debug --style compact \
+    > "$MAC_RUNTIME_SHOW_LOG" 2>&1 || true
+xcrun simctl spawn "$SIM_UDID" log show --predicate 'subsystem == "chat.matron"' \
+    --start "$SCENARIO_START_TS" \
+    --info --debug --style compact \
+    > "$IOS_RUNTIME_SHOW_LOG" 2>&1 || true
+
+# --- Pull matrix-rust-sdk trace files into artifacts ---
+# Mac (Debug build, unsandboxed): trace files land in
+# `~/Library/Caches/matron-sdk-trace/matron-sdk*.log`. Concatenate the
+# rotated set into one artifact for easy reading.
+if compgen -G "$MAC_SDK_TRACE_DIR/matron-sdk*.log" > /dev/null; then
+    cat "$MAC_SDK_TRACE_DIR"/matron-sdk*.log > "$MAC_SDK_TRACE_ARTIFACT" 2>/dev/null || true
+    log "  Mac SDK trace: $MAC_SDK_TRACE_ARTIFACT ($(wc -l < "$MAC_SDK_TRACE_ARTIFACT") lines)"
+else
+    log "  Mac SDK trace: no files found at $MAC_SDK_TRACE_DIR"
+fi
+
+# iOS sim: trace files live inside the app data container.
+# `xcrun simctl get_app_container` resolves the path; the dir is
+# wiped on each `simctl uninstall` so we don't need to clean it.
+IOS_DATA_CONTAINER="$(xcrun simctl get_app_container "$SIM_UDID" chat.matron.app data 2>/dev/null || true)"
+if [ -n "$IOS_DATA_CONTAINER" ]; then
+    IOS_SDK_TRACE_DIR="$IOS_DATA_CONTAINER/Library/Caches/matron-sdk-trace"
+    if compgen -G "$IOS_SDK_TRACE_DIR/matron-sdk*.log" > /dev/null; then
+        cat "$IOS_SDK_TRACE_DIR"/matron-sdk*.log > "$IOS_SDK_TRACE_ARTIFACT" 2>/dev/null || true
+        log "  iOS SDK trace: $IOS_SDK_TRACE_ARTIFACT ($(wc -l < "$IOS_SDK_TRACE_ARTIFACT") lines)"
+    else
+        log "  iOS SDK trace: no files found at $IOS_SDK_TRACE_DIR"
+    fi
+fi
+
 # --- Trace assertions ---
 PASS=1
 if [ $MAC_RC -ne 0 ]; then
@@ -192,11 +261,11 @@ if [ $IOS_RC -ne 0 ]; then
     log "✗ iOS xcodebuild test failed"
     PASS=0
 fi
-if ! grep -q "$TRACE_MARKER" "$MAC_RUNTIME_LOG"; then
+if ! grep -q "$TRACE_MARKER" "$MAC_RUNTIME_LOG" "$MAC_RUNTIME_SHOW_LOG" 2>/dev/null; then
     log "✗ Mac os.Logger never logged: $TRACE_MARKER"
     PASS=0
 fi
-if ! grep -q "$TRACE_MARKER" "$IOS_RUNTIME_LOG"; then
+if ! grep -q "$TRACE_MARKER" "$IOS_RUNTIME_LOG" "$IOS_RUNTIME_SHOW_LOG" 2>/dev/null; then
     log "✗ iOS os.Logger never logged: $TRACE_MARKER"
     PASS=0
 fi
@@ -209,16 +278,28 @@ fi
 log "✗ Scenario FAILED — collecting diagnostics"
 log "  Mac test log: $MAC_TEST_LOG"
 log "  iOS test log: $IOS_TEST_LOG"
-log "  Mac runtime: $MAC_RUNTIME_LOG"
-log "  iOS runtime: $IOS_RUNTIME_LOG"
+log "  Mac runtime stream: $MAC_RUNTIME_LOG"
+log "  iOS runtime stream: $IOS_RUNTIME_LOG"
+log "  Mac runtime show:   $MAC_RUNTIME_SHOW_LOG"
+log "  iOS runtime show:   $IOS_RUNTIME_SHOW_LOG"
+log "  Mac SDK trace:      $MAC_SDK_TRACE_ARTIFACT"
+log "  iOS SDK trace:      $IOS_SDK_TRACE_ARTIFACT"
 log "  Mac xcresult: $MAC_XCRESULT"
 log "  iOS xcresult: $IOS_XCRESULT"
 echo "--- last 60 lines of Mac test log ---"
 tail -60 "$MAC_TEST_LOG" || true
 echo "--- last 60 lines of iOS test log ---"
 tail -60 "$IOS_TEST_LOG" || true
-echo "--- last 30 lines of Mac runtime log ---"
+echo "--- last 30 lines of Mac runtime stream ---"
 tail -30 "$MAC_RUNTIME_LOG" 2>/dev/null || true
-echo "--- last 30 lines of iOS runtime log ---"
+echo "--- last 30 lines of iOS runtime stream ---"
 tail -30 "$IOS_RUNTIME_LOG" 2>/dev/null || true
+echo "--- last 60 lines of Mac runtime show (log show fallback) ---"
+tail -60 "$MAC_RUNTIME_SHOW_LOG" 2>/dev/null || true
+echo "--- last 60 lines of iOS runtime show (log show fallback) ---"
+tail -60 "$IOS_RUNTIME_SHOW_LOG" 2>/dev/null || true
+echo "--- last 60 lines of Mac SDK trace ---"
+tail -60 "$MAC_SDK_TRACE_ARTIFACT" 2>/dev/null || true
+echo "--- last 60 lines of iOS SDK trace ---"
+tail -60 "$IOS_SDK_TRACE_ARTIFACT" 2>/dev/null || true
 exit 1

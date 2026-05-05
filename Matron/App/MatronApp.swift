@@ -155,6 +155,15 @@ struct MatronApp: App {
     }
 
     private func bootstrap() async {
+        // Wire matrix-rust-sdk tracing FIRST — initPlatform must run
+        // exactly once per process AND before the first ClientBuilder()
+        // is instantiated. Without this the SDK is silent (no /sync, no
+        // /keys/query, no enableRecovery, no verification internals
+        // logged), which is what stranded the matron-vs-matron-ui
+        // scenario for a full session of debugging — see Phase 3
+        // session 4 in `docs/HANDOVER.md`.
+        MatronSDKTracing.setup()
+
         // Phase 3 / Wave 3 / M1: setup-time Keychain probe (parity with
         // Mac Task 13). Skipped on the iOS Simulator because
         // `$(AppIdentifierPrefix)` doesn't resolve without a signing team

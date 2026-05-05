@@ -104,18 +104,27 @@ final class MatronVsMatronIOSUITests: XCTestCase {
     /// (Was `/tmp/matron-mac-ready` until we discovered the Mac UI test
     /// runner can't write to /tmp under its sandbox/TCC profile —
     /// /Users/Shared is the standard cross-app writable path.)
-    /// Rejects the file if its mtime predates this test run — guards
-    /// against a stale signal from a prior failed run when the iOS test
-    /// is invoked standalone (the harness wrapper wipes the file but
-    /// standalone-iteration runs from Xcode UI may not).
+    ///
+    /// Stale-file gate: tests/integration/scenarios/matron-vs-matron-ui.sh
+    /// `rm -f`s the ready file at scenario start, but standalone-iteration
+    /// runs from Xcode UI don't, so we still want SOME freshness check.
+    /// `mtime >= runStartedAt` is too strict — when Mac's bootstrap is
+    /// fast (post-fix: enableRecovery returns in <100ms) Mac writes the
+    /// marker BEFORE iOS's `setUp()` fires its `runStartedAt = Date()`,
+    /// so iOS sees a "stale" file and skips even though it's fresh.
+    /// Use a 5-minute window instead: rejects truly-old leftovers (a
+    /// ready-file from yesterday) while accepting anything written
+    /// during this scenario, regardless of test-launch ordering.
     private func waitForReadyFile(timeout: TimeInterval) -> Bool {
         let path = "/Users/Shared/matron-mac-ready"
         let deadline = Date().addingTimeInterval(timeout)
+        let stalenessWindow: TimeInterval = 5 * 60
+        let acceptIfNewerThan = runStartedAt.addingTimeInterval(-stalenessWindow)
         while Date() < deadline {
             if FileManager.default.fileExists(atPath: path),
                let attrs = try? FileManager.default.attributesOfItem(atPath: path),
                let mtime = attrs[.modificationDate] as? Date,
-               mtime >= runStartedAt {
+               mtime >= acceptIfNewerThan {
                 return true
             }
             Thread.sleep(forTimeInterval: 1)

@@ -160,9 +160,17 @@ final class MatronVsMatronMacUITests: XCTestCase {
         print("MATRON_MAC_TRUST_ANCHOR_READY")
         fflush(stdout)
 
-        // --- Wait up to 120s for incoming-verify banner from iOS peer ---
+        // --- Wait up to 240s for incoming-verify banner from iOS peer ---
+        // 240s, not 120s: parallel test launch is unsynchronised across
+        // Mac and iOS xcodebuild invocations. Mac builds faster + boots
+        // faster, so it can finish recovery-key bootstrap and start
+        // waiting for the banner BEFORE iOS sim has even begun launching
+        // the iOS app. Live evidence: in run 20260504-223738 Mac wrote
+        // MATRON_MAC_TRUST_ANCHOR_READY at 22:38:52 and iOS sent the
+        // verification.request at 22:42:15 — a 3m23s gap. 120s wasn't
+        // enough; 240s comfortably covers iOS-sim cold-boot tail.
         let acceptBtn = app.buttons["verifybanner.accept"]
-        XCTAssertTrue(acceptBtn.waitForExistence(timeout: 120),
+        XCTAssertTrue(acceptBtn.waitForExistence(timeout: 240),
                       "Incoming verify banner never appeared from iOS peer")
         acceptBtn.click()
 
