@@ -555,20 +555,28 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
 
     /// Routes the SDK delegate's `didAcceptVerificationRequest` callback.
     ///
-    /// Both roles call `startSasVerification()` — Element X iOS does the
-    /// same (`SessionVerificationScreenStateMachine.swift:89` route is
-    /// fired by both requester and responder UIs after the request is
-    /// accepted). The Matrix spec puts the burden of `m.key.verification.start`
-    /// on the initiator (requester); matrix-rust-sdk's
-    /// `startSasVerification()` is the API to issue it.
+    /// Per the Matrix spec, ONLY the requester (initiator) sends
+    /// `m.key.verification.start`. The responder issues `.ready` via
+    /// `acceptVerificationRequest()` and then waits for the
+    /// requester's `.start` to arrive over to-device — matrix-rust-sdk
+    /// auto-progresses the responder's state machine on receipt
+    /// (`didStartSasVerification` then `didReceiveVerificationData`
+    /// fire from inside the sync delivery path). Calling
+    /// `startSasVerification()` on the responder side issues a SECOND
+    /// `.start` event; the requester's SDK sees two and cancels with
+    /// "duplicate start".
     ///
-    /// Wave 7 bug #6 originally added a `role == .responder` guard here
-    /// citing "double-start trips MAC", but live debugging against the
-    /// integration harness showed the requester MUST call this for SAS
-    /// to advance past phase=Ready against any peer. Reverted again
-    /// (second attempt, this time alongside in-process partner
-    /// bootstrap-and-wait so any state-preservation issue is also
-    /// addressed).
+    /// Wave 7 bug #6 originally landed exactly this guard. A
+    /// post-Wave-7 commit reverted it because verify-sdk-against-partner
+    /// (matron-as-requester vs matrix-js-sdk) appeared to deadlock at
+    /// `phase=Ready` without it. Live evidence in run
+    /// `tests/integration/artifacts/20260504-224505/matron-mac-show.log`
+    /// shows the unguarded shape causes `didCancel` against a
+    /// matrix-rust-sdk responder (matron-vs-matron-ui). Re-adding the
+    /// guard. If verify-sdk regresses afterward, the matrix-js-sdk
+    /// peer has a different code path that needs targeted handling
+    /// (peer-SDK detection or a manual `.start` resend), not blanket
+    /// double-start.
     func routeAcceptedVerificationRequest() async {
         Self.logger.notice("routeAcceptedVerificationRequest: enter")
         let role = await store.activeRole()
@@ -576,6 +584,10 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
         Self.logger.notice("routeAcceptedVerificationRequest: role=\(String(describing: role), privacy: .public) activeFlowID=\(activeID ?? "nil", privacy: .public)")
         guard let activeID, let controller = await store.controller(for: activeID) else {
             Self.logger.error("routeAcceptedVerificationRequest: NO CONTROLLER for active flow")
+            return
+        }
+        if role == .responder {
+            Self.logger.notice("routeAcceptedVerificationRequest: role=responder — skipping startSasVerification (requester-only per Matrix spec)")
             return
         }
         do {

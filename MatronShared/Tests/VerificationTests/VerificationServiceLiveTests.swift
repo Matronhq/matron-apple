@@ -43,7 +43,15 @@ final class VerificationServiceLiveTests: XCTestCase {
     /// the routing entry point directly with role=.responder, no
     /// acceptIncoming involvement, so it isolates the route's behavior
     /// from the synthesised-after-accept retry path.
-    func test_routeAcceptedVerificationRequest_responder_callsStartSas() async throws {
+    /// Responder MUST NOT call startSasVerification — per the Matrix
+    /// spec the initiator (requester) sends `m.key.verification.start`,
+    /// the responder waits for the .start to arrive and the SDK
+    /// auto-progresses internally. Live evidence in
+    /// `tests/integration/artifacts/20260504-224505/matron-mac-show.log`
+    /// shows the unguarded shape causes both peers to issue .start,
+    /// which trips matrix-rust-sdk's "duplicate start" cancel path
+    /// (`SDK→didCancel` fires within milliseconds).
+    func test_routeAcceptedVerificationRequest_responder_skipsStartSas() async throws {
         let live = VerificationServiceLive()
         let controller = FakeSessionVerificationController()
         await live.register(controller: controller, for: "req-resp")
@@ -53,13 +61,15 @@ final class VerificationServiceLiveTests: XCTestCase {
         await live.routeAcceptedVerificationRequest()
 
         let started = await controller.didStartSas
-        XCTAssertTrue(started, "routeAcceptedVerificationRequest must call startSasVerification for responder role")
+        XCTAssertFalse(started, "routeAcceptedVerificationRequest must NOT call startSasVerification for responder — only initiator sends .start per Matrix spec")
     }
 
-    /// Both requester and responder must call startSasVerification — see
-    /// the docstring on routeAcceptedVerificationRequest. Wave 7's
-    /// "requester does not call" rule was reverted after live debugging
-    /// against partner.mjs proved SAS deadlocks at phase=Ready otherwise.
+    /// Requester (initiator) MUST call startSasVerification — that's
+    /// the API matrix-rust-sdk uses to issue `m.key.verification.start`,
+    /// and per the Matrix spec only the initiator may send it. The
+    /// responder's `routeAcceptedVerificationRequest` is now guarded
+    /// to skip this call (see
+    /// `test_routeAcceptedVerificationRequest_responder_skipsStartSas`).
     func test_routeAcceptedVerificationRequest_requester_callsStartSas() async throws {
         let live = VerificationServiceLive()
         let controller = FakeSessionVerificationController()
@@ -131,11 +141,19 @@ final class VerificationServiceLiveTests: XCTestCase {
         await controller.setNextStartSasError(VerificationError.notConfigured)
         await live.register(controller: controller, for: "req-throw")
         await live.setActiveFlowID("req-throw")
-        await live.setFlowRole(.responder, for: "req-throw")
 
+        // Open the stream via acceptIncoming so a continuation is
+        // registered for "req-throw" — that's what we'll observe the
+        // cleanup against. acceptIncoming sets role=.responder
+        // internally, but the responder branch now skips
+        // startSasVerification (responder-only-skip guard added with
+        // session 5's matron-vs-matron fix). Override the role to
+        // requester AFTER the stream opens so the route actually
+        // reaches the startSasVerification call site we want to test.
         let stream = live.acceptIncoming(requestID: "req-throw")
         var iterator = stream.makeAsyncIterator()
         _ = await iterator.next() // .requested
+        await live.setFlowRole(.requester, for: "req-throw")
 
         await live.routeAcceptedVerificationRequest()
 
