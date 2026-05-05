@@ -93,6 +93,15 @@ struct NewChatSheet: View {
                 var lastSnapshot: [ChatSummary] = []
                 for try await snapshot in chat.chatSummaries() {
                     lastSnapshot = snapshot
+                    // Load-bearing once `chatSummaries()` flips to a
+                    // long-lived stream (per the protocol's Phase 3
+                    // doc-comment). Today's live impl finishes after
+                    // one yield so this is a no-op; with a long-lived
+                    // stream the inner loop would otherwise hang the
+                    // sheet forever waiting on subsequent snapshots
+                    // we don't need. Empty snapshots fall through to
+                    // the outer retry below.
+                    if !snapshot.isEmpty { break }
                 }
                 if !lastSnapshot.isEmpty {
                     let unique = Set(lastSnapshot.map(\.bot))
