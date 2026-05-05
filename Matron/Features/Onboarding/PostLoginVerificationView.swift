@@ -111,9 +111,7 @@ struct PostLoginVerificationView: View {
                         keychain: KeychainStore.recoveryStore()
                     )
                     RecoveryKeyView(
-                        viewModel: RecoveryKeyViewModel(
-                            mode: .restore,
-                            generate: { "" },
+                        viewModel: .restoring(
                             restore: { try await mgr.restore(usingKey: $0) }
                         ),
                         onFinished: onCompleted

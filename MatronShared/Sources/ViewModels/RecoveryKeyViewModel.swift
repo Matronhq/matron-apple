@@ -64,6 +64,24 @@ public final class RecoveryKeyViewModel {
         self.restore = restore
     }
 
+    /// Convenience constructor for `.restore` mode where `generate` is
+    /// unreachable by design. Wires a `preconditionFailure` so a future
+    /// caller routing `.restore` through `generate()` crashes loudly with
+    /// a clear message instead of silently producing an empty key string
+    /// (PR #3 review #9). The throwing-wrapper around `preconditionFailure`
+    /// keeps the closure type aligned with the designated init.
+    public static func restoring(
+        restore: @escaping (String) async throws -> Void
+    ) -> RecoveryKeyViewModel {
+        RecoveryKeyViewModel(
+            mode: .restore,
+            generate: {
+                preconditionFailure("RecoveryKeyViewModel.generate() called in .restore mode — programmer error")
+            },
+            restore: restore
+        )
+    }
+
     /// Whether the primary "Confirm" / "Restore" action should be enabled.
     /// For `.generate` we additionally require constant-time equality
     /// between the displayed and re-entered keys (see `keysMatch`).

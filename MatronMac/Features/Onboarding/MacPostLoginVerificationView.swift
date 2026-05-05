@@ -95,9 +95,7 @@ struct MacPostLoginVerificationView: View {
                         keychain: KeychainStore.recoveryStore()
                     )
                     MacRecoveryKeyView(
-                        viewModel: RecoveryKeyViewModel(
-                            mode: .restore,
-                            generate: { "" },
+                        viewModel: .restoring(
                             restore: { try await mgr.restore(usingKey: $0) }
                         ),
                         onFinished: onCompleted

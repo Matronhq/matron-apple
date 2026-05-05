@@ -78,9 +78,7 @@ final class RecoveryKeyViewModelTests: XCTestCase {
     @MainActor
     func test_restore_callsManager() async {
         let fake = FakeRecoveryKeyManager()
-        let vm = RecoveryKeyViewModel(
-            mode: .restore,
-            generate: { "" },
+        let vm = RecoveryKeyViewModel.restoring(
             restore: { try await fake.restore(usingKey: $0) }
         )
         vm.enteredKey = "abc"
@@ -90,7 +88,7 @@ final class RecoveryKeyViewModelTests: XCTestCase {
 
     @MainActor
     func test_restore_canFinish_reflectsEntry() {
-        let vm = RecoveryKeyViewModel(mode: .restore, generate: { "" }, restore: { _ in })
+        let vm = RecoveryKeyViewModel.restoring(restore: { _ in })
         XCTAssertFalse(vm.canFinish)
         vm.enteredKey = "abc"
         XCTAssertTrue(vm.canFinish)

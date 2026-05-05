@@ -718,11 +718,7 @@ private struct SelfVerifyThisDeviceSheet: View {
                 }
             }
             Button {
-                recoveryKeyViewModel = RecoveryKeyViewModel(
-                    mode: .restore,
-                    generate: { "" },
-                    restore: recoveryKeyRestore
-                )
+                recoveryKeyViewModel = .restoring(restore: recoveryKeyRestore)
                 phase = .recoveryKey
             } label: {
                 Label("Use recovery key", systemImage: "key")
