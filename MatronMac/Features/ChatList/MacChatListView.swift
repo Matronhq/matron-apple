@@ -424,14 +424,13 @@ struct MacChatListView: View {
     }
 
     /// Builds the SAS sheet shown when a banner's "Verify" is clicked.
-    /// Hands construction to the per-present `MacIncomingRequestSasSheet`
-    /// view whose `@State`-stored SasViewModel survives parent re-renders
-    /// (Wave 4 expert-QA #8 — mirrors the iOS `IncomingRequestSasSheet`
-    /// pattern). The prior inline construction here rebuilt the VM +
-    /// reopened a fresh `acceptIncoming` stream on every parent
-    /// `@State` mutation, so partner-side SAS state transitions could
-    /// reach an orphaned VM whose continuation the visible sheet was no
-    /// longer observing.
+    /// Hands construction to the per-present `MacSasSheetWrapper` view
+    /// whose `@State`-stored SasViewModel survives parent re-renders
+    /// (Wave 4 expert-QA #8 — mirrors the iOS pattern). The prior
+    /// inline construction here rebuilt the VM + reopened a fresh
+    /// `acceptIncoming` stream on every parent `@State` mutation, so
+    /// partner-side SAS state transitions could reach an orphaned VM
+    /// whose continuation the visible sheet was no longer observing.
     @ViewBuilder
     private func sasSheetContent(
         for summary: VerificationRequestSummary,
@@ -451,52 +450,14 @@ struct MacChatListView: View {
             verificationCenter?.markCompleted(summary)
             sasSummary = nil
         }
-        MacIncomingRequestSasSheet(
+        MacSasSheetWrapper(
             service: svc,
             requestID: summary.id,
+            title: "Verify device",
+            streamFactory: { $0.acceptIncoming(requestID: summary.id) },
             onFinished: drainAndDismiss,
             onCancelled: drainAndDismiss
         )
-    }
-}
-
-/// Per-present SAS sheet body for an incoming verification request from
-/// the Mac sidebar banner. Mirrors iOS `IncomingRequestSasSheet` — see
-/// iOS `ChatView.swift`'s `VerifyBotSheet` for the Wave 5 bugbot #2
-/// rationale (the prior `init`-side `acceptIncoming` call fired on every
-/// parent body re-render and silently cancelled the active continuation
-/// via Wave 2 / M3's "Replaced by new flow" drain).
-private struct MacIncomingRequestSasSheet: View {
-    let service: VerificationService
-    let requestID: String
-    let onFinished: () -> Void
-    let onCancelled: () -> Void
-
-    @State private var viewModel: SasViewModel?
-
-    var body: some View {
-        Group {
-            if let vm = viewModel {
-                MacSasView(
-                    viewModel: vm,
-                    title: "Verify device",
-                    onFinished: onFinished,
-                    onCancelled: onCancelled
-                )
-            } else {
-                ProgressView("Starting verification…")
-            }
-        }
-        .task(id: requestID) {
-            guard viewModel == nil else { return }
-            let stream = service.acceptIncoming(requestID: requestID)
-            viewModel = SasViewModel(
-                stream: stream,
-                requestID: requestID,
-                confirm: { try await service.confirmEmojiMatch(requestID: requestID) },
-                cancel: { reason in try await service.cancel(requestID: requestID, reason: reason) }
-            )
-        }
     }
 }
 

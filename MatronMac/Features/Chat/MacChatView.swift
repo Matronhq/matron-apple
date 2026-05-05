@@ -247,15 +247,17 @@ struct MacChatView: View {
     }
 
     /// Builds the SAS sheet for verifying the bot user. Hands construction
-    /// to the per-present `MacVerifyBotSheet` whose `@State`-stored
+    /// to the per-present `MacSasSheetWrapper` whose `@State`-stored
     /// SasViewModel survives parent re-renders (B2/M5 fix; see iOS
     /// `ChatView` for full rationale).
     @ViewBuilder
     private func verifyBotSheetBody(for botMatrixID: String) -> some View {
         if let svc = verificationService {
-            MacVerifyBotSheet(
+            MacSasSheetWrapper(
                 service: svc,
-                botMatrixID: botMatrixID,
+                requestID: botMatrixID,
+                title: "Verify \(botMatrixID)",
+                streamFactory: { $0.startSAS(withUser: botMatrixID, deviceID: nil) },
                 onFinished: {
                     verifyBotContext = nil
                     Task { await evaluateBotVerification() }
@@ -276,41 +278,3 @@ struct MacChatView: View {
     }
 }
 
-/// Per-present SAS sheet body for the per-bot verification flow.
-/// Mirrors iOS `VerifyBotSheet` — see iOS `ChatView.swift` for the
-/// Wave 5 bugbot #2 rationale (the prior `init`-side `startSAS` call
-/// fired on every parent body re-render and silently cancelled the
-/// active continuation via Wave 2 / M3's "Replaced by new flow" drain).
-private struct MacVerifyBotSheet: View {
-    let service: VerificationService
-    let botMatrixID: String
-    let onFinished: () -> Void
-    let onCancelled: () -> Void
-
-    @State private var viewModel: SasViewModel?
-
-    var body: some View {
-        Group {
-            if let vm = viewModel {
-                MacSasView(
-                    viewModel: vm,
-                    title: "Verify \(botMatrixID)",
-                    onFinished: onFinished,
-                    onCancelled: onCancelled
-                )
-            } else {
-                ProgressView("Starting verification…")
-            }
-        }
-        .task(id: botMatrixID) {
-            guard viewModel == nil else { return }
-            let stream = service.startSAS(withUser: botMatrixID, deviceID: nil)
-            viewModel = SasViewModel(
-                stream: stream,
-                requestID: botMatrixID,
-                confirm: { try await service.confirmEmojiMatch(requestID: botMatrixID) },
-                cancel: { reason in try await service.cancel(requestID: botMatrixID, reason: reason) }
-            )
-        }
-    }
-}

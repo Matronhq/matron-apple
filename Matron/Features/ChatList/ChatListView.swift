@@ -397,11 +397,11 @@ struct ChatListView: View {
     }
 
     /// Builds the SAS sheet shown when a banner's "Verify" is tapped.
-    /// Hands construction to the per-present `IncomingRequestSasSheet`
-    /// view whose `@State`-stored SasViewModel survives parent re-renders
-    /// (Wave 4 expert-QA #8 — mirrors the Wave 2 fix to `ChatView`'s
-    /// per-bot SAS sheet). The prior inline construction here rebuilt
-    /// the VM + reopened a fresh `acceptIncoming` stream on every parent
+    /// Hands construction to the per-present `SasSheetWrapper` view whose
+    /// `@State`-stored SasViewModel survives parent re-renders (Wave 4
+    /// expert-QA #8 — mirrors the Wave 2 fix to `ChatView`'s per-bot
+    /// SAS sheet). The prior inline construction here rebuilt the VM +
+    /// reopened a fresh `acceptIncoming` stream on every parent
     /// `@State` mutation (`viewModel.groups` updates, `botProfileSummary`
     /// flips, etc.), so partner-side SAS state transitions could reach
     /// an orphaned VM whose continuation the visible sheet was no
@@ -429,9 +429,11 @@ struct ChatListView: View {
             verificationCenter?.markCompleted(summary)
             sasSummary = nil
         }
-        IncomingRequestSasSheet(
+        SasSheetWrapper(
             service: svc,
             requestID: summary.id,
+            title: "Verify device",
+            streamFactory: { $0.acceptIncoming(requestID: summary.id) },
             onFinished: drainAndDismiss,
             onCancelled: drainAndDismiss
         )
@@ -567,66 +569,15 @@ private struct ChatRow: View {
     }
 }
 
-/// Per-present SAS sheet body for an incoming verification request from
-/// the chat-list banner. Cache key here is the SDK-assigned `requestID`
-/// (the banner summary's id), not the user matrix ID — that's the
-/// FlowStore key `VerificationServiceLive.routeIncomingRequest`
-/// registered the incoming-request controller under.
-///
-/// **Wave 5 bugbot #2 (covers #5).** Earlier waves built the
-/// `SasViewModel` + opened the `service.acceptIncoming(...)` stream in
-/// `init` and seeded it via `_viewModel = State(initialValue: …)`.
-/// SwiftUI does keep the `@State`-stored VM stable across re-inits at
-/// the same view-identity, BUT the right-hand side of
-/// `_viewModel = State(initialValue: …)` still EVALUATES on every
-/// `init` — so `acceptIncoming(...)` fired on every parent body re-render.
-/// Each call hit `FlowStore.setContinuation` (Wave 2 / M3) which drained
-/// the prior continuation with `.cancelled("Replaced by new flow")`, so
-/// the user saw an unexpected cancellation any time the parent re-rendered.
-/// See iOS `ChatView.swift`'s `VerifyBotSheet` for the full rationale.
-private struct IncomingRequestSasSheet: View {
-    let service: VerificationService
-    let requestID: String
-    let onFinished: () -> Void
-    let onCancelled: () -> Void
-
-    @State private var viewModel: SasViewModel?
-
-    var body: some View {
-        Group {
-            if let vm = viewModel {
-                SasView(
-                    viewModel: vm,
-                    title: "Verify device",
-                    onFinished: onFinished,
-                    onCancelled: onCancelled
-                )
-            } else {
-                ProgressView("Starting verification…")
-            }
-        }
-        .task(id: requestID) {
-            guard viewModel == nil else { return }
-            let stream = service.acceptIncoming(requestID: requestID)
-            viewModel = SasViewModel(
-                stream: stream,
-                requestID: requestID,
-                confirm: { try await service.confirmEmojiMatch(requestID: requestID) },
-                cancel: { reason in try await service.cancel(requestID: requestID, reason: reason) }
-            )
-        }
-    }
-}
-
 /// Per-present SAS sheet body for the "verify this device" self-verify
 /// flow triggered by `UnverifiedDeviceBanner` (Wave 6 / live-test #3).
-/// Mirrors `SelfVerifySasDestination` (the post-login verify-gate
-/// version) — same `service.startSAS(withUser: userID, deviceID: nil)`
-/// shape, where `userID` is the SIGNED-IN USER's matrixID (NOT a bot's),
-/// which is the FlowStore cache key `VerificationServiceLive.startSAS`
-/// registers under for self-verification flows. See iOS `ChatView.swift`'s
-/// `VerifyBotSheet` for the Wave 5 bugbot #2 rationale (the `.task(id:)`
-/// shape vs. the prior `init`-side seed that fired on every re-render).
+/// Owns the chooser / recovery-key phase machine; the SAS sub-flow
+/// itself is delegated to `SasSheetWrapper`, where `requestID` is the
+/// SIGNED-IN USER's matrixID (NOT a bot's) — the FlowStore cache key
+/// `VerificationServiceLive.startSAS` registers under for self-verification
+/// flows. See `SasSheetWrapper.swift` for the Wave 5 bugbot #2 rationale
+/// behind the `.task(id:)` shape (vs. the prior `init`-side seed that
+/// fired on every re-render).
 private struct SelfVerifyThisDeviceSheet: View {
     let service: VerificationService
     let userID: String
@@ -645,7 +596,6 @@ private struct SelfVerifyThisDeviceSheet: View {
     /// online (e.g. both devices' SDK stores got wiped on re-login).
     enum Phase { case probing, chooser, sas, recoveryKey }
     @State private var phase: Phase = .probing
-    @State private var sasViewModel: SasViewModel?
     @State private var recoveryKeyViewModel: RecoveryKeyViewModel?
     /// `nil` while the probe is in flight; `true` if the SDK reports
     /// at least one other already-verified device of the same user
@@ -664,16 +614,18 @@ private struct SelfVerifyThisDeviceSheet: View {
             case .chooser:
                 chooserView
             case .sas:
-                if let vm = sasViewModel {
-                    SasView(
-                        viewModel: vm,
-                        title: "Verify this device",
-                        onFinished: onFinished,
-                        onCancelled: onCancelled
-                    )
-                } else {
-                    ProgressView("Starting verification…")
-                }
+                // SAS sub-flow delegated to `SasSheetWrapper` (PR #3
+                // review #1). The phase state machine (chooser /
+                // recovery-key / probing) stays here; only the SAS
+                // surface is the wrapped pattern.
+                SasSheetWrapper(
+                    service: service,
+                    requestID: userID,
+                    title: "Verify this device",
+                    streamFactory: { $0.startSAS(withUser: userID, deviceID: nil) },
+                    onFinished: onFinished,
+                    onCancelled: onCancelled
+                )
             case .recoveryKey:
                 if let vm = recoveryKeyViewModel {
                     // Wrap in NavigationStack here because RecoveryKeyView
@@ -714,13 +666,9 @@ private struct SelfVerifyThisDeviceSheet: View {
                 .multilineTextAlignment(.center)
             VStack(spacing: 4) {
                 Button {
-                    let stream = service.startSAS(withUser: userID, deviceID: nil)
-                    sasViewModel = SasViewModel(
-                        stream: stream,
-                        requestID: userID,
-                        confirm: { try await service.confirmEmojiMatch(requestID: userID) },
-                        cancel: { reason in try await service.cancel(requestID: userID, reason: reason) }
-                    )
+                    // The wrapper now owns SAS VM construction; just
+                    // flip the phase. `SasSheetWrapper.task(id:)` opens
+                    // the stream once on entry into `.sas`.
                     phase = .sas
                 } label: {
                     Label("Verify with another device", systemImage: "laptopcomputer")

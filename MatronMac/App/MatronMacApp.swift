@@ -427,12 +427,13 @@ struct MatronMacApp: App {
 /// failure.
 private struct KeychainProbeTimeout: Error {}
 
-/// Help → Verify This Device sheet body. Mirrors
-/// `MacSelfVerifySasDestination` / `MacVerifyBotSheet` — see iOS
-/// `ChatView.swift`'s `VerifyBotSheet` for the Wave 5 bugbot #2
-/// rationale (the prior `init`-side `startSAS` call fired on every
-/// parent body re-render and silently cancelled the active continuation
-/// via Wave 2 / M3's "Replaced by new flow" drain).
+/// Help → Verify This Device sheet body. Owns the probing /
+/// alreadyVerified / chooser / recoveryKey phase machine; the SAS
+/// sub-flow itself is delegated to `MacSasSheetWrapper`. See
+/// `SasSheetWrapper.swift` for the Wave 5 bugbot #2 rationale (the
+/// prior `init`-side `startSAS` call fired on every parent body
+/// re-render and silently cancelled the active continuation via Wave 2 /
+/// M3's "Replaced by new flow" drain).
 private struct HelpMenuVerifyDeviceSheet: View {
     let service: VerificationService
     let userID: String
@@ -455,7 +456,6 @@ private struct HelpMenuVerifyDeviceSheet: View {
         case probing, alreadyVerified, chooser, sas, recoveryKey
     }
     @State private var phase: Phase = .probing
-    @State private var sasViewModel: SasViewModel?
     @State private var recoveryKeyViewModel: RecoveryKeyViewModel?
     /// `nil` while the probe is in flight; `true` if the SDK reports
     /// at least one other already-verified device of the same user
@@ -477,16 +477,18 @@ private struct HelpMenuVerifyDeviceSheet: View {
             case .chooser:
                 chooserView
             case .sas:
-                if let vm = sasViewModel {
-                    MacSasView(
-                        viewModel: vm,
-                        title: "Verify this device",
-                        onFinished: onFinished,
-                        onCancelled: onFinished
-                    )
-                } else {
-                    ProgressView("Starting verification…")
-                }
+                // SAS sub-flow delegated to `MacSasSheetWrapper` (PR #3
+                // review #1). The phase state machine (chooser /
+                // recovery-key / probing / alreadyVerified) stays here;
+                // only the SAS surface is the wrapped pattern.
+                MacSasSheetWrapper(
+                    service: service,
+                    requestID: userID,
+                    title: "Verify this device",
+                    streamFactory: { $0.startSAS(withUser: userID, deviceID: nil) },
+                    onFinished: onFinished,
+                    onCancelled: onFinished
+                )
             case .recoveryKey:
                 if let vm = recoveryKeyViewModel {
                     MacRecoveryKeyView(
@@ -536,19 +538,15 @@ private struct HelpMenuVerifyDeviceSheet: View {
     private var chooserView: some View {
         // View body extracted to `MacVerifyDeviceChooser` so the disabled-
         // when-no-other-devices branch can be snapshot-tested in isolation.
-        // This sheet still owns the post-pick state mutations
-        // (constructing SasViewModel / RecoveryKeyViewModel and flipping
-        // `phase`); the chooser just dispatches the user's choice.
+        // SAS construction is delegated to `MacSasSheetWrapper`'s
+        // `.task(id:)`; this sheet still owns the recovery-key VM and
+        // flips `phase`; the chooser just dispatches the user's choice.
         MacVerifyDeviceChooser(
             hasOtherDevices: hasOtherDevices ?? false,
             onSAS: {
-                let stream = service.startSAS(withUser: userID, deviceID: nil)
-                sasViewModel = SasViewModel(
-                    stream: stream,
-                    requestID: userID,
-                    confirm: { try await service.confirmEmojiMatch(requestID: userID) },
-                    cancel: { reason in try await service.cancel(requestID: userID, reason: reason) }
-                )
+                // The wrapper now owns SAS VM construction; just flip
+                // the phase. `MacSasSheetWrapper.task(id:)` opens the
+                // stream once on entry into `.sas`.
                 phase = .sas
             },
             onRecoveryKey: {

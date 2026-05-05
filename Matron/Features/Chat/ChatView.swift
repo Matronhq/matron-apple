@@ -257,7 +257,7 @@ struct ChatView: View {
     }
 
     /// Builds the SAS sheet for verifying the bot user. The SasViewModel
-    /// + stream are owned by the inner `VerifyBotSheet` view's `@State`
+    /// + stream are owned by the inner `SasSheetWrapper` view's `@State`
     /// so they're constructed exactly once per present (B2/M5 expert-QA
     /// fix). Mirrors the FlowStore cache-key choice in
     /// `VerificationServiceLive.startSAS` for per-user verification
@@ -267,9 +267,11 @@ struct ChatView: View {
     @ViewBuilder
     private func verifyBotSheetBody(for botMatrixID: String) -> some View {
         if let svc = verificationService {
-            VerifyBotSheet(
+            SasSheetWrapper(
                 service: svc,
-                botMatrixID: botMatrixID,
+                requestID: botMatrixID,
+                title: "Verify \(botMatrixID)",
+                streamFactory: { $0.startSAS(withUser: botMatrixID, deviceID: nil) },
                 onFinished: {
                     verifyBotContext = nil
                     Task { await evaluateBotVerification() }
@@ -295,58 +297,3 @@ struct ChatView: View {
     }
 }
 
-/// Per-present SAS sheet body for the per-bot verification flow.
-///
-/// **Wave 5 bugbot #2.** Earlier waves built the `SasViewModel` + opened
-/// the `service.startSAS(...)` stream in `init` and seeded it via
-/// `_viewModel = State(initialValue: …)`. SwiftUI does keep the
-/// `@State`-stored VM stable across re-inits at the same view-identity,
-/// BUT the right-hand side of `_viewModel = State(initialValue: …)` still
-/// EVALUATES on every `init` — so `service.startSAS(...)` fired on every
-/// parent body re-render. Each call hits `FlowStore.setContinuation`
-/// (Wave 2 / M3), which drains the prior continuation with
-/// `.cancelled("Replaced by new flow")`. The `@State`-preserved VM is
-/// observing a now-terminated stream and the user sees an unexpected
-/// cancellation any time the parent re-renders. That effectively unwound
-/// Wave 2's hoisting fix when combined with M3.
-///
-/// New shape: VM is `@State private var viewModel: SasViewModel?` (nil
-/// until the side-effect runs), and `service.startSAS(...)` is invoked
-/// from `.task(id: botMatrixID)` — which SwiftUI guarantees to fire
-/// exactly once per identity value, NOT on every body re-eval. The
-/// `guard viewModel == nil` is belt-and-suspenders against SwiftUI
-/// invoking the id-keyed task once on cold-init AND once on first
-/// body settle (rare in practice; cheap to defend against).
-private struct VerifyBotSheet: View {
-    let service: VerificationService
-    let botMatrixID: String
-    let onFinished: () -> Void
-    let onCancelled: () -> Void
-
-    @State private var viewModel: SasViewModel?
-
-    var body: some View {
-        Group {
-            if let vm = viewModel {
-                SasView(
-                    viewModel: vm,
-                    title: "Verify \(botMatrixID)",
-                    onFinished: onFinished,
-                    onCancelled: onCancelled
-                )
-            } else {
-                ProgressView("Starting verification…")
-            }
-        }
-        .task(id: botMatrixID) {
-            guard viewModel == nil else { return }
-            let stream = service.startSAS(withUser: botMatrixID, deviceID: nil)
-            viewModel = SasViewModel(
-                stream: stream,
-                requestID: botMatrixID,
-                confirm: { try await service.confirmEmojiMatch(requestID: botMatrixID) },
-                cancel: { reason in try await service.cancel(requestID: botMatrixID, reason: reason) }
-            )
-        }
-    }
-}

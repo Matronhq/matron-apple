@@ -119,18 +119,20 @@ struct PostLoginVerificationView: View {
                         onFinished: onCompleted
                     )
                 case .sasWithOtherDevice:
-                    // B2/M5 expert-QA fix: hand construction to a
-                    // dedicated `SelfVerifySasDestination` that owns
-                    // the `SasViewModel` in `@State`. Inline construction
+                    // B2/M5 expert-QA fix: hand construction to the
+                    // generic `SasSheetWrapper` that owns the
+                    // `SasViewModel` in `@State`. Inline construction
                     // here re-built the VM + reopened a fresh
                     // `startSAS` stream on every parent re-render
                     // (`@State path: [Path]` on this view changes per
                     // navigation), so partner-side SAS state transitions
                     // could reach an orphaned VM whose continuation the
                     // visible destination was no longer observing.
-                    SelfVerifySasDestination(
+                    SasSheetWrapper(
                         service: dependencies.verificationService(for: session),
-                        userID: session.userID,
+                        requestID: session.userID,
+                        title: "Verify this device",
+                        streamFactory: { $0.startSAS(withUser: session.userID, deviceID: nil) },
                         onFinished: onCompleted,
                         onCancelled: { path.removeLast() }
                     )
@@ -140,57 +142,3 @@ struct PostLoginVerificationView: View {
     }
 }
 
-/// Self-verify SAS navigation destination. Cache key is `session.userID` —
-/// that's the FlowStore key `VerificationServiceLive.startSAS` registers
-/// under for self-verification flows, so confirm/cancel hit the same
-/// entry.
-///
-/// **Wave 5 bugbot #2.** Earlier waves built the `SasViewModel` + opened
-/// the `service.startSAS(...)` stream in `init` and seeded it via
-/// `_viewModel = State(initialValue: …)`. SwiftUI does keep the
-/// `@State`-stored VM stable across re-inits at the same view-identity,
-/// BUT the right-hand side of `_viewModel = State(initialValue: …)` still
-/// EVALUATES on every `init` — so `service.startSAS(...)` fired on every
-/// parent body re-render. Each call hit `FlowStore.setContinuation`
-/// (Wave 2 / M3) which drained the prior continuation with
-/// `.cancelled("Replaced by new flow")`, so the user saw an unexpected
-/// cancellation any time the parent re-rendered.
-///
-/// New shape: VM is `@State private var viewModel: SasViewModel?` (nil
-/// until the side-effect runs), and `service.startSAS(...)` is invoked
-/// from `.task(id: userID)` — which SwiftUI guarantees to fire exactly
-/// once per identity value, NOT on every body re-eval. See iOS
-/// `ChatView.swift`'s `VerifyBotSheet` for the full rationale.
-private struct SelfVerifySasDestination: View {
-    let service: VerificationService
-    let userID: String
-    let onFinished: () -> Void
-    let onCancelled: () -> Void
-
-    @State private var viewModel: SasViewModel?
-
-    var body: some View {
-        Group {
-            if let vm = viewModel {
-                SasView(
-                    viewModel: vm,
-                    title: "Verify this device",
-                    onFinished: onFinished,
-                    onCancelled: onCancelled
-                )
-            } else {
-                ProgressView("Starting verification…")
-            }
-        }
-        .task(id: userID) {
-            guard viewModel == nil else { return }
-            let stream = service.startSAS(withUser: userID, deviceID: nil)
-            viewModel = SasViewModel(
-                stream: stream,
-                requestID: userID,
-                confirm: { try await service.confirmEmojiMatch(requestID: userID) },
-                cancel: { reason in try await service.cancel(requestID: userID, reason: reason) }
-            )
-        }
-    }
-}

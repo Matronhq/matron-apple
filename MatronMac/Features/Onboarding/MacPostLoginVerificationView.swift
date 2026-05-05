@@ -104,16 +104,18 @@ struct MacPostLoginVerificationView: View {
                     )
                 case .sasWithOtherDevice:
                     // B2/M5 expert-QA fix mirroring iOS — hand
-                    // construction to `MacSelfVerifySasDestination` so
-                    // the SasViewModel + stream survive parent
+                    // construction to the generic `MacSasSheetWrapper`
+                    // so the SasViewModel + stream survive parent
                     // re-renders. See iOS `PostLoginVerificationView`
                     // for full rationale. `onCancelled` pops back to
                     // the verify-gate buttons so a cancelled SAS
                     // doesn't strand the user inside the destination
                     // with no way out.
-                    MacSelfVerifySasDestination(
+                    MacSasSheetWrapper(
                         service: dependencies.verificationService(for: session),
-                        userID: session.userID,
+                        requestID: session.userID,
+                        title: "Verify this device",
+                        streamFactory: { $0.startSAS(withUser: session.userID, deviceID: nil) },
                         onFinished: onCompleted,
                         onCancelled: { path.removeLast() }
                     )
@@ -123,43 +125,4 @@ struct MacPostLoginVerificationView: View {
     }
 }
 
-/// Mac self-verify SAS navigation destination. Mirrors iOS
-/// `SelfVerifySasDestination` — see iOS `ChatView.swift`'s
-/// `VerifyBotSheet` for the Wave 5 bugbot #2 rationale (the prior
-/// `init`-side `startSAS` call fired on every parent body re-render
-/// and silently cancelled the active continuation via Wave 2 / M3's
-/// "Replaced by new flow" drain).
-private struct MacSelfVerifySasDestination: View {
-    let service: VerificationService
-    let userID: String
-    let onFinished: () -> Void
-    let onCancelled: () -> Void
-
-    @State private var viewModel: SasViewModel?
-
-    var body: some View {
-        Group {
-            if let vm = viewModel {
-                MacSasView(
-                    viewModel: vm,
-                    title: "Verify this device",
-                    onFinished: onFinished,
-                    onCancelled: onCancelled
-                )
-            } else {
-                ProgressView("Starting verification…")
-            }
-        }
-        .task(id: userID) {
-            guard viewModel == nil else { return }
-            let stream = service.startSAS(withUser: userID, deviceID: nil)
-            viewModel = SasViewModel(
-                stream: stream,
-                requestID: userID,
-                confirm: { try await service.confirmEmojiMatch(requestID: userID) },
-                cancel: { reason in try await service.cancel(requestID: userID, reason: reason) }
-            )
-        }
-    }
-}
 #endif
