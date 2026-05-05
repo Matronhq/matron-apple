@@ -273,6 +273,15 @@ struct ChatView: View {
                 onFinished: {
                     verifyBotContext = nil
                     Task { await evaluateBotVerification() }
+                },
+                onCancelled: {
+                    // SAS .cancelled state's "Close" button hits this.
+                    // Same dismissal as onFinished — clear the context;
+                    // re-evaluating bot verification is harmless on cancel
+                    // (state hasn't changed) and keeps the call sites
+                    // symmetric.
+                    verifyBotContext = nil
+                    Task { await evaluateBotVerification() }
                 }
             )
         } else {
@@ -312,6 +321,7 @@ private struct VerifyBotSheet: View {
     let service: VerificationService
     let botMatrixID: String
     let onFinished: () -> Void
+    let onCancelled: () -> Void
 
     @State private var viewModel: SasViewModel?
 
@@ -321,7 +331,8 @@ private struct VerifyBotSheet: View {
                 SasView(
                     viewModel: vm,
                     title: "Verify \(botMatrixID)",
-                    onFinished: onFinished
+                    onFinished: onFinished,
+                    onCancelled: onCancelled
                 )
             } else {
                 ProgressView("Starting verification…")

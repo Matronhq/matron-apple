@@ -259,6 +259,13 @@ struct MacChatView: View {
                 onFinished: {
                     verifyBotContext = nil
                     Task { await evaluateBotVerification() }
+                },
+                onCancelled: {
+                    // SAS .cancelled state's "Close" button hits this.
+                    // Same dismissal as onFinished; the re-evaluate is a
+                    // no-op on cancel but keeps both call sites symmetric.
+                    verifyBotContext = nil
+                    Task { await evaluateBotVerification() }
                 }
             )
         } else {
@@ -278,6 +285,7 @@ private struct MacVerifyBotSheet: View {
     let service: VerificationService
     let botMatrixID: String
     let onFinished: () -> Void
+    let onCancelled: () -> Void
 
     @State private var viewModel: SasViewModel?
 
@@ -287,7 +295,8 @@ private struct MacVerifyBotSheet: View {
                 MacSasView(
                     viewModel: vm,
                     title: "Verify \(botMatrixID)",
-                    onFinished: onFinished
+                    onFinished: onFinished,
+                    onCancelled: onCancelled
                 )
             } else {
                 ProgressView("Starting verification…")
