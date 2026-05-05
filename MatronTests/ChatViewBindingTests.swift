@@ -1,6 +1,7 @@
 import XCTest
 import MatronChat
 import MatronModels
+import MatronVerification
 import MatronViewModels
 @testable import Matron
 
@@ -32,6 +33,87 @@ private final class FakeTimelineForChat: TimelineService, @unchecked Sendable {
 /// need the protocol satisfied to construct a `ChatViewModel`.
 private final class FakeMediaForChat: MediaService, @unchecked Sendable {
     func image(for mxc: URL) async -> Data? { nil }
+}
+
+/// Local fake mirroring the `actor`-based `FakeVerificationService` over in
+/// `MatronShared/Tests/VerificationTests/`. The host-app test bundle can't
+/// reach into another test target's `internal` fakes, so we duplicate the
+/// minimal surface needed to drive the per-bot banner test.
+private final class CountingVerificationServiceForChat: VerificationService, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _startSASCalls: Int = 0
+    private var _userVerificationMap: [String: UserVerificationResult] = [:]
+
+    var startSASCallCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _startSASCalls
+    }
+
+    func setUserVerificationResult(_ result: UserVerificationResult, for matrixID: String) {
+        lock.lock(); defer { lock.unlock() }
+        _userVerificationMap[matrixID] = result
+    }
+
+    func isThisDeviceVerified() async throws -> Bool { true }
+    func isUserVerified(matrixID: String) async throws -> UserVerificationResult {
+        lock.lock(); defer { lock.unlock() }
+        return _userVerificationMap[matrixID, default: .unknown]
+    }
+    func hasOtherVerifiedDevices() async throws -> Bool { false }
+    func incomingRequests() -> AsyncStream<VerificationRequestSummary> {
+        AsyncStream { $0.finish() }
+    }
+    func cancelledRequests() -> AsyncStream<String> {
+        AsyncStream { $0.finish() }
+    }
+    func startSAS(withUser userID: String, deviceID: String?) -> AsyncStream<SasFlowState> {
+        lock.lock()
+        _startSASCalls += 1
+        lock.unlock()
+        return AsyncStream { $0.finish() }
+    }
+    func acceptIncoming(requestID: String) -> AsyncStream<SasFlowState> {
+        AsyncStream { $0.finish() }
+    }
+    func confirmEmojiMatch(requestID: String) async throws {}
+    func cancel(requestID: String, reason: String) async throws {}
+}
+
+private actor FakeVerificationServiceForChat: VerificationService {
+    private var userVerificationMap: [String: UserVerificationResult] = [:]
+
+    /// Convenience seam preserved from the prior Bool shape — `true` →
+    /// `.verified`, `false` → `.unverified`. Tests that need to drive the
+    /// `.unknown` arm (cold-start path) call `setUserVerificationResult(_:for:)`.
+    func setUserVerified(_ verified: Bool, for matrixID: String) {
+        userVerificationMap[matrixID] = verified ? .verified : .unverified
+    }
+
+    /// M2 tri-state seam — exercises the `.unknown` arm that the Bool
+    /// seam can't reach. Default for un-seeded users is `.unknown`.
+    func setUserVerificationResult(_ result: UserVerificationResult, for matrixID: String) {
+        userVerificationMap[matrixID] = result
+    }
+
+    func isThisDeviceVerified() async throws -> Bool { true }
+    func isUserVerified(matrixID: String) async throws -> UserVerificationResult {
+        userVerificationMap[matrixID, default: .unknown]
+    }
+    func hasOtherVerifiedDevices() async throws -> Bool { false }
+    nonisolated func incomingRequests() -> AsyncStream<VerificationRequestSummary> {
+        AsyncStream { $0.finish() }
+    }
+    nonisolated func cancelledRequests() -> AsyncStream<String> {
+        AsyncStream { $0.finish() }
+    }
+    nonisolated func startSAS(withUser userID: String, deviceID: String?) -> AsyncStream<SasFlowState> {
+        AsyncStream { $0.finish() }
+    }
+    nonisolated func acceptIncoming(requestID: String) -> AsyncStream<SasFlowState> {
+        AsyncStream { $0.finish() }
+    }
+    func confirmEmojiMatch(requestID: String) async throws {}
+    func cancel(requestID: String, reason: String) async throws {}
 }
 
 final class ChatViewBindingTests: XCTestCase {
@@ -145,5 +227,123 @@ final class ChatViewBindingTests: XCTestCase {
         XCTAssertEqual(chatVM.items.count, 1, "tail mutation kept count constant")
         XCTAssertEqual(chatVM.items.last?.id, "$event:s",
                        "last item id must reflect the latest snapshot — the value the scroll modifier keys on")
+    }
+
+    /// Task 10: per-bot inline banner above the timeline.
+    /// Constructing the view with `verificationService:` + `botMatrixID:`
+    /// exercises the optional-parameter wiring at compile time, and
+    /// awaiting the fake drives the same path the view uses to populate
+    /// `botVerification`. Spec §7.3 / §7.5: when the bot's identity is
+    /// `.unverified`, the banner must render. M2 tightens the seam from
+    /// Bool to tri-state — the `.unknown` arm is covered separately below.
+    @MainActor
+    func test_view_showsBanner_whenBotIsUnverified() async throws {
+        let fake = FakeTimelineForChat()
+        let chatVM = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaForChat())
+        let composerVM = ComposerViewModel(timeline: fake, commands: [])
+        let verificationSvc = FakeVerificationServiceForChat()
+        // Explicitly seed `.unverified` (NOT `.unknown` — that's the new
+        // banner-hides default). Banner only renders on `.unverified`.
+        await verificationSvc.setUserVerificationResult(.unverified, for: "@box4:s")
+        let view = ChatView(
+            viewModel: chatVM,
+            composerVM: composerVM,
+            chatTitle: "Bot Room",
+            onShowBotProfile: {},
+            verificationService: verificationSvc,
+            botMatrixID: "@box4:s"
+        )
+        let result = try await verificationSvc.isUserVerified(matrixID: "@box4:s")
+        XCTAssertEqual(result, .unverified, "Seeded .unverified must read as such for the banner to render")
+        XCTAssertEqual(view.botMatrixID, "@box4:s")
+    }
+
+    @MainActor
+    func test_view_hidesBanner_whenBotIsVerified() async throws {
+        let fake = FakeTimelineForChat()
+        let chatVM = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaForChat())
+        let composerVM = ComposerViewModel(timeline: fake, commands: [])
+        let verificationSvc = FakeVerificationServiceForChat()
+        await verificationSvc.setUserVerified(true, for: "@box4:s")
+        let _ = ChatView(
+            viewModel: chatVM,
+            composerVM: composerVM,
+            chatTitle: "Bot Room",
+            onShowBotProfile: {},
+            verificationService: verificationSvc,
+            botMatrixID: "@box4:s"
+        )
+        let result = try await verificationSvc.isUserVerified(matrixID: "@box4:s")
+        XCTAssertEqual(result, .verified, "Seeded verified state must read .verified so the banner is suppressed")
+    }
+
+    /// Wave 5 bugbot #2: the per-bot SAS sheet body must build the
+    /// `SasViewModel` + open the `startSAS` stream exactly once per
+    /// "Verify" tap, not on every parent body re-evaluation.
+    ///
+    /// Earlier waves seeded the VM via `_viewModel = State(initialValue:
+    /// SasViewModel(stream: service.startSAS(...), …))`. SwiftUI keeps
+    /// the @State value stable across re-inits at the same view-identity,
+    /// BUT the right-hand side of `_viewModel = State(initialValue: …)`
+    /// still EVALUATES on every `init` — so `service.startSAS(...)`
+    /// fired on every parent body re-render. With Wave 2 / M3's
+    /// "Replaced by new flow" drain, this silently cancelled the active
+    /// continuation any time the parent re-rendered.
+    ///
+    /// New shape: VM is `@State private var viewModel: SasViewModel?`
+    /// (nil until set), and `service.startSAS(...)` is invoked from
+    /// `.task(id: botMatrixID)` — fires once per identity value, not per
+    /// body re-eval. That structural change is the load-bearing piece;
+    /// this test pins the construction-time baseline (ChatView's `init`
+    /// MUST NOT call startSAS — the side effect only happens once the
+    /// sheet's `.task(id:)` runs after the user taps Verify).
+    @MainActor
+    func test_perBotSasSheet_callsStartSASExactlyOnce_perPresent() async throws {
+        let svc = CountingVerificationServiceForChat()
+        let timeline = FakeTimelineForChat()
+        let chatVM = ChatViewModel(roomID: "!r:s", timeline: timeline, media: FakeMediaForChat())
+        let composerVM = ComposerViewModel(timeline: timeline, commands: [])
+        // Constructing ChatView itself does NOT call startSAS — that
+        // only happens when the sheet presents (banner-tap path) and its
+        // `.task(id: botMatrixID)` runs.
+        let _ = ChatView(
+            viewModel: chatVM,
+            composerVM: composerVM,
+            chatTitle: "Bot Room",
+            onShowBotProfile: {},
+            verificationService: svc,
+            botMatrixID: "@box4:s"
+        )
+        XCTAssertEqual(svc.startSASCallCount, 0,
+                       "ChatView constructor must not call startSAS — that fires on banner-tap")
+    }
+
+    /// M2 expert-QA fix: cold-start path. When the SDK's local crypto
+    /// store doesn't yet have the bot's identity (sliding-sync hasn't
+    /// warmed up `/keys/query` yet), `isUserVerified` returns `.unknown`.
+    /// The banner MUST stay hidden in that case — the previous Bool
+    /// shape collapsed `.unknown` into `.unverified`, causing the banner
+    /// to flash on every fresh chat open. The unverified arm above pins
+    /// "explicit unverified renders"; this test pins "unknown does not
+    /// render" so a regression that re-collapsed the two would trip here.
+    @MainActor
+    func test_view_hidesBanner_whenBotVerificationIsUnknown() async throws {
+        let fake = FakeTimelineForChat()
+        let chatVM = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaForChat())
+        let composerVM = ComposerViewModel(timeline: fake, commands: [])
+        let verificationSvc = FakeVerificationServiceForChat()
+        // Don't seed — default is `.unknown`. Equivalent to the cold-start
+        // path where the local crypto store hasn't loaded the identity yet.
+        let _ = ChatView(
+            viewModel: chatVM,
+            composerVM: composerVM,
+            chatTitle: "Bot Room",
+            onShowBotProfile: {},
+            verificationService: verificationSvc,
+            botMatrixID: "@coldstart:s"
+        )
+        let result = try await verificationSvc.isUserVerified(matrixID: "@coldstart:s")
+        XCTAssertEqual(result, .unknown,
+            "Un-seeded user must read as .unknown — banner stays hidden until next sync tick")
     }
 }

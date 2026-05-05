@@ -11,16 +11,23 @@ struct SignInView: View {
         NavigationStack {
             Form {
                 Section("Server") {
-                    TextField("https://matrix.example.com", text: $viewModel.serverURL)
+                    // Placeholder kept URL-shape-free because iOS Form's
+                    // data detection styles `https://…` placeholders as
+                    // tappable blue link text — looks like an error /
+                    // link, not a hint.
+                    TextField("Homeserver URL", text: $viewModel.serverURL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
+                        .accessibilityIdentifier("signin.server")
                 }
                 Section("Credentials") {
                     TextField("Username", text: $viewModel.username)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .accessibilityIdentifier("signin.username")
                     SecureField("Password", text: $viewModel.password)
+                        .accessibilityIdentifier("signin.password")
                 }
                 if case .error(let message) = viewModel.state {
                     Section {
@@ -41,6 +48,7 @@ struct SignInView: View {
                         if case .busy = viewModel.state { return true }
                         return viewModel.serverURL.isEmpty || viewModel.username.isEmpty || viewModel.password.isEmpty
                     }())
+                    .accessibilityIdentifier("signin.submit")
                 }
             }
             .navigationTitle("Sign in to Matron")

@@ -18,6 +18,14 @@ import SnapshotTesting
 /// pixel-equality assertions across macOS versions are inherently fragile.
 /// Snapshots are still useful locally for visual regression review — they
 /// run by default unless the env var opts out.
+///
+/// We also accept `TEST_RUNNER_MATRON_SKIP_SNAPSHOT_TESTS=1` because this SPM
+/// test bundle runs transitively inside the Mac xcodebuild scheme too (the
+/// `MatronShared` SPM package is a dependency of the `MatronMac` scheme), and
+/// xcodebuild only forwards env vars into the test runner under the
+/// `TEST_RUNNER_*` prefix. Reading both names means the same skip works
+/// regardless of whether the bundle is launched by `swift test` (inherits
+/// shell env) or `xcodebuild test` (only `TEST_RUNNER_*` propagates).
 func assertVariants<V: View>(
     of view: V,
     named base: String,
@@ -25,7 +33,8 @@ func assertVariants<V: View>(
     testName: String = #function,
     line: UInt = #line
 ) {
-    if ProcessInfo.processInfo.environment["MATRON_SKIP_SNAPSHOT_TESTS"] == "1" {
+    let env = ProcessInfo.processInfo.environment
+    if ["MATRON_SKIP_SNAPSHOT_TESTS", "TEST_RUNNER_MATRON_SKIP_SNAPSHOT_TESTS"].contains(where: { env[$0] == "1" }) {
         return
     }
     #if canImport(UIKit) && !os(macOS)

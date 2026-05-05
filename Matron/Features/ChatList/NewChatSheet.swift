@@ -77,32 +77,67 @@ struct NewChatSheet: View {
         }
     }
 
-    /// Reads the first room-list snapshot to derive the unique-bot set.
-    /// Phase 2's live `chatSummaries()` is single-snapshot per call (the
-    /// stream finishes after one snapshot — see the protocol doc-comment),
-    /// so the `break` after the first snapshot is defensive: re-opening
-    /// the sheet picks up any newly-arrived bots from a fresh subscription.
-    /// Phase 3 flips the stream to long-lived and the `break` becomes
-    /// load-bearing — keep it.
+    /// Reads room-list snapshots to derive the unique-bot set. Re-polls
+    /// on empty (1s × up to 30 attempts) for the same race that bit
+    /// `ChatListViewModel`: `chatSummaries()` is single-shot per call
+    /// (Phase 1/2 contract), and the first snapshot lands as soon as
+    /// `sync.waitUntilReady()` returns — but `.running` doesn't
+    /// guarantee any rooms have been downloaded.
+    ///
+    /// `didLoad` flips after the FIRST attempt regardless of whether
+    /// it yielded bots — so a user with genuinely zero bots provisioned
+    /// sees the empty state in ~1s instead of staring at a ProgressView
+    /// for 30 seconds. Subsequent attempts refresh `bots` if a non-empty
+    /// snapshot lands later.
+    ///
+    /// The whole retry loop goes away in Phase 2.5 (live chat-list); the
+    /// long-lived stream there yields naturally when sliding sync warms
+    /// up, no manual polling needed. See
+    /// `docs/superpowers/plans/2026-05-05-matron-ios-phase-2-5-live-chat-list.md`.
     private func loadBots() async {
         let chat = deps.chatService(for: session)
-        do {
-            for try await snapshot in chat.chatSummaries() {
-                let unique = Set(snapshot.map(\.bot))
-                bots = Array(unique).sorted { $0.displayName < $1.displayName }
-                break
+        // Track the most recent stream error per-attempt so a transient
+        // failure on attempt 1 (e.g. SyncReadyError.timeout while sync
+        // is still warming up) doesn't bypass the remaining retries.
+        var lastError: Error?
+        for attempt in 0..<30 {
+            if Task.isCancelled { return }
+            var lastSnapshot: [ChatSummary] = []
+            do {
+                for try await snapshot in chat.chatSummaries() {
+                    lastSnapshot = snapshot
+                    // Load-bearing once `chatSummaries()` flips to a
+                    // long-lived stream — without it, the inner loop
+                    // would hang the sheet forever waiting on subsequent
+                    // snapshots we don't need.
+                    if !snapshot.isEmpty { break }
+                }
+                lastError = nil
+            } catch {
+                lastError = error
             }
-        } catch {
-            // Surface the upstream stream error (e.g. SyncReadyError.timeout)
-            // in the same field as createChat failures so the user sees
-            // a meaningful banner instead of an empty bot picker
-            // (QA finding #10).
-            errorMessage = error.localizedDescription
+            if !lastSnapshot.isEmpty {
+                let unique = Set(lastSnapshot.map(\.bot))
+                bots = Array(unique).sorted { $0.displayName < $1.displayName }
+                didLoad = true
+                return
+            }
+            // Show the empty state immediately after the first attempt
+            // returns no bots. Background polling continues in case
+            // sliding sync warms up later and bots appear.
+            didLoad = true
+            if attempt < 29 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
         }
-        // Flip *after* the first snapshot processes (or the stream
-        // finishes without one) so the empty state shows once we're sure
-        // there are no bots — not during the in-flight window.
-        didLoad = true
+        // If all 30 attempts produced empty snapshots AND the last one
+        // threw, surface the upstream error in the same field as
+        // createChat failures (QA finding #10). The empty-but-no-error
+        // case (genuinely zero bots provisioned) keeps the empty-state
+        // body the user is already seeing.
+        if bots.isEmpty, let lastError {
+            errorMessage = lastError.localizedDescription
+        }
     }
 
     /// Invokes `ChatService.createChat(with:)` and surfaces the new room id

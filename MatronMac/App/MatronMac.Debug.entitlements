@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+	Debug-only entitlements for the Mac target. Intentionally OMITS
+	`com.apple.security.app-sandbox` so XCUITest's runner can establish
+	its XPC connection to the host app for the integration harness —
+	sandboxed Mac apps can't be UI-tested without ad-hoc signing +
+	provisioning gymnastics, and the harness is the higher-value
+	tradeoff. Release entitlements (MatronMac.entitlements) DO include
+	`com.apple.security.app-sandbox` for App Store distribution.
+
+	Acknowledged risk: sandbox-related bugs (Keychain scoping, file-
+	system access, network behaviour) won't surface in Debug builds —
+	they only show up at Release / TestFlight. Mitigation is manual
+	smoke on signed Release builds (per the Phase 3 workflow in
+	docs/HANDOVER.md). Per-config wiring lives in project.yml at the
+	MatronMac target's settings.configs.Debug / settings.configs.Release
+	split.
+
+	If a future review re-flags the missing app-sandbox entitlement,
+	the answer is: yes, intentional; see the project.yml comment block
+	at the MatronMac target settings.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.files.user-selected.read-only</key>
+	<true/>
+	<!--
+		Keychain access group, parity with Release. Required for
+		`RecoveryKeyManager.generateAndPersist` to write the recovery
+		key into the user's Keychain — without it, `SecItemAdd` returns
+		errSecMissingEntitlement (-34018) on every call and the user
+		sees "Couldn't auto-store your recovery key" inline. The group
+		string uses Xcode's `$(AppIdentifierPrefix)` build-time
+		substitution; ad-hoc-signed harness builds (which set
+		CODE_SIGN_IDENTITY=-) won't validate it (the entitlement is
+		checked against the AppID at runtime), so they'll still hit
+		-34018 — but the view-model already handles that path via
+		`PersistenceError.keychainWriteFailedButKeyAvailable`. Properly
+		signed dev builds (Personal Team or THE ORG TEAM)
+		get a working Keychain write at runtime.
+	-->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)chat.matron.mac</string>
+	</array>
+</dict>
+</plist>

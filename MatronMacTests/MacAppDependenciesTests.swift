@@ -2,6 +2,8 @@
 import XCTest
 import MatronChat
 import MatronModels
+import MatronVerification
+import MatronViewModels
 @testable import MatronMac
 
 /// Mac mirror of `MatronTests/AppDependenciesTests`. The Mac
@@ -21,6 +23,57 @@ final class MacAppDependenciesTests: XCTestCase {
 
         XCTAssertTrue(first as AnyObject === second as AnyObject,
                       "mediaService(for:) must return the same instance for the same session")
+    }
+
+    /// Mac mirror — see iOS `test_verificationService_isCached_perSession`
+    /// for the full rationale (shared FlowStore + shared registered SDK
+    /// delegate; expert-QA finding B1).
+    func test_verificationService_isCached_perSession() {
+        let deps = AppDependencies()
+        let session = UserSession(
+            userID: "@a:s", deviceID: "D",
+            homeserverURL: URL(string: "https://s")!, accessToken: "t"
+        )
+
+        let first = deps.verificationService(for: session)
+        let second = deps.verificationService(for: session)
+
+        XCTAssertTrue(first === second,
+                      "verificationService(for:) must return the same instance — shared FlowStore + delegate")
+    }
+
+    /// B2/M5 expert-QA mirror — see iOS
+    /// `test_verificationCenter_canBeBuilt_fromCachedService` for full
+    /// rationale. Locks the structural invariant that a freshly-built
+    /// `VerificationCenter` wraps the cached service identity, so
+    /// every consumer in the Mac app shares a FlowStore + delegate.
+    func test_verificationCenter_canBeBuilt_fromCachedService() {
+        let deps = AppDependencies()
+        let session = UserSession(
+            userID: "@a:s", deviceID: "D",
+            homeserverURL: URL(string: "https://s")!, accessToken: "t"
+        )
+        let svc = deps.verificationService(for: session)
+        let center = VerificationCenter(service: svc)
+        XCTAssertTrue((center.service as AnyObject) === (svc as AnyObject),
+                      "VerificationCenter.service must point at the cached instance")
+        center.start()
+        center.start()
+        center.stop()
+    }
+
+    func test_verificationService_isDistinct_perUser() {
+        let deps = AppDependencies()
+        let s1 = UserSession(userID: "@a:s", deviceID: "D",
+                             homeserverURL: URL(string: "https://s")!, accessToken: "t")
+        let s2 = UserSession(userID: "@b:s", deviceID: "D",
+                             homeserverURL: URL(string: "https://s")!, accessToken: "t")
+
+        let a = deps.verificationService(for: s1)
+        let b = deps.verificationService(for: s2)
+
+        XCTAssertFalse(a === b,
+                       "different sessions must get different verification services")
     }
 
     func test_mediaService_isDistinct_perUser() {

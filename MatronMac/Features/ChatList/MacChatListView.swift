@@ -1,6 +1,7 @@
 import SwiftUI
 import MatronChat
 import MatronModels
+import MatronVerification
 import MatronViewModels
 
 /// Mac chat-list screen — the sidebar column of a `NavigationSplitView`
@@ -39,10 +40,61 @@ struct MacChatListView: View {
     /// flip the same state. `.automatic` is the system default (sidebar
     /// shown); `.detailOnly` collapses it.
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+    /// The summary whose "Verify" button on a `MacVerificationBanner`
+    /// was clicked. Drives the `.sheet(item:)` presentation of
+    /// `MacSasView`. Cleared by the sheet's `onFinished` (`.verified`)
+    /// or an explicit dismiss.
+    @State private var sasSummary: VerificationRequestSummary?
+    /// Cross-platform incoming-verification orchestrator (spec §7.1, §5.9).
+    /// Optional so previews / tests that exercise only the chat-list
+    /// rendering can construct the view without standing up a full
+    /// verification stack. When non-nil, `start()` runs in `.onAppear`
+    /// and `stop()` in `.onDisappear` (Swift 6 forbids `@MainActor
+    /// deinit` reaching isolated state — same lesson as
+    /// `ChatListViewModel.cancel()`).
+    var verificationCenter: VerificationCenter? = nil
+    /// Sign-out callback owned by `MatronMacApp`. Invoked by the
+    /// `.onReceive(.signOut)` listener (this view is the active branch
+    /// any time the user is signed in + verified, so anchoring the
+    /// listener here is reliable — the prior WindowGroup-root anchor
+    /// silently dropped notifications when the `Group { … }`'s active
+    /// branch changed type, which is what made File → Sign Out a
+    /// no-op on macOS post-Phase-3 — Wave 6 / live-test #1).
+    var onSignOut: (() -> Void)? = nil
+    /// Help → Verify This Device callback owned by `MatronMacApp`.
+    /// Same anchor rationale as `onSignOut` — Wave 6 / live-test #2.
+    /// Also driven by the in-chat-list "this device hasn't been verified"
+    /// banner (Wave 6 / live-test #3), so signed-in users have an
+    /// in-app prompt to re-verify rather than relying on the Help menu.
+    var onVerifyDevice: (() -> Void)? = nil
+    /// Help → Show Recovery Key callback owned by `MatronMacApp`.
+    /// Same anchor rationale as `onSignOut` — Wave 6 / live-test #2.
+    var onShowRecoveryKey: (() -> Void)? = nil
+    /// `VerificationService` used by the in-list "this device hasn't been
+    /// verified" banner (Wave 6 / live-test #3) to decide whether to
+    /// render. Optional so previews / tests that don't standing up a
+    /// real service can omit it (the banner's tri-state state stays
+    /// `nil` and renders nothing). Production wiring routes through
+    /// `dependencies.verificationService(for: session)`.
+    var verificationService: VerificationService? = nil
+    /// Re-evaluation token bumped by `MatronMacApp` when the Help →
+    /// Verify This Device sheet (or banner-triggered SAS sheet — same
+    /// closure) dismisses. Drives the per-this-device verification
+    /// `.task(id:)` so a successful self-verify clears the in-list
+    /// `MacUnverifiedDeviceBanner` without requiring a full chat-list
+    /// re-mount. Defaults to `0` so previews / tests that don't host
+    /// the verify-device sheet still get the initial check.
+    var verifyDeviceDismissToken: Int = 0
+    /// Tri-state per-this-device verification state. `nil` until the
+    /// async query resolves, then `true` (verified) or `false`
+    /// (unverified). Banner only renders on `false` so it doesn't
+    /// flash for verified devices during the initial query — same
+    /// pattern as the per-bot banner (`MacChatView.botVerification`).
+    @State private var isThisDeviceVerified: Bool? = nil
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            sidebar
+            sidebarColumn
                 .frame(minWidth: 240, idealWidth: 280)
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) {
@@ -65,7 +117,48 @@ struct MacChatListView: View {
         .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.toggleSidebar))) { _ in
             columnVisibility = (columnVisibility == .detailOnly) ? .automatic : .detailOnly
         }
-        .navigationTitle("Matron")
+        // Sign Out / Verify Device / Show Recovery Key — Wave 6 / live-test
+        // #1+#2 fix. Previously these listeners lived on `MatronMacApp`'s
+        // `WindowGroup`-root `Group { … }` content. macOS SwiftUI did not
+        // reliably re-install the subscriptions when the Group's active
+        // branch changed type (sign-in → verify-gate → chat-list), so the
+        // File → Sign Out and Help menu items silently posted into the
+        // void. Anchoring on this view (the active branch any time a
+        // signed-in + verified user is reachable) is reliable — same
+        // shape as `.toggleSidebar` above, which has always worked. The
+        // host owns the actual side-effect (clear session, present sheet)
+        // via the `onSignOut` / `onVerifyDevice` / `onShowRecoveryKey`
+        // closures so the host's `@State` mutators stay co-located with
+        // the host. Sign-in screen + verify-gate are intentionally not
+        // covered: a user without a session has nothing to sign out of,
+        // and a user mid-verification gate is already on the verify path.
+        // File → New Chat (⌘N from the menu bar). The toolbar `+` button
+        // has its own .keyboardShortcut("n", modifiers: .command), but on
+        // macOS the menu-bar's ⌘N takes priority and posts via the
+        // command bus — so without a listener here the menu-bar shortcut
+        // and the menu item itself were silent no-ops (PR #1 cursor[bot]
+        // findings — both Commands.swift and MacChatListView).
+        .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.newChat))) { _ in
+            showingNewChat = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.signOut))) { _ in
+            onSignOut?()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.verifyDevice))) { _ in
+            onVerifyDevice?()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showRecoveryKey))) { _ in
+            onShowRecoveryKey?()
+        }
+        // Wave 6 / live-test #4: dropped `.navigationTitle("Matron")`.
+        // The detail column's `MacChatToolbar` (Task 14d) carries the
+        // chat title in its `.principal` slot, and on macOS the
+        // `NavigationSplitView`'s detail column was rendering "Matron"
+        // as a window-bar label next to the sidebar toggle — visual
+        // duplication next to the bot-room title in the toolbar's
+        // principal slot. Sidebar column's existing `ContentUnavailable`
+        // / list content already conveys "this is the chat list" without
+        // needing a navigation title there either.
         .sheet(isPresented: $showingNewChat) {
             // Mac `AppDependencies` is a per-target type, so the sheet
             // wires off the Mac variant. The placeholder fallback keeps
@@ -101,8 +194,97 @@ struct MacChatListView: View {
                 onDismiss: { botProfileSummary = nil }
             )
         }
+        .sheet(item: $sasSummary) { summary in
+            // SAS sheet driven by the banner's "Verify" click. Build the
+            // service inline (mirrors `MacPostLoginVerificationView`) so
+            // the sheet body owns no long-lived SDK state — when the
+            // sheet dismisses the controller is released. Without `deps`
+            // / `session` we render a minimal placeholder so the binding
+            // is still observable in tests / previews.
+            if let deps, let session {
+                sasSheetContent(for: summary, deps: deps, session: session)
+            } else {
+                Text("Verification unavailable")
+                    .frame(width: 480, height: 200)
+                    .padding()
+            }
+        }
         .task { viewModel.start() }
+        // VerificationCenter lifecycle is owned by `MatronMacApp`'s
+        // `.task(id: session.userID)` + `.onDisappear` on the verifyDone
+        // branch (B2/M5). MacChatListView only consumes the binding — no
+        // start/stop here, just the view-model cancel.
         .onDisappear { viewModel.cancel() }
+        // Wave 6 / live-test #3: per-this-device verification check.
+        // Pre-Phase-3 users skipped the post-login verify gate
+        // (`verifyDone` was never set on their session) so they have
+        // no in-app prompt to verify. The async result drives
+        // `MacUnverifiedDeviceBanner` visibility — see the property
+        // declaration for the tri-state (`nil` / `true` / `false`)
+        // rationale that mirrors the per-bot banner. Keying on
+        // `verifyDeviceDismissToken` re-runs the check when the host's
+        // verify-device sheet dismisses (a successful self-verify
+        // clears the banner without a chat-list re-mount).
+        .task(id: verifyDeviceDismissToken) { await evaluateThisDeviceVerification() }
+    }
+
+    /// Resolves `isThisDeviceVerified` from the injected
+    /// `verificationService`. Failure resolves to `nil` (banner stays
+    /// hidden) so a transient SDK error doesn't prompt a verified user
+    /// to re-verify — same posture as the per-bot banner's `.unknown`
+    /// arm. The next sync tick triggers a re-evaluate via the parent
+    /// task lifecycle (the host's `.task { syncService.start() }` and
+    /// the verification service's incoming-request stream both keep
+    /// the SDK warm; this `.task` runs on `.onAppear` of the chat
+    /// list, which is the right cadence for a one-shot check).
+    private func evaluateThisDeviceVerification() async {
+        guard let svc = verificationService else {
+            isThisDeviceVerified = nil
+            return
+        }
+        do {
+            isThisDeviceVerified = try await svc.isThisDeviceVerified()
+        } catch {
+            isThisDeviceVerified = nil
+        }
+    }
+
+    /// Sidebar column wrapper: when the verification center has pending
+    /// requests OR this device is explicitly unverified, stack the
+    /// relevant banner(s) above the existing sidebar content. Banner
+    /// order: unverified-device (most actionable) → incoming requests
+    /// → list. Empty / no-banner case falls straight through to
+    /// `sidebar`. Plan §9b — banner sits above the chat list inside the
+    /// leading column of `NavigationSplitView`.
+    @ViewBuilder
+    private var sidebarColumn: some View {
+        let hasIncoming = (verificationCenter?.pending.isEmpty == false)
+        let showUnverified = (isThisDeviceVerified == false) && (onVerifyDevice != nil)
+        if hasIncoming || showUnverified {
+            VStack(spacing: 0) {
+                if showUnverified {
+                    MacUnverifiedDeviceBanner(
+                        onVerify: { onVerifyDevice?() }
+                    )
+                }
+                if let center = verificationCenter, !center.pending.isEmpty {
+                    VStack(spacing: 8) {
+                        ForEach(center.pending) { summary in
+                            MacVerificationBanner(
+                                summary: summary,
+                                onAccept: { sasSummary = $0 },
+                                onDismiss: { dismissed in
+                                    Task { await center.dismiss(dismissed) }
+                                }
+                            )
+                        }
+                    }
+                }
+                sidebar
+            }
+        } else {
+            sidebar
+        }
     }
 
     @ViewBuilder
@@ -205,7 +387,15 @@ struct MacChatListView: View {
                 viewModel: chatVM,
                 composerVM: composerVM,
                 chatTitle: summary.title,
-                onShowBotProfile: { botProfileSummary = summary }
+                onShowBotProfile: { botProfileSummary = summary },
+                // Reuse the VerificationCenter's service so the per-bot
+                // banner's SAS sheet hits the SAME FlowStore that any
+                // incoming verification request was registered against
+                // (mirrors the iOS `chatDestination` wiring + the
+                // `sasSheetContent` rationale on this view).
+                verificationService: verificationCenter?.service
+                    ?? deps.verificationService(for: session),
+                botMatrixID: summary.bot.matrixID
             )
             .id(summary.id)
         } else {
@@ -227,6 +417,43 @@ struct MacChatListView: View {
         guard let deps, let session else { return }
         let chat = deps.chatService(for: session)
         try? await action(chat)
+    }
+
+    /// Builds the SAS sheet shown when a banner's "Verify" is clicked.
+    /// Hands construction to the per-present `MacSasSheetWrapper` view
+    /// whose `@State`-stored SasViewModel survives parent re-renders
+    /// (Wave 4 expert-QA #8 — mirrors the iOS pattern). The prior
+    /// inline construction here rebuilt the VM + reopened a fresh
+    /// `acceptIncoming` stream on every parent `@State` mutation, so
+    /// partner-side SAS state transitions could reach an orphaned VM
+    /// whose continuation the visible sheet was no longer observing.
+    @ViewBuilder
+    private func sasSheetContent(
+        for summary: VerificationRequestSummary,
+        deps: AppDependencies,
+        session: UserSession
+    ) -> some View {
+        // Reuse the VerificationCenter's service so acceptIncoming hits the
+        // SAME FlowStore that registered the incoming request — see iOS
+        // ChatListView for the full rationale.
+        let svc: any VerificationService = verificationCenter?.service
+            ?? deps.verificationService(for: session)
+        // Both terminal states (verified + cancelled) drain pending +
+        // close the sheet — leaving a stale banner under a cancelled
+        // SAS is the same UX bug as leaving a stale banner over a
+        // verified one. The closure is the same for both.
+        let drainAndDismiss: () -> Void = {
+            verificationCenter?.markCompleted(summary)
+            sasSummary = nil
+        }
+        MacSasSheetWrapper(
+            service: svc,
+            requestID: summary.id,
+            title: "Verify device",
+            streamFactory: { $0.acceptIncoming(requestID: summary.id) },
+            onFinished: drainAndDismiss,
+            onCancelled: drainAndDismiss
+        )
     }
 }
 
