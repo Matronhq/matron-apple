@@ -3,31 +3,68 @@ import MatronChat
 import MatronModels
 @testable import MatronViewModels
 
-/// Test fake mirroring the chat-list streaming surface. Local to this
-/// test file so the error-flow assertion (QA finding #10) doesn't need
-/// to leak through to the production protocol's other test consumers.
+/// Test fake mirroring the Phase 2.5 long-lived chat-list streaming
+/// surface. Each `chatSummaries()` call returns a long-lived stream that
+/// yields every queued snapshot in order, then optionally finishes with
+/// `streamError` if set. Mirrors the production `ChatSummaryBroadcaster`
+/// shape: one stream, multiple yields. Local to this test file so the
+/// error-flow assertion (QA finding #10) doesn't leak through to the
+/// production protocol's other test consumers.
 final class FakeStreamingChatService: ChatService, @unchecked Sendable {
-    /// Each entry is the snapshot the n-th `chatSummaries()` call yields.
-    /// Single-shot per call: each invocation yields one entry then finishes
-    /// (matches the production `ChatServiceLive` Phase 1/2 contract). Once
-    /// the queue is exhausted, subsequent calls yield an empty snapshot.
-    /// Convenience: a one-element queue collapses to "yield this once".
+    /// Snapshots the next `chatSummaries()` stream yields in order before
+    /// finishing (with `streamError` if set, otherwise cleanly). Mutated
+    /// in place by `forceSnapshot()` — tests that exercise refresh push
+    /// onto this queue between yields.
     var snapshotsToEmit: [[ChatSummary]] = []
     var streamError: Error?
     private(set) var callCount = 0
+    private(set) var forceSnapshotCalls = 0
+    /// Holds the active stream's continuation so `forceSnapshot()` can
+    /// drive an extra yield through the same pipe (mirrors the live
+    /// broadcaster's fan-out shape).
+    private var activeContinuation: AsyncThrowingStream<[ChatSummary], Error>.Continuation?
+
     func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error> {
         callCount += 1
-        let snapshot: [ChatSummary] = snapshotsToEmit.isEmpty ? [] : snapshotsToEmit.removeFirst()
+        let queued = snapshotsToEmit
+        snapshotsToEmit.removeAll()
         let err = streamError
         return AsyncThrowingStream { continuation in
-            continuation.yield(snapshot)
+            self.activeContinuation = continuation
+            for snapshot in queued {
+                continuation.yield(snapshot)
+            }
             if let err {
                 continuation.finish(throwing: err)
-            } else {
-                continuation.finish()
+                self.activeContinuation = nil
             }
+            // No `finish()` on the success path — the stream stays open
+            // so subsequent `forceSnapshot()` calls can deliver more
+            // yields. Tests that need the stream to terminate cleanly
+            // can call `finishStream()`.
         }
     }
+
+    /// Drives one extra yield through the active stream, taking the
+    /// next entry from `snapshotsToEmit` if any. No-op if no stream is
+    /// active or the queue is empty.
+    func forceSnapshot() async throws {
+        forceSnapshotCalls += 1
+        guard let continuation = activeContinuation,
+              !snapshotsToEmit.isEmpty
+        else { return }
+        let snapshot = snapshotsToEmit.removeFirst()
+        continuation.yield(snapshot)
+    }
+
+    /// Closes the active stream cleanly. Tests that assert on
+    /// post-finish behaviour call this; the default success path leaves
+    /// the stream open so multi-yield matches production semantics.
+    func finishStream() {
+        activeContinuation?.finish()
+        activeContinuation = nil
+    }
+
     func createChat(with botID: String) async throws -> String { "!stub:server" }
     func refresh() async throws {}
     func mute(roomID: String) async throws {}
@@ -83,31 +120,63 @@ final class ChatListViewModelTests: XCTestCase {
         XCTAssertFalse(vm.isLoading, "isLoading must clear so the View renders the error")
     }
 
-    /// Live-validated bug: user signed in fresh on Mac → list was empty →
-    /// stayed empty because the VM only consumed the first snapshot from
-    /// `ChatService.chatSummaries()` — and that first snapshot lands as
-    /// soon as sliding sync reaches `.running`, often before any rooms
-    /// have actually been downloaded. The fix re-polls until non-empty
-    /// (or cancelled). This test simulates: 1st call → empty, 2nd call →
-    /// populated; asserts the VM ends up with the populated groups.
+    /// Phase 2.5 multi-yield contract: the long-lived broadcaster yields
+    /// every snapshot through ONE stream, so the VM iterates the stream
+    /// without re-subscribing. Pre-Phase-2.5 the VM masked an empty
+    /// first yield with a 30×1s retry loop that re-called
+    /// `chatSummaries()`; that's now dead code — an empty first yield
+    /// just means the next yield will arrive when sliding sync warms up.
     @MainActor
-    func test_retriesOnEmptySnapshot_until_populated() async throws {
+    func test_consumesMultipleYieldsThroughSingleStream() async throws {
         let bot = BotIdentity(matrixID: "@b:s", displayName: "Bot", avatarURL: nil)
         let fake = FakeStreamingChatService()
         fake.snapshotsToEmit = [
-            [],  // 1st call: empty
+            [],  // 1st yield: empty (sliding sync still warming up)
             [ChatSummary(id: "!1:s", title: "ok", bot: bot, lastActivity: .now, unreadCount: 0)],
         ]
         let vm = ChatListViewModel(chat: fake)
         vm.start()
-        // Polling cadence is 1s in production; this test waits up to 5s.
         let start = Date()
-        while vm.groups.isEmpty && Date().timeIntervalSince(start) < 5 {
-            try? await Task.sleep(nanoseconds: 50_000_000)
+        while vm.groups.isEmpty && Date().timeIntervalSince(start) < 2 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
         }
-        XCTAssertFalse(vm.groups.isEmpty, "VM should retry past the first empty snapshot and land on the populated one")
-        XCTAssertGreaterThanOrEqual(fake.callCount, 2, "VM must re-call chatSummaries() after an empty snapshot")
+        XCTAssertFalse(vm.groups.isEmpty, "VM must land on the populated second yield")
+        XCTAssertEqual(fake.callCount, 1, "long-lived stream means exactly one chatSummaries() call")
         XCTAssertNil(vm.error, "no upstream error means error stays nil")
+    }
+
+    /// `refresh()` calls `forceSnapshot()` on the underlying service; the
+    /// fake broadcasts the next queued snapshot through the active
+    /// stream so the VM observes it as an additional yield.
+    @MainActor
+    func test_refresh_drivesForceSnapshot_andUpdatesGroups() async throws {
+        let bot = BotIdentity(matrixID: "@b:s", displayName: "Bot", avatarURL: nil)
+        let fake = FakeStreamingChatService()
+        let initial = [ChatSummary(id: "!1:s", title: "first", bot: bot, lastActivity: .now, unreadCount: 0)]
+        let refreshed = [
+            ChatSummary(id: "!1:s", title: "first", bot: bot, lastActivity: .now, unreadCount: 0),
+            ChatSummary(id: "!2:s", title: "second", bot: bot, lastActivity: .now, unreadCount: 0),
+        ]
+        fake.snapshotsToEmit = [initial]
+        let vm = ChatListViewModel(chat: fake)
+        vm.start()
+        // Wait for the initial yield to land on the VM.
+        var start = Date()
+        while vm.groups.isEmpty && Date().timeIntervalSince(start) < 2 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(vm.groups.flatMap(\.summaries).count, 1, "initial yield should populate one summary")
+
+        // Queue a second snapshot then call refresh — the fake's
+        // forceSnapshot drains the queue through the active stream.
+        fake.snapshotsToEmit = [refreshed]
+        await vm.refresh()
+        XCTAssertEqual(fake.forceSnapshotCalls, 1, "refresh() must call forceSnapshot()")
+        start = Date()
+        while vm.groups.flatMap(\.summaries).count < 2 && Date().timeIntervalSince(start) < 2 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(vm.groups.flatMap(\.summaries).count, 2, "refresh-driven yield must reach the VM through the live stream")
     }
 
     @MainActor
