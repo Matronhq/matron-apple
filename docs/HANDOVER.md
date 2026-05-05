@@ -1,19 +1,18 @@
 # Handover — Matron iOS+Mac, Phase 3 + integration harness
 
-**As of 2026-05-05 early morning (session 5 close-out)**, after five
-working sessions on `phase-3-e2ee-verification`. **Session 5 closed
-out with `matron-vs-matron-ui` GREEN end-to-end** alongside the
-3 SDK scenarios — full SAS round trip with both peers reaching
-`verificationStateListener: fired with verified`. The session-5 win
-required four product-code changes layered on top of session 4's
-groundwork: `autoEnableCrossSigning(true)`, Element X recoveryState
-branching in `RecoveryKeyManager`, calling
-`acknowledgeVerificationRequest(senderId:flowId:)` before
-`acceptVerificationRequest()`, and re-introducing the responder-skip
-guard in `routeAcceptedVerificationRequest`. Plus an entire logging
-stack (SDK `initPlatform` tracing, `RecoveryKeyManager` os.Logger
-entries, scenario `log show` fallback + SDK trace file collection)
-that made the diagnosis tractable. See "Session 5" block below.
+**As of 2026-05-05 mid-day (session 6)**, after six working sessions
+on `phase-3-e2ee-verification`. Session 6 was a heavy manual-testing
++ UX-polish + bug-fixing pass on top of session 5's matron-vs-matron-
+ui green state. Eleven product-code commits + one SPM-test-coverage
+commit. The branch is in good shape to PR, but several UX-visible
+gaps were found and fixed live, and there are real automated-test
+gaps for the new code paths. See "Session 6" block below.
+
+**Session 5** closed out with `matron-vs-matron-ui` GREEN end-to-end
+alongside the 3 SDK scenarios — full SAS round trip with both peers
+reaching `verificationStateListener: fired with verified`. Required
+four product-code changes plus a logging stack. See "Session 5"
+block below.
 
 Latest tip: **`879f44e`** (`fix(test/scenario): poll-grep watcher instead of tail|grep -m1`),
 plus an uncommitted retry+logging diagnostic in
@@ -136,6 +135,280 @@ re-litigate without reading the spec):
   iOS-as-requester signs in, taps the verify-gate button, calls
   `startSAS`, and sends `m.key.verification.request` over to-device
   successfully — i.e., the iOS requester half is working end-to-end.
+
+---
+
+## Session 6 — manual-testing pass; UX polish; product fixes; partial test coverage
+
+**TL;DR for the next agent:** session 5 closed out matron-vs-matron-ui
+green at the harness level. Session 6 ran the full Phase 3 user
+journey by hand on a signed Mac build (Yearbook Machine team) +
+fresh iOS sim against a local Docker homeserver. Found and fixed
+twelve real issues — most user-visible UX bugs, some SDK-state
+edge cases. Branch is in good shape; major remaining work is
+XCUITest coverage for the new paths (chooser, recovery-key restore
+via UI, reverse-direction matron-vs-matron). See "Open work for
+session 7" at the bottom of this block.
+
+### Setup state for the next agent
+
+- Local Docker homeserver running: `http://localhost:6167`
+  (`tests/integration/docker/docker-compose.yml`). Container name
+  `matron-test-server`. Nuke + restart with
+  `cd tests/integration/docker && docker compose down -v && docker compose up -d`.
+- Test user: `dan` / `test-pw`. Created in this session via
+  `node tests/integration/partner/partner.mjs register --homeserver
+  http://localhost:6167 --user dan --password test-pw --token
+  matron-test-only`. Cross-signing identity is live on the server
+  for `@dan:localhost`.
+- Mac is signed with Yearbook Machine Limited (`DEVELOPMENT_TEAM:
+  4LJ7WRRRFD`, sticky in project.yml as of `6ee5b7d`). Xcode-Run
+  picks up signing automatically; CLI builds need
+  `-allowProvisioningUpdates`. Harness builds use ad-hoc signing
+  via `MatronMac.Debug.AdHoc.entitlements` (an entitlements file
+  without `keychain-access-groups`, since ad-hoc signing can't
+  validate it).
+- iOS sim: iPhone 17, UDID `337C3A3A-4191-4A51-9513-93F5805276EC`.
+  matron-iOS app installed at last test, possibly in a
+  partially-verified state.
+
+### Twelve commits landed
+
+| SHA | Type | What |
+|-----|------|------|
+| `9c3c954` | fix | `keychain-access-groups` in Mac Debug entitlements (was missing, signed dev builds couldn't write recovery key) |
+| `98705d1` | fix | Defer Mac "Verify with another device" nav 120 ms so the borderedProminent press animation visibly completes; soften recovery-key warning copy |
+| `6ee5b7d` | fix | `DEVELOPMENT_TEAM: 4LJ7WRRRFD` sticky in `project.yml`; new `MatronMac.Debug.AdHoc.entitlements` for harness ad-hoc builds |
+| `92293a4` | fix | Drain `VerificationCenter.pending` on successful SAS; yield `.awaitingConfirmation` from `confirmEmojiMatch` so the SAS view shows "Waiting for the other device…" between local approve and partner-side approve |
+| `b511e9a` | fix | Close button on cancelled SAS sheet (Mac + iOS); Help → Verify This Device shows "already verified" confirmation when device is verified instead of running redundant SAS |
+| `c0c2e99` | fix | Chat-list verify-banner chooser — replaces immediate-SAS with a two-button chooser (SAS / recovery-key); plumbs `recoveryKeyRestore` closure from host so the sheet stays free of `RecoveryKeyManager` deps |
+| `31bfa3c` | fix | `hasOtherVerifiedDevices` SDK probe; chooser disables SAS button + caption when no other peer; drop "SAS" jargon from copy; `XXXX-XXXX-XXXX-XXXX` placeholder → "Enter recovery key" / "Re-enter recovery key"; combine inline Restore + bottom Done into single Restore-with-progress button |
+| `1322554` | test | `ScriptedVerificationService` test fake conforms to new `hasOtherVerifiedDevices` |
+| `57e7c4c` | fix | **Prime `userIdentity(fallbackToServer: true)` before `requestDeviceVerification` so the SDK has the partner's CURRENT device list before sending `.request`. Without this, .ready arrives from a from_device the local rust olm machine doesn't recognise and silently drops it. This was the bug that stalled SAS at "Starting verification…" with the partner's .ready never landing.** |
+| `6662a6c` / `51daac1` | fix | iOS sign-in: `https://matrix.example.com` placeholder was rendered as a tappable blue link by Form's data detection. Replaced with plain "Homeserver URL". |
+| `453e9a9` | fix | New `cancelledRequests()` AsyncStream on `VerificationService` + observation in `VerificationCenter.start()` to drain `pending` when the SDK fires `didCancel` for a flow with no active SAS continuation (e.g. partner cancelled before our user clicked the banner). Routes through `routeSasCancelled`'s no-active-continuation branch. |
+| `d76e085` | test | 4 SPM tests for the cancelled-stream drain (regression for `453e9a9`) |
+
+### Manual testing journey — what was validated
+
+Driven through the Phase 3 + Phase 5 playlist plus follow-on tests:
+
+1. **Mac signed-build keychain access** ✓ — recovery key persists to
+   Keychain on a Yearbook-team-signed Debug build. Console.app shows
+   `recovery-key:generate: keychain.set OK — exit`.
+2. **Mac press feedback** ✓ — borderedProminent button visibly
+   compresses + releases before NavigationStack swap.
+3. **matron-vs-matron SAS round trip** ✓ — both peers reach
+   `verificationStateListener: fired with verified`. End-to-end via
+   the chat-list banner click on Mac (responder) + verify-gate click
+   on iOS (requester).
+4. **Reverse-direction SAS** ✓ — Mac as requester (verify-gate
+   "Verify with another device") + iOS as responder (chat-list
+   banner click). Same outcome.
+5. **Recovery-key restore via verify-gate** ✓ — sign out + sign back
+   in lands at verify-gate; "Use recovery key" + paste → device
+   verified.
+6. **Recovery-key restore via chat-list chooser** ✓ — banner Verify
+   tap → chooser → "Use recovery key" → verified.
+7. **iOS Settings → Encryption** ✓ — verified status visible to user.
+8. **`hasOtherVerifiedDevices` probe disables SAS button** ✓ — when
+   no other verified device exists, chooser shows the SAS button
+   greyed out with explanatory caption.
+9. **SDK timeout cancel propagates** ✓ — both sides show "Verification
+   cancelled" with Close button (was a stuck UI before `b511e9a`).
+10. **Sign-out cycle returns to verify-gate** ✓.
+
+### Bugs caught + fixed live during testing
+
+- "Couldn't auto-save your recovery key" warning on Mac signed builds
+  → entitlements fix (`9c3c954`).
+- Click on "Verify with another device" had no visible feedback →
+  defer fix (`98705d1`).
+- `XCODE_DEVELOPMENT_TEAM` evaporating across `xcodegen generate`
+  → sticky team in project.yml (`6ee5b7d`).
+- Cancelled SAS sheet had no Close button → `b511e9a`.
+- Sidebar verify banner stayed after successful verification →
+  `92293a4` + `453e9a9`.
+- "Verify with another device" on already-verified Mac re-initiated
+  SAS instead of saying "you're verified" → `b511e9a`.
+- Chat-list verify-banner only offered SAS, no path to recovery-key
+  restore (stranded users with both devices unverified) → `c0c2e99`.
+- "SAS" jargon in copy; mid-flow no "waiting for other device" cue;
+  clicking Restore showed no progress feedback → `31bfa3c`.
+- iOS sign-in URL placeholder rendered as blue link → `6662a6c`.
+- iOS SAS got stuck at "Starting verification…" — partner's .ready
+  arrived but iOS's rust verification machine silently dropped it
+  because iOS's local /keys/query hadn't yet seen Mac's NEW device
+  → `57e7c4c` (force-prime via `userIdentity(fallbackToServer: true)`).
+- Stale banner on remote cancel before local user clicks Verify →
+  `453e9a9`.
+
+### Open work for session 7
+
+Branch is in a great state to merge — but XCUITest coverage of the
+new paths is partial. SPM tests cover the cancelled-stream drain
+(via `d76e085`); the rest is manual-only.
+
+**Priority A — XCUITest gaps (high-value, ~150 LOC each):**
+
+1. `test_chatListChooser_recoveryKeyPath` — sign in fresh, generate
+   recovery key, sign out, sign back in, chat-list banner appears,
+   tap Verify → chooser → "Use recovery key" → restore → verified.
+   Self-contained on Mac; no two-device dance needed. Add as a new
+   `func test_*()` in `MatronVsMatronMacUITests` — shares the
+   harness Docker but the test method is independent of the
+   existing trust-anchor test.
+2. `test_reverseDirection_macAsRequester_iOSAsResponder` — mirror of
+   the existing matron-vs-matron flow with directions swapped. Needs
+   coordinated test methods in BOTH `MatronVsMatronMacUITests` and
+   `MatronVsMatronIOSUITests` because the existing scenario script
+   spawns both in parallel.
+3. `test_chooser_buttonStates_basedOnHasOtherDevices` — assert SAS
+   button is enabled when another verified device exists, disabled
+   when not. Lower-cost: probe `hasOtherDevices` is `true` on the
+   working setup; test the disabled path by using a freshly
+   registered second user with no devices.
+
+**Priority B — recovery-key UI flow scenarios (~250 LOC + new
+scenario script):**
+
+4. New scenario `recovery-key-ui.sh` — partner.mjs `bootstrap-anchor`
+   first to seed `@matron`'s cross-signing identity, then matron app
+   signs in, hits verify-gate, takes the "Use recovery key" path
+   with the bootstrap recovery key. Asserts on `chat.matron:recovery-key`
+   trace + chat-list mount.
+5. `test_recoveryKey_reenterMustMatch` — generate flow's re-enter
+   phase rejects mismatched re-entry, accepts matching one. Pure
+   single-device.
+6. `test_recoveryKey_restoreError_invalidKey` — paste garbage,
+   inline error renders + Restore button stays clickable for retry.
+
+**Priority C — UX-only XCUITests (~80 LOC each):**
+
+7. `test_helpMenu_alreadyVerified` — Help menu after verified shows
+   green check + Close, no SAS.
+8. `test_cancelled_closeButton` — force a SAS cancel via partner
+   (timeout), verify Close button appears + clicking it dismisses
+   the sheet AND drains the chat-list banner.
+9. `test_remoteCancel_drainsBanner` (XCUITest) — already SPM-covered
+   in `d76e085`; XCUITest adds end-to-end UI assertion.
+
+**Priority D — sliding-sync / timing investigations:**
+
+10. **iOS rust-verification-machine drops .ready event**
+    (workaround landed in `57e7c4c`). Investigate the underlying
+    matrix-rust-sdk behaviour to file an upstream bug report. The
+    current workaround prevents the symptom but the root SDK bug
+    affects any cold-start verification.
+11. **matrix-js-sdk same-user-verification lookup miss**
+    (`verify-sdk-against-partner.sh` regression from `da37ba2`).
+    Documented in session 5 block; partner-side workaround would
+    poll the rust olm machine for request registration before
+    signalling "ready".
+
+### Files changed this session (~1200 LOC total)
+
+**Product code:**
+- `MatronShared/Sources/Verification/VerificationService.swift` —
+  `hasOtherVerifiedDevices()`, `cancelledRequests()` protocol additions
+- `MatronShared/Sources/Verification/VerificationServiceLive.swift` —
+  protocol impl, `cancelledContinuation` in FlowStore,
+  `userIdentity(fallbackToServer:)` prime, `routeSasCancelled`
+  no-continuation branch, yield `.awaitingConfirmation` in
+  `confirmEmojiMatch`
+- `MatronShared/Sources/ViewModels/VerificationCenter.swift` —
+  `markCompleted(_:)` method, parallel `cancelObservationTask` in
+  `start()`/`stop()`
+- `MatronShared/Sources/ViewModels/RecoveryKeyViewModel.swift` —
+  softer warning copy
+- `MatronMac/Features/Verification/MacSasView.swift` — `onCancelled`
+  callback, Close button in `.cancelled` case
+- `MatronMac/Features/Verification/MacRecoveryKeyView.swift` —
+  placeholder text, single Restore button with progress
+- `MatronMac/Features/ChatList/MacChatListView.swift` —
+  `MacIncomingRequestSasSheet` plumbs `onCancelled`, drain on cancel
+- `MatronMac/Features/Onboarding/MacPostLoginVerificationView.swift`
+  — defer nav, `onCancelled` to pop nav
+- `MatronMac/App/MatronMacApp.swift` — `HelpMenuVerifyDeviceSheet`
+  becomes a chooser with already-verified guard
+- `MatronMac/App/MatronMac.Debug.entitlements` — add
+  `keychain-access-groups`
+- `MatronMac/App/MatronMac.Debug.AdHoc.entitlements` (new) —
+  ad-hoc-signing variant for harness
+- `Matron/Features/Verification/SasView.swift` — `onCancelled`,
+  Close button in `.cancelled`
+- `Matron/Features/Verification/RecoveryKeyView.swift` —
+  placeholder, single Restore button with progress
+- `Matron/Features/ChatList/ChatListView.swift` —
+  `IncomingRequestSasSheet` and `SelfVerifyThisDeviceSheet` plumb
+  `onCancelled` + chooser logic
+- `Matron/Features/Onboarding/PostLoginVerificationView.swift` —
+  `onCancelled` to pop nav
+- `Matron/Features/Onboarding/SignInView.swift` — placeholder text
+  fix
+- `project.yml` — `DEVELOPMENT_TEAM: 4LJ7WRRRFD`,
+  `CODE_SIGN_STYLE: Automatic`
+- All 6 `tests/integration/scenarios/*.sh` — `CODE_SIGN_ENTITLEMENTS=
+  $ROOT/MatronMac/App/MatronMac.Debug.AdHoc.entitlements` override
+
+**Tests:**
+- `MatronShared/Tests/VerificationTests/FakeVerificationService.swift`
+  — `hasOtherVerifiedDevicesValue`, `cancelledRequests` stub
+- `MatronShared/Tests/VerificationTests/VerificationServiceLiveTests.swift`
+  — 2 new tests for `routeSasCancelled` no-continuation +
+  defensive branches
+- `MatronShared/Tests/ViewModelTests/VerificationCenterTests.swift`
+  — `ScriptedVerificationService` gains `scheduleCancelledIDs(_:)`,
+  2 new tests for cancelled-stream drain
+
+### How to validate the branch
+
+All SPM tests pass:
+```bash
+cd MatronShared && swift test
+```
+
+Mac signed build:
+```bash
+xcodebuild build -scheme MatronMac -destination 'platform=macOS' -allowProvisioningUpdates
+```
+
+Mac harness build (ad-hoc):
+```bash
+xcodebuild build -scheme MatronMac -destination 'platform=macOS' \
+    CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual \
+    CODE_SIGNING_REQUIRED=NO AD_HOC_CODE_SIGNING_ALLOWED=YES \
+    CODE_SIGN_ENTITLEMENTS="$PWD/MatronMac/App/MatronMac.Debug.AdHoc.entitlements"
+```
+
+Integration scenarios (still green):
+- `tests/integration/run-harness.sh matron-vs-matron-ui.sh` ✓
+- `tests/integration/run-harness.sh chat-list-sdk.sh` ✓
+- `tests/integration/run-harness.sh recovery-key-sdk.sh` ✓
+- `tests/integration/run-harness.sh verify-sdk-against-partner.sh`
+  ✗ (matrix-js-sdk same-user-verification race; documented session 5)
+
+### Things to NOT undo (specific to session 6)
+
+- Don't drop `userIdentity(fallbackToServer: true)` from
+  `startSAS`'s prelude — it's not optional cosmetics, it's the
+  workaround for an iOS-side rust-verification-machine bug that
+  silently drops `.ready` events when the partner's device_id
+  isn't in the local cache at request time.
+- Don't drop the `cancelledRequests()` stream — `routeSasCancelled`'s
+  no-active-continuation branch needs somewhere to broadcast,
+  otherwise stale banners reappear.
+- Don't merge `MatronMac.Debug.entitlements` and
+  `MatronMac.Debug.AdHoc.entitlements` into one — they have
+  different `keychain-access-groups` posture by signing mode and
+  the harness depends on having an ad-hoc-friendly file to point
+  `CODE_SIGN_ENTITLEMENTS=` at.
+- Don't replace the chat-list-banner-tap chooser with a direct-to-SAS
+  shape — the chooser's recovery-key path is the only in-chat-list
+  way to recover a device whose `verifyDone` flag is true but
+  `isThisDeviceVerified()` is false (which happens on every
+  sign-out + sign-in cycle since `loginPassword` wipes basePath
+  and `verifyDone` UserDefaults survives the wipe).
 
 ---
 
@@ -1048,11 +1321,17 @@ For the XCUITest scenarios:
 
 ## Where to pick up
 
-The session-5 close-out block at the top of this file ("Session 5 —
-matron-vs-matron-ui ✓ GREEN end-to-end") has the canonical ranked
-next steps. Below is the residual list of items NOT covered there
-that pre-date session 5 and remain open — read both lists before
-picking work.
+**Session 6 added "Open work for session 7" inside its own block (top
+of this file).** That's the canonical ranked next-steps list.
+Highest-priority items: XCUITest coverage for the chat-list chooser
+recovery-key path + reverse-direction matron-vs-matron + Help-menu
+already-verified guard. Mid-priority: a new `recovery-key-ui.sh`
+scenario script. Lower-priority: investigation of the iOS rust-
+verification-machine `.ready`-drop bug (workaround landed in
+`57e7c4c` but worth an upstream report).
+
+Below is the residual list of items from earlier sessions that
+remain open — read alongside the session-6 list.
 
 ### A. iOS sim — drive the user-tap paths post-fix
 
