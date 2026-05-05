@@ -48,7 +48,11 @@ private final class CountingVerificationServiceForChat: VerificationService, @un
 
     func isThisDeviceVerified() async throws -> Bool { true }
     func isUserVerified(matrixID: String) async throws -> UserVerificationResult { .unknown }
+    func hasOtherVerifiedDevices() async throws -> Bool { false }
     func incomingRequests() -> AsyncStream<VerificationRequestSummary> {
+        AsyncStream { $0.finish() }
+    }
+    func cancelledRequests() -> AsyncStream<String> {
         AsyncStream { $0.finish() }
     }
     func startSAS(withUser userID: String, deviceID: String?) -> AsyncStream<SasFlowState> {
@@ -86,7 +90,11 @@ private actor FakeVerificationServiceForChat: VerificationService {
     func isUserVerified(matrixID: String) async throws -> UserVerificationResult {
         userVerificationMap[matrixID, default: .unknown]
     }
+    func hasOtherVerifiedDevices() async throws -> Bool { false }
     nonisolated func incomingRequests() -> AsyncStream<VerificationRequestSummary> {
+        AsyncStream { $0.finish() }
+    }
+    nonisolated func cancelledRequests() -> AsyncStream<String> {
         AsyncStream { $0.finish() }
     }
     nonisolated func startSAS(withUser userID: String, deviceID: String?) -> AsyncStream<SasFlowState> {

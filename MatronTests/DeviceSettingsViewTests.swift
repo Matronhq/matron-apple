@@ -18,7 +18,11 @@ private actor FakeVerificationServiceForSettings: VerificationService {
         return deviceVerifiedReturn
     }
     func isUserVerified(matrixID: String) async throws -> UserVerificationResult { .unknown }
+    func hasOtherVerifiedDevices() async throws -> Bool { false }
     nonisolated func incomingRequests() -> AsyncStream<VerificationRequestSummary> {
+        AsyncStream { $0.finish() }
+    }
+    nonisolated func cancelledRequests() -> AsyncStream<String> {
         AsyncStream { $0.finish() }
     }
     nonisolated func startSAS(withUser userID: String, deviceID: String?) -> AsyncStream<SasFlowState> {
