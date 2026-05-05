@@ -209,6 +209,18 @@ struct MatronApp: App {
             bootstrapError = "Keychain access timed out — see docs/setup-ios.md"
             bootstrapDone = true
             return
+        } catch is CancellationError {
+            // Defensive: when the probe wins the race, `group.cancelAll()`
+            // cancels the still-pending `Task.sleep` in the timeout child.
+            // The cancelled sleep throws `CancellationError`, which the
+            // task group's implicit drain on body-return can rethrow out of
+            // `withThrowingTaskGroup`. Without this arm the success path
+            // would fall into the generic catch below and surface a bogus
+            // "Keychain probe failed" error. No-op when the loser's
+            // cancellation is silently swallowed (Swift version dependent);
+            // critical-fix when it isn't. Probe success has already been
+            // observed via `group.next()`, so it's safe to fall through to
+            // the post-probe bootstrap.
         } catch {
             bootstrapError = "Keychain probe failed: \(error.localizedDescription) — see docs/setup-ios.md"
             bootstrapDone = true
