@@ -132,6 +132,15 @@ struct MacChatListView: View {
         // the host. Sign-in screen + verify-gate are intentionally not
         // covered: a user without a session has nothing to sign out of,
         // and a user mid-verification gate is already on the verify path.
+        // File → New Chat (⌘N from the menu bar). The toolbar `+` button
+        // has its own .keyboardShortcut("n", modifiers: .command), but on
+        // macOS the menu-bar's ⌘N takes priority and posts via the
+        // command bus — so without a listener here the menu-bar shortcut
+        // and the menu item itself were silent no-ops (PR #1 cursor[bot]
+        // findings — both Commands.swift and MacChatListView).
+        .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.newChat))) { _ in
+            showingNewChat = true
+        }
         .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.signOut))) { _ in
             onSignOut?()
         }
