@@ -1,12 +1,18 @@
 # Handover — Matron iOS+Mac, Phase 3 + integration harness
 
-**As of 2026-05-05 mid-day (session 6)**, after six working sessions
-on `phase-3-e2ee-verification`. Session 6 was a heavy manual-testing
-+ UX-polish + bug-fixing pass on top of session 5's matron-vs-matron-
-ui green state. Eleven product-code commits + one SPM-test-coverage
-commit. The branch is in good shape to PR, but several UX-visible
-gaps were found and fixed live, and there are real automated-test
-gaps for the new code paths. See "Session 6" block below.
+**As of 2026-05-05 early afternoon (session 7)**, after seven working
+sessions on `phase-3-e2ee-verification`. Session 7 picked up the
+"Open work for session 7 — Priority A" list session 6 left, and
+closed all three items end-to-end. Two new scenario scripts +
+a Node orchestrator + one SwiftUI snapshot test on the Mac side.
+A real iOS production bug was uncovered + fixed by the new
+reverse-direction test (nested `NavigationStack` inside iOS
+`RecoveryKeyView` was breaking pushed navigation from the verify
+gate — the user manually reproduced "switches to empty screen, then
+immediately switches back"). All session-7 work is **uncommitted on
+disk** as of handover — see "Open work for session 8" below for the
+commit ordering recommendation. Previous block (session 6) is also
+worth reading for the broader Phase 3 story.
 
 **Session 5** closed out with `matron-vs-matron-ui` GREEN end-to-end
 alongside the 3 SDK scenarios — full SAS round trip with both peers
@@ -135,6 +141,211 @@ re-litigate without reading the spec):
   iOS-as-requester signs in, taps the verify-gate button, calls
   `startSAS`, and sends `m.key.verification.request` over to-device
   successfully — i.e., the iOS requester half is working end-to-end.
+
+---
+
+## Session 7 — Priority A test coverage; real iOS NavStack bug fix; Node harness orchestrator
+
+**TL;DR for the next agent:** session 6 closed out with a "Priority A
+— XCUITest gaps" list of three tests. Session 7 delivered all three
+(in slightly different shapes than session 6 specified — the
+chooser test became a snapshot rather than XCUITest, and #1 became
+verify-gate restore rather than chat-list-banner restore; rationale
+inline below). The reverse-direction test surfaced a real iOS bug
+(nested NavigationStack in `RecoveryKeyView`) that had never been
+caught because the Mac equivalent doesn't have a nested stack and
+no prior automated coverage drove iOS through `.generate` from the
+verify gate. Branch is in better shape than session 6 described:
+two more scenarios green, one production bug fixed, harness
+runtime cut substantially via team signing + a Node orchestrator
+that brings Docker up once for the whole batch instead of per-
+scenario.
+
+**Everything is uncommitted on disk** — `git status` shows 11
+modified files + 7 new files + 1 new snapshot directory. See
+"Open work for session 8" for the recommended commit ordering.
+
+### Setup state for the next agent (deltas from session 6)
+
+- Same Docker harness on `http://localhost:6167`, container
+  `matron-test-server`, same `tests/integration/docker/docker-compose.yml`.
+- New convenience entry-point: `node tests/integration/run-all-ui.mjs`
+  brings Docker up once, registers `@matron1` + `@matron2`
+  (passwords `matron1-test-pw` / `matron2-test-pw` — pattern is
+  `<user>-test-pw`), runs both new UI scenarios sequentially with
+  the right user per scenario, tears Docker down on exit. ~3 min
+  wall-clock for the happy-path batch.
+- Single-scenario invocation still works via the existing
+  `tests/integration/run-harness.sh <scenario>.sh`. Session 7
+  added `recovery-key-restore-ui.sh` and `reverse-direction-ui.sh`
+  to its auto-skip-bootstrap-anchor list.
+- **Harness now uses team signing** (`-allowProvisioningUpdates`
+  with `DEVELOPMENT_TEAM=4LJ7WRRRFD`) instead of ad-hoc signing.
+  TCC grants the Accessibility/Automation permission to the test
+  runner once per stable signature; with team signing, that
+  signature persists across rebuilds, so TouchID is asked once and
+  never again. The `MatronMac.Debug.AdHoc.entitlements` file is
+  no longer referenced by the new scenario scripts but stays in
+  the repo for backwards compat with `verify-mac-ui-against-partner.sh`
+  and the original `matron-vs-matron-ui.sh` (those still use ad-hoc).
+- iOS sim UDID unchanged: `337C3A3A-4191-4A51-9513-93F5805276EC`
+  (iPhone 17, iOS 26.4.1).
+
+### What was delivered (all uncommitted)
+
+**New tests / scenarios:**
+
+| Path | Type | Status |
+|------|------|--------|
+| `MatronMacUITests/RecoveryKeyRestoreUITests.swift` | XCUITest | ✓ green via `recovery-key-restore-ui.sh` |
+| `MatronMacUITests/ReverseDirectionMacUITests.swift` | XCUITest (Mac as requester) | ✓ green via `reverse-direction-ui.sh` |
+| `MatronUITests/ReverseDirectionIOSUITests.swift` | XCUITest (iOS as trust anchor) | ✓ green (paired with Mac above) |
+| `MatronMacTests/MacVerifyDeviceChooserSnapshotTests.swift` | SwiftUI snapshot | ✓ green; baselines recorded |
+| `MatronMacTests/__Snapshots__/MacVerifyDeviceChooserSnapshotTests/` | 6 PNG baselines | new dir, 6 files |
+| `tests/integration/scenarios/recovery-key-restore-ui.sh` | new scenario script | ✓ |
+| `tests/integration/scenarios/reverse-direction-ui.sh` | new scenario script | ✓ |
+| `tests/integration/run-all-ui.mjs` | Node batched runner | ✓ |
+
+**Production code touched:**
+
+| File | What changed |
+|------|--------------|
+| `Matron/Features/Verification/RecoveryKeyView.swift` | (1) Removed inner `NavigationStack` — was nested with the parent and broke pushed navigation; (2) added 6 missing accessibility identifiers (`recoverykey.copy`, `recoverykey.acknowledgeSaved`, `recoverykey.generate`, `recoverykey.continue`, `recoverykey.confirm`, `recoverykey.reenterField`); (3) added `recoverykey.generatedKey` to the `Text` showing the key so XCUITest can read it without a pasteboard prompt. |
+| `Matron/Features/Verification/VerificationBanner.swift` | Added `verifybanner.accept` accessibility identifier. |
+| `Matron/Features/Onboarding/PostLoginVerificationView.swift` | Switched the "first device — generate a key" Button from plain text to `.buttonStyle(.bordered)` for tap reliability + clearer affordance. |
+| `MatronMac/App/MatronMacApp.swift` | Refactored the chooser body of `HelpMenuVerifyDeviceSheet` to delegate to a new standalone `MacVerifyDeviceChooser` view (testability). Sheet keeps ownership of post-pick state mutations. |
+| `MatronMac/Features/Verification/MacVerifyDeviceChooser.swift` (new) | Extracted chooser body — pure view that takes `hasOtherDevices: Bool` + 3 callbacks. Snapshot-tested. |
+| `MatronMac/Features/Verification/MacRecoveryKeyView.swift` | Added 2 missing accessibility identifiers on the restore form (`recoverykey.restorePaste`, `recoverykey.restore`) so the new `RecoveryKeyRestoreUITests` can target them. |
+
+**Pre-existing build breaks fixed (uncovered while running tests):**
+
+Session 6 added `hasOtherVerifiedDevices()` and `cancelledRequests()` to `VerificationService` and updated the *shared* SPM fake (commit `1322554`), but missed four host-app fakes. Both Mac AND iOS schemes wouldn't compile until these were stubbed:
+
+- `MatronMacTests/MacDeviceSettingsViewTests.swift` (`FakeVerificationServiceForSettings`)
+- `MatronMacTests/MacChatViewTests.swift` (`CountingVerificationServiceForChat` + `FakeVerificationServiceForChat`)
+- `MatronTests/DeviceSettingsViewTests.swift` (`FakeVerificationServiceForSettings`)
+- `MatronTests/ChatViewBindingTests.swift` (`CountingVerificationServiceForChat` + `FakeVerificationServiceForChat`)
+
+Stubbed implementations return `false` / empty stream — sufficient for view tests that don't exercise these surfaces.
+
+**Harness changes:**
+
+- `tests/integration/run-harness.sh` — added `recovery-key-restore-ui.sh` and `reverse-direction-ui.sh` to the auto-skip-bootstrap-anchor list.
+
+### Production bugs caught + fixed live during this session
+
+1. **iOS `RecoveryKeyView` had a nested `NavigationStack`** inside the parent `PostLoginVerificationView`'s NavStack. iOS would briefly mount the destination view then immediately pop back to the verify gate (user manually reproduced: "switches to another empty screen and then immediately switches back"). Mac doesn't have this bug because `MacRecoveryKeyView` doesn't host an inner NavStack. Fix: removed the inner stack from iOS `RecoveryKeyView.body`; wrapped the one sheet call site (`ChatListView.swift:659`) in its own NavStack to preserve the title bar there.
+
+2. **iOS verify-gate "first device" Button was plain-text + ~20pt tall** — XCUITest tap synthesis on iOS 26 simulator was unreliable (tap fired but action didn't always register). Bumping to `.buttonStyle(.bordered)` gives a 34pt-tall hit target. The actual user-visible improvement is small (was tappable manually, just looked less affordant); main payoff is test reliability.
+
+3. **iOS SwiftUI Toggle `.tap()` doesn't reliably flip state on iOS 26.4 sim.** The acknowledge toggle in the recovery-key-show step was getting tapped (synthesized event) but the `@Binding` wouldn't update. Fixed test-side: coordinate-based tap on the right edge (where the switch thumb lives), with a `swipeRight()` fallback if the value still hasn't flipped. Added a value-readback assert so future regressions surface immediately rather than silently skipping the toggle. Not a production bug per se but worth knowing.
+
+4. **iOS pasteboard read triggers a system-modal "X would like to paste" prompt** that XCUITest can't dismiss without `XCUIInterruptionMonitor` glue. The original test approach (tap Copy → read `UIPasteboard.general.string` → type back into reenter) hung the test for 126s waiting for the user to tap Allow. New approach: read the displayed key from `app.staticTexts["recoverykey.generatedKey"].label` directly, no pasteboard involved. The Copy button itself is no longer exercised by the test (still works in production; just not tapped during reverse-direction).
+
+### Harness improvements
+
+- **Single Docker bring-up per batch** via `tests/integration/run-all-ui.mjs` (Node, ~140 LOC, no new deps — uses Node 18+ built-ins). Saves ~60s per scenario vs `run-harness.sh`-per-scenario.
+- **Per-scenario user isolation** — `matron1` for recovery-key-restore, `matron2` for reverse-direction. Server-side cross-signing state from one scenario can't leak into the next; client-side state wipe is already handled by each scenario's existing `rm -rf` block at the top.
+- **Team-identity signing** for harness builds — TCC permission persists across rebuilds, so TouchID is asked once and never again on the dev's machine.
+- **75s Mac wait timeout** in `ReverseDirectionMacUITests` (down from 300s). iOS deterministically fails in ~28s, so 75s buys plenty of headroom on warm-sim happy paths (~40s) while keeping failure cycles short.
+- **Why a Node orchestrator and not bash:** scenarios are still bash, but the orchestrator (Docker setup, user registration, sequential dispatch, summary) is Node — closer to where the existing `partner.mjs` lives. We discussed this explicitly: shell stays fine for ~150 LOC scenarios, but the orchestration glue grows fastest as more scenarios land, and Node gives us proper data structures + error handling without adding any runtime deps. Bash stays as the per-scenario implementation language.
+
+### Decisions on session 6's "Priority A" list (and what was skipped)
+
+- **A#1 `test_chatListChooser_recoveryKeyPath` → reframed as `testRecoveryKeyRestoreViaVerifyGate`.** The handover spec said "sign out, sign back in, chat-list banner appears" — but `MatronMacApp.signOut()` clears `verifyDone`, so sign-back-in lands at the verify gate, not the chat list. The chat-list-banner state (verifyDone=true + isThisDeviceVerified=false) only happens via app-quit + selective state wipe, which the user pointed out is a legacy-upgrade-only state and **this app has never been released**. So no real users will hit it. The verify-gate restore path covers the same `recoverykey.restore` + `Restore` + verified production code; just reached via a more natural surface for new users. ✓ green.
+- **A#2 reverse-direction matron-vs-matron** — implemented as spec'd: iOS as trust-anchor responder (signs in first, generates key, prints `MATRON_IOS_TRUST_ANCHOR_READY` to stdout, host-watcher creates `/Users/Shared/matron-ios-ready`, Mac waits, signs in, drives SAS as requester). Inverse of the original `matron-vs-matron-ui.sh`. Surfaced the iOS NavStack bug above. ✓ green end-to-end.
+- **A#3 chooser button states → snapshot test, not XCUITest.** The chooser is reachable via the same legacy-only state as A#1's chat-list path — XCUITest would need state-injection trickery. Refactored the chooser into `MacVerifyDeviceChooser` and added two snapshot tests covering the `hasOtherDevices=true` and `false` arms. Same logical guarantee, ~50 LOC vs ~150 LOC + new scenario. ✓ green; baselines recorded.
+
+### How to validate the branch end-to-end
+
+The fast path:
+```bash
+node tests/integration/run-all-ui.mjs
+```
+~3 min, runs both new scenarios. Expected output ends with:
+```
+Summary
+  ✓ PASS    recovery-key-restore-ui.sh    (user: @matron1, rc=0)
+  ✓ PASS    reverse-direction-ui.sh       (user: @matron2, rc=0)
+```
+
+Snapshot tests (no Docker needed):
+```bash
+xcodebuild test \
+    -scheme MatronMac -destination 'platform=macOS' \
+    -only-testing:MatronMacTests/MacVerifyDeviceChooserSnapshotTests \
+    -allowProvisioningUpdates
+```
+
+The original `matron-vs-matron-ui.sh` and other session-6 scenarios are unchanged and should still work via `tests/integration/run-harness.sh <scenario>.sh`.
+
+### Open work for session 8
+
+**Priority A — commit + PR the session-7 work:**
+
+1. Commit the production-code changes (the 4 modified `*.swift` files + `MacVerifyDeviceChooser.swift` + `MacRecoveryKeyView.swift` accessibility-id additions) as one logical commit. The iOS NavStack fix is the most important — flag it clearly in the commit message because it's a real user-visible bug fix.
+2. Commit the new tests + scenario scripts + orchestrator as a second commit.
+3. Commit the snapshot baselines as a third commit (they're binary PNGs; a separate commit keeps the diff readable).
+4. Commit the four pre-existing-fake fixes as a fourth commit explicitly noting "fixes session-6 build breaks introduced by `1322554` only updating the SPM fake".
+5. Then either rebase + force-push to PR #3, or merge into main if the PR is being abandoned.
+
+**Priority B — Priority B/C tests from session 6's list** (still un-touched):
+
+- `test_recoveryKey_reenterMustMatch` — pure single-device, simple
+- `test_recoveryKey_restoreError_invalidKey` — error branch coverage
+- `test_helpMenu_alreadyVerified` — UX-only
+- `test_cancelled_closeButton` — UX-only
+
+Each is ~80-100 LOC. Recommend doing as a follow-up batch only if the underlying surfaces gain new bugs — no current evidence they're broken.
+
+**Priority C — investigate dead code uncovered by session 7's analysis:**
+
+- `MacUnverifiedDeviceBanner` (in `MatronMac/Features/Verification/`) and the chat-list code path that surfaces it (`MacChatListView.swift` showUnverified branch) are **only reachable via the legacy-upgrade state that doesn't exist in a never-released app.** Worth either deleting or explicitly gating behind a `#if DEBUG` flag with a comment explaining when it would activate. Same applies to the iOS chat-list chooser at `Matron/Features/ChatList/ChatListView.swift:680-728` (the inline chooser body that mirrors `MacVerifyDeviceChooser`). Both surfaces have working code paths, just no users.
+- The "Things to NOT undo" bullet from session 6 about the chat-list-banner chooser ("happens on every sign-out + sign-in cycle since loginPassword wipes basePath and verifyDone UserDefaults survives the wipe") is **inaccurate** — `signOut()` does clear verifyDone (MatronMacApp.swift:328). The chat-list-banner state only happens with app force-quit + external state surgery, not normal sign-out + sign-in. Worth correcting that note when consolidating Priority C above.
+
+**Priority D — carried forward from session 6:**
+
+- `verify-sdk-against-partner.sh` regression (matrix-js-sdk same-user-verification race) — still un-fixed, partner-side workaround needs the rust olm machine poll
+- iOS rust-verification-machine drops `.ready` event upstream bug — workaround landed in session 6's `57e7c4c`, still no upstream report filed
+
+### Things to NOT undo (specific to session 7)
+
+- **Don't re-add the inner `NavigationStack` to iOS `RecoveryKeyView`** — it nests with the parent NavStack from `PostLoginVerificationView` and immediately pops the destination. The user manually reproduced this on iOS 26.4 sim. The `ChatListView.swift:659` sheet call site wraps in its own NavStack to preserve the title bar there; if you change the sheet to push from a parent NavStack instead, drop that wrapper.
+- **Don't switch the iOS verify-gate "first device" Button back to plain text** — XCUITest tap synthesis on iOS 26.4 sim is unreliable on plain-text buttons under ~30pt tall. `.buttonStyle(.bordered)` is also a UX win (clearer affordance for a primary action).
+- **Don't switch the iOS reverse-direction test back to UIPasteboard for capturing the recovery key** — iOS shows a system-modal paste prompt that hangs unattended runs. Read from `app.staticTexts["recoverykey.generatedKey"].label` instead.
+- **Don't drop the toggle value-readback** in `ReverseDirectionIOSUITests.swift` — iOS SwiftUI Toggle's `.tap()` is flaky on iOS 26 sim; the coordinate-tap-then-swipeRight fallback + post-condition assert catches the silent-failure mode.
+- **Don't switch harness scenarios back to ad-hoc signing** — TouchID would be required on every rebuild. Team signing (4LJ7WRRRFD) keeps TCC permission across rebuilds.
+- **Don't merge `MacVerifyDeviceChooser` back into `HelpMenuVerifyDeviceSheet`** — the extraction is what makes the snapshot test possible (the sheet's `Phase` state machine is `private` and not testable in isolation).
+
+### Files changed this session (~600 LOC + 6 new files)
+
+**Product code (uncommitted):**
+- `Matron/Features/Verification/RecoveryKeyView.swift` — drop inner NavStack, add 7 accessibility IDs
+- `Matron/Features/Verification/VerificationBanner.swift` — add `verifybanner.accept`
+- `Matron/Features/Onboarding/PostLoginVerificationView.swift` — `.buttonStyle(.bordered)` on `verifygate.generateNew`
+- `Matron/Features/ChatList/ChatListView.swift` — wrap sheet recovery-key case in `NavigationStack`
+- `MatronMac/App/MatronMacApp.swift` — refactor `chooserView` to delegate to `MacVerifyDeviceChooser`
+- `MatronMac/Features/Verification/MacVerifyDeviceChooser.swift` (new) — extracted chooser view
+- `MatronMac/Features/Verification/MacRecoveryKeyView.swift` — add 2 restore-form accessibility IDs
+
+**Tests (uncommitted, all new):**
+- `MatronMacUITests/RecoveryKeyRestoreUITests.swift`
+- `MatronMacUITests/ReverseDirectionMacUITests.swift`
+- `MatronUITests/ReverseDirectionIOSUITests.swift`
+- `MatronMacTests/MacVerifyDeviceChooserSnapshotTests.swift`
+- `MatronMacTests/__Snapshots__/MacVerifyDeviceChooserSnapshotTests/` (6 PNGs)
+
+**Pre-existing fake fixes (uncommitted):**
+- `MatronMacTests/MacDeviceSettingsViewTests.swift`
+- `MatronMacTests/MacChatViewTests.swift`
+- `MatronTests/DeviceSettingsViewTests.swift`
+- `MatronTests/ChatViewBindingTests.swift`
+
+**Harness (uncommitted):**
+- `tests/integration/run-all-ui.mjs` (new, ~140 LOC)
+- `tests/integration/scenarios/recovery-key-restore-ui.sh` (new)
+- `tests/integration/scenarios/reverse-direction-ui.sh` (new)
+- `tests/integration/run-harness.sh` — added two scenarios to auto-skip-bootstrap list
 
 ---
 
@@ -403,12 +614,19 @@ Integration scenarios (still green):
   different `keychain-access-groups` posture by signing mode and
   the harness depends on having an ad-hoc-friendly file to point
   `CODE_SIGN_ENTITLEMENTS=` at.
-- Don't replace the chat-list-banner-tap chooser with a direct-to-SAS
-  shape — the chooser's recovery-key path is the only in-chat-list
-  way to recover a device whose `verifyDone` flag is true but
-  `isThisDeviceVerified()` is false (which happens on every
-  sign-out + sign-in cycle since `loginPassword` wipes basePath
-  and `verifyDone` UserDefaults survives the wipe).
+- _(Corrected by session 7 — see session-7 block above for context.)_
+  The chat-list-banner-tap chooser surface
+  (`MacUnverifiedDeviceBanner` → `HelpMenuVerifyDeviceSheet.chooserView`)
+  was added to recover devices in the state `verifyDone=true` AND
+  `isThisDeviceVerified()=false`. Session 7 verified the original
+  description of when this happens was wrong: `MatronMacApp.signOut()`
+  *does* clear `verifyDone` (line 328), so a normal File → Sign Out →
+  sign-back-in cycle lands at the verify gate, NOT the chat list with
+  banner. The split state is only reachable via app force-quit +
+  external state surgery (admin-revoked device, manual `rm -rf basePath`
+  while UserDefaults persists). For a never-released app there are no
+  upgrade paths to this state either. **Consider deletion** rather
+  than preservation — session-8 Priority C.
 
 ---
 
