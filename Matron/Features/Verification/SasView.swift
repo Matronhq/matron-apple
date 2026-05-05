@@ -29,6 +29,14 @@ struct SasView: View {
     /// and then the user was permanently stuck because the parent never
     /// learned the flow had completed.
     var onFinished: () -> Void = {}
+    /// Fired when the user taps Close on the `.cancelled` terminal
+    /// state. Separate from `onFinished` because the parent's success-
+    /// side reaction (e.g. `markVerifyDone(for:)` on the onboarding
+    /// gate, `markCompleted(_:)` on the chat-list banner) is outcome-
+    /// dependent: we don't want to flip a "device verified" flag just
+    /// because a SAS got cancelled. Default is a no-op so callers that
+    /// don't surface a Close button stay unbroken.
+    var onCancelled: () -> Void = {}
 
     var body: some View {
         VStack(spacing: 24) {
@@ -55,6 +63,16 @@ struct SasView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                // Without an explicit Close, a cancelled SAS leaves the
+                // user staring at a sheet they have to swipe-down to
+                // dismiss AND leaves a stale banner under it. The
+                // button surfaces both: callers wire `onCancelled` to
+                // either pop the navigation (verify-gate path) or
+                // drain the banner + close the sheet (chat-list
+                // incoming-request path).
+                Button("Close") { onCancelled() }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("sas.cancelClose")
             }
         }
         .padding()

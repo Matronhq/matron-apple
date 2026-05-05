@@ -137,7 +137,8 @@ struct PostLoginVerificationView: View {
                     SelfVerifySasDestination(
                         service: dependencies.verificationService(for: session),
                         userID: session.userID,
-                        onFinished: onCompleted
+                        onFinished: onCompleted,
+                        onCancelled: { path.removeLast() }
                     )
                 }
             }
@@ -170,6 +171,7 @@ private struct SelfVerifySasDestination: View {
     let service: VerificationService
     let userID: String
     let onFinished: () -> Void
+    let onCancelled: () -> Void
 
     @State private var viewModel: SasViewModel?
 
@@ -179,7 +181,8 @@ private struct SelfVerifySasDestination: View {
                 SasView(
                     viewModel: vm,
                     title: "Verify this device",
-                    onFinished: onFinished
+                    onFinished: onFinished,
+                    onCancelled: onCancelled
                 )
             } else {
                 ProgressView("Starting verification…")

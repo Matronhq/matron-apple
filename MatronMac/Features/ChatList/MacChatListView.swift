@@ -434,19 +434,19 @@ struct MacChatListView: View {
         // ChatListView for the full rationale.
         let svc: any VerificationService = verificationCenter?.service
             ?? deps.verificationService(for: session)
+        // Both terminal states (verified + cancelled) drain pending +
+        // close the sheet — leaving a stale banner under a cancelled
+        // SAS is the same UX bug as leaving a stale banner over a
+        // verified one. The closure is the same for both.
+        let drainAndDismiss: () -> Void = {
+            verificationCenter?.markCompleted(summary)
+            sasSummary = nil
+        }
         MacIncomingRequestSasSheet(
             service: svc,
             requestID: summary.id,
-            onFinished: {
-                // Drain the now-completed flow from the center's
-                // pending list so the sidebar banner clears. Without
-                // this, a successful SAS leaves a stale "Verify this
-                // device" banner the user has to dismiss manually
-                // (and that dismissal would try to cancel an
-                // already-finished flow on the SDK).
-                verificationCenter?.markCompleted(summary)
-                sasSummary = nil
-            }
+            onFinished: drainAndDismiss,
+            onCancelled: drainAndDismiss
         )
     }
 }
@@ -461,6 +461,7 @@ private struct MacIncomingRequestSasSheet: View {
     let service: VerificationService
     let requestID: String
     let onFinished: () -> Void
+    let onCancelled: () -> Void
 
     @State private var viewModel: SasViewModel?
 
@@ -470,7 +471,8 @@ private struct MacIncomingRequestSasSheet: View {
                 MacSasView(
                     viewModel: vm,
                     title: "Verify device",
-                    onFinished: onFinished
+                    onFinished: onFinished,
+                    onCancelled: onCancelled
                 )
             } else {
                 ProgressView("Starting verification…")

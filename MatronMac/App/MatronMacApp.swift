@@ -412,21 +412,56 @@ private struct HelpMenuVerifyDeviceSheet: View {
     let onFinished: () -> Void
 
     @State private var viewModel: SasViewModel?
+    /// `true` once the verified-state probe has resolved AND this device
+    /// is already verified; in that branch we render an "already verified"
+    /// confirmation instead of initiating a fresh SAS. `nil` while the
+    /// probe is in flight so the loading state stays neutral.
+    @State private var alreadyVerified: Bool? = nil
 
     var body: some View {
         Group {
-            if let vm = viewModel {
+            if alreadyVerified == true {
+                // Tapping Help → Verify This Device on an already-verified
+                // device used to silently kick off a redundant SAS — the
+                // user's correct mental model is "this menu item is
+                // contextual; if I'm verified it should tell me so."
+                VStack(spacing: 16) {
+                    Image(systemName: "checkmark.shield.fill")
+                        .font(.system(size: 60))
+                        .foregroundStyle(.green)
+                    Text("This device is already verified")
+                        .font(.title2).bold()
+                    Text("If you want to verify a different device, sign in there and start the verification from that device's onboarding gate.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    Button("Close") { onFinished() }
+                        .keyboardShortcut(.return)
+                        .buttonStyle(.borderedProminent)
+                }
+                .padding(24)
+                .frame(width: 480, height: 320)
+            } else if let vm = viewModel {
                 MacSasView(
                     viewModel: vm,
                     title: "Verify this device",
-                    onFinished: onFinished
+                    onFinished: onFinished,
+                    onCancelled: onFinished
                 )
             } else {
                 ProgressView("Starting verification…")
             }
         }
         .task(id: userID) {
-            guard viewModel == nil else { return }
+            guard viewModel == nil, alreadyVerified == nil else { return }
+            // Probe verified state before starting the SAS dance — see
+            // `alreadyVerified`'s declaration for rationale.
+            let verified = (try? await service.isThisDeviceVerified()) ?? false
+            if verified {
+                alreadyVerified = true
+                return
+            }
+            alreadyVerified = false
             let stream = service.startSAS(withUser: userID, deviceID: nil)
             viewModel = SasViewModel(
                 stream: stream,

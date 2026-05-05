@@ -114,11 +114,15 @@ struct MacPostLoginVerificationView: View {
                     // construction to `MacSelfVerifySasDestination` so
                     // the SasViewModel + stream survive parent
                     // re-renders. See iOS `PostLoginVerificationView`
-                    // for full rationale.
+                    // for full rationale. `onCancelled` pops back to
+                    // the verify-gate buttons so a cancelled SAS
+                    // doesn't strand the user inside the destination
+                    // with no way out.
                     MacSelfVerifySasDestination(
                         service: dependencies.verificationService(for: session),
                         userID: session.userID,
-                        onFinished: onCompleted
+                        onFinished: onCompleted,
+                        onCancelled: { path.removeLast() }
                     )
                 }
             }
@@ -136,6 +140,7 @@ private struct MacSelfVerifySasDestination: View {
     let service: VerificationService
     let userID: String
     let onFinished: () -> Void
+    let onCancelled: () -> Void
 
     @State private var viewModel: SasViewModel?
 
@@ -145,7 +150,8 @@ private struct MacSelfVerifySasDestination: View {
                 MacSasView(
                     viewModel: vm,
                     title: "Verify this device",
-                    onFinished: onFinished
+                    onFinished: onFinished,
+                    onCancelled: onCancelled
                 )
             } else {
                 ProgressView("Starting verification…")

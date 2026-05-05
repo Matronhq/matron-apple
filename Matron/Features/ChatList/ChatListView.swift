@@ -223,6 +223,15 @@ struct ChatListView: View {
                     onFinished: {
                         verifyThisDeviceContext = nil
                         Task { await evaluateThisDeviceVerification() }
+                    },
+                    onCancelled: {
+                        // Same teardown as onFinished — close the sheet
+                        // and re-evaluate verification status. We don't
+                        // distinguish the cancel vs success paths here
+                        // because the banner-clearing semantics are
+                        // identical: post-close we re-read isThisDeviceVerified.
+                        verifyThisDeviceContext = nil
+                        Task { await evaluateThisDeviceVerification() }
                     }
                 )
             } else {
@@ -384,19 +393,19 @@ struct ChatListView: View {
         // every other consumer in the app.
         let svc: any VerificationService = verificationCenter?.service
             ?? deps.verificationService(for: session)
+        // Both terminal states (verified + cancelled) drain pending +
+        // close the sheet — leaving a stale banner under a cancelled
+        // SAS is the same UX bug as leaving a stale banner over a
+        // verified one. The closure is the same for both.
+        let drainAndDismiss: () -> Void = {
+            verificationCenter?.markCompleted(summary)
+            sasSummary = nil
+        }
         IncomingRequestSasSheet(
             service: svc,
             requestID: summary.id,
-            onFinished: {
-                // Drain the now-completed flow from the center's
-                // pending list so the chat-list banner clears. Without
-                // this, a successful SAS leaves a stale "Verify this
-                // device" banner the user has to dismiss manually
-                // (and that dismissal would try to cancel an
-                // already-finished flow on the SDK).
-                verificationCenter?.markCompleted(summary)
-                sasSummary = nil
-            }
+            onFinished: drainAndDismiss,
+            onCancelled: drainAndDismiss
         )
     }
 
@@ -551,6 +560,7 @@ private struct IncomingRequestSasSheet: View {
     let service: VerificationService
     let requestID: String
     let onFinished: () -> Void
+    let onCancelled: () -> Void
 
     @State private var viewModel: SasViewModel?
 
@@ -560,7 +570,8 @@ private struct IncomingRequestSasSheet: View {
                 SasView(
                     viewModel: vm,
                     title: "Verify device",
-                    onFinished: onFinished
+                    onFinished: onFinished,
+                    onCancelled: onCancelled
                 )
             } else {
                 ProgressView("Starting verification…")
@@ -592,6 +603,7 @@ private struct SelfVerifyThisDeviceSheet: View {
     let service: VerificationService
     let userID: String
     let onFinished: () -> Void
+    let onCancelled: () -> Void
 
     @State private var viewModel: SasViewModel?
 
@@ -601,7 +613,8 @@ private struct SelfVerifyThisDeviceSheet: View {
                 SasView(
                     viewModel: vm,
                     title: "Verify this device",
-                    onFinished: onFinished
+                    onFinished: onFinished,
+                    onCancelled: onCancelled
                 )
             } else {
                 ProgressView("Starting verification…")
