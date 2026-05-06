@@ -261,7 +261,7 @@ shipped Phase 4 Task 1 in full:
   own, or merge will need admin-override again per the session 9/10
   pattern.
 
-**Phase 4 progress (mid-session — 10 commits on `phase-4-task-1`, all green; iOS side substantially done):**
+**Phase 4 progress (mid-session — 13 commits on `phase-4-task-1`, all green; both iOS + Mac wiring substantially done bar Mac silent-push body construction):**
 - Task 1 (NSE target + Push protocol scaffolding): **DONE** (3 commits).
 - Task 2 (PushServiceLive): **DONE** — `30d6421`. Bridges the
   protocol to `Client.setPusher(...)` / `Client.deletePusher(...)`.
@@ -349,20 +349,66 @@ shipped Phase 4 Task 1 in full:
   Sygnal + APNs auth keys + Cloudflare Tunnel setup; Task 9b adds
   manual test scenarios. Both are no-code; can land separately
   whenever the dev-boxer / matron-server Sygnal infra is ready.
-- Tasks 10-12 (Mac in-process notification handler / Mac APNs
-  registration / `aps-environment` entitlement): **PENDING — Mac
-  side.** Mac handles pushes in-process (no NSE); the host app's
-  `UNUserNotificationCenterDelegate` calls into `PushDecoder.live`
-  directly. Wiring is parallel to iOS but uses
-  `NSApplicationDelegate` for the token capture and the
-  `.singleProcess(syncService: SyncService)` flavour of
-  `notificationClient(processSetup:)` (where iOS NSE uses
-  `.multipleProcesses`). Task 11's `MacPushBootstrap` wraps the
-  cross-platform `PushBootstrap` for Mac; Task 12 lands the
-  `aps-environment` entitlement on `MatronMac.entitlements` (and
-  the Debug entitlements file). All three need actual Mac hardware
-  + signing-team setup to validate end-to-end, so they're a clean
-  next-session pickup point.
+- Task 10 (Mac in-process notification handler): **DONE** —
+  `9455e9e`. `MacNotificationHandler` (`@MainActor`,
+  `UNUserNotificationCenterDelegate`). `willPresent` returns
+  presentation options for foreground in-app banners; `didReceive`
+  extracts `room_id` from userInfo, activates NSApp, brings the
+  main window forward, posts a new `.matronOpenRoom` Notification
+  carrying the room ID. `MacChatListView.onReceive` flips the
+  existing `selectedSummaryID` to drive the NavigationSplitView
+  detail column. New `Notification.Name.matronOpenRoom` lives
+  alongside (not inside) the existing `MatronCommand: String,
+  CaseIterable` rawValue-derived names because case-with-associated-
+  value (`.openRoom(String)`) precludes raw values. `MatronMacTests/MacNotificationHandlerTests`
+  pins the post + the no-roomID-no-post contract.
+- Task 11 (Mac APNs registration / NSApplicationDelegateAdaptor):
+  **DONE** — same commit `9455e9e`. `MatronMacAppDelegate` is
+  `@MainActor`, conforms to NSApplicationDelegate.
+  `applicationDidFinishLaunching` installs the shared
+  MacNotificationHandler as UNUserNotificationCenter delegate;
+  `didRegisterForRemoteNotificationsWithDeviceToken` writes into
+  `PushTokenStore.shared`. MatronMacApp adopts the adaptor and
+  adds a `.task(id: session.userID) { await bootstrapPush(for:) }`
+  on the post-verify branch + a `bootstrapPush(for:)` helper that
+  mirrors the iOS shape. Task 8 best-effort pusher unregister
+  also fires from `signOut(activeSession:)`.
+- Task 12 (Mac `aps-environment` entitlement): **DONE** —
+  `6955cf9`. Two values, one per build configuration (matches
+  the existing two-files split that already drives sandbox-on-
+  Release / sandbox-off-Debug):
+  `MatronMac.Debug.entitlements` → `aps-environment: development`
+  (pairs with Sygnal `chat.matron.mac.dev` / `use_sandbox: true`);
+  `MatronMac.entitlements` → `aps-environment: production` (pairs
+  with `chat.matron.mac` / `use_sandbox: false`).
+
+**Deferred — silent-push body construction on Mac.** The Phase 4
+plan envisioned `MacNotificationHandler.willPresent` rewriting the
+displayed body with the decoded cleartext, but Apple's
+`userNotificationCenter(_:willPresent:withCompletionHandler:)`
+only takes presentation options in the completion — content
+mutations there are dropped on the floor. Mac's equivalent of iOS
+NSE's content rewrite is to handle the silent payload in
+`NSApplicationDelegate.application(_:didReceiveRemoteNotification:)`,
+decode the event via PushDecoder, and schedule a fresh LOCAL
+`UNNotificationRequest` with the cleartext body. That pipeline is
+deferred from this session's work because:
+- It needs the decoder lazy-installed onto the app delegate
+  (chicken-and-egg with session restore — the AppDelegate is
+  built before the user signs in, but the decoder needs a
+  UserSession + ClientProvider).
+- Validation requires Sygnal reachable + APNs auth keys + a real
+  Mac (the unit-test bundle can't receive APNs).
+- The "right" design pass (where to store the decoder, lifecycle
+  on sign-out / multi-account switch, error surfacing) is its
+  own chunk of work that's cleaner to do as a separate followup
+  alongside the Sygnal infra rather than fold into Phase 4.
+
+The structurally-sound bits ship in Task 10/11 (token capture,
+tap-to-open routing, foreground presentation, bootstrap,
+sign-out unregister); silent-push handling is the last remaining
+piece of the Mac story. Track in a new `phase-4-mac-silent-push`
+issue / branch.
 
 **iOS Phase 4 user journey on `phase-4-task-1` (untested manually
 yet — branch needs Sygnal up to validate end-to-end push
