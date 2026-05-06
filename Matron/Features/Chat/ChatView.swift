@@ -241,6 +241,24 @@ struct ChatView: View {
                     }
                 }
             }
+            // Backward-pagination trigger driven by the scroll position
+            // binding. The earlier `.onAppear` on the topmost row only
+            // fires once per row mount and proved unreliable under
+            // `.scrollPosition(id:)` — LazyVStack pre-mounts a buffer
+            // of off-screen rows, so the first row's appear had often
+            // already fired by the time the user actually scrolled to
+            // it. `scrolledItemID` updates every time the visible row
+            // at the bottom of the viewport changes, so this fires
+            // continuously as the user scrolls. Paginate when the
+            // visible bottom falls within the first 5 message ids —
+            // i.e. user is within ~5 rows of the head, which is the
+            // right time to fetch the next page.
+            .onChange(of: scrolledItemID) { _, newID in
+                guard let newID,
+                      viewModel.items.prefix(5).contains(where: { $0.id == newID })
+                else { return }
+                Task { await viewModel.paginateBackward() }
+            }
             // Floating jump-to-latest. Visible only when the user has
             // scrolled away from the tail.
             .overlay(alignment: .bottomTrailing) {

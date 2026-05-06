@@ -156,11 +156,25 @@ struct TimelineItemView: View {
             .padding(.vertical, 4)
 
         case .unknown(let eventType):
+            // Encrypted-but-not-yet-decrypted is the SDK's
+            // `MsgLikeKind.unableToDecrypt` mapped to
+            // `.unknown(eventType: "m.room.encrypted")`. matrix-rust-sdk
+            // retries decryption automatically as megolm keys arrive
+            // (key backup, key forwarding); the row is replaced via
+            // a `.set` diff once that succeeds. Friendlier copy than
+            // the raw "[unsupported event]" we use as a generic fallback.
             HStack {
                 Spacer()
-                Text("[unsupported event: \(eventType)]")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                if eventType == "m.room.encrypted" {
+                    Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary)
+                    Text("Encrypted message — waiting for key")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("[unsupported event: \(eventType)]")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
             }
             .padding(.vertical, 4)
@@ -185,7 +199,18 @@ struct TimelineItemView: View {
     /// disturbing the existing snapshot baselines. `static internal` so
     /// `TimelineItemViewTests` can exercise the contract without rendering.
     static func shouldRender(_ item: TimelineItem) -> Bool {
-        if case .stateChange(let text) = item.kind, text.isEmpty {
+        // Empty stateChange covers the virtual items
+        // (`dateDivider` / `readMarker` / `timelineStart`) — see
+        // `TimelineServiceLive.mapVirtual` — and falls under "no Phase-2
+        // visual treatment, skip rather than render an 8pt blank row".
+        //
+        // Non-empty stateChange ("X joined", "Room state changed", profile
+        // updates) is meta-noise for the bot-first chats Matron targets.
+        // Hidden by default so the user sees the conversation tail
+        // instead of a wall of "Room state changed" rows from joins,
+        // power-level setup, encryption-on, etc. Phase 7 polish can
+        // bring back a "show metadata events" toggle if anyone asks.
+        if case .stateChange = item.kind {
             return false
         }
         return true

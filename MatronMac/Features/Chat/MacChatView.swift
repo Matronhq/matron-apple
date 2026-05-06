@@ -204,6 +204,17 @@ struct MacChatView: View {
                     }
                 }
             }
+            // Mirror iOS — paginate when the visible bottom row enters
+            // the first 5 message ids. See iOS ChatView for the full
+            // rationale (LazyVStack pre-mounting made the per-row
+            // `.onAppear` trigger unreliable; `scrolledItemID` updates
+            // continuously as the user scrolls).
+            .onChange(of: scrolledItemID) { _, newID in
+                guard let newID,
+                      viewModel.items.prefix(5).contains(where: { $0.id == newID })
+                else { return }
+                Task { await viewModel.paginateBackward() }
+            }
             .overlay(alignment: .bottomTrailing) {
                 if let last = viewModel.items.last?.id, scrolledItemID != last {
                     JumpToBottomButton {

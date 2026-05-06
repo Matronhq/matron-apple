@@ -133,24 +133,34 @@ struct MacTimelineItemView: View {
             .padding(.vertical, 4)
 
         case .unknown(let eventType):
+            // `m.room.encrypted` is the SDK's `unableToDecrypt` mapped
+            // through; the SDK retries decryption as keys arrive and
+            // replaces the row via a `.set` diff. Friendlier than the
+            // raw "[unsupported event]" generic fallback.
             HStack {
                 Spacer()
-                Text("[unsupported event: \(eventType)]")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                if eventType == "m.room.encrypted" {
+                    Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary)
+                    Text("Encrypted message — waiting for key")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("[unsupported event: \(eventType)]")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
             }
             .padding(.vertical, 4)
         }
     }
 
-    /// Mac mirror of `TimelineItemView.shouldRender(_:)` — see iOS for
-    /// the full rationale. Returns `false` for `.stateChange(text: "")`
-    /// (the `mapVirtual` placeholder for date dividers / read markers /
-    /// timeline start) so the renderer emits `EmptyView()` instead of a
-    /// padded blank row.
+    /// Mac mirror of `TimelineItemView.shouldRender(_:)`. Hides ALL
+    /// stateChange rows — see iOS for the full rationale (bot-first
+    /// chats don't want "Room state changed" / membership / profile
+    /// noise; Phase 7 polish can bring back a metadata-events toggle).
     static func shouldRender(_ item: TimelineItem) -> Bool {
-        if case .stateChange(let text) = item.kind, text.isEmpty {
+        if case .stateChange = item.kind {
             return false
         }
         return true
