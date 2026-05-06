@@ -93,7 +93,7 @@ final class DeviceSettingsViewTests: XCTestCase {
         let svc = FakeVerificationServiceForSettings()
         await svc.setDeviceVerified(true)
         let result = try await svc.isThisDeviceVerified()
-        XCTAssertTrue(result)
+        XCTAssertEqual(result, true)
         let calls = await svc.didCallIsThisDeviceVerified
         XCTAssertEqual(calls, 1)
         // Just confirm the view binding compiles with the same service.
