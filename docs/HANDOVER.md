@@ -261,14 +261,79 @@ shipped Phase 4 Task 1 in full:
   own, or merge will need admin-override again per the session 9/10
   pattern.
 
-**Phase 4 progress:**
-- Task 1 (NSE target + Push protocol scaffolding): **DONE** on this
-  branch (3 commits, ~190 LoC of product code + tests).
-- Task 2 (PushServiceLive): NEXT — bridges the protocol to the SDK's
-  `notificationClient(processSetup:).setHttpPusher(...)`. Plan
-  reference at `docs/superpowers/plans/2026-05-02-matron-ios-phase-4-push-nse.md:280`.
-  Touches MatronShared only; no project.yml changes.
-- Tasks 3-12: pending.
+**Phase 4 progress (mid-session — 6 commits on `phase-4-task-1`, all green):**
+- Task 1 (NSE target + Push protocol scaffolding): **DONE** (3 commits).
+- Task 2 (PushServiceLive): **DONE** — `30d6421`. Bridges the
+  protocol to `Client.setPusher(...)` / `Client.deletePusher(...)`.
+  The plan's `setHttpPusher` / `notificationClient.setPusher` /
+  `String pushFormat` paths were all wrong for v26 SDK; commit body
+  documents each drift and the actual surface used.
+- Task 3 (PushDecoder): **DONE** — `fce214c`. Closure-injectable
+  fetcher; `live(provider:session:)` factory wires
+  `notificationClient.getNotification` mapping
+  `NotificationStatus.event(item:)` → NotificationItem (and the
+  three negative cases → nil). Body extraction is layered through
+  three pure (no-FFI) leaf functions: `body(forContent:)`,
+  `body(forMessageLike:)`, `body(forMessageType:)` — each switch
+  exhaustive on the source enum so future SDK additions fail to
+  compile here. The plan's switch on `item.event` (`.text`/
+  `.image`/`.toolCall`/etc.) was fictional for v26; commit body
+  documents the real chain: `NotificationItem.event` →
+  `NotificationEvent` → `TimelineEvent.content()` →
+  `TimelineEventContent` → `MessageLikeEventContent` →
+  `MessageType`. 12 unit tests covering the testable paths;
+  `decoded(from:)` is reachable only via a real fetcher because
+  `NotificationItem` requires a Rust-handle-backed `TimelineEvent`
+  class — Task 7's "fixture tests for every msgtype" maps to the
+  integration harness rather than unit tests.
+- Task 4 (NotificationService NSE entry point): **DONE** —
+  `f580792`. Replaces the pass-through stub with the full
+  fetch-and-decrypt pipeline. Mirrors the iOS host's storage layout
+  (App-Group `sdk-store/` + `sessions/` + FileSessionStore) so the
+  NSE shares state with whatever the host most recently wrote. iOS
+  30-second budget falls back to "Matron / New message" if SDK can't
+  fetch+decrypt. Original `room_id` / `event_id` preserved on
+  `userInfo` for Task 6's NotificationDelegate to deep-link.
+  MatronAuth added as a direct dep on the MatronNSE target —
+  AuthServiceLive is NOT a transitive dep of MatronPush (PushDecoder
+  only consumes ClientProvider + UserSession).
+- Task 5 (PushBootstrap cross-platform launch hook): **NEXT — needs
+  design decision before starting.** The plan's push-rules step
+  (Step 3) calls `notificationSettings.isPushRuleEnabled(.override,
+  ruleId: ".m.rule.master")` / `setPushRuleEnabled(...)` to enable
+  the master rule. **Those methods don't exist in v26.** The actual
+  SDK exposes `getRawPushRules() -> String?` (raw JSON) and
+  `setCustomPushRule(ruleId:ruleKind:actions:conditions:)` for
+  creating custom rules, but no direct enable/disable of built-in
+  rules. Three options for the next agent: (a) skip the master-rule
+  step (server-side default is already enabled; user explicitly
+  disabling it is a user choice), keep just the per-room
+  `setRoomNotificationMode(.allMessages)` loop. (b) parse + edit
+  the raw push rules JSON to flip `enabled: true` on `.m.rule.master`
+  — possible but invasive. (c) defer the push-rules step to a
+  later phase entirely; Task 5 ships just the bootstrap
+  infrastructure (permission, register-for-remote, token capture)
+  and rely on server defaults. **Recommendation: (a) or (c)**;
+  decision is mostly about whether we trust the homeserver default.
+- Tasks 6-12: pending.
+
+**Plan vs SDK drift summary so far** (Phase 4 plan was written ahead
+of the v26 SDK; every Push-related Task has SDK API drift in it):
+- Task 2: `setHttpPusher` → `setPusher`; `pushFormat: String` →
+  `PushFormat: enum`; pusher methods on `Client` not
+  `NotificationClient`.
+- Task 3: `NotificationEvent` cases were entirely fictional
+  (`.text` / `.image` / `.toolCall`) — actual enum has only
+  `.timeline(event:)` and `.invite(sender:)`; body-extraction
+  digs through `TimelineEvent.content()` →
+  `TimelineEventContent` → `MessageLikeEventContent` → `MessageType`.
+- Task 5: `isPushRuleEnabled` / `setPushRuleEnabled` don't exist;
+  fallback options outlined above.
+
+The plan author flagged "argument shapes vary across SDK versions"
+inline at Tasks 2 and 3, so deviating where needed is expected.
+Future agents should read the commit bodies for each Task on PR #5
+to see the actual shape used vs the plan-as-written.
 
 ### Things to NOT undo (Session 11)
 
