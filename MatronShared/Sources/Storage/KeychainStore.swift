@@ -117,24 +117,19 @@ public struct KeychainStore: SessionStore {
     /// docblock and the `RecoveryKeyManagerTests`/`KeychainProbeTests`
     /// regression-guard tests are the trip-wire for this.
     ///
-    /// Originally `synchronizable: true` so recovery keys could ride
-    /// iCloud Keychain for cross-device install — but neither the iOS
-    /// nor Mac entitlement file declares
-    /// `com.apple.developer.icloud-services` / iCloud-keychain
-    /// capability, and macOS rejects sync writes from apps without it
-    /// with `errSecMissingEntitlement` (-34018). The user-visible
-    /// symptom was the "Couldn't auto-save your recovery key" warning
-    /// even on a properly team-signed Mac build. Local-only persistence
-    /// is the right posture until iCloud Keychain capability is added
-    /// to App Store Connect + both entitlement files; users generate a
-    /// fresh recovery key per device, which is also the cleaner
-    /// security default for a multi-device E2EE app. To restore sync
-    /// later: add `com.apple.developer.icloud-services` + an iCloud
-    /// Keychain entry to both entitlements, then flip the flag back.
+    /// `synchronizable: true` because recovery keys ride iCloud Keychain
+    /// to enable additional-device install without re-entering the key.
+    /// The team-prefixed `keychain-access-groups` entitlement we already
+    /// declare is sufficient for iCloud Keychain ride — no extra
+    /// `com.apple.developer.icloud-services` capability is required.
+    /// User must have iCloud Keychain enabled in System Settings for
+    /// the cross-device sync to actually take effect. Session 6
+    /// (2026-04-30) confirmed end-to-end persistence + sync on the
+    /// Yearbook-team-signed Mac Debug build with this exact shape.
     public static func recoveryStore() -> KeychainStore {
         return KeychainStore(
             service: "chat.matron.recovery",
-            synchronizable: false
+            synchronizable: true
         )
     }
 
