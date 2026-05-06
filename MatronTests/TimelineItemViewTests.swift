@@ -1,5 +1,6 @@
 import XCTest
 import MatronChat
+import MatronDesignSystem
 import MatronModels
 @testable import Matron
 
@@ -71,6 +72,20 @@ final class TimelineItemViewTests: XCTestCase {
         )
         XCTAssertTrue(TimelineItemView.shouldRender(item),
                       "populated state-change rows are real events and must render")
+    }
+
+    // MARK: - sendStateGlyph mapping
+
+    /// Pins the model → design-system enum mapping so a future
+    /// refactor that renames a `SendState` case doesn't silently drop
+    /// the failed-send retry affordance.
+    func test_sendStateGlyph_mapsAllCases() {
+        XCTAssertEqual(TimelineItemView.sendStateGlyph(for: .sent), .sent)
+        XCTAssertEqual(TimelineItemView.sendStateGlyph(for: .sending), .sending)
+        XCTAssertEqual(
+            TimelineItemView.sendStateGlyph(for: .failed(reason: "boom")),
+            .failed(reason: "boom")
+        )
     }
 
     /// Sanity: text / image / file / unknown kinds always render.

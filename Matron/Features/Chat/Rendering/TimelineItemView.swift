@@ -20,6 +20,10 @@ struct TimelineItemView: View {
     /// `ChatViewModel`. Production usage in `ChatView` always passes
     /// `viewModel.image(for:)`.
     var resolveImage: ((URL) -> Image?)? = nil
+    /// Optional retry handler for own-messages whose send state is
+    /// `.failed(reason:)`. Wired by `ChatView` to
+    /// `viewModel.retrySend(itemID:)`. `nil` for previews / tests.
+    var onRetry: ((String) -> Void)? = nil
 
     var body: some View {
         if !Self.shouldRender(item) {
@@ -35,8 +39,37 @@ struct TimelineItemView: View {
             // give them real visual treatment without disturbing the
             // existing snapshot baselines.
             EmptyView()
+        } else if item.isOwn && item.sendState != .sent {
+            // Own-message with non-default send state: render the body
+            // at reduced opacity (so the timeline visually distinguishes
+            // pending / failed sends) plus a footer indicator carrying
+            // the retry affordance. `.sent` is excluded explicitly so
+            // the common case continues to bypass the wrapping VStack
+            // (preserves the iOS snapshot test baselines).
+            VStack(alignment: .trailing, spacing: 2) {
+                renderedBody
+                    .opacity(item.sendState == .sending ? 0.7 : 1.0)
+                SendStateIndicator(
+                    state: Self.sendStateGlyph(for: item.sendState),
+                    onRetry: onRetry.map { handler in { handler(item.id) } }
+                )
+                .padding(.horizontal)
+            }
         } else {
             renderedBody
+        }
+    }
+
+    /// Maps the model's `TimelineItem.SendState` (in `MatronChat`) onto
+    /// the design-system mirror enum (in `MatronDesignSystem`). The two
+    /// types are kept separate so `MatronDesignSystem` doesn't have to
+    /// depend on `MatronChat` for one row primitive — see
+    /// `SendStateGlyph` for the full rationale.
+    static func sendStateGlyph(for state: TimelineItem.SendState) -> SendStateGlyph {
+        switch state {
+        case .sent: return .sent
+        case .sending: return .sending
+        case .failed(let reason): return .failed(reason: reason)
         }
     }
 

@@ -109,7 +109,11 @@ struct MacChatView: View {
                             DateSeparator(date: date)
                                 .id(row.id)
                         case .message(let item):
-                            MacTimelineItemView(item: item, resolveImage: { viewModel.image(for: $0) })
+                            MacTimelineItemView(
+                                item: item,
+                                resolveImage: { viewModel.image(for: $0) },
+                                onRetry: { id in viewModel.retrySend(itemID: id) }
+                            )
                                 .id(item.id)
                                 // Infinite-scroll backward pagination
                                 // trigger keys on `items.first?.id`

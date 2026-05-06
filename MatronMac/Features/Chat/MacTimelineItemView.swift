@@ -15,6 +15,10 @@ struct MacTimelineItemView: View {
     /// placeholder rendering for previews and tests that don't wire up a
     /// `ChatViewModel`.
     var resolveImage: ((URL) -> Image?)? = nil
+    /// Optional retry handler for own-messages whose send state is
+    /// `.failed(reason:)`. Mirrors the iOS surface — wired by
+    /// `MacChatView` to `viewModel.retrySend(itemID:)`.
+    var onRetry: ((String) -> Void)? = nil
 
     var body: some View {
         if !Self.shouldRender(item) {
@@ -26,8 +30,33 @@ struct MacTimelineItemView: View {
             // closeout: render nothing for these. Phase 3+ can give them
             // proper visual treatment.
             EmptyView()
+        } else if item.isOwn && item.sendState != .sent {
+            // Own-message with non-default send state — see iOS
+            // `TimelineItemView` for the full rationale. `.sent`
+            // bypasses the wrapping VStack so the common case keeps
+            // the existing layout untouched.
+            VStack(alignment: .trailing, spacing: 2) {
+                renderedBody
+                    .opacity(item.sendState == .sending ? 0.7 : 1.0)
+                SendStateIndicator(
+                    state: Self.sendStateGlyph(for: item.sendState),
+                    onRetry: onRetry.map { handler in { handler(item.id) } }
+                )
+                .padding(.horizontal)
+            }
         } else {
             renderedBody
+        }
+    }
+
+    /// Mac mirror of `TimelineItemView.sendStateGlyph(for:)` — translates
+    /// the model enum into the design-system mirror so
+    /// `MatronDesignSystem` doesn't depend on `MatronChat`.
+    static func sendStateGlyph(for state: TimelineItem.SendState) -> SendStateGlyph {
+        switch state {
+        case .sent: return .sent
+        case .sending: return .sending
+        case .failed(let reason): return .failed(reason: reason)
         }
     }
 

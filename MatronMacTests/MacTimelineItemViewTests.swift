@@ -1,6 +1,7 @@
 #if os(macOS)
 import XCTest
 import MatronChat
+import MatronDesignSystem
 import MatronModels
 @testable import MatronMac
 
@@ -41,6 +42,20 @@ final class MacTimelineItemViewTests: XCTestCase {
         )
         XCTAssertTrue(MacTimelineItemView.shouldRender(item),
                       "populated state-change rows are real events and must render")
+    }
+
+    // MARK: - sendStateGlyph mapping
+
+    /// Mac mirror — pins the model → design-system enum mapping so a
+    /// future refactor doesn't silently drop the failed-send retry
+    /// affordance from own messages.
+    func test_sendStateGlyph_mapsAllCases() {
+        XCTAssertEqual(MacTimelineItemView.sendStateGlyph(for: .sent), .sent)
+        XCTAssertEqual(MacTimelineItemView.sendStateGlyph(for: .sending), .sending)
+        XCTAssertEqual(
+            MacTimelineItemView.sendStateGlyph(for: .failed(reason: "boom")),
+            .failed(reason: "boom")
+        )
     }
 
     func test_shouldRender_returnsTrue_forContentKinds() {

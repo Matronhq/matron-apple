@@ -132,7 +132,11 @@ struct ChatView: View {
                             DateSeparator(date: date)
                                 .id(row.id)
                         case .message(let item):
-                            TimelineItemView(item: item, resolveImage: { viewModel.image(for: $0) })
+                            TimelineItemView(
+                                item: item,
+                                resolveImage: { viewModel.image(for: $0) },
+                                onRetry: { id in viewModel.retrySend(itemID: id) }
+                            )
                                 .id(item.id)
                                 // Infinite-scroll backward pagination
                                 // trigger: when the topmost message

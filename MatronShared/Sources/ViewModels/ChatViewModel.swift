@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import os
 import MatronChat
 import MatronModels
 import MatronStorage
@@ -71,6 +72,11 @@ public final class ChatViewModel {
     /// keeping the upper bound predictable. Static so tests can pin the
     /// exact eviction boundary.
     public static let mediaCacheLimit: Int = 100
+
+    /// Subsystem-tagged logger for view-model diagnostics. Same
+    /// "chat.matron" subsystem the rest of the package uses so output
+    /// streams together in `os_log` consumers.
+    private static let logger = os.Logger(subsystem: "chat.matron", category: "chat-view-model")
 
     public let roomID: String
     public private(set) var items: [TimelineItem] = []
@@ -249,6 +255,25 @@ public final class ChatViewModel {
 
     public func markAsRead() async {
         try? await timeline.markAsRead()
+    }
+
+    /// Retry handler for own-messages whose send state is `.failed`.
+    /// Currently a stub: real SDK retry wiring lands later (the
+    /// `MatrixRustSDK` exposes `Timeline.retryDecryption` /
+    /// `Timeline.send` queue replays, but the right hook for "retry
+    /// this specific failed local-echo" needs a service-layer
+    /// addition to `TimelineService` that hasn't shipped yet).
+    /// Logging-only so taps are observable in the debugger; no state
+    /// mutation here so the failed glyph stays visible until the
+    /// underlying snapshot updates.
+    ///
+    /// TODO(phase-3+): replace this stub with `timeline.retrySend(itemID:)`
+    /// once the service-layer surface lands. Until then the UI
+    /// affordance exists but the behaviour is a noop — this is
+    /// deliberate so the visual treatment can ship ahead of the SDK
+    /// wiring without the call site silently swallowing taps.
+    public func retrySend(itemID: String) {
+        Self.logger.info("retrySend tapped for item=\(itemID, privacy: .public) (stub)")
     }
 
     /// Mac toolbar refresh button + ⌘R menu shortcut wire here. Re-paginating
