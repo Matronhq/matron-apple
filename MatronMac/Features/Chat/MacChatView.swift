@@ -1,4 +1,5 @@
 import SwiftUI
+import os
 import UniformTypeIdentifiers
 import MatronChat
 import MatronModels
@@ -204,16 +205,28 @@ struct MacChatView: View {
                     }
                 }
             }
-            // Mirror iOS — paginate when the visible bottom row enters
-            // the first 5 message ids. See iOS ChatView for the full
-            // rationale (LazyVStack pre-mounting made the per-row
-            // `.onAppear` trigger unreliable; `scrolledItemID` updates
-            // continuously as the user scrolls).
+            // Paginate when the visible bottom row enters the first
+            // ~10 row ids (separators + messages combined). See iOS
+            // ChatView for the full rationale: the scroll-position
+            // binding uses mixed-namespace ids (messages → `item.id`,
+            // separators → `"sep:<epoch>"`) so the prefix check has
+            // to handle both.
             .onChange(of: scrolledItemID) { _, newID in
-                guard let newID,
-                      viewModel.items.prefix(5).contains(where: { $0.id == newID })
-                else { return }
-                Task { await viewModel.paginateBackward() }
+                let logger = os.Logger(subsystem: "chat.matron", category: "chat-view-scroll")
+                guard let newID else { return }
+                let topRowIDs: Set<String> = Set(
+                    viewModel.rows.prefix(10).map { row in
+                        switch row {
+                        case .message(let item): return item.id
+                        case .separator: return row.id
+                        }
+                    }
+                )
+                let inPrefix = topRowIDs.contains(newID)
+                logger.notice("scrolledItemID=\(newID, privacy: .public) inTop10=\(inPrefix, privacy: .public) totalRows=\(self.viewModel.rows.count, privacy: .public)")
+                if inPrefix {
+                    Task { await viewModel.paginateBackward() }
+                }
             }
             .overlay(alignment: .bottomTrailing) {
                 if let last = viewModel.items.last?.id, scrolledItemID != last {

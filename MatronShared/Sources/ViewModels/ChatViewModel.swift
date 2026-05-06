@@ -257,12 +257,23 @@ public final class ChatViewModel {
         // are safer: the SDK no-ops fast when it's genuinely at the
         // room start, and the natural `.onAppear` cadence (only fires
         // when the topmost row is on screen) keeps call rate sane.
-        guard !isPaginatingBackward else { return }
+        guard !isPaginatingBackward else {
+            Self.logger.notice("paginateBackward: SKIP — already in flight")
+            return
+        }
         isPaginatingBackward = true
         defer { isPaginatingBackward = false }
+        let beforeCount = items.count
+        Self.logger.notice("paginateBackward: enter (before=\(beforeCount, privacy: .public))")
         do {
-            _ = try await timeline.paginateBackward(requestSize: 30)
+            let reachedStart = try await timeline.paginateBackward(requestSize: 30)
+            // Yield once so the timeline.items() listener has a chance
+            // to flush any new diff snapshots into `items` before we log
+            // the post-count.
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            Self.logger.notice("paginateBackward: returned (reachedStart=\(reachedStart, privacy: .public), after=\(self.items.count, privacy: .public))")
         } catch {
+            Self.logger.error("paginateBackward: threw — \(error.localizedDescription, privacy: .public)")
             self.error = error.localizedDescription
         }
     }
