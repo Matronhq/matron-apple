@@ -3,6 +3,7 @@ import MatronChat
 import MatronDesignSystem
 import MatronModels
 import MatronStorage
+import MatronSync
 import MatronVerification
 import MatronViewModels
 
@@ -84,6 +85,17 @@ struct ChatListView: View {
     /// `@MainActor deinit` reaching into isolated state, so the lifecycle
     /// hooks are explicit (mirrors the `ChatListViewModel.cancel()` pattern).
     var verificationCenter: VerificationCenter? = nil
+    /// Latest user-facing connection state, fed by the host's
+    /// `SyncService.stateStream()`. `.running` hides the banner;
+    /// `.connecting` / `.offline` render it. Drives
+    /// `ConnectionStatusBanner` directly — no async glue inside the
+    /// View, just a `@State` mirror of the upstream stream.
+    @State private var connectionState: SyncBannerState = .connecting
+    /// Tracks whether sliding sync has ever been observed `.running` in
+    /// this session, so the banner can pick "Connecting…" vs
+    /// "Reconnecting…" for the connecting state. Sticky once true —
+    /// resets only when the View itself remounts (e.g. sign-out + back-in).
+    @State private var hasEverConnected: Bool = false
 
     var body: some View {
         chatListColumn
@@ -246,6 +258,22 @@ struct ChatListView: View {
         // the binding is always nil at that point (the task runs after
         // onAppear), so it was unreachable.
         .onDisappear { viewModel.cancel() }
+        // Sync connection-state banner. Subscribes to the host's
+        // long-lived `stateStream()` and mirrors yields into the local
+        // `connectionState` so the banner reacts without bouncing
+        // through the ViewModel. Keying on `session?.userID` so a
+        // user-switch (sign out + sign back in) recycles the iterator
+        // against the new session's sync service. The async-let pattern
+        // here matches the verification-center observation in
+        // `MatronApp` (one .task per long-lived async loop).
+        .task(id: session?.userID) {
+            guard let deps, let session else { return }
+            let sync = deps.syncService(for: session)
+            for await state in await sync.stateStream() {
+                connectionState = Self.bannerState(from: state)
+                if state == .running { hasEverConnected = true }
+            }
+        }
         // Wave 6 / live-test #3: per-this-device verification check.
         // Pre-Phase-3 users skipped the post-login verify gate
         // (`verifyDone` was never set on their session) so they have
@@ -279,21 +307,35 @@ struct ChatListView: View {
         }
     }
 
-    /// Column wrapper: when the verification center has pending requests
-    /// OR this device is explicitly unverified, stack the relevant
-    /// banner(s) above the existing chat-list content. Banner order:
-    /// unverified-device (most actionable) → incoming requests → list.
-    /// Empty / no-banner case falls straight through to `chatListContent`
-    /// so the loading `ProgressView` keeps its full-screen vertical
-    /// centering — wrapping the content in a top-down `VStack`
-    /// unconditionally (the prior shape) collapsed the progress view to
-    /// the top of the column. Mirrors `MacChatListView.sidebarColumn`.
+    /// Column wrapper: when the connection-state banner is visible OR
+    /// the verification center has pending requests OR this device is
+    /// explicitly unverified, stack the relevant banner(s) above the
+    /// existing chat-list content. Banner order (top-down): connection
+    /// state → unverified-device (most actionable) → incoming requests
+    /// → list. Empty / no-banner case falls straight through to
+    /// `chatListContent` so the loading `ProgressView` keeps its
+    /// full-screen vertical centering — wrapping the content in a
+    /// top-down `VStack` unconditionally (the prior shape) collapsed
+    /// the progress view to the top of the column. Mirrors
+    /// `MacChatListView.sidebarColumn`.
     @ViewBuilder
     private var chatListColumn: some View {
         let hasIncoming = (verificationCenter?.pending.isEmpty == false)
         let showUnverified = (isThisDeviceVerified == false) && (session != nil)
-        if hasIncoming || showUnverified {
+        let showConnection = (connectionState != .running)
+        if hasIncoming || showUnverified || showConnection {
             VStack(spacing: 0) {
+                // Connection-state banner sits at the very top so the
+                // user's first read of the list is "what's the current
+                // sync status?" before anything else competes for
+                // attention. Hides on `.running` via the inner switch
+                // (returns EmptyView). Animates in/out so the banner
+                // doesn't snap.
+                ConnectionStatusBanner(
+                    state: connectionState,
+                    hasEverConnected: hasEverConnected
+                )
+                .animation(.easeInOut(duration: 0.2), value: connectionState)
                 // Wave 6 / live-test #3: in-list "this device hasn't been
                 // verified" banner. Sits above the incoming-verification-
                 // request banners (most actionable first — a user who's
@@ -548,6 +590,19 @@ struct ChatListView: View {
         guard let deps, let session else { return }
         let chat = deps.chatService(for: session)
         try? await action(chat)
+    }
+
+    /// Boundary translation between the service-layer connection state
+    /// (lives in MatronSync) and the design-system banner state (lives
+    /// in MatronDesignSystem, which can't import service-layer types).
+    /// Identity-shaped — kept here so both surfaces can evolve
+    /// independently without dragging a cross-module dependency.
+    static func bannerState(from state: SyncConnectionState) -> SyncBannerState {
+        switch state {
+        case .connecting: return .connecting
+        case .running: return .running
+        case .offline(let reason): return .offline(reason: reason)
+        }
     }
 }
 

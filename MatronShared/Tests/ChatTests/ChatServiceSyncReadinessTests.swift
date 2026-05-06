@@ -33,6 +33,13 @@ actor LocalFakeSync: MatronSync.SyncService {
     }
 
     func sdkService() async -> MatrixRustSDK.SyncService? { nil }
+
+    func stateStream() -> AsyncStream<SyncConnectionState> {
+        AsyncStream { continuation in
+            continuation.yield(.connecting)
+            continuation.finish()
+        }
+    }
 }
 
 final class ChatServiceSyncReadinessTests: XCTestCase {
