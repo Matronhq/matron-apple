@@ -6,5 +6,18 @@
 	<array>
 		<string>group.chat.matron</string>
 	</array>
+	<!--
+	Phase 4 Task 1: keychain-access-groups mirrors the host-app
+	entitlement so the NSE process can read the same per-user
+	`matron.recovery-key.<userID>` Keychain entry the host writes
+	(needed by PushDecoder to bootstrap a NotificationClient when the
+	host app isn't running). `chat.matron` (NOT `chat.matron.app.nse`)
+	to share the existing keychain group with the host. Matches the
+	rationale on the iOS host target's `keychain-access-groups`.
+	-->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)chat.matron</string>
+	</array>
 </dict>
 </plist>

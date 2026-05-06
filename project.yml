@@ -131,6 +131,15 @@ targets:
         product: MatronVerification
       - package: MatrixRustSDK
         product: MatrixRustSDK
+      # Phase 4 Task 1: embed the NSE app-extension target inside the
+      # iOS host bundle so APNs can invoke it on incoming silent push.
+      # Without `embed: true`, the .appex builds standalone but is
+      # never copied into Matron.app/PlugIns/, so iOS has no extension
+      # to wake on push delivery and the encrypted notif decryption
+      # path (Tasks 2-8) is unreachable end-to-end.
+      - target: MatronNSE
+        embed: true
+        codeSign: true
 
   MatronMac:
     type: application
@@ -316,12 +325,12 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: chat.matron.app.nse
         CODE_SIGN_ENTITLEMENTS: MatronNSE/MatronNSE.entitlements
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
-    entitlements:
-      path: MatronNSE/MatronNSE.entitlements
-      properties:
-        com.apple.security.application-groups:
-          - group.chat.matron
-        # keychain-access-groups omitted — see note on the Matron target.
+    # Note: target-level `entitlements:` block intentionally NOT set
+    # here — XcodeGen would otherwise overwrite the on-disk
+    # `MatronNSE.entitlements` plist on every `xcodegen generate`,
+    # losing the manually-maintained `keychain-access-groups` entry.
+    # `CODE_SIGN_ENTITLEMENTS` above points the build system at the
+    # plist; same pattern as `MatronMac` (see its comment).
     dependencies:
       - package: MatronShared
         product: MatronStorage
