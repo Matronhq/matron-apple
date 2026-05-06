@@ -4,6 +4,41 @@ import MatronChat
 import MatronModels
 import MatronStorage
 
+/// Rendering unit for the chat timeline. The view-model walks `items`
+/// once and interleaves `.separator` rows whenever two adjacent messages
+/// straddle a calendar-day boundary; views render the resulting
+/// `[TimelineRow]` directly instead of duplicating the bucketing logic
+/// across iOS and Mac.
+///
+/// `.separator` carries only the boundary `Date` — the human-readable
+/// label ("Today" / "Yesterday" / "Tuesday" / "5 Mar 2026") is resolved
+/// at render time by the View through `DateSeparatorLabel.format` so
+/// `MatronViewModels` doesn't need a `MatronDesignSystem` dependency
+/// (which would pull SwiftUI / MarkdownUI into a non-View module).
+///
+/// `id` is `Hashable` so SwiftUI's `ForEach` can diff the row stream
+/// without manual `id:` parameters. Separator ids key on the start-of-
+/// day epoch so two snapshots on the same day re-use the same SwiftUI
+/// identity slot — a row remount on every snapshot would burn the
+/// `.transition` animation budget for no behavioural gain.
+public enum TimelineRow: Identifiable, Equatable, Sendable {
+    case message(TimelineItem)
+    case separator(date: Date)
+
+    public var id: String {
+        switch self {
+        case .message(let item): return "msg:\(item.id)"
+        case .separator(let date):
+            // Bucket by calendar day so a stream of items spanning a
+            // single day all collide on one identity even if the
+            // boundary `Date` value is the first item's exact
+            // timestamp (which differs per render).
+            let day = Calendar.current.startOfDay(for: date)
+            return "sep:\(Int(day.timeIntervalSince1970))"
+        }
+    }
+}
+
 /// Drives a single chat screen. Subscribes to a room's `TimelineService.items()`
 /// stream, exposes the current snapshot as `items`, and forwards
 /// pagination + mark-as-read calls to the underlying service.
@@ -40,6 +75,38 @@ public final class ChatViewModel {
     public let roomID: String
     public private(set) var items: [TimelineItem] = []
     public private(set) var error: String?
+
+    /// Calendar used for date-separator bucketing. Injectable so tests
+    /// can pin a deterministic timezone without poking the host
+    /// runtime. Default is `Calendar.current` so production callers
+    /// don't have to thread anything through.
+    public var calendar: Calendar = .current
+
+    /// Render-ready row list: `items` interleaved with `.separator`
+    /// rows whenever two adjacent messages straddle a calendar-day
+    /// boundary (and one separator at the head of the timeline so the
+    /// first cluster also has a header). Computed on each access —
+    /// `O(items.count)` and not on the hot scroll path, so the
+    /// allocation cost is negligible compared to the SwiftUI diff
+    /// downstream. Memoising would risk the cache going stale relative
+    /// to `items`; SwiftUI re-evaluates the body on `@Observable`
+    /// changes anyway, so the recomputation runs at exactly the right
+    /// cadence.
+    public var rows: [TimelineRow] {
+        guard !items.isEmpty else { return [] }
+        var out: [TimelineRow] = []
+        out.reserveCapacity(items.count + 4)
+        var previousDay: Date?
+        for item in items {
+            let day = calendar.startOfDay(for: item.timestamp)
+            if previousDay == nil || day != previousDay {
+                out.append(.separator(date: item.timestamp))
+                previousDay = day
+            }
+            out.append(.message(item))
+        }
+        return out
+    }
     /// `true` while a `paginateBackward()` call is in flight. Surfaces to
     /// the view so the topmost row's `.onAppear` trigger can guard
     /// against re-entering the paginate loop on every re-layout, and so

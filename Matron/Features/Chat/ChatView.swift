@@ -108,42 +108,58 @@ struct ChatView: View {
             }
             ScrollView {
                 LazyVStack(spacing: 8) {
-                    ForEach(viewModel.items) { item in
-                        TimelineItemView(item: item, resolveImage: { viewModel.image(for: $0) })
-                            .id(item.id)
-                            // Infinite-scroll backward pagination
-                            // trigger: when the topmost row mounts,
-                            // request older messages. The view-model
-                            // guards against re-entry + reached-start.
-                            .onAppear {
-                                if item.id == viewModel.items.first?.id {
-                                    Task { await viewModel.paginateBackward() }
+                    // Render `rows` (messages interleaved with date
+                    // separators) instead of `items` directly. The
+                    // separator stream is computed on the view-model
+                    // so iOS and Mac don't have to duplicate the
+                    // calendar-day bucketing.
+                    ForEach(viewModel.rows) { row in
+                        switch row {
+                        case .separator(let date):
+                            DateSeparator(date: date)
+                                .id(row.id)
+                        case .message(let item):
+                            TimelineItemView(item: item, resolveImage: { viewModel.image(for: $0) })
+                                .id(item.id)
+                                // Infinite-scroll backward pagination
+                                // trigger: when the topmost message
+                                // mounts, request older events. We
+                                // key on `viewModel.items.first?.id`
+                                // (raw message list) rather than
+                                // `rows.first` because the head row
+                                // is now usually a separator — and
+                                // the separator's onAppear shouldn't
+                                // drive pagination.
+                                .onAppear {
+                                    if item.id == viewModel.items.first?.id {
+                                        Task { await viewModel.paginateBackward() }
+                                    }
                                 }
-                            }
-                            .contextMenu {
-                                if case .text(let body, _) = item.kind {
+                                .contextMenu {
+                                    if case .text(let body, _) = item.kind {
+                                        Button {
+                                            // Use the cross-platform helper from
+                                            // MatronDesignSystem so iOS and Mac stay
+                                            // on a single Pasteboard surface
+                                            // (QA finding #3).
+                                            Pasteboard.copy(body)
+                                        } label: {
+                                            Label("Copy", systemImage: "doc.on.doc")
+                                        }
+                                        ShareLink(item: body) {
+                                            Label("Share", systemImage: "square.and.arrow.up")
+                                        }
+                                    }
+                                    // "View source" applies to every kind —
+                                    // text, image, file, stateChange, unknown
+                                    // — so it lives outside the `.text` guard.
                                     Button {
-                                        // Use the cross-platform helper from
-                                        // MatronDesignSystem so iOS and Mac stay
-                                        // on a single Pasteboard surface
-                                        // (QA finding #3).
-                                        Pasteboard.copy(body)
+                                        sourceItem = item
                                     } label: {
-                                        Label("Copy", systemImage: "doc.on.doc")
-                                    }
-                                    ShareLink(item: body) {
-                                        Label("Share", systemImage: "square.and.arrow.up")
+                                        Label("View source", systemImage: "curlybraces")
                                     }
                                 }
-                                // "View source" applies to every kind —
-                                // text, image, file, stateChange, unknown
-                                // — so it lives outside the `.text` guard.
-                                Button {
-                                    sourceItem = item
-                                } label: {
-                                    Label("View source", systemImage: "curlybraces")
-                                }
-                            }
+                        }
                     }
                 }
                 .scrollTargetLayout()

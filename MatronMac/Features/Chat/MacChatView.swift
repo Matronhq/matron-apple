@@ -87,38 +87,51 @@ struct MacChatView: View {
             }
             ScrollView {
                 LazyVStack(spacing: 8) {
-                    ForEach(viewModel.items) { item in
-                        MacTimelineItemView(item: item, resolveImage: { viewModel.image(for: $0) })
-                            .id(item.id)
-                            // Infinite-scroll backward pagination
-                            // trigger: when the topmost row mounts,
-                            // request older messages. The view-model
-                            // guards against re-entry + reached-start.
-                            .onAppear {
-                                if item.id == viewModel.items.first?.id {
-                                    Task { await viewModel.paginateBackward() }
+                    // Render `rows` (messages interleaved with date
+                    // separators) instead of `items` directly. Mirrors
+                    // the iOS surface — the bucketing logic lives in
+                    // `ChatViewModel.rows` so the two platforms can't
+                    // drift.
+                    ForEach(viewModel.rows) { row in
+                        switch row {
+                        case .separator(let date):
+                            DateSeparator(date: date)
+                                .id(row.id)
+                        case .message(let item):
+                            MacTimelineItemView(item: item, resolveImage: { viewModel.image(for: $0) })
+                                .id(item.id)
+                                // Infinite-scroll backward pagination
+                                // trigger keys on `items.first?.id`
+                                // (the raw message list) rather than
+                                // `rows.first` — the head row is now
+                                // usually a separator and shouldn't
+                                // drive pagination on appear.
+                                .onAppear {
+                                    if item.id == viewModel.items.first?.id {
+                                        Task { await viewModel.paginateBackward() }
+                                    }
                                 }
-                            }
-                            .contextMenu {
-                                if case .text(let body, _) = item.kind {
+                                .contextMenu {
+                                    if case .text(let body, _) = item.kind {
+                                        Button {
+                                            Pasteboard.copy(body)
+                                        } label: {
+                                            Label("Copy", systemImage: "doc.on.doc")
+                                        }
+                                        ShareLink(item: body) {
+                                            Label("Share", systemImage: "square.and.arrow.up")
+                                        }
+                                    }
+                                    // "View source" applies to every kind —
+                                    // text, image, file, stateChange, unknown
+                                    // — so it lives outside the `.text` guard.
                                     Button {
-                                        Pasteboard.copy(body)
+                                        sourceItem = item
                                     } label: {
-                                        Label("Copy", systemImage: "doc.on.doc")
-                                    }
-                                    ShareLink(item: body) {
-                                        Label("Share", systemImage: "square.and.arrow.up")
+                                        Label("View source", systemImage: "curlybraces")
                                     }
                                 }
-                                // "View source" applies to every kind —
-                                // text, image, file, stateChange, unknown
-                                // — so it lives outside the `.text` guard.
-                                Button {
-                                    sourceItem = item
-                                } label: {
-                                    Label("View source", systemImage: "curlybraces")
-                                }
-                            }
+                        }
                     }
                 }
                 .scrollTargetLayout()
