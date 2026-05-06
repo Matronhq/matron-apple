@@ -81,6 +81,13 @@ struct MacChatView: View {
                     .accessibilityLabel("Chat error: \(errorMessage)")
             }
             ScrollViewReader { proxy in
+                // `.defaultScrollAnchor(.bottom)` makes the ScrollView
+                // open already at the bottom on first layout AND keep
+                // the bottom anchored as new messages append — no
+                // animated scroll-to-bottom on chat open. The
+                // `.onChange` handler below only fires when `last?.id`
+                // actually changes, so existing live-update behaviour
+                // is unchanged.
                 ScrollView {
                     LazyVStack(spacing: 8) {
                         ForEach(viewModel.items) { item in
@@ -119,6 +126,7 @@ struct MacChatView: View {
                     }
                     .padding(.vertical)
                 }
+                .defaultScrollAnchor(.bottom)
                 .onChange(of: viewModel.items.last?.id) { _, _ in
                     // Round-3 bugbot finding #5: keying on `items.count`
                     // missed `.set` diffs that swap a local-echo id for

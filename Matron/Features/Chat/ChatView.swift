@@ -101,6 +101,14 @@ struct ChatView: View {
                     .accessibilityLabel("Chat error: \(errorMessage)")
             }
             ScrollViewReader { proxy in
+                // `.defaultScrollAnchor(.bottom)` makes the ScrollView
+                // anchor at the bottom on first layout AND keep the
+                // bottom anchored when content grows below it. Together
+                // with the `.onChange` scroll-to-tail handler below this
+                // gives chat-style "open at bottom; stay at bottom on
+                // new message; preserve user's scroll position when they
+                // scroll up to read history" behaviour without animating
+                // a scroll-to-bottom on open.
                 ScrollView {
                     LazyVStack(spacing: 8) {
                         ForEach(viewModel.items) { item in
@@ -143,6 +151,7 @@ struct ChatView: View {
                     }
                     .padding(.vertical)
                 }
+                .defaultScrollAnchor(.bottom)
                 .onChange(of: viewModel.items.last?.id) { _, _ in
                     // Round-3 bugbot finding #5: previously we keyed on
                     // `items.count`, which misses two real cases —
