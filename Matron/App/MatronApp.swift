@@ -43,6 +43,13 @@ struct MatronApp: App {
     /// keeps the center stable across body re-evaluations and (correctly)
     /// rebuilds when the user changes.
     @State private var verificationCenter: VerificationCenter?
+    /// Phase 4 Task 6 — chat-list `NavigationStack` path. Hoisted to
+    /// the host so a notification tap (routed via
+    /// `NotificationDelegate.shared.tappedRoomID`) can append a room
+    /// ID and SwiftUI's stack drives the existing
+    /// `ChatListView.navigationDestination(for: ChatSummary.ID.self)`
+    /// branch. `[String]` because `ChatSummary.ID == String`.
+    @State private var chatPath: [String] = []
     /// Set by `bootstrap()` when the setup-time `KeychainProbe.run(...)`
     /// fails (Phase 3 / Wave 3 / M1 — parity with Mac Task 13). When
     /// non-nil, every other UI branch is short-circuited and
@@ -81,7 +88,7 @@ struct MatronApp: App {
                         // already an `Optional<VerificationCenter>` and
                         // its banner code short-circuits on `nil` until
                         // the task installs the real instance.
-                        NavigationStack {
+                        NavigationStack(path: $chatPath) {
                             ChatListView(
                                 viewModel: ChatListViewModel(chat: dependencies.chatService(for: session)),
                                 onSignOut: { signOut() },
@@ -90,6 +97,22 @@ struct MatronApp: App {
                         }
                         .environment(\.appDependencies, dependencies)
                         .environment(\.currentSession, session)
+                        // Phase 4 Task 6: notification-tap deep link.
+                        // The NSE-rewritten userInfo carries `room_id`;
+                        // NotificationDelegate publishes that ID and we
+                        // append it onto the navigation path so the
+                        // existing `navigationDestination(for: ChatSummary.ID.self)`
+                        // branch in ChatListView pushes the chat. Idempotent
+                        // on duplicate sends (re-appending a room already
+                        // at the top of the stack just no-ops the user
+                        // visually); cleared on sign-out via `signOut()`
+                        // below so a tap from the previous session can't
+                        // strand the new user inside a stale room.
+                        .onReceive(NotificationDelegate.shared.tappedRoomID) { roomID in
+                            if chatPath.last != roomID {
+                                chatPath.append(roomID)
+                            }
+                        }
                         .task { try? await dependencies.syncService(for: session).start() }
                         // Wave 7 bug #1+#7: dropped the eager
                         // `verificationService(for: session).start()`
@@ -311,6 +334,10 @@ struct MatronApp: App {
         dependencies.signOut()
         session = nil
         verifyDone = false
+        // Drop any deep-linked room from the prior session so the next
+        // sign-in lands at the chat list root, not stranded inside a
+        // (now-inaccessible) prior-account room.
+        chatPath = []
     }
 
     /// Phase 4 Task 5 — full push pipeline bootstrap for `session`.

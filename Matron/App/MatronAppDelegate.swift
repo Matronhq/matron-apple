@@ -1,4 +1,5 @@
 import UIKit
+import UserNotifications
 import MatronPush
 
 /// `UIApplicationDelegate` adaptor for the SwiftUI host. SwiftUI's
@@ -16,7 +17,22 @@ import MatronPush
 /// the bootstrap flow start before, during, or after the token
 /// arrives — iOS doesn't guarantee an order between SwiftUI scene
 /// .task firing and APNs delivery.
+///
+/// `didFinishLaunchingWithOptions` also installs
+/// `NotificationDelegate.shared` as the
+/// `UNUserNotificationCenter` delegate so notification taps surface
+/// `userNotificationCenter(_:didReceive:withCompletionHandler:)`,
+/// which translates to a `tappedRoomID.send(...)` Combine event the
+/// host observes to deep-link into the right chat (Task 6).
 final class MatronAppDelegate: NSObject, UIApplicationDelegate {
+
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
+        return true
+    }
 
     func application(
         _ application: UIApplication,
