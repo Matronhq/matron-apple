@@ -177,6 +177,18 @@ public final class ChatViewModel {
     /// opened timeline (see `paginateBackward` doc-comment) without
     /// requiring a long stall before we stop hammering the SDK.
     private static let noGrowthLimitForReachedStart = 2
+    /// Maximum time to wait after `timeline.paginateBackward` returns
+    /// for `timeline.items()` to deliver a snapshot containing the new
+    /// events. The SDK runs the actual /messages fetch + decrypt +
+    /// dedup pipeline asynchronously and yields the new snapshot when
+    /// it's ready — typically 100-500ms on a warm cache, longer if a
+    /// network round-trip is involved. 2.5s gives realistic networks
+    /// headroom while keeping the no-growth verdict timely enough that
+    /// a genuine end-of-history doesn't spin the user.
+    private static let snapshotWaitTimeout: TimeInterval = 2.5
+    /// Poll interval for the snapshot-arrival wait. Short enough that
+    /// the loop reacts within a SwiftUI frame of the snapshot landing.
+    private static let snapshotPollInterval: UInt64 = 50_000_000  // 50ms
     /// Flips to `true` after `start()` processes its first snapshot
     /// (even if that snapshot is empty) or the upstream stream finishes
     /// without yielding. The empty-state placeholder gates on this so
@@ -316,9 +328,22 @@ public final class ChatViewModel {
         Self.logger.notice("paginateBackward: enter (items=\(beforeCount, privacy: .public))")
         do {
             _ = try await timeline.paginateBackward(requestSize: 30)
-            // Yield once so the timeline.items() listener has a chance
-            // to flush any new diff snapshots into `items`.
-            try? await Task.sleep(nanoseconds: 50_000_000)
+            // Wait for the timeline.items() AsyncStream to deliver the
+            // new snapshot. The SDK fetches /messages over the network,
+            // decrypts, dedups, then yields — easily 200-1000ms of
+            // pipeline before the new items show up in `self.items`.
+            // The previous fixed 50ms wait was a guess and lost on
+            // every realistic round-trip; a few back-to-back lost
+            // checks tipped `consecutiveNoGrowthPaginates` over the
+            // threshold and flipped `reachedHistoryStart=true`
+            // permanently, bricking scroll-up after the first paginate.
+            // Poll instead: short-circuit the moment items grows, and
+            // only count "no growth" if we've actually waited long
+            // enough for a snapshot to plausibly arrive.
+            let deadline = Date().addingTimeInterval(Self.snapshotWaitTimeout)
+            while items.count == beforeCount && Date() < deadline {
+                try? await Task.sleep(nanoseconds: Self.snapshotPollInterval)
+            }
             let grew = items.count > beforeCount
             Self.logger.notice("paginateBackward: done (items: \(beforeCount, privacy: .public)→\(self.items.count, privacy: .public), grew=\(grew, privacy: .public))")
             if grew {
