@@ -152,6 +152,23 @@ public final class ChatViewModel {
         })?.id
     }
 
+    /// Tail mirror of `firstRenderableItemID`. Same rationale —
+    /// `items.last?.id` may be a `.stateChange` that the view filters
+    /// out, in which case scroll-to-tail / auto-follow / scroll-memory
+    /// keys would target a row that doesn't exist in the LazyVStack.
+    /// Symptoms: jump-to-bottom button stays visible at the actual
+    /// tail, auto-follow assigns `scrolledItemID` to a non-rendered
+    /// id, the per-room scroll-memory restore-on-open misses. Keep
+    /// the predicate in lockstep with `firstRenderableItemID` and
+    /// the `rows` filter so any future hidden Kind shows up at all
+    /// three sites at once.
+    public var lastRenderableItemID: TimelineItem.ID? {
+        items.last(where: { item in
+            if case .stateChange = item.kind { return false }
+            return true
+        })?.id
+    }
+
     /// `true` while a `paginateBackward()` call is in flight. Surfaces to
     /// the view so the topmost row's `.onAppear` trigger can guard
     /// against re-entering the paginate loop on every re-layout, and so
@@ -441,7 +458,15 @@ public final class ChatViewModel {
             try FileManager.default.createDirectory(
                 at: dir, withIntermediateDirectories: true
             )
-            let dest = dir.appendingPathComponent(filename)
+            // Sanitise the filename: strip directory separators and
+            // parent-dir traversal so a malicious sender can't craft
+            // `../../.ssh/authorized_keys` to escape the temp dir. The
+            // filename arrives from Matrix event metadata, which is
+            // attacker-controllable. We keep the basename for human-
+            // friendly preview / share labels, falling back to a UUID
+            // if sanitisation produces an empty string.
+            let safeFilename = Self.sanitisedAttachmentFilename(filename)
+            let dest = dir.appendingPathComponent(safeFilename)
             try data.write(to: dest, options: .atomic)
             return dest
         } catch {
@@ -458,6 +483,31 @@ public final class ChatViewModel {
     /// behaviour `image(for:)` produces, so observation stays aligned
     /// with rendering.
     public func resolvedImage(for url: URL) -> Image? { resolvedImages[url] }
+
+    /// Strip path-traversal and directory-separator components from a
+    /// Matrix-event-attached filename. Inputs that reduce to an empty
+    /// string (all-`/`, `..`, hidden-only) fall back to a UUID so we
+    /// never pass `/` to `appendingPathComponent` or write a hidden
+    /// file by accident. Test seam: `internal` so
+    /// `ChatViewModelTests` can assert the contract directly without
+    /// rendering or hitting disk.
+    static func sanitisedAttachmentFilename(_ raw: String) -> String {
+        // Last path component drops any leading directory tree the
+        // sender embedded — `Foundation.URL`-style normalisation
+        // collapses `..` / `.` segments along the way.
+        let trimmed = (raw as NSString).lastPathComponent
+        // Replace remaining separators (rare, but `:` on macOS
+        // historically and `\` on Windows-style senders) with `_`.
+        let cleaned = trimmed.replacingOccurrences(of: "/", with: "_")
+                              .replacingOccurrences(of: ":", with: "_")
+        // Reject empty or `.`/`..`-only strings — fall back to a UUID
+        // so the write always lands inside the attachments dir.
+        let stripped = cleaned.trimmingCharacters(in: .whitespaces)
+        if stripped.isEmpty || stripped == "." || stripped == ".." {
+            return UUID().uuidString
+        }
+        return stripped
+    }
 
     /// Live count of cached resolved images. Test seam for asserting
     /// LRU eviction without exposing the raw storage.

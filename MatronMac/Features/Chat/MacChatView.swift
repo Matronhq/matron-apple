@@ -194,7 +194,7 @@ struct MacChatView: View {
             // visible row id, which we use both for the per-room scroll
             // memory and for the jump-to-latest overlay.
             .scrollPosition(id: $scrolledItemID, anchor: .bottom)
-            .onChange(of: viewModel.items.last?.id) { oldID, newID in
+            .onChange(of: viewModel.lastRenderableItemID) { oldID, newID in
                 // Auto-follow the live tail only if the user was already
                 // there. Scrolled-up users keep their position; the
                 // floating button is the path back.
@@ -230,7 +230,7 @@ struct MacChatView: View {
                 }
             }
             .overlay(alignment: .bottomTrailing) {
-                if let last = viewModel.items.last?.id, scrolledItemID != last {
+                if let last = viewModel.lastRenderableItemID, scrolledItemID != last {
                     JumpToBottomButton {
                         withAnimation(.easeOut(duration: 0.2)) {
                             scrolledItemID = last
@@ -290,7 +290,7 @@ struct MacChatView: View {
             // Persist the user's scroll position so the next open of
             // this room lands where they left off; drop the entry on
             // tail so the default jump-to-tail behaviour applies.
-            if let id = scrolledItemID, id != viewModel.items.last?.id {
+            if let id = scrolledItemID, id != viewModel.lastRenderableItemID {
                 ChatScrollPositionMemory.store(roomID: viewModel.roomID, itemID: id)
             } else {
                 ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
@@ -310,6 +310,12 @@ struct MacChatView: View {
                 .accessibilityHidden(true)
         )
         // ⌘R refresh — driven by the menu-bar command bus (Task 14e).
+        // When focus is on a chat detail column, ⌘R reloads THIS
+        // chat's timeline (paginate-backward via
+        // `ChatViewModel.refresh()`). The chat-list `⌘R` /
+        // pull-to-refresh in `MacChatListView.refreshable` handles
+        // the list-level snapshot via `ChatService.forceSnapshot()` —
+        // those are different surfaces and stay separately wired.
         .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.refresh))) { _ in
             Task { await viewModel.refresh() }
         }

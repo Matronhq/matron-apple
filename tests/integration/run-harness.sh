@@ -80,7 +80,7 @@ $PARTNER_CLI register \
 # MATRON_SKIP_BOOTSTRAP_ANCHOR=1.
 SCENARIO_NAME="${1:-}"
 case "$SCENARIO_NAME" in
-    verify-sdk-against-partner.sh|verify-mac-ui-against-partner.sh|chat-list-sdk.sh|recovery-key-sdk.sh|recovery-key-restore-ui.sh|incoming-verify-sdk.sh|matron-vs-matron-ui.sh|reverse-direction-ui.sh)
+    verify-sdk-against-partner.sh|verify-mac-ui-against-partner.sh|chat-list-sdk.sh|chat-list-live-updates-sdk.sh|recovery-key-sdk.sh|recovery-key-restore-ui.sh|incoming-verify-sdk.sh|matron-vs-matron-ui.sh|reverse-direction-ui.sh)
         MATRON_SKIP_BOOTSTRAP_ANCHOR="${MATRON_SKIP_BOOTSTRAP_ANCHOR:-1}"
         ;;
 esac

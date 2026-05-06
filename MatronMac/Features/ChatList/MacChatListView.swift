@@ -239,7 +239,7 @@ struct MacChatListView: View {
             guard let deps, let session else { return }
             let sync = deps.syncService(for: session)
             for await state in await sync.stateStream() {
-                connectionState = Self.bannerState(from: state)
+                connectionState = .from(state)
                 if state == .running { hasEverConnected = true }
             }
         }
@@ -248,11 +248,11 @@ struct MacChatListView: View {
         // the badge so a zero count produces no overlay. AppKit handles
         // the rendering — capsule, white text, accent fill — so we
         // don't need to reproduce the iOS pill visual on the dock side.
-        // `initial: true` so the badge clears on first appear of a
-        // freshly-launched session whose snapshot is still warming up
-        // (without it, a stale badge from a prior launch would persist
-        // until the first non-zero update).
-        .onChange(of: viewModel.totalUnread, initial: true) { _, newValue in
+        // No `initial: true` for the same reason as iOS — see
+        // `ChatListView` for the rationale: firing on first appear
+        // with a still-zero `totalUnread` actively clears any badge a
+        // push notification set while the app was backgrounded.
+        .onChange(of: viewModel.totalUnread) { _, newValue in
             NSApp.dockTile.badgeLabel = newValue > 0 ? "\(newValue)" : nil
         }
         // Wave 6 / live-test #3: per-this-device verification check.
@@ -480,25 +480,6 @@ struct MacChatListView: View {
         guard let deps, let session else { return }
         let chat = deps.chatService(for: session)
         Task { try? await action(chat) }
-    }
-
-    private func runChatActionAwaiting(_ action: @escaping (ChatService) async throws -> Void) async {
-        guard let deps, let session else { return }
-        let chat = deps.chatService(for: session)
-        try? await action(chat)
-    }
-
-    /// Boundary translation between the service-layer connection state
-    /// (lives in MatronSync) and the design-system banner state (lives
-    /// in MatronDesignSystem, which can't import service-layer types).
-    /// Identity-shaped — kept here so both surfaces can evolve
-    /// independently. Mirrors the iOS ChatListView helper.
-    static func bannerState(from state: SyncConnectionState) -> SyncBannerState {
-        switch state {
-        case .connecting: return .connecting
-        case .running: return .running
-        case .offline(let reason): return .offline(reason: reason)
-        }
     }
 
     /// Builds the SAS sheet shown when a banner's "Verify" is clicked.

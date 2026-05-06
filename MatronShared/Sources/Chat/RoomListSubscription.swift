@@ -129,7 +129,19 @@ enum RoomListEntriesAlgorithm {
                 let removed = rooms.remove(at: index)
                 dropped.append(removed.id())
                 // Cached summaries for rows AFTER `index` are keyed by
-                // ID, so they remain valid; only their position changed.
+                // ID and stay valid, but earlier `.set` / `.append`
+                // operations in the same batch may have inserted
+                // index-positioned values into `touched` that now
+                // point at the wrong row (or off the end). The
+                // caller's bounds-guard prevents crashes but leaves
+                // those rooms with stale summaries until the next
+                // diff. Set `resetAll` so the caller widens `touched`
+                // to the full range and recomputes summaries from
+                // scratch — `summaries` is keyed by room ID so the
+                // existing entries get re-applied correctly to their
+                // new positions, while shifted-room summaries get
+                // recomputed.
+                resetAll = true
 
             case .set(let index, let value):
                 guard index >= 0, index < rooms.count else { continue }
@@ -328,9 +340,16 @@ final class RoomListSubscription: @unchecked Sendable {
         _ = result.controller().setFilter(kind: .all(filters: []))
         self.adapters = result
 
+        // `[weak self]` + per-iteration strong-rebind. The previous
+        // `guard let self else { return }` BEFORE the loop strong-
+        // captured self for the lifetime of the closure, so the
+        // closure → batchTask → self chain became a retain cycle and
+        // `deinit` never fired. Re-binding inside the loop releases
+        // the strong ref between iterations, letting deinit run when
+        // the owning `ChatServiceLive` is dropped (sign-out path).
         self.batchTask = Task { [weak self] in
-            guard let self else { return }
             for await event in stream {
+                guard let self else { break }
                 if Task.isCancelled { break }
                 switch event {
                 case .batch(let batch):
@@ -440,12 +459,26 @@ enum ChatSummaryMapper {
         let title = room.displayName() ?? roomID
         let bot = botIdentity(from: room, excluding: myID, fallbackTitle: title)
         let lastActivity = await timestamp(of: room.latestEvent())
+        // Pull the SDK-tracked unread notification count off the
+        // RoomInfo. The previous hardcoded `0` made every consumer
+        // (`UnreadBadge` per-row, app-icon badge on iOS, dock badge
+        // on Mac) dead-on-arrival. `roomInfo()` is async + throws —
+        // on failure we fall back to 0 (better than crashing the
+        // whole snapshot) but log so the gap is visible in the
+        // diagnostic trace.
+        let unread: Int
+        do {
+            let info = try await room.roomInfo()
+            unread = Int(clamping: info.numUnreadNotifications)
+        } catch {
+            unread = 0
+        }
         return ChatSummary(
             id: roomID,
             title: title,
             bot: bot,
             lastActivity: lastActivity,
-            unreadCount: 0
+            unreadCount: unread
         )
     }
 

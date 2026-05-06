@@ -28,6 +28,15 @@ final class AppDependencies {
     /// re-fetched the same image bytes on every view re-render. Caching
     /// per `userID` keeps the cache shared across rooms in a session.
     private var mediaCache: [String: MediaService] = [:]
+    /// Per-session `ChatService` cache. `ChatServiceLive` owns the
+    /// shared `ChatSummaryBroadcaster` and the `BootstrapState` that
+    /// holds the single upstream `RoomListSubscription` (Phase 2.5
+    /// fan-out design). Without this cache, every consumer
+    /// (`ChatListViewModel.start()`, `NewChatSheet.loadBots()`, etc.)
+    /// would build its own `ChatServiceLive` → its own broadcaster →
+    /// its own `entriesWithDynamicAdapters` listener, which exactly
+    /// defeats the singleton design the broadcaster was added to enable.
+    private var chatCache: [String: ChatService] = [:]
     /// Per-room timeline cache keyed by `(userID, roomID)`. Re-using the
     /// same `TimelineServiceLive` across navigations to the same room
     /// preserves the SDK timeline handle and the in-memory snapshot the
@@ -104,11 +113,14 @@ final class AppDependencies {
     }
 
     func chatService(for session: UserSession) -> ChatService {
-        ChatServiceLive(
+        if let existing = chatCache[session.userID] { return existing }
+        let svc = ChatServiceLive(
             provider: clientProvider,
             session: session,
             sync: syncService(for: session)
         )
+        chatCache[session.userID] = svc
+        return svc
     }
 
     /// SDK-backed `MediaService` that resolves `mxc://` URLs into bytes via
@@ -176,6 +188,7 @@ final class AppDependencies {
         syncCache.removeAll()
         verificationCache.removeAll()
         mediaCache.removeAll()
+        chatCache.removeAll()
         timelineCache = .init(limit: AppDependencies.timelineCacheLimit)
     }
 }

@@ -36,20 +36,16 @@ struct TimelineItemView: View {
     var onTapFile: ((URL, String) -> Void)? = nil
 
     var body: some View {
-        if !Self.shouldRender(item) {
-            // Round-5 bugbot finding #2: `TimelineServiceLive.mapVirtual`
-            // collapses `dateDivider`, `readMarker`, and `timelineStart`
-            // virtual items into `.stateChange(text: "")`. The
-            // `.stateChange` branch below wraps the text in a padded
-            // `HStack` with `Spacer`s, which renders as a visible 8pt
-            // empty row for these placeholders. Phase 2 closeout takes
-            // option (a) — render nothing for empty state-change text.
-            // Phase 3+ can extend `TimelineItem.Kind` with proper
-            // `.dateDivider` / `.readMarker` / `.timelineStart` cases and
-            // give them real visual treatment without disturbing the
-            // existing snapshot baselines.
-            EmptyView()
-        } else if item.isOwn && item.sendState != .sent {
+        // Note: `shouldRender(_:)` is the contract for "is this Kind
+        // visible?" but the actual filtering happens in
+        // `ChatViewModel.rows` BEFORE the ForEach builds the view
+        // tree, so the dead branch that returned `EmptyView()` for
+        // `!shouldRender(item)` was unreachable in practice — every
+        // item that reaches `body` has already been filtered.
+        // `shouldRender` stays as a public static helper because
+        // `TimelineItemViewTests` exercises the contract; the views
+        // themselves don't need to re-check.
+        if item.isOwn && item.sendState != .sent {
             // Own-message with non-default send state: render the body
             // at reduced opacity (so the timeline visually distinguishes
             // pending / failed sends) plus a footer indicator carrying
@@ -70,11 +66,12 @@ struct TimelineItemView: View {
         }
     }
 
-    /// Maps the model's `TimelineItem.SendState` (in `MatronChat`) onto
-    /// the design-system mirror enum (in `MatronDesignSystem`). The two
-    /// types are kept separate so `MatronDesignSystem` doesn't have to
-    /// depend on `MatronChat` for one row primitive — see
-    /// `SendStateGlyph` for the full rationale.
+    /// Maps `TimelineItem.SendState` (lives in `MatronChat`, transitively
+    /// pulls MatrixRustSDK) to the design-system glyph enum. Stays
+    /// local rather than hoisted to `MatronDesignSystem` because that
+    /// would force the design-system target to depend on the SDK
+    /// (`SendState` is in MatronChat, not MatronModels). Keep
+    /// in lockstep with `MacTimelineItemView.sendStateGlyph(for:)`.
     static func sendStateGlyph(for state: TimelineItem.SendState) -> SendStateGlyph {
         switch state {
         case .sent: return .sent

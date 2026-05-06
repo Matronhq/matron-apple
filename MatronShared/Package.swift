@@ -78,6 +78,14 @@ let package = Package(
             name: "MatronDesignSystem",
             dependencies: [
                 .product(name: "MarkdownUI", package: "swift-markdown-ui"),
+                // `StateBridges.swift` declares
+                // `SyncBannerState.from(_ state: SyncConnectionState)`
+                // — the single source of truth for the service-layer
+                // → design-system banner-state mapping. MatronSync
+                // is a leaf module with no SwiftUI surface, so this
+                // dep keeps the bridge close to the target type
+                // without creating a cycle.
+                "MatronSync",
             ],
             path: "Sources/DesignSystem"
         ),

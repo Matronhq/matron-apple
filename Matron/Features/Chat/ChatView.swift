@@ -237,7 +237,7 @@ struct ChatView: View {
             // the previous tail. If they've scrolled up to read history,
             // a new bot message shouldn't yank them back to the bottom —
             // that's what the floating jump button is for.
-            .onChange(of: viewModel.items.last?.id) { oldID, newID in
+            .onChange(of: viewModel.lastRenderableItemID) { oldID, newID in
                 guard let newID else { return }
                 let wasAtTail = (scrolledItemID == oldID) || (scrolledItemID == nil)
                 if wasAtTail {
@@ -285,7 +285,7 @@ struct ChatView: View {
             // Floating jump-to-latest. Visible only when the user has
             // scrolled away from the tail.
             .overlay(alignment: .bottomTrailing) {
-                if let last = viewModel.items.last?.id, scrolledItemID != last {
+                if let last = viewModel.lastRenderableItemID, scrolledItemID != last {
                     JumpToBottomButton {
                         withAnimation(.easeOut(duration: 0.2)) {
                             scrolledItemID = last
@@ -351,7 +351,7 @@ struct ChatView: View {
             // this room lands where they left off. Drop the entry on
             // tail (no point storing "user was at the live tail" — the
             // default behaviour already opens there).
-            if let id = scrolledItemID, id != viewModel.items.last?.id {
+            if let id = scrolledItemID, id != viewModel.lastRenderableItemID {
                 ChatScrollPositionMemory.store(roomID: viewModel.roomID, itemID: id)
             } else {
                 ChatScrollPositionMemory.forget(roomID: viewModel.roomID)

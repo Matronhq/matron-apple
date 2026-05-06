@@ -171,10 +171,22 @@ private actor BootstrapState {
     private var bootstrap: Task<Void, Never>?
     private var subscription: RoomListSubscription?
     private var fallbackTask: Task<Void, Never>?
+    /// Set when the previous `runBootstrap` failed transiently (sync
+    /// not ready, client builder threw). Distinct from a successful
+    /// bootstrap — when this is non-nil, `ensureBootstrapStarted`
+    /// will rebuild the task on the next call so a forceSnapshot()
+    /// or a new chatSummaries() consumer can drive a retry. Without
+    /// this, one DNS hiccup at app cold-start permanently poisons
+    /// the chat list until the user signs out.
+    private var lastFailure: Error?
 
-    /// Lazily starts the bootstrap and awaits its completion. Subsequent
-    /// callers await the same Task — first-call wins, every other caller
-    /// returns once bootstrap has resolved (success or stored failure).
+    /// Lazily starts the bootstrap and awaits its completion.
+    /// Concurrent first-callers all await the same Task. After a
+    /// failure the cached Task is dropped, so the next caller
+    /// (forceSnapshot, a fresh chatSummaries subscriber) drives a
+    /// retry. After a success the cached Task remains so subsequent
+    /// callers see the live subscription / fallback poll without
+    /// rebuilding.
     func ensureBootstrapStarted(
         sync: MatronSync.SyncService,
         provider: ClientProvider,
@@ -183,15 +195,15 @@ private actor BootstrapState {
         logger: Logger,
         fallbackInterval: TimeInterval
     ) async {
-        if let bootstrap {
+        if let bootstrap, lastFailure == nil {
             await bootstrap.value
             return
         }
-        // Strong self capture — `BootstrapState` is owned by `ChatServiceLive`
-        // for its full lifetime, so the task can't outlive a deallocated
-        // actor. Weak capture would silently no-op the bootstrap if the
-        // actor were ever released early, leaving every registered consumer
-        // stalled indefinitely without diagnostic.
+        // Either first call, or the previous attempt failed and we
+        // want a clean retry. Drop the stale failure marker first so
+        // `runBootstrap` starts from a clean slate; if it fails
+        // again, it sets `lastFailure` itself.
+        lastFailure = nil
         let task: Task<Void, Never> = Task {
             await self.runBootstrap(
                 sync: sync,
@@ -206,6 +218,18 @@ private actor BootstrapState {
         await task.value
     }
 
+    /// Records a transient failure and clears the cached task so the
+    /// next `ensureBootstrapStarted` call retries instead of awaiting
+    /// the dead task. Caller is responsible for any user-facing
+    /// surfacing — we deliberately do NOT call `broadcaster.fail`
+    /// here because that's a permanent poison that survives
+    /// reconnection.
+    private func recordTransientFailure(_ error: Error, logger: Logger) {
+        logger.error("ChatServiceLive bootstrap transient failure (will retry on next subscribe / forceSnapshot): \(error, privacy: .public)")
+        lastFailure = error
+        bootstrap = nil
+    }
+
     private func runBootstrap(
         sync: MatronSync.SyncService,
         provider: ClientProvider,
@@ -217,7 +241,7 @@ private actor BootstrapState {
         do {
             try await sync.waitUntilReady()
         } catch {
-            await broadcaster.fail(with: error)
+            recordTransientFailure(error, logger: logger)
             return
         }
 
@@ -225,7 +249,7 @@ private actor BootstrapState {
         do {
             client = try await provider.client(for: session)
         } catch {
-            await broadcaster.fail(with: error)
+            recordTransientFailure(error, logger: logger)
             return
         }
 

@@ -271,20 +271,20 @@ struct ChatListView: View {
             guard let deps, let session else { return }
             let sync = deps.syncService(for: session)
             for await state in await sync.stateStream() {
-                connectionState = Self.bannerState(from: state)
+                connectionState = .from(state)
                 if state == .running { hasEverConnected = true }
             }
         }
         // App-icon badge mirrors the chat list's running unread total.
-        // `UNUserNotificationCenter.setBadgeCount(_:)` is the iOS-16+
-        // replacement for `UIApplication.applicationIconBadgeNumber`,
-        // which is deprecated. Errors are swallowed — if a user's
-        // notification permission gates the badge update, the badge
-        // simply doesn't change; we never block the UI on the result.
-        // Re-running on first appear (`onAppear` analog via
-        // `.task(id: viewModel.totalUnread)` is overkill; `.onChange`
-        // delivers the same coverage with one less view-id binding).
-        .onChange(of: viewModel.totalUnread, initial: true) { _, newValue in
+        // No `initial: true` — on cold start `totalUnread` is 0
+        // before sync delivers the first snapshot, and firing the
+        // badge update with that 0 would actively clear any badge
+        // a push notification (Phase 4 NSE) had set while the app
+        // was backgrounded. Letting the closure run only on actual
+        // changes means we'll write the right count once the chat
+        // list lands its first real snapshot, and we'll keep
+        // tracking decrements as the user reads rooms after that.
+        .onChange(of: viewModel.totalUnread) { _, newValue in
             UNUserNotificationCenter.current().setBadgeCount(newValue) { _ in }
         }
         // Wave 6 / live-test #3: per-this-device verification check.
@@ -624,26 +624,6 @@ struct ChatListView: View {
         Task { try? await action(chat) }
     }
 
-    /// Awaiting variant for `.refreshable`, which expects an `async`
-    /// closure so it can spin its progress indicator until completion.
-    private func runChatActionAwaiting(_ action: @escaping (ChatService) async throws -> Void) async {
-        guard let deps, let session else { return }
-        let chat = deps.chatService(for: session)
-        try? await action(chat)
-    }
-
-    /// Boundary translation between the service-layer connection state
-    /// (lives in MatronSync) and the design-system banner state (lives
-    /// in MatronDesignSystem, which can't import service-layer types).
-    /// Identity-shaped — kept here so both surfaces can evolve
-    /// independently without dragging a cross-module dependency.
-    static func bannerState(from state: SyncConnectionState) -> SyncBannerState {
-        switch state {
-        case .connecting: return .connecting
-        case .running: return .running
-        case .offline(let reason): return .offline(reason: reason)
-        }
-    }
 }
 
 private struct ChatRow: View {

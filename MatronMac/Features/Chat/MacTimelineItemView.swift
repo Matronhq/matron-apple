@@ -27,16 +27,11 @@ struct MacTimelineItemView: View {
     var onTapFile: ((URL, String) -> Void)? = nil
 
     var body: some View {
-        if !Self.shouldRender(item) {
-            // Mac mirror of the iOS `TimelineItemView` round-5 finding #2
-            // fix. Virtual timeline items (`dateDivider`, `readMarker`,
-            // `timelineStart`) collapse to `.stateChange(text: "")` in
-            // `TimelineServiceLive.mapVirtual`, and the padded `HStack`
-            // below renders them as visible 8pt blank rows. Phase 2
-            // closeout: render nothing for these. Phase 3+ can give them
-            // proper visual treatment.
-            EmptyView()
-        } else if item.isOwn && item.sendState != .sent {
+        // See iOS `TimelineItemView.body` — `shouldRender` is dead
+        // code in the body because `ChatViewModel.rows` filters
+        // hidden items BEFORE the ForEach. Kept as a static helper
+        // for `MacTimelineItemViewTests` to exercise the contract.
+        if item.isOwn && item.sendState != .sent {
             // Own-message with non-default send state — see iOS
             // `TimelineItemView` for the full rationale. `.sent`
             // bypasses the wrapping VStack so the common case keeps
@@ -55,9 +50,8 @@ struct MacTimelineItemView: View {
         }
     }
 
-    /// Mac mirror of `TimelineItemView.sendStateGlyph(for:)` — translates
-    /// the model enum into the design-system mirror so
-    /// `MatronDesignSystem` doesn't depend on `MatronChat`.
+    /// Mac mirror of `TimelineItemView.sendStateGlyph(for:)` — see
+    /// the iOS doc-comment for why this stays inline.
     static func sendStateGlyph(for state: TimelineItem.SendState) -> SendStateGlyph {
         switch state {
         case .sent: return .sent

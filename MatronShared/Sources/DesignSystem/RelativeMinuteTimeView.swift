@@ -50,9 +50,20 @@ public struct RelativeMinuteTimeView: View {
             let d = Int(interval / 86400)
             return "\(d)d"
         }
+        return Self.absoluteDateFormatter.string(from: source)
+    }
+
+    /// Static formatter shared across every periodic format call.
+    /// `DateFormatter` construction is expensive — `TimelineView(.periodic)`
+    /// re-formats every visible row once a minute, so a chat list with
+    /// many older conversations would re-allocate one formatter per row
+    /// per minute. A `static let` instance avoids the churn and is
+    /// thread-safe in modern Foundation (Apple's docs explicitly bless
+    /// reuse across threads since iOS 7 / macOS 10.9).
+    private static let absoluteDateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateStyle = .short
         f.timeStyle = .none
-        return f.string(from: source)
-    }
+        return f
+    }()
 }

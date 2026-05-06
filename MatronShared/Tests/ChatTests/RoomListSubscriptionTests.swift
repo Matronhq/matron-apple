@@ -114,9 +114,12 @@ final class RoomListSubscriptionTests: XCTestCase {
         let result = RoomListEntriesAlgorithm.apply([.remove(index: 1)], to: &rooms)
         XCTAssertEqual(rooms.map { $0.id() }, ["a", "c"])
         XCTAssertEqual(result.dropped, ["b"])
-        // Cached summaries for "c" remain valid (keyed by ID), so we do
-        // NOT widen touched. Only the row's position shifted.
-        XCTAssertFalse(result.resetAll)
+        // `.remove` shifts subsequent indices down, so any earlier
+        // `.set` / `.append` in the same batch may have inserted
+        // index-positioned values into `touched` that now point at
+        // the wrong row. We set `resetAll` so the caller widens
+        // `touched` to the full range (PR #4 bugbot finding #12).
+        XCTAssertTrue(result.resetAll)
     }
 
     func test_remove_outOfBounds_isNoOp() {
