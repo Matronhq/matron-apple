@@ -78,25 +78,6 @@ public final class ChatViewModel {
     /// streams together in `os_log` consumers.
     private static let logger = os.Logger(subsystem: "chat.matron", category: "chat-view-model")
 
-    /// Histogram of `TimelineItem.Kind` cases — diagnostic helper so a
-    /// "paginate added 31 items but I see no change" complaint can be
-    /// traced to "31 of those were `.stateChange` which the renderer
-    /// hides" or "31 were `.unknown(m.room.encrypted)` waiting for keys"
-    /// without rebuilding the app.
-    nonisolated static func kindBreakdown(_ items: [TimelineItem]) -> String {
-        var text = 0, image = 0, file = 0, stateChange = 0, encrypted = 0, unknown = 0
-        for item in items {
-            switch item.kind {
-            case .text: text += 1
-            case .image: image += 1
-            case .file: file += 1
-            case .stateChange: stateChange += 1
-            case .unknown(let t) where t == "m.room.encrypted": encrypted += 1
-            case .unknown: unknown += 1
-            }
-        }
-        return "text=\(text) img=\(image) file=\(file) state=\(stateChange) encrypted=\(encrypted) unknown=\(unknown)"
-    }
 
     public let roomID: String
     public private(set) var items: [TimelineItem] = []
@@ -138,14 +119,26 @@ public final class ChatViewModel {
     /// against re-entering the paginate loop on every re-layout, and so
     /// the view can show a tiny "loading earlier…" spinner if it wants.
     public private(set) var isPaginatingBackward: Bool = false
-    /// Retained as `false` for back-compat with consumers that read it
-    /// (a few view-side overlays). Phase-2.5 follow-up: the SDK's
-    /// "reached start" Bool from `paginateBackwards` is unreliable on a
-    /// freshly-opened timeline with a sliding-sync seed of one event,
-    /// so we no longer let it persist a hard lock-out. Always returns
-    /// `false`; the `.onAppear` cadence on the topmost row + the SDK's
-    /// own no-op fast-path provide the actual rate-limiting.
+    /// Flips to `true` once we've observed enough consecutive
+    /// zero-growth paginate calls to be confident the SDK genuinely has
+    /// no more history to surface. Setting this stops further paginate
+    /// triggers from the scroll-position listener — without it the
+    /// `.onChange(of: scrolledItemID)` trigger fires paginate on every
+    /// row change at the head, hammering the SDK for no result.
+    /// Empirical: matrix-rust-sdk's `paginateBackwards` returns `false`
+    /// (more events might exist) even when /messages has no more events
+    /// for this user, so we can't trust the SDK signal alone — needed
+    /// the consecutive-zero-growth heuristic. See the threshold const.
     public private(set) var reachedHistoryStart: Bool = false
+    /// Counts consecutive paginate calls that produced zero new items.
+    /// When this hits `noGrowthLimitForReachedStart`, we flip
+    /// `reachedHistoryStart`. Reset to 0 on any growth.
+    private var consecutiveNoGrowthPaginates: Int = 0
+    /// How many zero-growth paginates before we declare history-start.
+    /// 2 is enough to filter the one-shot spurious result on a freshly-
+    /// opened timeline (see `paginateBackward` doc-comment) without
+    /// requiring a long stall before we stop hammering the SDK.
+    private static let noGrowthLimitForReachedStart = 2
     /// Flips to `true` after `start()` processes its first snapshot
     /// (even if that snapshot is empty) or the upstream stream finishes
     /// without yielding. The empty-state placeholder gates on this so
@@ -261,39 +254,31 @@ public final class ChatViewModel {
     }
 
     public func paginateBackward() async {
-        // Re-entrancy guard only — `.onAppear` of the topmost row can
-        // fire repeatedly during scroll bounces, and the explicit
-        // paginate-on-open in `ChatView.task` can race the row-driven
-        // trigger; without the guard a single scroll-up would queue up
-        // a dozen overlapping paginate requests.
-        //
-        // We deliberately do NOT short-circuit on a prior `reachedStart`
-        // result. Empirical: the SDK can return `true` ("reached start")
-        // on the very first call against a freshly-opened Timeline that
-        // only holds the one-event sliding-sync seed, before its
-        // history index has actually been built. Persisting that as a
-        // permanent lock-out left the user staring at the latest
-        // message with no way to scroll into history. Cheap re-attempts
-        // are safer: the SDK no-ops fast when it's genuinely at the
-        // room start, and the natural `.onAppear` cadence (only fires
-        // when the topmost row is on screen) keeps call rate sane.
-        guard !isPaginatingBackward else {
-            Self.logger.notice("paginateBackward: SKIP — already in flight")
-            return
-        }
+        // Re-entrancy guard + reached-history-start short-circuit. The
+        // `reachedHistoryStart` flag isn't driven by the SDK's `Bool`
+        // return — that signal is unreliable in matrix-rust-sdk 26.4.1
+        // (returns `false` even when `/messages` is genuinely
+        // returning duplicates / nothing the Timeline can surface).
+        // Instead we count consecutive zero-growth paginate calls and
+        // flip the flag after `noGrowthLimitForReachedStart`.
+        guard !isPaginatingBackward, !reachedHistoryStart else { return }
         isPaginatingBackward = true
         defer { isPaginatingBackward = false }
         let beforeCount = items.count
-        let beforeKindCounts = Self.kindBreakdown(items)
-        Self.logger.notice("paginateBackward: enter (before=\(beforeCount, privacy: .public) kinds=\(beforeKindCounts, privacy: .public))")
         do {
-            let reachedStart = try await timeline.paginateBackward(requestSize: 30)
+            _ = try await timeline.paginateBackward(requestSize: 30)
             // Yield once so the timeline.items() listener has a chance
-            // to flush any new diff snapshots into `items` before we log
-            // the post-count.
+            // to flush any new diff snapshots into `items`.
             try? await Task.sleep(nanoseconds: 50_000_000)
-            let afterKindCounts = Self.kindBreakdown(self.items)
-            Self.logger.notice("paginateBackward: returned (reachedStart=\(reachedStart, privacy: .public), after=\(self.items.count, privacy: .public) kinds=\(afterKindCounts, privacy: .public))")
+            if items.count > beforeCount {
+                consecutiveNoGrowthPaginates = 0
+            } else {
+                consecutiveNoGrowthPaginates += 1
+                if consecutiveNoGrowthPaginates >= Self.noGrowthLimitForReachedStart {
+                    reachedHistoryStart = true
+                    Self.logger.notice("paginateBackward: reached history start (no growth across \(Self.noGrowthLimitForReachedStart, privacy: .public) consecutive calls)")
+                }
+            }
         } catch {
             Self.logger.error("paginateBackward: threw — \(error.localizedDescription, privacy: .public)")
             self.error = error.localizedDescription

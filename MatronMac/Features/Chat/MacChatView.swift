@@ -1,5 +1,4 @@
 import SwiftUI
-import os
 import UniformTypeIdentifiers
 import MatronChat
 import MatronModels
@@ -212,7 +211,6 @@ struct MacChatView: View {
             // separators → `"sep:<epoch>"`) so the prefix check has
             // to handle both.
             .onChange(of: scrolledItemID) { _, newID in
-                let logger = os.Logger(subsystem: "chat.matron", category: "chat-view-scroll")
                 guard let newID else { return }
                 let topRowIDs: Set<String> = Set(
                     viewModel.rows.prefix(10).map { row in
@@ -222,9 +220,7 @@ struct MacChatView: View {
                         }
                     }
                 )
-                let inPrefix = topRowIDs.contains(newID)
-                logger.notice("scrolledItemID=\(newID, privacy: .public) inTop10=\(inPrefix, privacy: .public) totalRows=\(self.viewModel.rows.count, privacy: .public)")
-                if inPrefix {
+                if topRowIDs.contains(newID) {
                     Task { await viewModel.paginateBackward() }
                 }
             }
