@@ -1,4 +1,5 @@
 import UserNotifications
+import MatrixRustSDK
 import MatronAuth
 import MatronPush
 import MatronStorage
@@ -80,7 +81,15 @@ final class NotificationService: UNNotificationServiceExtension {
             throw NSEBootstrapError.noPersistedSession
         }
         let provider = ClientProvider(basePath: sdkStore)
-        let decoder = PushDecoder.live(provider: provider, session: session)
+        // NSE runs in a separate process from the iOS host, so the
+        // notification client coordinates with the host via
+        // `.multipleProcesses`. Mac uses `.singleProcess(syncService:)`
+        // — see PushDecoder.live's doc-comment for the full split.
+        let decoder = PushDecoder.live(
+            provider: provider,
+            session: session,
+            processSetup: .multipleProcesses
+        )
         return try await decoder.decode(roomID: roomID, eventID: eventID)
     }
 

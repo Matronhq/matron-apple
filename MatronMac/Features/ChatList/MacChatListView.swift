@@ -163,6 +163,19 @@ struct MacChatListView: View {
         .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showRecoveryKey))) { _ in
             onShowRecoveryKey?()
         }
+        // Phase 4 Task 10 — notification-tap deep link. The Mac notification
+        // handler posts `.matronOpenRoom` with `room_id` in userInfo when
+        // the user taps a notification banner / Notification Center entry;
+        // we route that into the existing sidebar selection state so the
+        // `NavigationSplitView` detail column flips to the matching chat.
+        // `selectedSummaryID` ↔ `selection: $selectedSummaryID` on the
+        // sidebar `List` (line ~374) handles the actual UI flip; this
+        // listener just feeds it the right ID.
+        .onReceive(NotificationCenter.default.publisher(for: .matronOpenRoom)) { note in
+            if let roomID = note.userInfo?[MacNotificationHandler.roomIDKey] as? String {
+                selectedSummaryID = roomID
+            }
+        }
         // Wave 6 / live-test #4: dropped `.navigationTitle("Matron")`.
         // The detail column's `MacChatToolbar` (Task 14d) carries the
         // chat title in its `.principal` slot, and on macOS the

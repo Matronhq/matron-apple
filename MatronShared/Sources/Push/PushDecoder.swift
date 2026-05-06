@@ -47,18 +47,29 @@ public final class PushDecoder: @unchecked Sendable {
 
     /// Production fetcher: resolves a Client through `provider`, opens
     /// a `NotificationClient` against the shared crypto store, and
-    /// fetches the notification for `(roomId, eventId)`. iOS NSE uses
-    /// `.multipleProcesses` so the extension can read the App-Group
-    /// store concurrently with the host. Mac uses `.singleProcess` —
-    /// see Task 10 for the host-side wiring (the host already owns a
-    /// running `SyncService` to pass into the associated value).
+    /// fetches the notification for `(roomId, eventId)`.
+    ///
+    /// Caller passes `processSetup` explicitly because the right value
+    /// is platform- and surface-specific:
+    ///
+    /// - **iOS NSE** uses `.multipleProcesses` — the .appex runs in a
+    ///   distinct process and needs cross-process coordination on the
+    ///   App-Group-shared crypto store.
+    /// - **Mac in-process handler** uses `.singleProcess(syncService:)`
+    ///   — the host app is the only consumer of the crypto store, but
+    ///   it needs to coordinate with the running SyncService so the
+    ///   notification client doesn't conflict with the live sync's
+    ///   crypto-store writes. The associated value is the SDK's
+    ///   `MatrixRustSDK.SyncService` from
+    ///   `SyncServiceLive.sdkService()`.
     public static func live(
         provider: ClientProvider,
-        session: UserSession
+        session: UserSession,
+        processSetup: NotificationProcessSetup
     ) -> PushDecoder {
         PushDecoder { roomID, eventID in
             let client = try await provider.client(for: session)
-            let nc = try await client.notificationClient(processSetup: .multipleProcesses)
+            let nc = try await client.notificationClient(processSetup: processSetup)
             let status = try await nc.getNotification(roomId: roomID, eventId: eventID)
             switch status {
             case .event(let item):

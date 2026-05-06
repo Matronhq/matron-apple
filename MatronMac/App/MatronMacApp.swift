@@ -2,12 +2,20 @@ import SwiftUI
 import MatronAuth
 import MatronDesignSystem
 import MatronModels
+import MatronPush
 import MatronStorage
 import MatronVerification
 import MatronViewModels
 
 @main
 struct MatronMacApp: App {
+    /// Phase 4 Tasks 10/11 — APNs token capture + UN center delegate
+    /// installation. The adaptor keeps a single delegate instance
+    /// alive for the process lifetime; `applicationDidFinishLaunching`
+    /// installs the shared `MacNotificationHandler` as the
+    /// `UNUserNotificationCenter` delegate so taps surface from launch.
+    @NSApplicationDelegateAdaptor(MatronMacAppDelegate.self) private var appDelegate
+
     @State private var dependencies = AppDependencies()
     @State private var session: UserSession?
     @State private var bootstrapDone = false
@@ -134,6 +142,19 @@ struct MatronMacApp: App {
                             )
                             center.start()
                             verificationCenter = center
+                        }
+                        // Phase 4 Task 11: request push permission, set
+                        // every joined room to `.allMessages`, register
+                        // for remote notifications, and plumb the APNs
+                        // token to the homeserver pusher record. Mirrors
+                        // the iOS `MatronApp.bootstrapPush(for:)` flow,
+                        // bar the platform-specific
+                        // `NSApplication.shared.registerForRemoteNotifications()`
+                        // path inside the shared `PushBootstrap`. Keyed on
+                        // `session.userID` so a multi-account switch
+                        // re-runs against the new user's pusher row.
+                        .task(id: session.userID) {
+                            await bootstrapPush(for: session)
                         }
                         .onDisappear {
                             verificationCenter?.stop()
@@ -351,6 +372,22 @@ struct MatronMacApp: App {
     /// flips `session = nil` so the WindowGroup re-mounts the
     /// `MacSignInView` branch.
     private func signOut(activeSession: UserSession) {
+        // Phase 4 Task 8: best-effort pusher unregister BEFORE clearing
+        // the session. Once `dependencies.signOut()` lands, the
+        // ClientProvider is invalidated and `unregister` would 404 —
+        // so we kick this off before, but don't `await`. Mirrors the
+        // iOS host's signOut path.
+        if let token = PushTokenStore.shared.cachedToken {
+            let provider = dependencies.clientProvider
+            let pusherURL = Self.pusherBaseURL
+            Task.detached {
+                let pushService = PushServiceLive(provider: provider, session: activeSession)
+                try? await pushService.unregister(
+                    deviceToken: token,
+                    pusherBaseURL: pusherURL
+                )
+            }
+        }
         UserDefaults.standard.removeObject(
             forKey: activeSession.verifyDoneKey
         )
@@ -358,6 +395,54 @@ struct MatronMacApp: App {
         session = nil
         verifyDone = false
     }
+
+    /// Phase 4 Task 11 — full push pipeline bootstrap for `session`,
+    /// Mac variant. Same shape as the iOS host's `bootstrapPush(for:)`,
+    /// bar `NotificationProcessSetup`: Mac handles pushes in-process
+    /// (no NSE) so the `PushDecoder.live` factory will eventually need
+    /// `.singleProcess(syncService: SyncService)` for the silent-push
+    /// decode path (deferred — not exercised yet from this task; see
+    /// `MacNotificationHandler`'s doc-comment for the full rationale).
+    /// The bootstrap itself only needs `Client.setPusher(...)` which is
+    /// platform-agnostic.
+    @MainActor
+    private func bootstrapPush(for session: UserSession) async {
+        do {
+            let client = try await dependencies.clientProvider.client(for: session)
+            let settings = await LiveMatronNotificationSettings.from(client: client)
+            let pushService = PushServiceLive(
+                provider: dependencies.clientProvider,
+                session: session
+            )
+            let chat = dependencies.chatService(for: session)
+            let bootstrap = PushBootstrap(
+                pushService: pushService,
+                pusherBaseURL: Self.pusherBaseURL,
+                notificationSettings: settings,
+                joinedRoomIDs: {
+                    var iterator = chat.chatSummaries().makeAsyncIterator()
+                    if let snapshot = try? await iterator.next() {
+                        return snapshot.map(\.id)
+                    }
+                    return []
+                }
+            )
+            let granted = await bootstrap.bootstrap()
+            guard granted else { return }
+            let token = await PushTokenStore.shared.waitForToken()
+            await bootstrap.register(token: token)
+        } catch {
+            // Failure to resolve a Client typically means sync isn't
+            // ready yet — same swallow pattern as iOS.
+        }
+    }
+
+    /// Sygnal pusher endpoint URL — placeholder. See iOS host's
+    /// `pusherBaseURL` for the full "out of scope per Phase 4 plan"
+    /// rationale; replace when Task 9's runbook lands.
+    private static let pusherBaseURL = URL(
+        string: "https://sygnal.matron.example/_matrix/push/v1/notify"
+    )!
 
     /// Help → Verify This Device… sheet body. Hands construction to a
     /// dedicated `HelpMenuVerifyDeviceSheet` whose `@State`-stored
