@@ -78,6 +78,26 @@ public final class ChatViewModel {
     /// streams together in `os_log` consumers.
     private static let logger = os.Logger(subsystem: "chat.matron", category: "chat-view-model")
 
+    /// Histogram of `TimelineItem.Kind` cases — diagnostic helper so a
+    /// "paginate added 31 items but I see no change" complaint can be
+    /// traced to "31 of those were `.stateChange` which the renderer
+    /// hides" or "31 were `.unknown(m.room.encrypted)` waiting for keys"
+    /// without rebuilding the app.
+    nonisolated static func kindBreakdown(_ items: [TimelineItem]) -> String {
+        var text = 0, image = 0, file = 0, stateChange = 0, encrypted = 0, unknown = 0
+        for item in items {
+            switch item.kind {
+            case .text: text += 1
+            case .image: image += 1
+            case .file: file += 1
+            case .stateChange: stateChange += 1
+            case .unknown(let t) where t == "m.room.encrypted": encrypted += 1
+            case .unknown: unknown += 1
+            }
+        }
+        return "text=\(text) img=\(image) file=\(file) state=\(stateChange) encrypted=\(encrypted) unknown=\(unknown)"
+    }
+
     public let roomID: String
     public private(set) var items: [TimelineItem] = []
     public private(set) var error: String?
@@ -264,14 +284,16 @@ public final class ChatViewModel {
         isPaginatingBackward = true
         defer { isPaginatingBackward = false }
         let beforeCount = items.count
-        Self.logger.notice("paginateBackward: enter (before=\(beforeCount, privacy: .public))")
+        let beforeKindCounts = Self.kindBreakdown(items)
+        Self.logger.notice("paginateBackward: enter (before=\(beforeCount, privacy: .public) kinds=\(beforeKindCounts, privacy: .public))")
         do {
             let reachedStart = try await timeline.paginateBackward(requestSize: 30)
             // Yield once so the timeline.items() listener has a chance
             // to flush any new diff snapshots into `items` before we log
             // the post-count.
             try? await Task.sleep(nanoseconds: 50_000_000)
-            Self.logger.notice("paginateBackward: returned (reachedStart=\(reachedStart, privacy: .public), after=\(self.items.count, privacy: .public))")
+            let afterKindCounts = Self.kindBreakdown(self.items)
+            Self.logger.notice("paginateBackward: returned (reachedStart=\(reachedStart, privacy: .public), after=\(self.items.count, privacy: .public) kinds=\(afterKindCounts, privacy: .public))")
         } catch {
             Self.logger.error("paginateBackward: threw — \(error.localizedDescription, privacy: .public)")
             self.error = error.localizedDescription
