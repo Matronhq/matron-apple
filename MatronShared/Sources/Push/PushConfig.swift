@@ -1,4 +1,5 @@
 import Foundation
+import MatrixRustSDK
 
 /// Static config for the Matrix-side pusher record. The four `app_id`
 /// values must each have a matching app entry in Sygnal's
@@ -33,12 +34,15 @@ public enum PushConfig {
     /// when surfacing per-pusher records to the user.
     public static let appDisplayName = "Matron"
 
-    /// Push payload format. `event_id_only` is the silent-payload shape
+    /// Push payload format. `.eventIdOnly` is the silent-payload shape
     /// Element X / matrix-rust-sdk standardise on — APNs delivers just
     /// the room+event IDs, the NSE / in-process delegate fetches the
     /// encrypted event from the homeserver and decrypts on-device. No
-    /// plaintext leaves the homeserver.
-    public static let pushFormat = "event_id_only"
+    /// plaintext leaves the homeserver. Typed against the SDK's
+    /// `PushFormat` enum (rather than the wire-level string
+    /// `"event_id_only"`) so a future enum case addition fails to
+    /// compile here instead of silently leaking content.
+    public static let pushFormat: PushFormat = .eventIdOnly
 
     /// Pusher language for any homeserver-side fallback rendering. We
     /// decrypt + render locally so this is mostly cosmetic; pinning to

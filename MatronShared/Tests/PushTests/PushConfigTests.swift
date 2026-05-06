@@ -1,4 +1,5 @@
 import XCTest
+import MatrixRustSDK
 @testable import MatronPush
 
 /// Pins the per-platform / per-build-config `PushConfig.appID`. Sygnal
@@ -24,11 +25,12 @@ final class PushConfigTests: XCTestCase {
     }
 
     func test_pushFormat_isEventIDOnly() {
-        // Anything other than `event_id_only` would mean the homeserver
+        // Anything other than `.eventIdOnly` would mean the homeserver
         // sends decrypted content in the APNs payload — which would
-        // leak plaintext via Apple's push relay. Pin this value so a
-        // refactor can't silently regress it.
-        XCTAssertEqual(PushConfig.pushFormat, "event_id_only")
+        // leak plaintext via Apple's push relay. Pin this enum value
+        // so a refactor (or a SDK that adds a new `PushFormat` case)
+        // can't silently regress it.
+        XCTAssertEqual(PushConfig.pushFormat, .eventIdOnly)
     }
 
     func test_appDisplayName_andLanguage_arePinned() {
