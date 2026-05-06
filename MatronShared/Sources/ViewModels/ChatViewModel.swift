@@ -327,7 +327,8 @@ public final class ChatViewModel {
         let beforeCount = items.count
         Self.logger.notice("paginateBackward: enter (items=\(beforeCount, privacy: .public))")
         do {
-            _ = try await timeline.paginateBackward(requestSize: 30)
+            let sdkReachedStart = try await timeline.paginateBackward(requestSize: 30)
+            Self.logger.notice("paginateBackward: SDK returned reachedStart=\(sdkReachedStart, privacy: .public)")
             // Wait for the timeline.items() AsyncStream to deliver the
             // new snapshot. The SDK fetches /messages over the network,
             // decrypts, dedups, then yields — easily 200-1000ms of

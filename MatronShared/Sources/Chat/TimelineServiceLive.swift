@@ -18,6 +18,31 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
     private let sync: MatronSync.SyncService
     private let roomID: String
 
+    /// Single `MatrixRustSDK.Timeline` instance shared by `items()`,
+    /// every send, paginate, and markAsRead. Built lazily on first use.
+    ///
+    /// Why cache: `Room.timeline()` BUILDS A NEW TIMELINE on every call
+    /// — the SDK doc-comment is explicit ("Create a timeline with a
+    /// default configuration, i.e. a live timeline…"). Without caching,
+    /// `items()` builds Timeline T1 and attaches its listener to it,
+    /// while `paginateBackward` builds an unrelated Timeline T2 and
+    /// runs paginate on T2's empty internal store — paginate returns
+    /// in single-digit milliseconds claiming `reachedStart=false` (T2
+    /// is at the live tail, hasn't even started), no `/messages` HTTP
+    /// goes out, T2 is dropped, T1 (which the view watches) never
+    /// receives any new events. Bug confirmed via SDK trace + view-
+    /// model log lining up: paginate "completes" 13ms after enter with
+    /// no `messages` span in the SDK trace at all.
+    ///
+    /// Identity matters not just for paginate but for sends — the
+    /// caller's local-echo + send-state listener (when we add one)
+    /// will only fire on the SAME Timeline that owns the in-flight
+    /// `SendHandle`. Lock-based init so the rare double-first-call
+    /// race (e.g. items() and paginate-on-open kicking off in
+    /// parallel) doesn't build two Timelines.
+    private let timelineLock = NSLock()
+    private var cachedTimeline: Timeline?
+
     public init(
         provider: ClientProvider,
         session: UserSession,
@@ -39,11 +64,10 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
             // assignment, the old closure cancelled the setup task but
             // the freshly-attached listener handle leaked.
             let holder = TimelineLifecycleHolder()
-            let task = Task { [sync, roomID] in
+            let task = Task { [self] in
                 do {
                     try await sync.waitUntilReady()
-                    let room = try await Self.resolveRoom(roomID: roomID, sync: sync, provider: provider, session: session)
-                    let timeline = try await room.timeline()
+                    let timeline = try await timeline()
                     let listener = TimelineSnapshotListener(continuation: continuation)
                     let handle = await timeline.addListener(listener: listener)
                     holder.setHandle(handle)
@@ -132,20 +156,44 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
 
     // MARK: - Helpers
 
-    /// Resolves a fresh `Timeline` handle for each operation. The SDK
-    /// returns the same per-room handle internally; we don't cache it
-    /// here because the cached `Client` already owns lifecycle.
+    /// Returns the cached `Timeline`, building it on first call. Every
+    /// caller (items listener, sends, paginate, markAsRead) gets the
+    /// same instance — see the `cachedTimeline` doc-comment for the
+    /// reason. Keep `await sync.waitUntilReady()` upstream of this
+    /// helper (caller's responsibility) — building a Timeline before
+    /// sliding sync's room store is hydrated would force the SDK to
+    /// build it against an empty room view.
     ///
-    /// QA finding #8: relying on the SDK's per-room handle identity is
-    /// fragile across SDK bumps — caching here would risk stop()/start()
-    /// lifecycle issues with a reused handle that the SDK might tear
-    /// down internally. Re-resolving each call is the conservative
-    /// choice while we're pinned to v26 (26.04.01). When bumping the
-    /// SDK, double-check `room.timeline()`'s identity contract before
-    /// considering a cache.
+    /// The previous "fresh Timeline per operation" approach was
+    /// motivated by a worry about SDK-driven teardown, but that risk
+    /// was hypothetical — `Room.timeline()` is documented to *build*
+    /// a new timeline each call, not return a shared handle, and the
+    /// resulting Timeline is owned by us. Holding a strong reference
+    /// for the lifetime of `TimelineServiceLive` (which itself is
+    /// LRU-cached per `(userID, roomID)` in `AppDependencies`) ties
+    /// the Timeline lifecycle to the cache's eviction, which is the
+    /// behaviour we want.
     private func timeline() async throws -> Timeline {
+        timelineLock.lock()
+        if let cached = cachedTimeline {
+            timelineLock.unlock()
+            return cached
+        }
+        timelineLock.unlock()
         let room = try await Self.resolveRoom(roomID: roomID, sync: sync, provider: provider, session: session)
-        return try await room.timeline()
+        let built = try await room.timeline()
+        timelineLock.lock()
+        // Re-check under the lock — a parallel first call may have
+        // beaten us; keep whichever instance won the race so both
+        // callers observe the same handle. The loser instance is
+        // dropped (its async drop runs on the SDK's runtime).
+        if let winner = cachedTimeline {
+            timelineLock.unlock()
+            return winner
+        }
+        cachedTimeline = built
+        timelineLock.unlock()
+        return built
     }
 
     /// Bridges from the chat-list-visible `summary.id` to a usable
