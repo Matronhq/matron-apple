@@ -22,11 +22,17 @@ since session 8. Phases not started: 5, 6, 7.
 
 What's deferred from PR #5 (won't block merge; tracked for a
 follow-up branch):
-- Mac silent-push body construction — needs design pass on decoder
-  lifecycle in `NSApplicationDelegate.application(_:didReceiveRemoteNotification:)`
-  and real-hardware validation against Sygnal. The structurally-
-  sound bits (token capture, tap-to-open, foreground presentation,
-  bootstrap, sign-out unregister) ALL ship in PR #5.
+- Mac silent-push body construction — **design pass landed in
+  session 12** (`36c1a61`):
+  [`docs/superpowers/specs/2026-05-06-matron-mac-silent-push-design.md`](superpowers/specs/2026-05-06-matron-mac-silent-push-design.md).
+  Eight design decisions documented (decoder singleton, install/
+  tearDown lifecycle, `.singleProcess(syncService:)`, silent-drop
+  fallback, tap routing reuse, etc.) plus a six-task implementation
+  breakdown ready to drive a `phase-4-mac-silent-push` follow-up
+  branch. Real-hardware validation against Sygnal still needs to
+  happen during execution, not before. The structurally-sound bits
+  (token capture, tap-to-open, foreground presentation, bootstrap,
+  sign-out unregister, cold-start tap drain) ALL ship in PR #5.
 - Task 7 fixture tests — the plan's design depends on fictional v26
   SDK enum cases; testable layers are already covered by Task 3's
   `PushDecoderDefaultsTests`.
@@ -385,9 +391,11 @@ for future bugbot / pre-merge gates:
 
 ### Open / deferred (mostly unchanged from session 11; Task 9b now done)
 
-- Mac silent-push body construction — needs the decoder lifecycle
-  design pass + Sygnal infra. Tracked for a `phase-4-mac-silent-push`
-  follow-up branch.
+- Mac silent-push body construction — **design landed in session 12**
+  at `docs/superpowers/specs/2026-05-06-matron-mac-silent-push-design.md`
+  (`36c1a61`). Implementation deferred to a `phase-4-mac-silent-push`
+  follow-up branch; needs Sygnal up for end-to-end validation but
+  the spec is task-broken-down and ready to drive.
 - Real `pusherBaseURL` — placeholder until Cloudflare Tunnel
   hostname lands.
 - Phase 7 iOS entitlements split for App Store distribution —
