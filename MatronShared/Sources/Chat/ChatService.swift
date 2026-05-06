@@ -1,19 +1,19 @@
 import Foundation
 
 public protocol ChatService: Sendable {
-    /// Async stream of room list snapshots (full list, not deltas).
+    /// Long-lived async stream of room list snapshots (full list, not
+    /// deltas). Phase 2.5 wired this through a fan-out broadcaster on top
+    /// of `RoomList.entriesWithDynamicAdapters` + per-room
+    /// `Room.subscribeToRoomInfoUpdates` — see plan at
+    /// `docs/superpowers/plans/2026-05-05-matron-ios-phase-2-5-live-chat-list.md`.
     ///
-    /// **Phase 1 contract:** the live impl yields exactly one snapshot once
-    /// sliding sync reaches `.running`, then completes the stream. Callers
-    /// that need to refresh must call this method again.
-    ///
-    /// **Phase 2 contract:** Phase 2's live impl is **still single-snapshot
-    /// per call** — the dynamic-adapters API needed for live diffing is
-    /// known-crashy against tuwunel in v26. Phase 3 is when this flips to
-    /// keep-the-stream-open with a snapshot per RoomList change. Test
-    /// fakes already emit multiple snapshots so consumer ViewModels
-    /// (`ChatListViewModel`) are diff-tolerant today (QA finding #6 —
-    /// pinned the doc-comment to what actually ships).
+    /// Each call registers a new continuation with the broadcaster:
+    /// the consumer immediately receives the latest snapshot (may be
+    /// `[]` if sliding sync is still warming up), then a fresh snapshot
+    /// for every diff the live `RoomListSubscription` reports. The stream
+    /// stays open until the consumer cancels (sheet dismiss, view-model
+    /// `cancel()`, task cancellation). Cancelling one consumer doesn't
+    /// affect any other.
     ///
     /// `AsyncThrowingStream` so sliding-sync readiness failures
     /// (`SyncReadyError.timeout`, `.errored`, `.terminated`) bubble to
@@ -27,14 +27,22 @@ public protocol ChatService: Sendable {
     /// the server (tuwunel) is responsible for marking the room as a DM.
     func createChat(with botID: String) async throws -> String
 
-    /// Forces the chat list to re-poll its underlying source so consumers
-    /// observing `chatSummaries()` receive a fresh snapshot. Wired to the
-    /// iOS pull-to-refresh gesture and the Mac `⌘R` menu shortcut. The
-    /// Phase 1 contract that `chatSummaries()` is single-shot per call
-    /// stays intact — `refresh()` is a write-side ping that the Phase 2
-    /// live impl uses to wait for sync readiness; the consumer is
-    /// responsible for kicking off a new subscription.
+    /// Blocks on `sync.waitUntilReady()` and returns. Stays around for any
+    /// caller that just wants to ensure sliding sync has bootstrapped
+    /// before proceeding. View-layer pull-to-refresh / `⌘R` gestures
+    /// route through `ChatListViewModel.refresh()` →
+    /// `ChatService.forceSnapshot()` instead — see Phase 2.5 plan at
+    /// `docs/superpowers/plans/2026-05-05-matron-ios-phase-2-5-live-chat-list.md`.
     func refresh() async throws
+
+    /// Phase 2.5: feeds a fresh one-shot `client.rooms()` snapshot through
+    /// the same broadcaster pipe the live `RoomListSubscription` uses, so
+    /// every registered `chatSummaries()` consumer sees an extra yield.
+    /// Bound to the iOS pull-to-refresh and Mac `⌘R` gestures via
+    /// `ChatListViewModel.refresh()`. Does NOT tear down the live listener
+    /// — accumulated diff state and per-room subscription handles stay
+    /// intact.
+    func forceSnapshot() async throws
 
     /// Mutes notifications for `roomID` by setting the SDK's
     /// `NotificationSettings` room mode to `.mute`. Idempotent — calling

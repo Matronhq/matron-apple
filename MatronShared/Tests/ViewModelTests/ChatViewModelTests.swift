@@ -363,6 +363,152 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_hasReceivedFirstSnapshot_initiallyFalse() async {
+        // Before `start()` runs the flag is false so the empty-state
+        // placeholder stays hidden during sliding-sync warm-up.
+        let timeline = FakeTimelineService()
+        let vm = ChatViewModel(roomID: "!r:s", timeline: timeline, media: FakeMediaService())
+        XCTAssertFalse(vm.hasReceivedFirstSnapshot)
+    }
+
+    @MainActor
+    func test_hasReceivedFirstSnapshot_flipsTrue_afterEmptySnapshot() async {
+        // A genuinely-empty room must still flip the flag — that's the
+        // signal the placeholder uses to disambiguate "still loading"
+        // from "settled empty room".
+        let fake = FakeTimelineService()
+        fake.snapshotsToEmit = [[]]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        await task.value
+        XCTAssertTrue(vm.hasReceivedFirstSnapshot,
+                      "first applied snapshot must flip the gate, even when empty")
+    }
+
+    @MainActor
+    func test_hasReceivedFirstSnapshot_flipsTrue_evenWhenStreamYieldsNothing() async {
+        // The fallback branch fires when the upstream stream finishes
+        // without yielding any snapshot. Without this, freshly-joined
+        // rooms whose live timeline never warms up would leave the
+        // placeholder hidden forever.
+        let fake = FakeTimelineService()
+        // Default: no snapshots → stream finishes empty.
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        await task.value
+        XCTAssertTrue(vm.hasReceivedFirstSnapshot)
+    }
+
+    @MainActor
+    func test_rows_isEmpty_whenItemsEmpty() async {
+        // `rows` short-circuits on empty input so an empty chat
+        // doesn't render a stray separator with `now`'s date. Pinning
+        // explicitly so a refactor that drops the guard surfaces here.
+        let timeline = FakeTimelineService()
+        let vm = ChatViewModel(roomID: "!r:s", timeline: timeline, media: FakeMediaService())
+        XCTAssertTrue(vm.rows.isEmpty)
+    }
+
+    @MainActor
+    func test_rows_interleavesSeparators_betweenCalendarDays() async {
+        // Three messages spanning two calendar days → two separators
+        // (one at the head, one at the day boundary). The bucketing
+        // is calendar-aware so we inject a fixed UTC calendar to keep
+        // the assertion stable across CI timezones.
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC")!
+        var dc = DateComponents()
+        dc.year = 2026; dc.month = 3; dc.day = 1; dc.hour = 12
+        dc.timeZone = TimeZone(identifier: "UTC")
+        let day1 = cal.date(from: dc)!
+        let day1Later = cal.date(byAdding: .hour, value: 4, to: day1)!
+        let day2 = cal.date(byAdding: .day, value: 1, to: day1)!
+
+        let fake = FakeTimelineService()
+        let items: [TimelineItem] = [
+            TimelineItem(id: "a", sender: "@a:s", timestamp: day1,
+                         kind: .text(body: "morning", formattedHTML: nil), isOwn: false),
+            TimelineItem(id: "b", sender: "@a:s", timestamp: day1Later,
+                         kind: .text(body: "afternoon", formattedHTML: nil), isOwn: false),
+            TimelineItem(id: "c", sender: "@a:s", timestamp: day2,
+                         kind: .text(body: "next day", formattedHTML: nil), isOwn: false),
+        ]
+        fake.snapshotsToEmit = [items]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        vm.calendar = cal
+        let task = await vm.start()
+        await task.value
+
+        let rows = vm.rows
+        XCTAssertEqual(rows.count, 5,
+                       "expected: separator, msg, msg, separator, msg")
+        // Head separator → first cluster's day.
+        if case .separator = rows[0] {} else {
+            XCTFail("expected leading separator, got \(rows[0])")
+        }
+        // Two messages on day 1.
+        if case .message(let m) = rows[1] {
+            XCTAssertEqual(m.id, "a")
+        } else { XCTFail("expected message a at index 1") }
+        if case .message(let m) = rows[2] {
+            XCTAssertEqual(m.id, "b")
+        } else { XCTFail("expected message b at index 2") }
+        // Boundary separator before the day-2 cluster.
+        if case .separator = rows[3] {} else {
+            XCTFail("expected boundary separator, got \(rows[3])")
+        }
+        if case .message(let m) = rows[4] {
+            XCTAssertEqual(m.id, "c")
+        } else { XCTFail("expected message c at index 4") }
+    }
+
+    @MainActor
+    func test_rows_singleSeparator_whenAllItemsSameDay() async {
+        // Sanity: three messages on the same calendar day → one head
+        // separator, no day-boundary separator. Guards against the
+        // bucketing logic emitting a separator on every item.
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC")!
+        var dc = DateComponents()
+        dc.year = 2026; dc.month = 3; dc.day = 1; dc.hour = 9
+        dc.timeZone = TimeZone(identifier: "UTC")
+        let base = cal.date(from: dc)!
+
+        let fake = FakeTimelineService()
+        fake.snapshotsToEmit = [(0..<3).map { i in
+            TimelineItem(
+                id: "m\(i)", sender: "@a:s",
+                timestamp: cal.date(byAdding: .hour, value: i, to: base)!,
+                kind: .text(body: "msg \(i)", formattedHTML: nil),
+                isOwn: false
+            )
+        }]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        vm.calendar = cal
+        let task = await vm.start()
+        await task.value
+
+        let separators = vm.rows.filter {
+            if case .separator = $0 { return true }
+            return false
+        }
+        XCTAssertEqual(separators.count, 1,
+                       "items inside one calendar day must share a single separator")
+    }
+
+    @MainActor
+    func test_retrySend_isCallable_andStubDoesNotThrow() {
+        // Stub-only contract: the SDK retry path lands later. The
+        // surface needs to exist now so the View can wire the failed-
+        // send "Tap to retry" affordance ahead of the service layer.
+        // This test pins that the method exists, accepts a String,
+        // and doesn't crash — exactly what the View depends on.
+        let timeline = FakeTimelineService()
+        let vm = ChatViewModel(roomID: "!r:s", timeline: timeline, media: FakeMediaService())
+        vm.retrySend(itemID: "abc")
+    }
+
+    @MainActor
     func test_stop_cancelsObservationTask() async throws {
         let fake = FakeTimelineService()
         fake.snapshotsToEmit = [[]]

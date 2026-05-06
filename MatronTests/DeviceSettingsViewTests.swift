@@ -13,10 +13,11 @@ private actor FakeVerificationServiceForSettings: VerificationService {
 
     func setDeviceVerified(_ verified: Bool) { deviceVerifiedReturn = verified }
 
-    func isThisDeviceVerified() async throws -> Bool {
+    func isThisDeviceVerified() async throws -> Bool? {
         didCallIsThisDeviceVerified += 1
         return deviceVerifiedReturn
     }
+    nonisolated func verificationStateStream() -> AsyncStream<Bool?> { AsyncStream { $0.finish() } }
     func isUserVerified(matrixID: String) async throws -> UserVerificationResult { .unknown }
     func hasOtherVerifiedDevices() async throws -> Bool { false }
     nonisolated func incomingRequests() -> AsyncStream<VerificationRequestSummary> {
@@ -93,7 +94,7 @@ final class DeviceSettingsViewTests: XCTestCase {
         let svc = FakeVerificationServiceForSettings()
         await svc.setDeviceVerified(true)
         let result = try await svc.isThisDeviceVerified()
-        XCTAssertTrue(result)
+        XCTAssertEqual(result, true)
         let calls = await svc.didCallIsThisDeviceVerified
         XCTAssertEqual(calls, 1)
         // Just confirm the view binding compiles with the same service.

@@ -34,6 +34,18 @@ xcodebuild test -workspace Matron.xcworkspace -scheme Matron -destination 'platf
 xcodebuild test -workspace Matron.xcworkspace -scheme MatronMac -destination 'platform=macOS'
 ```
 
+## Debugging
+
+Verbose diagnostic logs (timeline snapshots, paginate lifecycle, scroll triggers, etc.) are gated behind `MatronDebug.enabled` so they stay in the source as living documentation of the data flow but cost nothing in shipped builds. Call sites use `Logger.diag(...)` instead of `Logger.notice(...)`. To turn them on for a session:
+
+```bash
+defaults write chat.matron.MatronMac MatronDebug -bool YES   # Mac
+defaults write chat.matron.app MatronDebug -bool YES         # iOS sim
+# then relaunch the app
+```
+
+Then read with `log show --last 5m --predicate 'subsystem == "chat.matron"' --style compact`. SDK-side Rust traces (matrix-rust-sdk's own logs) live at `~/Library/Caches/matron-sdk-trace/` on Mac and inside the iOS sim's app data dir. See `MatronShared/Sources/Models/MatronDebug.swift` for the helper and toggle internals.
+
 ## License
 
 AGPL-3.0 with commercial licensing available by arrangement. See `LICENSE`, `NOTICE`, and `CONTRIBUTING.md`.

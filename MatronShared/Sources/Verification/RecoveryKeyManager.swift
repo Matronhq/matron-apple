@@ -40,6 +40,20 @@ public final class RecoveryKeyManager: @unchecked Sendable {
     /// user ID so each user's key lives in its own Keychain entry.
     public static let storageKeyPrefix = "matron.recovery-key"
 
+    /// Maximum time `restore(usingKey:)` will wait for the SDK's
+    /// `verificationState()` to flip to `.verified` after
+    /// `recoverAndFixBackup` returns. 30s mirrors
+    /// `SyncServiceLive.readyTimeout` and is generous enough for the
+    /// SDK to download cross-signing private keys + sign this device
+    /// against the master key on a slow link, but tight enough that a
+    /// genuinely-stuck restore surfaces a `crossSigningTimeout` error
+    /// rather than dropping the user into a half-trusted state.
+    public static let crossSigningSettleTimeout: TimeInterval = 30
+    /// Poll cadence inside `waitForVerifiedState`. 250ms is small
+    /// enough to react quickly when the listener fires, big enough
+    /// to avoid hammering the SDK's encryption layer.
+    public static let crossSigningSettlePollInterval: TimeInterval = 0.25
+
     /// Per-user Keychain account name. Stable across devices for the same
     /// user because the entry is iCloud-synced and the user ID is the
     /// canonical Matrix identifier.
@@ -50,6 +64,28 @@ public final class RecoveryKeyManager: @unchecked Sendable {
     /// Convenience accessor for this manager's session-scoped key.
     private var sessionStorageKey: String {
         Self.storageKey(for: session.userID)
+    }
+
+    /// Polls `encryption.verificationState()` until it flips to
+    /// `.verified`, or throws `RestoreError.crossSigningTimeout` after
+    /// `timeout`. Internal, but `static` + `nonisolated` so unit tests
+    /// can exercise the timeout path against a stubbed clock without
+    /// constructing the full `RecoveryKeyManager`.
+    static func waitForVerifiedState(
+        encryption: Encryption,
+        timeout: TimeInterval,
+        pollInterval: TimeInterval
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if encryption.verificationState() == .verified { return }
+            try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
+        }
+        // Final check — last poll might have settled in the gap
+        // between the loop exit and the throw.
+        if encryption.verificationState() == .verified { return }
+        Self.logger.error("waitForVerifiedState: timed out after \(timeout, privacy: .public)s with state=\(String(describing: encryption.verificationState()), privacy: .public)")
+        throw RestoreError.crossSigningTimeout
     }
 
     public init(provider: ClientProvider, session: UserSession, keychain: KeychainStore) {
@@ -206,6 +242,29 @@ public final class RecoveryKeyManager: @unchecked Sendable {
                 let encryption = client.encryption()
                 try await encryption.recoverAndFixBackup(recoveryKey: key)
                 Self.logger.notice("restore: SDK recoverAndFixBackup() returned OK — verificationState now: \(String(describing: encryption.verificationState()), privacy: .public)")
+                // Block until cross-signing actually settles to
+                // `.verified`. `recoverAndFixBackup` returns once
+                // secret-storage is unlocked but cross-signing finalisation
+                // (downloading the master/self-signing/user-signing
+                // private keys, then signing this device against its
+                // own master key) is async and can take several seconds
+                // even on a fast network. Without this gate the caller
+                // flips `verifyDone = true` immediately and the user
+                // lands on a chat list with a device that other clients
+                // see as "not verified by owner" + a
+                // `SessionVerificationController` cached at the
+                // pre-cross-sign state that no longer dispatches
+                // delegate callbacks for subsequent SAS attempts.
+                // 30s timeout matches `SyncServiceLive.readyTimeout` —
+                // generous enough for slow homeservers, tight enough
+                // that an unreachable backup surfaces a real error
+                // instead of stranding the user.
+                try await Self.waitForVerifiedState(
+                    encryption: encryption,
+                    timeout: Self.crossSigningSettleTimeout,
+                    pollInterval: Self.crossSigningSettlePollInterval
+                )
+                Self.logger.notice("restore: cross-signing settled to .verified")
             }
         } catch let recoveryError as RecoveryError {
             Self.logger.error("restore: SDK threw RecoveryError: \(String(describing: recoveryError), privacy: .public)")
@@ -295,6 +354,18 @@ public final class RecoveryKeyManager: @unchecked Sendable {
         /// underlying error's description so debug logs aren't useless,
         /// but the UI shows a generic "couldn't restore" message.
         case other(underlying: Error)
+        /// `recoverAndFixBackup` returned successfully but the SDK's
+        /// `verificationState()` never flipped to `.verified` within
+        /// the cross-signing settle timeout. Surfacing this as a
+        /// distinct case stops the UI from waving the user past the
+        /// post-login gate into a half-trusted state — the device's
+        /// own messages would render as "from a device not verified
+        /// by its owner" on every other client and SAS verification
+        /// flows wouldn't dispatch their delegate callbacks (the
+        /// SessionVerificationController gets pinned to whatever the
+        /// state was at first build, so cached-against-`.unverified`
+        /// silently breaks the SAS protocol later).
+        case crossSigningTimeout
 
         public var errorDescription: String? {
             switch self {
@@ -304,6 +375,8 @@ public final class RecoveryKeyManager: @unchecked Sendable {
                 return "Couldn't reach the homeserver. Check your connection and try again."
             case .other(let underlying):
                 return "Couldn't restore: \(underlying.localizedDescription)"
+            case .crossSigningTimeout:
+                return "Couldn't finalize verification on this device. Sign out and try again — if this keeps happening, your other device may need to be online."
             }
         }
     }

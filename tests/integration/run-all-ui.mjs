@@ -41,8 +41,9 @@ mkdirSync(ARTIFACTS_DIR, { recursive: true });
 // app state wipe inside each scenario script handles client-side
 // isolation.
 const SCENARIOS = [
-  { script: 'recovery-key-restore-ui.sh', user: 'matron1' },
-  { script: 'reverse-direction-ui.sh',    user: 'matron2' },
+  { script: 'recovery-key-restore-ui.sh',     user: 'matron1' },
+  { script: 'reverse-direction-ui.sh',        user: 'matron2' },
+  { script: 'chat-list-live-updates-sdk.sh',  user: 'matron3' },
 ];
 
 function log(msg) {

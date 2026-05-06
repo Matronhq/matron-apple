@@ -17,6 +17,20 @@ public protocol MediaService: Sendable {
 }
 
 public extension MediaService {
+    /// Generic bytes accessor used by the fullscreen-attachment
+    /// preview path (file attachments → temp-file → QuickLook /
+    /// ShareLink). The underlying SDK call (`getMediaContent`) is
+    /// kind-agnostic; the existing `image(for:)` already returns the
+    /// raw bytes — `fetchBytes(mxcURL:)` exists as a clearer name
+    /// for non-image call sites so the public surface signals intent
+    /// without needing two parallel implementations on the live
+    /// service. Default implementation forwards to `image(for:)`.
+    func fetchBytes(mxcURL: URL) async -> Data? {
+        await image(for: mxcURL)
+    }
+}
+
+public extension MediaService {
     /// Convenience wrapper that decodes the resolved bytes into a SwiftUI
     /// `Image`. Cross-platform: iOS uses `UIImage`, macOS uses `NSImage`.
     /// Returns `nil` if the bytes don't decode as a known image format.

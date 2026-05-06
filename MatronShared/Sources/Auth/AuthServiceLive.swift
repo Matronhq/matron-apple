@@ -77,6 +77,13 @@ public final class AuthServiceLive: AuthService, @unchecked Sendable {
                 .sessionPaths(dataPath: basePath.path, cachePath: basePath.path)
                 .slidingSyncVersionBuilder(versionBuilder: .native)
                 .autoEnableCrossSigning(autoEnableCrossSigning: true)
+                // Match `ClientProvider.client(for:)` — auto-fetch the
+                // missing megolm session from server backup on any
+                // decryption failure, so freshly-logged-in devices can
+                // backfill historical messages once secret gossiping or
+                // a recovery-key restore has handed them the backup
+                // decryption key.
+                .backupDownloadStrategy(backupDownloadStrategy: .afterDecryptionFailure)
                 .build()
         } catch {
             throw AuthError.unexpected("ClientBuilder.build failed: \(error)")

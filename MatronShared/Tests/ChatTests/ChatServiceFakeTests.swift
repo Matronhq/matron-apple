@@ -11,6 +11,7 @@ final class FakeChatService: ChatService, @unchecked Sendable {
     var createCalls: [String] = []
     var nextCreatedRoomID: String = "!fake:server"
     var refreshCalls: Int = 0
+    var forceSnapshotCalls: Int = 0
     var mutedRooms: [String] = []
     var leftRooms: [String] = []
 
@@ -33,6 +34,7 @@ final class FakeChatService: ChatService, @unchecked Sendable {
     }
 
     func refresh() async throws { refreshCalls += 1 }
+    func forceSnapshot() async throws { forceSnapshotCalls += 1 }
     func mute(roomID: String) async throws { mutedRooms.append(roomID) }
     func leave(roomID: String) async throws { leftRooms.append(roomID) }
 }

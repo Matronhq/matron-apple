@@ -119,6 +119,13 @@ public struct KeychainStore: SessionStore {
     ///
     /// `synchronizable: true` because recovery keys ride iCloud Keychain
     /// to enable additional-device install without re-entering the key.
+    /// The team-prefixed `keychain-access-groups` entitlement we already
+    /// declare is sufficient for iCloud Keychain ride — no extra
+    /// `com.apple.developer.icloud-services` capability is required.
+    /// User must have iCloud Keychain enabled in System Settings for
+    /// the cross-device sync to actually take effect. Session 6
+    /// (2026-04-30) confirmed end-to-end persistence + sync on the
+    /// Org-team-signed Mac Debug build with this exact shape.
     public static func recoveryStore() -> KeychainStore {
         return KeychainStore(
             service: "chat.matron.recovery",

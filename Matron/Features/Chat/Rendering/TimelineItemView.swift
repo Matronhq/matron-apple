@@ -20,23 +20,63 @@ struct TimelineItemView: View {
     /// `ChatViewModel`. Production usage in `ChatView` always passes
     /// `viewModel.image(for:)`.
     var resolveImage: ((URL) -> Image?)? = nil
+    /// Optional retry handler for own-messages whose send state is
+    /// `.failed(reason:)`. Wired by `ChatView` to
+    /// `viewModel.retrySend(itemID:)`. `nil` for previews / tests.
+    var onRetry: ((String) -> Void)? = nil
+    /// Image-attachment tap handler — receives the row's resolved
+    /// `Image` (already in memory via `resolveImage`) so the parent
+    /// can present the fullscreen viewer without a second fetch.
+    /// `nil` keeps existing test sites compiling unchanged.
+    var onTapImage: ((Image) -> Void)? = nil
+    /// File-attachment tap handler — receives the `mxc://` URL plus
+    /// the original filename so the parent can stage the bytes to a
+    /// temp file and present `ShareLink` (iOS) / `NSWorkspace.open`
+    /// (Mac).
+    var onTapFile: ((URL, String) -> Void)? = nil
 
     var body: some View {
-        if !Self.shouldRender(item) {
-            // Round-5 bugbot finding #2: `TimelineServiceLive.mapVirtual`
-            // collapses `dateDivider`, `readMarker`, and `timelineStart`
-            // virtual items into `.stateChange(text: "")`. The
-            // `.stateChange` branch below wraps the text in a padded
-            // `HStack` with `Spacer`s, which renders as a visible 8pt
-            // empty row for these placeholders. Phase 2 closeout takes
-            // option (a) — render nothing for empty state-change text.
-            // Phase 3+ can extend `TimelineItem.Kind` with proper
-            // `.dateDivider` / `.readMarker` / `.timelineStart` cases and
-            // give them real visual treatment without disturbing the
-            // existing snapshot baselines.
-            EmptyView()
+        // Note: `shouldRender(_:)` is the contract for "is this Kind
+        // visible?" but the actual filtering happens in
+        // `ChatViewModel.rows` BEFORE the ForEach builds the view
+        // tree, so the dead branch that returned `EmptyView()` for
+        // `!shouldRender(item)` was unreachable in practice — every
+        // item that reaches `body` has already been filtered.
+        // `shouldRender` stays as a public static helper because
+        // `TimelineItemViewTests` exercises the contract; the views
+        // themselves don't need to re-check.
+        if item.isOwn && item.sendState != .sent {
+            // Own-message with non-default send state: render the body
+            // at reduced opacity (so the timeline visually distinguishes
+            // pending / failed sends) plus a footer indicator carrying
+            // the retry affordance. `.sent` is excluded explicitly so
+            // the common case continues to bypass the wrapping VStack
+            // (preserves the iOS snapshot test baselines).
+            VStack(alignment: .trailing, spacing: 2) {
+                renderedBody
+                    .opacity(item.sendState == .sending ? 0.7 : 1.0)
+                SendStateIndicator(
+                    state: Self.sendStateGlyph(for: item.sendState),
+                    onRetry: onRetry.map { handler in { handler(item.id) } }
+                )
+                .padding(.horizontal)
+            }
         } else {
             renderedBody
+        }
+    }
+
+    /// Maps `TimelineItem.SendState` (lives in `MatronChat`, transitively
+    /// pulls MatrixRustSDK) to the design-system glyph enum. Stays
+    /// local rather than hoisted to `MatronDesignSystem` because that
+    /// would force the design-system target to depend on the SDK
+    /// (`SendState` is in MatronChat, not MatronModels). Keep
+    /// in lockstep with `MacTimelineItemView.sendStateGlyph(for:)`.
+    static func sendStateGlyph(for state: TimelineItem.SendState) -> SendStateGlyph {
+        switch state {
+        case .sent: return .sent
+        case .sending: return .sending
+        case .failed(let reason): return .failed(reason: reason)
         }
     }
 
@@ -65,18 +105,41 @@ struct TimelineItemView: View {
                 AttachmentImage(
                     image: resolvedImage(for: url),
                     placeholder: "Image",
-                    caption: caption ?? sizeBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
+                    caption: caption ?? sizeBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) },
+                    // Forward tap to the parent only when we've got a
+                    // resolved Image AND a registered handler. Tapping
+                    // a still-loading placeholder is a no-op — opening
+                    // the fullscreen viewer with no bytes would just
+                    // show an empty black sheet.
+                    onTap: {
+                        if let img = resolvedImage(for: url),
+                           let onTapImage {
+                            onTapImage(img)
+                        }
+                    }
                 )
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: caption ?? "Image attachment"))
 
-        case .file(_, let filename, let sizeBytes):
+        case .file(let url, let filename, let sizeBytes):
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
                 senderLabel: item.isOwn ? nil : displayName(for: item.sender)
             ) {
-                AttachmentFile(filename: filename, sizeBytes: sizeBytes)
+                AttachmentFile(
+                    filename: filename,
+                    sizeBytes: sizeBytes,
+                    // Tap handler — only fires if we have both a URL
+                    // and a registered handler. Without the URL there's
+                    // nothing to fetch (`.file(url: nil, …)` is a
+                    // theoretical state but possible per the model).
+                    onTap: {
+                        if let url, let onTapFile {
+                            onTapFile(url, filename)
+                        }
+                    }
+                )
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "File attachment: \(filename)"))
@@ -90,11 +153,25 @@ struct TimelineItemView: View {
             .padding(.vertical, 4)
 
         case .unknown(let eventType):
+            // Encrypted-but-not-yet-decrypted is the SDK's
+            // `MsgLikeKind.unableToDecrypt` mapped to
+            // `.unknown(eventType: "m.room.encrypted")`. matrix-rust-sdk
+            // retries decryption automatically as megolm keys arrive
+            // (key backup, key forwarding); the row is replaced via
+            // a `.set` diff once that succeeds. Friendlier copy than
+            // the raw "[unsupported event]" we use as a generic fallback.
             HStack {
                 Spacer()
-                Text("[unsupported event: \(eventType)]")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                if eventType == "m.room.encrypted" {
+                    Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary)
+                    Text("Encrypted message — waiting for key")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("[unsupported event: \(eventType)]")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
             }
             .padding(.vertical, 4)
@@ -119,7 +196,18 @@ struct TimelineItemView: View {
     /// disturbing the existing snapshot baselines. `static internal` so
     /// `TimelineItemViewTests` can exercise the contract without rendering.
     static func shouldRender(_ item: TimelineItem) -> Bool {
-        if case .stateChange(let text) = item.kind, text.isEmpty {
+        // Empty stateChange covers the virtual items
+        // (`dateDivider` / `readMarker` / `timelineStart`) — see
+        // `TimelineServiceLive.mapVirtual` — and falls under "no Phase-2
+        // visual treatment, skip rather than render an 8pt blank row".
+        //
+        // Non-empty stateChange ("X joined", "Room state changed", profile
+        // updates) is meta-noise for the bot-first chats Matron targets.
+        // Hidden by default so the user sees the conversation tail
+        // instead of a wall of "Room state changed" rows from joins,
+        // power-level setup, encryption-on, etc. Phase 7 polish can
+        // bring back a "show metadata events" toggle if anyone asks.
+        if case .stateChange = item.kind {
             return false
         }
         return true

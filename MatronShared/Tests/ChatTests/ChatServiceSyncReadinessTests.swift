@@ -1,4 +1,5 @@
 import XCTest
+import MatrixRustSDK
 @testable import MatronChat
 @testable import MatronSync
 @testable import MatronModels
@@ -28,6 +29,15 @@ actor LocalFakeSync: MatronSync.SyncService {
         if isReady { return }
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             readyContinuations.append(cont)
+        }
+    }
+
+    func sdkService() async -> MatrixRustSDK.SyncService? { nil }
+
+    func stateStream() -> AsyncStream<SyncConnectionState> {
+        AsyncStream { continuation in
+            continuation.yield(.connecting)
+            continuation.finish()
         }
     }
 }

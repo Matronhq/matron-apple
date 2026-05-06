@@ -187,9 +187,9 @@ final class VerificationFlowIntegrationTests: XCTestCase {
         var persisted = false
         var lastState = "(uncalled)"
         for _ in 0..<150 {
-            let state = (try? await verification.isThisDeviceVerified()) ?? false
-            lastState = state ? "true" : "false"
-            if state {
+            let state = (try? await verification.isThisDeviceVerified()) ?? nil
+            lastState = state.map { $0 ? "true" : "false" } ?? "nil"
+            if state == true {
                 persisted = true
                 break
             }
@@ -330,7 +330,7 @@ final class VerificationFlowIntegrationTests: XCTestCase {
         //    .verified once partner's cross-signature lands locally.
         var verifiedAfter = false
         for _ in 0..<60 {
-            if try await verification.isThisDeviceVerified() { verifiedAfter = true; break }
+            if try await verification.isThisDeviceVerified() == true { verifiedAfter = true; break }
             try await Task.sleep(nanoseconds: 500_000_000)
         }
         XCTAssertTrue(verifiedAfter, "isThisDeviceVerified() never returned true within 30s of incoming-verification completion")
@@ -429,7 +429,7 @@ final class VerificationFlowIntegrationTests: XCTestCase {
         //    keys land locally and matron self-signs its device.
         var verifiedAfterRestore = false
         for _ in 0..<60 {  // up to 30s
-            if try await verification.isThisDeviceVerified() {
+            if try await verification.isThisDeviceVerified() == true {
                 verifiedAfterRestore = true
                 break
             }

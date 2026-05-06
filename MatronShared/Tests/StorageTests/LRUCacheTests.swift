@@ -45,17 +45,20 @@ final class LRUCacheTests: XCTestCase {
         XCTAssertTrue(cache.contains("d"))
     }
 
-    func test_getTouchesRecency_promotingEntryToMRU() {
+    func test_getDoesNotTouchRecency() {
         var cache = LRUCache<String, Int>(limit: 3)
         cache["a"] = 1
         cache["b"] = 2
         cache["c"] = 3
-        // Touching "a" via subscript-get moves it to MRU end — now "b"
-        // is the LRU and should be evicted on the next over-fill.
+        // Reads must NOT promote "a" — the subscript getter is
+        // explicitly non-mutating now (see `LRUCache.swift` doc-comment
+        // for the @Observable-render-loop rationale). After a read of
+        // "a" then writing "d", "a" is still the LRU and must be
+        // evicted; reads aren't a touch.
         _ = cache["a"]
         cache["d"] = 4
-        XCTAssertTrue(cache.contains("a"), "touched entry must survive eviction")
-        XCTAssertFalse(cache.contains("b"), "true LRU after touch must be evicted")
+        XCTAssertFalse(cache.contains("a"), "untouched-by-write entry must be evicted on next over-fill")
+        XCTAssertTrue(cache.contains("b"))
         XCTAssertTrue(cache.contains("c"))
         XCTAssertTrue(cache.contains("d"))
     }

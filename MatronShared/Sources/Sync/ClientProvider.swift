@@ -27,6 +27,20 @@ public actor ClientProvider {
             .sessionPaths(dataPath: basePath.path, cachePath: basePath.path)
             .slidingSyncVersionBuilder(versionBuilder: .native)
             .autoEnableCrossSigning(autoEnableCrossSigning: true)
+            // Auto-fetch the missing megolm session from the server-side
+            // key backup whenever an event fails to decrypt. Without
+            // this, historical messages on this device stay as
+            // [unsupported event: m.room.encrypted] forever — the SDK
+            // has the backup decryption key (received via secret
+            // gossiping after SAS verification or via recovery key
+            // restore), but won't *use* it to recover individual events
+            // unless the strategy is set. Mirrors Element X iOS
+            // (`ElementX/Sources/Other/Extensions/ClientBuilder.swift`).
+            // Pairs with `RecoveryKeyManager.restore()` calling
+            // `recoverAndFixBackup` — that step makes the backup
+            // decryption key *available* on this device; this builder
+            // step makes the SDK *use* it on demand.
+            .backupDownloadStrategy(backupDownloadStrategy: .afterDecryptionFailure)
             .build()
         let sdkSession = Session(
             accessToken: session.accessToken,

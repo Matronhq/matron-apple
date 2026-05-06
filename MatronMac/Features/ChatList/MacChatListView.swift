@@ -1,6 +1,9 @@
 import SwiftUI
+import AppKit
 import MatronChat
+import MatronDesignSystem
 import MatronModels
+import MatronSync
 import MatronVerification
 import MatronViewModels
 
@@ -91,6 +94,16 @@ struct MacChatListView: View {
     /// flash for verified devices during the initial query — same
     /// pattern as the per-bot banner (`MacChatView.botVerification`).
     @State private var isThisDeviceVerified: Bool? = nil
+    /// Latest user-facing connection state, fed by the host's
+    /// `SyncService.stateStream()`. `.running` hides the banner;
+    /// `.connecting` / `.offline` render it. Drives
+    /// `ConnectionStatusBanner` directly — no async glue inside the
+    /// View, just a `@State` mirror of the upstream stream.
+    @State private var connectionState: SyncBannerState = .connecting
+    /// Tracks whether sliding sync has ever been observed `.running` in
+    /// this session, so the banner can pick "Connecting…" vs
+    /// "Reconnecting…" copy. Sticky once true.
+    @State private var hasEverConnected: Bool = false
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -215,6 +228,33 @@ struct MacChatListView: View {
         // branch (B2/M5). MacChatListView only consumes the binding — no
         // start/stop here, just the view-model cancel.
         .onDisappear { viewModel.cancel() }
+        // Sync connection-state banner. Subscribes to the host's
+        // long-lived `stateStream()` and mirrors yields into the local
+        // `connectionState` so the banner reacts without bouncing
+        // through the ViewModel. Keying on `session?.userID` so a
+        // user-switch (sign out + sign back in) recycles the iterator
+        // against the new session's sync service. Mirrors the iOS
+        // ChatListView wiring.
+        .task(id: session?.userID) {
+            guard let deps, let session else { return }
+            let sync = deps.syncService(for: session)
+            for await state in await sync.stateStream() {
+                connectionState = .from(state)
+                if state == .running { hasEverConnected = true }
+            }
+        }
+        // Dock-tile badge mirrors the chat list's running unread total.
+        // `NSApp.dockTile.badgeLabel` accepts a String; `nil` removes
+        // the badge so a zero count produces no overlay. AppKit handles
+        // the rendering — capsule, white text, accent fill — so we
+        // don't need to reproduce the iOS pill visual on the dock side.
+        // No `initial: true` for the same reason as iOS — see
+        // `ChatListView` for the rationale: firing on first appear
+        // with a still-zero `totalUnread` actively clears any badge a
+        // push notification set while the app was backgrounded.
+        .onChange(of: viewModel.totalUnread) { _, newValue in
+            NSApp.dockTile.badgeLabel = newValue > 0 ? "\(newValue)" : nil
+        }
         // Wave 6 / live-test #3: per-this-device verification check.
         // Pre-Phase-3 users skipped the post-login verify gate
         // (`verifyDone` was never set on their session) so they have
@@ -226,6 +266,17 @@ struct MacChatListView: View {
         // verify-device sheet dismisses (a successful self-verify
         // clears the banner without a chat-list re-mount).
         .task(id: verifyDeviceDismissToken) { await evaluateThisDeviceVerification() }
+        // Reactively bind to the SDK's verification-state stream so a
+        // successful SAS / recovery-restore clears the banner the
+        // instant the SDK reports `.verified` — no longer dependent
+        // on the sheet-dismiss token landing AFTER the state has
+        // propagated. Mirrors the iOS ChatListView wiring.
+        .task {
+            guard let svc = verificationService else { return }
+            for await state in svc.verificationStateStream() {
+                isThisDeviceVerified = state
+            }
+        }
     }
 
     /// Resolves `isThisDeviceVerified` from the injected
@@ -249,19 +300,31 @@ struct MacChatListView: View {
         }
     }
 
-    /// Sidebar column wrapper: when the verification center has pending
-    /// requests OR this device is explicitly unverified, stack the
-    /// relevant banner(s) above the existing sidebar content. Banner
-    /// order: unverified-device (most actionable) → incoming requests
-    /// → list. Empty / no-banner case falls straight through to
-    /// `sidebar`. Plan §9b — banner sits above the chat list inside the
-    /// leading column of `NavigationSplitView`.
+    /// Sidebar column wrapper: when the connection-state banner is
+    /// visible OR the verification center has pending requests OR this
+    /// device is explicitly unverified, stack the relevant banner(s)
+    /// above the existing sidebar content. Banner order (top-down):
+    /// connection state → unverified-device (most actionable) →
+    /// incoming requests → list. Empty / no-banner case falls straight
+    /// through to `sidebar`. Plan §9b — banner sits above the chat
+    /// list inside the leading column of `NavigationSplitView`.
     @ViewBuilder
     private var sidebarColumn: some View {
         let hasIncoming = (verificationCenter?.pending.isEmpty == false)
         let showUnverified = (isThisDeviceVerified == false) && (onVerifyDevice != nil)
-        if hasIncoming || showUnverified {
+        let showConnection = (connectionState != .running)
+        if hasIncoming || showUnverified || showConnection {
             VStack(spacing: 0) {
+                // Connection-state banner sits at the very top so the
+                // user's first read of the sidebar is "what's the
+                // current sync status?" before anything else competes
+                // for attention. Hides on `.running` via the inner
+                // switch (returns EmptyView).
+                ConnectionStatusBanner(
+                    state: connectionState,
+                    hasEverConnected: hasEverConnected
+                )
+                .animation(.easeInOut(duration: 0.2), value: connectionState)
                 if showUnverified {
                     MacUnverifiedDeviceBanner(
                         onVerify: { onVerifyDevice?() }
@@ -328,7 +391,13 @@ struct MacChatListView: View {
             }
             .listStyle(.sidebar)
             .refreshable {
-                await runChatActionAwaiting { try await $0.refresh() }
+                // Phase 2.5: `⌘R` / sidebar pull drives a one-shot
+                // `client.rooms()` snapshot through the live broadcaster
+                // pipe via `ChatListViewModel.refresh()` →
+                // `ChatService.forceSnapshot()`. Pre-2.5 this called
+                // `chat.refresh()`, a `sync.waitUntilReady()` no-op once
+                // running, so the gesture was purely cosmetic.
+                await viewModel.refresh()
             }
         }
     }
@@ -382,7 +451,7 @@ struct MacChatListView: View {
             let timelineSvc = deps.timelineService(for: session, roomID: summary.id)
             let mediaSvc = deps.mediaService(for: session)
             let chatVM = ChatViewModel(roomID: summary.id, timeline: timelineSvc, media: mediaSvc)
-            let composerVM = ComposerViewModel(timeline: timelineSvc, commands: BotCommandCatalog.claudeBridge)
+            let composerVM = ComposerViewModel(roomID: summary.id, timeline: timelineSvc, commands: BotCommandCatalog.claudeBridge)
             MacChatView(
                 viewModel: chatVM,
                 composerVM: composerVM,
@@ -411,12 +480,6 @@ struct MacChatListView: View {
         guard let deps, let session else { return }
         let chat = deps.chatService(for: session)
         Task { try? await action(chat) }
-    }
-
-    private func runChatActionAwaiting(_ action: @escaping (ChatService) async throws -> Void) async {
-        guard let deps, let session else { return }
-        let chat = deps.chatService(for: session)
-        try? await action(chat)
     }
 
     /// Builds the SAS sheet shown when a banner's "Verify" is clicked.
@@ -473,16 +536,14 @@ private struct MacChatRow: View {
                     Text(summary.bot.displayName).font(.caption).foregroundStyle(.secondary)
                     if let lastActivity = summary.lastActivity {
                         Text("·").foregroundStyle(.secondary)
-                        Text(lastActivity, style: .relative)
+                        RelativeMinuteTimeView(lastActivity)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
             }
             Spacer(minLength: 0)
-            if summary.unreadCount > 0 {
-                Circle().fill(Color.accentColor).frame(width: 8, height: 8)
-            }
+            UnreadBadge(count: summary.unreadCount)
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 4)
