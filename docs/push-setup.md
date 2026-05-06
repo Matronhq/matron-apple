@@ -265,3 +265,214 @@ dev provisioning). App Store releases will need the production form,
 which is cleanest as a Debug/Release entitlement-files split mirroring
 Mac's `MatronMac.Debug.entitlements` / `MatronMac.entitlements`
 arrangement. Defer until Phase 7 wires App Store distribution.
+
+## Manual test walkthroughs
+
+These walkthroughs are written for the operator standing up Sygnal
++ a real device for the first time. Each one names the expected
+side-effect in the system unified log + the failure mode on the
+opposite side. **The Smoke test cURL chain above is the
+prerequisite** — if step 4 of that chain returns `{"rejected":
+["<token>"]}` or the live device never sees a notification, none of
+the below will pass either; fix Sygnal/APNs first.
+
+The whole-pipeline state to inspect across a walkthrough:
+- **Device unified log:** `log stream --predicate 'subsystem == "chat.matron"'` on the live host (Mac) or Console.app filtered by process for an iOS device. Surfaces every PushBootstrap / PushServiceLive / NotificationDelegate / MacNotificationHandler step the SDK tracing setup wires up.
+- **Sygnal log:** journal output of the running container; surfaces "Notification delivered to APNs" / "Rejected by APNs (BadDeviceToken / InvalidProviderToken / TopicDisallowed)" lines.
+- **matron-server pusher list:** `curl -H "Authorization: Bearer <admin>" https://<homeserver>/_synapse/admin/v1/users/<userID>/pushers | jq` (Tuwunel exposes the same shape as Synapse). One row per `(pushkey, app_id)` tuple.
+
+### Walkthrough 1 — first-time iOS push wire-up (real device)
+
+1. Install a Debug build of `Matron.app` on a real iOS device via
+   Xcode. Cold-launch.
+2. Sign in to a test account (`@manual-push-test:<homeserver>`) +
+   complete verification. The post-verify `.task(id: session.userID)`
+   fires `bootstrapPush(for:)`.
+3. iOS surfaces the system notification permission prompt — accept.
+   - **Failure mode:** prompt never appears → check the
+     `aps-environment` entitlement is in the signed `.ipa`
+     (`unzip -p Matron.ipa Payload/Matron.app/embedded.mobileprovision
+     | security cms -D | plutil -p -` and look for
+     `aps-environment: development`).
+4. Within ~1s the device log shows
+   `PushTokenStore.setToken(...)` followed by
+   `PushServiceLive.registerToken` posting to the Sygnal URL.
+5. Query matron-server's pusher list: a fresh row should appear with
+   `app_id: chat.matron.ios.dev`, `pushkey: <hex device token>`,
+   `kind: http`, `data.url:
+   https://<sygnal-host>/_matrix/push/v1/notify`.
+   - **Failure mode:** no row → Sygnal returned non-200 (check
+     Sygnal logs); pushkey malformed (`PushTokenStore` uses lowercase
+     hex with no separators — pin in `PushServiceLive.registerToken`).
+6. From a second account on a second device, send `Hello push` to
+   the test account's bot room.
+7. The first device receives a silent-push payload. The NSE wakes:
+   log shows `MatronSDKTracing.setup` (one-shot init), then
+   `PushDecoder.live` fetching + decrypting the event, then
+   `NotificationService.deliver(decoded:...)` rewriting the body.
+8. Lock-screen banner shows the decrypted body (`Hello push`)
+   + sender display name in the title.
+   - **Failure mode (encrypted placeholder visible):** NSE didn't
+     run or didn't decrypt. Filter the device log on
+     `subsystem == "chat.matron" AND category == "PushDecoder"` to
+     see the decrypt error. Common cause: NSE's App-Group
+     entitlement (`group.chat.matron`) doesn't match the host's, so
+     the NSE can't read the host's SDK store.
+
+### Walkthrough 2 — tap-to-open deep link (iOS)
+
+1. With the Matron.app backgrounded (home button / swipe up), send
+   another test message.
+2. Tap the notification banner from the lock screen / Notification
+   Center.
+3. App resumes; the chat-list NavigationStack pushes directly to
+   the room.
+   - Internals: `NotificationDelegate.didReceive` lands; the room ID
+     is stashed in `pendingRoomID` AND published via
+     `tappedRoomID`; the `.onReceive(tappedRoomID)` subscriber on
+     the post-verify branch appends to `chatPath`.
+   - **Failure mode (lands at chat list root):** `room_id` missing
+     from `userInfo`. The NSE's `deliver(decoded:roomID:eventID:)`
+     copies the IDs out of the decoded payload back into
+     `content.userInfo` for exactly this reason — if it didn't,
+     the tap fires but `tappedRoomID` never publishes.
+
+### Walkthrough 3 — cold-start tap (iOS)
+
+1. Force-quit Matron.app (multitasking switcher → swipe up).
+2. Send a test message + tap the notification.
+3. iOS launches Matron.app specifically because of the tap; first
+   render lands directly in the room.
+   - Internals: `NotificationDelegate.didReceive` runs BEFORE the
+     SwiftUI tree mounts, so the `.onReceive(tappedRoomID)`
+     subscriber isn't there to receive the publish. The
+     `pendingRoomID` buffer survives that gap; the post-verify
+     `.task(id: session.userID)` calls `consumePendingRoomID()` on
+     mount and appends to `chatPath`.
+   - **Failure mode:** lands at chat list root with no deep-link.
+     The cold-start path was specifically the bug cursor PR #5
+     pass-1 finding "cold-start taps get dropped" caught — verify
+     `consumePendingRoomID` is being called by setting a breakpoint
+     in `Matron/App/MatronApp.swift:177`.
+
+### Walkthrough 4 — sign-out → sign-in cycle (iOS)
+
+1. With account A signed in, confirm a pusher row exists in
+   matron-server for `(pushkey, chat.matron.ios.dev)`.
+2. Sign out via Settings (Phase 7 wires the Settings UI; Debug
+   builds can use the menu hook).
+3. Within ~5s the pusher row should disappear.
+   - Internals: `signOut()` reads
+     `PushTokenStore.shared.cachedToken` and enqueues an
+     `unregister(...)` onto the shared serialised chain.
+   - **Failure mode (row persists):** the unregister fired against
+     the wrong pusherBaseURL or a stale ClientProvider. The
+     `enqueuePushOperation` closure captures provider + session
+     up-front (the host signOut path documents this); confirm the
+     captured provider is alive when the chain runs.
+4. Sign in to account B (different `@user:homeserver`). Within ~1s
+   a fresh pusher row appears for B.
+5. From a third account, send messages to BOTH A's and B's bot
+   rooms. Only B's notification should arrive on the device — A's
+   pusher is gone.
+   - **Failure mode (A's notification arrives):** the unregister
+     didn't actually land server-side (Sygnal returned non-200, or
+     matron-server rejected it). Worse: the pusher row for A still
+     exists AND a row for B exists; both will fire. Check the
+     pusher list and force-delete A's via the homeserver admin API.
+
+### Walkthrough 5 — first-time Mac push wire-up
+
+Same shape as Walkthrough 1 but on macOS. Two important deltas:
+- Run a Debug build of `MatronMac.app` (sandbox is disabled in
+  Debug per the spec; Release builds re-enable sandbox + use the
+  `production` `aps-environment`).
+- The `app_id` written to the pusher row is `chat.matron.mac.dev`
+  (Debug) or `chat.matron.mac` (Release), NOT the iOS variants.
+  Sygnal must have all four `app_id`s configured (Smoke test step 1
+  pins this).
+- **Cleartext body in notification: NOT yet supported.** The Mac
+  silent-push body construction path is deferred (see "What's
+  deferred" above). Today the user sees the encrypted-placeholder
+  body APNs delivers; the room ID + sender are still in `userInfo`
+  for tap routing, but the visible body until Sygnal-side body
+  injection or the deferred local-notification rewrite lands is the
+  raw placeholder.
+
+### Walkthrough 6 — notification tap on Mac (multi-app open)
+
+1. With MatronMac backgrounded behind another app, send a test
+   message.
+2. Click the notification in Notification Center / banner.
+3. MatronMac activates and the main window flips forward;
+   `MacChatListView`'s sidebar selects the matching chat (detail
+   column flips to render it).
+   - Internals: `MacNotificationHandler.didReceive` →
+     `handleTap(userInfo:)` → `NSApp.activate` +
+     `window.makeKeyAndOrderFront` + `NotificationCenter` post
+     (`.matronOpenRoom`); `MacChatListView.onReceive` flips
+     `selectedSummaryID`.
+   - **Failure mode (window comes forward but no chat selected):**
+     `room_id` missing from userInfo (same iOS fix applies — the
+     `userInfo` flows from APNs payload to the silent-push handler
+     to the local notification, OR from the local-notification
+     `userInfo` directly when the deferred Mac decoder lands).
+
+### Walkthrough 7 — cold-start tap on Mac
+
+1. Quit MatronMac (`⌘Q`).
+2. Send a test message + click the notification.
+3. macOS launches MatronMac specifically because of the click;
+   first render of `MacChatListView` lands selected on the room.
+   - Internals: `MacNotificationHandler.handleTap` runs BEFORE
+     SwiftUI mounts, so `.onReceive(matronOpenRoom)` isn't there
+     to receive the post. The new `pendingRoomID` buffer (added in
+     `e4bf65a`) survives that gap; `MacChatListView.task` calls
+     `consumePendingRoomID()` on first appearance and writes to
+     `selectedSummaryID`.
+   - **Failure mode:** lands at chat list root. Verify the
+     `MacNotificationHandler.shared` singleton is actually wired
+     as the UN delegate in `MatronMacAppDelegate.applicationDidFinishLaunching`
+     — the delegate-stored-property shape (pre-`e4bf65a`) made the
+     buffer unreachable from the view layer.
+
+### Walkthrough 8 — permission denied path (both platforms)
+
+1. Decline the system permission prompt on first run.
+2. Confirm bootstrap returns `false` and no pusher row is written.
+   - Internals: `PushBootstrap.bootstrap()` short-circuits on
+     `!granted` BEFORE `setPerRoomNotificationMode` /
+     `registerForRemoteNotifications`; `register(token:)` is
+     never reached because the host's `bootstrapPush` guards on
+     `granted`.
+3. Send a test message — no notification arrives. Expected.
+4. The next launch should NOT re-prompt (iOS / macOS cache the
+   decision). To re-test, reset notification permission via
+   `xcrun simctl privacy <UDID> reset all chat.matron.app` (sim)
+   or System Settings → Notifications → Matron → toggle off → on
+   (real device).
+5. Once permission is granted in System Settings, the next launch's
+   `.task(id: session.userID)` re-runs bootstrap and writes the
+   pusher row.
+
+### Walkthrough 9 — sandbox vs production cross-check (operator-side)
+
+Before submitting a TestFlight or App Store build:
+1. Confirm the `app_id` in `PushConfig.swift` matches the build
+   configuration (Debug → `chat.matron.{ios,mac}.dev`; Release →
+   `chat.matron.{ios,mac}`). Pinned by `PushConfigTests`.
+2. Confirm the matching `app_id` in Sygnal's config has
+   `use_sandbox: true` (dev) or `false` (production) per the
+   Smoke test step 2 cross-check.
+3. Confirm the signing profile's `aps-environment` value pairs
+   correctly: `development` ↔ sandbox, `production` ↔ production
+   (Smoke test steps 3a/3b pin this).
+4. **Mismatch failure mode:** Sygnal forwards to production APNs
+   but the device is signed with a development profile (or vice
+   versa). APNs returns `BadDeviceToken`; the user sees no
+   notification and Sygnal's logs show the error. The mismatch
+   is silent on the client — there's no Swift-side check that
+   would catch a sandbox/production mis-pairing. Phase 7's App
+   Store-prep checklist should re-run this walkthrough against
+   the production profile + production Sygnal config before
+   first submission.
