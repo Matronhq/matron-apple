@@ -2,12 +2,23 @@ import SwiftUI
 import MatronAuth
 import MatronDesignSystem
 import MatronModels
+import MatronPush
 import MatronStorage
 import MatronVerification
 import MatronViewModels
 
 @main
 struct MatronApp: App {
+    /// Phase 4 Task 5 — APNs token capture lives on the
+    /// `UIApplicationDelegate`, not on the SwiftUI scene. The adaptor
+    /// keeps a single delegate instance alive for the process lifetime
+    /// so the system can hand `didRegisterForRemoteNotificationsWithDeviceToken`
+    /// back to the same object every push registration cycle. The
+    /// delegate forwards tokens into `PushTokenStore.shared` which
+    /// the `.task` on the post-verify branch awaits via
+    /// `PushBootstrap.bootstrap()` + `register(token:)`.
+    @UIApplicationDelegateAdaptor(MatronAppDelegate.self) private var appDelegate
+
     @State private var dependencies = AppDependencies()
     @State private var session: UserSession?
     @State private var bootstrapDone = false
@@ -118,6 +129,19 @@ struct MatronApp: App {
                             )
                             center.start()
                             verificationCenter = center
+                        }
+                        // Phase 4 Task 5: request push permission, set
+                        // every joined room to `.allMessages`, register
+                        // for remote notifications, and plumb the APNs
+                        // token to the homeserver pusher record. Keyed on
+                        // `session.userID` so a multi-account switch
+                        // re-runs the bootstrap against the new user's
+                        // pusher row. The task body completes once the
+                        // token is registered (or the user denies
+                        // permission); SwiftUI keeps the Task struct
+                        // around until the view dies.
+                        .task(id: session.userID) {
+                            await bootstrapPush(for: session)
                         }
                         .onDisappear {
                             verificationCenter?.stop()
@@ -288,6 +312,71 @@ struct MatronApp: App {
         session = nil
         verifyDone = false
     }
+
+    /// Phase 4 Task 5 — full push pipeline bootstrap for `session`.
+    /// Builds a `PushBootstrap` with the live SDK-bridging deps and
+    /// runs:
+    ///
+    /// 1. `bootstrap()` — system permission prompt (or cached
+    ///    decision), per-room `.allMessages` mode, register-for-remote.
+    /// 2. `PushTokenStore.shared.waitForToken()` — suspends until the
+    ///    `MatronAppDelegate` receives the APNs token. Returns
+    ///    immediately if the token already arrived (cold-start path).
+    /// 3. `register(token:)` — writes the pusher record on the
+    ///    homeserver via `Client.setPusher(...)`.
+    ///
+    /// Errors surface as no-ops today (Phase 4 doesn't gate UX on
+    /// "did push wire up successfully"); a Settings UI in a later
+    /// phase will surface persistent failures.
+    @MainActor
+    private func bootstrapPush(for session: UserSession) async {
+        do {
+            let client = try await dependencies.clientProvider.client(for: session)
+            let settings = await LiveMatronNotificationSettings.from(client: client)
+            let pushService = PushServiceLive(
+                provider: dependencies.clientProvider,
+                session: session
+            )
+            let chat = dependencies.chatService(for: session)
+            let bootstrap = PushBootstrap(
+                pushService: pushService,
+                pusherBaseURL: Self.pusherBaseURL,
+                notificationSettings: settings,
+                joinedRoomIDs: {
+                    // One snapshot off the long-lived chatSummaries
+                    // stream — never consumed past the first yield, so
+                    // the broadcaster's other registered consumers
+                    // (ChatListViewModel, NewChatSheet) are unaffected.
+                    var iterator = chat.chatSummaries().makeAsyncIterator()
+                    if let snapshot = try? await iterator.next() {
+                        return snapshot.map(\.id)
+                    }
+                    return []
+                }
+            )
+            let granted = await bootstrap.bootstrap()
+            guard granted else { return }
+            let token = await PushTokenStore.shared.waitForToken()
+            await bootstrap.register(token: token)
+        } catch {
+            // Failure to resolve a Client typically means sync isn't
+            // ready yet — the next user-switch / relaunch will retry.
+            // Phase 4 doesn't gate UX on this; later Settings UI
+            // surfaces persistent failures.
+        }
+    }
+
+    /// Sygnal pusher endpoint URL. **Out of scope for Phase 4 plan**:
+    /// real wiring needs Sygnal reachable + APNs auth keys + a
+    /// Cloudflare Tunnel hostname, all tracked in a separate
+    /// `dev-boxer` / `matron-server` issue (plan §"Server-side
+    /// prerequisites"). Until then this points at a placeholder host
+    /// — the bootstrap call will register a pusher row that simply
+    /// won't deliver until Sygnal is up. Replace with the real URL
+    /// when Task 9's runbook lands.
+    private static let pusherBaseURL = URL(
+        string: "https://sygnal.matron.example/_matrix/push/v1/notify"
+    )!
 }
 
 /// Sentinel error thrown by the timeout branch of `MatronApp.bootstrap()`'s
