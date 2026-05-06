@@ -1,31 +1,21 @@
-# Handover — Matron iOS+Mac, Phase 3 + integration harness
+# Handover — Matron iOS+Mac, on `main` ready for Phase 4
 
-**As of 2026-05-05 late afternoon (session 8)**, after eight working
-sessions on `phase-3-e2ee-verification`. Session 8 was a long
-review-feedback + CI cleanup pass on top of session 7's Priority A
-work, plus the start of Phase 2.5 (live chat-list subscription) —
-which is **net-new work** that needs to land before PR #3's Phase 3
-ships in any honest sense. Session 7's block is preserved below.
-The branch is clean, all 28 commits since session 6 close-out are
-pushed (`73ffd0b..c2e238a`), and CI's shared-package-tests +
-ios-build-and-test + mac-build-and-test are green. The CLA check
-is red because of a workflow infrastructure issue (`@v2` action pin
-that needs to be fixed on `main` — see session 8 block).
+**As of 2026-05-06 evening (session 10)**, after ten working sessions.
+**Phase 2.5 (live chat-list subscription + the post-merge bug-fix
+wave) merged to `main` as `ef00f5a`** (PR #4, squash, 57 commits
+collapsed). The repo is on `main` and ready for **Phase 4 (Push &
+NSE)** to start. No open PRs, no live feature branches, working
+tree clean.
 
-**Session 5** closed out with `matron-vs-matron-ui` GREEN end-to-end
-alongside the 3 SDK scenarios — full SAS round trip with both peers
-reaching `verificationStateListener: fired with verified`. Required
-four product-code changes plus a logging stack. See "Session 5"
-block below.
+Phases shipped: 1, 2, 3, 2.5. Phases not started: 4, 5, 6, 7. The
+next session's job is to start **Phase 4 — Push & NSE** per
+[`docs/superpowers/plans/2026-05-02-matron-ios-phase-4-push-nse.md`](superpowers/plans/2026-05-02-matron-ios-phase-4-push-nse.md).
+That plan is task-checkboxed and assumes Phase 3 + CI green (both
+satisfied modulo CI-billing — see "CI status" below).
 
-Latest tip: **`879f44e`** (`fix(test/scenario): poll-grep watcher instead of tail|grep -m1`),
-plus an uncommitted retry+logging diagnostic in
-`VerificationServiceLive.buildController`.
-Session 3 added the matron-vs-matron UI test scenario (Mac + iOS sim,
-both running matrix-rust-sdk, no partner.mjs) — 19 commits, ending in a
-**concrete reproducer of the matron-vs-matron responder bug** (Mac
-chat-list-view doesn't render the incoming-verify banner when iOS sends
-a verification request). See "Session 3" section.
+The full chronological session log lives below — read **Session 10**
+first for what just landed, then back to Session 9 for the Phase 2.5
+core, then earlier sessions for Phase 3 history.
 
 ---
 
@@ -53,8 +43,9 @@ phase gets its own plan with task-level checkboxes:
 |-------|-------|--------|--------|
 | 1 | Foundation | App scaffolds, sign-in, sliding sync, room list | **Shipped** (PR #1, squashed into main) |
 | 2 | Chat experience | Timeline, composer, attachments, slash commands | **Shipped** (PR #1, same merge) |
-| 3 | E2EE & verification UX | Recovery key, SAS, per-bot trust banners | **In flight on PR #3** |
-| 4 | Push & NSE | iOS push notifications, encrypted notif decryption | Plan only |
+| 3 | E2EE & verification UX | Recovery key, SAS, per-bot trust banners | **Shipped** (PR #3, squashed into main as `3f10451`) |
+| 2.5 | Live chat-list subscription + post-merge bug-fix wave | Long-lived `chatSummaries()`, broadcaster, bug fixes | **Shipped** (PR #4, squashed into main as `ef00f5a`) |
+| 4 | Push & NSE | iOS push notifications, encrypted notif decryption | **Next — plan ready** |
 | 5 | Custom event types | `tool_call`, `ask_user`, `session_meta` rendering | Plan only |
 | 6 | Search | Encrypted message search | Plan only |
 | 7 | Polish | Settings UI, font sizing, App Store prep | Plan only |
@@ -139,6 +130,297 @@ re-litigate without reading the spec):
   iOS-as-requester signs in, taps the verify-gate button, calls
   `startSAS`, and sends `m.key.verification.request` over to-device
   successfully — i.e., the iOS requester half is working end-to-end.
+
+---
+
+## Session 10 — Phase 2.5 hands-on testing → bug-fix wave → squash-merge
+
+**TL;DR for the next agent:** PR #4 had landed Phase 2.5's core
+plumbing in session 9 but had only seen automated tests. Session 10
+was almost entirely hands-on testing on signed Mac + iOS sim builds,
+which surfaced a **stack of real-world issues** (some pre-existing,
+some Phase-2.5-introduced) that got fixed inline. The branch
+accumulated 57 commits past `main`, all of which are now squashed
+into `main` as **`ef00f5a`** via admin-merge (CI billing exhausted —
+see Session 8/9 history). **`main` is the working baseline for
+Phase 4.**
+
+**Bugbot status:** Round 1 (18 findings) was addressed in commit
+`fe09d3d` mid-session. Bugbot was still running its review on the
+last pre-merge commit (`dc8af2d`) when we squash-merged; a one-shot
+in-session cron was scheduled for ~30 min post-merge to check for
+any late findings on the closed PR (`gh pr view 4 --json reviews`).
+**If you're picking up cold and that cron didn't fire, run that
+command manually** — anything bugbot found on the last commit needs
+to land as a follow-up PR on `main`.
+
+### What got fixed mid-session (in order)
+
+1. **`LRUCache.subscript get` was `mutating` and pinned main at 100% CPU.**
+   When the cache lives inside an `@Observable` view-model
+   (`ChatViewModel.resolvedImages`), every read fired the
+   macro-synthesized `modify` accessor → invalidated the SwiftUI
+   view → re-rendered → re-read → infinite loop. Fix: non-mutating
+   `get`; touch recency only on insert/update. The eviction
+   semantics shift slightly (FIFO from `timelineService(for:)`'s
+   perspective, since reads no longer promote) but for matron's
+   actual access pattern the bound is preserved.
+
+2. **Chat-tap → `roomNotFound` for every room on cold start.**
+   `Client.getRoom(roomId:)` reads BaseClient's room store, which
+   hydrates from sliding sync incrementally. The chat list, by
+   contrast, is sourced from `RoomList.entriesWithDynamicAdapters`
+   which registers + subscribes a room the moment sliding sync sees
+   it. Window: room visible in chat list but invisible to
+   `getRoom`. Fix: `TimelineServiceLive.resolveRoom` falls back to
+   `syncService.roomListService().room(roomId:)` on `getRoom` nil.
+   Genuinely-missing IDs still throw `roomNotFound`.
+
+3. **Chat list went stale silently after the laptop slept.**
+   `matrix-rust-sdk`'s `SyncService` does NOT auto-recover from
+   `.error` / `.terminated` — once it transitions, the sync_once
+   loop is dead until something calls `.start()` again. Fix:
+   `SyncServiceLive.handleStateChange` queues a single-flight
+   backoff'd restart (2s → 60s exponential) on those transitions;
+   successful `.running` resets the backoff; `stop()` cancels
+   pending restart. Banner switches to `.offline` during the outage.
+
+4. **Historical messages stuck as `[unsupported event: m.room.encrypted]`
+   forever.** `BackupDownloadStrategy.manual` is the SDK default;
+   `recoverAndFixBackup` makes the backup decryption key
+   *available*, but nothing *uses* it on demand. Fix: both
+   ClientBuilders configure `.afterDecryptionFailure` so per-event
+   UTDs auto-fetch from the backup. Mirrors Element X iOS — the
+   doc-comment in `RecoveryKeyManager.restore()` already flagged
+   this as deferred work, and that comment was right.
+
+5. **Already-verified device with no backup key — dead-end UI.**
+   SAS verification cross-signs the device but does NOT guarantee
+   the backup decryption key arrives (secret gossiping is
+   best-effort + sync may drop). The Help → Verify This Device
+   sheet's "Already verified" branch had no recovery-key escape.
+   Fix: that branch now offers "Restore from recovery key…" too;
+   user can pull the backup key out of secret storage without
+   re-doing SAS.
+
+6. **`Room.timeline()` builds a NEW Timeline per call.** SDK
+   doc-comment is explicit ("Create a timeline with a default
+   configuration"). `items()` was building T1 + attaching the
+   listener; `paginateBackward` was building T2 (unrelated) and
+   running paginate on T2's empty internal store — paginate
+   "completed" in 13ms with no `messages` HTTP span anywhere in the
+   SDK trace, T2 dropped, T1 never observed any new events. Fix:
+   `TimelineServiceLive` caches the Timeline once on first use;
+   `items` / send / paginate / markAsRead all route through the
+   cached instance. Lock-based init for the rare double-first-call
+   race. Lifecycle is tied to the LRU-cached `TimelineServiceLive`
+   in `AppDependencies`.
+
+7. **Scroll-up paginate snapshot-arrival timing.** The old code
+   slept 50ms after `timeline.paginateBackward` then checked
+   `items.count`. SDK delivers the new snapshot through
+   `timeline.items()` AsyncStream 200ms-1s later (network +
+   decrypt + dedup pipeline), so the count check ALWAYS fired
+   before the snapshot landed → no-growth counter incremented →
+   `reachedHistoryStart=true` flipped permanently after 2 such
+   misses → every subsequent scroll-up trigger short-circuited.
+   Fix: poll `items.count` until it grows, capped at
+   `snapshotWaitTimeout` (2.5s).
+
+8. **Scroll-up paginate trigger compared against `items.first?.id`.**
+   But `items.first` is virtually always a `.stateChange` event
+   (room create / encryption setup) which `shouldRender` filters
+   out, so the comparison never matched any rendered row. Same
+   bug at the tail (`items.last?.id` in auto-follow / jump-to-bottom
+   / scroll-memory). Fix: `firstRenderableItemID` /
+   `lastRenderableItemID` skip hidden `.stateChange` items; both
+   views route through them.
+
+9. **Banner stuck after SAS.** Was sheet-dismiss-token-driven;
+   replaced with `verificationStateStream()` reactive subscription
+   so banner state tracks the SDK's actual `verificationState()`.
+
+10. **18 bugbot findings on PR #4 (round 1).** Addressed in
+    `fe09d3d` as one stack: `ChatService` cached in `AppDependencies`
+    so the broadcaster singleton actually works; `MacNewChatSheet`
+    breaks on first non-empty snapshot; transient bootstrap errors
+    no longer permanently poison the broadcaster (clears cached
+    Task on failure, retry on next subscriber); `RoomListSubscription`
+    retain cycle broken (per-iteration `guard let self`); real
+    `numUnreadNotifications` plumbed; badge wiring no longer clears
+    push-set badges on cold start; `.remove(idx)` sets `resetAll`;
+    `bannerState` hoisted to `MatronDesignSystem`; filename
+    sanitisation in `writeTempFile`; `DateFormatter` static-let;
+    dead `runChatActionAwaiting` dropped; redundant `shouldRender`
+    branches dropped; integration harness skip-list updated.
+
+11. **`ChatViewModel.rows` was O(N) per body re-eval, 60K item
+    operations/sec during scroll.** `rows`, `firstRenderableItemID`,
+    `lastRenderableItemID` are now memoised stored properties,
+    recomputed once per snapshot via a single-pass
+    `applyDerivedRecompute()`. Snapshot listener routes through
+    `applySnapshot(_:)` (single mutation entry point for `items`).
+    User-visible: scrolling deep conversations is materially smoother.
+
+12. **Paginating spinner indicator + min-display-duration.** Small
+    "Loading earlier messages…" pill at the top of the chat
+    ScrollView while a backward paginate is in flight, gated on
+    `viewModel.isPaginatingBackward`. `MinDisplayDuration` wrapper
+    holds the visible flag `true` for at least 500ms once shown so
+    fast paginates that complete in 50-200ms still produce a
+    perceptible indicator.
+
+13. **`MatronDebug.enabled` gate + `Logger.diag(...)` helper.**
+    Diagnostic logs (snapshot, onAppear, scrollChange,
+    paginate-lifecycle) stay in source as breadcrumbs but cost
+    nothing in shipped builds. `@autoclosure` defers the message
+    interpolation. Toggle via
+    `defaults write chat.matron.{MatronMac,app} MatronDebug -bool YES`.
+    README has a Debugging section pointing at it.
+
+### Tried + reverted: SQLCipher for SDK-store-at-rest encryption
+
+`c5f6c7e` attempted `SqliteStoreBuilder.passphrase(...)` for
+encrypted-at-rest SDK store (SDK store is plaintext on disk, only
+device-unlock-gated by FS encryption). Reverted in **`dc8af2d`**.
+
+**Why it failed:**
+- The matrix-rust-components-swift v26 prebuilt SwiftPM binary does
+  NOT ship with the `sqlite-cipher` Cargo feature compiled in.
+  `.passphrase(...)` is silently ignored at the binding layer
+  (verified: on-disk file magic stayed `SQLite format 3`).
+- Worse, swapping `.sessionPaths(...)` for
+  `.sqliteStore(SqliteStoreBuilder)` produced
+  `CryptoStoreError(Backend(Decode(Syntax("missing field user_id"))))`
+  during sliding-sync's encryption sub-channel, which broke
+  recovery-key restore (user reported "couldn't finalize
+  verification on this device"). The two builder paths aren't
+  behaviour-equivalent in v26 even with a nil/ignored passphrase.
+
+**Why we stopped:**
+- The path to actual encryption is forking
+  matrix-rust-components-swift, enabling the `sqlite-cipher` feature
+  in its Cargo manifest, rebuilding the `.xcframework`, vendoring
+  the binary, and re-cutting on every SDK bump. Multi-day effort,
+  locks us off upstream binary releases.
+- For a bot-first chat client on devices the user owns, iOS Data
+  Protection / FileVault filesystem encryption already addresses
+  the realistic threat (stolen locked device). SQLCipher only adds
+  defence against unlocked-device sandbox dumps, which is not in
+  scope. The user explicitly accepted plaintext-on-disk after this
+  finding.
+- See memory `project_sdk_store_at_rest_encryption.md`.
+
+**Don't try this again** unless (a) matrix-rust-components-swift
+ships a SQLCipher-enabled binary upstream, OR (b) a compliance
+requirement appears that genuinely needs encrypted-at-rest beyond
+what FileVault provides.
+
+### Known issue inherited from this session: corrupted Mac SDK store
+
+The SQLCipher attempt **left the `~/Library/Application Support/chat.matron.mac/sdk-store` directory in a state where the
+crypto-store decode kept failing** (`missing field user_id`) even
+after the revert. We nuked that directory + the sessions dir
+manually mid-session (`rm -rf
+"~/Library/Application Support/chat.matron.mac/sdk-store" sessions`)
+and the user signed in fresh; the working build is using a clean
+store. **If a future agent picks up and the user reports the same
+crypto-store decode error, the recovery is the same: quit Mac app,
+nuke those two directories, sign in fresh.** Future-proofing it
+in code (auto-recover on crypto-store decode failure) was
+deliberately deferred — the trigger was a one-time botched
+migration, not an ongoing risk.
+
+### Things to NOT undo (Session 10)
+
+- **Don't make `LRUCache.subscript get` mutating again.** The
+  doc-comment on `LRUCache` calls out the @Observable-render-loop
+  rationale — there's a regression-guard test
+  (`LRUCacheTests.test_getDoesNotTouchRecency`).
+- **Don't go back to `client.getRoom`-only for room resolution in
+  `TimelineServiceLive`.** The room-list-service fallback
+  (`syncService.roomListService().room(roomId:)`) is what makes
+  cold-start chat-tap work for rooms whose BaseClient hydration
+  hasn't caught up yet.
+- **Don't drop the `SyncServiceLive` auto-restart on `.error` /
+  `.terminated`.** matrix-rust-sdk does NOT auto-recover from
+  those — without our restart, chat list goes stale silently
+  after the first DNS blip / sleep+wake. The doc-comment on
+  `handleStateChange` previously said "SDK auto-recovers; flashing
+  the banner on every blip is just noise" — that was wrong and is
+  now corrected inline.
+- **Don't drop `BackupDownloadStrategy(.afterDecryptionFailure)`
+  from either ClientBuilder.** Without it, historical UTDs stay
+  unreadable forever even when the backup decryption key is
+  available locally.
+- **Don't go back to building a fresh `Timeline` per operation in
+  `TimelineServiceLive`.** The previous comment justifying that
+  pattern was a worry about SDK-driven teardown that turned out
+  to be hypothetical — `Room.timeline()` builds a new Timeline
+  every call, and paginate-on-an-unrelated-Timeline silently
+  no-ops. Cache-once-per-service is the correct pattern.
+- **Don't try SQLCipher again** without first confirming
+  matrix-rust-components-swift has shipped a SQLCipher-enabled
+  binary upstream (see "Tried + reverted" above).
+- **Don't unmemoise `ChatViewModel.rows` /
+  `firstRenderableItemID` / `lastRenderableItemID`.** Long-
+  conversation scrolling perceptibly slows again.
+- **Don't drop `MinDisplayDuration` around the paginating
+  indicator.** Fast paginates (50-200ms from local cache) make
+  the spinner imperceptible without it.
+
+### State at close
+
+- **Tip:** `ef00f5a` on `main` (`Phase 2.5: live chat-list
+  subscription + post-merge bug-fix wave (#4)`). Working tree
+  clean. No live feature branches. PR #4 closed/merged.
+- **Local verification:** SPM `swift test` → 296 tests, 4 skipped,
+  0 failures. iOS + Mac `xcodebuild build` clean. Manual smoke
+  tested heavily on signed Mac + iOS sim throughout the session
+  (chat list live updates, scroll up paginate, recovery-key
+  restore, decryption recovery, sleep+wake sync recovery, etc.).
+- **CI:** Still red on the GitHub Actions billing budget
+  (exhausted earlier); merge was admin-override per prior
+  agreement. CLA workflow's `@v2` infra issue from session 8 is
+  unresolved on `main` (not a code problem).
+- **Memory entries added this session:**
+  - `feedback_add_diagnostics_when_stuck.md` — when a fix doesn't
+    land twice, stop guessing → add `os.Logger` at every layer →
+    read the trace.
+  - `project_sdk_store_at_rest_encryption.md` — the SQLCipher
+    deferral context.
+
+### Phase 4 starting state (for the next agent)
+
+You're starting cold on `main` at `ef00f5a`. **Phase 3 is shipped,
+Phase 2.5 is shipped, Phase 4 is next.** The plan file is
+[`docs/superpowers/plans/2026-05-02-matron-ios-phase-4-push-nse.md`](superpowers/plans/2026-05-02-matron-ios-phase-4-push-nse.md)
+— task-checkboxed, ~1600 lines, covers iOS NSE + cross-platform
+`PushService` + Mac in-process notification handler.
+
+**Server-side prerequisites are out of plan** (Sygnal + APNs auth
+key + Cloudflare Tunnel) — track in a separate `dev-boxer` /
+`matron-server` issue. The plan assumes Sygnal is already reachable
+with four `app_id` entries (`chat.matron.ios{,.dev}`,
+`chat.matron.mac{,.dev}`).
+
+Recommended first task: **Task 1 (NSE Xcode target + PushConfig +
+PushService protocol)** — pure scaffolding, no runtime behaviour
+yet. Establishes the `MatronNSE` target via XcodeGen and the
+shared `MatronShared/Sources/Push/` directory. Phase 1 wired up
+`Matron`, `MatronMac`, `MatronShared` but did NOT create the NSE
+target — Phase 4 owns that.
+
+Ground rules from the plan worth re-stating:
+- **NSE is iOS-only.** Mac handles pushes in-process via
+  `UNUserNotificationCenterDelegate` — no NSE target on Mac.
+- **PushDecoder is closure-injectable** so the same code runs in
+  the iOS NSE process AND in-process on Mac.
+- **`aps-environment` entitlement** lands separately for Mac
+  (Task 12).
+- **Provisioning is out of scope** for the plan — the .p8 auth
+  key + bundle IDs need to exist in App Store Connect before
+  Tasks 1–8 can be exercised end-to-end.
 
 ---
 
