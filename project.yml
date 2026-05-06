@@ -102,6 +102,18 @@ targets:
         # green. Real-device + signed-CI builds get the probe.
         keychain-access-groups:
           - $(AppIdentifierPrefix)chat.matron
+        # Phase 4 Task 5 follow-up: APNs entitlement. Without this,
+        # `UIApplication.registerForRemoteNotifications()` fails before
+        # `PushTokenStore` ever sees a token, so the pusher record is
+        # never written and APNs delivery never starts. iOS uses
+        # `aps-environment` (NOT the macOS `com.apple.developer.aps-environment`
+        # — that's the macOS-specific variant). Single value `development`
+        # for now; Phase 7's App Store split adds a Release entitlements
+        # file with `production` to pair with the App Store provisioning
+        # profile. Mismatch (Debug build with `production` provisioning
+        # or vice versa) silently rejects tokens at Sygnal — see
+        # `MatronMac.entitlements` for the parallel Mac comment.
+        aps-environment: development
     # `scheme.testTargets` populates `<Testables>` on the auto-generated
     # `Matron.xcscheme`. Without this, `xcodebuild test -scheme Matron`
     # fails with "Scheme is not currently configured for the test action"

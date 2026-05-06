@@ -56,8 +56,16 @@
 		pairing is pinned on both sides; see
 		`docs/superpowers/plans/2026-05-02-matron-ios-phase-4-push-nse.md`
 		§"Push setup runbook" for the cross-check.
+
+		**macOS-specific key**: macOS uses
+		`com.apple.developer.aps-environment` (NOT the iOS-only bare
+		`aps-environment`). Initial Task 12 commit landed the iOS form
+		on Mac, which fails to grant push capability — `NSApplication.registerForRemoteNotifications()`
+		never produces a token. Bug spotted by cursor on PR #5 review;
+		the right key per Apple's macOS entitlements docs is the
+		`com.apple.developer.*` namespaced form.
 	-->
-	<key>aps-environment</key>
+	<key>com.apple.developer.aps-environment</key>
 	<string>development</string>
 </dict>
 </plist>

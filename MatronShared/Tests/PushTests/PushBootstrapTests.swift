@@ -135,4 +135,51 @@ final class PushBootstrapTests: XCTestCase {
         let received = await store.waitForToken()
         XCTAssertEqual(received, token)
     }
+
+    // MARK: - PushTokenStore.enqueuePushOperation ordering
+
+    func test_enqueuePushOperation_runsInOrder() async {
+        // Cursor PR #5 finding "unregister can erase new pusher": if
+        // sign-out's unregister and bootstrap's register can race, a
+        // late unregister from a prior session can delete a fresh
+        // register. The chain serialises them. This test enqueues
+        // three operations and asserts they ran in enqueue order.
+        let store = PushTokenStore()
+        let recorder = OrderRecorder()
+
+        store.enqueuePushOperation { [recorder] in
+            // Sleep on the first task so the second has a chance to
+            // be scheduled before the first finishes — without the
+            // chain, the second would race ahead.
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            await recorder.append("a")
+        }
+        store.enqueuePushOperation { [recorder] in
+            await recorder.append("b")
+        }
+        store.enqueuePushOperation { [recorder] in
+            await recorder.append("c")
+        }
+
+        await store.awaitPendingPushOperations()
+        let order = await recorder.recorded
+        XCTAssertEqual(order, ["a", "b", "c"])
+    }
+
+    func test_awaitPendingPushOperations_returnsImmediatelyWhenChainEmpty() async {
+        // Bootstrap calls `awaitPendingPushOperations()` before
+        // `register(token:)`. On a clean cold-start (no prior
+        // sign-out / unregister enqueued), this must NOT block.
+        let store = PushTokenStore()
+        await store.awaitPendingPushOperations()
+        // No assertion needed — the test passes by completing.
+    }
+}
+
+/// Actor-protected ordered list used by `test_enqueuePushOperation_runsInOrder`
+/// — `Task` closures need a Sendable sink to record their landing order
+/// without tripping concurrency-checking warnings on a plain `[String]`.
+private actor OrderRecorder {
+    var recorded: [String] = []
+    func append(_ value: String) { recorded.append(value) }
 }

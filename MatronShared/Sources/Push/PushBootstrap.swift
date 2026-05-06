@@ -77,7 +77,17 @@ public final class PushBootstrap {
     /// path (via `PushTokenStore`). Errors are swallowed today — Phase 4
     /// doesn't gate UX on this; Settings UI in a later phase will
     /// surface failures so the user knows pushes aren't wired.
+    ///
+    /// Awaits any pending push operations on
+    /// `PushTokenStore.shared.pushOperationTail` first, so a stale
+    /// `unregister` from a prior session's sign-out lands BEFORE this
+    /// fresh `register` writes the pusher row. Without this guard, a
+    /// fast sign-out → sign-in cycle's late-completing unregister
+    /// would delete the just-written pusher row and leave the user
+    /// without push delivery until the next manual bootstrap pass
+    /// (cursor PR #5 finding "unregister can erase new pusher").
     public func register(token: Data) async {
+        await PushTokenStore.shared.awaitPendingPushOperations()
         do {
             try await pushService.registerToken(token, pusherBaseURL: pusherBaseURL)
         } catch {
@@ -134,6 +144,16 @@ public final class PushTokenStore {
     private var latestToken: Data?
     private var waiters: [CheckedContinuation<Data, Never>] = []
 
+    /// Tail of the serialised push-operation chain. New register /
+    /// unregister calls extend the chain so they run in the order
+    /// they were enqueued — this prevents the race where a fast
+    /// sign-out → sign-in cycle's stale `unregister` lands AFTER
+    /// the new session's `register`, deleting the freshly-written
+    /// pusher row. Cursor PR #5 finding "unregister can erase new
+    /// pusher". `nil` until the first enqueue; `enqueuePushOperation`
+    /// awaits the prior tail before its own work runs.
+    private var pushOperationTail: Task<Void, Never>?
+
     /// Internal so unit tests can build a fresh store per case.
     /// Production code uses `PushTokenStore.shared`.
     init() {}
@@ -172,5 +192,32 @@ public final class PushTokenStore {
         return await withCheckedContinuation { continuation in
             waiters.append(continuation)
         }
+    }
+
+    /// Enqueues a push operation onto the serialised chain. The work
+    /// closure runs only after every prior enqueued operation has
+    /// completed, so a stale `unregister` from sign-out can never
+    /// land after a fresh `register` from sign-in. Returns the new
+    /// tail so callers can `await` if they need ordering against
+    /// their own subsequent calls.
+    @discardableResult
+    public func enqueuePushOperation(
+        _ work: @escaping @Sendable () async -> Void
+    ) -> Task<Void, Never> {
+        let prior = pushOperationTail
+        let next = Task<Void, Never> {
+            await prior?.value
+            await work()
+        }
+        pushOperationTail = next
+        return next
+    }
+
+    /// Awaits any pending push operations enqueued via
+    /// `enqueuePushOperation`. The bootstrap flow calls this before
+    /// `register(token:)` so a stale unregister from a prior session's
+    /// sign-out completes BEFORE the new session writes its pusher row.
+    public func awaitPendingPushOperations() async {
+        await pushOperationTail?.value
     }
 }

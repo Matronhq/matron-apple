@@ -164,6 +164,20 @@ struct MatronApp: App {
                         // permission); SwiftUI keeps the Task struct
                         // around until the view dies.
                         .task(id: session.userID) {
+                            // Cold-start tap drain (cursor PR #5
+                            // finding): if iOS launched the app
+                            // specifically because the user tapped a
+                            // notification on the lock screen,
+                            // `didReceive` ran before the
+                            // `.onReceive(tappedRoomID)` below
+                            // subscribed and `PassthroughSubject`
+                            // dropped the value. The delegate buffers
+                            // such taps in `pendingRoomID`; drain it
+                            // here.
+                            if let pending = NotificationDelegate.shared.consumePendingRoomID(),
+                               chatPath.last != pending {
+                                chatPath.append(pending)
+                            }
                             await bootstrapPush(for: session)
                         }
                         .onDisappear {
@@ -329,18 +343,18 @@ struct MatronApp: App {
     /// to retry verification.
     private func signOut() {
         // Phase 4 Task 8: best-effort pusher unregister BEFORE clearing
-        // the session. Once `dependencies.signOut()` lands, the
-        // ClientProvider is invalidated and `unregister` would 404 —
-        // so we kick this off before, but don't `await` (a slow
-        // network round-trip shouldn't block the UI returning to the
-        // sign-in view). Leaving the pusher row on the homeserver is
-        // a minor wart (it stays until next sign-in / manual cleanup)
-        // but not a security issue: the signed-out device can't
-        // decrypt the pushes anyway.
+        // the session. Enqueued through the shared `pushOperationTail`
+        // chain on PushTokenStore so a fast sign-out → sign-in cycle's
+        // unregister can't land AFTER the new session's register and
+        // delete the freshly-written pusher row (cursor PR #5 finding).
+        // Capture provider + session up front because
+        // `dependencies.signOut()` invalidates the ClientProvider
+        // immediately below — the chain's work runs later but uses
+        // the snapshot.
         if let session, let token = PushTokenStore.shared.cachedToken {
             let provider = dependencies.clientProvider
             let pusherURL = Self.pusherBaseURL
-            Task.detached {
+            PushTokenStore.shared.enqueuePushOperation {
                 let pushService = PushServiceLive(provider: provider, session: session)
                 try? await pushService.unregister(
                     deviceToken: token,

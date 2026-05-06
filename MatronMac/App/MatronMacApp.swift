@@ -373,14 +373,15 @@ struct MatronMacApp: App {
     /// `MacSignInView` branch.
     private func signOut(activeSession: UserSession) {
         // Phase 4 Task 8: best-effort pusher unregister BEFORE clearing
-        // the session. Once `dependencies.signOut()` lands, the
-        // ClientProvider is invalidated and `unregister` would 404 —
-        // so we kick this off before, but don't `await`. Mirrors the
-        // iOS host's signOut path.
+        // the session. Enqueued through the shared `pushOperationTail`
+        // chain on PushTokenStore so a fast sign-out → sign-in cycle's
+        // unregister can't land AFTER the new session's register and
+        // delete the freshly-written pusher row (cursor PR #5 finding).
+        // Mirrors the iOS host's signOut path.
         if let token = PushTokenStore.shared.cachedToken {
             let provider = dependencies.clientProvider
             let pusherURL = Self.pusherBaseURL
-            Task.detached {
+            PushTokenStore.shared.enqueuePushOperation {
                 let pushService = PushServiceLive(provider: provider, session: activeSession)
                 try? await pushService.unregister(
                     deviceToken: token,
