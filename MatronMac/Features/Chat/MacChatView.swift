@@ -127,14 +127,17 @@ struct MacChatView: View {
                     .padding(.vertical)
                 }
                 .defaultScrollAnchor(.bottom)
-                .onChange(of: viewModel.items.last?.id) { _, _ in
-                    // Round-3 bugbot finding #5: keying on `items.count`
-                    // missed `.set` diffs that swap a local-echo id for
-                    // a remote-event id (count constant, last id moves)
-                    // and remove+add diff batches (count constant, last
-                    // id moves). Keying on `last?.id` catches both.
-                    if let last = viewModel.items.last {
-                        withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                // Pin to the live tail. Re-fires every time the last
+                // item's id changes; the Task hop yields a runloop turn
+                // so the LazyVStack row geometry is registered before
+                // `proxy.scrollTo` resolves it. Without that the very
+                // first scroll is a no-op (proxy can't find the id
+                // yet), which presents as "chat opens above the bottom".
+                .onChange(of: viewModel.items.last?.id) { _, newID in
+                    guard let id = newID else { return }
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 50_000_000)
+                        proxy.scrollTo(id, anchor: .bottom)
                     }
                 }
             }

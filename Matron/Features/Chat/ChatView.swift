@@ -152,17 +152,21 @@ struct ChatView: View {
                     .padding(.vertical)
                 }
                 .defaultScrollAnchor(.bottom)
-                .onChange(of: viewModel.items.last?.id) { _, _ in
-                    // Round-3 bugbot finding #5: previously we keyed on
-                    // `items.count`, which misses two real cases —
-                    // (a) a `.set` diff swapping a local-echo item id for
-                    // its remote-event id keeps `count` constant but
-                    // should still scroll to the new tail, and
-                    // (b) a remove + add in the same diff batch leaves
-                    // `count` unchanged but the last-item id moves.
-                    // Keying on `last?.id` catches both.
-                    if let last = viewModel.items.last {
-                        withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                // Pin to the live tail. Re-fires every time the last
+                // item's id changes — covers initial load (nil → first
+                // id), new messages (id appended), `.set` diffs swapping
+                // local-echo ids for remote-event ids (count constant,
+                // last id moves), and remove+add batches with the same
+                // shape. The Task hop yields one runloop turn so the
+                // `LazyVStack` has finished laying out the new row
+                // before `proxy.scrollTo` resolves it — without that,
+                // the call is a no-op on the very first non-empty yield
+                // because the row's geometry isn't registered yet.
+                .onChange(of: viewModel.items.last?.id) { _, newID in
+                    guard let id = newID else { return }
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 50_000_000)
+                        proxy.scrollTo(id, anchor: .bottom)
                     }
                 }
             }
