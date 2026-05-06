@@ -244,6 +244,12 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
     /// so we only ever fetch + register the SDK controller once.
     private var buildTask: Task<Void, Error>?
 
+    /// One-shot guard for `refreshControllerOnVerifiedTransition`. Set
+    /// the first time the state listener fires `.verified`; never
+    /// cleared. Sign-out + sign-in constructs a new
+    /// `VerificationServiceLive` and resets the flag.
+    private var hasRefreshedAfterVerified: Bool = false
+
     /// Production init. Subscribes to the SDK's verification-state listener;
     /// the controller is built lazily the first time the listener fires
     /// `!= .unknown` (i.e. when the user identity is in the local crypto
@@ -825,6 +831,24 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
                     guard state != .unknown else { return }
                     Task { [weak self] in
                         try? await self?.awaitController()
+                        // After a transition into `.verified` we
+                        // refresh the cached `SessionVerificationController`.
+                        // The original controller was fetched at the
+                        // first non-`.unknown` listener fire — for a
+                        // device that signs in via recovery key that's
+                        // typically `.unverified`. The matrix-rust-sdk
+                        // SAS delegate dispatch is partially gated on
+                        // the controller's view of self-trust; once we
+                        // cross-sign, the cached `.unverified`-vintage
+                        // controller stops dispatching
+                        // `didAcceptVerificationRequest` /
+                        // `didStartSasVerification` /
+                        // `didReceiveVerificationData` and SAS flows
+                        // hang on the spinner. Refreshing on the
+                        // upgrade restores the dispatch path.
+                        if state == .verified {
+                            await self?.refreshControllerOnVerifiedTransition()
+                        }
                     }
                 }
             )
@@ -912,6 +936,34 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
         self.registeredDelegate = weakDelegate
         controller.setDelegate(delegate: weakDelegate)
         Self.logger.notice("buildController: setDelegate completed")
+    }
+
+    /// One-shot rebuild of the cached SDK controller after the
+    /// `verificationStateListener` reports a transition to `.verified`.
+    /// Idempotent across listener re-fires of `.verified` (the
+    /// `hasRefreshedAfterVerified` flag flips on the first run and
+    /// stays true for the lifetime of this `VerificationServiceLive`
+    /// instance — i.e. for the lifetime of the signed-in session).
+    /// Sign-out + sign-in constructs a new instance and resets it.
+    @MainActor
+    private func refreshControllerOnVerifiedTransition() async {
+        guard !hasRefreshedAfterVerified else { return }
+        hasRefreshedAfterVerified = true
+        Self.logger.notice("refreshControllerOnVerifiedTransition: clearing cached controller and rebuilding")
+        // Detach the delegate from the existing controller so the SDK
+        // doesn't retain a stale callback target while we set up the
+        // replacement.
+        if let existing = await store.getSDKController() {
+            existing.setDelegate(delegate: nil)
+        }
+        await store.setSDKController(nil)
+        registeredDelegate = nil
+        do {
+            try await buildController()
+            Self.logger.notice("refreshControllerOnVerifiedTransition: rebuild OK")
+        } catch {
+            Self.logger.error("refreshControllerOnVerifiedTransition: rebuild failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 }
 
