@@ -1,7 +1,8 @@
 import XCTest
+import MatrixRustSDK
 @testable import MatronSync
 
-actor FakeSyncService: SyncService {
+actor FakeSyncService: MatronSync.SyncService {
     var startCallCount = 0
     var stopCallCount = 0
     private var running = false
@@ -31,6 +32,8 @@ actor FakeSyncService: SyncService {
             readyContinuations.append(cont)
         }
     }
+
+    func sdkService() async -> MatrixRustSDK.SyncService? { nil }
 }
 
 final class SyncServiceProtocolTests: XCTestCase {

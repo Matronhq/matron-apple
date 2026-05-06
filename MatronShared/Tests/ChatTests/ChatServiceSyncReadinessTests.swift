@@ -1,4 +1,5 @@
 import XCTest
+import MatrixRustSDK
 @testable import MatronChat
 @testable import MatronSync
 @testable import MatronModels
@@ -30,6 +31,8 @@ actor LocalFakeSync: MatronSync.SyncService {
             readyContinuations.append(cont)
         }
     }
+
+    func sdkService() async -> MatrixRustSDK.SyncService? { nil }
 }
 
 final class ChatServiceSyncReadinessTests: XCTestCase {

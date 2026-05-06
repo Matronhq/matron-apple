@@ -229,17 +229,16 @@ private actor BootstrapState {
             return
         }
 
-        // The protocol surface of `MatronSync.SyncService` doesn't expose
-        // the SDK's `RoomListService`; the live impl `SyncServiceLive`
-        // does via `sdkService()`. In production this cast always
-        // succeeds because `AppDependencies` constructs `SyncServiceLive`.
-        // In the rare (test-only) case where a fake `SyncService` is
-        // wired, we degrade gracefully to the construction-throw fallback
-        // path — same end state as if `allRooms()` had thrown.
-        guard let liveSync = sync as? SyncServiceLive,
-              let sdkSync = await liveSync.sdkService()
-        else {
-            logger.error("ChatServiceLive: SyncService doesn't expose sdkService(); falling back to client.rooms() poll")
+        // `sdkService()` is on the protocol surface (Phase 2.5 follow-up).
+        // The original implementation used `sync as? SyncServiceLive` to
+        // avoid polluting the protocol with a MatrixRustSDK type, but the
+        // cross-module downcast was unreliable in host-app link
+        // configurations — production iOS silently demoted to the
+        // construction-throw fallback poll path with no live diff stream.
+        // Test fakes that return `nil` from `sdkService()` still degrade
+        // gracefully to the polling path.
+        guard let sdkSync = await sync.sdkService() else {
+            logger.error("ChatServiceLive: SyncService.sdkService() returned nil; falling back to client.rooms() poll")
             fallbackTask = Self.startFallbackPoll(
                 client: client,
                 broadcaster: broadcaster,

@@ -1,4 +1,5 @@
 import Foundation
+import MatrixRustSDK
 
 public protocol SyncService: Sendable {
     /// Starts sliding sync. Caller must keep a strong reference.
@@ -15,4 +16,15 @@ public protocol SyncService: Sendable {
     /// room list (e.g. `ChatServiceLive`) must await this before issuing
     /// `client.syncService().roomListService()`.
     func waitUntilReady() async throws
+
+    /// Underlying SDK `SyncService` once `start()` has wired it; `nil` before
+    /// then or after `stop()`. `ChatServiceLive` reaches through this for
+    /// `roomListService()` to subscribe to the live room-list diff stream
+    /// (Phase 2.5). Test fakes return `nil` and ChatServiceLive degrades to
+    /// the construction-throw fallback poll path. Lives on the protocol —
+    /// not just the concrete — because cross-module `as?` downcasts of
+    /// `any SyncService` to `SyncServiceLive` were unreliable in some host-app
+    /// link configurations and silently demoted production iOS to the polling
+    /// fallback.
+    func sdkService() async -> MatrixRustSDK.SyncService?
 }
