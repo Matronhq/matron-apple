@@ -129,6 +129,8 @@ targets:
         product: MatronDesignSystem
       - package: MatronShared
         product: MatronVerification
+      - package: MatronShared
+        product: MatronPush
       - package: MatrixRustSDK
         product: MatrixRustSDK
       # Phase 4 Task 1: embed the NSE app-extension target inside the
@@ -195,6 +197,8 @@ targets:
         product: MatronDesignSystem
       - package: MatronShared
         product: MatronVerification
+      - package: MatronShared
+        product: MatronPush
 
   MatronTests:
     type: bundle.unit-test
@@ -332,7 +336,10 @@ targets:
     # `CODE_SIGN_ENTITLEMENTS` above points the build system at the
     # plist; same pattern as `MatronMac` (see its comment).
     dependencies:
+      # Phase 4 Task 1: NSE links the shared Push library so Task 4's
+      # NotificationService can call into PushDecoder + PushConfig
+      # without re-implementing the SDK bridge inside the extension.
+      # MatronPush transitively pulls MatronStorage + MatronSync +
+      # MatrixRustSDK, which is the surface the NSE actually needs.
       - package: MatronShared
-        product: MatronStorage
-      - package: MatrixRustSDK
-        product: MatrixRustSDK
+        product: MatronPush

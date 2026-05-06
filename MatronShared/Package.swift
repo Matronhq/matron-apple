@@ -16,6 +16,7 @@ let package = Package(
         .library(name: "MatronViewModels", targets: ["MatronViewModels"]),
         .library(name: "MatronDesignSystem", targets: ["MatronDesignSystem"]),
         .library(name: "MatronVerification", targets: ["MatronVerification"]),
+        .library(name: "MatronPush", targets: ["MatronPush"]),
     ],
     dependencies: [
         .package(url: "https://github.com/matrix-org/matrix-rust-components-swift", from: "26.04.01"),
@@ -104,6 +105,21 @@ let package = Package(
             ],
             path: "Sources/Verification"
         ),
+        // Phase 4 Task 1: Push protocol surface + (Task 2) the live
+        // SDK-bridging impl + (Task 3) the cross-platform PushDecoder.
+        // Depends on Sync for `ClientProvider` (Task 2's PushServiceLive
+        // resolves a `Client` per-session) and on the SDK for the
+        // notification-client APIs. Mac and iOS NSE both link this.
+        .target(
+            name: "MatronPush",
+            dependencies: [
+                "MatronModels",
+                "MatronStorage",
+                "MatronSync",
+                .product(name: "MatrixRustSDK", package: "matrix-rust-components-swift"),
+            ],
+            path: "Sources/Push"
+        ),
         .testTarget(name: "StorageTests", dependencies: ["MatronStorage"], path: "Tests/StorageTests"),
         .testTarget(name: "AuthTests", dependencies: ["MatronAuth", "MatronModels", "MatronStorage"], path: "Tests/AuthTests"),
         .testTarget(name: "SyncTests", dependencies: ["MatronSync", "MatronModels"], path: "Tests/SyncTests"),
@@ -123,6 +139,11 @@ let package = Package(
             name: "VerificationTests",
             dependencies: ["MatronVerification", "MatronModels", "MatronStorage"],
             path: "Tests/VerificationTests"
+        ),
+        .testTarget(
+            name: "PushTests",
+            dependencies: ["MatronPush"],
+            path: "Tests/PushTests"
         ),
     ]
 )
