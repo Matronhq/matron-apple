@@ -389,7 +389,7 @@ struct MacChatListView: View {
             let timelineSvc = deps.timelineService(for: session, roomID: summary.id)
             let mediaSvc = deps.mediaService(for: session)
             let chatVM = ChatViewModel(roomID: summary.id, timeline: timelineSvc, media: mediaSvc)
-            let composerVM = ComposerViewModel(timeline: timelineSvc, commands: BotCommandCatalog.claudeBridge)
+            let composerVM = ComposerViewModel(roomID: summary.id, timeline: timelineSvc, commands: BotCommandCatalog.claudeBridge)
             MacChatView(
                 viewModel: chatVM,
                 composerVM: composerVM,

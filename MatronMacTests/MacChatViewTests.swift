@@ -147,7 +147,7 @@ final class MacChatViewTests: XCTestCase {
     /// `.keyboardShortcut("k", modifiers: .command)`; here we verify the
     /// model surface honours the toggle as `MacChatView` expects.
     func test_palettePinnedOpen_togglesPalette() {
-        let composer = ComposerViewModel(timeline: FakeTimelineForChat(),
+        let composer = ComposerViewModel(roomID: "!test:s", timeline: FakeTimelineForChat(),
                                           commands: BotCommandCatalog.claudeBridge)
         XCTAssertFalse(composer.showPalette)
         composer.palettePinnedOpen = true
@@ -184,7 +184,7 @@ final class MacChatViewTests: XCTestCase {
     func test_view_compiles_withChatViewModel_andComposerViewModel() {
         let timeline = FakeTimelineForChat()
         let chatVM = ChatViewModel(roomID: "!r:s", timeline: timeline, media: FakeMediaForChat())
-        let composerVM = ComposerViewModel(timeline: timeline, commands: [])
+        let composerVM = ComposerViewModel(roomID: "!test:s", timeline: timeline, commands: [])
         var profileTaps = 0
         let view = MacChatView(
             viewModel: chatVM,
@@ -205,7 +205,7 @@ final class MacChatViewTests: XCTestCase {
     func test_view_showsBanner_whenBotIsUnverified() async throws {
         let timeline = FakeTimelineForChat()
         let chatVM = ChatViewModel(roomID: "!r:s", timeline: timeline, media: FakeMediaForChat())
-        let composerVM = ComposerViewModel(timeline: timeline, commands: [])
+        let composerVM = ComposerViewModel(roomID: "!test:s", timeline: timeline, commands: [])
         let svc = FakeVerificationServiceForChat()
         // Explicitly seed `.unverified` (NOT `.unknown` — the new
         // banner-hides default). Banner only renders on `.unverified`.
@@ -226,7 +226,7 @@ final class MacChatViewTests: XCTestCase {
     func test_view_hidesBanner_whenBotIsVerified() async throws {
         let timeline = FakeTimelineForChat()
         let chatVM = ChatViewModel(roomID: "!r:s", timeline: timeline, media: FakeMediaForChat())
-        let composerVM = ComposerViewModel(timeline: timeline, commands: [])
+        let composerVM = ComposerViewModel(roomID: "!test:s", timeline: timeline, commands: [])
         let svc = FakeVerificationServiceForChat()
         await svc.setUserVerified(true, for: "@box4:s")
         let _ = MacChatView(
@@ -254,7 +254,7 @@ final class MacChatViewTests: XCTestCase {
         let svc = CountingVerificationServiceForChat()
         let timeline = FakeTimelineForChat()
         let chatVM = ChatViewModel(roomID: "!r:s", timeline: timeline, media: FakeMediaForChat())
-        let composerVM = ComposerViewModel(timeline: timeline, commands: [])
+        let composerVM = ComposerViewModel(roomID: "!test:s", timeline: timeline, commands: [])
         let _ = MacChatView(
             viewModel: chatVM,
             composerVM: composerVM,
@@ -276,7 +276,7 @@ final class MacChatViewTests: XCTestCase {
     func test_view_hidesBanner_whenBotVerificationIsUnknown() async throws {
         let timeline = FakeTimelineForChat()
         let chatVM = ChatViewModel(roomID: "!r:s", timeline: timeline, media: FakeMediaForChat())
-        let composerVM = ComposerViewModel(timeline: timeline, commands: [])
+        let composerVM = ComposerViewModel(roomID: "!test:s", timeline: timeline, commands: [])
         let svc = FakeVerificationServiceForChat()
         // Don't seed — default is `.unknown`. Equivalent to the cold-start
         // path where the local crypto store hasn't loaded the identity yet.

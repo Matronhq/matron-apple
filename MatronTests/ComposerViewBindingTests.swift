@@ -33,7 +33,7 @@ final class ComposerViewBindingTests: XCTestCase {
     @MainActor
     func test_view_observesViewModelInput_andSendsThroughTimeline() async throws {
         let fake = FakeTimelineForComposer()
-        let vm = ComposerViewModel(timeline: fake, commands: BotCommandCatalog.claudeBridge)
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: BotCommandCatalog.claudeBridge)
 
         // Instantiating the view exercises the @State + binding wiring at
         // compile time; the view itself isn't rendered in this unit test.
@@ -49,7 +49,7 @@ final class ComposerViewBindingTests: XCTestCase {
     @MainActor
     func test_view_initialisesWithProvidedCommands_forPalette() {
         let fake = FakeTimelineForComposer()
-        let vm = ComposerViewModel(timeline: fake, commands: BotCommandCatalog.claudeBridge)
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: BotCommandCatalog.claudeBridge)
         let _ = ComposerView(viewModel: vm)
 
         vm.input = "/sta"
@@ -111,7 +111,7 @@ final class ComposerViewBindingTests: XCTestCase {
         // surfaces the write error via `reportAttachmentError(_:)` and
         // skips the doomed `attachFiles` call entirely.
         let fake = FakeTimelineForComposer()
-        let vm = ComposerViewModel(timeline: fake, commands: [])
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
         XCTAssertNil(vm.sendError)
 
         // Path inside a non-existent parent dir → write throws
@@ -136,7 +136,7 @@ final class ComposerViewBindingTests: XCTestCase {
         // these two tests pin the do/catch split that fixes the round-5
         // finding without regressing the happy path.
         let fake = FakeTimelineForComposer()
-        let vm = ComposerViewModel(timeline: fake, commands: [])
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
 
         // Use a `.txt` extension so `attachFiles` routes to `sendFile` (no
         // image-specific MIME setup needed). UUID keeps the path unique.
@@ -162,7 +162,7 @@ final class ComposerViewBindingTests: XCTestCase {
         // the user with an active button that does nothing. The view's
         // `isSendable` must mirror the model's trim.
         let fake = FakeTimelineForComposer()
-        let vm = ComposerViewModel(timeline: fake, commands: [])
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
         let view = ComposerView(viewModel: vm)
 
         vm.input = ""

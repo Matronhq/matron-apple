@@ -106,6 +106,25 @@ struct ComposerView: View {
                 viewModel.reportAttachmentError(error.localizedDescription)
             }
         }
+        // Restore any draft the user typed in this room earlier in the
+        // session. `.task` runs on view appear; the per-room cache
+        // survives navigation but resets on app quit (mirrors
+        // `ChatScrollPositionMemory`). Only restores on a fresh, empty
+        // composer so we don't clobber a slash-command selection that
+        // already populated `input` synchronously above the timeline.
+        .task {
+            if viewModel.input.isEmpty,
+               let draft = ComposerDraftMemory.retrieve(roomID: viewModel.roomID) {
+                viewModel.input = draft
+            }
+        }
+        // Capture whatever is in the composer when this view leaves the
+        // hierarchy (back-nav to chat list, sheet dismiss, etc.). Empty
+        // input clears the entry inside `store(roomID:text:)` so a sent
+        // composer doesn't ghost text into the next visit.
+        .onDisappear {
+            ComposerDraftMemory.store(roomID: viewModel.roomID, text: viewModel.input)
+        }
     }
 
     /// Picks the best filename extension for a `PhotosPickerItem` using
