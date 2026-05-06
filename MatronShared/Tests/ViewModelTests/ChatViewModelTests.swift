@@ -363,6 +363,43 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_hasReceivedFirstSnapshot_initiallyFalse() async {
+        // Before `start()` runs the flag is false so the empty-state
+        // placeholder stays hidden during sliding-sync warm-up.
+        let timeline = FakeTimelineService()
+        let vm = ChatViewModel(roomID: "!r:s", timeline: timeline, media: FakeMediaService())
+        XCTAssertFalse(vm.hasReceivedFirstSnapshot)
+    }
+
+    @MainActor
+    func test_hasReceivedFirstSnapshot_flipsTrue_afterEmptySnapshot() async {
+        // A genuinely-empty room must still flip the flag — that's the
+        // signal the placeholder uses to disambiguate "still loading"
+        // from "settled empty room".
+        let fake = FakeTimelineService()
+        fake.snapshotsToEmit = [[]]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        await task.value
+        XCTAssertTrue(vm.hasReceivedFirstSnapshot,
+                      "first applied snapshot must flip the gate, even when empty")
+    }
+
+    @MainActor
+    func test_hasReceivedFirstSnapshot_flipsTrue_evenWhenStreamYieldsNothing() async {
+        // The fallback branch fires when the upstream stream finishes
+        // without yielding any snapshot. Without this, freshly-joined
+        // rooms whose live timeline never warms up would leave the
+        // placeholder hidden forever.
+        let fake = FakeTimelineService()
+        // Default: no snapshots → stream finishes empty.
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        await task.value
+        XCTAssertTrue(vm.hasReceivedFirstSnapshot)
+    }
+
+    @MainActor
     func test_rows_isEmpty_whenItemsEmpty() async {
         // `rows` short-circuits on empty input so an empty chat
         // doesn't render a stray separator with `now`'s date. Pinning

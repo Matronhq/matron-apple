@@ -117,6 +117,13 @@ public final class ChatViewModel {
     /// duration of the request). Prevents endless no-op pagination
     /// requests once the user has scrolled to the start of the room.
     public private(set) var reachedHistoryStart: Bool = false
+    /// Flips to `true` after `start()` processes its first snapshot
+    /// (even if that snapshot is empty) or the upstream stream finishes
+    /// without yielding. The empty-state placeholder gates on this so
+    /// it doesn't flash during the initial sliding-sync warm-up:
+    /// `items.isEmpty` ambiguously means both "still loading" and
+    /// "settled empty room" until we've definitively seen one snapshot.
+    public private(set) var hasReceivedFirstSnapshot: Bool = false
     /// Cache of `mxc://` URL → resolved SwiftUI `Image`. Populated lazily by
     /// `image(for:)` so SwiftUI can re-render the row once the bytes arrive.
     /// Backed by an `LRUCache` (capped at `mediaCacheLimit`) so a long
@@ -185,6 +192,10 @@ public final class ChatViewModel {
                         self.items = snapshot
                         // Clear any prior error once a fresh snapshot lands.
                         self.error = nil
+                        // Flip on the first applied snapshot so the
+                        // empty-state placeholder gates correctly even
+                        // when the snapshot itself is empty.
+                        self.hasReceivedFirstSnapshot = true
                     }
                     firstSignal.fireOnce()
                 }
@@ -200,7 +211,12 @@ public final class ChatViewModel {
             // Stream finished (or threw) without yielding any snapshot —
             // still resume so the caller of `start()` doesn't hang on a
             // room that the live timeline never populates (or a fake set
-            // up with no `snapshotsToEmit`).
+            // up with no `snapshotsToEmit`). Flip the first-snapshot
+            // flag too so the empty-state placeholder isn't stuck
+            // hidden on rooms whose live timeline never warms up.
+            if let self {
+                await MainActor.run { self.hasReceivedFirstSnapshot = true }
+            }
             firstSignal.fireOnce()
         }
         observationTask = task

@@ -106,6 +106,19 @@ struct ChatView: View {
                     .background(Color.red.opacity(0.9))
                     .accessibilityLabel("Chat error: \(errorMessage)")
             }
+            if viewModel.items.isEmpty
+                && viewModel.hasReceivedFirstSnapshot
+                && viewModel.error == nil {
+                // Settled-empty branch: the timeline has definitively
+                // yielded an empty snapshot (not just "still loading"),
+                // so the user sees a placeholder instead of a blank
+                // scroll. Gating on `hasReceivedFirstSnapshot` avoids
+                // flashing the placeholder during sliding-sync warm-up
+                // — `items.isEmpty` alone collapses both "loading" and
+                // "settled empty" into the same UI state.
+                EmptyChatPlaceholder(botName: chatTitle)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
             ScrollView {
                 LazyVStack(spacing: 8) {
                     // Render `rows` (messages interleaved with date
@@ -200,6 +213,7 @@ struct ChatView: View {
                         ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
                     }
                 }
+            }
             }
             ComposerView(viewModel: composerVM)
         }

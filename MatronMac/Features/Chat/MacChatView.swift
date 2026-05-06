@@ -85,6 +85,17 @@ struct MacChatView: View {
                     .background(Color.red.opacity(0.9))
                     .accessibilityLabel("Chat error: \(errorMessage)")
             }
+            if viewModel.items.isEmpty
+                && viewModel.hasReceivedFirstSnapshot
+                && viewModel.error == nil {
+                // Settled-empty branch — see iOS `ChatView` for the
+                // full rationale. `hasReceivedFirstSnapshot` is the
+                // disambiguator between "still loading" and "settled
+                // empty"; without it the placeholder would flash on
+                // every cold-start chat open before sliding-sync warms.
+                EmptyChatPlaceholder(botName: chatTitle)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
             ScrollView {
                 LazyVStack(spacing: 8) {
                     // Render `rows` (messages interleaved with date
@@ -163,6 +174,7 @@ struct MacChatView: View {
                         ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
                     }
                 }
+            }
             }
 
             Divider()
