@@ -287,13 +287,24 @@ struct ChatView: View {
             // (overlay rather than LazyVStack header) so its
             // appearance doesn't push the user's apparent reading
             // position around.
+            //
+            // `MinDisplayDuration` holds the visible flag `true` for
+            // at least 500ms once shown — without it, a paginate
+            // that completes from local cache (~50-200ms) finishes
+            // before the 180ms fade-in animation, so the indicator
+            // would either flash imperceptibly or get swallowed by
+            // the fade-out entirely. Long paginates still show
+            // throughout because the derived flag tracks `isActive`
+            // immediately on the rising edge.
             .overlay(alignment: .top) {
-                if viewModel.isPaginatingBackward {
-                    PaginatingHeader()
-                        .transition(.move(edge: .top).combined(with: .opacity))
+                MinDisplayDuration(while: viewModel.isPaginatingBackward) { visible in
+                    if visible {
+                        PaginatingHeader()
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
                 }
+                .animation(.easeInOut(duration: 0.18), value: viewModel.isPaginatingBackward)
             }
-            .animation(.easeInOut(duration: 0.18), value: viewModel.isPaginatingBackward)
             // Floating jump-to-latest. Visible only when the user has
             // scrolled away from the tail.
             .overlay(alignment: .bottomTrailing) {
