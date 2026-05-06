@@ -55,6 +55,7 @@ private final class CountingVerificationServiceForChat: VerificationService, @un
     }
 
     func isThisDeviceVerified() async throws -> Bool? { true }
+    nonisolated func verificationStateStream() -> AsyncStream<Bool?> { AsyncStream { $0.yield(true); $0.finish() } }
     func isUserVerified(matrixID: String) async throws -> UserVerificationResult {
         lock.lock(); defer { lock.unlock() }
         return _userVerificationMap[matrixID, default: .unknown]
@@ -96,6 +97,7 @@ private actor FakeVerificationServiceForChat: VerificationService {
     }
 
     func isThisDeviceVerified() async throws -> Bool? { true }
+    nonisolated func verificationStateStream() -> AsyncStream<Bool?> { AsyncStream { $0.yield(true); $0.finish() } }
     func isUserVerified(matrixID: String) async throws -> UserVerificationResult {
         userVerificationMap[matrixID, default: .unknown]
     }

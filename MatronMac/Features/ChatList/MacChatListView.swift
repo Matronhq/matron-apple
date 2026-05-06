@@ -266,6 +266,17 @@ struct MacChatListView: View {
         // verify-device sheet dismisses (a successful self-verify
         // clears the banner without a chat-list re-mount).
         .task(id: verifyDeviceDismissToken) { await evaluateThisDeviceVerification() }
+        // Reactively bind to the SDK's verification-state stream so a
+        // successful SAS / recovery-restore clears the banner the
+        // instant the SDK reports `.verified` — no longer dependent
+        // on the sheet-dismiss token landing AFTER the state has
+        // propagated. Mirrors the iOS ChatListView wiring.
+        .task {
+            guard let svc = verificationService else { return }
+            for await state in svc.verificationStateStream() {
+                isThisDeviceVerified = state
+            }
+        }
     }
 
     /// Resolves `isThisDeviceVerified` from the injected

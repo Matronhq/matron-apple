@@ -250,6 +250,20 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
     /// `VerificationServiceLive` and resets the flag.
     private var hasRefreshedAfterVerified: Bool = false
 
+    /// Subscribers to `verificationStateStream()`. Keyed by UUID for
+    /// O(1) unregister on consumer-side termination. Mutated only on
+    /// the main actor (the listener fires through a `Task { @MainActor }`
+    /// hop and the public stream-vending function is `nonisolated` but
+    /// hops to MainActor before mutating the dict).
+    @MainActor
+    private var stateContinuations: [UUID: AsyncStream<Bool?>.Continuation] = [:]
+    /// Latest tri-state Bool? the SDK has reported. Seeded to nil
+    /// (`.unknown`) on init; updated each time the listener fires.
+    /// Subscribers receive this value immediately on register so they
+    /// don't have to seed state separately.
+    @MainActor
+    private var lastEmittedState: Bool?
+
     /// Production init. Subscribes to the SDK's verification-state listener;
     /// the controller is built lazily the first time the listener fires
     /// `!= .unknown` (i.e. when the user identity is in the local crypto
@@ -373,6 +387,49 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
         case .verified: return true
         case .unverified: return false
         case .unknown: return nil
+        }
+    }
+
+    public nonisolated func verificationStateStream() -> AsyncStream<Bool?> {
+        AsyncStream { continuation in
+            let id = UUID()
+            // Hop to MainActor to register against the
+            // `stateContinuations` dict + replay the last emitted
+            // value. `nonisolated` lets the call site stay synchronous
+            // (matches the `incomingRequests()` shape).
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    continuation.finish()
+                    return
+                }
+                self.stateContinuations[id] = continuation
+                if let last = self.lastEmittedState {
+                    continuation.yield(last)
+                } else {
+                    // Seed the consumer with an initial nil so they
+                    // know there IS no value yet (vs "stream hasn't
+                    // started"). Same as the live impl's `.unknown`
+                    // → nil mapping.
+                    continuation.yield(nil)
+                }
+            }
+            continuation.onTermination = { [weak self] _ in
+                Task { @MainActor in
+                    self?.stateContinuations.removeValue(forKey: id)
+                }
+            }
+        }
+    }
+
+    /// Fans the latest tri-state out to every registered
+    /// `verificationStateStream()` consumer. MainActor-isolated so the
+    /// dict mutation + yield calls don't race the (also-MainActor)
+    /// register / unregister path.
+    @MainActor
+    private func broadcastVerificationState(_ state: Bool?) {
+        lastEmittedState = state
+        for continuation in stateContinuations.values {
+            continuation.yield(state)
         }
     }
 
@@ -828,6 +885,21 @@ public final class VerificationServiceLive: VerificationService, SessionVerifica
             verificationStateListenerHandle = client.encryption().verificationStateListener(
                 listener: VerificationStateSDKListener { [weak self] state in
                     Self.logger.notice("verificationStateListener: fired with \(String(describing: state), privacy: .public)")
+                    // Broadcast to any UI subscribers — banner,
+                    // settings rows. `.unknown` propagates as `nil` so
+                    // tri-state callers can suppress display until the
+                    // SDK has settled (matches `isThisDeviceVerified`'s
+                    // semantics).
+                    let triState: Bool? = {
+                        switch state {
+                        case .verified: return true
+                        case .unverified: return false
+                        case .unknown: return nil
+                        }
+                    }()
+                    Task { @MainActor [weak self] in
+                        self?.broadcastVerificationState(triState)
+                    }
                     guard state != .unknown else { return }
                     Task { [weak self] in
                         try? await self?.awaitController()

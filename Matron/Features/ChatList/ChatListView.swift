@@ -294,6 +294,33 @@ struct ChatListView: View {
         // `UnverifiedDeviceBanner` visibility. See the property
         // declaration for the tri-state rationale.
         .task { await evaluateThisDeviceVerification() }
+        // Reactively bind the banner to the SDK's verification-state
+        // listener. The previous "re-evaluate on sheet dismiss" design
+        // (`.task(id: verifyDeviceDismissToken)` on Mac, plus the
+        // .onChange-based flips here on iOS) raced the SDK's own
+        // state propagation: a successful SAS could complete and the
+        // sheet dismiss could fire BEFORE `verificationState()`
+        // returned `.verified`, so the banner cached `false` and stuck
+        // until the user manually re-opened the chooser. Subscribing
+        // to the stream means each SDK `verificationStateListener`
+        // fire (including the post-SAS `.verified` transition)
+        // immediately updates the banner — no token, no sheet
+        // round-trip required.
+        .task {
+            guard let svc = currentVerificationService else { return }
+            for await state in svc.verificationStateStream() {
+                isThisDeviceVerified = state
+            }
+        }
+    }
+
+    /// Prefer the `VerificationCenter`'s cached service so we share the
+    /// same `verificationStateStream()` continuation source as the
+    /// incoming-request banner; fall back to the env-derived factory.
+    private var currentVerificationService: (any VerificationService)? {
+        if let svc = verificationCenter?.service { return svc }
+        guard let deps, let session else { return nil }
+        return deps.verificationService(for: session)
     }
 
     /// Resolves `isThisDeviceVerified` from the active session's

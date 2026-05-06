@@ -27,6 +27,20 @@ public protocol VerificationService: Sendable {
     /// the chat-list / Help-menu chooser's "already-verified" short-circuit.
     func isThisDeviceVerified() async throws -> Bool?
 
+    /// Long-lived stream of self-device verification state. Yields a
+    /// fresh tri-state Bool? each time the SDK's
+    /// `verificationStateListener` fires — same encoding as
+    /// `isThisDeviceVerified()`. Subscribers (chat-list banner,
+    /// settings rows) bind their displayed state to the stream so a
+    /// successful SAS / recovery-key cross-sign clears the banner the
+    /// instant the SDK's local crypto store reports `.verified`,
+    /// without depending on a sheet-dismiss token bump landing AFTER
+    /// the state has propagated. The stream emits the current value
+    /// on subscribe so callers don't have to seed state separately.
+    /// Cancellation (consumer side) tears down the registered
+    /// continuation; the underlying SDK listener stays alive.
+    func verificationStateStream() -> AsyncStream<Bool?>
+
     /// Tri-state trust check for the per-bot inline banner shown above the
     /// chat timeline (spec §7.3, §7.5). Returns:
     ///   * `.verified`   — SDK has the identity AND it's cross-signed.
