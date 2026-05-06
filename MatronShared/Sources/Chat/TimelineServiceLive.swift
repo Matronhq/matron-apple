@@ -39,14 +39,10 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
             // assignment, the old closure cancelled the setup task but
             // the freshly-attached listener handle leaked.
             let holder = TimelineLifecycleHolder()
-            let task = Task { [provider, session, sync, roomID] in
+            let task = Task { [sync, roomID] in
                 do {
                     try await sync.waitUntilReady()
-                    let client = try await provider.client(for: session)
-                    guard let room = try client.getRoom(roomId: roomID) else {
-                        continuation.finish(throwing: TimelineServiceError.roomNotFound(roomID))
-                        return
-                    }
+                    let room = try await Self.resolveRoom(roomID: roomID, sync: sync, provider: provider, session: session)
                     let timeline = try await room.timeline()
                     let listener = TimelineSnapshotListener(continuation: continuation)
                     let handle = await timeline.addListener(listener: listener)
@@ -148,11 +144,43 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
     /// SDK, double-check `room.timeline()`'s identity contract before
     /// considering a cache.
     private func timeline() async throws -> Timeline {
-        let client = try await provider.client(for: session)
-        guard let room = try client.getRoom(roomId: roomID) else {
-            throw TimelineServiceError.roomNotFound(roomID)
-        }
+        let room = try await Self.resolveRoom(roomID: roomID, sync: sync, provider: provider, session: session)
         return try await room.timeline()
+    }
+
+    /// Bridges from the chat-list-visible `summary.id` to a usable
+    /// `MatrixRustSDK.Room` for the SDK timeline call. The chat list is
+    /// sourced from sliding sync via `RoomListService`/`RoomList`, but
+    /// `Client.getRoom` only sees rooms once the BaseClient store has
+    /// hydrated from the sync stream. On a cold start we observed every
+    /// chat opening with `TimelineServiceError.roomNotFound` even though
+    /// the chat list was rendering 300+ rooms — `getRoom` was returning
+    /// nil for rooms that only existed in the room-list-service view.
+    /// Fall back to the same upstream the chat list uses
+    /// (`SyncService.roomListService().room(roomId:)`) — that path
+    /// returns a registered, subscribed `Room` for any ID currently
+    /// surfaced by sliding sync, which by definition includes everything
+    /// the user can see in the list.
+    static func resolveRoom(
+        roomID: String,
+        sync: MatronSync.SyncService,
+        provider: ClientProvider,
+        session: UserSession
+    ) async throws -> Room {
+        let client = try await provider.client(for: session)
+        if let room = try client.getRoom(roomId: roomID) {
+            return room
+        }
+        if let sdkSync = await sync.sdkService() {
+            do {
+                return try sdkSync.roomListService().room(roomId: roomID)
+            } catch {
+                // Fall through to a typed not-found if the room-list
+                // service also has no record of this ID — surfaces the
+                // same overlay as before for genuinely-missing rooms.
+            }
+        }
+        throw TimelineServiceError.roomNotFound(roomID)
     }
 }
 
