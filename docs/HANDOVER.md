@@ -1,11 +1,11 @@
-# Handover — Matron iOS+Mac, on `main` ready for Phase 4
+# Handover — Matron iOS+Mac, Phase 4 Task 1 in flight on PR #5
 
 **As of 2026-05-06 late evening (session 11)**, after eleven working
 sessions. **Phase 2.5** is on `main` as `ef00f5a` (PR #4, session 10).
-Session 11 opened with a bugbot-follow-up audit on PR #4 and a tiny
-DRY refactor (`SendStateGlyph` bridge moved to `MatronDesignSystem`)
-— uncommitted as of this write. The repo is otherwise on `main` ready
-for **Phase 4 (Push & NSE)** to start.
+**Phase 4 Task 1 is on `phase-4-task-1` branch (PR #5, open,
+non-draft)** — three commits pushed: SendStateGlyph dedup, NSE embed
++ entitlements, PushConfig/PushService/MatronPush library. Bugbot
+will review each push as the branch progresses through Tasks 2-12.
 
 Phases shipped: 1, 2, 3, 2.5. Phases not started: 4, 5, 6, 7. The
 next session's job is to start **Phase 4 — Push & NSE** per
@@ -214,11 +214,61 @@ this write, 8 files modified, +64/-87 LoC, two new files:
 - `xcodebuild test -scheme Matron -only-testing MatronTests/TimelineItemViewTests`: **7 tests pass**.
 - `xcodebuild test -scheme MatronMac -only-testing MatronMacTests/MacTimelineItemViewTests`: passes.
 
-**State at close.** Working tree dirty with the dedup; not yet
-committed or PR'd. Decision needed (next session): either land it as
-a tiny follow-up PR on main, or fold it into the Phase 4 Task 1
-branch when that work starts. The diff is small enough that either
-shape is fine.
+**State at close (mid-session update).** The dedup landed as commit 1
+on the `phase-4-task-1` branch (`aca54d8`); two further commits
+shipped Phase 4 Task 1 in full:
+
+- `2c115fe feat(nse): embed MatronNSE in Matron host + keychain entitlement + lifecycle stub`
+  — Task 1 Step 0. The `MatronNSE` Xcode target was already
+  scaffolded back in `edd6d44` (early Phase 0) but Phase 1 stopped
+  short of three things: (a) no `embed: true` dep on the iOS host so
+  the `.appex` was never copied into `Matron.app/PlugIns/`, making
+  the entire push pipeline unreachable end-to-end no matter how
+  clean the runtime code; (b) `MatronNSE.entitlements` was missing
+  `keychain-access-groups: $(AppIdentifierPrefix)chat.matron`, which
+  Task 4's PushDecoder will need to read the user's recovery key
+  from the same per-user Keychain entry the host writes; (c) the
+  `NotificationService.swift` stub was a no-arg pass-through, swapped
+  to the canonical Apple NSE template (`contentHandler` /
+  `bestAttempt` instance properties, `serviceExtensionTimeWillExpire`
+  fallback) so Task 4 has clean ground to attach the decryption
+  pipeline. Also dropped the target-level `entitlements:` block from
+  project.yml so XcodeGen no longer overwrites the manually-maintained
+  plist on every regen — same trick MatronMac uses.
+- `79eb964 feat: PushConfig + PushService protocol + MatronPush library`
+  — Task 1 Steps 1-3. Adds `PushConfig` (per-platform / per-build-config
+  `app_id`, with the four-value mapping `chat.matron.{ios,ios.dev,mac,mac.dev}`
+  pinned by `PushConfigTests`), `PushService` protocol
+  (`requestPermission` / `registerToken` / `unregister`), and the
+  new `MatronPush` SPM library product (deps: MatronModels,
+  MatronStorage, MatronSync, MatrixRustSDK). Wired into all three
+  consumers: `Matron`, `MatronMac`, and `MatronNSE` (the NSE's deps
+  block now points at MatronPush directly — MatronPush transitively
+  pulls everything the .appex needs).
+
+**Builds + tests as of last push:**
+- SPM: 305 tests pass (was 302; +3 from `PushConfigTests`), 0
+  failures, 4 skipped.
+- iOS host build (with embedded NSE): clean.
+- iOS NSE standalone build: clean.
+- Mac host build: clean.
+
+**Open on PR #5:**
+- Bugbot has a fresh review-pass cycle to run as commits land. As of
+  this write, PR #5 has no review comments yet (just opened).
+- CI: still red on the GitHub Actions billing budget — same as PR
+  #4. Either the budget refreshes monthly and CI will run on its
+  own, or merge will need admin-override again per the session 9/10
+  pattern.
+
+**Phase 4 progress:**
+- Task 1 (NSE target + Push protocol scaffolding): **DONE** on this
+  branch (3 commits, ~190 LoC of product code + tests).
+- Task 2 (PushServiceLive): NEXT — bridges the protocol to the SDK's
+  `notificationClient(processSetup:).setHttpPusher(...)`. Plan
+  reference at `docs/superpowers/plans/2026-05-02-matron-ios-phase-4-push-nse.md:280`.
+  Touches MatronShared only; no project.yml changes.
+- Tasks 3-12: pending.
 
 ### Things to NOT undo (Session 11)
 
