@@ -261,7 +261,7 @@ shipped Phase 4 Task 1 in full:
   own, or merge will need admin-override again per the session 9/10
   pattern.
 
-**Phase 4 progress (mid-session — 6 commits on `phase-4-task-1`, all green):**
+**Phase 4 progress (mid-session — 10 commits on `phase-4-task-1`, all green; iOS side substantially done):**
 - Task 1 (NSE target + Push protocol scaffolding): **DONE** (3 commits).
 - Task 2 (PushServiceLive): **DONE** — `30d6421`. Bridges the
   protocol to `Client.setPusher(...)` / `Client.deletePusher(...)`.
@@ -297,25 +297,108 @@ shipped Phase 4 Task 1 in full:
   MatronAuth added as a direct dep on the MatronNSE target —
   AuthServiceLive is NOT a transitive dep of MatronPush (PushDecoder
   only consumes ClientProvider + UserSession).
-- Task 5 (PushBootstrap cross-platform launch hook): **NEXT — needs
-  design decision before starting.** The plan's push-rules step
-  (Step 3) calls `notificationSettings.isPushRuleEnabled(.override,
-  ruleId: ".m.rule.master")` / `setPushRuleEnabled(...)` to enable
-  the master rule. **Those methods don't exist in v26.** The actual
-  SDK exposes `getRawPushRules() -> String?` (raw JSON) and
-  `setCustomPushRule(ruleId:ruleKind:actions:conditions:)` for
-  creating custom rules, but no direct enable/disable of built-in
-  rules. Three options for the next agent: (a) skip the master-rule
-  step (server-side default is already enabled; user explicitly
-  disabling it is a user choice), keep just the per-room
-  `setRoomNotificationMode(.allMessages)` loop. (b) parse + edit
-  the raw push rules JSON to flip `enabled: true` on `.m.rule.master`
-  — possible but invasive. (c) defer the push-rules step to a
-  later phase entirely; Task 5 ships just the bootstrap
-  infrastructure (permission, register-for-remote, token capture)
-  and rely on server defaults. **Recommendation: (a) or (c)**;
-  decision is mostly about whether we trust the homeserver default.
-- Tasks 6-12: pending.
+- Task 5 (PushBootstrap cross-platform launch hook): **DONE** —
+  `56aea52`. PushBootstrap (`@MainActor`) + PushTokenStore singleton
+  + MatronNotificationSettings protocol + LiveMatronNotificationSettings
+  wrapper. iOS host wires `MatronAppDelegate` (UIApplicationDelegate
+  adaptor) for APNs token capture and a `.task(id: session.userID)`
+  on the post-verify branch that runs bootstrap → waitForToken →
+  register. Plan called for re-enabling `.m.rule.master`; **went
+  with option (a) per session 11 design call** — skip the master-rule
+  step (server default has it enabled, user explicitly disabling
+  it shouldn't be silently overridden), per-room `.allMessages`
+  loop only. PushBootstrap doc-comment captures the rationale.
+  `pusherBaseURL` is a placeholder; real wiring depends on the
+  separate dev-boxer / matron-server Sygnal+APNs+Tunnel issue
+  (plan §"Server-side prerequisites").
+- Task 6 (NotificationDelegate — deep link on tap): **DONE** —
+  `4cdbbc0`. Singleton conforming to UNUserNotificationCenterDelegate;
+  publishes `tappedRoomID` via Combine PassthroughSubject. Hoisted
+  the chat-list NavigationStack path to a `@State chatPath: [String]`
+  on MatronApp; `.onReceive(tappedRoomID)` appends, signOut() clears.
+  `MatronAppDelegate.didFinishLaunchingWithOptions` installs the
+  shared delegate so taps surface from launch (not lazily on first
+  sign-in). `willPresent` returns `[.banner, .sound, .list]` so
+  in-app banners surface for off-screen rooms — same shape as
+  Element X iOS.
+- Task 7 (PushDecoder fixture tests for every msgtype): **SKIPPED**.
+  The plan's fixtures use fictional `NotificationEvent` cases (`.text`,
+  `.image`, `.toolCall`, `.askUser`) that don't exist in v26; the
+  actual NotificationEvent has `.timeline(event: TimelineEvent)` /
+  `.invite(sender:)`, and `TimelineEvent` is a Rust-handle class
+  that can't be safely fabricated without the FFI. Task 3's
+  PushDecoderDefaultsTests already cover the testable body-extraction
+  layers (`body(forContent:)`, `body(forMessageLike:)`,
+  `body(forMessageType:)`); the `decoded(from: NotificationItem)`
+  level path is integration-harness territory. Future work: add the
+  audio/video/gallery/poll/keyVerification* cases to PushDecoderDefaultsTests
+  if we want defence-in-depth pinning, but the existing 12 tests
+  hit every case the user normally encounters (text, image, file,
+  notice, emote, location, other-msgtype, encrypted, reaction,
+  sticker, redaction).
+- Task 8 (sign-out clears pusher): **DONE** — `d89ae64`. Added a
+  public `cachedToken` accessor to PushTokenStore; iOS host's
+  `signOut()` reads it, captures `clientProvider` + pusherURL, and
+  fires a `Task.detached` that builds a PushServiceLive and calls
+  `unregister(...)`. Not awaited — sign-out should return the user
+  to the sign-in view immediately. Idempotent on next sign-in
+  (re-registering the same `(pushkey, app_id)` pair overwrites the
+  stale row server-side).
+- Tasks 9 + 9b (server-side runbook + manual test additions):
+  **DOCS — pending.** Task 9 writes `docs/push-setup.md` covering
+  Sygnal + APNs auth keys + Cloudflare Tunnel setup; Task 9b adds
+  manual test scenarios. Both are no-code; can land separately
+  whenever the dev-boxer / matron-server Sygnal infra is ready.
+- Tasks 10-12 (Mac in-process notification handler / Mac APNs
+  registration / `aps-environment` entitlement): **PENDING — Mac
+  side.** Mac handles pushes in-process (no NSE); the host app's
+  `UNUserNotificationCenterDelegate` calls into `PushDecoder.live`
+  directly. Wiring is parallel to iOS but uses
+  `NSApplicationDelegate` for the token capture and the
+  `.singleProcess(syncService: SyncService)` flavour of
+  `notificationClient(processSetup:)` (where iOS NSE uses
+  `.multipleProcesses`). Task 11's `MacPushBootstrap` wraps the
+  cross-platform `PushBootstrap` for Mac; Task 12 lands the
+  `aps-environment` entitlement on `MatronMac.entitlements` (and
+  the Debug entitlements file). All three need actual Mac hardware
+  + signing-team setup to validate end-to-end, so they're a clean
+  next-session pickup point.
+
+**iOS Phase 4 user journey on `phase-4-task-1` (untested manually
+yet — branch needs Sygnal up to validate end-to-end push
+delivery):**
+1. User installs the iOS build → sign-in → verify.
+2. Post-verify branch's `.task` runs `bootstrapPush(for: session)`.
+3. System notification permission prompt (or cached decision).
+4. Sets every joined room to `.allMessages` on the homeserver.
+5. `UIApplication.registerForRemoteNotifications()` triggers
+   `MatronAppDelegate.didRegisterForRemoteNotificationsWithDeviceToken`
+   which writes to `PushTokenStore.shared`.
+6. `bootstrapPush` awaits via `waitForToken()` and calls
+   `register(token:)` which writes the pusher record on the
+   homeserver via `Client.setPusher(...)`.
+7. APNs delivers a silent payload (`room_id` + `event_id`) for any
+   future room event; `MatronNSE.appex` (embedded at
+   `Matron.app/PlugIns/MatronNSE.appex`) wakes; PushDecoder fetches
+   + decrypts the event off the App-Group-shared crypto store;
+   notification body rewritten with the decoded text + sender.
+8. User taps the notification; `NotificationDelegate.shared.tappedRoomID`
+   publishes the `room_id`; host's `.onReceive` appends to
+   `chatPath`; SwiftUI's NavigationStack pushes the matching
+   ChatView via the existing `navigationDestination(for: ChatSummary.ID.self)`
+   branch in ChatListView.
+9. User signs out; `signOut()` fires a detached pusher `unregister`
+   so the homeserver pusher row goes away.
+
+Tested locally: builds clean, all 328 SPM tests pass. End-to-end
+push delivery requires Sygnal reachable + APNs auth keys + a real
+push topic — same dev-boxer / matron-server prerequisite that's
+been pending. iOS Simulator can't receive APNs (`registerForRemoteNotifications`
+is a no-op in the Sim) so even with Sygnal up, real-device testing
+is needed.
+
+**Plan vs SDK drift summary so far** (Phase 4 plan was written ahead
+of the v26 SDK; every Push-related Task has SDK API drift in it):
 
 **Plan vs SDK drift summary so far** (Phase 4 plan was written ahead
 of the v26 SDK; every Push-related Task has SDK API drift in it):
@@ -327,8 +410,16 @@ of the v26 SDK; every Push-related Task has SDK API drift in it):
   `.timeline(event:)` and `.invite(sender:)`; body-extraction
   digs through `TimelineEvent.content()` →
   `TimelineEventContent` → `MessageLikeEventContent` → `MessageType`.
-- Task 5: `isPushRuleEnabled` / `setPushRuleEnabled` don't exist;
-  fallback options outlined above.
+- Task 5: `isPushRuleEnabled` / `setPushRuleEnabled` don't exist
+  on v26's NotificationSettings; resolved by going with option (a)
+  from the design call (skip master-rule-enable, per-room
+  `.allMessages` only). PushBootstrap doc-comment captures the
+  rationale so future agents don't re-litigate.
+- Task 7: `NotificationEvent` cases for `.text`/`.image`/`.toolCall`/
+  `.askUser` don't exist; real cases are `.timeline(event:)` and
+  `.invite(sender:)` only, and TimelineEvent is a Rust-handle class
+  that can't be fabricated in unit tests. Task 7 deferred entirely;
+  Task 3's PushDecoderDefaultsTests cover the testable surface.
 
 The plan author flagged "argument shapes vary across SDK versions"
 inline at Tasks 2 and 3, so deviating where needed is expected.
