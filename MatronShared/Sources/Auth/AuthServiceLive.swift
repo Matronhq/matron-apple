@@ -7,21 +7,10 @@ public final class AuthServiceLive: AuthService, @unchecked Sendable {
     private let sessionKey = "matron.session"
     private let sessionStore: any SessionStore
     private let basePath: URL
-    /// Per-userID SQLCipher passphrase store. Generated on fresh
-    /// login, stashed in Keychain so subsequent restoreSession calls
-    /// in `ClientProvider` can re-open the SQLCipher database. See
-    /// the `SDKPassphraseStore` doc-comment for the at-rest threat
-    /// model rationale.
-    private let passphraseStore: SDKPassphraseStore
 
-    public init(
-        sessionStore: any SessionStore,
-        basePath: URL,
-        passphraseStore: SDKPassphraseStore = SDKPassphraseStore()
-    ) {
+    public init(sessionStore: any SessionStore, basePath: URL) {
         self.sessionStore = sessionStore
         self.basePath = basePath
-        self.passphraseStore = passphraseStore
     }
 
     public func probe(_ rawURL: String) async throws -> ServerCapabilities {
@@ -66,18 +55,6 @@ public final class AuthServiceLive: AuthService, @unchecked Sendable {
         try? FileManager.default.removeItem(at: basePath)
         try? FileManager.default.createDirectory(at: basePath, withIntermediateDirectories: true)
 
-        // Generate the SQLCipher passphrase BEFORE building the
-        // SDK store. Order matters: if SQLCipher initialises with
-        // a passphrase we then fail to persist, the on-disk
-        // database becomes unreadable on next launch. So we
-        // generate first and only feed it to the store builder
-        // after we've decided to commit to this login attempt.
-        // (We can't store it in Keychain yet because we don't
-        // know the canonical userID until after `client.login`
-        // succeeds.) See `SDKPassphraseStore` for the at-rest
-        // threat-model rationale.
-        let passphrase = SDKPassphraseStore.generate()
-
         let client: Client
         do {
             // `.autoEnableCrossSigning(true)` makes the SDK upload cross-
@@ -95,18 +72,9 @@ public final class AuthServiceLive: AuthService, @unchecked Sendable {
             // bootstrapped, calling the bootstrap-shaped `enableRecovery`
             // on a non-`.disabled` state hangs, so the recovery-key path
             // calls `resetRecoveryKey` instead in that branch.
-            //
-            // `.sqliteStore(...)` replaces the bare `.sessionPaths(...)`
-            // call so the SDK uses SQLCipher with our generated
-            // passphrase — store contents (decrypted-event cache, room
-            // state, crypto sessions) are AES-encrypted on disk.
-            let storeConfig = SqliteStoreBuilder(
-                dataPath: basePath.path,
-                cachePath: basePath.path
-            ).passphrase(passphrase: passphrase)
             client = try await ClientBuilder()
                 .serverNameOrHomeserverUrl(serverNameOrUrl: homeserverURL.absoluteString)
-                .sqliteStore(config: storeConfig)
+                .sessionPaths(dataPath: basePath.path, cachePath: basePath.path)
                 .slidingSyncVersionBuilder(versionBuilder: .native)
                 .autoEnableCrossSigning(autoEnableCrossSigning: true)
                 // Match `ClientProvider.client(for:)` — auto-fetch the
@@ -143,32 +111,18 @@ public final class AuthServiceLive: AuthService, @unchecked Sendable {
         } catch {
             throw AuthError.unexpected("login failed: \(error)")
         }
-        let session: Session
         do {
-            session = try client.session()
+            let session = try client.session()
+            return UserSession(
+                userID: session.userId,
+                deviceID: session.deviceId,
+                homeserverURL: homeserverURL,
+                accessToken: session.accessToken,
+                refreshToken: session.refreshToken
+            )
         } catch {
             throw AuthError.unexpected("session() failed after login: \(error)")
         }
-        // Persist the SQLCipher passphrase NOW that we have the
-        // canonical `userId`. ClientProvider's restoreSession path
-        // looks it up by exactly this key. If keychain.set throws,
-        // the SDK store on disk is encrypted with a passphrase only
-        // the dying process knows — useless on next launch — so we
-        // surface the failure to the caller and let them re-attempt
-        // (the `removeItem` at the top of this method will wipe the
-        // unreadable store on retry).
-        do {
-            try passphraseStore.store(passphrase: passphrase, for: session.userId)
-        } catch {
-            throw AuthError.unexpected("could not persist SDK passphrase to Keychain: \(error)")
-        }
-        return UserSession(
-            userID: session.userId,
-            deviceID: session.deviceId,
-            homeserverURL: homeserverURL,
-            accessToken: session.accessToken,
-            refreshToken: session.refreshToken
-        )
     }
 
     public func restoreSession() async throws -> UserSession? {

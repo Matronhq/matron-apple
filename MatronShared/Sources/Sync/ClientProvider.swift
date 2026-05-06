@@ -6,31 +6,14 @@ import MatronStorage
 public actor ClientProvider {
     private var cached: Client?
     private let basePath: URL
-    private let passphraseStore: SDKPassphraseStore
 
-    public init(
-        basePath: URL,
-        passphraseStore: SDKPassphraseStore = SDKPassphraseStore()
-    ) {
+    public init(basePath: URL) {
         self.basePath = basePath
-        self.passphraseStore = passphraseStore
     }
 
     /// Restores or builds a fully authenticated Client for the given session.
     public func client(for session: UserSession) async throws -> Client {
         if let cached { return cached }
-        // SQLCipher passphrase recovered from Keychain (set by
-        // `AuthServiceLive.loginPassword` on the original sign-in).
-        // Missing for sessions that pre-date the SQLCipher rollout —
-        // those keep working in plaintext-SQLite mode until the user
-        // signs out + back in. Going forward every fresh login
-        // produces an encrypted store; this branch is a one-shot
-        // upgrade-path concession, not a permanent fallback.
-        let storedPassphrase = try? passphraseStore.retrieve(for: session.userID)
-        let storeConfig = SqliteStoreBuilder(
-            dataPath: basePath.path,
-            cachePath: basePath.path
-        ).passphrase(passphrase: storedPassphrase)
         // `.autoEnableCrossSigning(true)` must be set on every
         // ClientBuilder — the flag affects how the rust-side
         // identity-handling subsystem treats the local crypto store
@@ -41,7 +24,7 @@ public actor ClientProvider {
         // `loginPassword` for the full rationale.
         let client = try await ClientBuilder()
             .serverNameOrHomeserverUrl(serverNameOrUrl: session.homeserverURL.absoluteString)
-            .sqliteStore(config: storeConfig)
+            .sessionPaths(dataPath: basePath.path, cachePath: basePath.path)
             .slidingSyncVersionBuilder(versionBuilder: .native)
             .autoEnableCrossSigning(autoEnableCrossSigning: true)
             // Auto-fetch the missing megolm session from the server-side

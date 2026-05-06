@@ -130,13 +130,6 @@ final class AppDependencies {
     /// per-session cache so a subsequent `restoreSession()` returns
     /// nil and a fresh login lands in a clean state.
     func signOut() {
-        // Clear SDK passphrases for every userID this process has
-        // served — see iOS `AppDependencies.signOut()` for the full
-        // rationale.
-        let passphraseStore = SDKPassphraseStore()
-        for userID in syncCache.keys {
-            try? passphraseStore.delete(for: userID)
-        }
         try? auth.clearSession()
         syncCache.removeAll()
         verificationCache.removeAll()
