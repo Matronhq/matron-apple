@@ -328,6 +328,26 @@ struct MatronApp: App {
     /// the gate would silently no-op for a user who signed out + back in
     /// to retry verification.
     private func signOut() {
+        // Phase 4 Task 8: best-effort pusher unregister BEFORE clearing
+        // the session. Once `dependencies.signOut()` lands, the
+        // ClientProvider is invalidated and `unregister` would 404 —
+        // so we kick this off before, but don't `await` (a slow
+        // network round-trip shouldn't block the UI returning to the
+        // sign-in view). Leaving the pusher row on the homeserver is
+        // a minor wart (it stays until next sign-in / manual cleanup)
+        // but not a security issue: the signed-out device can't
+        // decrypt the pushes anyway.
+        if let session, let token = PushTokenStore.shared.cachedToken {
+            let provider = dependencies.clientProvider
+            let pusherURL = Self.pusherBaseURL
+            Task.detached {
+                let pushService = PushServiceLive(provider: provider, session: session)
+                try? await pushService.unregister(
+                    deviceToken: token,
+                    pusherBaseURL: pusherURL
+                )
+            }
+        }
         if let session {
             UserDefaults.standard.removeObject(forKey: session.verifyDoneKey)
         }

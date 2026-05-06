@@ -138,6 +138,16 @@ public final class PushTokenStore {
     /// Production code uses `PushTokenStore.shared`.
     init() {}
 
+    /// Synchronous accessor for the cached APNs token. Returns `nil`
+    /// before `setToken(_:)` has fired; non-nil afterwards. The
+    /// sign-out path (Task 8) reads this to send a best-effort
+    /// `unregister` to the homeserver pusher record before clearing
+    /// the session — without it, the homeserver keeps the pusher row
+    /// for a signed-out account, which is a minor wart but not a
+    /// security issue (signed-out client can't decrypt the pushes
+    /// anyway).
+    public var cachedToken: Data? { latestToken }
+
     /// Called from the application delegate's
     /// `didRegisterForRemoteNotificationsWithDeviceToken` callback.
     /// Resumes any in-flight `waitForToken()` callers and caches the
