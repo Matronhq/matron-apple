@@ -34,17 +34,19 @@ public struct LRUCache<Key: Hashable, Value> {
 
     public func contains(_ key: Key) -> Bool { values[key] != nil }
 
+    /// Non-mutating read. Reads do NOT promote the entry to MRU —
+    /// originally `mutating get` did, but that broke catastrophically
+    /// when the cache was held inside an `@Observable` view-model
+    /// (`ChatViewModel.resolvedImages`): each read fired the
+    /// macro-synthesized `modify` accessor, which invalidated SwiftUI
+    /// views observing the cache, which re-rendered, which called the
+    /// subscript again — infinite render loop pinning the main thread
+    /// at ~100% CPU. Only touching on write (insert/update) keeps the
+    /// cache `Observable`-safe while preserving the bounded-eviction
+    /// invariant for the access pattern matron uses (write-once on
+    /// fetch completion, read-many during render).
     public subscript(key: Key) -> Value? {
-        mutating get {
-            guard let value = values[key] else { return nil }
-            // Touch — move to MRU end so this entry survives the next
-            // eviction.
-            if let i = recency.firstIndex(of: key) {
-                recency.remove(at: i)
-            }
-            recency.append(key)
-            return value
-        }
+        get { values[key] }
         set {
             if let newValue {
                 if values[key] == nil {

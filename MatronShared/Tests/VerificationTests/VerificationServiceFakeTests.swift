@@ -61,7 +61,7 @@ final class VerificationServiceFakeTests: XCTestCase {
     func test_isThisDeviceVerified_returnsTrueByDefault() async throws {
         let svc = FakeVerificationService()
         let verified = try await svc.isThisDeviceVerified()
-        XCTAssertTrue(verified)
+        XCTAssertEqual(verified, true)
     }
 
     /// M2 expert-QA fix: the default for an un-seeded user is `.unknown`,

@@ -1,7 +1,10 @@
 import SwiftUI
+import UserNotifications
 import MatronChat
+import MatronDesignSystem
 import MatronModels
 import MatronStorage
+import MatronSync
 import MatronVerification
 import MatronViewModels
 
@@ -83,6 +86,17 @@ struct ChatListView: View {
     /// `@MainActor deinit` reaching into isolated state, so the lifecycle
     /// hooks are explicit (mirrors the `ChatListViewModel.cancel()` pattern).
     var verificationCenter: VerificationCenter? = nil
+    /// Latest user-facing connection state, fed by the host's
+    /// `SyncService.stateStream()`. `.running` hides the banner;
+    /// `.connecting` / `.offline` render it. Drives
+    /// `ConnectionStatusBanner` directly — no async glue inside the
+    /// View, just a `@State` mirror of the upstream stream.
+    @State private var connectionState: SyncBannerState = .connecting
+    /// Tracks whether sliding sync has ever been observed `.running` in
+    /// this session, so the banner can pick "Connecting…" vs
+    /// "Reconnecting…" for the connecting state. Sticky once true —
+    /// resets only when the View itself remounts (e.g. sign-out + back-in).
+    @State private var hasEverConnected: Bool = false
 
     var body: some View {
         chatListColumn
@@ -245,6 +259,34 @@ struct ChatListView: View {
         // the binding is always nil at that point (the task runs after
         // onAppear), so it was unreachable.
         .onDisappear { viewModel.cancel() }
+        // Sync connection-state banner. Subscribes to the host's
+        // long-lived `stateStream()` and mirrors yields into the local
+        // `connectionState` so the banner reacts without bouncing
+        // through the ViewModel. Keying on `session?.userID` so a
+        // user-switch (sign out + sign back in) recycles the iterator
+        // against the new session's sync service. The async-let pattern
+        // here matches the verification-center observation in
+        // `MatronApp` (one .task per long-lived async loop).
+        .task(id: session?.userID) {
+            guard let deps, let session else { return }
+            let sync = deps.syncService(for: session)
+            for await state in await sync.stateStream() {
+                connectionState = .from(state)
+                if state == .running { hasEverConnected = true }
+            }
+        }
+        // App-icon badge mirrors the chat list's running unread total.
+        // No `initial: true` — on cold start `totalUnread` is 0
+        // before sync delivers the first snapshot, and firing the
+        // badge update with that 0 would actively clear any badge
+        // a push notification (Phase 4 NSE) had set while the app
+        // was backgrounded. Letting the closure run only on actual
+        // changes means we'll write the right count once the chat
+        // list lands its first real snapshot, and we'll keep
+        // tracking decrements as the user reads rooms after that.
+        .onChange(of: viewModel.totalUnread) { _, newValue in
+            UNUserNotificationCenter.current().setBadgeCount(newValue) { _ in }
+        }
         // Wave 6 / live-test #3: per-this-device verification check.
         // Pre-Phase-3 users skipped the post-login verify gate
         // (`verifyDone` was never set on their session) so they have
@@ -252,6 +294,33 @@ struct ChatListView: View {
         // `UnverifiedDeviceBanner` visibility. See the property
         // declaration for the tri-state rationale.
         .task { await evaluateThisDeviceVerification() }
+        // Reactively bind the banner to the SDK's verification-state
+        // listener. The previous "re-evaluate on sheet dismiss" design
+        // (`.task(id: verifyDeviceDismissToken)` on Mac, plus the
+        // .onChange-based flips here on iOS) raced the SDK's own
+        // state propagation: a successful SAS could complete and the
+        // sheet dismiss could fire BEFORE `verificationState()`
+        // returned `.verified`, so the banner cached `false` and stuck
+        // until the user manually re-opened the chooser. Subscribing
+        // to the stream means each SDK `verificationStateListener`
+        // fire (including the post-SAS `.verified` transition)
+        // immediately updates the banner — no token, no sheet
+        // round-trip required.
+        .task {
+            guard let svc = currentVerificationService else { return }
+            for await state in svc.verificationStateStream() {
+                isThisDeviceVerified = state
+            }
+        }
+    }
+
+    /// Prefer the `VerificationCenter`'s cached service so we share the
+    /// same `verificationStateStream()` continuation source as the
+    /// incoming-request banner; fall back to the env-derived factory.
+    private var currentVerificationService: (any VerificationService)? {
+        if let svc = verificationCenter?.service { return svc }
+        guard let deps, let session else { return nil }
+        return deps.verificationService(for: session)
     }
 
     /// Resolves `isThisDeviceVerified` from the active session's
@@ -278,21 +347,35 @@ struct ChatListView: View {
         }
     }
 
-    /// Column wrapper: when the verification center has pending requests
-    /// OR this device is explicitly unverified, stack the relevant
-    /// banner(s) above the existing chat-list content. Banner order:
-    /// unverified-device (most actionable) → incoming requests → list.
-    /// Empty / no-banner case falls straight through to `chatListContent`
-    /// so the loading `ProgressView` keeps its full-screen vertical
-    /// centering — wrapping the content in a top-down `VStack`
-    /// unconditionally (the prior shape) collapsed the progress view to
-    /// the top of the column. Mirrors `MacChatListView.sidebarColumn`.
+    /// Column wrapper: when the connection-state banner is visible OR
+    /// the verification center has pending requests OR this device is
+    /// explicitly unverified, stack the relevant banner(s) above the
+    /// existing chat-list content. Banner order (top-down): connection
+    /// state → unverified-device (most actionable) → incoming requests
+    /// → list. Empty / no-banner case falls straight through to
+    /// `chatListContent` so the loading `ProgressView` keeps its
+    /// full-screen vertical centering — wrapping the content in a
+    /// top-down `VStack` unconditionally (the prior shape) collapsed
+    /// the progress view to the top of the column. Mirrors
+    /// `MacChatListView.sidebarColumn`.
     @ViewBuilder
     private var chatListColumn: some View {
         let hasIncoming = (verificationCenter?.pending.isEmpty == false)
         let showUnverified = (isThisDeviceVerified == false) && (session != nil)
-        if hasIncoming || showUnverified {
+        let showConnection = (connectionState != .running)
+        if hasIncoming || showUnverified || showConnection {
             VStack(spacing: 0) {
+                // Connection-state banner sits at the very top so the
+                // user's first read of the list is "what's the current
+                // sync status?" before anything else competes for
+                // attention. Hides on `.running` via the inner switch
+                // (returns EmptyView). Animates in/out so the banner
+                // doesn't snap.
+                ConnectionStatusBanner(
+                    state: connectionState,
+                    hasEverConnected: hasEverConnected
+                )
+                .animation(.easeInOut(duration: 0.2), value: connectionState)
                 // Wave 6 / live-test #3: in-list "this device hasn't been
                 // verified" banner. Sits above the incoming-verification-
                 // request banners (most actionable first — a user who's
@@ -389,7 +472,13 @@ struct ChatListView: View {
             }
             .listStyle(.plain)
             .refreshable {
-                await runChatActionAwaiting { try await $0.refresh() }
+                // Phase 2.5: pull-to-refresh drives a one-shot
+                // `client.rooms()` snapshot through the live broadcaster
+                // pipe via `ChatListViewModel.refresh()` →
+                // `ChatService.forceSnapshot()`. Pre-2.5 this called
+                // `chat.refresh()`, a `sync.waitUntilReady()` no-op once
+                // running, so the gesture was purely cosmetic.
+                await viewModel.refresh()
             }
         }
     }
@@ -481,7 +570,7 @@ struct ChatListView: View {
             let timelineSvc = deps.timelineService(for: session, roomID: summary.id)
             let mediaSvc = deps.mediaService(for: session)
             let chatVM = ChatViewModel(roomID: summary.id, timeline: timelineSvc, media: mediaSvc)
-            let composerVM = ComposerViewModel(timeline: timelineSvc, commands: BotCommandCatalog.claudeBridge)
+            let composerVM = ComposerViewModel(roomID: summary.id, timeline: timelineSvc, commands: BotCommandCatalog.claudeBridge)
             ChatView(
                 viewModel: chatVM,
                 composerVM: composerVM,
@@ -535,13 +624,6 @@ struct ChatListView: View {
         Task { try? await action(chat) }
     }
 
-    /// Awaiting variant for `.refreshable`, which expects an `async`
-    /// closure so it can spin its progress indicator until completion.
-    private func runChatActionAwaiting(_ action: @escaping (ChatService) async throws -> Void) async {
-        guard let deps, let session else { return }
-        let chat = deps.chatService(for: session)
-        try? await action(chat)
-    }
 }
 
 private struct ChatRow: View {
@@ -556,13 +638,11 @@ private struct ChatRow: View {
             }
             Spacer()
             if let lastActivity = summary.lastActivity {
-                Text(lastActivity, style: .relative)
+                RelativeMinuteTimeView(lastActivity)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-            if summary.unreadCount > 0 {
-                Circle().fill(.blue).frame(width: 8, height: 8)
-            }
+            UnreadBadge(count: summary.unreadCount)
         }
     }
 }
@@ -658,8 +738,12 @@ private struct SelfVerifyThisDeviceSheet: View {
             // render and the user tapping Verify, short-circuit to
             // `.alreadyVerified` so we don't run a redundant SAS.
             // Mirrors Mac `HelpMenuVerifyDeviceSheet` (PR #3 review #6).
-            let verified = (try? await service.isThisDeviceVerified()) ?? false
-            if verified {
+            // Tri-state probe: only short-circuit on an explicit `true`.
+            // `nil` (unknown) and `false` (unverified) both fall through
+            // to the chooser — falsy unknown would have falsely shown
+            // "already verified" before the SDK loaded the identity.
+            let verified = try? await service.isThisDeviceVerified()
+            if verified == true {
                 phase = .alreadyVerified
                 return
             }
@@ -669,19 +753,30 @@ private struct SelfVerifyThisDeviceSheet: View {
     }
 
     private var alreadyVerifiedView: some View {
+        // See `MacAppMain.alreadyVerifiedView` for the full rationale —
+        // cross-signing-verified ≠ backup-key-available, so even
+        // already-verified devices need a path to enter the recovery
+        // key when historical messages aren't decrypting.
         VStack(spacing: 16) {
             Image(systemName: "checkmark.shield.fill")
                 .font(.system(size: 60))
                 .foregroundStyle(.green)
             Text("This device is already verified")
                 .font(.title2).bold()
-            Text("If you want to verify a different device, sign in there and start the verification from that device's onboarding gate.")
+            Text("If your historical messages aren't decrypting, restoring from your recovery key fetches the backup decryption key for this device.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Button("Close") { onFinished() }
-                .buttonStyle(.borderedProminent)
-                .accessibilityIdentifier("verifychooser.alreadyVerified.close")
+            VStack(spacing: 12) {
+                Button("Restore from recovery key…") {
+                    recoveryKeyViewModel = .restoring(restore: recoveryKeyRestore)
+                    phase = .recoveryKey
+                }
+                .accessibilityIdentifier("verifychooser.alreadyVerified.recovery")
+                Button("Close") { onFinished() }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("verifychooser.alreadyVerified.close")
+            }
         }
         .padding()
     }

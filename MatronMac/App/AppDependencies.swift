@@ -23,6 +23,9 @@ final class AppDependencies {
     /// full rationale — `MediaServiceLive` owns a 64 MB `NSCache` for
     /// resolved `mxc://` bytes, and a fresh instance per call defeats it.
     private var mediaCache: [String: MediaService] = [:]
+    /// Per-session `ChatService` cache — see iOS `AppDependencies`
+    /// for the full Phase 2.5 broadcaster-singleton rationale.
+    private var chatCache: [String: ChatService] = [:]
     /// Per-room timeline cache keyed by `(userID, roomID)`. Re-using the
     /// same `TimelineServiceLive` across detail-column transitions
     /// preserves the SDK timeline handle and the in-memory snapshot the
@@ -74,11 +77,14 @@ final class AppDependencies {
     }
 
     func chatService(for session: UserSession) -> ChatService {
-        ChatServiceLive(
+        if let existing = chatCache[session.userID] { return existing }
+        let svc = ChatServiceLive(
             provider: clientProvider,
             session: session,
             sync: syncService(for: session)
         )
+        chatCache[session.userID] = svc
+        return svc
     }
 
     /// SDK-backed `MediaService` that resolves `mxc://` URLs into bytes via
@@ -128,6 +134,7 @@ final class AppDependencies {
         syncCache.removeAll()
         verificationCache.removeAll()
         mediaCache.removeAll()
+        chatCache.removeAll()
         timelineCache = .init(limit: AppDependencies.timelineCacheLimit)
     }
 }

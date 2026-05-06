@@ -50,6 +50,35 @@ struct ChatView: View {
     /// `id` is the matrixID itself); the wrapper exists to satisfy
     /// `Identifiable` and to give `.sheet(item:)` a stable identity.
     @State private var verifyBotContext: VerifyBotSheetContext?
+    /// The bottom-anchored visible item id, bound to `.scrollPosition`
+    /// on the timeline ScrollView. Drives both the per-room scroll
+    /// memory (so reopening a chat lands where the user left off) and
+    /// the floating "jump to latest" button (visible iff this isn't
+    /// `items.last?.id`).
+    @State private var scrolledItemID: String?
+    /// Backing state for the fullscreen attachment preview. `nil`
+    /// hides the sheet; setting either case presents it via
+    /// `.sheet(item:)`. `.image` draws the pinch-zoom viewer; `.file`
+    /// drives a small share sheet around `ShareLink(item:)` so the
+    /// user can save / forward the attachment without leaving the
+    /// chat.
+    @State private var attachmentPreview: AttachmentPreview?
+
+    /// Sheet payload for fullscreen attachment previews. Identifiable
+    /// via a per-present UUID so two consecutive taps re-mount the
+    /// sheet (and so `.sheet(item:)` doesn't conflate two separate
+    /// images).
+    fileprivate enum AttachmentPreview: Identifiable {
+        case image(id: UUID = UUID(), Image)
+        case file(id: UUID = UUID(), URL, filename: String)
+
+        var id: UUID {
+            switch self {
+            case .image(let id, _): return id
+            case .file(let id, _, _): return id
+            }
+        }
+    }
 
     /// Identifiable wrapper for `.sheet(item:)`. Identity is the bot's
     /// matrixID — one bot per chat, so two sequential taps re-use the
@@ -100,12 +129,70 @@ struct ChatView: View {
                     .background(Color.red.opacity(0.9))
                     .accessibilityLabel("Chat error: \(errorMessage)")
             }
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 8) {
-                        ForEach(viewModel.items) { item in
-                            TimelineItemView(item: item, resolveImage: { viewModel.image(for: $0) })
+            if viewModel.items.isEmpty
+                && viewModel.hasReceivedFirstSnapshot
+                && viewModel.error == nil {
+                // Settled-empty branch: the timeline has definitively
+                // yielded an empty snapshot (not just "still loading"),
+                // so the user sees a placeholder instead of a blank
+                // scroll. Gating on `hasReceivedFirstSnapshot` avoids
+                // flashing the placeholder during sliding-sync warm-up
+                // — `items.isEmpty` alone collapses both "loading" and
+                // "settled empty" into the same UI state.
+                EmptyChatPlaceholder(botName: chatTitle)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    // Render `rows` (messages interleaved with date
+                    // separators) instead of `items` directly. The
+                    // separator stream is computed on the view-model
+                    // so iOS and Mac don't have to duplicate the
+                    // calendar-day bucketing.
+                    ForEach(viewModel.rows) { row in
+                        switch row {
+                        case .separator(let date):
+                            DateSeparator(date: date)
+                                .id(row.id)
+                        case .message(let item):
+                            TimelineItemView(
+                                item: item,
+                                resolveImage: { viewModel.image(for: $0) },
+                                onRetry: { id in viewModel.retrySend(itemID: id) },
+                                onTapImage: { img in
+                                    attachmentPreview = .image(img)
+                                },
+                                onTapFile: { mxc, filename in
+                                    Task {
+                                        if let url = await viewModel.writeTempFile(
+                                            mxcURL: mxc, filename: filename
+                                        ) {
+                                            attachmentPreview = .file(url, filename: filename)
+                                        }
+                                    }
+                                }
+                            )
                                 .id(item.id)
+                                // Infinite-scroll backward pagination
+                                // trigger. Compares against
+                                // `firstRenderableItemID` (the first
+                                // non-`.stateChange` item) rather than
+                                // `items.first?.id` — Matrix room
+                                // timelines virtually always start
+                                // with `.stateChange` rows (room
+                                // create / encryption setup) that the
+                                // view filters out, so the raw
+                                // `items.first` comparison never
+                                // matched any rendered row and
+                                // scroll-up paginate silently never
+                                // fired. See
+                                // `ChatViewModel.firstRenderableItemID`
+                                // for the full rationale.
+                                .onAppear {
+                                    if item.id == viewModel.firstRenderableItemID {
+                                        Task { await viewModel.paginateBackward() }
+                                    }
+                                }
                                 .contextMenu {
                                     if case .text(let body, _) = item.kind {
                                         Button {
@@ -132,21 +219,104 @@ struct ChatView: View {
                                 }
                         }
                     }
-                    .padding(.vertical)
                 }
-                .onChange(of: viewModel.items.last?.id) { _, _ in
-                    // Round-3 bugbot finding #5: previously we keyed on
-                    // `items.count`, which misses two real cases —
-                    // (a) a `.set` diff swapping a local-echo item id for
-                    // its remote-event id keeps `count` constant but
-                    // should still scroll to the new tail, and
-                    // (b) a remove + add in the same diff batch leaves
-                    // `count` unchanged but the last-item id moves.
-                    // Keying on `last?.id` catches both.
-                    if let last = viewModel.items.last {
-                        withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                .scrollTargetLayout()
+                .padding(.vertical)
+            }
+            // `.scrollPosition(id:anchor: .bottom)` binds `scrolledItemID`
+            // to the row at the bottom of the viewport. Setting it to
+            // `items.last?.id` jumps to the live tail; reading it tells
+            // us which row the user is currently looking at, which is
+            // both what we save for the per-room memory and what we
+            // compare against the tail to decide whether to show the
+            // jump-to-bottom button. `.scrollTargetLayout()` on the
+            // `LazyVStack` is required for the binding to resolve row
+            // ids.
+            .scrollPosition(id: $scrolledItemID, anchor: .bottom)
+            // Auto-follow the live tail only if the user was already at
+            // the previous tail. If they've scrolled up to read history,
+            // a new bot message shouldn't yank them back to the bottom —
+            // that's what the floating jump button is for.
+            .onChange(of: viewModel.lastRenderableItemID) { oldID, newID in
+                guard let newID else { return }
+                let wasAtTail = (scrolledItemID == oldID) || (scrolledItemID == nil)
+                if wasAtTail {
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 50_000_000)
+                        scrolledItemID = newID
                     }
                 }
+            }
+            // Backward-pagination trigger driven by the scroll position
+            // binding. The earlier `.onAppear` on the topmost row only
+            // fires once per row mount and proved unreliable under
+            // `.scrollPosition(id:)` — LazyVStack pre-mounts a buffer
+            // of off-screen rows, so the first row's appear had often
+            // already fired by the time the user actually scrolled to
+            // it. `scrolledItemID` updates every time the visible row
+            // at the bottom of the viewport changes, so this fires
+            // continuously as the user scrolls. Paginate when the
+            // visible bottom falls within the first 5 message ids —
+            // i.e. user is within ~5 rows of the head, which is the
+            // right time to fetch the next page.
+            .onChange(of: scrolledItemID) { _, newID in
+                guard let newID else { return }
+                // The scroll-position binding uses whatever string was
+                // attached via `.id(...)` on the matching row. Messages
+                // use `item.id` directly; date-separator rows use the
+                // `TimelineRow.id` ("sep:<epoch>") — mixed namespace.
+                // Build a unified set of the first 10 row ids in
+                // either form so the prefix check works for both.
+                // Bumped from 5 → 10 so the trigger fires a few rows
+                // BEFORE the user reaches the head, reducing perceived
+                // jank as the next page arrives.
+                let topRowIDs: Set<String> = Set(
+                    viewModel.rows.prefix(10).map { row in
+                        switch row {
+                        case .message(let item): return item.id
+                        case .separator: return row.id
+                        }
+                    }
+                )
+                if topRowIDs.contains(newID) {
+                    Task { await viewModel.paginateBackward() }
+                }
+            }
+            // "Loading earlier messages…" pill while a backward
+            // paginate is in flight. Floats over the topmost content
+            // (overlay rather than LazyVStack header) so its
+            // appearance doesn't push the user's apparent reading
+            // position around.
+            //
+            // `MinDisplayDuration` holds the visible flag `true` for
+            // at least 500ms once shown — without it, a paginate
+            // that completes from local cache (~50-200ms) finishes
+            // before the 180ms fade-in animation, so the indicator
+            // would either flash imperceptibly or get swallowed by
+            // the fade-out entirely. Long paginates still show
+            // throughout because the derived flag tracks `isActive`
+            // immediately on the rising edge.
+            .overlay(alignment: .top) {
+                MinDisplayDuration(while: viewModel.isPaginatingBackward) { visible in
+                    if visible {
+                        PaginatingHeader()
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                }
+                .animation(.easeInOut(duration: 0.18), value: viewModel.isPaginatingBackward)
+            }
+            // Floating jump-to-latest. Visible only when the user has
+            // scrolled away from the tail.
+            .overlay(alignment: .bottomTrailing) {
+                if let last = viewModel.lastRenderableItemID, scrolledItemID != last {
+                    JumpToBottomButton {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            scrolledItemID = last
+                        }
+                        ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
+                    }
+                }
+            }
             }
             ComposerView(viewModel: composerVM)
         }
@@ -160,6 +330,13 @@ struct ChatView: View {
             }
         }
         .task {
+            // Restore the per-room scroll position BEFORE start() so
+            // the first snapshot's `.onChange` doesn't auto-pin to the
+            // tail (its guard checks `scrolledItemID == oldID`, which
+            // is true for the unrestored nil case but false once we've
+            // set a saved id here). If no memory exists, `scrolledItemID`
+            // stays nil and the chat opens at the tail as usual.
+            scrolledItemID = ChatScrollPositionMemory.retrieve(roomID: viewModel.roomID)
             // Chain `markAsRead()` *after* the timeline observation has
             // applied its first snapshot. `start()` is now `async` and
             // returns once the first snapshot has landed (or the stream
@@ -169,6 +346,13 @@ struct ChatView: View {
             // for the underlying signal mechanism (round-3 bugbot fix #3).
             await viewModel.start()
             await viewModel.markAsRead()
+            // Explicit paginate-on-open. Sliding sync seeds the timeline
+            // with just the latest event, so without this the user sees
+            // a single message until they scroll up. The topmost-row
+            // `.onAppear` trigger handles SUBSEQUENT history loads as
+            // they scroll; this seeds the first page so there's
+            // something to scroll into.
+            await viewModel.paginateBackward()
         }
         // Evaluate per-bot verification on appear AND each time the
         // timeline gains its first items — that's the cheapest signal
@@ -185,13 +369,74 @@ struct ChatView: View {
         // Bool shape) so the banner errs hidden on transient errors
         // and re-checks on the next tick (§7.5 trust posture).
         .task(id: viewModel.items.isEmpty) { await evaluateBotVerification() }
-        .onDisappear { viewModel.stop() }
+        .onDisappear {
+            // Capture the user's scroll position so the next open of
+            // this room lands where they left off. Drop the entry on
+            // tail (no point storing "user was at the live tail" — the
+            // default behaviour already opens there).
+            if let id = scrolledItemID, id != viewModel.lastRenderableItemID {
+                ChatScrollPositionMemory.store(roomID: viewModel.roomID, itemID: id)
+            } else {
+                ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
+            }
+            viewModel.stop()
+        }
         .sheet(item: $sourceItem) { item in
             EventSourceSheet(item: item)
         }
         .sheet(item: $verifyBotContext) { context in
             verifyBotSheetBody(for: context.id)
         }
+        // Fullscreen attachment preview. Presented from a tap on
+        // either an `AttachmentImage` or `AttachmentFile` row;
+        // payload selects between the pinch-zoom image viewer and
+        // the share-sheet wrapper for files. Dismissed by setting
+        // `attachmentPreview = nil` (swipe-down on iOS, "Done"
+        // button, or successful share).
+        .sheet(item: $attachmentPreview) { preview in
+            switch preview {
+            case .image(_, let img):
+                AttachmentFullscreenViewer(
+                    image: img,
+                    onDismiss: { attachmentPreview = nil }
+                )
+            case .file(_, let url, let filename):
+                fileShareSheet(url: url, filename: filename)
+            }
+        }
+    }
+
+    /// iOS file-share sheet body. Presents the filename + a system
+    /// `ShareLink` so the user can save / forward the attachment
+    /// without leaving the chat. Lifted into its own builder so the
+    /// `.sheet(item:)` switch above stays tight.
+    @ViewBuilder
+    private func fileShareSheet(url: URL, filename: String) -> some View {
+        VStack(spacing: 16) {
+            Image(systemName: "doc")
+                .font(.system(size: 56))
+                .foregroundStyle(.tint)
+                .padding(.top, 32)
+            Text(filename)
+                .font(.headline)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
+            ShareLink(item: url) {
+                Label("Share", systemImage: "square.and.arrow.up")
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color.accentColor)
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
+            .padding(.horizontal)
+            Button("Done") { attachmentPreview = nil }
+                .padding(.top, 4)
+            Spacer()
+        }
+        .padding()
+        .presentationDetents([.medium])
     }
 
     /// Per-bot verification evaluation. `nil` keeps the banner hidden

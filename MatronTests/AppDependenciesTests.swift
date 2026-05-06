@@ -155,11 +155,14 @@ final class AppDependenciesTests: XCTestCase {
                       "newly-inserted entry must remain in the cache")
     }
 
-    /// Touching an entry (re-fetching the same `(userID, roomID)`) moves
-    /// it to the MRU end so the *next* over-fill evicts something else.
-    /// This guards against a regression where `subscript get` doesn't
-    /// touch recency, which would degrade the LRU into a FIFO.
-    func test_timelineCache_touchPromotesEntryToMRU() {
+    /// Re-fetching an existing `(userID, roomID)` does NOT promote it
+    /// — the subscript getter is non-mutating now (see `LRUCache.swift`
+    /// for the @Observable-render-loop rationale that drove the
+    /// switch). The eviction order for `timelineService(for:)` is
+    /// therefore insertion order: when an over-fill occurs, the
+    /// originally-first-cached room is the one evicted, regardless of
+    /// how many times it was re-fetched after.
+    func test_timelineCache_reaccessDoesNotPromote_evictionIsFIFO() {
         let deps = AppDependencies()
         let session = UserSession(
             userID: "@a:s", deviceID: "D",
@@ -170,14 +173,15 @@ final class AppDependenciesTests: XCTestCase {
         for i in 0..<limit {
             _ = deps.timelineService(for: session, roomID: "!room\(i):s")
         }
-        // Touch room 0 — this should move it to MRU. Now room 1 is LRU.
+        // Re-fetch room 0 — under the old touch-on-read semantics this
+        // would move it to MRU; now it's a no-op for recency.
         _ = deps.timelineService(for: session, roomID: "!room0:s")
         // Trigger eviction.
         _ = deps.timelineService(for: session, roomID: "!room\(limit):s")
 
-        XCTAssertTrue(deps.timelineCacheContains(userID: session.userID, roomID: "!room0:s"),
-                      "touched entry must survive the next eviction")
-        XCTAssertFalse(deps.timelineCacheContains(userID: session.userID, roomID: "!room1:s"),
-                       "true LRU (room1) must be evicted instead")
+        XCTAssertFalse(deps.timelineCacheContains(userID: session.userID, roomID: "!room0:s"),
+                       "FIFO eviction: oldest insert (room0) goes first regardless of re-access")
+        XCTAssertTrue(deps.timelineCacheContains(userID: session.userID, roomID: "!room1:s"),
+                      "second-oldest must still be cached after a single eviction")
     }
 }

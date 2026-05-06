@@ -17,7 +17,7 @@ private final class FakeTimelineForToolbar: TimelineService, @unchecked Sendable
     func sendText(_ body: String) async throws {}
     func sendImage(_ data: Data, filename: String, mimeType: String) async throws {}
     func sendFile(_ data: Data, filename: String, mimeType: String) async throws {}
-    func paginateBackward(requestSize: UInt16) async throws {}
+    func paginateBackward(requestSize: UInt16) async throws -> Bool { false }
     func markAsRead() async throws {}
 }
 

@@ -116,8 +116,11 @@ final class MacAppDependenciesTests: XCTestCase {
         XCTAssertTrue(deps.timelineCacheContains(userID: session.userID, roomID: "!room\(limit):s"))
     }
 
-    /// Mac mirror of the iOS touch-promotes-MRU test.
-    func test_timelineCache_touchPromotesEntryToMRU() {
+    /// Mac mirror of the iOS no-touch / FIFO-eviction test. Reads do
+    /// not promote (non-mutating subscript get); eviction is insertion
+    /// order. See `MatronTests/AppDependenciesTests.swift` for the
+    /// @Observable-render-loop rationale.
+    func test_timelineCache_reaccessDoesNotPromote_evictionIsFIFO() {
         let deps = AppDependencies()
         let session = UserSession(
             userID: "@a:s", deviceID: "D",
@@ -131,8 +134,8 @@ final class MacAppDependenciesTests: XCTestCase {
         _ = deps.timelineService(for: session, roomID: "!room0:s")
         _ = deps.timelineService(for: session, roomID: "!room\(limit):s")
 
-        XCTAssertTrue(deps.timelineCacheContains(userID: session.userID, roomID: "!room0:s"))
-        XCTAssertFalse(deps.timelineCacheContains(userID: session.userID, roomID: "!room1:s"))
+        XCTAssertFalse(deps.timelineCacheContains(userID: session.userID, roomID: "!room0:s"))
+        XCTAssertTrue(deps.timelineCacheContains(userID: session.userID, roomID: "!room1:s"))
     }
 }
 #endif

@@ -90,7 +90,10 @@ struct MacDeviceSettingsView: View {
         .frame(width: 480, height: 420)
         .navigationTitle("Device")
         .task {
-            isVerified = (try? await verificationService.isThisDeviceVerified()) ?? false
+            // Tri-state: `nil` (SDK hasn't loaded the identity yet) falls
+            // back to `false` so settings shows the worst-case until
+            // proven verified. Same posture as the iOS counterpart.
+            isVerified = ((try? await verificationService.isThisDeviceVerified()) ?? nil) == true
         }
     }
 

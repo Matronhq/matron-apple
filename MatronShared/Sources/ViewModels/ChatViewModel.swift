@@ -1,8 +1,44 @@
 import Foundation
 import SwiftUI
+import os
 import MatronChat
 import MatronModels
 import MatronStorage
+
+/// Rendering unit for the chat timeline. The view-model walks `items`
+/// once and interleaves `.separator` rows whenever two adjacent messages
+/// straddle a calendar-day boundary; views render the resulting
+/// `[TimelineRow]` directly instead of duplicating the bucketing logic
+/// across iOS and Mac.
+///
+/// `.separator` carries only the boundary `Date` — the human-readable
+/// label ("Today" / "Yesterday" / "Tuesday" / "5 Mar 2026") is resolved
+/// at render time by the View through `DateSeparatorLabel.format` so
+/// `MatronViewModels` doesn't need a `MatronDesignSystem` dependency
+/// (which would pull SwiftUI / MarkdownUI into a non-View module).
+///
+/// `id` is `Hashable` so SwiftUI's `ForEach` can diff the row stream
+/// without manual `id:` parameters. Separator ids key on the start-of-
+/// day epoch so two snapshots on the same day re-use the same SwiftUI
+/// identity slot — a row remount on every snapshot would burn the
+/// `.transition` animation budget for no behavioural gain.
+public enum TimelineRow: Identifiable, Equatable, Sendable {
+    case message(TimelineItem)
+    case separator(date: Date)
+
+    public var id: String {
+        switch self {
+        case .message(let item): return "msg:\(item.id)"
+        case .separator(let date):
+            // Bucket by calendar day so a stream of items spanning a
+            // single day all collide on one identity even if the
+            // boundary `Date` value is the first item's exact
+            // timestamp (which differs per render).
+            let day = Calendar.current.startOfDay(for: date)
+            return "sep:\(Int(day.timeIntervalSince1970))"
+        }
+    }
+}
 
 /// Drives a single chat screen. Subscribes to a room's `TimelineService.items()`
 /// stream, exposes the current snapshot as `items`, and forwards
@@ -37,9 +73,161 @@ public final class ChatViewModel {
     /// exact eviction boundary.
     public static let mediaCacheLimit: Int = 100
 
+    /// Subsystem-tagged logger for view-model diagnostics. Same
+    /// "chat.matron" subsystem the rest of the package uses so output
+    /// streams together in `os_log` consumers.
+    private static let logger = os.Logger(subsystem: "chat.matron", category: "chat-view-model")
+
+
     public let roomID: String
+    /// The raw timeline snapshot from the SDK. Setter is private so
+    /// every mutation flows through `applySnapshot(_:)` which keeps
+    /// the memoised derived state (`rows`, `firstRenderableItemID`,
+    /// `lastRenderableItemID`) in sync. Reading `items` directly is
+    /// still cheap; what we needed to avoid was the derived state
+    /// recomputing on every body re-eval (see the doc-comment on
+    /// `rows`).
     public private(set) var items: [TimelineItem] = []
     public private(set) var error: String?
+
+    /// Calendar used for date-separator bucketing. Injectable so tests
+    /// can pin a deterministic timezone without poking the host
+    /// runtime. Default is `Calendar.current` so production callers
+    /// don't have to thread anything through.
+    public var calendar: Calendar = .current {
+        didSet {
+            // Bucket boundaries depend on calendar; recompute so a
+            // late timezone change in tests doesn't desync the row
+            // list from items.
+            applyDerivedRecompute()
+        }
+    }
+
+    /// Render-ready row list: `items` interleaved with `.separator`
+    /// rows whenever two adjacent messages straddle a calendar-day
+    /// boundary (and one separator at the head of the timeline so the
+    /// first cluster also has a header).
+    ///
+    /// Memoised — recomputed once per `applySnapshot(_:)` rather than
+    /// on every read. The previous computed-property version did an
+    /// O(N) filter + O(N) bucket pass on every access; SwiftUI calls
+    /// `viewModel.rows` from the ForEach binding AND from
+    /// `.onChange(of: scrolledItemID)`, the latter firing on every
+    /// scroll-position tick, so a 1000-item room re-bucketed ~60K
+    /// items/second during scroll. Caching once per snapshot drops
+    /// that to ~zero on the hot path. Stale-cache risk is bounded
+    /// because the only `items` mutation site is the snapshot
+    /// listener, and it routes through `applySnapshot(_:)`.
+    public private(set) var rows: [TimelineRow] = []
+
+    /// ID of the first item the timeline view actually renders — i.e.
+    /// the first non-`.stateChange` item in `items`. Used by the
+    /// scroll-up `.onAppear` paginate trigger. Memoised alongside
+    /// `rows` for the same reason — every body re-eval was running
+    /// an O(N) `first(where:)` scan; now it's a stored property
+    /// updated once per snapshot. See `applyDerivedRecompute()` for
+    /// the in-sync update.
+    public private(set) var firstRenderableItemID: TimelineItem.ID?
+
+    /// Tail mirror of `firstRenderableItemID`. Same memoisation
+    /// rationale — auto-follow / jump-to-bottom / scroll-memory all
+    /// read this on every scroll-tick body re-eval. Stays in
+    /// lockstep with `firstRenderableItemID` and the `rows` filter
+    /// (all three derive from the same `.stateChange`-skip
+    /// predicate); any future hidden Kind needs the same treatment
+    /// in `applyDerivedRecompute()`.
+    public private(set) var lastRenderableItemID: TimelineItem.ID?
+
+    /// Single mutation entry point for `items`. Updates the raw
+    /// snapshot and the three derived caches atomically so a body
+    /// re-eval that reads any combination of `items` / `rows` /
+    /// `firstRenderableItemID` / `lastRenderableItemID` always sees
+    /// a consistent view.
+    private func applySnapshot(_ snapshot: [TimelineItem]) {
+        self.items = snapshot
+        applyDerivedRecompute()
+    }
+
+    /// Rebuilds `rows` + `firstRenderableItemID` + `lastRenderableItemID`
+    /// from the current `items`. Pulled out so a calendar change can
+    /// also re-bucket without going through `applySnapshot`. Single
+    /// pass — filter + bucket + first/last extraction in one walk so
+    /// we don't traverse `items` four times.
+    private func applyDerivedRecompute() {
+        // Single pass over items so a 1000-item room doesn't walk
+        // four arrays. Filter hidden items inline and capture the
+        // first / last visible IDs as we go.
+        var nextRows: [TimelineRow] = []
+        nextRows.reserveCapacity(items.count + 4)
+        var first: TimelineItem.ID?
+        var last: TimelineItem.ID?
+        var previousDay: Date?
+        for item in items {
+            // `.stateChange` is the only hidden Kind today; both the
+            // view-side `shouldRender` and the date-bucket logic
+            // skip it. The "1 Jan 1970" separator bug came from
+            // virtual stateChange items (timestamp = epoch zero)
+            // participating in day bucketing — the filter here is
+            // what kept that fix in place.
+            if case .stateChange = item.kind { continue }
+            if first == nil { first = item.id }
+            last = item.id
+            let day = calendar.startOfDay(for: item.timestamp)
+            if previousDay == nil || day != previousDay {
+                nextRows.append(.separator(date: item.timestamp))
+                previousDay = day
+            }
+            nextRows.append(.message(item))
+        }
+        self.rows = nextRows
+        self.firstRenderableItemID = first
+        self.lastRenderableItemID = last
+    }
+
+    /// `true` while a `paginateBackward()` call is in flight. Surfaces to
+    /// the view so the topmost row's `.onAppear` trigger can guard
+    /// against re-entering the paginate loop on every re-layout, and so
+    /// the view can show a tiny "loading earlier…" spinner if it wants.
+    public private(set) var isPaginatingBackward: Bool = false
+    /// Flips to `true` once we've observed enough consecutive
+    /// zero-growth paginate calls to be confident the SDK genuinely has
+    /// no more history to surface. Setting this stops further paginate
+    /// triggers from the scroll-position listener — without it the
+    /// `.onChange(of: scrolledItemID)` trigger fires paginate on every
+    /// row change at the head, hammering the SDK for no result.
+    /// Empirical: matrix-rust-sdk's `paginateBackwards` returns `false`
+    /// (more events might exist) even when /messages has no more events
+    /// for this user, so we can't trust the SDK signal alone — needed
+    /// the consecutive-zero-growth heuristic. See the threshold const.
+    public private(set) var reachedHistoryStart: Bool = false
+    /// Counts consecutive paginate calls that produced zero new items.
+    /// When this hits `noGrowthLimitForReachedStart`, we flip
+    /// `reachedHistoryStart`. Reset to 0 on any growth.
+    private var consecutiveNoGrowthPaginates: Int = 0
+    /// How many zero-growth paginates before we declare history-start.
+    /// 2 is enough to filter the one-shot spurious result on a freshly-
+    /// opened timeline (see `paginateBackward` doc-comment) without
+    /// requiring a long stall before we stop hammering the SDK.
+    private static let noGrowthLimitForReachedStart = 2
+    /// Maximum time to wait after `timeline.paginateBackward` returns
+    /// for `timeline.items()` to deliver a snapshot containing the new
+    /// events. The SDK runs the actual /messages fetch + decrypt +
+    /// dedup pipeline asynchronously and yields the new snapshot when
+    /// it's ready — typically 100-500ms on a warm cache, longer if a
+    /// network round-trip is involved. 2.5s gives realistic networks
+    /// headroom while keeping the no-growth verdict timely enough that
+    /// a genuine end-of-history doesn't spin the user.
+    private static let snapshotWaitTimeout: TimeInterval = 2.5
+    /// Poll interval for the snapshot-arrival wait. Short enough that
+    /// the loop reacts within a SwiftUI frame of the snapshot landing.
+    private static let snapshotPollInterval: UInt64 = 50_000_000  // 50ms
+    /// Flips to `true` after `start()` processes its first snapshot
+    /// (even if that snapshot is empty) or the upstream stream finishes
+    /// without yielding. The empty-state placeholder gates on this so
+    /// it doesn't flash during the initial sliding-sync warm-up:
+    /// `items.isEmpty` ambiguously means both "still loading" and
+    /// "settled empty room" until we've definitively seen one snapshot.
+    public private(set) var hasReceivedFirstSnapshot: Bool = false
     /// Cache of `mxc://` URL → resolved SwiftUI `Image`. Populated lazily by
     /// `image(for:)` so SwiftUI can re-render the row once the bytes arrive.
     /// Backed by an `LRUCache` (capped at `mediaCacheLimit`) so a long
@@ -105,9 +293,15 @@ public final class ChatViewModel {
                         return
                     }
                     await MainActor.run {
-                        self.items = snapshot
+                        let before = self.items.count
+                        self.applySnapshot(snapshot)
+                        Self.logger.diag("snapshot: items \(before)→\(snapshot.count) firstRenderable=\(self.firstRenderableItemID ?? "nil")")
                         // Clear any prior error once a fresh snapshot lands.
                         self.error = nil
+                        // Flip on the first applied snapshot so the
+                        // empty-state placeholder gates correctly even
+                        // when the snapshot itself is empty.
+                        self.hasReceivedFirstSnapshot = true
                     }
                     firstSignal.fireOnce()
                 }
@@ -123,7 +317,12 @@ public final class ChatViewModel {
             // Stream finished (or threw) without yielding any snapshot —
             // still resume so the caller of `start()` doesn't hang on a
             // room that the live timeline never populates (or a fake set
-            // up with no `snapshotsToEmit`).
+            // up with no `snapshotsToEmit`). Flip the first-snapshot
+            // flag too so the empty-state placeholder isn't stuck
+            // hidden on rooms whose live timeline never warms up.
+            if let self {
+                await MainActor.run { self.hasReceivedFirstSnapshot = true }
+            }
             firstSignal.fireOnce()
         }
         observationTask = task
@@ -139,15 +338,82 @@ public final class ChatViewModel {
     }
 
     public func paginateBackward() async {
+        // Re-entrancy guard + reached-history-start short-circuit. The
+        // `reachedHistoryStart` flag isn't driven by the SDK's `Bool`
+        // return — that signal is unreliable in matrix-rust-sdk 26.4.1
+        // (returns `false` even when `/messages` is genuinely
+        // returning duplicates / nothing the Timeline can surface).
+        // Instead we count consecutive zero-growth paginate calls and
+        // flip the flag after `noGrowthLimitForReachedStart`.
+        if isPaginatingBackward {
+            Self.logger.diag("paginateBackward: skip — already in flight")
+            return
+        }
+        if reachedHistoryStart {
+            Self.logger.diag("paginateBackward: skip — reachedHistoryStart")
+            return
+        }
+        isPaginatingBackward = true
+        defer { isPaginatingBackward = false }
+        let beforeCount = items.count
+        Self.logger.diag("paginateBackward: enter (items=\(beforeCount))")
         do {
-            try await timeline.paginateBackward(requestSize: 30)
+            let sdkReachedStart = try await timeline.paginateBackward(requestSize: 30)
+            Self.logger.diag("paginateBackward: SDK returned reachedStart=\(sdkReachedStart)")
+            // Wait for the timeline.items() AsyncStream to deliver the
+            // new snapshot. The SDK fetches /messages over the network,
+            // decrypts, dedups, then yields — easily 200-1000ms of
+            // pipeline before the new items show up in `self.items`.
+            // The previous fixed 50ms wait was a guess and lost on
+            // every realistic round-trip; a few back-to-back lost
+            // checks tipped `consecutiveNoGrowthPaginates` over the
+            // threshold and flipped `reachedHistoryStart=true`
+            // permanently, bricking scroll-up after the first paginate.
+            // Poll instead: short-circuit the moment items grows, and
+            // only count "no growth" if we've actually waited long
+            // enough for a snapshot to plausibly arrive.
+            let deadline = Date().addingTimeInterval(Self.snapshotWaitTimeout)
+            while items.count == beforeCount && Date() < deadline {
+                try? await Task.sleep(nanoseconds: Self.snapshotPollInterval)
+            }
+            let grew = items.count > beforeCount
+            Self.logger.diag("paginateBackward: done (items: \(beforeCount)→\(self.items.count), grew=\(grew))")
+            if grew {
+                consecutiveNoGrowthPaginates = 0
+            } else {
+                consecutiveNoGrowthPaginates += 1
+                if consecutiveNoGrowthPaginates >= Self.noGrowthLimitForReachedStart {
+                    reachedHistoryStart = true
+                    Self.logger.diag("paginateBackward: reached history start (no growth across \(Self.noGrowthLimitForReachedStart) consecutive calls)")
+                }
+            }
         } catch {
+            Self.logger.error("paginateBackward: threw — \(error.localizedDescription, privacy: .public)")
             self.error = error.localizedDescription
         }
     }
 
     public func markAsRead() async {
         try? await timeline.markAsRead()
+    }
+
+    /// Retry handler for own-messages whose send state is `.failed`.
+    /// Currently a stub: real SDK retry wiring lands later (the
+    /// `MatrixRustSDK` exposes `Timeline.retryDecryption` /
+    /// `Timeline.send` queue replays, but the right hook for "retry
+    /// this specific failed local-echo" needs a service-layer
+    /// addition to `TimelineService` that hasn't shipped yet).
+    /// Logging-only so taps are observable in the debugger; no state
+    /// mutation here so the failed glyph stays visible until the
+    /// underlying snapshot updates.
+    ///
+    /// TODO(phase-3+): replace this stub with `timeline.retrySend(itemID:)`
+    /// once the service-layer surface lands. Until then the UI
+    /// affordance exists but the behaviour is a noop — this is
+    /// deliberate so the visual treatment can ship ahead of the SDK
+    /// wiring without the call site silently swallowing taps.
+    public func retrySend(itemID: String) {
+        Self.logger.info("retrySend tapped for item=\(itemID, privacy: .public) (stub)")
     }
 
     /// Mac toolbar refresh button + ⌘R menu shortcut wire here. Re-paginating
@@ -186,6 +452,44 @@ public final class ChatViewModel {
         return nil
     }
 
+    /// Fetches bytes for an `mxc://` attachment URL and writes them to
+    /// a temporary file under `FileManager.default.temporaryDirectory`,
+    /// returning the URL. Used by the fullscreen-preview path on file
+    /// attachments — iOS hands the temp URL to `ShareLink`, Mac hands
+    /// it to `NSWorkspace.shared.open`. Returns `nil` if the fetch
+    /// fails so the View can fall back to a no-op (better than
+    /// presenting a broken preview).
+    ///
+    /// The temp filename preserves the original `filename` so the
+    /// downstream preview / share UI shows a sensible label instead
+    /// of a UUID. Files written here are *not* cleaned up — the OS
+    /// reaps the temp directory between launches and the size cost
+    /// is bounded by attachments the user has actively opened.
+    public func writeTempFile(mxcURL: URL, filename: String) async -> URL? {
+        guard let data = await media.fetchBytes(mxcURL: mxcURL) else { return nil }
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("matron-attachments", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(
+                at: dir, withIntermediateDirectories: true
+            )
+            // Sanitise the filename: strip directory separators and
+            // parent-dir traversal so a malicious sender can't craft
+            // `../../.ssh/authorized_keys` to escape the temp dir. The
+            // filename arrives from Matrix event metadata, which is
+            // attacker-controllable. We keep the basename for human-
+            // friendly preview / share labels, falling back to a UUID
+            // if sanitisation produces an empty string.
+            let safeFilename = Self.sanitisedAttachmentFilename(filename)
+            let dest = dir.appendingPathComponent(safeFilename)
+            try data.write(to: dest, options: .atomic)
+            return dest
+        } catch {
+            Self.logger.error("writeTempFile failed: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
     /// Read-only view of the resolved-image cache for a single URL. Wraps
     /// the underlying `LRUCache`'s `mutating get` so external observers
     /// (tests, debug overlays) can check what's resolved without holding
@@ -194,6 +498,31 @@ public final class ChatViewModel {
     /// behaviour `image(for:)` produces, so observation stays aligned
     /// with rendering.
     public func resolvedImage(for url: URL) -> Image? { resolvedImages[url] }
+
+    /// Strip path-traversal and directory-separator components from a
+    /// Matrix-event-attached filename. Inputs that reduce to an empty
+    /// string (all-`/`, `..`, hidden-only) fall back to a UUID so we
+    /// never pass `/` to `appendingPathComponent` or write a hidden
+    /// file by accident. Test seam: `internal` so
+    /// `ChatViewModelTests` can assert the contract directly without
+    /// rendering or hitting disk.
+    static func sanitisedAttachmentFilename(_ raw: String) -> String {
+        // Last path component drops any leading directory tree the
+        // sender embedded — `Foundation.URL`-style normalisation
+        // collapses `..` / `.` segments along the way.
+        let trimmed = (raw as NSString).lastPathComponent
+        // Replace remaining separators (rare, but `:` on macOS
+        // historically and `\` on Windows-style senders) with `_`.
+        let cleaned = trimmed.replacingOccurrences(of: "/", with: "_")
+                              .replacingOccurrences(of: ":", with: "_")
+        // Reject empty or `.`/`..`-only strings — fall back to a UUID
+        // so the write always lands inside the attachments dir.
+        let stripped = cleaned.trimmingCharacters(in: .whitespaces)
+        if stripped.isEmpty || stripped == "." || stripped == ".." {
+            return UUID().uuidString
+        }
+        return stripped
+    }
 
     /// Live count of cached resolved images. Test seam for asserting
     /// LRU eviction without exposing the raw storage.

@@ -190,6 +190,10 @@ public final class RecoveryKeyViewModel {
                 phase = .error("Couldn't reach the homeserver. Check your connection and try again.")
             case .other(let underlying):
                 phase = .error("Couldn't restore: \(underlying.localizedDescription)")
+            case .crossSigningTimeout:
+                // Surface verbatim from `RestoreError.errorDescription`
+                // so the copy stays in one place.
+                phase = .error(restoreError.localizedDescription)
             }
         } catch {
             phase = .error(error.localizedDescription)

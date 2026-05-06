@@ -1,5 +1,6 @@
 import XCTest
 import MatronChat
+import MatronDesignSystem
 import MatronModels
 @testable import Matron
 
@@ -57,10 +58,13 @@ final class TimelineItemViewTests: XCTestCase {
                        "virtual placeholders must skip rendering to avoid blank padded rows")
     }
 
-    /// Real state-change events (member joins, profile updates, …) carry
-    /// non-empty text and must still render. Pinning this guards against
-    /// a regression that over-broad shouldRender to swallow everything.
-    func test_shouldRender_returnsTrue_forPopulatedStateChange() {
+    /// `shouldRender` now hides ALL state-change rows (membership joins,
+    /// profile updates, generic "Room state changed", etc.) — bot-first
+    /// chats don't want that meta noise interleaved with the
+    /// conversation. Phase 7 polish can bring back a metadata-events
+    /// toggle. Empty-text variant (the `mapVirtual` placeholder) was
+    /// already hidden; this generalises to the populated variants too.
+    func test_shouldRender_returnsFalse_forPopulatedStateChange() {
         let item = TimelineItem(
             id: "join-1",
             sender: "@alice:s",
@@ -69,8 +73,22 @@ final class TimelineItemViewTests: XCTestCase {
             isOwn: false,
             sendState: .sent
         )
-        XCTAssertTrue(TimelineItemView.shouldRender(item),
-                      "populated state-change rows are real events and must render")
+        XCTAssertFalse(TimelineItemView.shouldRender(item),
+                       "populated state-change rows are meta-noise in a bot chat — hide them")
+    }
+
+    // MARK: - sendStateGlyph mapping
+
+    /// Pins the model → design-system enum mapping so a future
+    /// refactor that renames a `SendState` case doesn't silently drop
+    /// the failed-send retry affordance.
+    func test_sendStateGlyph_mapsAllCases() {
+        XCTAssertEqual(TimelineItemView.sendStateGlyph(for: .sent), .sent)
+        XCTAssertEqual(TimelineItemView.sendStateGlyph(for: .sending), .sending)
+        XCTAssertEqual(
+            TimelineItemView.sendStateGlyph(for: .failed(reason: "boom")),
+            .failed(reason: "boom")
+        )
     }
 
     /// Sanity: text / image / file / unknown kinds always render.

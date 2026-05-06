@@ -23,7 +23,7 @@ private final class FakeTimelineForChat: TimelineService, @unchecked Sendable {
     func sendText(_ body: String) async throws {}
     func sendImage(_ data: Data, filename: String, mimeType: String) async throws {}
     func sendFile(_ data: Data, filename: String, mimeType: String) async throws {}
-    func paginateBackward(requestSize: UInt16) async throws { paginateCalls += 1 }
+    func paginateBackward(requestSize: UInt16) async throws -> Bool { paginateCalls += 1; return false }
     func markAsRead() async throws { markReadCalls += 1 }
 }
 
@@ -54,7 +54,8 @@ private final class CountingVerificationServiceForChat: VerificationService, @un
         _userVerificationMap[matrixID] = result
     }
 
-    func isThisDeviceVerified() async throws -> Bool { true }
+    func isThisDeviceVerified() async throws -> Bool? { true }
+    nonisolated func verificationStateStream() -> AsyncStream<Bool?> { AsyncStream { $0.yield(true); $0.finish() } }
     func isUserVerified(matrixID: String) async throws -> UserVerificationResult {
         lock.lock(); defer { lock.unlock() }
         return _userVerificationMap[matrixID, default: .unknown]
@@ -95,7 +96,8 @@ private actor FakeVerificationServiceForChat: VerificationService {
         userVerificationMap[matrixID] = result
     }
 
-    func isThisDeviceVerified() async throws -> Bool { true }
+    func isThisDeviceVerified() async throws -> Bool? { true }
+    nonisolated func verificationStateStream() -> AsyncStream<Bool?> { AsyncStream { $0.yield(true); $0.finish() } }
     func isUserVerified(matrixID: String) async throws -> UserVerificationResult {
         userVerificationMap[matrixID, default: .unknown]
     }
@@ -127,7 +129,7 @@ final class ChatViewBindingTests: XCTestCase {
         )
         fake.snapshotsToEmit = [[item]]
         let chatVM = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaForChat())
-        let composerVM = ComposerViewModel(timeline: fake, commands: [])
+        let composerVM = ComposerViewModel(roomID: "!r:s", timeline: fake, commands: [])
 
         // Instantiating the view exercises the @State + binding wiring at
         // compile time. The view itself isn't rendered in this unit test.
@@ -151,7 +153,7 @@ final class ChatViewBindingTests: XCTestCase {
     func test_view_initialises_withProvidedTitle_andCallback() {
         let fake = FakeTimelineForChat()
         let chatVM = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaForChat())
-        let composerVM = ComposerViewModel(timeline: fake, commands: [])
+        let composerVM = ComposerViewModel(roomID: "!r:s", timeline: fake, commands: [])
 
         var profileTaps = 0
         let view = ChatView(
@@ -240,7 +242,7 @@ final class ChatViewBindingTests: XCTestCase {
     func test_view_showsBanner_whenBotIsUnverified() async throws {
         let fake = FakeTimelineForChat()
         let chatVM = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaForChat())
-        let composerVM = ComposerViewModel(timeline: fake, commands: [])
+        let composerVM = ComposerViewModel(roomID: "!r:s", timeline: fake, commands: [])
         let verificationSvc = FakeVerificationServiceForChat()
         // Explicitly seed `.unverified` (NOT `.unknown` — that's the new
         // banner-hides default). Banner only renders on `.unverified`.
@@ -262,7 +264,7 @@ final class ChatViewBindingTests: XCTestCase {
     func test_view_hidesBanner_whenBotIsVerified() async throws {
         let fake = FakeTimelineForChat()
         let chatVM = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaForChat())
-        let composerVM = ComposerViewModel(timeline: fake, commands: [])
+        let composerVM = ComposerViewModel(roomID: "!r:s", timeline: fake, commands: [])
         let verificationSvc = FakeVerificationServiceForChat()
         await verificationSvc.setUserVerified(true, for: "@box4:s")
         let _ = ChatView(
@@ -302,7 +304,7 @@ final class ChatViewBindingTests: XCTestCase {
         let svc = CountingVerificationServiceForChat()
         let timeline = FakeTimelineForChat()
         let chatVM = ChatViewModel(roomID: "!r:s", timeline: timeline, media: FakeMediaForChat())
-        let composerVM = ComposerViewModel(timeline: timeline, commands: [])
+        let composerVM = ComposerViewModel(roomID: "!r:s", timeline: timeline, commands: [])
         // Constructing ChatView itself does NOT call startSAS — that
         // only happens when the sheet presents (banner-tap path) and its
         // `.task(id: botMatrixID)` runs.
@@ -330,7 +332,7 @@ final class ChatViewBindingTests: XCTestCase {
     func test_view_hidesBanner_whenBotVerificationIsUnknown() async throws {
         let fake = FakeTimelineForChat()
         let chatVM = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaForChat())
-        let composerVM = ComposerViewModel(timeline: fake, commands: [])
+        let composerVM = ComposerViewModel(roomID: "!r:s", timeline: fake, commands: [])
         let verificationSvc = FakeVerificationServiceForChat()
         // Don't seed — default is `.unknown`. Equivalent to the cold-start
         // path where the local crypto store hasn't loaded the identity yet.

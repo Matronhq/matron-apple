@@ -46,14 +46,14 @@ final class FakeTimelineService: TimelineService, @unchecked Sendable {
         if let err = nextSendError { nextSendError = nil; throw err }
         sentFiles.append((filename, mimeType, data.count))
     }
-    func paginateBackward(requestSize: UInt16) async throws { paginateCalls += 1 }
+    func paginateBackward(requestSize: UInt16) async throws -> Bool { paginateCalls += 1; return false }
     func markAsRead() async throws { markReadCalls += 1 }
 }
 
 final class ComposerViewModelTests: XCTestCase {
     @MainActor
     func test_palette_isShownWhenInputStartsWithSlash() {
-        let vm = ComposerViewModel(timeline: FakeTimelineService(), commands: BotCommandCatalog.claudeBridge)
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: FakeTimelineService(), commands: BotCommandCatalog.claudeBridge)
         vm.input = "/sta"
         XCTAssertTrue(vm.showPalette)
         XCTAssertTrue(vm.filteredCommands.contains { $0.trigger == "/start" })
@@ -61,7 +61,7 @@ final class ComposerViewModelTests: XCTestCase {
 
     @MainActor
     func test_palette_isHiddenForRegularInput() {
-        let vm = ComposerViewModel(timeline: FakeTimelineService(), commands: BotCommandCatalog.claudeBridge)
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: FakeTimelineService(), commands: BotCommandCatalog.claudeBridge)
         vm.input = "hello"
         XCTAssertFalse(vm.showPalette)
     }
@@ -70,14 +70,14 @@ final class ComposerViewModelTests: XCTestCase {
     func test_palette_isHiddenAfterSpace() {
         // Once the user types past the trigger token, the palette should
         // hide so it doesn't cover the rest of the message.
-        let vm = ComposerViewModel(timeline: FakeTimelineService(), commands: BotCommandCatalog.claudeBridge)
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: FakeTimelineService(), commands: BotCommandCatalog.claudeBridge)
         vm.input = "/start workdir"
         XCTAssertFalse(vm.showPalette)
     }
 
     @MainActor
     func test_selectingCommand_replacesInput_andClosesPalette() {
-        let vm = ComposerViewModel(timeline: FakeTimelineService(), commands: BotCommandCatalog.claudeBridge)
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: FakeTimelineService(), commands: BotCommandCatalog.claudeBridge)
         vm.input = "/sta"
         vm.palettePinnedOpen = true
         let cmd = BotCommand(trigger: "/start", summary: "x", argHint: "[workdir]")
@@ -89,7 +89,7 @@ final class ComposerViewModelTests: XCTestCase {
     @MainActor
     func test_send_sendsTrimmedAndClearsInput() async {
         let fake = FakeTimelineService()
-        let vm = ComposerViewModel(timeline: fake, commands: [])
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
         vm.input = "  hello world  "
         await vm.send()
         XCTAssertEqual(fake.sentText, ["hello world"])
@@ -100,7 +100,7 @@ final class ComposerViewModelTests: XCTestCase {
     @MainActor
     func test_send_doesNothing_forEmptyInput() async {
         let fake = FakeTimelineService()
-        let vm = ComposerViewModel(timeline: fake, commands: [])
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
         vm.input = "   "
         await vm.send()
         XCTAssertTrue(fake.sentText.isEmpty)
@@ -111,7 +111,7 @@ final class ComposerViewModelTests: XCTestCase {
         let fake = FakeTimelineService()
         struct Boom: Error, LocalizedError { var errorDescription: String? { "boom" } }
         fake.nextSendError = Boom()
-        let vm = ComposerViewModel(timeline: fake, commands: [])
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
         vm.input = "hi"
         await vm.send()
         XCTAssertEqual(vm.sendError, "boom")
@@ -125,7 +125,7 @@ final class ComposerViewModelTests: XCTestCase {
         // to "/start " (trailing space). The palette's old check trimmed
         // whitespace, collapsing the input back to a single token starting
         // with `/`, which re-opened the palette immediately.
-        let vm = ComposerViewModel(timeline: FakeTimelineService(), commands: BotCommandCatalog.claudeBridge)
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: FakeTimelineService(), commands: BotCommandCatalog.claudeBridge)
         let cmd = BotCommand(trigger: "/start", summary: "x", argHint: "[workdir]")
         vm.selectCommand(cmd)
         XCTAssertEqual(vm.input, "/start ")
@@ -138,7 +138,7 @@ final class ComposerViewModelTests: XCTestCase {
         // Tightened version of the regression above: typing the command
         // followed by a space (without the user even hitting an argument)
         // should hide the palette so it doesn't cover the next character.
-        let vm = ComposerViewModel(timeline: FakeTimelineService(), commands: BotCommandCatalog.claudeBridge)
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: FakeTimelineService(), commands: BotCommandCatalog.claudeBridge)
         vm.input = "/start "
         XCTAssertFalse(vm.showPalette)
     }
@@ -150,7 +150,7 @@ final class ComposerViewModelTests: XCTestCase {
         // trim — both must agree the input is unsendable, otherwise the
         // button looks active but `send()` no-ops.
         let fake = FakeTimelineService()
-        let vm = ComposerViewModel(timeline: fake, commands: [])
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
         vm.input = "   \t\n  "
         await vm.send()
         XCTAssertTrue(fake.sentText.isEmpty)
@@ -163,7 +163,7 @@ final class ComposerViewModelTests: XCTestCase {
         // failures (bugbot finding #4). Without this method, view-layer
         // errors had no way into the view model's private(set) field and
         // were silently dropped via `try?`.
-        let vm = ComposerViewModel(timeline: FakeTimelineService(), commands: [])
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: FakeTimelineService(), commands: [])
         vm.reportAttachmentError("boom")
         XCTAssertEqual(vm.sendError, "boom")
     }
@@ -176,7 +176,7 @@ final class ComposerViewModelTests: XCTestCase {
         // (raw `"  /sta"` doesn't strip the leading space, so the
         // `byPrefix` filter looked for triggers starting with `"  /sta"`
         // and matched nothing). Both sides must agree.
-        let vm = ComposerViewModel(timeline: FakeTimelineService(), commands: BotCommandCatalog.claudeBridge)
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: FakeTimelineService(), commands: BotCommandCatalog.claudeBridge)
         vm.input = "  /sta"
         XCTAssertTrue(vm.showPalette)
         XCTAssertFalse(vm.filteredCommands.isEmpty,
@@ -206,7 +206,7 @@ final class ComposerViewModelTests: XCTestCase {
         try? Data("hi".utf8).write(to: url)
 
         let fake = FakeTimelineService()
-        let vm = ComposerViewModel(timeline: fake, commands: [])
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
         await vm.attachFiles([url])
 
         // Outcome: the file was read and dispatched to `sendFile`

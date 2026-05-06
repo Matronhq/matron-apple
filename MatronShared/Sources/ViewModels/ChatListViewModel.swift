@@ -13,6 +13,13 @@ public final class ChatListViewModel {
 
     public private(set) var groups: [GroupedSummaries] = []
     public private(set) var isLoading: Bool = true
+    /// Sum of `unreadCount` across every chat in `groups`. Drives the
+    /// app-icon badge (iOS `UNUserNotificationCenter.setBadgeCount`)
+    /// and the macOS dock badge (`NSApp.dockTile.badgeLabel`). Updated
+    /// in lockstep with `groups` from inside the snapshot consumer
+    /// loop so the host's `.onChange` listener fires exactly once per
+    /// snapshot — no separate stream wiring needed.
+    public private(set) var totalUnread: Int = 0
     /// Last error raised by the upstream `chatSummaries()` stream. Phase 2
     /// surfaces this as a banner / `ContentUnavailableView` overlay so a
     /// `SyncReadyError.timeout` doesn't manifest as an "infinite spinner
@@ -27,73 +34,64 @@ public final class ChatListViewModel {
         self.chat = chat
     }
 
+    /// Subscribes to the long-lived `ChatService.chatSummaries()` stream
+    /// (Phase 2.5). The stream yields the broadcaster's latest snapshot
+    /// immediately on register, then a fresh snapshot for every diff the
+    /// `RoomListSubscription` reports — so an empty first yield (sliding
+    /// sync still warming up) just means the next yield will arrive when
+    /// rooms land. The pre-Phase-2.5 30×1s retry loop existed only to
+    /// mask that one-shot empty-first-snapshot race; with the long-lived
+    /// stream it's pure dead code.
     public func start() {
         observationTask?.cancel()
         observationTask = Task { [weak self] in
             guard let self else { return }
-            // `ChatService.chatSummaries()` is single-shot per call (Phase 1/2
-            // contract). The first snapshot lands as soon as sliding sync
-            // reaches `.running` — but `.running` doesn't guarantee rooms
-            // have actually been downloaded yet. Sliding sync delivers rooms
-            // incrementally; the first snapshot is often empty even for a
-            // user with rooms on the server.
-            //
-            // Re-poll until we either get a non-empty snapshot or the task
-            // is cancelled (`onDisappear` / sign-out). Live-validated bug:
-            // user signed in fresh on Mac → list was empty → stayed empty
-            // because the VM stopped subscribing after the first (empty)
-            // snapshot. Phase 3 SDK-side fix is to flip chatSummaries() to
-            // a long-lived diff stream; until then this re-poll keeps the
-            // user from being stranded on an empty list.
-            //
-            // Polling cadence: 1s, capped at 30 attempts (~30s total). After
-            // 30s we stop and leave whatever the last snapshot was; the user
-            // can pull-to-refresh / ⌘R to retry. Matches the integration
-            // test's polling shape (`testChatListShowsRoomCreatedByOtherDevice`).
-            let maxAttempts = 30
-            for attempt in 0..<maxAttempts {
-                if Task.isCancelled { return }
-                do {
-                    var lastSnapshot: [ChatSummary] = []
-                    // Drain the stream fully so a `finish(throwing:)` after
-                    // the snapshot yields propagates as an error rather than
-                    // being silently swallowed by an early break (the
-                    // production stream is single-shot, but tests assert on
-                    // the throw + stream error).
-                    for try await snapshot in chat.chatSummaries() {
-                        lastSnapshot = snapshot
-                        let grouped = Self.group(summaries: snapshot)
-                        await MainActor.run {
-                            self.groups = grouped
-                            self.isLoading = false
-                            self.error = nil
-                        }
-                    }
-                    if !lastSnapshot.isEmpty { return }  // populated — done
-                } catch {
-                    let message = error.localizedDescription
+            do {
+                for try await snapshot in chat.chatSummaries() {
+                    if Task.isCancelled { return }
+                    let grouped = Self.group(summaries: snapshot)
+                    let unread = snapshot.reduce(0) { $0 + $1.unreadCount }
                     await MainActor.run {
-                        self.error = message
+                        self.groups = grouped
+                        self.totalUnread = unread
                         self.isLoading = false
+                        self.error = nil
                     }
-                    return  // upstream errored; no point retrying this session
                 }
-                // Empty snapshot — wait then retry. Skip the sleep on the
-                // last attempt so the loop exits immediately.
-                if attempt < maxAttempts - 1 {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+            } catch {
+                let message = error.localizedDescription
+                await MainActor.run {
+                    self.error = message
+                    self.isLoading = false
                 }
+            }
+        }
+    }
+
+    /// iOS pull-to-refresh / Mac `⌘R` entry point. Drives a one-shot
+    /// `client.rooms()` snapshot through the live broadcaster pipe via
+    /// `ChatService.forceSnapshot()` — the active `start()` stream
+    /// receives the extra yield. The live `RoomListSubscription` and its
+    /// per-room handles stay alive; refresh adds a snapshot, never tears
+    /// the listener down.
+    public func refresh() async {
+        do {
+            try await chat.forceSnapshot()
+        } catch {
+            let message = error.localizedDescription
+            await MainActor.run {
+                self.error = message
             }
         }
     }
 
     /// Cancels the in-flight observation task. Call from `View.onDisappear`,
     /// or when the session changes / user signs out, so the underlying
-    /// AsyncStream's continuation is released. Phase 2's live impl is
-    /// still single-snapshot per call, so this is mostly defensive — but
-    /// the cancel keeps re-subscribe churn invisible (QA finding #17).
-    /// Phase 3 flips to a long-lived diff stream; at that point this is
-    /// required to avoid Task leaks across re-logins.
+    /// AsyncStream's continuation is released. Phase 2.5 flipped
+    /// `chatSummaries()` to a long-lived broadcaster stream; cancelling
+    /// here unregisters this consumer's continuation without disturbing
+    /// the upstream `RoomListSubscription`, so re-`start()` after a
+    /// session swap reuses the warm listener.
     public func cancel() {
         observationTask?.cancel()
         observationTask = nil

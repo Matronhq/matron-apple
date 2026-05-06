@@ -18,10 +18,19 @@ public final class ComposerViewModel {
     /// Mac slash palette is also openable via `⌘K`; iOS toggles purely via `/` typing.
     public var palettePinnedOpen: Bool = false
 
+    /// Room this composer is bound to. Used by the View layer to key
+    /// per-room draft persistence (`ComposerDraftMemory`) — the VM
+    /// itself doesn't read or write the cache so it stays a pure input
+    /// model. Empty string is acceptable for non-room composer surfaces
+    /// (none today, but the future-proof seam mirrors Slack's cross-
+    /// surface composer model).
+    public let roomID: String
+
     private let timeline: TimelineService
     private let commands: [BotCommand]
 
-    public init(timeline: TimelineService, commands: [BotCommand]) {
+    public init(roomID: String, timeline: TimelineService, commands: [BotCommand]) {
+        self.roomID = roomID
         self.timeline = timeline
         self.commands = commands
     }
@@ -62,7 +71,9 @@ public final class ComposerViewModel {
 
     /// Sends the trimmed input as a text message. No-op for empty input.
     /// On failure, records `sendError` and preserves the input so the user
-    /// can retry.
+    /// can retry. On success, also drops the per-room draft entry so a
+    /// subsequent open of this room lands on an empty composer instead
+    /// of restoring the just-sent text.
     public func send() async {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -72,6 +83,7 @@ public final class ComposerViewModel {
             try await timeline.sendText(trimmed)
             input = ""
             sendError = nil
+            ComposerDraftMemory.forget(roomID: roomID)
         } catch {
             sendError = error.localizedDescription
         }

@@ -32,7 +32,11 @@ public protocol TimelineService: Sendable {
     func sendFile(_ data: Data, filename: String, mimeType: String) async throws
 
     /// Asks the SDK to paginate older history. UI subscribes via `items()`.
-    func paginateBackward(requestSize: UInt16) async throws
+    /// Returns `true` if the SDK has reached the start of the room's
+    /// history (further calls would be no-ops); `false` otherwise. The
+    /// view-model uses this to short-circuit the topmost-row `.onAppear`
+    /// trigger once we've back-filled the entire room.
+    func paginateBackward(requestSize: UInt16) async throws -> Bool
 
     /// Marks the most recent visible event as read.
     func markAsRead() async throws

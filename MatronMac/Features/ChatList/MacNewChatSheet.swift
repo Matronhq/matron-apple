@@ -75,30 +75,34 @@ struct MacNewChatSheet: View {
     /// on empty (1s × 30 attempts) for the same race that bit
     /// `ChatListViewModel` — see iOS `NewChatSheet.loadBots()` for the
     /// full rationale.
+    /// Phase 2.5 made `chatSummaries()` a long-lived stream that never
+    /// finishes, so the previous `for try await snapshot { lastSnapshot = }`
+    /// loop on this Mac sheet hung forever (the iOS counterpart was
+    /// fixed to break on first non-empty snapshot but this one was
+    /// missed — see PR #4 bugbot finding). Mirror iOS exactly:
+    /// flip `didLoad` on the first snapshot regardless of emptiness
+    /// (so a genuinely-zero-bot account sees the empty state instead
+    /// of a permanent ProgressView), then on the first non-empty
+    /// snapshot grab the bots and return.
     private func loadBots() async {
         let chat = deps.chatService(for: session)
         do {
-            for attempt in 0..<30 {
+            for try await snapshot in chat.chatSummaries() {
                 if Task.isCancelled { return }
-                var lastSnapshot: [ChatSummary] = []
-                for try await snapshot in chat.chatSummaries() {
-                    lastSnapshot = snapshot
-                }
-                if !lastSnapshot.isEmpty {
-                    let unique = Set(lastSnapshot.map(\.bot))
+                if !snapshot.isEmpty {
+                    let unique = Set(snapshot.map(\.bot))
                     bots = Array(unique).sorted { $0.displayName < $1.displayName }
-                    break
+                    didLoad = true
+                    return
                 }
-                if attempt < 29 {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                }
+                didLoad = true
             }
         } catch {
             // Surface the upstream stream error (e.g. SyncReadyError.timeout)
             // in the same field as createChat failures (QA finding #10).
             errorMessage = error.localizedDescription
+            didLoad = true
         }
-        didLoad = true
     }
 
     private func create(with bot: BotIdentity) async {

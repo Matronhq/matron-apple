@@ -5,6 +5,13 @@ import MatronModels
 import MatronVerification
 import MatronViewModels
 import MatronDesignSystem
+import os
+
+/// Diagnostic logger for the chat paginate trigger plumbing. Calls
+/// to `paginateLogger.diag(...)` are gated by `MatronDebug.enabled`
+/// so they stay in the source as living documentation of the data
+/// flow without paying for them at runtime in shipped builds.
+private let paginateLogger = Logger(subsystem: "chat.matron", category: "mac-chat-paginate")
 
 /// Mac chat detail column. Hosts a `ScrollView` + `LazyVStack` of
 /// `MacTimelineItemView` rows above the `MacComposerView`. Right-click
@@ -44,6 +51,24 @@ struct MacChatView: View {
     /// `.sheet(item:)` gets a stable `Identifiable` to key on; identity
     /// is the bot's matrixID itself.
     @State private var verifyBotContext: VerifyBotSheetContext?
+    /// Bottom-anchored visible item id, bound to `.scrollPosition` on
+    /// the timeline ScrollView. Drives both the per-room scroll memory
+    /// (so reopening a chat lands where the user left off) and the
+    /// floating jump-to-latest button.
+    @State private var scrolledItemID: String?
+    /// Backing state for the fullscreen image preview. Files take a
+    /// different path on Mac — `NSWorkspace.shared.open(_:)` hands
+    /// the temp file to QuickLook / the user's preferred app, which
+    /// means no SwiftUI sheet is needed. Only image taps land here.
+    @State private var imagePreview: ImagePreview?
+
+    /// Identifiable wrapper around a SwiftUI `Image` so
+    /// `.sheet(item:)` has something to key on. Per-present UUID so
+    /// two consecutive taps re-mount the sheet.
+    fileprivate struct ImagePreview: Identifiable {
+        let id = UUID()
+        let image: Image
+    }
 
     /// Identifiable wrapper for `.sheet(item:)`. See iOS `ChatView`.
     fileprivate struct VerifyBotSheetContext: Identifiable, Hashable {
@@ -80,12 +105,65 @@ struct MacChatView: View {
                     .background(Color.red.opacity(0.9))
                     .accessibilityLabel("Chat error: \(errorMessage)")
             }
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 8) {
-                        ForEach(viewModel.items) { item in
-                            MacTimelineItemView(item: item, resolveImage: { viewModel.image(for: $0) })
+            if viewModel.items.isEmpty
+                && viewModel.hasReceivedFirstSnapshot
+                && viewModel.error == nil {
+                // Settled-empty branch — see iOS `ChatView` for the
+                // full rationale. `hasReceivedFirstSnapshot` is the
+                // disambiguator between "still loading" and "settled
+                // empty"; without it the placeholder would flash on
+                // every cold-start chat open before sliding-sync warms.
+                EmptyChatPlaceholder(botName: chatTitle)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    // Render `rows` (messages interleaved with date
+                    // separators) instead of `items` directly. Mirrors
+                    // the iOS surface — the bucketing logic lives in
+                    // `ChatViewModel.rows` so the two platforms can't
+                    // drift.
+                    ForEach(viewModel.rows) { row in
+                        switch row {
+                        case .separator(let date):
+                            DateSeparator(date: date)
+                                .id(row.id)
+                        case .message(let item):
+                            MacTimelineItemView(
+                                item: item,
+                                resolveImage: { viewModel.image(for: $0) },
+                                onRetry: { id in viewModel.retrySend(itemID: id) },
+                                onTapImage: { img in
+                                    imagePreview = ImagePreview(image: img)
+                                },
+                                onTapFile: { mxc, filename in
+                                    Task {
+                                        if let url = await viewModel.writeTempFile(
+                                            mxcURL: mxc, filename: filename
+                                        ) {
+                                            // Hand off to the system —
+                                            // QuickLook / the user's
+                                            // chosen app handles the
+                                            // open. Stays inside the
+                                            // SwiftUI surface (no
+                                            // need for a sheet on
+                                            // Mac since the OS shell
+                                            // owns the open path).
+                                            await MainActor.run {
+                                                NSWorkspace.shared.open(url)
+                                            }
+                                        }
+                                    }
+                                }
+                            )
                                 .id(item.id)
+                                .onAppear {
+                                    let match = (item.id == viewModel.firstRenderableItemID)
+                                    paginateLogger.diag("onAppear: id=\(item.id) first=\(viewModel.firstRenderableItemID ?? "nil") match=\(match)")
+                                    if match {
+                                        Task { await viewModel.paginateBackward() }
+                                    }
+                                }
                                 .contextMenu {
                                     if case .text(let body, _) = item.kind {
                                         Button {
@@ -108,18 +186,71 @@ struct MacChatView: View {
                                 }
                         }
                     }
-                    .padding(.vertical)
                 }
-                .onChange(of: viewModel.items.last?.id) { _, _ in
-                    // Round-3 bugbot finding #5: keying on `items.count`
-                    // missed `.set` diffs that swap a local-echo id for
-                    // a remote-event id (count constant, last id moves)
-                    // and remove+add diff batches (count constant, last
-                    // id moves). Keying on `last?.id` catches both.
-                    if let last = viewModel.items.last {
-                        withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                .scrollTargetLayout()
+                .padding(.vertical)
+            }
+            // Mirror iOS — `.scrollPosition(id:)` binds the bottom-anchored
+            // visible row id, which we use both for the per-room scroll
+            // memory and for the jump-to-latest overlay.
+            .scrollPosition(id: $scrolledItemID, anchor: .bottom)
+            .onChange(of: viewModel.lastRenderableItemID) { oldID, newID in
+                // Auto-follow the live tail only if the user was already
+                // there. Scrolled-up users keep their position; the
+                // floating button is the path back.
+                guard let newID else { return }
+                let wasAtTail = (scrolledItemID == oldID) || (scrolledItemID == nil)
+                if wasAtTail {
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 50_000_000)
+                        scrolledItemID = newID
                     }
                 }
+            }
+            // Paginate when the visible bottom row enters the first
+            // ~10 row ids (separators + messages combined). See iOS
+            // ChatView for the full rationale: the scroll-position
+            // binding uses mixed-namespace ids (messages → `item.id`,
+            // separators → `"sep:<epoch>"`) so the prefix check has
+            // to handle both.
+            .onChange(of: scrolledItemID) { _, newID in
+                guard let newID else { return }
+                let topRowIDs: Set<String> = Set(
+                    viewModel.rows.prefix(10).map { row in
+                        switch row {
+                        case .message(let item): return item.id
+                        case .separator: return row.id
+                        }
+                    }
+                )
+                let inTop = topRowIDs.contains(newID)
+                paginateLogger.diag("scrollChange: bottom=\(newID) inTop10=\(inTop) rows=\(viewModel.rows.count)")
+                if inTop {
+                    Task { await viewModel.paginateBackward() }
+                }
+            }
+            // "Loading earlier messages…" pill — see iOS `ChatView`
+            // for the overlay rationale + `MinDisplayDuration`'s
+            // role keeping fast-paginate flashes perceptible.
+            .overlay(alignment: .top) {
+                MinDisplayDuration(while: viewModel.isPaginatingBackward) { visible in
+                    if visible {
+                        PaginatingHeader()
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                }
+                .animation(.easeInOut(duration: 0.18), value: viewModel.isPaginatingBackward)
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if let last = viewModel.lastRenderableItemID, scrolledItemID != last {
+                    JumpToBottomButton {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            scrolledItemID = last
+                        }
+                        ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
+                    }
+                }
+            }
             }
 
             Divider()
@@ -139,12 +270,21 @@ struct MacChatView: View {
             )
         }
         .task {
+            // Restore the per-room scroll position BEFORE start() —
+            // see iOS `ChatView` for the auto-follow guard rationale.
+            scrolledItemID = ChatScrollPositionMemory.retrieve(roomID: viewModel.roomID)
             // `start()` (round-3 bugbot fix #3) returns once the first
             // timeline snapshot has been applied, so the chained
             // `markAsRead()` marks the actual head of the timeline as
             // read instead of racing the empty initial state.
             await viewModel.start()
             await viewModel.markAsRead()
+            // Explicit paginate-on-open. Sliding sync seeds the
+            // timeline with just the latest event; without this the
+            // user sees a single message until they scroll up. The
+            // topmost-row `.onAppear` trigger covers subsequent loads
+            // as the user scrolls — this just seeds the first page.
+            await viewModel.paginateBackward()
         }
         // Per-bot verification check on appear AND each time the
         // timeline gains its first items — that's the cheapest signal
@@ -158,7 +298,17 @@ struct MacChatView: View {
         // cancellation lifecycle with the long-lived timeline
         // observation.
         .task(id: viewModel.items.isEmpty) { await evaluateBotVerification() }
-        .onDisappear { viewModel.stop() }
+        .onDisappear {
+            // Persist the user's scroll position so the next open of
+            // this room lands where they left off; drop the entry on
+            // tail so the default jump-to-tail behaviour applies.
+            if let id = scrolledItemID, id != viewModel.lastRenderableItemID {
+                ChatScrollPositionMemory.store(roomID: viewModel.roomID, itemID: id)
+            } else {
+                ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
+            }
+            viewModel.stop()
+        }
         // ⌘K opens the slash palette without typing `/`. The hidden
         // button is the SwiftUI-recommended pattern for a global keyboard
         // shortcut that doesn't have a visible UI counterpart. Marked
@@ -172,6 +322,12 @@ struct MacChatView: View {
                 .accessibilityHidden(true)
         )
         // ⌘R refresh — driven by the menu-bar command bus (Task 14e).
+        // When focus is on a chat detail column, ⌘R reloads THIS
+        // chat's timeline (paginate-backward via
+        // `ChatViewModel.refresh()`). The chat-list `⌘R` /
+        // pull-to-refresh in `MacChatListView.refreshable` handles
+        // the list-level snapshot via `ChatService.forceSnapshot()` —
+        // those are different surfaces and stay separately wired.
         .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.refresh))) { _ in
             Task { await viewModel.refresh() }
         }
@@ -188,6 +344,15 @@ struct MacChatView: View {
         }
         .sheet(item: $verifyBotContext) { context in
             verifyBotSheetBody(for: context.id)
+        }
+        // Mac fullscreen image preview — Mac's `NSWorkspace.shared.open`
+        // already owns the file path, so the only sheet wired here is
+        // for the in-app pinch-zoom-style image viewer.
+        .sheet(item: $imagePreview) { preview in
+            AttachmentFullscreenViewer(
+                image: preview.image,
+                onDismiss: { imagePreview = nil }
+            )
         }
     }
 

@@ -15,19 +15,48 @@ struct MacTimelineItemView: View {
     /// placeholder rendering for previews and tests that don't wire up a
     /// `ChatViewModel`.
     var resolveImage: ((URL) -> Image?)? = nil
+    /// Optional retry handler for own-messages whose send state is
+    /// `.failed(reason:)`. Mirrors the iOS surface — wired by
+    /// `MacChatView` to `viewModel.retrySend(itemID:)`.
+    var onRetry: ((String) -> Void)? = nil
+    /// Image-attachment tap handler — mirrors the iOS surface.
+    var onTapImage: ((Image) -> Void)? = nil
+    /// File-attachment tap handler — mirrors the iOS surface.
+    /// `MacChatView` wires this through to a temp-file write +
+    /// `NSWorkspace.shared.open(_:)`.
+    var onTapFile: ((URL, String) -> Void)? = nil
 
     var body: some View {
-        if !Self.shouldRender(item) {
-            // Mac mirror of the iOS `TimelineItemView` round-5 finding #2
-            // fix. Virtual timeline items (`dateDivider`, `readMarker`,
-            // `timelineStart`) collapse to `.stateChange(text: "")` in
-            // `TimelineServiceLive.mapVirtual`, and the padded `HStack`
-            // below renders them as visible 8pt blank rows. Phase 2
-            // closeout: render nothing for these. Phase 3+ can give them
-            // proper visual treatment.
-            EmptyView()
+        // See iOS `TimelineItemView.body` — `shouldRender` is dead
+        // code in the body because `ChatViewModel.rows` filters
+        // hidden items BEFORE the ForEach. Kept as a static helper
+        // for `MacTimelineItemViewTests` to exercise the contract.
+        if item.isOwn && item.sendState != .sent {
+            // Own-message with non-default send state — see iOS
+            // `TimelineItemView` for the full rationale. `.sent`
+            // bypasses the wrapping VStack so the common case keeps
+            // the existing layout untouched.
+            VStack(alignment: .trailing, spacing: 2) {
+                renderedBody
+                    .opacity(item.sendState == .sending ? 0.7 : 1.0)
+                SendStateIndicator(
+                    state: Self.sendStateGlyph(for: item.sendState),
+                    onRetry: onRetry.map { handler in { handler(item.id) } }
+                )
+                .padding(.horizontal)
+            }
         } else {
             renderedBody
+        }
+    }
+
+    /// Mac mirror of `TimelineItemView.sendStateGlyph(for:)` — see
+    /// the iOS doc-comment for why this stays inline.
+    static func sendStateGlyph(for state: TimelineItem.SendState) -> SendStateGlyph {
+        switch state {
+        case .sent: return .sent
+        case .sending: return .sending
+        case .failed(let reason): return .failed(reason: reason)
         }
     }
 
@@ -54,18 +83,37 @@ struct MacTimelineItemView: View {
                 AttachmentImage(
                     image: resolvedImage(for: url),
                     placeholder: "Image",
-                    caption: caption ?? sizeBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
+                    caption: caption ?? sizeBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) },
+                    // Tap forwards to the parent only when the bytes
+                    // have already resolved AND a handler is wired.
+                    // Tapping a still-loading placeholder is a no-op
+                    // so the fullscreen viewer doesn't open with an
+                    // empty `Image`.
+                    onTap: {
+                        if let img = resolvedImage(for: url),
+                           let onTapImage {
+                            onTapImage(img)
+                        }
+                    }
                 )
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: caption ?? "Image attachment"))
 
-        case .file(_, let filename, let sizeBytes):
+        case .file(let url, let filename, let sizeBytes):
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
                 senderLabel: item.isOwn ? nil : Self.displayName(for: item.sender)
             ) {
-                AttachmentFile(filename: filename, sizeBytes: sizeBytes)
+                AttachmentFile(
+                    filename: filename,
+                    sizeBytes: sizeBytes,
+                    onTap: {
+                        if let url, let onTapFile {
+                            onTapFile(url, filename)
+                        }
+                    }
+                )
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "File attachment: \(filename)"))
@@ -79,24 +127,34 @@ struct MacTimelineItemView: View {
             .padding(.vertical, 4)
 
         case .unknown(let eventType):
+            // `m.room.encrypted` is the SDK's `unableToDecrypt` mapped
+            // through; the SDK retries decryption as keys arrive and
+            // replaces the row via a `.set` diff. Friendlier than the
+            // raw "[unsupported event]" generic fallback.
             HStack {
                 Spacer()
-                Text("[unsupported event: \(eventType)]")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                if eventType == "m.room.encrypted" {
+                    Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary)
+                    Text("Encrypted message — waiting for key")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("[unsupported event: \(eventType)]")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
             }
             .padding(.vertical, 4)
         }
     }
 
-    /// Mac mirror of `TimelineItemView.shouldRender(_:)` — see iOS for
-    /// the full rationale. Returns `false` for `.stateChange(text: "")`
-    /// (the `mapVirtual` placeholder for date dividers / read markers /
-    /// timeline start) so the renderer emits `EmptyView()` instead of a
-    /// padded blank row.
+    /// Mac mirror of `TimelineItemView.shouldRender(_:)`. Hides ALL
+    /// stateChange rows — see iOS for the full rationale (bot-first
+    /// chats don't want "Room state changed" / membership / profile
+    /// noise; Phase 7 polish can bring back a metadata-events toggle).
     static func shouldRender(_ item: TimelineItem) -> Bool {
-        if case .stateChange(let text) = item.kind, text.isEmpty {
+        if case .stateChange = item.kind {
             return false
         }
         return true
