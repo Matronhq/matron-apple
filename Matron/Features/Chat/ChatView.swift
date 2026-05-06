@@ -50,6 +50,12 @@ struct ChatView: View {
     /// `id` is the matrixID itself); the wrapper exists to satisfy
     /// `Identifiable` and to give `.sheet(item:)` a stable identity.
     @State private var verifyBotContext: VerifyBotSheetContext?
+    /// The bottom-anchored visible item id, bound to `.scrollPosition`
+    /// on the timeline ScrollView. Drives both the per-room scroll
+    /// memory (so reopening a chat lands where the user left off) and
+    /// the floating "jump to latest" button (visible iff this isn't
+    /// `items.last?.id`).
+    @State private var scrolledItemID: String?
 
     /// Identifiable wrapper for `.sheet(item:)`. Identity is the bot's
     /// matrixID — one bot per chat, so two sequential taps re-use the
@@ -100,73 +106,82 @@ struct ChatView: View {
                     .background(Color.red.opacity(0.9))
                     .accessibilityLabel("Chat error: \(errorMessage)")
             }
-            ScrollViewReader { proxy in
-                // `.defaultScrollAnchor(.bottom)` makes the ScrollView
-                // anchor at the bottom on first layout AND keep the
-                // bottom anchored when content grows below it. Together
-                // with the `.onChange` scroll-to-tail handler below this
-                // gives chat-style "open at bottom; stay at bottom on
-                // new message; preserve user's scroll position when they
-                // scroll up to read history" behaviour without animating
-                // a scroll-to-bottom on open.
-                ScrollView {
-                    LazyVStack(spacing: 8) {
-                        ForEach(viewModel.items) { item in
-                            TimelineItemView(item: item, resolveImage: { viewModel.image(for: $0) })
-                                .id(item.id)
-                                // Infinite-scroll backward pagination
-                                // trigger: when the topmost row mounts,
-                                // request older messages. The view-model
-                                // guards against re-entry + reached-start.
-                                .onAppear {
-                                    if item.id == viewModel.items.first?.id {
-                                        Task { await viewModel.paginateBackward() }
-                                    }
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    ForEach(viewModel.items) { item in
+                        TimelineItemView(item: item, resolveImage: { viewModel.image(for: $0) })
+                            .id(item.id)
+                            // Infinite-scroll backward pagination
+                            // trigger: when the topmost row mounts,
+                            // request older messages. The view-model
+                            // guards against re-entry + reached-start.
+                            .onAppear {
+                                if item.id == viewModel.items.first?.id {
+                                    Task { await viewModel.paginateBackward() }
                                 }
-                                .contextMenu {
-                                    if case .text(let body, _) = item.kind {
-                                        Button {
-                                            // Use the cross-platform helper from
-                                            // MatronDesignSystem so iOS and Mac stay
-                                            // on a single Pasteboard surface
-                                            // (QA finding #3).
-                                            Pasteboard.copy(body)
-                                        } label: {
-                                            Label("Copy", systemImage: "doc.on.doc")
-                                        }
-                                        ShareLink(item: body) {
-                                            Label("Share", systemImage: "square.and.arrow.up")
-                                        }
-                                    }
-                                    // "View source" applies to every kind —
-                                    // text, image, file, stateChange, unknown
-                                    // — so it lives outside the `.text` guard.
+                            }
+                            .contextMenu {
+                                if case .text(let body, _) = item.kind {
                                     Button {
-                                        sourceItem = item
+                                        // Use the cross-platform helper from
+                                        // MatronDesignSystem so iOS and Mac stay
+                                        // on a single Pasteboard surface
+                                        // (QA finding #3).
+                                        Pasteboard.copy(body)
                                     } label: {
-                                        Label("View source", systemImage: "curlybraces")
+                                        Label("Copy", systemImage: "doc.on.doc")
+                                    }
+                                    ShareLink(item: body) {
+                                        Label("Share", systemImage: "square.and.arrow.up")
                                     }
                                 }
-                        }
+                                // "View source" applies to every kind —
+                                // text, image, file, stateChange, unknown
+                                // — so it lives outside the `.text` guard.
+                                Button {
+                                    sourceItem = item
+                                } label: {
+                                    Label("View source", systemImage: "curlybraces")
+                                }
+                            }
                     }
-                    .padding(.vertical)
                 }
-                .defaultScrollAnchor(.bottom)
-                // Pin to the live tail. Re-fires every time the last
-                // item's id changes — covers initial load (nil → first
-                // id), new messages (id appended), `.set` diffs swapping
-                // local-echo ids for remote-event ids (count constant,
-                // last id moves), and remove+add batches with the same
-                // shape. The Task hop yields one runloop turn so the
-                // `LazyVStack` has finished laying out the new row
-                // before `proxy.scrollTo` resolves it — without that,
-                // the call is a no-op on the very first non-empty yield
-                // because the row's geometry isn't registered yet.
-                .onChange(of: viewModel.items.last?.id) { _, newID in
-                    guard let id = newID else { return }
+                .scrollTargetLayout()
+                .padding(.vertical)
+            }
+            // `.scrollPosition(id:anchor: .bottom)` binds `scrolledItemID`
+            // to the row at the bottom of the viewport. Setting it to
+            // `items.last?.id` jumps to the live tail; reading it tells
+            // us which row the user is currently looking at, which is
+            // both what we save for the per-room memory and what we
+            // compare against the tail to decide whether to show the
+            // jump-to-bottom button. `.scrollTargetLayout()` on the
+            // `LazyVStack` is required for the binding to resolve row
+            // ids.
+            .scrollPosition(id: $scrolledItemID, anchor: .bottom)
+            // Auto-follow the live tail only if the user was already at
+            // the previous tail. If they've scrolled up to read history,
+            // a new bot message shouldn't yank them back to the bottom —
+            // that's what the floating jump button is for.
+            .onChange(of: viewModel.items.last?.id) { oldID, newID in
+                guard let newID else { return }
+                let wasAtTail = (scrolledItemID == oldID) || (scrolledItemID == nil)
+                if wasAtTail {
                     Task { @MainActor in
                         try? await Task.sleep(nanoseconds: 50_000_000)
-                        proxy.scrollTo(id, anchor: .bottom)
+                        scrolledItemID = newID
+                    }
+                }
+            }
+            // Floating jump-to-latest. Visible only when the user has
+            // scrolled away from the tail.
+            .overlay(alignment: .bottomTrailing) {
+                if let last = viewModel.items.last?.id, scrolledItemID != last {
+                    JumpToBottomButton {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            scrolledItemID = last
+                        }
+                        ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
                     }
                 }
             }
@@ -182,6 +197,13 @@ struct ChatView: View {
             }
         }
         .task {
+            // Restore the per-room scroll position BEFORE start() so
+            // the first snapshot's `.onChange` doesn't auto-pin to the
+            // tail (its guard checks `scrolledItemID == oldID`, which
+            // is true for the unrestored nil case but false once we've
+            // set a saved id here). If no memory exists, `scrolledItemID`
+            // stays nil and the chat opens at the tail as usual.
+            scrolledItemID = ChatScrollPositionMemory.retrieve(roomID: viewModel.roomID)
             // Chain `markAsRead()` *after* the timeline observation has
             // applied its first snapshot. `start()` is now `async` and
             // returns once the first snapshot has landed (or the stream
@@ -207,7 +229,18 @@ struct ChatView: View {
         // Bool shape) so the banner errs hidden on transient errors
         // and re-checks on the next tick (§7.5 trust posture).
         .task(id: viewModel.items.isEmpty) { await evaluateBotVerification() }
-        .onDisappear { viewModel.stop() }
+        .onDisappear {
+            // Capture the user's scroll position so the next open of
+            // this room lands where they left off. Drop the entry on
+            // tail (no point storing "user was at the live tail" — the
+            // default behaviour already opens there).
+            if let id = scrolledItemID, id != viewModel.items.last?.id {
+                ChatScrollPositionMemory.store(roomID: viewModel.roomID, itemID: id)
+            } else {
+                ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
+            }
+            viewModel.stop()
+        }
         .sheet(item: $sourceItem) { item in
             EventSourceSheet(item: item)
         }
