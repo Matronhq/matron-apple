@@ -422,13 +422,22 @@ struct MatronApp: App {
             )
             let granted = await bootstrap.bootstrap()
             guard granted else { return }
-            let token = await PushTokenStore.shared.waitForToken()
+            // `try await` so a sign-out that cancels this `.task`
+            // surfaces as `CancellationError` and the catch arm
+            // exits without registering — without that, a stale
+            // bootstrap could resume on the NEXT session's setToken
+            // and write a pusher row for the signed-out account
+            // (cursor PR #5 third-pass finding).
+            let token = try await PushTokenStore.shared.waitForToken()
             await bootstrap.register(token: token)
         } catch {
             // Failure to resolve a Client typically means sync isn't
             // ready yet — the next user-switch / relaunch will retry.
-            // Phase 4 doesn't gate UX on this; later Settings UI
-            // surfaces persistent failures.
+            // `CancellationError` from the waitForToken cancellation
+            // path also lands here; a cancelled bootstrap is the
+            // expected exit, no surfacing needed. Phase 4 doesn't
+            // gate UX on this; later Settings UI surfaces persistent
+            // failures.
         }
     }
 

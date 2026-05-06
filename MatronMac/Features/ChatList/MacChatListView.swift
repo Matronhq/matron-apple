@@ -176,6 +176,18 @@ struct MacChatListView: View {
                 selectedSummaryID = roomID
             }
         }
+        // Cold-start tap drain (cursor PR #5 third-pass finding): a
+        // notification tap that launched the app — `didReceive` fired
+        // before this view mounted — would otherwise be lost because
+        // `NotificationCenter` doesn't replay missed posts. The
+        // handler buffers it; this `.task` drains on first
+        // appearance. Mirrors iOS's `NotificationDelegate.consumePendingRoomID()`
+        // call at `Matron/App/MatronApp.swift:177`.
+        .task {
+            if let pending = MacNotificationHandler.shared.consumePendingRoomID() {
+                selectedSummaryID = pending
+            }
+        }
         // Wave 6 / live-test #4: dropped `.navigationTitle("Matron")`.
         // The detail column's `MacChatToolbar` (Task 14d) carries the
         // chat title in its `.principal` slot, and on macOS the

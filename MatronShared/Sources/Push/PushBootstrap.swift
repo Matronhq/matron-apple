@@ -149,7 +149,12 @@ public final class PushTokenStore {
     public static let shared = PushTokenStore()
 
     private var latestToken: Data?
-    private var waiters: [CheckedContinuation<Data, Never>] = []
+    /// Pending `waitForToken()` callers, keyed by per-call UUID so a
+    /// task-cancellation handler can target this specific waiter
+    /// without taking the whole list down. The throwing continuation
+    /// is what lets `waitForToken()` surface `CancellationError` —
+    /// see its doc-comment for the full rationale.
+    private var waiters: [UUID: CheckedContinuation<Data, Error>] = [:]
 
     /// Tail of the serialised push-operation chain. New register /
     /// unregister calls extend the chain so they run in the order
@@ -183,21 +188,70 @@ public final class PushTokenStore {
     public func setToken(_ data: Data) {
         latestToken = data
         let toResume = waiters
-        waiters = []
-        for continuation in toResume {
+        waiters = [:]
+        for continuation in toResume.values {
             continuation.resume(returning: data)
         }
     }
 
     /// Suspends until `setToken(_:)` is called. Returns the cached
     /// token immediately if one already exists (the common cold-start
-    /// path: APNs delivers before bootstrap awaits). Callers should
-    /// await this with a timeout around it if they want to gate UX on
-    /// "did push wire up successfully" — Phase 4 doesn't.
-    public func waitForToken() async -> Data {
+    /// path: APNs delivers before bootstrap awaits). Throws
+    /// `CancellationError` if the calling Task is cancelled while
+    /// suspended — without this, a sign-out that cancels the
+    /// post-verify `.task(id: session.userID)` would leave the dead
+    /// waiter parked indefinitely; once the next session's
+    /// `setToken` fires, the dead Task would resume and write a
+    /// pusher row for a signed-out account (cursor PR #5 third-pass
+    /// finding "stale push registration can resume"). Callers gate
+    /// `register(token:)` behind this `try await` so a cancelled
+    /// bootstrap exits cleanly via the catch arm without registering.
+    public func waitForToken() async throws -> Data {
         if let latestToken { return latestToken }
-        return await withCheckedContinuation { continuation in
-            waiters.append(continuation)
+        let id = UUID()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                self.installWaiter(id: id, continuation: continuation)
+            }
+        } onCancel: {
+            // `onCancel` runs synchronously on the cancelling Task's
+            // executor, but `waiters` is `@MainActor`-isolated — hop
+            // explicitly. The dispatch and `setToken`'s drain race
+            // safely: `removeValue(forKey:)` ensures only one path
+            // resumes the continuation (a CheckedContinuation traps
+            // on double-resume).
+            Task { @MainActor [weak self] in
+                self?.cancelWaiter(id: id)
+            }
+        }
+    }
+
+    /// Re-checks token state inside the continuation closure to close
+    /// the window between `waitForToken`'s `if let latestToken` early-
+    /// return and continuation install — a `setToken` that landed in
+    /// that window would otherwise leave the new waiter parked with
+    /// nothing to resume it. Also surfaces immediate cancellation if
+    /// the calling Task was already cancelled before the suspension
+    /// point reached this line.
+    private func installWaiter(id: UUID, continuation: CheckedContinuation<Data, Error>) {
+        if let latestToken {
+            continuation.resume(returning: latestToken)
+            return
+        }
+        if Task.isCancelled {
+            continuation.resume(throwing: CancellationError())
+            return
+        }
+        waiters[id] = continuation
+    }
+
+    /// Targeted cancel for a single waiter, called from
+    /// `waitForToken`'s `onCancel` handler. The `removeValue` returns
+    /// `nil` if `setToken` already drained the waiter — so this is
+    /// idempotent against the setToken/onCancel race.
+    private func cancelWaiter(id: UUID) {
+        if let c = waiters.removeValue(forKey: id) {
+            c.resume(throwing: CancellationError())
         }
     }
 

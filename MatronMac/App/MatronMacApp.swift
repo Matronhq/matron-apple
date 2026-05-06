@@ -395,6 +395,12 @@ struct MatronMacApp: App {
         dependencies.signOut()
         session = nil
         verifyDone = false
+        // Drop any buffered cold-start tap so the next sign-in's
+        // `MacChatListView.task` doesn't drain a stale room ID from
+        // the prior account (cursor PR #5 third-pass finding "Mac
+        // cold-start taps are dropped" plus the stale-pending
+        // hygiene that the iOS host already does on `signOut`).
+        MacNotificationHandler.shared.clearPendingRoomID()
     }
 
     /// Phase 4 Task 11 — full push pipeline bootstrap for `session`,
@@ -430,11 +436,18 @@ struct MatronMacApp: App {
             )
             let granted = await bootstrap.bootstrap()
             guard granted else { return }
-            let token = await PushTokenStore.shared.waitForToken()
+            // `try await` so a sign-out cancelling this `.task`
+            // raises `CancellationError` and the catch arm exits
+            // without registering. See iOS's `bootstrapPush` for
+            // the full rationale (cursor PR #5 third-pass finding
+            // "stale push registration can resume").
+            let token = try await PushTokenStore.shared.waitForToken()
             await bootstrap.register(token: token)
         } catch {
             // Failure to resolve a Client typically means sync isn't
-            // ready yet — same swallow pattern as iOS.
+            // ready yet — same swallow pattern as iOS, also catches
+            // `CancellationError` from the waitForToken cancellation
+            // path (which is the expected exit, not a real failure).
         }
     }
 

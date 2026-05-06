@@ -21,14 +21,12 @@ import MatronPush
 @MainActor
 final class MatronMacAppDelegate: NSObject, NSApplicationDelegate {
 
-    /// Singleton handler — `UNUserNotificationCenter.current().delegate`
-    /// is a single global slot, and the chat-list view layer needs a
-    /// stable instance to attach observers to. Same pattern as iOS's
-    /// `NotificationDelegate.shared`.
-    let notificationHandler = MacNotificationHandler()
-
     func applicationDidFinishLaunching(_ notification: Notification) {
-        UNUserNotificationCenter.current().delegate = notificationHandler
+        // `MacNotificationHandler.shared` is the same instance
+        // `MacChatListView` reads `consumePendingRoomID()` off, so
+        // a cold-start tap that lands before SwiftUI mounts still
+        // gets drained by the chat list's first-mount task.
+        UNUserNotificationCenter.current().delegate = MacNotificationHandler.shared
     }
 
     func application(

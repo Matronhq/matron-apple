@@ -153,7 +153,7 @@ final class PushBootstrapTests: XCTestCase {
 
     // MARK: - PushTokenStore
 
-    func test_pushTokenStore_resumesWaitersOnSetToken() async {
+    func test_pushTokenStore_resumesWaitersOnSetToken() async throws {
         let store = PushTokenStore()
         let token = Data([0xab, 0xcd])
         Task { @MainActor in
@@ -164,18 +164,58 @@ final class PushBootstrapTests: XCTestCase {
             store.setToken(token)
         }
 
-        let received = await store.waitForToken()
+        let received = try await store.waitForToken()
         XCTAssertEqual(received, token)
     }
 
-    func test_pushTokenStore_returnsCachedTokenImmediately() async {
+    func test_pushTokenStore_returnsCachedTokenImmediately() async throws {
         let store = PushTokenStore()
         let token = Data([0xfe, 0xed])
         store.setToken(token)
 
         // Already cached — must not block.
-        let received = await store.waitForToken()
+        let received = try await store.waitForToken()
         XCTAssertEqual(received, token)
+    }
+
+    func test_waitForToken_throwsCancellationError_whenTaskCancelled() async {
+        // Cursor PR #5 third-pass finding "stale push registration can
+        // resume": before this fix, `waitForToken` ignored task
+        // cancellation; a sign-out that cancelled the post-verify
+        // bootstrap left the dead waiter parked, and the next
+        // session's `setToken` would resume it and drive a stale
+        // `register(token:)`. After the fix, cancelling the calling
+        // Task surfaces `CancellationError` and the bootstrap exits
+        // through the catch arm without registering.
+        let store = PushTokenStore()
+        let outcome = OutcomeBox<Result<Data, Error>>()
+        let task = Task { @MainActor in
+            do {
+                let token = try await store.waitForToken()
+                await outcome.set(.success(token))
+            } catch {
+                await outcome.set(.failure(error))
+            }
+        }
+        // Yield twice so the inner Task has installed its waiter on
+        // the @MainActor before we cancel — without this, the cancel
+        // can race the install and short-circuit via Task.isCancelled
+        // inside `installWaiter` (which is also valid CancellationError
+        // surface, but we want to exercise the onCancel handler path).
+        await Task.yield()
+        await Task.yield()
+        task.cancel()
+        await task.value
+
+        let result = await outcome.value
+        switch result {
+        case .success(let token):
+            XCTFail("expected CancellationError, got token=\(token as NSData)")
+        case .failure(let error):
+            XCTAssertTrue(error is CancellationError, "expected CancellationError, got \(type(of: error))")
+        case .none:
+            XCTFail("Task finished without setting outcome")
+        }
     }
 
     // MARK: - PushTokenStore.enqueuePushOperation ordering
@@ -224,6 +264,14 @@ final class PushBootstrapTests: XCTestCase {
 private actor OrderRecorder {
     var recorded: [String] = []
     func append(_ value: String) { recorded.append(value) }
+}
+
+/// Generic actor box for capturing a Task's outcome from outside the
+/// Task body without tripping data-isolation diagnostics. Used by
+/// `test_waitForToken_throwsCancellationError_whenTaskCancelled`.
+private actor OutcomeBox<T: Sendable> {
+    private(set) var value: T?
+    func set(_ v: T) { value = v }
 }
 
 /// PushService double whose `registerToken` records `"register"` onto the
