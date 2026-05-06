@@ -372,6 +372,11 @@ struct MatronApp: App {
         // sign-in lands at the chat list root, not stranded inside a
         // (now-inaccessible) prior-account room.
         chatPath = []
+        // Drop any buffered cold-start tap so the next sign-in's
+        // post-verify `.task(id: session.userID)` doesn't drain a
+        // stale room ID from the prior account (cursor PR #5
+        // second-pass finding "live taps leave stale pending rooms").
+        NotificationDelegate.shared.clearPendingRoomID()
     }
 
     /// Phase 4 Task 5 — full push pipeline bootstrap for `session`.

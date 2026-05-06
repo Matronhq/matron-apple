@@ -42,17 +42,20 @@ public final class PushBootstrap {
     private let pusherBaseURL: URL
     private let notificationSettings: MatronNotificationSettings
     private let joinedRoomIDs: @Sendable () async -> [String]
+    private let tokenStore: PushTokenStore
 
     public init(
         pushService: PushService,
         pusherBaseURL: URL,
         notificationSettings: MatronNotificationSettings,
-        joinedRoomIDs: @escaping @Sendable () async -> [String]
+        joinedRoomIDs: @escaping @Sendable () async -> [String],
+        tokenStore: PushTokenStore = .shared
     ) {
         self.pushService = pushService
         self.pusherBaseURL = pusherBaseURL
         self.notificationSettings = notificationSettings
         self.joinedRoomIDs = joinedRoomIDs
+        self.tokenStore = tokenStore
     }
 
     /// Run once per session, post-sync, post-verify. Idempotent on the
@@ -78,21 +81,25 @@ public final class PushBootstrap {
     /// doesn't gate UX on this; Settings UI in a later phase will
     /// surface failures so the user knows pushes aren't wired.
     ///
-    /// Awaits any pending push operations on
-    /// `PushTokenStore.shared.pushOperationTail` first, so a stale
-    /// `unregister` from a prior session's sign-out lands BEFORE this
-    /// fresh `register` writes the pusher row. Without this guard, a
-    /// fast sign-out → sign-in cycle's late-completing unregister
-    /// would delete the just-written pusher row and leave the user
-    /// without push delivery until the next manual bootstrap pass
-    /// (cursor PR #5 finding "unregister can erase new pusher").
+    /// The `registerToken` HTTP call itself is enqueued onto
+    /// `tokenStore.pushOperationTail` so it runs serially against any
+    /// pending unregister AND against any unregister enqueued while
+    /// register is in flight. An earlier shape (await the chain, then
+    /// fire registerToken outside it) left a window where a sign-out
+    /// landing during the in-flight HTTP could race the just-written
+    /// pusher row away (cursor PR #5 second-pass finding "push
+    /// operations can still race"). Awaiting the returned task means
+    /// `register(token:)` returns only when the pusher row is
+    /// actually written or the call has thrown-and-been-swallowed.
     public func register(token: Data) async {
-        await PushTokenStore.shared.awaitPendingPushOperations()
-        do {
-            try await pushService.registerToken(token, pusherBaseURL: pusherBaseURL)
-        } catch {
-            // Intentionally swallow — see method doc.
+        let task = tokenStore.enqueuePushOperation { [pushService, pusherBaseURL] in
+            do {
+                try await pushService.registerToken(token, pusherBaseURL: pusherBaseURL)
+            } catch {
+                // Intentionally swallow — see method doc.
+            }
         }
+        await task.value
     }
 
     /// Walks the current joined-room snapshot and sets each room to

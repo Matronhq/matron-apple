@@ -69,7 +69,20 @@ final class NotificationService: UNNotificationServiceExtension {
     /// (with the shared `keychain-access-groups` entitlement that
     /// landed in Task 1 Step 0) is a follow-up — both processes need
     /// to swap together.
+    ///
+    /// SDK tracing setup runs FIRST. `initPlatform(...)` is process-
+    /// local: the NSE is a separate process from the iOS host, so the
+    /// host's `MatronApp.bootstrap()` setup never reaches us. Without
+    /// this call the SDK runs silent in the extension — every internal
+    /// notification-fetch / decrypt / `/sync` round-trip would fail
+    /// without a diagnostic anywhere in the unified log, exactly the
+    /// gap that stranded the matron-vs-matron-ui scenario for a full
+    /// session of debugging in Phase 3 (cursor PR #5 second-pass
+    /// finding "NSE skips SDK platform setup"). `useLightweightTokioRuntime: true`
+    /// per the iOS NSE 30s / 24MB memory budget — the doc-comment on
+    /// `MatronSDKTracing.setup` flags this as the extension shape.
     private static func decode(roomID: String, eventID: String) async throws -> DecodedNotification {
+        await MatronSDKTracing.setup(useLightweightTokioRuntime: true)
         guard let container = StoragePaths.groupContainer else {
             throw NSEBootstrapError.missingAppGroupContainer
         }

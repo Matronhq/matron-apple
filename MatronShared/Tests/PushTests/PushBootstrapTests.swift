@@ -73,7 +73,8 @@ final class PushBootstrapTests: XCTestCase {
             pushService: push,
             pusherBaseURL: url,
             notificationSettings: FakeMatronNotificationSettings(),
-            joinedRoomIDs: { [] }
+            joinedRoomIDs: { [] },
+            tokenStore: PushTokenStore()
         )
         let token = Data([0x01, 0x02, 0x03, 0x04])
 
@@ -82,6 +83,46 @@ final class PushBootstrapTests: XCTestCase {
         XCTAssertEqual(push.registeredTokens.count, 1)
         XCTAssertEqual(push.registeredTokens.first?.token, token)
         XCTAssertEqual(push.registeredTokens.first?.url, url)
+    }
+
+    func test_register_runsAfterPriorChainAndBlocksLaterEnqueues() async {
+        // Cursor PR #5 second-pass finding "push operations can still
+        // race": the prior shape of `register` only AWAITED the chain
+        // and then fired `registerToken` outside it, so a sign-out
+        // unregister enqueued WHILE register's HTTP was in flight
+        // could land first and erase the freshly-written pusher row.
+        // Pin the new contract: register's registerToken work is
+        // itself enqueued onto `tokenStore.pushOperationTail`, so a
+        // pre-existing chain entry runs BEFORE register, and an
+        // entry enqueued after register runs AFTER it.
+        let store = PushTokenStore()
+        let recorder = OrderRecorder()
+        let push = OrderRecordingPushService(recorder: recorder)
+        let bootstrap = PushBootstrap(
+            pushService: push,
+            pusherBaseURL: URL(string: "https://sygnal.example")!,
+            notificationSettings: FakeMatronNotificationSettings(),
+            joinedRoomIDs: { [] },
+            tokenStore: store
+        )
+
+        // Pre-existing slow chain entry — register must wait for it.
+        store.enqueuePushOperation { [recorder] in
+            try? await Task.sleep(nanoseconds: 30_000_000)
+            await recorder.append("before")
+        }
+
+        await bootstrap.register(token: Data([0x01]))
+
+        // Follow-up entry enqueued AFTER register — register's
+        // HTTP call is in the chain, so this must land last.
+        store.enqueuePushOperation { [recorder] in
+            await recorder.append("after")
+        }
+
+        await store.awaitPendingPushOperations()
+        let order = await recorder.recorded
+        XCTAssertEqual(order, ["before", "register", "after"])
     }
 
     func test_register_swallowsThrownErrorsFromPushService() async {
@@ -102,7 +143,8 @@ final class PushBootstrapTests: XCTestCase {
             pushService: ThrowingPushService(),
             pusherBaseURL: URL(string: "https://sygnal.example")!,
             notificationSettings: FakeMatronNotificationSettings(),
-            joinedRoomIDs: { [] }
+            joinedRoomIDs: { [] },
+            tokenStore: PushTokenStore()
         )
 
         // No try — must not propagate.
@@ -182,4 +224,26 @@ final class PushBootstrapTests: XCTestCase {
 private actor OrderRecorder {
     var recorded: [String] = []
     func append(_ value: String) { recorded.append(value) }
+}
+
+/// PushService double whose `registerToken` records `"register"` onto the
+/// shared `OrderRecorder` so a test can prove WHERE in the serialised
+/// chain the registerToken HTTP call landed. Used by
+/// `test_register_runsAfterPriorChainAndBlocksLaterEnqueues`.
+private final class OrderRecordingPushService: PushService, @unchecked Sendable {
+    let recorder: OrderRecorder
+
+    init(recorder: OrderRecorder) {
+        self.recorder = recorder
+    }
+
+    func requestPermission() async -> Bool { true }
+
+    func registerToken(_ deviceToken: Data, pusherBaseURL: URL) async throws {
+        await recorder.append("register")
+    }
+
+    func unregister(deviceToken: Data, pusherBaseURL: URL) async throws {
+        await recorder.append("unregister")
+    }
 }
