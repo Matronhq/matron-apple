@@ -1,12 +1,19 @@
 # Handover — Matron iOS+Mac, Phase 4 substantially shipped on PR #5
 
-**As of 2026-05-06 late evening (session 11)**, after eleven working
+**As of 2026-05-06 late evening (session 12)**, after twelve working
 sessions. **Phase 2.5** is on `main` as `ef00f5a` (PR #4, session 10).
 **Phase 4 Push & NSE is open on `phase-4-task-1` branch (PR #5,
-non-draft, 18 commits, all green)** covering Tasks 0 (cursor follow-
-up dedup) + 1-6 + 8-12 + the server-side runbook (Task 9). Cursor's
-review of the branch has been addressed (commit `73fcd21`). 330 SPM
-tests pass; iOS host with embedded NSE + Mac host both build clean.
+non-draft, 21 commits, all green; latest `ab2f513`)** covering Tasks
+0 (cursor follow-up dedup) + 1-6 + 8-12 + the server-side runbook
+(Task 9). Cursor's review of the branch has been addressed across
+**three iterative passes** — `73fcd21` (5 first-pass findings),
+`3b1ae84` (3 second-pass findings), and `e4bf65a` (2 third-pass
+findings). The fourth bugbot run on `e4bf65a` returned **SUCCESS
+with zero findings**. `ab2f513` then refreshed the two pre-existing
+MatronMacTests failures that had been flagged-but-not-caused by
+earlier commits. 332 SPM tests pass; **all 72 MatronMacTests pass**;
+iOS host with embedded NSE + Mac host both build clean; iOS host
+MatronTests pass.
 
 Phases shipped: 1, 2, 3, 2.5. **Phase 4 is one merge away** —
 PR #5 is mergeable bar the CI-billing block that's been outstanding
@@ -46,11 +53,12 @@ check, the iOS-vs-macOS entitlement key difference, full smoke-test
 sequence, and an inventory of "what's wired in the app today" vs
 "what's deferred".
 
-The full chronological session log lives below — read **Session 11**
-first for the Phase 4 work + cursor review fixes, then **Session 10**
-for Phase 2.5, then earlier sessions for Phase 3 history.
+The full chronological session log lives below — read **Session 12**
+first for the multi-pass cursor cleanup + Mac test bundle de-flake,
+then **Session 11** for the Phase 4 implementation work, then
+**Session 10** for Phase 2.5, then earlier sessions for Phase 3
+history.
 
----
 
 ## Wider context (read these first if you're cold)
 
@@ -163,6 +171,224 @@ re-litigate without reading the spec):
   iOS-as-requester signs in, taps the verify-gate button, calls
   `startSAS`, and sends `m.key.verification.request` over to-device
   successfully — i.e., the iOS requester half is working end-to-end.
+
+---
+
+## Session 12 — three iterative cursor passes + Mac test bundle clean-up
+
+**TL;DR:** Picked up cold on `phase-4-task-1` at `e395841`. Session
+11 had pushed the Phase 4 implementation + the first cursor review
+fix (`73fcd21`) and left the branch one commit ahead of main with
+**5 stale cursor inline comments still showing on the PR**. Audit
+revealed all 5 were already fixed in code; bugbot's latest run had
+silently cleared them server-side but the inline comments persisted
+visually. Posted resolution replies on each, then bugbot's next
+re-review surfaced **3 NEW issues** on the latest commit, which were
+fixed in `3b1ae84`. Bugbot then surfaced **2 MORE** on that commit,
+fixed in `e4bf65a`. The fourth bugbot run on `e4bf65a` returned
+SUCCESS with zero findings — branch now has no outstanding bugbot
+issues. Closed the session with `ab2f513` to refresh two pre-
+existing MatronMacTests failures that were orthogonal to push but
+red anyway.
+
+### Cursor pass-by-pass log
+
+**Pass 1 — `73fcd21` (5 findings, all HIGH or MED, all real)**
+landed in session 11; recap repeated here for completeness:
+1. iOS missing `aps-environment` entitlement (HIGH) — added via
+   target-level entitlements block in `project.yml:84-116` so
+   xcodegen regenerates `Matron/App/Matron.entitlements` on every
+   run.
+2. Mac `aps-environment` key wrong (HIGH) — macOS uses
+   `com.apple.developer.aps-environment` per Apple's docs, NOT the
+   iOS-only bare form. Fixed in both
+   `MatronMac.Debug.entitlements:68` and `MatronMac.entitlements:27`
+   with doc-comments capturing the macOS-specific quirk.
+3. Cold-start notification taps dropped (MED) — `PassthroughSubject`
+   doesn't replay missed values; added `pendingRoomID` buffer + 
+   `consumePendingRoomID()` to `NotificationDelegate` (`@MainActor`-
+   isolated). Drained from the post-verify `.task(id: session.userID)`
+   on first mount.
+4. `unregister` could erase a fresh pusher (MED) — fast sign-out →
+   sign-in cycle's stale unregister could delete the just-written
+   pusher row. Added a serialised push-operation chain on
+   `PushTokenStore.shared`; both signOut paths enqueue via
+   `enqueuePushOperation(_:)`; bootstrap's `register(token:)` awaits
+   `awaitPendingPushOperations()` first.
+5. `PushDecoder.live` Mac mode hardcoded (MED) — already fixed in
+   `9455e9e`; `processSetup` is now an explicit init parameter.
+   Cursor's read was on an outdated revision.
+
+**Pass 2 — `3b1ae84` (3 findings, all real)**:
+1. **Push operations can still race** (MED) — the prior shape of
+   `register(token:)` only AWAITED the chain on
+   `PushTokenStore.shared.pushOperationTail` and then fired
+   `pushService.registerToken(...)` outside the chain. A sign-out
+   unregister enqueued WHILE the in-flight HTTP call was running
+   could overtake it and erase the freshly-written pusher row. Fix:
+   refactor `register` so its `registerToken` work is itself
+   enqueued onto the chain via `enqueuePushOperation { ... }` and
+   the call awaits its own returned task. PushBootstrap.init now
+   takes an optional `tokenStore: PushTokenStore = .shared`
+   parameter so tests can inject a fresh store and assert chain
+   participation without polluting the singleton. Pinned by
+   `test_register_runsAfterPriorChainAndBlocksLaterEnqueues`.
+2. **NSE skips SDK platform setup** (HIGH) — `MatronSDKTracing.setup`
+   wires `initPlatform(...)` which configures the rust-side tracing
+   subscriber and tokio runtime. Setup is process-local: the NSE
+   is a separate process from the iOS host, so the host's
+   `MatronApp.bootstrap()` setup never reaches the extension.
+   Without it, the SDK runs silent in the NSE — every notification-
+   fetch / decrypt round-trip would fail with NO diagnostic anywhere
+   in the unified log, exactly the gap that stranded the matron-vs-
+   matron-ui scenario for a full session of debugging in Phase 3.
+   Fix: call `await MatronSDKTracing.setup(useLightweightTokioRuntime: true)`
+   at the top of `NotificationService.decode` before any Client
+   construction. `useLightweightTokioRuntime: true` per the iOS NSE
+   30s / 24MB memory budget.
+3. **Live taps leave stale pending rooms** (LOW) — `didReceive`
+   stored every tap in `pendingRoomID` (the cold-start buffer), but
+   `MatronApp.signOut()` only cleared `chatPath` and never the
+   pending tap. After sign-out → sign-in to a different account, the
+   new session's post-verify `.task(id: session.userID)` would drain
+   a stale room ID from the prior account and try to deep-link into
+   a now-inaccessible room. Fix: added `clearPendingRoomID()` to
+   `NotificationDelegate` and called from signOut alongside the
+   existing `chatPath = []` reset.
+
+**Pass 3 — `e4bf65a` (2 findings, both MED, both real)**:
+1. **Stale push registration can resume** (MED) —
+   `PushTokenStore.waitForToken()` ignored task cancellation. A
+   sign-out cancelling the post-verify `.task(id: session.userID)`
+   left the dead waiter parked on the continuation list; once the
+   NEXT session's `setToken` fired, the dead Task resumed and
+   proceeded to `register(token:)`, writing a pusher row for a
+   signed-out account. Fix: switch `waiters` to a UUID-keyed map,
+   wrap the continuation in `withTaskCancellationHandler` so a
+   targeted cancel can resume the right waiter with
+   `CancellationError`, re-check token state inside the install
+   closure to close the `if let latestToken` early-return / install
+   race, and surface the throw via `try await` at both host call
+   sites (`MatronApp.bootstrapPush(for:)` +
+   `MatronMacApp.bootstrapPush(for:)`) so a cancelled bootstrap
+   exits via the existing catch arm without touching `register`.
+   Pinned by `test_waitForToken_throwsCancellationError_whenTaskCancelled`.
+2. **Mac cold-start taps are dropped** (MED) — `MacNotificationHandler.handleTap`
+   posted `.matronOpenRoom` through `NotificationCenter`, which
+   doesn't replay missed posts. A tap that launched the app — the
+   delegate fires before `MacChatListView` mounts its `.onReceive`
+   subscriber — was lost. Fix: mirror iOS's `NotificationDelegate`
+   buffer pattern. `MacNotificationHandler` gains a `pendingRoomID`
+   stored property (set by `handleTap` alongside the post),
+   `consumePendingRoomID()` (drained by `MacChatListView.task` on
+   first appearance), and `clearPendingRoomID()` (called from
+   `MatronMacApp.signOut(activeSession:)`). Promoted to
+   `static let shared` so MacChatListView reads the same instance
+   the AppDelegate installs as the UN delegate. Pinned by
+   `test_consumePendingRoomID_returnsBufferedTapAndClears` +
+   `test_clearPendingRoomID_dropsBufferWithoutSurfacing`.
+
+**Pass 4 — `e4bf65a` re-review: SUCCESS, zero findings.** Branch is
+clean of bugbot-flagged issues.
+
+### Mac test bundle clean-up — `ab2f513`
+
+While running the full Mac test suite during the third pass, two
+pre-existing failures surfaced that had been masked by `MatronTests`-
+only verification runs in earlier sessions. Verified against
+`3b1ae84` unmodified that both reproduce; orthogonal to PR #5
+push work but worth fixing now so the Mac bundle is reliably green
+for future bugbot / pre-merge gates:
+
+1. **`MacChatListViewTests.test_selectionState_isChatSummaryID_notFullStruct`**
+   was flaky. The prior shape used a fixed `Task.sleep(50ms)` to
+   wait for the `chatSummaries()` AsyncThrowingStream's first
+   snapshot to land on `vm.groups`. Under MatronMacTests suite load
+   (72 tests fanning out actor hops), 50ms was sometimes too short
+   — passed alone, failed in suite. Fix: replaced with a 25ms-
+   sliced poll up to a 2s ceiling via a new private
+   `waitUntil(timeout:_:)` helper. Exits the moment the predicate
+   goes true so the happy path stays fast, generous ceiling for
+   CI / busy hosts.
+
+2. **`MacRecoveryKeyViewSnapshotTests.test_restore_mode`** had a
+   stale snapshot. The restore-mode view was intentionally
+   consolidated in Phase 3 from a two-button layout (gray "Restore"
+   mid-screen + blue "Done" at the bottom, both running the same
+   SDK call) into a single bottom "Restore"-and-dismiss primary
+   action — see the doc-comment at `MacRecoveryKeyView.swift:138-145`
+   for the "two buttons doing approximately the same thing was
+   confusing" rationale. The view shipped; the reference snapshot
+   never got refreshed. `ab2f513` overwrites all three variants
+   (light/dark/axxxl) with the current rendered output. No view
+   code change.
+
+### State at session close
+
+- **PR #5: 21 commits, mergeable, no outstanding bugbot findings.**
+  Cursor's three review passes have surfaced and been resolved on
+  iteratively. Latest SHA: `ab2f513`.
+- **Local verification (all green on `ab2f513`):**
+  - `swift test` from `MatronShared/`: **332 tests, 4 skipped, 0
+    failures** (was 330 in session 11; +2 from the cursor follow-
+    up tests added in passes 2 and 3).
+  - `xcodebuild build -scheme Matron -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO`: clean.
+  - `xcodebuild build -scheme MatronMac -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO`: clean.
+  - `xcodebuild test -scheme Matron -only-testing MatronTests CODE_SIGNING_ALLOWED=NO`: passes.
+  - `xcodebuild test -scheme MatronMac -only-testing MatronMacTests CODE_SIGNING_ALLOWED=NO`: **72 tests pass, 0 failures** (was 70 + 2 failing in session 11).
+- **CI billing block remains the only outstanding gate** —
+  `shared-package-tests` + `cla` instant-fail at 3 seconds (same
+  pattern outstanding since session 8); `ios-build-and-test` +
+  `mac-build-and-test` SKIPPED downstream. Either the budget
+  refreshes monthly and CI runs on its own, or merge needs admin-
+  override per the session 9/10 pattern.
+
+### Things to NOT undo (Session 12)
+
+- **Don't fold `register(token:)`'s work back outside the
+  `enqueuePushOperation` chain.** The pre-`3b1ae84` shape only
+  awaited the chain and then fired registerToken outside it, which
+  was the EXACT race cursor caught. The chain's job is to serialise
+  every register/unregister HTTP call against every other one;
+  participating in the chain is the contract.
+- **Don't drop `MatronSDKTracing.setup` from the NSE.** The NSE is
+  a separate process from the iOS host. Without `setup` in the
+  extension's entry point, the SDK runs silent — there's no
+  diagnostic for fetch/decrypt failures and no visibility on what
+  went wrong if a notification doesn't decode. The doc-comment at
+  `NotificationService.decode` captures the rationale.
+- **Don't go back to `PushTokenStore.waitForToken()` returning
+  non-throwing `async`.** The CancellationError path is what stops
+  a dead bootstrap from registering on a stale session. Both call
+  sites (`MatronApp.bootstrapPush(for:)` +
+  `MatronMacApp.bootstrapPush(for:)`) await with `try` so a
+  cancelled bootstrap exits via the existing catch arm without
+  touching register; reverting the throw would re-introduce the
+  third-pass bug.
+- **Don't single-instance `MacNotificationHandler` ONLY in the
+  AppDelegate.** Promoting to `static let shared` is what lets
+  `MacChatListView` read `consumePendingRoomID()` off the same
+  instance the AppDelegate installs as the UN delegate. The prior
+  shape (delegate-stored property) made the cold-start drain
+  unreachable from the view layer.
+- **Don't bring back the fixed-50ms `Task.sleep` in
+  `test_selectionState_isChatSummaryID_notFullStruct`.** The
+  `waitUntil(timeout:_:)` poll is the deterministic shape — it
+  exits the moment the assertion can pass and only burns the 2s
+  ceiling on actual stalls. Going back to a fixed sleep brings
+  back the suite-load flake.
+
+### Open / deferred (unchanged from session 11 close)
+
+- Mac silent-push body construction — needs the decoder lifecycle
+  design pass + Sygnal infra. Tracked for a `phase-4-mac-silent-push`
+  follow-up branch.
+- Real `pusherBaseURL` — placeholder until Cloudflare Tunnel
+  hostname lands.
+- Phase 7 iOS entitlements split for App Store distribution —
+  Debug/Release `aps-environment` files (Mac already has this).
+- Task 9b manual-test walkthroughs — non-code, defer until Sygnal
+  reachable.
 
 ---
 
