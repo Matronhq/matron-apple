@@ -229,6 +229,15 @@ struct MacChatView: View {
                     Task { await viewModel.paginateBackward() }
                 }
             }
+            // "Loading earlier messages…" pill — see iOS `ChatView`
+            // for the overlay-over-LazyVStack-header rationale.
+            .overlay(alignment: .top) {
+                if viewModel.isPaginatingBackward {
+                    PaginatingHeader()
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .animation(.easeInOut(duration: 0.18), value: viewModel.isPaginatingBackward)
             .overlay(alignment: .bottomTrailing) {
                 if let last = viewModel.lastRenderableItemID, scrolledItemID != last {
                     JumpToBottomButton {

@@ -282,6 +282,18 @@ struct ChatView: View {
                     Task { await viewModel.paginateBackward() }
                 }
             }
+            // "Loading earlier messages…" pill while a backward
+            // paginate is in flight. Floats over the topmost content
+            // (overlay rather than LazyVStack header) so its
+            // appearance doesn't push the user's apparent reading
+            // position around.
+            .overlay(alignment: .top) {
+                if viewModel.isPaginatingBackward {
+                    PaginatingHeader()
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .animation(.easeInOut(duration: 0.18), value: viewModel.isPaginatingBackward)
             // Floating jump-to-latest. Visible only when the user has
             // scrolled away from the tail.
             .overlay(alignment: .bottomTrailing) {

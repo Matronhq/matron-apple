@@ -80,6 +80,13 @@ public final class ChatViewModel {
 
 
     public let roomID: String
+    /// The raw timeline snapshot from the SDK. Setter is private so
+    /// every mutation flows through `applySnapshot(_:)` which keeps
+    /// the memoised derived state (`rows`, `firstRenderableItemID`,
+    /// `lastRenderableItemID`) in sync. Reading `items` directly is
+    /// still cheap; what we needed to avoid was the derived state
+    /// recomputing on every body re-eval (see the doc-comment on
+    /// `rows`).
     public private(set) var items: [TimelineItem] = []
     public private(set) var error: String?
 
@@ -87,86 +94,94 @@ public final class ChatViewModel {
     /// can pin a deterministic timezone without poking the host
     /// runtime. Default is `Calendar.current` so production callers
     /// don't have to thread anything through.
-    public var calendar: Calendar = .current
+    public var calendar: Calendar = .current {
+        didSet {
+            // Bucket boundaries depend on calendar; recompute so a
+            // late timezone change in tests doesn't desync the row
+            // list from items.
+            applyDerivedRecompute()
+        }
+    }
 
     /// Render-ready row list: `items` interleaved with `.separator`
     /// rows whenever two adjacent messages straddle a calendar-day
     /// boundary (and one separator at the head of the timeline so the
-    /// first cluster also has a header). Computed on each access —
-    /// `O(items.count)` and not on the hot scroll path, so the
-    /// allocation cost is negligible compared to the SwiftUI diff
-    /// downstream. Memoising would risk the cache going stale relative
-    /// to `items`; SwiftUI re-evaluates the body on `@Observable`
-    /// changes anyway, so the recomputation runs at exactly the right
-    /// cadence.
-    public var rows: [TimelineRow] {
-        // Filter hidden items BEFORE bucketing. Two reasons:
-        //   (a) `TimelineServiceLive.mapVirtual` emits placeholder
-        //       items for `dateDivider` / `readMarker` / `timelineStart`
-        //       with `timestamp = Date(timeIntervalSince1970: 0)`. If
-        //       those participate in day-bucketing, a "1 Jan 1970"
-        //       separator pops up mid-list — exactly what the user
-        //       reported between today's content and last-night's
-        //       still-undecryptable events.
-        //   (b) `.stateChange` rows are hidden by the view's
-        //       `shouldRender` (Phase 7 polish can bring back a
-        //       metadata-events toggle), so they shouldn't influence
-        //       which days get separators either.
-        // Both share the `.stateChange` Kind tag, which makes the
-        // filter trivial. Any future hidden Kind needs the same
-        // treatment to avoid the same date-bucket pollution.
-        let visibleItems = items.filter {
-            if case .stateChange = $0.kind { return false }
-            return true
-        }
-        guard !visibleItems.isEmpty else { return [] }
-        var out: [TimelineRow] = []
-        out.reserveCapacity(visibleItems.count + 4)
-        var previousDay: Date?
-        for item in visibleItems {
-            let day = calendar.startOfDay(for: item.timestamp)
-            if previousDay == nil || day != previousDay {
-                out.append(.separator(date: item.timestamp))
-                previousDay = day
-            }
-            out.append(.message(item))
-        }
-        return out
-    }
+    /// first cluster also has a header).
+    ///
+    /// Memoised — recomputed once per `applySnapshot(_:)` rather than
+    /// on every read. The previous computed-property version did an
+    /// O(N) filter + O(N) bucket pass on every access; SwiftUI calls
+    /// `viewModel.rows` from the ForEach binding AND from
+    /// `.onChange(of: scrolledItemID)`, the latter firing on every
+    /// scroll-position tick, so a 1000-item room re-bucketed ~60K
+    /// items/second during scroll. Caching once per snapshot drops
+    /// that to ~zero on the hot path. Stale-cache risk is bounded
+    /// because the only `items` mutation site is the snapshot
+    /// listener, and it routes through `applySnapshot(_:)`.
+    public private(set) var rows: [TimelineRow] = []
+
     /// ID of the first item the timeline view actually renders — i.e.
     /// the first non-`.stateChange` item in `items`. Used by the
-    /// scroll-up `.onAppear` paginate trigger; comparing against
-    /// `items.first?.id` was wrong because `items.first` is regularly a
-    /// `.stateChange` (room create / encryption setup at the head of
-    /// every Matrix room timeline), and the view filters those out
-    /// before rendering. The mismatch silently disabled scroll-up
-    /// pagination for any room whose oldest known event was a state
-    /// change — which is most rooms. Stays in sync with
-    /// `MacTimelineItemView.shouldRender` / `TimelineItemView.shouldRender`
-    /// (both hide ALL `.stateChange`); future hidden Kinds need the
-    /// same treatment here.
-    public var firstRenderableItemID: TimelineItem.ID? {
-        items.first(where: { item in
-            if case .stateChange = item.kind { return false }
-            return true
-        })?.id
+    /// scroll-up `.onAppear` paginate trigger. Memoised alongside
+    /// `rows` for the same reason — every body re-eval was running
+    /// an O(N) `first(where:)` scan; now it's a stored property
+    /// updated once per snapshot. See `applyDerivedRecompute()` for
+    /// the in-sync update.
+    public private(set) var firstRenderableItemID: TimelineItem.ID?
+
+    /// Tail mirror of `firstRenderableItemID`. Same memoisation
+    /// rationale — auto-follow / jump-to-bottom / scroll-memory all
+    /// read this on every scroll-tick body re-eval. Stays in
+    /// lockstep with `firstRenderableItemID` and the `rows` filter
+    /// (all three derive from the same `.stateChange`-skip
+    /// predicate); any future hidden Kind needs the same treatment
+    /// in `applyDerivedRecompute()`.
+    public private(set) var lastRenderableItemID: TimelineItem.ID?
+
+    /// Single mutation entry point for `items`. Updates the raw
+    /// snapshot and the three derived caches atomically so a body
+    /// re-eval that reads any combination of `items` / `rows` /
+    /// `firstRenderableItemID` / `lastRenderableItemID` always sees
+    /// a consistent view.
+    private func applySnapshot(_ snapshot: [TimelineItem]) {
+        self.items = snapshot
+        applyDerivedRecompute()
     }
 
-    /// Tail mirror of `firstRenderableItemID`. Same rationale —
-    /// `items.last?.id` may be a `.stateChange` that the view filters
-    /// out, in which case scroll-to-tail / auto-follow / scroll-memory
-    /// keys would target a row that doesn't exist in the LazyVStack.
-    /// Symptoms: jump-to-bottom button stays visible at the actual
-    /// tail, auto-follow assigns `scrolledItemID` to a non-rendered
-    /// id, the per-room scroll-memory restore-on-open misses. Keep
-    /// the predicate in lockstep with `firstRenderableItemID` and
-    /// the `rows` filter so any future hidden Kind shows up at all
-    /// three sites at once.
-    public var lastRenderableItemID: TimelineItem.ID? {
-        items.last(where: { item in
-            if case .stateChange = item.kind { return false }
-            return true
-        })?.id
+    /// Rebuilds `rows` + `firstRenderableItemID` + `lastRenderableItemID`
+    /// from the current `items`. Pulled out so a calendar change can
+    /// also re-bucket without going through `applySnapshot`. Single
+    /// pass — filter + bucket + first/last extraction in one walk so
+    /// we don't traverse `items` four times.
+    private func applyDerivedRecompute() {
+        // Single pass over items so a 1000-item room doesn't walk
+        // four arrays. Filter hidden items inline and capture the
+        // first / last visible IDs as we go.
+        var nextRows: [TimelineRow] = []
+        nextRows.reserveCapacity(items.count + 4)
+        var first: TimelineItem.ID?
+        var last: TimelineItem.ID?
+        var previousDay: Date?
+        for item in items {
+            // `.stateChange` is the only hidden Kind today; both the
+            // view-side `shouldRender` and the date-bucket logic
+            // skip it. The "1 Jan 1970" separator bug came from
+            // virtual stateChange items (timestamp = epoch zero)
+            // participating in day bucketing — the filter here is
+            // what kept that fix in place.
+            if case .stateChange = item.kind { continue }
+            if first == nil { first = item.id }
+            last = item.id
+            let day = calendar.startOfDay(for: item.timestamp)
+            if previousDay == nil || day != previousDay {
+                nextRows.append(.separator(date: item.timestamp))
+                previousDay = day
+            }
+            nextRows.append(.message(item))
+        }
+        self.rows = nextRows
+        self.firstRenderableItemID = first
+        self.lastRenderableItemID = last
     }
 
     /// `true` while a `paginateBackward()` call is in flight. Surfaces to
@@ -279,7 +294,7 @@ public final class ChatViewModel {
                     }
                     await MainActor.run {
                         let before = self.items.count
-                        self.items = snapshot
+                        self.applySnapshot(snapshot)
                         Self.logger.diag("snapshot: items \(before)→\(snapshot.count) firstRenderable=\(self.firstRenderableItemID ?? "nil")")
                         // Clear any prior error once a fresh snapshot lands.
                         self.error = nil
