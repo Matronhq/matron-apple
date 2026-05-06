@@ -3,17 +3,18 @@
 **As of 2026-05-06 late evening (session 12)**, after twelve working
 sessions. **Phase 2.5** is on `main` as `ef00f5a` (PR #4, session 10).
 **Phase 4 Push & NSE is open on `phase-4-task-1` branch (PR #5,
-non-draft, 21 commits, all green; latest `ab2f513`)** covering Tasks
-0 (cursor follow-up dedup) + 1-6 + 8-12 + the server-side runbook
-(Task 9). Cursor's review of the branch has been addressed across
-**three iterative passes** — `73fcd21` (5 first-pass findings),
-`3b1ae84` (3 second-pass findings), and `e4bf65a` (2 third-pass
-findings). The fourth bugbot run on `e4bf65a` returned **SUCCESS
-with zero findings**. `ab2f513` then refreshed the two pre-existing
-MatronMacTests failures that had been flagged-but-not-caused by
-earlier commits. 332 SPM tests pass; **all 72 MatronMacTests pass**;
-iOS host with embedded NSE + Mac host both build clean; iOS host
-MatronTests pass.
+non-draft, 24 commits, all green; latest `f46ddc8`)** covering Tasks
+0 (cursor follow-up dedup) + 1-6 + **8-12 + Task 9 server-side
+runbook + Task 9b manual-test additions**. Cursor's review of the
+branch has been addressed across **three iterative passes** —
+`73fcd21` (5 first-pass findings), `3b1ae84` (3 second-pass
+findings), and `e4bf65a` (2 third-pass findings). The fourth bugbot
+run on `e4bf65a` returned **SUCCESS with zero findings**. `ab2f513`
+then refreshed the two pre-existing MatronMacTests failures that
+had been flagged-but-not-caused by earlier commits. `59af4ba` +
+`f46ddc8` landed Task 9b's two-doc walkthrough split. 332 SPM tests
+pass; **all 72 MatronMacTests pass**; iOS host with embedded NSE +
+Mac host both build clean; iOS host MatronTests pass.
 
 Phases shipped: 1, 2, 3, 2.5. **Phase 4 is one merge away** —
 PR #5 is mergeable bar the CI-billing block that's been outstanding
@@ -29,8 +30,12 @@ follow-up branch):
 - Task 7 fixture tests — the plan's design depends on fictional v26
   SDK enum cases; testable layers are already covered by Task 3's
   `PushDecoderDefaultsTests`.
-- Task 9b manual-test walkthroughs — non-code, defer until Sygnal
-  infra is up to actually walk through.
+- ~~Task 9b manual-test walkthroughs~~ — **landed in session 12**
+  (`59af4ba` + `f46ddc8`). Two-doc split: operator-side end-to-end
+  walkthroughs (with diagnostic tips per failure mode) in
+  [`docs/push-setup.md`](push-setup.md) §"Manual test walkthroughs",
+  pre-submit checklist (TestFlight / Mac App Store gate) in
+  [`manual-tests.md`](../manual-tests.md) §"Phase 4 (Push & NSE)".
 - Real `pusherBaseURL` — placeholder `sygnal.matron.example` in
   both host apps; replace when the Cloudflare Tunnel hostname is
   live (separate dev-boxer / matron-server issue).
@@ -378,7 +383,7 @@ for future bugbot / pre-merge gates:
   ceiling on actual stalls. Going back to a fixed sleep brings
   back the suite-load flake.
 
-### Open / deferred (unchanged from session 11 close)
+### Open / deferred (mostly unchanged from session 11; Task 9b now done)
 
 - Mac silent-push body construction — needs the decoder lifecycle
   design pass + Sygnal infra. Tracked for a `phase-4-mac-silent-push`
@@ -387,8 +392,9 @@ for future bugbot / pre-merge gates:
   hostname lands.
 - Phase 7 iOS entitlements split for App Store distribution —
   Debug/Release `aps-environment` files (Mac already has this).
-- Task 9b manual-test walkthroughs — non-code, defer until Sygnal
-  reachable.
+- ~~Task 9b manual-test walkthroughs~~ — **DONE.** Operator-side
+  walkthroughs in `docs/push-setup.md` (`59af4ba`); pre-submit
+  checklist in `manual-tests.md` (`f46ddc8`).
 
 ---
 
@@ -611,10 +617,13 @@ shipped Phase 4 Task 1 in full:
   test sequence (4 cURL/awk steps), inventory of "what's wired in
   the app today" + "what's deferred" so an operator can cross-check
   client + server when Sygnal infra eventually lands.
-- Task 9b (manual test additions): **PENDING — non-code.** Walk-
-  throughs for what to test manually once Sygnal is up. Cheap to
-  write but only useful when there's hardware + Sygnal to actually
-  test against.
+- Task 9b (manual test additions): **DONE — session 12** (`59af4ba`
+  + `f46ddc8`). Plan-faithful checklist in `manual-tests.md`
+  §"Phase 4" PLUS operator-side end-to-end walkthroughs in
+  `docs/push-setup.md` §"Manual test walkthroughs" (the latter
+  carries diagnostic tips per failure mode for when something
+  breaks; the former is the lightweight TestFlight / Mac App Store
+  pre-submit checkbox gate).
 - Task 10 (Mac in-process notification handler): **DONE** —
   `9455e9e`. `MacNotificationHandler` (`@MainActor`,
   `UNUserNotificationCenterDelegate`). `willPresent` returns
