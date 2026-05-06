@@ -773,19 +773,30 @@ private struct SelfVerifyThisDeviceSheet: View {
     }
 
     private var alreadyVerifiedView: some View {
+        // See `MacAppMain.alreadyVerifiedView` for the full rationale —
+        // cross-signing-verified ≠ backup-key-available, so even
+        // already-verified devices need a path to enter the recovery
+        // key when historical messages aren't decrypting.
         VStack(spacing: 16) {
             Image(systemName: "checkmark.shield.fill")
                 .font(.system(size: 60))
                 .foregroundStyle(.green)
             Text("This device is already verified")
                 .font(.title2).bold()
-            Text("If you want to verify a different device, sign in there and start the verification from that device's onboarding gate.")
+            Text("If your historical messages aren't decrypting, restoring from your recovery key fetches the backup decryption key for this device.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Button("Close") { onFinished() }
-                .buttonStyle(.borderedProminent)
-                .accessibilityIdentifier("verifychooser.alreadyVerified.close")
+            VStack(spacing: 12) {
+                Button("Restore from recovery key…") {
+                    recoveryKeyViewModel = .restoring(restore: recoveryKeyRestore)
+                    phase = .recoveryKey
+                }
+                .accessibilityIdentifier("verifychooser.alreadyVerified.recovery")
+                Button("Close") { onFinished() }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("verifychooser.alreadyVerified.close")
+            }
         }
         .padding()
     }

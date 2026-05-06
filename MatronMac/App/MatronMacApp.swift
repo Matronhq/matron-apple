@@ -528,19 +528,33 @@ private struct HelpMenuVerifyDeviceSheet: View {
     }
 
     private var alreadyVerifiedView: some View {
+        // Cross-signing-verified ≠ backup-key-available. Post-SAS the
+        // backup decryption key arrives via secret gossiping, but if
+        // the partner device didn't have it, or sliding sync dropped
+        // before the to-device event landed, this device shows as
+        // verified but historical messages still render as
+        // [unsupported event: m.room.encrypted] — the SDK has no key
+        // to decrypt the backup. Offer the recovery-key restore here
+        // so the user has a path out without re-doing SAS.
         VStack(spacing: 16) {
             Image(systemName: "checkmark.shield.fill")
                 .font(.system(size: 60))
                 .foregroundStyle(.green)
             Text("This device is already verified")
                 .font(.title2).bold()
-            Text("If you want to verify a different device, sign in there and start the verification from that device's onboarding gate.")
+            Text("If your historical messages aren't decrypting, restoring from your recovery key fetches the backup decryption key for this device.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Button("Close") { onFinished() }
-                .keyboardShortcut(.return)
-                .buttonStyle(.borderedProminent)
+            HStack(spacing: 12) {
+                Button("Restore from recovery key…") {
+                    recoveryKeyViewModel = .restoring(restore: recoveryKeyRestore)
+                    phase = .recoveryKey
+                }
+                Button("Close") { onFinished() }
+                    .keyboardShortcut(.return)
+                    .buttonStyle(.borderedProminent)
+            }
         }
         .padding(24)
         .frame(width: 480, height: 320)
