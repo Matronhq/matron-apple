@@ -66,12 +66,13 @@ final class DateSeparatorLabelTests: XCTestCase {
     }
 
     func test_olderThanWeek_fallsBack_toLocalisedDate() {
-        // 2026-02-25 is eight days back — past the trailing-week
-        // window, so the medium-style date should kick in.
+        // Eight days back from 2026-03-04 12:00 UTC → 2026-02-24
+        // 12:00 UTC. Past the trailing-week window, so the medium-
+        // style date kicks in. Medium-style en_GB: "24 Feb 2026".
+        // Pinning the exact string is fine since we own the locale
+        // via the injected calendar.
         let date = calendar.date(byAdding: .day, value: -8, to: now)!
         let formatted = DateSeparatorLabel.format(date, now: now, calendar: calendar)
-        // Medium-style en_GB: "25 Feb 2026". Pinning the exact string
-        // is fine since we own the locale via the injected calendar.
-        XCTAssertEqual(formatted, "25 Feb 2026")
+        XCTAssertEqual(formatted, "24 Feb 2026")
     }
 }
