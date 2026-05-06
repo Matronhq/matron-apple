@@ -1,11 +1,11 @@
 # Handover — Matron iOS+Mac, on `main` ready for Phase 4
 
-**As of 2026-05-06 evening (session 10)**, after ten working sessions.
-**Phase 2.5 (live chat-list subscription + the post-merge bug-fix
-wave) merged to `main` as `ef00f5a`** (PR #4, squash, 57 commits
-collapsed). The repo is on `main` and ready for **Phase 4 (Push &
-NSE)** to start. No open PRs, no live feature branches, working
-tree clean.
+**As of 2026-05-06 late evening (session 11)**, after eleven working
+sessions. **Phase 2.5** is on `main` as `ef00f5a` (PR #4, session 10).
+Session 11 opened with a bugbot-follow-up audit on PR #4 and a tiny
+DRY refactor (`SendStateGlyph` bridge moved to `MatronDesignSystem`)
+— uncommitted as of this write. The repo is otherwise on `main` ready
+for **Phase 4 (Push & NSE)** to start.
 
 Phases shipped: 1, 2, 3, 2.5. Phases not started: 4, 5, 6, 7. The
 next session's job is to start **Phase 4 — Push & NSE** per
@@ -13,9 +13,9 @@ next session's job is to start **Phase 4 — Push & NSE** per
 That plan is task-checkboxed and assumes Phase 3 + CI green (both
 satisfied modulo CI-billing — see "CI status" below).
 
-The full chronological session log lives below — read **Session 10**
-first for what just landed, then back to Session 9 for the Phase 2.5
-core, then earlier sessions for Phase 3 history.
+The full chronological session log lives below — read **Session 11**
+first for the audit + tiny refactor, then **Session 10** for what
+landed in PR #4, then earlier sessions for Phase 3 history.
 
 ---
 
@@ -130,6 +130,113 @@ re-litigate without reading the spec):
   iOS-as-requester signs in, taps the verify-gate button, calls
   `startSAS`, and sends `m.key.verification.request` over to-device
   successfully — i.e., the iOS requester half is working end-to-end.
+
+---
+
+## Session 11 — PR #4 bugbot-follow-up audit + tiny SendStateGlyph dedup
+
+**TL;DR:** Picked up cold on `main` at `ef00f5a`. Session 10's exit
+note flagged "if the cron didn't fire, run `gh pr view 4 --json
+reviews` manually — anything bugbot found on the last commit needs to
+land as a follow-up PR on main." Did the audit. **PR #4 had 20
+cursor-bot review comments**; **19 are resolved on `main`**, three of
+those flagged-but-correct-by-design (in-line code comments at the
+call sites explain why). **One real DRY follow-up remained**:
+`sendStateGlyph(for:)` was still duplicated across iOS
+`TimelineItemView` and Mac `MacTimelineItemView` — `bannerState` got
+extracted to `MatronDesignSystem/StateBridges.swift` in session 10
+but `sendStateGlyph` was missed in the same dedup pass.
+
+### What got done
+
+**Audit.** Cross-referenced every cursor finding on PR #4 against
+the current state of `main`. The three flagged-but-correct ones
+worth re-flagging if they re-surface:
+
+- `RoomListSubscription.batchTask` uses `[weak self]` + per-iteration
+  `guard let self else { break }`. Cursor flagged this as "drops
+  events silently if self is nil at task launch" — but the previous
+  shape (strong-capture before the loop) caused the documented retain
+  cycle that prevented `deinit`. The doc-comment at
+  `MatronShared/Sources/Chat/RoomListSubscription.swift:343-349`
+  spells out why.
+- `MacChatView`'s `⌘R` calls `viewModel.refresh()` (paginate-backward
+  on the chat-detail timeline) while `MacChatListView`'s `⌘R` calls
+  `forceSnapshot()` (chat list). Different surfaces, separately
+  wired. Doc-comment at `MatronMac/Features/Chat/MacChatView.swift:324-330`.
+- `paginateLogger.diag(...)` calls in `MacChatView` are gated by
+  `MatronDebug.enabled` — they cost nothing in shipped builds. The
+  `.diag` helper (`MatronDebug.swift`) is the @autoclosure-deferred
+  formatter; cursor's "debug logging in production code" finding was
+  written before that gate landed.
+
+**Fix.** `SendStateGlyph` bridge dedup — uncommitted on `main` as of
+this write, 8 files modified, +64/-87 LoC, two new files:
+
+1. Promoted `TimelineItem.SendState` (nested in `MatronChat`) to a
+   top-level `TimelineSendState` enum in `MatronModels`.
+   `TimelineItem.SendState` is now a typealias for source compat
+   (every existing call site keeps compiling — see
+   `MatronShared/Sources/Chat/TimelineItem.swift`).
+2. Added `MatronModels` as a dep of `MatronDesignSystem` in
+   `MatronShared/Package.swift`. Both `MatronModels` and `MatronSync`
+   are leaf modules — neither pulls SwiftUI or `MatrixRustSDK`, so
+   the design-system target stays independent of the SDK transitive
+   surface (the original session 10 reason for leaving the
+   duplication: false — `TimelineItem.swift` only imports
+   `Foundation`, the heavy deps are in other Chat files).
+3. Added `SendStateGlyph.from(_ state: TimelineSendState) ->
+   SendStateGlyph` to `MatronShared/Sources/DesignSystem/StateBridges.swift`,
+   alongside the existing `SyncBannerState.from(_:)`.
+4. Replaced the two duplicated `sendStateGlyph(for:)` static funcs in
+   `Matron/Features/Chat/Rendering/TimelineItemView.swift` and
+   `MatronMac/Features/Chat/MacTimelineItemView.swift` with calls to
+   `SendStateGlyph.from(item.sendState)`.
+5. Replaced the two near-identical
+   `test_sendStateGlyph_mapsAllCases()` tests in
+   `MatronTests/TimelineItemViewTests` and
+   `MatronMacTests/MacTimelineItemViewTests` with a single
+   `MatronShared/Tests/DesignSystemSnapshotTests/StateBridgesTests.swift`
+   that exercises **both** bridges (`SyncBannerState.from(_:)` and
+   `SendStateGlyph.from(_:)`). 6 new test methods — the `bannerState`
+   bridge previously had no test coverage despite landing in session
+   10.
+6. Updated doc-comments in `StateBridges.swift`,
+   `SendStateIndicator.swift`, and `MacTimelineItemView.swift` to
+   drop the now-stale "left duplicated" rationale.
+
+**Local verification (all green, all on `main` working tree):**
+- `swift test` from `MatronShared/`: **302 tests, 4 skipped, 0
+  failures** (was 296 — +6 from `StateBridgesTests`, -0 net since
+  the per-platform sendStateGlyph tests were also removed).
+- `xcodebuild build -scheme Matron -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO`: clean.
+- `xcodebuild build -scheme MatronMac -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO`: clean.
+- `xcodebuild test -scheme Matron -only-testing MatronTests/TimelineItemViewTests`: **7 tests pass**.
+- `xcodebuild test -scheme MatronMac -only-testing MatronMacTests/MacTimelineItemViewTests`: passes.
+
+**State at close.** Working tree dirty with the dedup; not yet
+committed or PR'd. Decision needed (next session): either land it as
+a tiny follow-up PR on main, or fold it into the Phase 4 Task 1
+branch when that work starts. The diff is small enough that either
+shape is fine.
+
+### Things to NOT undo (Session 11)
+
+- **Don't move `TimelineSendState` back inside `TimelineItem`.** The
+  reason it lives in `MatronModels` is so `MatronDesignSystem` can
+  bridge it without pulling `MatronChat` (and `MatrixRustSDK`) into
+  the design-system target. The `public typealias SendState =
+  TimelineSendState` keeps every call site source-compatible.
+- **Don't re-add `sendStateGlyph(for:)` static funcs to the platform
+  views.** `SendStateGlyph.from(_:)` in `StateBridges.swift` is the
+  single source of truth; one-shot mapping with one set of tests.
+
+### Phase 4 starting state (still current)
+
+Same as session 10's note. The `docs/superpowers/plans/2026-05-02-matron-ios-phase-4-push-nse.md`
+plan is task-checkboxed and ready to drive. Recommended first task:
+**Task 1 (NSE Xcode target + PushConfig + PushService protocol)** —
+pure scaffolding, no runtime behaviour yet.
 
 ---
 

@@ -6,9 +6,9 @@ import MatronDesignSystem
 /// Mac-side mirror of `Matron/Features/Chat/Rendering/TimelineItemView`.
 /// Body is byte-identical bar the missing `displayName` static helper
 /// (iOS tests pin the iOS surface; Mac re-uses the same logic via a free
-/// function inside this file). Duplicated rather than shared so
-/// `MatronDesignSystem` doesn't have to depend on `MatronChat` /
-/// `MatronModels` for one row primitive.
+/// function inside this file). The send-state → glyph mapping is shared
+/// across platforms via `SendStateGlyph.from(_:)` in
+/// `MatronDesignSystem/StateBridges.swift`.
 struct MacTimelineItemView: View {
     let item: TimelineItem
     /// Optional resolver for `mxc://` image URLs. `nil` keeps the legacy
@@ -40,23 +40,13 @@ struct MacTimelineItemView: View {
                 renderedBody
                     .opacity(item.sendState == .sending ? 0.7 : 1.0)
                 SendStateIndicator(
-                    state: Self.sendStateGlyph(for: item.sendState),
+                    state: SendStateGlyph.from(item.sendState),
                     onRetry: onRetry.map { handler in { handler(item.id) } }
                 )
                 .padding(.horizontal)
             }
         } else {
             renderedBody
-        }
-    }
-
-    /// Mac mirror of `TimelineItemView.sendStateGlyph(for:)` — see
-    /// the iOS doc-comment for why this stays inline.
-    static func sendStateGlyph(for state: TimelineItem.SendState) -> SendStateGlyph {
-        switch state {
-        case .sent: return .sent
-        case .sending: return .sending
-        case .failed(let reason): return .failed(reason: reason)
         }
     }
 
