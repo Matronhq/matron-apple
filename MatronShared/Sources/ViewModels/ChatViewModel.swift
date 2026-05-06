@@ -133,6 +133,25 @@ public final class ChatViewModel {
         }
         return out
     }
+    /// ID of the first item the timeline view actually renders — i.e.
+    /// the first non-`.stateChange` item in `items`. Used by the
+    /// scroll-up `.onAppear` paginate trigger; comparing against
+    /// `items.first?.id` was wrong because `items.first` is regularly a
+    /// `.stateChange` (room create / encryption setup at the head of
+    /// every Matrix room timeline), and the view filters those out
+    /// before rendering. The mismatch silently disabled scroll-up
+    /// pagination for any room whose oldest known event was a state
+    /// change — which is most rooms. Stays in sync with
+    /// `MacTimelineItemView.shouldRender` / `TimelineItemView.shouldRender`
+    /// (both hide ALL `.stateChange`); future hidden Kinds need the
+    /// same treatment here.
+    public var firstRenderableItemID: TimelineItem.ID? {
+        items.first(where: { item in
+            if case .stateChange = item.kind { return false }
+            return true
+        })?.id
+    }
+
     /// `true` while a `paginateBackward()` call is in flight. Surfaces to
     /// the view so the topmost row's `.onAppear` trigger can guard
     /// against re-entering the paginate loop on every re-layout, and so
@@ -280,16 +299,26 @@ public final class ChatViewModel {
         // returning duplicates / nothing the Timeline can surface).
         // Instead we count consecutive zero-growth paginate calls and
         // flip the flag after `noGrowthLimitForReachedStart`.
-        guard !isPaginatingBackward, !reachedHistoryStart else { return }
+        if isPaginatingBackward {
+            Self.logger.debug("paginateBackward: skip — already in flight")
+            return
+        }
+        if reachedHistoryStart {
+            Self.logger.debug("paginateBackward: skip — reachedHistoryStart")
+            return
+        }
         isPaginatingBackward = true
         defer { isPaginatingBackward = false }
         let beforeCount = items.count
+        Self.logger.notice("paginateBackward: enter (items=\(beforeCount, privacy: .public))")
         do {
             _ = try await timeline.paginateBackward(requestSize: 30)
             // Yield once so the timeline.items() listener has a chance
             // to flush any new diff snapshots into `items`.
             try? await Task.sleep(nanoseconds: 50_000_000)
-            if items.count > beforeCount {
+            let grew = items.count > beforeCount
+            Self.logger.notice("paginateBackward: done (items: \(beforeCount, privacy: .public)→\(self.items.count, privacy: .public), grew=\(grew, privacy: .public))")
+            if grew {
                 consecutiveNoGrowthPaginates = 0
             } else {
                 consecutiveNoGrowthPaginates += 1

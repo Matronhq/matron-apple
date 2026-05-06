@@ -151,13 +151,21 @@ struct MacChatView: View {
                             )
                                 .id(item.id)
                                 // Infinite-scroll backward pagination
-                                // trigger keys on `items.first?.id`
-                                // (the raw message list) rather than
-                                // `rows.first` — the head row is now
-                                // usually a separator and shouldn't
-                                // drive pagination on appear.
+                                // trigger. Compares against
+                                // `firstRenderableItemID` (the first
+                                // non-`.stateChange` item) rather than
+                                // `items.first?.id` — Matrix room
+                                // timelines virtually always start
+                                // with `.stateChange` rows (room
+                                // create / encryption setup) which
+                                // the view filters out, so the
+                                // raw-`items.first` comparison would
+                                // never match any rendered row and
+                                // scroll-up paginate would never fire.
+                                // See `ChatViewModel.firstRenderableItemID`
+                                // for the full rationale.
                                 .onAppear {
-                                    if item.id == viewModel.items.first?.id {
+                                    if item.id == viewModel.firstRenderableItemID {
                                         Task { await viewModel.paginateBackward() }
                                     }
                                 }

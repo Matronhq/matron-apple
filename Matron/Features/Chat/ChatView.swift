@@ -174,16 +174,22 @@ struct ChatView: View {
                             )
                                 .id(item.id)
                                 // Infinite-scroll backward pagination
-                                // trigger: when the topmost message
-                                // mounts, request older events. We
-                                // key on `viewModel.items.first?.id`
-                                // (raw message list) rather than
-                                // `rows.first` because the head row
-                                // is now usually a separator — and
-                                // the separator's onAppear shouldn't
-                                // drive pagination.
+                                // trigger. Compares against
+                                // `firstRenderableItemID` (the first
+                                // non-`.stateChange` item) rather than
+                                // `items.first?.id` — Matrix room
+                                // timelines virtually always start
+                                // with `.stateChange` rows (room
+                                // create / encryption setup) that the
+                                // view filters out, so the raw
+                                // `items.first` comparison never
+                                // matched any rendered row and
+                                // scroll-up paginate silently never
+                                // fired. See
+                                // `ChatViewModel.firstRenderableItemID`
+                                // for the full rationale.
                                 .onAppear {
-                                    if item.id == viewModel.items.first?.id {
+                                    if item.id == viewModel.firstRenderableItemID {
                                         Task { await viewModel.paginateBackward() }
                                     }
                                 }
