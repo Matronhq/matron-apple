@@ -5,23 +5,26 @@ import SwiftUI
 /// fetched), caps to a 280×280 box with rounded corners, and surfaces an
 /// optional caption underneath.
 ///
-/// QA finding #12 dropped the `onTap` parameter — every Phase-2 call site
-/// (`TimelineItemView`, `MacTimelineItemView`) passed `nil`, and the
-/// fullscreen viewer that would consume the callback hasn't shipped. Re-add
-/// when that lands so the parameter doesn't sit unused on the public API.
+/// `onTap` was previously dropped (QA finding #12) because every Phase-2
+/// call site passed `nil` and the fullscreen viewer that would consume it
+/// hadn't shipped. Re-added now that the fullscreen viewer lands —
+/// default `nil` so existing snapshot-test sites compile unchanged.
 public struct AttachmentImage: View {
     let image: Image?
     let placeholder: String
     let caption: String?
+    let onTap: (() -> Void)?
 
     public init(
         image: Image?,
         placeholder: String = "Image",
-        caption: String? = nil
+        caption: String? = nil,
+        onTap: (() -> Void)? = nil
     ) {
         self.image = image
         self.placeholder = placeholder
         self.caption = caption
+        self.onTap = onTap
     }
 
     public var body: some View {
@@ -44,6 +47,13 @@ public struct AttachmentImage: View {
             }
             .frame(maxWidth: 280, maxHeight: 280)
             .clipShape(RoundedRectangle(cornerRadius: 8))
+            // Tap forwards to `onTap` when wired. The placeholder
+            // state still receives the gesture so the user can open
+            // the (eventually-resolved) image even before the bytes
+            // have rendered into the bubble — bypasses the dead-tap
+            // window otherwise visible while the fetch is in flight.
+            .contentShape(Rectangle())
+            .onTapGesture { onTap?() }
 
             if let caption {
                 Text(caption).font(.caption2).foregroundStyle(.secondary)

@@ -49,6 +49,19 @@ struct MacChatView: View {
     /// (so reopening a chat lands where the user left off) and the
     /// floating jump-to-latest button.
     @State private var scrolledItemID: String?
+    /// Backing state for the fullscreen image preview. Files take a
+    /// different path on Mac — `NSWorkspace.shared.open(_:)` hands
+    /// the temp file to QuickLook / the user's preferred app, which
+    /// means no SwiftUI sheet is needed. Only image taps land here.
+    @State private var imagePreview: ImagePreview?
+
+    /// Identifiable wrapper around a SwiftUI `Image` so
+    /// `.sheet(item:)` has something to key on. Per-present UUID so
+    /// two consecutive taps re-mount the sheet.
+    fileprivate struct ImagePreview: Identifiable {
+        let id = UUID()
+        let image: Image
+    }
 
     /// Identifiable wrapper for `.sheet(item:)`. See iOS `ChatView`.
     fileprivate struct VerifyBotSheetContext: Identifiable, Hashable {
@@ -112,7 +125,29 @@ struct MacChatView: View {
                             MacTimelineItemView(
                                 item: item,
                                 resolveImage: { viewModel.image(for: $0) },
-                                onRetry: { id in viewModel.retrySend(itemID: id) }
+                                onRetry: { id in viewModel.retrySend(itemID: id) },
+                                onTapImage: { img in
+                                    imagePreview = ImagePreview(image: img)
+                                },
+                                onTapFile: { mxc, filename in
+                                    Task {
+                                        if let url = await viewModel.writeTempFile(
+                                            mxcURL: mxc, filename: filename
+                                        ) {
+                                            // Hand off to the system —
+                                            // QuickLook / the user's
+                                            // chosen app handles the
+                                            // open. Stays inside the
+                                            // SwiftUI surface (no
+                                            // need for a sheet on
+                                            // Mac since the OS shell
+                                            // owns the open path).
+                                            await MainActor.run {
+                                                NSWorkspace.shared.open(url)
+                                            }
+                                        }
+                                    }
+                                }
                             )
                                 .id(item.id)
                                 // Infinite-scroll backward pagination
@@ -260,6 +295,15 @@ struct MacChatView: View {
         }
         .sheet(item: $verifyBotContext) { context in
             verifyBotSheetBody(for: context.id)
+        }
+        // Mac fullscreen image preview — Mac's `NSWorkspace.shared.open`
+        // already owns the file path, so the only sheet wired here is
+        // for the in-app pinch-zoom-style image viewer.
+        .sheet(item: $imagePreview) { preview in
+            AttachmentFullscreenViewer(
+                image: preview.image,
+                onDismiss: { imagePreview = nil }
+            )
         }
     }
 

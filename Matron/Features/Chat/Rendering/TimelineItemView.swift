@@ -24,6 +24,16 @@ struct TimelineItemView: View {
     /// `.failed(reason:)`. Wired by `ChatView` to
     /// `viewModel.retrySend(itemID:)`. `nil` for previews / tests.
     var onRetry: ((String) -> Void)? = nil
+    /// Image-attachment tap handler — receives the row's resolved
+    /// `Image` (already in memory via `resolveImage`) so the parent
+    /// can present the fullscreen viewer without a second fetch.
+    /// `nil` keeps existing test sites compiling unchanged.
+    var onTapImage: ((Image) -> Void)? = nil
+    /// File-attachment tap handler — receives the `mxc://` URL plus
+    /// the original filename so the parent can stage the bytes to a
+    /// temp file and present `ShareLink` (iOS) / `NSWorkspace.open`
+    /// (Mac).
+    var onTapFile: ((URL, String) -> Void)? = nil
 
     var body: some View {
         if !Self.shouldRender(item) {
@@ -98,18 +108,41 @@ struct TimelineItemView: View {
                 AttachmentImage(
                     image: resolvedImage(for: url),
                     placeholder: "Image",
-                    caption: caption ?? sizeBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
+                    caption: caption ?? sizeBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) },
+                    // Forward tap to the parent only when we've got a
+                    // resolved Image AND a registered handler. Tapping
+                    // a still-loading placeholder is a no-op — opening
+                    // the fullscreen viewer with no bytes would just
+                    // show an empty black sheet.
+                    onTap: {
+                        if let img = resolvedImage(for: url),
+                           let onTapImage {
+                            onTapImage(img)
+                        }
+                    }
                 )
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: caption ?? "Image attachment"))
 
-        case .file(_, let filename, let sizeBytes):
+        case .file(let url, let filename, let sizeBytes):
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
                 senderLabel: item.isOwn ? nil : displayName(for: item.sender)
             ) {
-                AttachmentFile(filename: filename, sizeBytes: sizeBytes)
+                AttachmentFile(
+                    filename: filename,
+                    sizeBytes: sizeBytes,
+                    // Tap handler — only fires if we have both a URL
+                    // and a registered handler. Without the URL there's
+                    // nothing to fetch (`.file(url: nil, …)` is a
+                    // theoretical state but possible per the model).
+                    onTap: {
+                        if let url, let onTapFile {
+                            onTapFile(url, filename)
+                        }
+                    }
+                )
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "File attachment: \(filename)"))

@@ -19,6 +19,12 @@ struct MacTimelineItemView: View {
     /// `.failed(reason:)`. Mirrors the iOS surface — wired by
     /// `MacChatView` to `viewModel.retrySend(itemID:)`.
     var onRetry: ((String) -> Void)? = nil
+    /// Image-attachment tap handler — mirrors the iOS surface.
+    var onTapImage: ((Image) -> Void)? = nil
+    /// File-attachment tap handler — mirrors the iOS surface.
+    /// `MacChatView` wires this through to a temp-file write +
+    /// `NSWorkspace.shared.open(_:)`.
+    var onTapFile: ((URL, String) -> Void)? = nil
 
     var body: some View {
         if !Self.shouldRender(item) {
@@ -83,18 +89,37 @@ struct MacTimelineItemView: View {
                 AttachmentImage(
                     image: resolvedImage(for: url),
                     placeholder: "Image",
-                    caption: caption ?? sizeBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
+                    caption: caption ?? sizeBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) },
+                    // Tap forwards to the parent only when the bytes
+                    // have already resolved AND a handler is wired.
+                    // Tapping a still-loading placeholder is a no-op
+                    // so the fullscreen viewer doesn't open with an
+                    // empty `Image`.
+                    onTap: {
+                        if let img = resolvedImage(for: url),
+                           let onTapImage {
+                            onTapImage(img)
+                        }
+                    }
                 )
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: caption ?? "Image attachment"))
 
-        case .file(_, let filename, let sizeBytes):
+        case .file(let url, let filename, let sizeBytes):
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
                 senderLabel: item.isOwn ? nil : Self.displayName(for: item.sender)
             ) {
-                AttachmentFile(filename: filename, sizeBytes: sizeBytes)
+                AttachmentFile(
+                    filename: filename,
+                    sizeBytes: sizeBytes,
+                    onTap: {
+                        if let url, let onTapFile {
+                            onTapFile(url, filename)
+                        }
+                    }
+                )
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "File attachment: \(filename)"))

@@ -312,6 +312,36 @@ public final class ChatViewModel {
         return nil
     }
 
+    /// Fetches bytes for an `mxc://` attachment URL and writes them to
+    /// a temporary file under `FileManager.default.temporaryDirectory`,
+    /// returning the URL. Used by the fullscreen-preview path on file
+    /// attachments — iOS hands the temp URL to `ShareLink`, Mac hands
+    /// it to `NSWorkspace.shared.open`. Returns `nil` if the fetch
+    /// fails so the View can fall back to a no-op (better than
+    /// presenting a broken preview).
+    ///
+    /// The temp filename preserves the original `filename` so the
+    /// downstream preview / share UI shows a sensible label instead
+    /// of a UUID. Files written here are *not* cleaned up — the OS
+    /// reaps the temp directory between launches and the size cost
+    /// is bounded by attachments the user has actively opened.
+    public func writeTempFile(mxcURL: URL, filename: String) async -> URL? {
+        guard let data = await media.fetchBytes(mxcURL: mxcURL) else { return nil }
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("matron-attachments", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(
+                at: dir, withIntermediateDirectories: true
+            )
+            let dest = dir.appendingPathComponent(filename)
+            try data.write(to: dest, options: .atomic)
+            return dest
+        } catch {
+            Self.logger.error("writeTempFile failed: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
     /// Read-only view of the resolved-image cache for a single URL. Wraps
     /// the underlying `LRUCache`'s `mutating get` so external observers
     /// (tests, debug overlays) can check what's resolved without holding

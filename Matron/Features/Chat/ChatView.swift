@@ -56,6 +56,29 @@ struct ChatView: View {
     /// the floating "jump to latest" button (visible iff this isn't
     /// `items.last?.id`).
     @State private var scrolledItemID: String?
+    /// Backing state for the fullscreen attachment preview. `nil`
+    /// hides the sheet; setting either case presents it via
+    /// `.sheet(item:)`. `.image` draws the pinch-zoom viewer; `.file`
+    /// drives a small share sheet around `ShareLink(item:)` so the
+    /// user can save / forward the attachment without leaving the
+    /// chat.
+    @State private var attachmentPreview: AttachmentPreview?
+
+    /// Sheet payload for fullscreen attachment previews. Identifiable
+    /// via a per-present UUID so two consecutive taps re-mount the
+    /// sheet (and so `.sheet(item:)` doesn't conflate two separate
+    /// images).
+    fileprivate enum AttachmentPreview: Identifiable {
+        case image(id: UUID = UUID(), Image)
+        case file(id: UUID = UUID(), URL, filename: String)
+
+        var id: UUID {
+            switch self {
+            case .image(let id, _): return id
+            case .file(let id, _, _): return id
+            }
+        }
+    }
 
     /// Identifiable wrapper for `.sheet(item:)`. Identity is the bot's
     /// matrixID — one bot per chat, so two sequential taps re-use the
@@ -135,7 +158,19 @@ struct ChatView: View {
                             TimelineItemView(
                                 item: item,
                                 resolveImage: { viewModel.image(for: $0) },
-                                onRetry: { id in viewModel.retrySend(itemID: id) }
+                                onRetry: { id in viewModel.retrySend(itemID: id) },
+                                onTapImage: { img in
+                                    attachmentPreview = .image(img)
+                                },
+                                onTapFile: { mxc, filename in
+                                    Task {
+                                        if let url = await viewModel.writeTempFile(
+                                            mxcURL: mxc, filename: filename
+                                        ) {
+                                            attachmentPreview = .file(url, filename: filename)
+                                        }
+                                    }
+                                }
                             )
                                 .id(item.id)
                                 // Infinite-scroll backward pagination
@@ -281,6 +316,56 @@ struct ChatView: View {
         .sheet(item: $verifyBotContext) { context in
             verifyBotSheetBody(for: context.id)
         }
+        // Fullscreen attachment preview. Presented from a tap on
+        // either an `AttachmentImage` or `AttachmentFile` row;
+        // payload selects between the pinch-zoom image viewer and
+        // the share-sheet wrapper for files. Dismissed by setting
+        // `attachmentPreview = nil` (swipe-down on iOS, "Done"
+        // button, or successful share).
+        .sheet(item: $attachmentPreview) { preview in
+            switch preview {
+            case .image(_, let img):
+                AttachmentFullscreenViewer(
+                    image: img,
+                    onDismiss: { attachmentPreview = nil }
+                )
+            case .file(_, let url, let filename):
+                fileShareSheet(url: url, filename: filename)
+            }
+        }
+    }
+
+    /// iOS file-share sheet body. Presents the filename + a system
+    /// `ShareLink` so the user can save / forward the attachment
+    /// without leaving the chat. Lifted into its own builder so the
+    /// `.sheet(item:)` switch above stays tight.
+    @ViewBuilder
+    private func fileShareSheet(url: URL, filename: String) -> some View {
+        VStack(spacing: 16) {
+            Image(systemName: "doc")
+                .font(.system(size: 56))
+                .foregroundStyle(.tint)
+                .padding(.top, 32)
+            Text(filename)
+                .font(.headline)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
+            ShareLink(item: url) {
+                Label("Share", systemImage: "square.and.arrow.up")
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color.accentColor)
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
+            .padding(.horizontal)
+            Button("Done") { attachmentPreview = nil }
+                .padding(.top, 4)
+            Spacer()
+        }
+        .padding()
+        .presentationDetents([.medium])
     }
 
     /// Per-bot verification evaluation. `nil` keeps the banner hidden
