@@ -261,7 +261,7 @@ shipped Phase 4 Task 1 in full:
   own, or merge will need admin-override again per the session 9/10
   pattern.
 
-**Phase 4 progress (mid-session — 13 commits on `phase-4-task-1`, all green; both iOS + Mac wiring substantially done bar Mac silent-push body construction):**
+**Phase 4 progress (mid-session — 16 commits on `phase-4-task-1`, all green; iOS + Mac wiring done bar Mac silent-push body construction; cursor PR #5 review addressed; Task 9 runbook landed):**
 - Task 1 (NSE target + Push protocol scaffolding): **DONE** (3 commits).
 - Task 2 (PushServiceLive): **DONE** — `30d6421`. Bridges the
   protocol to `Client.setPusher(...)` / `Client.deletePusher(...)`.
@@ -344,11 +344,18 @@ shipped Phase 4 Task 1 in full:
   to the sign-in view immediately. Idempotent on next sign-in
   (re-registering the same `(pushkey, app_id)` pair overwrites the
   stale row server-side).
-- Tasks 9 + 9b (server-side runbook + manual test additions):
-  **DOCS — pending.** Task 9 writes `docs/push-setup.md` covering
-  Sygnal + APNs auth keys + Cloudflare Tunnel setup; Task 9b adds
-  manual test scenarios. Both are no-code; can land separately
-  whenever the dev-boxer / matron-server Sygnal infra is ready.
+- Task 9 (server-side runbook): **DONE** — `fc34819`. Wrote
+  `docs/push-setup.md`: Sygnal four-app yaml config, APNs sandbox
+  vs production cross-check, the macOS-vs-iOS entitlement key
+  difference (`com.apple.developer.aps-environment` vs bare
+  `aps-environment`), Cloudflare Tunnel hostname slot, full smoke-
+  test sequence (4 cURL/awk steps), inventory of "what's wired in
+  the app today" + "what's deferred" so an operator can cross-check
+  client + server when Sygnal infra eventually lands.
+- Task 9b (manual test additions): **PENDING — non-code.** Walk-
+  throughs for what to test manually once Sygnal is up. Cheap to
+  write but only useful when there's hardware + Sygnal to actually
+  test against.
 - Task 10 (Mac in-process notification handler): **DONE** —
   `9455e9e`. `MacNotificationHandler` (`@MainActor`,
   `UNUserNotificationCenterDelegate`). `willPresent` returns
@@ -443,8 +450,39 @@ been pending. iOS Simulator can't receive APNs (`registerForRemoteNotifications`
 is a no-op in the Sim) so even with Sygnal up, real-device testing
 is needed.
 
-**Plan vs SDK drift summary so far** (Phase 4 plan was written ahead
-of the v26 SDK; every Push-related Task has SDK API drift in it):
+### Cursor review on PR #5 — addressed in `73fcd21`
+
+Cursor found 5 issues across the latest commits. 4 were real, 1 was
+on a stale revision. **All resolved on the branch:**
+
+1. **Missing iOS `aps-environment` entitlement** (HIGH) — added via
+   the target-level entitlements block in project.yml so xcodegen
+   regenerates the file with the entitlement on every run. Single
+   value `development` for now; Phase 7 App Store split will add a
+   Release variant with `production`.
+2. **Mac `aps-environment` key wrong** (HIGH) — macOS uses
+   `com.apple.developer.aps-environment` per Apple's docs, NOT the
+   iOS-only bare form. Fixed in both Mac entitlements files;
+   doc-comment captures the macOS-specific quirk.
+3. **Cold-start notification taps dropped** (MED) — `PassthroughSubject`
+   doesn't replay missed values; a tap that fired before
+   `.onReceive(tappedRoomID)` subscribed was lost. `NotificationDelegate`
+   is now `@MainActor`-isolated with a `pendingRoomID` buffer; the
+   post-verify `.task(id: session.userID)` calls
+   `consumePendingRoomID()` once on mount to drain any cold-start
+   buffered tap.
+4. **`unregister` could erase a fresh pusher** (MED) — fast sign-out
+   → sign-in cycle's `Task.detached` unregister could land after
+   the new session's bootstrap had already written its pusher row,
+   deleting it by `(pushkey, app_id)`. Fixed by adding a serialised
+   push-operation chain on `PushTokenStore.shared`. Both signOut
+   paths enqueue their unregister via `enqueuePushOperation(_:)`;
+   `PushBootstrap.register(token:)` awaits
+   `awaitPendingPushOperations()` first. `test_enqueuePushOperation_runsInOrder`
+   pins the contract.
+5. **`PushDecoder.live` Mac mode hardcoded** (MED) — already fixed
+   in `9455e9e`; `processSetup` is now an explicit init parameter.
+   Cursor's read was on an outdated revision.
 
 **Plan vs SDK drift summary so far** (Phase 4 plan was written ahead
 of the v26 SDK; every Push-related Task has SDK API drift in it):
