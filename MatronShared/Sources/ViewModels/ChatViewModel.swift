@@ -263,8 +263,7 @@ public final class ChatViewModel {
                     await MainActor.run {
                         let before = self.items.count
                         self.items = snapshot
-                        let firstRenderable = self.firstRenderableItemID
-                        Self.logger.notice("snapshot: items \(before, privacy: .public)→\(snapshot.count, privacy: .public) firstRenderable=\(firstRenderable ?? "nil", privacy: .public)")
+                        Self.logger.diag("snapshot: items \(before)→\(snapshot.count) firstRenderable=\(self.firstRenderableItemID ?? "nil")")
                         // Clear any prior error once a fresh snapshot lands.
                         self.error = nil
                         // Flip on the first applied snapshot so the
@@ -315,20 +314,20 @@ public final class ChatViewModel {
         // Instead we count consecutive zero-growth paginate calls and
         // flip the flag after `noGrowthLimitForReachedStart`.
         if isPaginatingBackward {
-            Self.logger.debug("paginateBackward: skip — already in flight")
+            Self.logger.diag("paginateBackward: skip — already in flight")
             return
         }
         if reachedHistoryStart {
-            Self.logger.debug("paginateBackward: skip — reachedHistoryStart")
+            Self.logger.diag("paginateBackward: skip — reachedHistoryStart")
             return
         }
         isPaginatingBackward = true
         defer { isPaginatingBackward = false }
         let beforeCount = items.count
-        Self.logger.notice("paginateBackward: enter (items=\(beforeCount, privacy: .public))")
+        Self.logger.diag("paginateBackward: enter (items=\(beforeCount))")
         do {
             let sdkReachedStart = try await timeline.paginateBackward(requestSize: 30)
-            Self.logger.notice("paginateBackward: SDK returned reachedStart=\(sdkReachedStart, privacy: .public)")
+            Self.logger.diag("paginateBackward: SDK returned reachedStart=\(sdkReachedStart)")
             // Wait for the timeline.items() AsyncStream to deliver the
             // new snapshot. The SDK fetches /messages over the network,
             // decrypts, dedups, then yields — easily 200-1000ms of
@@ -346,14 +345,14 @@ public final class ChatViewModel {
                 try? await Task.sleep(nanoseconds: Self.snapshotPollInterval)
             }
             let grew = items.count > beforeCount
-            Self.logger.notice("paginateBackward: done (items: \(beforeCount, privacy: .public)→\(self.items.count, privacy: .public), grew=\(grew, privacy: .public))")
+            Self.logger.diag("paginateBackward: done (items: \(beforeCount)→\(self.items.count), grew=\(grew))")
             if grew {
                 consecutiveNoGrowthPaginates = 0
             } else {
                 consecutiveNoGrowthPaginates += 1
                 if consecutiveNoGrowthPaginates >= Self.noGrowthLimitForReachedStart {
                     reachedHistoryStart = true
-                    Self.logger.notice("paginateBackward: reached history start (no growth across \(Self.noGrowthLimitForReachedStart, privacy: .public) consecutive calls)")
+                    Self.logger.diag("paginateBackward: reached history start (no growth across \(Self.noGrowthLimitForReachedStart) consecutive calls)")
                 }
             }
         } catch {

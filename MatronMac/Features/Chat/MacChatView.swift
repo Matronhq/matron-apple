@@ -7,6 +7,10 @@ import MatronViewModels
 import MatronDesignSystem
 import os
 
+/// Diagnostic logger for the chat paginate trigger plumbing. Calls
+/// to `paginateLogger.diag(...)` are gated by `MatronDebug.enabled`
+/// so they stay in the source as living documentation of the data
+/// flow without paying for them at runtime in shipped builds.
 private let paginateLogger = Logger(subsystem: "chat.matron", category: "mac-chat-paginate")
 
 /// Mac chat detail column. Hosts a `ScrollView` + `LazyVStack` of
@@ -154,9 +158,8 @@ struct MacChatView: View {
                             )
                                 .id(item.id)
                                 .onAppear {
-                                    let first = viewModel.firstRenderableItemID
-                                    let match = (item.id == first)
-                                    paginateLogger.notice("onAppear: id=\(item.id, privacy: .public) first=\(first ?? "nil", privacy: .public) match=\(match, privacy: .public)")
+                                    let match = (item.id == viewModel.firstRenderableItemID)
+                                    paginateLogger.diag("onAppear: id=\(item.id) first=\(viewModel.firstRenderableItemID ?? "nil") match=\(match)")
                                     if match {
                                         Task { await viewModel.paginateBackward() }
                                     }
@@ -221,7 +224,7 @@ struct MacChatView: View {
                     }
                 )
                 let inTop = topRowIDs.contains(newID)
-                paginateLogger.notice("scrollChange: bottom=\(newID, privacy: .public) inTop10=\(inTop, privacy: .public) rows=\(viewModel.rows.count, privacy: .public)")
+                paginateLogger.diag("scrollChange: bottom=\(newID) inTop10=\(inTop) rows=\(viewModel.rows.count)")
                 if inTop {
                     Task { await viewModel.paginateBackward() }
                 }
