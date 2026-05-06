@@ -184,6 +184,20 @@ final class AppDependencies {
     /// are cleared so the next login doesn't reuse stale handles bound
     /// to the previous user's SDK state.
     func signOut() {
+        // Clear the SQLCipher passphrase for every user we've ever
+        // built per-session services for in this process — `signOut`
+        // is called once per actual sign-out, but the same process
+        // can have served multiple userIDs across sign-out + sign-in
+        // cycles. Iterating `syncCache.keys` (which are userIDs)
+        // covers them all without us having to thread a session
+        // reference through every caller. Errors are swallowed
+        // because Keychain delete is idempotent for absent items —
+        // surfacing a missing-passphrase error during sign-out is
+        // strictly noise.
+        let passphraseStore = SDKPassphraseStore()
+        for userID in syncCache.keys {
+            try? passphraseStore.delete(for: userID)
+        }
         try? auth.clearSession()
         syncCache.removeAll()
         verificationCache.removeAll()
