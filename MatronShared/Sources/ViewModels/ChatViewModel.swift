@@ -249,7 +249,10 @@ public final class ChatViewModel {
                         return
                     }
                     await MainActor.run {
+                        let before = self.items.count
                         self.items = snapshot
+                        let firstRenderable = self.firstRenderableItemID
+                        Self.logger.notice("snapshot: items \(before, privacy: .public)→\(snapshot.count, privacy: .public) firstRenderable=\(firstRenderable ?? "nil", privacy: .public)")
                         // Clear any prior error once a fresh snapshot lands.
                         self.error = nil
                         // Flip on the first applied snapshot so the

@@ -5,6 +5,9 @@ import MatronModels
 import MatronVerification
 import MatronViewModels
 import MatronDesignSystem
+import os
+
+private let paginateLogger = Logger(subsystem: "chat.matron", category: "mac-chat-paginate")
 
 /// Mac chat detail column. Hosts a `ScrollView` + `LazyVStack` of
 /// `MacTimelineItemView` rows above the `MacComposerView`. Right-click
@@ -150,22 +153,11 @@ struct MacChatView: View {
                                 }
                             )
                                 .id(item.id)
-                                // Infinite-scroll backward pagination
-                                // trigger. Compares against
-                                // `firstRenderableItemID` (the first
-                                // non-`.stateChange` item) rather than
-                                // `items.first?.id` — Matrix room
-                                // timelines virtually always start
-                                // with `.stateChange` rows (room
-                                // create / encryption setup) which
-                                // the view filters out, so the
-                                // raw-`items.first` comparison would
-                                // never match any rendered row and
-                                // scroll-up paginate would never fire.
-                                // See `ChatViewModel.firstRenderableItemID`
-                                // for the full rationale.
                                 .onAppear {
-                                    if item.id == viewModel.firstRenderableItemID {
+                                    let first = viewModel.firstRenderableItemID
+                                    let match = (item.id == first)
+                                    paginateLogger.notice("onAppear: id=\(item.id, privacy: .public) first=\(first ?? "nil", privacy: .public) match=\(match, privacy: .public)")
+                                    if match {
                                         Task { await viewModel.paginateBackward() }
                                     }
                                 }
@@ -228,7 +220,9 @@ struct MacChatView: View {
                         }
                     }
                 )
-                if topRowIDs.contains(newID) {
+                let inTop = topRowIDs.contains(newID)
+                paginateLogger.notice("scrollChange: bottom=\(newID, privacy: .public) inTop10=\(inTop, privacy: .public) rows=\(viewModel.rows.count, privacy: .public)")
+                if inTop {
                     Task { await viewModel.paginateBackward() }
                 }
             }
