@@ -13,6 +13,13 @@ public final class ChatListViewModel {
 
     public private(set) var groups: [GroupedSummaries] = []
     public private(set) var isLoading: Bool = true
+    /// Sum of `unreadCount` across every chat in `groups`. Drives the
+    /// app-icon badge (iOS `UNUserNotificationCenter.setBadgeCount`)
+    /// and the macOS dock badge (`NSApp.dockTile.badgeLabel`). Updated
+    /// in lockstep with `groups` from inside the snapshot consumer
+    /// loop so the host's `.onChange` listener fires exactly once per
+    /// snapshot — no separate stream wiring needed.
+    public private(set) var totalUnread: Int = 0
     /// Last error raised by the upstream `chatSummaries()` stream. Phase 2
     /// surfaces this as a banner / `ContentUnavailableView` overlay so a
     /// `SyncReadyError.timeout` doesn't manifest as an "infinite spinner
@@ -43,8 +50,10 @@ public final class ChatListViewModel {
                 for try await snapshot in chat.chatSummaries() {
                     if Task.isCancelled { return }
                     let grouped = Self.group(summaries: snapshot)
+                    let unread = snapshot.reduce(0) { $0 + $1.unreadCount }
                     await MainActor.run {
                         self.groups = grouped
+                        self.totalUnread = unread
                         self.isLoading = false
                         self.error = nil
                     }

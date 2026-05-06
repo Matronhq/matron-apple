@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import MatronChat
 import MatronDesignSystem
 import MatronModels
@@ -241,6 +242,18 @@ struct MacChatListView: View {
                 connectionState = Self.bannerState(from: state)
                 if state == .running { hasEverConnected = true }
             }
+        }
+        // Dock-tile badge mirrors the chat list's running unread total.
+        // `NSApp.dockTile.badgeLabel` accepts a String; `nil` removes
+        // the badge so a zero count produces no overlay. AppKit handles
+        // the rendering — capsule, white text, accent fill — so we
+        // don't need to reproduce the iOS pill visual on the dock side.
+        // `initial: true` so the badge clears on first appear of a
+        // freshly-launched session whose snapshot is still warming up
+        // (without it, a stale badge from a prior launch would persist
+        // until the first non-zero update).
+        .onChange(of: viewModel.totalUnread, initial: true) { _, newValue in
+            NSApp.dockTile.badgeLabel = newValue > 0 ? "\(newValue)" : nil
         }
         // Wave 6 / live-test #3: per-this-device verification check.
         // Pre-Phase-3 users skipped the post-login verify gate
@@ -538,9 +551,7 @@ private struct MacChatRow: View {
                 }
             }
             Spacer(minLength: 0)
-            if summary.unreadCount > 0 {
-                Circle().fill(Color.accentColor).frame(width: 8, height: 8)
-            }
+            UnreadBadge(count: summary.unreadCount)
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 4)

@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 import MatronChat
 import MatronDesignSystem
 import MatronModels
@@ -273,6 +274,18 @@ struct ChatListView: View {
                 connectionState = Self.bannerState(from: state)
                 if state == .running { hasEverConnected = true }
             }
+        }
+        // App-icon badge mirrors the chat list's running unread total.
+        // `UNUserNotificationCenter.setBadgeCount(_:)` is the iOS-16+
+        // replacement for `UIApplication.applicationIconBadgeNumber`,
+        // which is deprecated. Errors are swallowed — if a user's
+        // notification permission gates the badge update, the badge
+        // simply doesn't change; we never block the UI on the result.
+        // Re-running on first appear (`onAppear` analog via
+        // `.task(id: viewModel.totalUnread)` is overkill; `.onChange`
+        // delivers the same coverage with one less view-id binding).
+        .onChange(of: viewModel.totalUnread, initial: true) { _, newValue in
+            UNUserNotificationCenter.current().setBadgeCount(newValue) { _ in }
         }
         // Wave 6 / live-test #3: per-this-device verification check.
         // Pre-Phase-3 users skipped the post-login verify gate
@@ -622,9 +635,7 @@ private struct ChatRow: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-            if summary.unreadCount > 0 {
-                Circle().fill(.blue).frame(width: 8, height: 8)
-            }
+            UnreadBadge(count: summary.unreadCount)
         }
     }
 }

@@ -179,6 +179,65 @@ final class ChatListViewModelTests: XCTestCase {
         XCTAssertEqual(vm.groups.flatMap(\.summaries).count, 2, "refresh-driven yield must reach the VM through the live stream")
     }
 
+    /// `totalUnread` mirrors the running sum of `ChatSummary.unreadCount`
+    /// across every snapshot. Drives the iOS app-icon badge and the
+    /// macOS dock-tile badge — both consume the published value via
+    /// `.onChange` so a regression here would silently break the badge.
+    @MainActor
+    func test_totalUnread_isSumOfUnreadCounts_acrossLatestSnapshot() async throws {
+        let bot = BotIdentity(matrixID: "@b:s", displayName: "Bot", avatarURL: nil)
+        let fake = FakeStreamingChatService()
+        fake.snapshotsToEmit = [[
+            ChatSummary(id: "!a:s", title: "A", bot: bot, lastActivity: .now, unreadCount: 3),
+            ChatSummary(id: "!b:s", title: "B", bot: bot, lastActivity: .now, unreadCount: 0),
+            ChatSummary(id: "!c:s", title: "C", bot: bot, lastActivity: .now, unreadCount: 7),
+        ]]
+        let vm = ChatListViewModel(chat: fake)
+        vm.start()
+        let start = Date()
+        while vm.groups.isEmpty && Date().timeIntervalSince(start) < 2 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(vm.totalUnread, 10,
+                       "totalUnread must sum unreadCount across every chat in the snapshot")
+    }
+
+    /// A subsequent yield with a different unread distribution must
+    /// update `totalUnread` in lockstep — the host's `.onChange`
+    /// listener depends on this for the badge to drop after the user
+    /// reads a chat (which causes `markAsRead()` → next snapshot drops
+    /// the count).
+    @MainActor
+    func test_totalUnread_updatesWith_eachSnapshot() async throws {
+        let bot = BotIdentity(matrixID: "@b:s", displayName: "Bot", avatarURL: nil)
+        let fake = FakeStreamingChatService()
+        fake.snapshotsToEmit = [
+            [ChatSummary(id: "!a:s", title: "A", bot: bot, lastActivity: .now, unreadCount: 5)],
+            [ChatSummary(id: "!a:s", title: "A", bot: bot, lastActivity: .now, unreadCount: 0)],
+        ]
+        let vm = ChatListViewModel(chat: fake)
+        vm.start()
+        let start = Date()
+        while vm.totalUnread != 0 && Date().timeIntervalSince(start) < 2 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(vm.totalUnread, 0,
+                       "second snapshot's zero-unread state must replace the prior 5")
+    }
+
+    @MainActor
+    func test_totalUnread_isZero_forEmptySnapshot() async throws {
+        let fake = FakeStreamingChatService()
+        fake.snapshotsToEmit = [[]]
+        let vm = ChatListViewModel(chat: fake)
+        vm.start()
+        let start = Date()
+        while vm.isLoading && Date().timeIntervalSince(start) < 2 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(vm.totalUnread, 0, "empty snapshot must clear the badge")
+    }
+
     @MainActor
     func test_successfulSnapshot_clears_priorError() async throws {
         // After an error, a fresh successful snapshot should clear the
