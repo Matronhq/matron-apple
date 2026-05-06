@@ -340,6 +340,13 @@ targets:
       # NotificationService can call into PushDecoder + PushConfig
       # without re-implementing the SDK bridge inside the extension.
       # MatronPush transitively pulls MatronStorage + MatronSync +
-      # MatrixRustSDK, which is the surface the NSE actually needs.
+      # MatrixRustSDK.
       - package: MatronShared
         product: MatronPush
+      # Phase 4 Task 4: NotificationService bootstraps the SDK from
+      # the same on-disk session state the iOS host writes (FileSessionStore
+      # + the App-Group-shared `sdk-store/` directory). `AuthServiceLive.restoreSession`
+      # is the entry point. Not a transitive dep of MatronPush — MatronPush
+      # only consumes ClientProvider + UserSession, never the auth flow itself.
+      - package: MatronShared
+        product: MatronAuth
