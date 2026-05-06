@@ -46,5 +46,18 @@
 	<array>
 		<string>$(AppIdentifierPrefix)chat.matron.mac</string>
 	</array>
+	<!--
+		Phase 4 Task 12: APNs environment for Debug builds. Pairs with
+		`use_sandbox: true` on the matching Sygnal `app_id`
+		(`chat.matron.mac.dev`). Mismatch (Debug build hitting an
+		`app_id` mapped to `use_sandbox: false`) silently rejects the
+		token at Sygnal with `{"rejected": [<token>]}` and never
+		reaches APNs — hard to diagnose live. The entitlement-vs-app_id
+		pairing is pinned on both sides; see
+		`docs/superpowers/plans/2026-05-02-matron-ios-phase-4-push-nse.md`
+		§"Push setup runbook" for the cross-check.
+	-->
+	<key>aps-environment</key>
+	<string>development</string>
 </dict>
 </plist>

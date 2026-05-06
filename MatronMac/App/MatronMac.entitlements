@@ -12,5 +12,14 @@
 	<array>
 		<string>$(AppIdentifierPrefix)chat.matron.mac</string>
 	</array>
+	<!--
+		Phase 4 Task 12: APNs environment for Release / App Store
+		builds. Pairs with `use_sandbox: false` on the matching Sygnal
+		`app_id` (`chat.matron.mac`). Notarized + Mac App Store builds
+		hit production APNs; Debug builds use `MatronMac.Debug.entitlements`
+		with `aps-environment=development` instead.
+	-->
+	<key>aps-environment</key>
+	<string>production</string>
 </dict>
 </plist>
