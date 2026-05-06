@@ -100,11 +100,30 @@ public final class ChatViewModel {
     /// changes anyway, so the recomputation runs at exactly the right
     /// cadence.
     public var rows: [TimelineRow] {
-        guard !items.isEmpty else { return [] }
+        // Filter hidden items BEFORE bucketing. Two reasons:
+        //   (a) `TimelineServiceLive.mapVirtual` emits placeholder
+        //       items for `dateDivider` / `readMarker` / `timelineStart`
+        //       with `timestamp = Date(timeIntervalSince1970: 0)`. If
+        //       those participate in day-bucketing, a "1 Jan 1970"
+        //       separator pops up mid-list — exactly what the user
+        //       reported between today's content and last-night's
+        //       still-undecryptable events.
+        //   (b) `.stateChange` rows are hidden by the view's
+        //       `shouldRender` (Phase 7 polish can bring back a
+        //       metadata-events toggle), so they shouldn't influence
+        //       which days get separators either.
+        // Both share the `.stateChange` Kind tag, which makes the
+        // filter trivial. Any future hidden Kind needs the same
+        // treatment to avoid the same date-bucket pollution.
+        let visibleItems = items.filter {
+            if case .stateChange = $0.kind { return false }
+            return true
+        }
+        guard !visibleItems.isEmpty else { return [] }
         var out: [TimelineRow] = []
-        out.reserveCapacity(items.count + 4)
+        out.reserveCapacity(visibleItems.count + 4)
         var previousDay: Date?
-        for item in items {
+        for item in visibleItems {
             let day = calendar.startOfDay(for: item.timestamp)
             if previousDay == nil || day != previousDay {
                 out.append(.separator(date: item.timestamp))
