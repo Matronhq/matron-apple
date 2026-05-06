@@ -118,10 +118,13 @@ public final class ChatViewModel {
     /// against re-entering the paginate loop on every re-layout, and so
     /// the view can show a tiny "loading earlier…" spinner if it wants.
     public private(set) var isPaginatingBackward: Bool = false
-    /// `true` once the SDK reports the timeline has reached the head of
-    /// history (or once a paginate call yields zero new events for the
-    /// duration of the request). Prevents endless no-op pagination
-    /// requests once the user has scrolled to the start of the room.
+    /// Retained as `false` for back-compat with consumers that read it
+    /// (a few view-side overlays). Phase-2.5 follow-up: the SDK's
+    /// "reached start" Bool from `paginateBackwards` is unreliable on a
+    /// freshly-opened timeline with a sliding-sync seed of one event,
+    /// so we no longer let it persist a hard lock-out. Always returns
+    /// `false`; the `.onAppear` cadence on the topmost row + the SDK's
+    /// own no-op fast-path provide the actual rate-limiting.
     public private(set) var reachedHistoryStart: Bool = false
     /// Flips to `true` after `start()` processes its first snapshot
     /// (even if that snapshot is empty) or the upstream stream finishes
@@ -238,16 +241,27 @@ public final class ChatViewModel {
     }
 
     public func paginateBackward() async {
-        // Re-entrancy guard. The view fires this from the topmost row's
-        // `.onAppear`, which can fire repeatedly during scroll bounces;
-        // without the guard a single scroll-up would queue up a dozen
-        // overlapping paginate requests.
-        guard !isPaginatingBackward, !reachedHistoryStart else { return }
+        // Re-entrancy guard only — `.onAppear` of the topmost row can
+        // fire repeatedly during scroll bounces, and the explicit
+        // paginate-on-open in `ChatView.task` can race the row-driven
+        // trigger; without the guard a single scroll-up would queue up
+        // a dozen overlapping paginate requests.
+        //
+        // We deliberately do NOT short-circuit on a prior `reachedStart`
+        // result. Empirical: the SDK can return `true` ("reached start")
+        // on the very first call against a freshly-opened Timeline that
+        // only holds the one-event sliding-sync seed, before its
+        // history index has actually been built. Persisting that as a
+        // permanent lock-out left the user staring at the latest
+        // message with no way to scroll into history. Cheap re-attempts
+        // are safer: the SDK no-ops fast when it's genuinely at the
+        // room start, and the natural `.onAppear` cadence (only fires
+        // when the topmost row is on screen) keeps call rate sane.
+        guard !isPaginatingBackward else { return }
         isPaginatingBackward = true
         defer { isPaginatingBackward = false }
         do {
-            let reachedStart = try await timeline.paginateBackward(requestSize: 30)
-            if reachedStart { reachedHistoryStart = true }
+            _ = try await timeline.paginateBackward(requestSize: 30)
         } catch {
             self.error = error.localizedDescription
         }

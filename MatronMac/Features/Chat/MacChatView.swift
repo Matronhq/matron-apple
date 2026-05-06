@@ -242,6 +242,12 @@ struct MacChatView: View {
             // read instead of racing the empty initial state.
             await viewModel.start()
             await viewModel.markAsRead()
+            // Explicit paginate-on-open. Sliding sync seeds the
+            // timeline with just the latest event; without this the
+            // user sees a single message until they scroll up. The
+            // topmost-row `.onAppear` trigger covers subsequent loads
+            // as the user scrolls — this just seeds the first page.
+            await viewModel.paginateBackward()
         }
         // Per-bot verification check on appear AND each time the
         // timeline gains its first items — that's the cheapest signal

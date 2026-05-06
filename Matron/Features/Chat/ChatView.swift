@@ -282,6 +282,13 @@ struct ChatView: View {
             // for the underlying signal mechanism (round-3 bugbot fix #3).
             await viewModel.start()
             await viewModel.markAsRead()
+            // Explicit paginate-on-open. Sliding sync seeds the timeline
+            // with just the latest event, so without this the user sees
+            // a single message until they scroll up. The topmost-row
+            // `.onAppear` trigger handles SUBSEQUENT history loads as
+            // they scroll; this seeds the first page so there's
+            // something to scroll into.
+            await viewModel.paginateBackward()
         }
         // Evaluate per-bot verification on appear AND each time the
         // timeline gains its first items — that's the cheapest signal
