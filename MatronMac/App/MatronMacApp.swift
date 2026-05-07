@@ -451,11 +451,13 @@ struct MatronMacApp: App {
         }
     }
 
-    /// Sygnal pusher endpoint URL — placeholder. See iOS host's
-    /// `pusherBaseURL` for the full "out of scope per Phase 4 plan"
-    /// rationale; replace when Task 9's runbook lands.
+    /// Sygnal pusher endpoint URL — see iOS host's `pusherBaseURL`
+    /// doc-comment for the full "what the URL means + what's still
+    /// needed for end-to-end delivery" rationale. Mac and iOS share
+    /// the same Sygnal hostname (Sygnal differentiates per-platform
+    /// via `app_id` on the pusher record, not via URL).
     private static let pusherBaseURL = URL(
-        string: "https://sygnal.matron.example/_matrix/push/v1/notify"
+        string: "https://sygnal.matron.chat/_matrix/push/v1/notify"
     )!
 
     /// Help → Verify This Device… sheet body. Hands construction to a

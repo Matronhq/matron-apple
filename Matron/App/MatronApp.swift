@@ -442,15 +442,22 @@ struct MatronApp: App {
     }
 
     /// Sygnal pusher endpoint URL. **Out of scope for Phase 4 plan**:
-    /// real wiring needs Sygnal reachable + APNs auth keys + a
-    /// Cloudflare Tunnel hostname, all tracked in a separate
-    /// `dev-boxer` / `matron-server` issue (plan §"Server-side
-    /// prerequisites"). Until then this points at a placeholder host
-    /// — the bootstrap call will register a pusher row that simply
-    /// won't deliver until Sygnal is up. Replace with the real URL
-    /// when Task 9's runbook lands.
+    /// Sygnal pusher endpoint — the public HTTPS URL the homeserver
+    /// will POST notification payloads to once a pusher record has
+    /// been written for this device. The hostname is the planned
+    /// production target (`sygnal.matron.chat`, served via Cloudflare
+    /// Tunnel from the box that runs `matron-server`); end-to-end
+    /// delivery still depends on (a) the Sygnal container being up,
+    /// (b) APNs `.p8` auth credentials provisioned in Sygnal's config
+    /// for all four `app_id`s, (c) DNS resolving the hostname. Until
+    /// (a)–(c) are in place, `bootstrap.register(token:)` writes the
+    /// pusher row successfully (the homeserver accepts any URL); the
+    /// homeserver then logs DNS-resolution failures when it tries to
+    /// deliver. Path suffix `_matrix/push/v1/notify` is the Matrix
+    /// spec endpoint Sygnal serves; do NOT change it without
+    /// changing Sygnal's listener route too.
     private static let pusherBaseURL = URL(
-        string: "https://sygnal.matron.example/_matrix/push/v1/notify"
+        string: "https://sygnal.matron.chat/_matrix/push/v1/notify"
     )!
 }
 
