@@ -1,4 +1,5 @@
 import Foundation
+import MatronEvents
 import MatronModels
 
 /// DTO consumed by the UI for a single timeline row.
@@ -24,6 +25,17 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         /// Member joins, name changes, profile updates — anything that's a
         /// state event we still want to render as a small inline notice.
         case stateChange(text: String)
+        /// `chat.matron.tool_call` event (spec §4.1). Phase 5 — renders
+        /// as a `ToolCallCard` (Task 8). `eventID` is the underlying
+        /// Matrix event ID, kept on the case so `m.replace` updates
+        /// can be correlated against an in-flight running tool call.
+        case toolCall(eventID: String, ToolCallEvent)
+        /// `chat.matron.ask_user` event (spec §4.2). Phase 5 — renders
+        /// as a half-sheet on iOS / fixed-size sheet on Mac (Task 9).
+        /// `eventID` is the underlying Matrix event ID, used by the
+        /// sheet's reply path to set `m.in_reply_to` so the bot can
+        /// correlate the answer.
+        case askUser(eventID: String, AskUserEvent)
         /// Catch-all for events we don't render specially yet (encrypted but
         /// undecryptable, polls, stickers, etc.). UI shows a placeholder so
         /// the event isn't silently dropped.

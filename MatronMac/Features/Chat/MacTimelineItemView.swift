@@ -116,6 +116,36 @@ struct MacTimelineItemView: View {
             }
             .padding(.vertical, 4)
 
+        case .toolCall(_, let evt):
+            // Phase 5 Task 5 placeholder — Task 11 swaps this for
+            // the proper `ToolCallCard`. Plain-text fallback so the
+            // Mac timeline renders something useful for tool-call
+            // events on a build that hasn't shipped Task 11 yet.
+            MessageBubble(
+                style: .bot,
+                senderLabel: Self.displayName(for: item.sender)
+            ) {
+                Text("🔧 \(evt.tool) — \(evt.status.rawValue)")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Tool call: \(evt.tool)"))
+
+        case .askUser(_, let evt):
+            // Phase 5 Task 5 placeholder — Task 11 swaps this for
+            // the `MacAskUserSheet` presentation (Task 9). Prompt
+            // text only until then.
+            MessageBubble(
+                style: .bot,
+                senderLabel: Self.displayName(for: item.sender)
+            ) {
+                Text("❓ \(evt.prompt)")
+                    .font(.callout)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Question: \(evt.prompt)"))
+
         case .unknown(let eventType):
             // `m.room.encrypted` is the SDK's `unableToDecrypt` mapped
             // through; the SDK retries decryption as keys arrive and

@@ -138,6 +138,39 @@ struct TimelineItemView: View {
             }
             .padding(.vertical, 4)
 
+        case .toolCall(_, let evt):
+            // Phase 5 Task 5 placeholder — Task 11 swaps this for
+            // the proper `ToolCallCard` (Task 8). Plain-text fallback
+            // until then so the timeline still renders something
+            // useful for tool-call events landing on a build that
+            // hasn't shipped Task 11 yet (graceful-degradation
+            // contract per the Phase 5 plan front-matter).
+            MessageBubble(
+                style: .bot,
+                senderLabel: displayName(for: item.sender)
+            ) {
+                Text("🔧 \(evt.tool) — \(evt.status.rawValue)")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Tool call: \(evt.tool)"))
+
+        case .askUser(_, let evt):
+            // Phase 5 Task 5 placeholder — Task 11 swaps this for
+            // the proper `AskUserSheet` presentation (Task 9). Plain-
+            // text fallback shows the prompt; the user can't interact
+            // with options until Task 11 lands.
+            MessageBubble(
+                style: .bot,
+                senderLabel: displayName(for: item.sender)
+            ) {
+                Text("❓ \(evt.prompt)")
+                    .font(.callout)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Question: \(evt.prompt)"))
+
         case .unknown(let eventType):
             // Encrypted-but-not-yet-decrypted is the SDK's
             // `MsgLikeKind.unableToDecrypt` mapped to

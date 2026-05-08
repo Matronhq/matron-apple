@@ -50,6 +50,12 @@ let package = Package(
             dependencies: [
                 "MatronModels",
                 "MatronSync",
+                // Phase 5 Task 5: TimelineItem.Kind gains `.toolCall` /
+                // `.askUser` cases that wrap MatronEvents DTOs. The
+                // dependency only pulls in pure value types — no
+                // SwiftUI, no SDK FFI — so MatronChat stays the same
+                // weight as before.
+                "MatronEvents",
                 .product(name: "MatrixRustSDK", package: "matrix-rust-components-swift"),
             ],
             path: "Sources/Chat"
@@ -135,7 +141,7 @@ let package = Package(
         .testTarget(name: "StorageTests", dependencies: ["MatronStorage"], path: "Tests/StorageTests"),
         .testTarget(name: "AuthTests", dependencies: ["MatronAuth", "MatronModels", "MatronStorage"], path: "Tests/AuthTests"),
         .testTarget(name: "SyncTests", dependencies: ["MatronSync", "MatronModels"], path: "Tests/SyncTests"),
-        .testTarget(name: "ChatTests", dependencies: ["MatronChat", "MatronModels", "MatronSync"], path: "Tests/ChatTests"),
+        .testTarget(name: "ChatTests", dependencies: ["MatronChat", "MatronEvents", "MatronModels", "MatronSync"], path: "Tests/ChatTests"),
         .testTarget(name: "ViewModelTests", dependencies: ["MatronViewModels", "MatronAuth", "MatronChat", "MatronModels", "MatronStorage", "MatronVerification"], path: "Tests/ViewModelTests"),
         .testTarget(
             name: "DesignSystemSnapshotTests",

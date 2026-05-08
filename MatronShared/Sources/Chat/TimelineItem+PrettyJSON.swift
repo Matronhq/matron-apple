@@ -1,4 +1,5 @@
 import Foundation
+import MatronEvents
 
 extension TimelineItem {
     /// Pretty-printed, JSON-shaped dump of the DTO for the long-press /
@@ -74,10 +75,51 @@ extension TimelineItem {
                 "type": "stateChange",
                 "text": text,
             ]
+        case .toolCall(let eventID, let evt):
+            return [
+                "type": "toolCall",
+                "eventID": eventID,
+                "tool": evt.tool,
+                "status": evt.status.rawValue,
+                "argsJSON": evt.argsJSON,
+                "resultText": evt.resultText ?? NSNull(),
+                "resultTruncated": evt.resultTruncated,
+                "startedAt": ISO8601DateFormatter().string(from: evt.startedAt),
+                "endedAt": evt.endedAt.map(ISO8601DateFormatter().string(from:)) ?? NSNull(),
+            ]
+        case .askUser(let eventID, let evt):
+            return [
+                "type": "askUser",
+                "eventID": eventID,
+                "prompt": evt.prompt,
+                "kind": askInputKindAsJSON(evt.kind),
+                "expiresAt": evt.expiresAt.map(ISO8601DateFormatter().string(from:)) ?? NSNull(),
+            ]
         case .unknown(let eventType):
             return [
                 "type": "unknown",
                 "eventType": eventType,
+            ]
+        }
+    }
+
+    private func askInputKindAsJSON(_ kind: AskUserEvent.InputKind) -> [String: Any] {
+        switch kind {
+        case .text:
+            return ["kind": "text"]
+        case .boolean:
+            return ["kind": "boolean"]
+        case .choice(let options, let allowOther):
+            return [
+                "kind": "choice",
+                "allowOther": allowOther,
+                "options": options.map { ["id": $0.id, "label": $0.label] },
+            ]
+        case .multiChoice(let options, let allowOther):
+            return [
+                "kind": "multiChoice",
+                "allowOther": allowOther,
+                "options": options.map { ["id": $0.id, "label": $0.label] },
             ]
         }
     }
