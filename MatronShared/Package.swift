@@ -17,6 +17,7 @@ let package = Package(
         .library(name: "MatronDesignSystem", targets: ["MatronDesignSystem"]),
         .library(name: "MatronVerification", targets: ["MatronVerification"]),
         .library(name: "MatronPush", targets: ["MatronPush"]),
+        .library(name: "MatronEvents", targets: ["MatronEvents"]),
     ],
     dependencies: [
         .package(url: "https://github.com/matrix-org/matrix-rust-components-swift", from: "26.04.01"),
@@ -120,6 +121,17 @@ let package = Package(
             ],
             path: "Sources/Push"
         ),
+        // Phase 5 Task 1: parsers + DTOs for the three Matron-specific
+        // event types (`chat.matron.tool_call`, `.ask_user`,
+        // `.session_meta`). Pure value types — no SwiftUI, no SDK FFI —
+        // so this target stays a leaf. The SDK-side mapping lives in
+        // `MatronChat`'s `TimelineServiceLive` (which depends on this
+        // target via the Phase 5 Task 6 wiring).
+        .target(
+            name: "MatronEvents",
+            dependencies: ["MatronModels"],
+            path: "Sources/Events"
+        ),
         .testTarget(name: "StorageTests", dependencies: ["MatronStorage"], path: "Tests/StorageTests"),
         .testTarget(name: "AuthTests", dependencies: ["MatronAuth", "MatronModels", "MatronStorage"], path: "Tests/AuthTests"),
         .testTarget(name: "SyncTests", dependencies: ["MatronSync", "MatronModels"], path: "Tests/SyncTests"),
@@ -144,6 +156,11 @@ let package = Package(
             name: "PushTests",
             dependencies: ["MatronPush"],
             path: "Tests/PushTests"
+        ),
+        .testTarget(
+            name: "EventsTests",
+            dependencies: ["MatronEvents", "MatronModels"],
+            path: "Tests/EventsTests"
         ),
     ]
 )
