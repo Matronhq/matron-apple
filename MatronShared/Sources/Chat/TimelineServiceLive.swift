@@ -1,5 +1,6 @@
 import Foundation
 import MatrixRustSDK
+import MatronEvents
 import MatronModels
 import MatronSync
 
@@ -457,7 +458,15 @@ final class TimelineSnapshotListener: TimelineListener, @unchecked Sendable {
 
     private func mapEvent(_ ev: EventTimelineItem, id: String) -> TimelineItem {
         let ts = Date(timeIntervalSince1970: TimeInterval(ev.timestamp) / 1000)
-        let kind = mapContent(ev.content)
+        // Phase 5 Task 6: custom Matron event types (`chat.matron.tool_call`,
+        // `.ask_user`) come through as `MsgLikeKind.other(.other("chat.matron.…"))`
+        // — the SDK's MessageLikeEventType has no first-class case for them.
+        // `mapMatronCustomEvent` checks for the type, pulls the original
+        // JSON via `ev.lazyProvider.debugInfo().originalJson`, and parses
+        // into the typed DTO. Falls through to `mapContent` when the event
+        // isn't a Matron custom type or its JSON couldn't be parsed (graceful
+        // degradation: a malformed payload still renders as `.unknown`).
+        let kind = mapMatronCustomEvent(ev) ?? mapContent(ev.content)
         let sendState: TimelineItem.SendState = mapSendState(ev.localSendState)
         return TimelineItem(
             id: id,
@@ -467,6 +476,68 @@ final class TimelineSnapshotListener: TimelineListener, @unchecked Sendable {
             isOwn: ev.isOwn,
             sendState: sendState
         )
+    }
+
+    /// Returns a `.toolCall` / `.askUser` `TimelineItem.Kind` when `ev`
+    /// is one of the custom Matron event types, else nil. The caller
+    /// falls through to the standard `mapContent` mapping when this
+    /// returns nil — same shape Phase 5 graceful-degradation contract:
+    /// any failure (wrong type, missing JSON, malformed content)
+    /// re-routes through `.unknown(eventType:)`. The SDK-handle-bound
+    /// bits (lazyProvider, eventOrTransactionId) are extracted here;
+    /// the testable JSON → kind mapping lives in `Self.parseCustomEvent`.
+    private func mapMatronCustomEvent(_ ev: EventTimelineItem) -> TimelineItem.Kind? {
+        guard case .msgLike(let msg) = ev.content,
+              case .other(let messageLikeEventType) = msg.kind,
+              case .other(let typeString) = messageLikeEventType else {
+            return nil
+        }
+        // Pull the original event JSON from the lazy provider. Local
+        // echoes don't have one (the event hasn't been sent yet) —
+        // those fall through to `.unknown` via the nil return.
+        guard let json = ev.lazyProvider.debugInfo().originalJson else {
+            return nil
+        }
+        // The Matrix event ID — used by the case to correlate
+        // `m.replace` updates against a running tool call. Local echo's
+        // transactionId branch isn't reached here because originalJson
+        // is nil for local echoes.
+        guard case .eventId(let eventID) = ev.eventOrTransactionId else {
+            return nil
+        }
+        return Self.parseCustomEvent(typeString: typeString, originalJson: json, eventID: eventID)
+    }
+
+    /// Pure JSON → Kind mapping for the two custom Matron event types,
+    /// pulled out of `mapMatronCustomEvent` so unit tests can exercise
+    /// it without standing up a real `EventTimelineItem` Rust handle.
+    /// Returns nil for non-Matron type strings, malformed JSON, missing
+    /// `content` field, or content that doesn't parse cleanly via the
+    /// per-type parsers in `MatronEvents`.
+    static func parseCustomEvent(
+        typeString: String,
+        originalJson: String,
+        eventID: String
+    ) -> TimelineItem.Kind? {
+        guard typeString == MatronEventType.toolCall ||
+              typeString == MatronEventType.askUser else {
+            return nil
+        }
+        guard let data = originalJson.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let content = parsed["content"] as? [String: Any] else {
+            return nil
+        }
+        switch typeString {
+        case MatronEventType.toolCall:
+            guard let evt = ToolCallEvent.parse(content: content) else { return nil }
+            return .toolCall(eventID: eventID, evt)
+        case MatronEventType.askUser:
+            guard let evt = AskUserEvent.parse(content: content) else { return nil }
+            return .askUser(eventID: eventID, evt)
+        default:
+            return nil  // Already filtered above; defensive only.
+        }
     }
 
     private func mapVirtual(_ v: VirtualTimelineItem, id: String) -> TimelineItem {
