@@ -419,7 +419,15 @@ struct ChatView: View {
         .onChange(of: viewModel.items) { _, _ in
             pendingAskPrompt = viewModel.pendingAsk()
         }
-        .sheet(item: askUserSheetBinding) { ctx in
+        // `onDismiss` re-queries once the dismissal animation has
+        // finished: if the timeline holds ANOTHER unanswered prompt
+        // (the closed one is excluded — every close path marks it
+        // answered first), it presents next rather than staying hidden
+        // until a later snapshot. Re-querying inside the binding's
+        // set-nil would fight the in-flight swipe-down animation.
+        .sheet(item: askUserSheetBinding, onDismiss: {
+            pendingAskPrompt = viewModel.pendingAsk()
+        }) { ctx in
             AskUserSheet(
                 viewModel: viewModel.makeAskUserSheetViewModel(
                     eventID: ctx.id,

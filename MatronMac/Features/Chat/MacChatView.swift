@@ -365,7 +365,12 @@ struct MacChatView: View {
         .onChange(of: viewModel.items) { _, _ in
             pendingAskPrompt = viewModel.pendingAsk()
         }
-        .sheet(item: askUserSheetBinding) { ctx in
+        // `onDismiss` re-queries after dismissal so a second unanswered
+        // prompt presents next instead of waiting for another timeline
+        // snapshot — see iOS `ChatView` for the full rationale.
+        .sheet(item: askUserSheetBinding, onDismiss: {
+            pendingAskPrompt = viewModel.pendingAsk()
+        }) { ctx in
             MacAskUserSheet(
                 viewModel: viewModel.makeAskUserSheetViewModel(
                     eventID: ctx.id,

@@ -573,6 +573,21 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_pendingAsk_surfacesOlderPrompt_onceNewestIsAnswered() async {
+        // Contract behind the sheet's `onDismiss` re-query (PR #6
+        // bugbot pass 1): with two unanswered prompts in the timeline,
+        // closing/answering the newest must surface the older one on
+        // the next query — not leave it hidden until a later snapshot.
+        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
+        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        let vm = await makeAskVM(items: [askItem(id: "$1"), askItem(id: "$2")])
+        XCTAssertEqual(vm.pendingAsk()?.id, "$2")
+
+        vm.markPromptAnswered("$2")
+        XCTAssertEqual(vm.pendingAsk()?.id, "$1", "older unanswered prompt must surface next")
+    }
+
+    @MainActor
     func test_pendingAsk_clearedBy_buttonResponseInTimeline() async {
         // Cross-device: the answer arrives as a chat.matron.
         // button_response event in the timeline, not via this
