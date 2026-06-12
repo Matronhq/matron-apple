@@ -107,21 +107,18 @@ final class ToolCallEventTests: XCTestCase {
     }
 
     func test_argsJSON_emptyDict_whenArgsMissing() throws {
-        // `args` missing entirely (e.g. nullary tool) → parser
-        // defaults `argsAny = [:]`, JSONSerialization serialises
-        // empty dict as `{\n\n}` (two-line literal). Pin that
-        // behaviour so a future ToolCallCard renderer either matches
-        // it (empty args section) or makes the explicit choice to
-        // hide an empty body.
-        let content: [String: Any] = [
-            "tool": "Now",
-            "status": "ok",
-            "result": "2026-05-01T12:00:00Z",
-            "started_at": 1745000000000.0,
-            "ended_at": 1745000001000.0,
-        ]
-        let evt = try XCTUnwrap(ToolCallEvent.parse(content: content))
-        XCTAssertEqual(evt.argsJSON, "{\n\n}")
+        // `args` missing entirely (e.g. nullary tool) → the exact
+        // literal "{}", NOT pretty-printed "{\n\n}" — ToolCallCard
+        // keys its hide-empty-args check on this literal (bugbot
+        // PR #6 finding "Empty tool args still show"). An explicit
+        // empty `args: {}` on the wire must normalise the same way.
+        for content in [
+            ["tool": "Now", "status": "ok", "result": "x", "started_at": 1745000000000.0],
+            ["tool": "Now", "args": [String: Any](), "status": "ok", "result": "x", "started_at": 1745000000000.0],
+        ] as [[String: Any]] {
+            let evt = try XCTUnwrap(ToolCallEvent.parse(content: content))
+            XCTAssertEqual(evt.argsJSON, "{}")
+        }
     }
 
     func test_returnsNil_whenMissingRequiredFields() {

@@ -86,6 +86,57 @@ final class AskUserSheetViewModelTests: XCTestCase {
         XCTAssertEqual(fake.sentText, [])
     }
 
+    // MARK: - Double-submit guard (bugbot PR #6 finding)
+
+    func test_send_secondConcurrentCall_isSwallowed() async {
+        // While the first send() is suspended on the timeline call, a
+        // second Send tap runs on the main actor — the isSending guard
+        // must drop it rather than answer the prompt twice.
+        let fake = FakeTimelineService()
+        fake.sendDelayNanos = 100_000_000
+        let vm = makeVM(
+            event: AskUserEvent(prompt: "Q?", kind: .text, expiresAt: nil),
+            timeline: fake
+        )
+        vm.textInput = "answer"
+        async let first: Void = vm.send()
+        async let second: Void = vm.send()
+        _ = await (first, second)
+        XCTAssertEqual(fake.sentText.count, 1, "concurrent re-tap must not double-answer")
+    }
+
+    func test_send_afterSuccess_isNoop() async {
+        // A tap landing after success but before the dismiss animation
+        // completes must not re-answer (hasSent guard).
+        let fake = FakeTimelineService()
+        let vm = makeVM(
+            event: AskUserEvent(prompt: "Q?", kind: .text, expiresAt: nil),
+            timeline: fake
+        )
+        vm.textInput = "answer"
+        await vm.send()
+        await vm.send()
+        XCTAssertEqual(fake.sentText.count, 1)
+    }
+
+    func test_send_afterError_allowsRetry() async {
+        // Errors must NOT latch the guard — the sheet stays open for a
+        // retry, and the retry goes to the wire.
+        let fake = FakeTimelineService()
+        fake.nextSendError = URLError(.notConnectedToInternet)
+        let vm = makeVM(
+            event: AskUserEvent(prompt: "Q?", kind: .text, expiresAt: nil),
+            timeline: fake
+        )
+        vm.textInput = "answer"
+        await vm.send()
+        XCTAssertNotNil(vm.error)
+        XCTAssertEqual(fake.sentText.count, 0)
+
+        await vm.send()
+        XCTAssertEqual(fake.sentText.count, 1, "post-error retry must reach the wire")
+    }
+
     func test_send_closesSheet_onSuccess() async {
         var closed = false
         let vm = makeVM(

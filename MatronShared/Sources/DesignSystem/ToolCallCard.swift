@@ -104,6 +104,9 @@ public struct ToolCallCard: View {
     }
 
     private var argSummary: String {
+        // Nullary tools normalise to exactly "{}" at parse time — show
+        // nothing rather than a meaningless brace pair next to the name.
+        guard event.argsJSON != "{}" else { return "" }
         let trimmed = event.argsJSON.replacingOccurrences(of: "\n", with: " ")
         return trimmed.count > 80 ? String(trimmed.prefix(77)) + "…" : trimmed
     }

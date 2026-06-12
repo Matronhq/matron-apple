@@ -23,6 +23,10 @@ final class FakeTimelineService: TimelineService, @unchecked Sendable {
     var markReadCalls: Int = 0
     /// When set, the next `sendText`/`sendImage`/`sendFile` call throws this error.
     var nextSendError: Error?
+    /// When non-zero, `sendText`/`sendButtonResponse` suspend this long
+    /// before recording — lets AskUserSheetViewModelTests overlap two
+    /// `send()` calls to pin the double-submit guard.
+    var sendDelayNanos: UInt64 = 0
 
     func items() -> AsyncThrowingStream<[TimelineItem], Error> {
         let snapshots = snapshotsToEmit
@@ -38,11 +42,13 @@ final class FakeTimelineService: TimelineService, @unchecked Sendable {
     }
 
     func sendText(_ body: String, inReplyTo: String?) async throws {
+        if sendDelayNanos > 0 { try? await Task.sleep(nanoseconds: sendDelayNanos) }
         if let err = nextSendError { nextSendError = nil; throw err }
         sentText.append(body)
         sentInReplyTo.append(inReplyTo)
     }
     func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {
+        if sendDelayNanos > 0 { try? await Task.sleep(nanoseconds: sendDelayNanos) }
         if let err = nextSendError { nextSendError = nil; throw err }
         sentButtonResponses.append((selectedValues, promptEventID))
     }

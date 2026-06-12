@@ -24,6 +24,13 @@ public final class AskUserSheetViewModel {
     public var booleanAnswer: Bool?
     public private(set) var isSending = false
     public private(set) var error: String?
+    /// Set once a send has reached the wire successfully. Together with
+    /// `isSending` it makes `send()` idempotent: a second Send tap while
+    /// the first is suspended on the timeline call, or after success but
+    /// before the dismiss animation lands, must not answer the same
+    /// prompt twice (bugbot PR #6 finding "double submit sends
+    /// duplicate answers"). Errors leave it false so retry stays open.
+    private var hasSent = false
 
     private let timeline: TimelineService
     private let onClose: () -> Void
@@ -48,7 +55,7 @@ public final class AskUserSheetViewModel {
     }
 
     public func send() async {
-        guard !isExpired else { return }
+        guard !isExpired, !isSending, !hasSent else { return }
         isSending = true
         defer { isSending = false }
         do {
@@ -67,6 +74,7 @@ public final class AskUserSheetViewModel {
                     inReplyTo: promptEventID
                 )
             }
+            hasSent = true
             onClose()
         } catch {
             self.error = error.localizedDescription

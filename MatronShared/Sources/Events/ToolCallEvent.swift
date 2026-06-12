@@ -63,6 +63,12 @@ public struct ToolCallEvent: Equatable, Sendable {
         }
         let argsAny = content["args"] ?? [:]
         let argsJSON: String = {
+            // Missing/empty args (nullary tools) normalise to the exact
+            // literal "{}" — pretty-printing an empty dict yields the
+            // two-line "{\n\n}", which ToolCallCard's hide-empty-args
+            // check (`!= "{}"`) can't recognise (bugbot PR #6 finding
+            // "Empty tool args still show").
+            if let dict = argsAny as? [String: Any], dict.isEmpty { return "{}" }
             guard let data = try? JSONSerialization.data(
                 withJSONObject: argsAny,
                 options: [.prettyPrinted, .sortedKeys]
