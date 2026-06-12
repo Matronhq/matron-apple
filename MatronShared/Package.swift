@@ -96,6 +96,12 @@ let package = Package(
                 // creating a cycle or pulling MatrixRustSDK.
                 "MatronModels",
                 "MatronSync",
+                // Phase 5: ToolCallCard / AskUserSheetBody /
+                // SessionMetaHeader render the MatronEvents DTOs
+                // directly. MatronEvents is a leaf module (Foundation
+                // only), so the design-system target still pulls no
+                // SDK surface.
+                "MatronEvents",
             ],
             path: "Sources/DesignSystem"
         ),
@@ -147,6 +153,7 @@ let package = Package(
             name: "DesignSystemSnapshotTests",
             dependencies: [
                 "MatronDesignSystem",
+                "MatronEvents",
                 "MatronModels",
                 "MatronSync",
                 .product(name: "SnapshotTesting", package: "swift-snapshot-testing"),

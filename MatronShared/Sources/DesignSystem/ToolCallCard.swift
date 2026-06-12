@@ -1,0 +1,116 @@
+import SwiftUI
+import MatronEvents
+
+/// Collapsible card for a `chat.matron.tool_call` event (spec §4.1).
+///
+/// Collapsed: status icon + tool name + one-line arg summary. Tap (click on
+/// Mac) to expand into the full pretty-printed arguments and result blocks.
+/// On macOS only, hovering a collapsed card surfaces a "Click to expand"
+/// hint and a pointing-hand cursor (spec §5.9) — iOS has no hover state, so
+/// that branch is compiled out there.
+public struct ToolCallCard: View {
+    let event: ToolCallEvent
+    @State private var expanded: Bool
+    @State private var isHovering: Bool
+
+    /// `expanded` defaults to `false` for production tap-toggle behaviour.
+    /// Callers (notably snapshot tests) may pass `true` to render the
+    /// expanded state directly. `forceHovered` forces the Mac hover hint on
+    /// for deterministic snapshot rendering — production callers leave it at
+    /// `false`. Ignored on iOS (no hover state).
+    public init(event: ToolCallEvent, expanded: Bool = false, forceHovered: Bool = false) {
+        self.event = event
+        self._expanded = State(initialValue: expanded)
+        self._isHovering = State(initialValue: forceHovered)
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button { expanded.toggle() } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    statusIcon
+                    Text(event.tool).font(.system(.callout, design: .monospaced)).bold()
+                    Text(argSummary).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Spacer()
+                    #if os(macOS)
+                    if !expanded && isHovering {
+                        Text("Click to expand")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .transition(.opacity)
+                    }
+                    #endif
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            #if os(macOS)
+            // `.pointerStyle(.link)` would be the modern spelling but needs
+            // macOS 15; the package targets macOS 14, so push/pop the cursor
+            // by hand on hover.
+            .onHover { hovering in
+                isHovering = hovering
+                if hovering {
+                    NSCursor.pointingHand.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            #endif
+
+            if expanded {
+                if !event.argsJSON.isEmpty && event.argsJSON != "{}" {
+                    sectionHeader("Arguments")
+                    codeView(event.argsJSON)
+                }
+                if let result = event.resultText {
+                    sectionHeader("Result\(event.resultTruncated ? " (truncated)" : "")")
+                    codeView(result)
+                }
+            }
+        }
+        .padding(8)
+        .background(Color.matronCodeBg)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    @ViewBuilder
+    private var statusIcon: some View {
+        switch event.status {
+        case .running: ProgressView().scaleEffect(0.7).frame(width: 12, height: 12)
+        case .ok:      Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).font(.caption)
+        case .error:   Image(systemName: "xmark.octagon.fill").foregroundStyle(.red).font(.caption)
+        }
+    }
+
+    private var argSummary: String {
+        let trimmed = event.argsJSON.replacingOccurrences(of: "\n", with: " ")
+        return trimmed.count > 80 ? String(trimmed.prefix(77)) + "…" : trimmed
+    }
+
+    private func sectionHeader(_ s: String) -> some View {
+        Text(s).font(.caption2).foregroundStyle(.secondary).padding(.top, 4)
+    }
+
+    private func codeView(_ s: String) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            Text(s).font(.system(.caption, design: .monospaced))
+                .padding(8)
+        }
+        .background(Color.matronCardInnerBg)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+private extension Color {
+    /// Inner code-block background that contrasts with the card's
+    /// `matronCodeBg` surface. `Color(.systemBackground)` is iOS-only,
+    /// same cross-platform split as the aliases in MarkdownText.swift.
+    #if canImport(UIKit) && !os(macOS)
+    static let matronCardInnerBg = Color(.systemBackground)
+    #elseif os(macOS)
+    static let matronCardInnerBg = Color(nsColor: .textBackgroundColor)
+    #endif
+}
