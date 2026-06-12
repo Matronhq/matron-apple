@@ -79,8 +79,60 @@ iPhone 17-family simulators (no "iPhone 16"). Capture xcodebuild to a
 log, echo its own exit code, and require the literal
 "Executed N tests, with 0 failures" line.
 
+### Late addendum — PR #5 fix pass (same evening, after Dan merged PR #7)
+
+Three bugbot threads on PR #5 turned out to be OPEN — they landed in a
+2026-05-07 run AFTER session 12 closed and were never triaged. All
+real; fixed in `8ce219e` on `phase-4-task-1`:
+
+1. **NSE data race (MED)** — `didReceive`'s decode Task vs
+   `serviceExtensionTimeWillExpire` both mutated
+   `bestAttempt`/`contentHandler` unsynchronized. Every finish path
+   now funnels through an `NSLock`-guarded `takeHandlerAndContent()`
+   (take-first wins, loser no-ops). Don't revert to the old "the
+   contentHandler is safe to call twice" comment — that defended
+   double-delivery, not the concurrent content mutation.
+2. **`awaitPendingPushOperations` (LOW)** — demoted to `internal`
+   (tests use `@testable`), doc-comment now describes the test seam
+   it actually is.
+3. **`bootstrapPush` duplication (LOW)** — hoisted to
+   `PushBootstrap.bootstrapHost(...)` (MatronPush); the chat-snapshot
+   closure became `ChatService.firstSnapshotRoomIDs()` (MatronChat,
+   keeping push decoupled from chat). 3 new tests pin it.
+
+Also on `phase-4-task-1`: cherry-picked the two snapshot-baseline
+commits from the phase-5 branch (`d78fc0b`+`5116c36`, content-identical
+blobs) because the macOS rendering drift made 30 SPM + Mac suites fail
+locally on this branch too. And **`phase-4-task-1` was merged INTO
+`phase-5-custom-events`** right after — without that sync, PR #6
+merging after a squash-merged PR #5 would have silently REVERTED the
+fix pass (stacked-branch gotcha; keep doing this for any future
+base-branch commits).
+
+**cla after PR #7:** the permissions fix WORKS — the action now runs
+and asks for a signature ("Committers of pull request 5 have to sign
+the CLA"). Dan needs to comment the standard phrase on PR #5 once
+("I have read the CLA Document and I hereby sign the CLA"); the
+signature persists to `signatures/v1/cla.json` on main and covers all
+future PRs. CI on `8ce219e`: shared-package-tests / ios / mac ALL
+PASS. Gate on the merged phase-5 branch: 425 SPM (4 skipped) / 73
+MatronMacTests / 54 MatronTests / both builds. En route, de-flaked
+`MacChatListViewBindingTests.test_view_observesViewModelGroups_afterStreamYield`
+— same fixed-50ms-sleep flake family as the session-12 fix, same
+`waitUntil` poll cure, confirmed with 3 consecutive green suite runs.
+
+Local-env note — TWO gotchas when hopping between these branches:
+(1) if xcodebuild links fail with `MatronEvents` symbol errors, nuke
+`~/Library/Developer/Xcode/DerivedData/Matron-*` — stale objects from
+the other branch cross-link; (2) re-run `xcodegen generate` after
+every switch — the gitignored project.pbxproj keeps the OTHER branch's
+file list, which surfaces as `cannot find 'MacAskUserSheet' in scope`
+(phase-5 files missing from a phase-4-generated project) or similar.
+
 ### Still open after this session
 
+- **Dan: sign the CLA on PR #5** (one comment) → merge PR #5 → check
+  PR #6's collapsed diff → merge PR #6.
 - Manual Phase 5 validation (human eyes; injectors ready) — then the
   Phase 6 (search) plan per Phase 5 acceptance.
 - Bridge-side emission, Sygnal app_id config, real-device push — items

@@ -19,10 +19,23 @@ final class MacChatListViewBindingTests: XCTestCase {
         let _ = MacChatListView(viewModel: vm)
 
         vm.start()
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        // Same de-flake shape as MacChatListViewTests.waitUntil (session
+        // 12): a fixed 50ms sleep raced the stream's first yield under
+        // suite load — passed alone, failed in the full bundle. Poll
+        // exits the moment the snapshot lands; the 2s ceiling only
+        // burns on a real stall.
+        await waitUntil(timeout: 2.0) { !vm.groups.isEmpty }
 
         XCTAssertFalse(vm.groups.isEmpty)
         XCTAssertEqual(vm.groups.first?.summaries.first?.title, "First chat")
+    }
+
+    private func waitUntil(timeout: TimeInterval, _ predicate: () -> Bool) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if predicate() { return }
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
     }
 }
 
