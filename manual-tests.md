@@ -311,3 +311,59 @@ Run before every TestFlight build (iOS) and every Mac App Store build.
 - Mac decrypted-body display (deferred — `phase-4-mac-silent-push`).
 - Notification badge counts on the app icon (Phase 4 doesn't manipulate `UIApplication.applicationIconBadgeNumber`; `NotificationService.deliver` only sets `content.badge` from the decoded payload if present).
 - App Store distribution `aps-environment: production` for iOS (Phase 7 wires the Debug/Release entitlements split that Mac already has).
+
+## Phase 5 (Custom events)
+
+> Two wire protocols drive the same UI. The **buttons protocol**
+> (`chat.matron.buttons` content key on ordinary messages, answered via
+> `chat.matron.button_response`) is what claude-matrix-bridge emits
+> TODAY — those checks run against the live bridge. The **custom event
+> types** (`chat.matron.tool_call` / `chat.matron.ask_user`) are the
+> forward-looking contract; until the bridge adopts them, exercise those
+> checks by sending the events manually (e.g. `sendRaw` from a script)
+> and expect graceful plain-text fallback from older app builds.
+
+### Tool call card — iOS (needs bridge `tool_call` adoption)
+
+- [ ] Send a Claude prompt that triggers a `Read` tool. Expect a collapsed card with the tool name + arg summary.
+- [ ] Tap to expand → arguments + result visible. Status icon matches outcome.
+- [ ] Tool that fails → red ✗ icon; result shows the error string.
+- [ ] Long-running tool → spinner icon; card updates in place when the result arrives (`m.replace`).
+
+### Tool call card — Mac (needs bridge `tool_call` adoption)
+
+- [ ] Same four checks as iOS.
+- [ ] Hover the cursor over a collapsed card → "Click to expand" hint appears next to the arg summary; cursor changes to pointer.
+- [ ] Move cursor away → hint disappears.
+- [ ] Click anywhere on the card → expands, hint hides (already expanded).
+
+### Ask-user sheet — iOS
+
+- [ ] **Buttons protocol (live bridge):** have the agent ask a question (AskUserQuestion routed through the bridge) → **half-sheet** appears (`.medium` detent) with the prompt + radio options; the timeline shows a centred "❓ <prompt>" pill.
+- [ ] Pick an option → Send → sheet closes; the bridge receives the answer (agent proceeds); the reply does NOT appear as a raw `value1, value2` text bubble (button responses are hidden).
+- [ ] Drag the sheet up → grows to `.large`.
+- [ ] Swipe the sheet down without answering → it does NOT re-pop on the next message; the pill stays in the timeline.
+- [ ] **ask_user events (manual / future bridge):** text prompt → free-text field, reply lands as a normal message replying (`m.in_reply_to`) to the prompt.
+- [ ] multi-choice → checkbox list → comma-separated reply. boolean → Yes/No buttons.
+- [ ] Prompt with `expires_at` in the past never pops a sheet; one expiring while open auto-dismisses and the controls grey out.
+
+### Ask-user sheet — Mac
+
+- [ ] Buttons-protocol question → **fixed-size sheet (520×400)** centered over the main window — no detents, no drag-to-resize.
+- [ ] Same input kinds + expiry behaviour as iOS.
+- [ ] Esc (⎋ / Close button) closes the sheet without sending; no re-pop on the next message.
+
+### Push notifications — both platforms
+
+- [ ] Receive a `tool_call` event while backgrounded → notification body shows "🔧 Tool call".
+- [ ] Receive an `ask_user` event while backgrounded → "❓ Question — needs your answer".
+- [ ] Receive a buttons-protocol question while backgrounded → "❓ <prompt>".
+
+### Cross-platform smoke
+
+- [ ] Send the same question to a chat → answer it on iOS → on Mac (same account, same chat) the open sheet (or pending state) clears within seconds once the answer event syncs; the sheet does NOT re-pop on Mac when the event re-decrypts. Same in reverse (answer on Mac → iOS clears).
+
+### What is NOT tested in Phase 5
+
+- Session-meta header (`chat.matron.session_meta`) — Tasks 7 + 10 deferred: v26 SDK has no state-event read API (see `ChatService.swift` doc-comment).
+- Bridge emission of `tool_call` / `ask_user` events — tracked by the companion bridge spec; until then those events fall back to plain text on builds without Phase 5 and render via Phase 5 UI when sent manually.
