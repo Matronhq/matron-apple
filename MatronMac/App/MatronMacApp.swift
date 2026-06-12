@@ -404,51 +404,24 @@ struct MatronMacApp: App {
     }
 
     /// Phase 4 Task 11 — full push pipeline bootstrap for `session`,
-    /// Mac variant. Same shape as the iOS host's `bootstrapPush(for:)`,
-    /// bar `NotificationProcessSetup`: Mac handles pushes in-process
+    /// Mac variant. The flow lives in `PushBootstrap.bootstrapHost`
+    /// (shared with the iOS host — the two copies were byte-identical,
+    /// cursor PR #5 fourth-pass finding). What stays Mac-specific is
+    /// `NotificationProcessSetup`: Mac handles pushes in-process
     /// (no NSE) so the `PushDecoder.live` factory will eventually need
     /// `.singleProcess(syncService: SyncService)` for the silent-push
-    /// decode path (deferred — not exercised yet from this task; see
-    /// `MacNotificationHandler`'s doc-comment for the full rationale).
-    /// The bootstrap itself only needs `Client.setPusher(...)` which is
-    /// platform-agnostic.
+    /// decode path (deferred — see `MacNotificationHandler`'s
+    /// doc-comment). The bootstrap itself only needs
+    /// `Client.setPusher(...)`, which is platform-agnostic.
     @MainActor
     private func bootstrapPush(for session: UserSession) async {
-        do {
-            let client = try await dependencies.clientProvider.client(for: session)
-            let settings = await LiveMatronNotificationSettings.from(client: client)
-            let pushService = PushServiceLive(
-                provider: dependencies.clientProvider,
-                session: session
-            )
-            let chat = dependencies.chatService(for: session)
-            let bootstrap = PushBootstrap(
-                pushService: pushService,
-                pusherBaseURL: Self.pusherBaseURL,
-                notificationSettings: settings,
-                joinedRoomIDs: {
-                    var iterator = chat.chatSummaries().makeAsyncIterator()
-                    if let snapshot = try? await iterator.next() {
-                        return snapshot.map(\.id)
-                    }
-                    return []
-                }
-            )
-            let granted = await bootstrap.bootstrap()
-            guard granted else { return }
-            // `try await` so a sign-out cancelling this `.task`
-            // raises `CancellationError` and the catch arm exits
-            // without registering. See iOS's `bootstrapPush` for
-            // the full rationale (cursor PR #5 third-pass finding
-            // "stale push registration can resume").
-            let token = try await PushTokenStore.shared.waitForToken()
-            await bootstrap.register(token: token)
-        } catch {
-            // Failure to resolve a Client typically means sync isn't
-            // ready yet — same swallow pattern as iOS, also catches
-            // `CancellationError` from the waitForToken cancellation
-            // path (which is the expected exit, not a real failure).
-        }
+        let chat = dependencies.chatService(for: session)
+        await PushBootstrap.bootstrapHost(
+            provider: dependencies.clientProvider,
+            session: session,
+            pusherBaseURL: Self.pusherBaseURL,
+            joinedRoomIDs: { await chat.firstSnapshotRoomIDs() }
+        )
     }
 
     /// Sygnal pusher endpoint URL — see iOS host's `pusherBaseURL`

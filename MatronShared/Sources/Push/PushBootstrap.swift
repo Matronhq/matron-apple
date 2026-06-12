@@ -2,6 +2,7 @@ import Foundation
 import UserNotifications
 import MatrixRustSDK
 import MatronModels
+import MatronSync
 #if os(iOS)
 import UIKit
 #elseif os(macOS)
@@ -128,6 +129,57 @@ public final class PushBootstrap {
         #elseif os(macOS)
         NSApplication.shared.registerForRemoteNotifications()
         #endif
+    }
+
+    /// The full host-side push pipeline, shared by `MatronApp` and
+    /// `MatronMacApp`'s post-verify `.task` (the two methods were
+    /// byte-identical — cursor PR #5 fourth-pass finding). Runs:
+    ///
+    /// 1. `bootstrap()` — system permission prompt (or cached
+    ///    decision), per-room `.allMessages` mode, register-for-remote.
+    /// 2. `tokenStore.waitForToken()` — suspends until the application
+    ///    delegate receives the APNs token. Returns immediately if the
+    ///    token already arrived (cold-start path). `try await` so a
+    ///    sign-out that cancels the host's `.task` surfaces as
+    ///    `CancellationError` and the catch arm exits without
+    ///    registering — without that, a stale bootstrap could resume
+    ///    on the NEXT session's `setToken` and write a pusher row for
+    ///    the signed-out account (cursor PR #5 third-pass finding).
+    /// 3. `register(token:)` — writes the pusher record on the
+    ///    homeserver via `Client.setPusher(...)`.
+    ///
+    /// Errors are swallowed: a Client-resolution failure typically
+    /// means sync isn't ready yet (next user-switch / relaunch
+    /// retries), and `CancellationError` is the expected sign-out
+    /// exit. Phase 4 doesn't gate UX on push wiring; a later Settings
+    /// UI surfaces persistent failures. Call sites stay app-specific
+    /// (`.task(id:)` placement, `pusherBaseURL`, the Mac
+    /// in-process-decode caveat) — only the flow is shared.
+    public static func bootstrapHost(
+        provider: ClientProvider,
+        session: UserSession,
+        pusherBaseURL: URL,
+        joinedRoomIDs: @escaping @Sendable () async -> [String],
+        tokenStore: PushTokenStore = .shared
+    ) async {
+        do {
+            let client = try await provider.client(for: session)
+            let settings = await LiveMatronNotificationSettings.from(client: client)
+            let pushService = PushServiceLive(provider: provider, session: session)
+            let bootstrap = PushBootstrap(
+                pushService: pushService,
+                pusherBaseURL: pusherBaseURL,
+                notificationSettings: settings,
+                joinedRoomIDs: joinedRoomIDs,
+                tokenStore: tokenStore
+            )
+            let granted = await bootstrap.bootstrap()
+            guard granted else { return }
+            let token = try await tokenStore.waitForToken()
+            await bootstrap.register(token: token)
+        } catch {
+            // Intentionally swallowed — see method doc.
+        }
     }
 }
 
@@ -274,11 +326,15 @@ public final class PushTokenStore {
         return next
     }
 
-    /// Awaits any pending push operations enqueued via
-    /// `enqueuePushOperation`. The bootstrap flow calls this before
-    /// `register(token:)` so a stale unregister from a prior session's
-    /// sign-out completes BEFORE the new session writes its pusher row.
-    public func awaitPendingPushOperations() async {
+    /// Awaits the tail of the push-operation chain. Test seam only —
+    /// production code never needs it: `register(token:)` participates
+    /// in the chain directly via `enqueuePushOperation` (the second
+    /// cursor-pass refactor superseded the earlier await-then-fire
+    /// shape this method existed for). `internal` so
+    /// `PushBootstrapTests` can drain the chain between assertions
+    /// without re-exposing dead public API (cursor PR #5 fourth-pass
+    /// finding).
+    func awaitPendingPushOperations() async {
         await pushOperationTail?.value
     }
 }

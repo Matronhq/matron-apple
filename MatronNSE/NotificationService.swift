@@ -17,6 +17,16 @@ import MatronSync
 /// to a generic body so the user sees SOMETHING — better than the
 /// raw encrypted placeholder APNs would otherwise show.
 final class NotificationService: UNNotificationServiceExtension {
+    /// Guards `contentHandler` + `bestAttempt`. The decode runs on an
+    /// unstructured `Task` (cooperative thread pool) while
+    /// `serviceExtensionTimeWillExpire` arrives on a system thread —
+    /// without serialisation, `deliver` and `fallback` can mutate the
+    /// same `UNMutableNotificationContent` concurrently (cursor PR #5
+    /// fourth-pass finding). Both finish paths go through
+    /// `takeHandlerAndContent()`: whoever takes the pair first owns
+    /// the content object exclusively and delivers; the loser gets
+    /// `nil` and becomes a no-op.
+    private let stateLock = NSLock()
     private var contentHandler: ((UNNotificationContent) -> Void)?
     private var bestAttempt: UNMutableNotificationContent?
 
@@ -24,18 +34,24 @@ final class NotificationService: UNNotificationServiceExtension {
         _ request: UNNotificationRequest,
         withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void
     ) {
+        stateLock.lock()
         self.contentHandler = contentHandler
         self.bestAttempt = request.content.mutableCopy() as? UNMutableNotificationContent
+        stateLock.unlock()
 
         // The Sygnal `event_id_only` payload puts the IDs into
         // `userInfo`. If they're missing we can't fetch the event —
         // fall through to whatever body APNs already supplied (which
         // is just the encrypted placeholder, but at least notifies
-        // the user that something happened).
+        // the user that something happened). Taking (not just calling)
+        // keeps the single-delivery invariant if the expiry callback
+        // fires anyway.
         guard let userInfo = request.content.userInfo as? [String: Any],
               let roomID = userInfo["room_id"] as? String,
               let eventID = userInfo["event_id"] as? String else {
-            contentHandler(request.content)
+            if let (handler, _) = takeHandlerAndContent() {
+                handler(request.content)
+            }
             return
         }
 
@@ -51,12 +67,25 @@ final class NotificationService: UNNotificationServiceExtension {
 
     override func serviceExtensionTimeWillExpire() {
         // iOS is about to terminate the extension; deliver whatever
-        // we've got rather than nothing. Touches the same `bestAttempt`
-        // the in-flight Task may also be writing — UNUserNotificationCenter
-        // documents that the contentHandler is safe to call multiple
-        // times (only the first call delivers), so the worst case is
-        // a redundant call, not a crash.
+        // we've got rather than nothing. Safe against the in-flight
+        // decode Task: both paths funnel through the take-first
+        // semantics of `takeHandlerAndContent()`, so exactly one of
+        // them touches the content object and calls the handler.
         fallback()
+    }
+
+    /// Atomically claims the `(handler, content)` pair. First caller
+    /// wins and gets exclusive ownership of the content object; every
+    /// later caller gets `nil`. This is the only access path to the
+    /// two stored properties after `didReceive` seeds them.
+    private func takeHandlerAndContent() -> ((UNNotificationContent) -> Void, UNMutableNotificationContent?)? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard let handler = contentHandler else { return nil }
+        contentHandler = nil
+        let content = bestAttempt
+        bestAttempt = nil
+        return (handler, content)
     }
 
     /// Stands up just enough of the host app's storage layout to open
@@ -107,7 +136,13 @@ final class NotificationService: UNNotificationServiceExtension {
     }
 
     private func deliver(decoded: DecodedNotification, roomID: String, eventID: String) {
-        guard let content = bestAttempt, let handler = contentHandler else { return }
+        guard let (handler, maybeContent) = takeHandlerAndContent() else { return }
+        guard let content = maybeContent else {
+            // mutableCopy failed in didReceive — nothing to decorate,
+            // but the handler must still fire exactly once.
+            handler(UNNotificationContent())
+            return
+        }
         content.title = decoded.title
         content.body = decoded.body
         content.threadIdentifier = decoded.threadIdentifier ?? roomID
@@ -123,8 +158,8 @@ final class NotificationService: UNNotificationServiceExtension {
     }
 
     private func fallback() {
-        guard let handler = contentHandler else { return }
-        if let content = bestAttempt {
+        guard let (handler, maybeContent) = takeHandlerAndContent() else { return }
+        if let content = maybeContent {
             content.title = "Matron"
             content.body = "New message"
             handler(content)

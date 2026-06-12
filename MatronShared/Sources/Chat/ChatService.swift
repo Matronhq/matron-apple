@@ -85,3 +85,20 @@ public protocol ChatService: Sendable {
     //
     // func sessionMeta(for roomID: String) async throws -> SessionMetaEvent?
 }
+
+public extension ChatService {
+    /// One snapshot off the long-lived `chatSummaries()` stream, mapped
+    /// to room IDs. Never consumed past the first yield, so the
+    /// broadcaster's other registered consumers (ChatListViewModel,
+    /// NewChatSheet) are unaffected. `PushBootstrap.bootstrapHost`'s
+    /// `joinedRoomIDs` source on both hosts — lives here (not in
+    /// MatronPush) so the push module stays decoupled from the chat
+    /// layer.
+    func firstSnapshotRoomIDs() async -> [String] {
+        var iterator = chatSummaries().makeAsyncIterator()
+        if let snapshot = try? await iterator.next() {
+            return snapshot.map(\.id)
+        }
+        return []
+    }
+}
