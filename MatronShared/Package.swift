@@ -129,6 +129,10 @@ let package = Package(
         .target(
             name: "MatronPush",
             dependencies: [
+                // Phase 5 Task 12: PushDecoder reads the
+                // MatronEventType constants for the notification-body
+                // hints (tool_call / ask_user / buttons).
+                "MatronEvents",
                 "MatronModels",
                 "MatronStorage",
                 "MatronSync",
