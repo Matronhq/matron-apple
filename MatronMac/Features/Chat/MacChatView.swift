@@ -61,6 +61,11 @@ struct MacChatView: View {
     /// the temp file to QuickLook / the user's preferred app, which
     /// means no SwiftUI sheet is needed. Only image taps land here.
     @State private var imagePreview: ImagePreview?
+    /// The ask-user prompt currently presented as a fixed-size sheet
+    /// (Phase 5 Task 11). Same contract as iOS `ChatView`: refreshed
+    /// from `viewModel.pendingAsk()` per snapshot, nil hides, an
+    /// answer from another device auto-dismisses.
+    @State private var pendingAskPrompt: AskUserPromptContext?
 
     /// Identifiable wrapper around a SwiftUI `Image` so
     /// `.sheet(item:)` has something to key on. Per-present UUID so
@@ -354,6 +359,43 @@ struct MacChatView: View {
                 onDismiss: { imagePreview = nil }
             )
         }
+        // Phase 5 Task 11: ask-user prompt sheet. Same drive logic as
+        // iOS `ChatView`; the presentation differs — fixed 520×400
+        // frame because Mac sheets have no detents (spec §5.9).
+        .onChange(of: viewModel.items) { _, _ in
+            pendingAskPrompt = viewModel.pendingAsk()
+        }
+        .sheet(item: askUserSheetBinding) { ctx in
+            MacAskUserSheet(
+                viewModel: viewModel.makeAskUserSheetViewModel(
+                    eventID: ctx.id,
+                    event: ctx.event,
+                    onClose: { closeAskUserSheet(ctx) }
+                ),
+                onClose: { closeAskUserSheet(ctx) }
+            )
+            .frame(width: 520, height: 400)
+        }
+    }
+
+    /// See iOS `ChatView.askUserSheetBinding` — intercepts interactive
+    /// dismissal (Esc / Close) so the prompt doesn't re-pop on the
+    /// next snapshot.
+    private var askUserSheetBinding: Binding<AskUserPromptContext?> {
+        Binding(
+            get: { pendingAskPrompt },
+            set: { newValue in
+                if newValue == nil, let ctx = pendingAskPrompt {
+                    viewModel.markPromptAnswered(ctx.id)
+                }
+                pendingAskPrompt = newValue
+            }
+        )
+    }
+
+    private func closeAskUserSheet(_ ctx: AskUserPromptContext) {
+        viewModel.markPromptAnswered(ctx.id)
+        pendingAskPrompt = nil
     }
 
     /// Per-bot verification evaluation. See iOS `ChatView` for details —

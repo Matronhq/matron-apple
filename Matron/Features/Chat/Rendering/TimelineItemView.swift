@@ -139,34 +139,29 @@ struct TimelineItemView: View {
             .padding(.vertical, 4)
 
         case .toolCall(_, let evt):
-            // Phase 5 Task 5 placeholder — Task 11 swaps this for
-            // the proper `ToolCallCard` (Task 8). Plain-text fallback
-            // until then so the timeline still renders something
-            // useful for tool-call events landing on a build that
-            // hasn't shipped Task 11 yet (graceful-degradation
-            // contract per the Phase 5 plan front-matter).
-            MessageBubble(
-                style: .bot,
-                senderLabel: displayName(for: item.sender)
-            ) {
-                Text("🔧 \(evt.tool) — \(evt.status.rawValue)")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+            HStack {
+                ToolCallCard(event: evt)
+                    .frame(maxWidth: 320, alignment: .leading)
+                Spacer(minLength: 0)
             }
+            .padding(.horizontal)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Tool call: \(evt.tool)"))
 
         case .askUser(_, let evt):
-            // Phase 5 Task 5 placeholder — Task 11 swaps this for
-            // the proper `AskUserSheet` presentation (Task 9). Plain-
-            // text fallback shows the prompt; the user can't interact
-            // with options until Task 11 lands.
-            MessageBubble(
-                style: .bot,
-                senderLabel: displayName(for: item.sender)
-            ) {
-                Text("❓ \(evt.prompt)")
-                    .font(.callout)
+            // The interaction surface is the sheet `ChatView` presents
+            // off `viewModel.pendingAsk()`; the timeline row is just a
+            // pill so the user can see there's an (un)answered prompt
+            // at this point in the conversation.
+            HStack {
+                Spacer()
+                Label(evt.prompt, systemImage: "questionmark.circle")
+                    .labelStyle(.titleAndIcon)
+                    .font(.caption)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(Color.accentColor.opacity(0.12))
+                    .clipShape(Capsule())
+                Spacer()
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Question: \(evt.prompt)"))

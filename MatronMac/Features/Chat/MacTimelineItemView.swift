@@ -117,31 +117,28 @@ struct MacTimelineItemView: View {
             .padding(.vertical, 4)
 
         case .toolCall(_, let evt):
-            // Phase 5 Task 5 placeholder — Task 11 swaps this for
-            // the proper `ToolCallCard`. Plain-text fallback so the
-            // Mac timeline renders something useful for tool-call
-            // events on a build that hasn't shipped Task 11 yet.
-            MessageBubble(
-                style: .bot,
-                senderLabel: Self.displayName(for: item.sender)
-            ) {
-                Text("🔧 \(evt.tool) — \(evt.status.rawValue)")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+            HStack {
+                ToolCallCard(event: evt)
+                    .frame(maxWidth: 420, alignment: .leading)  // wider on Mac
+                Spacer(minLength: 0)
             }
+            .padding(.horizontal)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Tool call: \(evt.tool)"))
 
         case .askUser(_, let evt):
-            // Phase 5 Task 5 placeholder — Task 11 swaps this for
-            // the `MacAskUserSheet` presentation (Task 9). Prompt
-            // text only until then.
-            MessageBubble(
-                style: .bot,
-                senderLabel: Self.displayName(for: item.sender)
-            ) {
-                Text("❓ \(evt.prompt)")
-                    .font(.callout)
+            // The interaction surface is the `MacAskUserSheet` that
+            // `MacChatView` presents off `viewModel.pendingAsk()`;
+            // the timeline row is just a pill marker — same as iOS.
+            HStack {
+                Spacer()
+                Label(evt.prompt, systemImage: "questionmark.circle")
+                    .labelStyle(.titleAndIcon)
+                    .font(.caption)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(Color.accentColor.opacity(0.12))
+                    .clipShape(Capsule())
+                Spacer()
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Question: \(evt.prompt)"))

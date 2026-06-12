@@ -63,6 +63,13 @@ struct ChatView: View {
     /// user can save / forward the attachment without leaving the
     /// chat.
     @State private var attachmentPreview: AttachmentPreview?
+    /// The ask-user prompt currently presented as a half-sheet (Phase
+    /// 5 Task 11). Refreshed from `viewModel.pendingAsk()` on every
+    /// timeline snapshot; `nil` hides the sheet. Identity is the
+    /// prompt's event ID so re-snapshots of the same prompt don't
+    /// re-present, while an answer landing from another device nils
+    /// this out and auto-dismisses.
+    @State private var pendingAskPrompt: AskUserPromptContext?
 
     /// Sheet payload for fullscreen attachment previews. Identifiable
     /// via a per-present UUID so two consecutive taps re-mount the
@@ -404,6 +411,46 @@ struct ChatView: View {
                 fileShareSheet(url: url, filename: filename)
             }
         }
+        // Phase 5 Task 11: surface the most recent unanswered ask-user
+        // prompt as a half-sheet. Driven off the snapshot (not a
+        // one-shot on appear) so prompts arriving while the chat is
+        // open pop immediately, and answers landing from another
+        // device dismiss the open sheet (pendingAsk() goes nil).
+        .onChange(of: viewModel.items) { _, _ in
+            pendingAskPrompt = viewModel.pendingAsk()
+        }
+        .sheet(item: askUserSheetBinding) { ctx in
+            AskUserSheet(
+                viewModel: viewModel.makeAskUserSheetViewModel(
+                    eventID: ctx.id,
+                    event: ctx.event,
+                    onClose: { closeAskUserSheet(ctx) }
+                ),
+                onClose: { closeAskUserSheet(ctx) }
+            )
+            .presentationDetents([.medium, .large])
+        }
+    }
+
+    /// Binding for the ask-user sheet that intercepts interactive
+    /// dismissal (swipe-down): a user pushing the sheet away is a
+    /// "not answering this" signal — mark the prompt answered so the
+    /// next snapshot's `.onChange` doesn't immediately re-present it.
+    private var askUserSheetBinding: Binding<AskUserPromptContext?> {
+        Binding(
+            get: { pendingAskPrompt },
+            set: { newValue in
+                if newValue == nil, let ctx = pendingAskPrompt {
+                    viewModel.markPromptAnswered(ctx.id)
+                }
+                pendingAskPrompt = newValue
+            }
+        )
+    }
+
+    private func closeAskUserSheet(_ ctx: AskUserPromptContext) {
+        viewModel.markPromptAnswered(ctx.id)
+        pendingAskPrompt = nil
     }
 
     /// iOS file-share sheet body. Presents the filename + a system

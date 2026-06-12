@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import os
 import MatronChat
+import MatronEvents
 import MatronModels
 import MatronStorage
 
@@ -258,10 +259,24 @@ public final class ChatViewModel {
     /// fire duplicate fetches on every SwiftUI re-render.
     private var inFlightRequests: Set<URL> = []
 
+    /// Event IDs of ask-user prompts the user has answered (or
+    /// dismissed) on THIS device, persisted across launches under
+    /// `matron.answeredPrompts.<roomID>` so push re-decryption /
+    /// re-opening the room can't re-pop an already-answered sheet.
+    /// Cross-DEVICE answers are detected from the timeline instead —
+    /// see `pendingAsk()`.
+    private var answeredPromptIDs: Set<String>
+
+    private var answeredPromptsDefaultsKey: String {
+        "matron.answeredPrompts.\(roomID)"
+    }
+
     public init(roomID: String, timeline: TimelineService, media: MediaService) {
         self.roomID = roomID
         self.timeline = timeline
         self.media = media
+        let stored = UserDefaults.standard.stringArray(forKey: "matron.answeredPrompts.\(roomID)") ?? []
+        self.answeredPromptIDs = Set(stored)
     }
 
     /// Starts observing the timeline. Returns *after* the first snapshot has
@@ -529,6 +544,70 @@ public final class ChatViewModel {
         return stripped
     }
 
+    // MARK: - Ask-user prompts (Phase 5 Task 11)
+
+    /// The most recent ask-user prompt the user still needs to answer,
+    /// or nil. Views key the sheet presentation off this from
+    /// `.onChange(of: viewModel.items)`.
+    ///
+    /// A prompt counts as answered when ANY of:
+    /// - it was answered/dismissed on this device
+    ///   (`answeredPromptIDs`, UserDefaults-persisted);
+    /// - the timeline contains a `chat.matron.button_response` for it
+    ///   (`.askUserAnswer`) — covers the user's other devices, which
+    ///   per-device bookkeeping can't see (Task 13's cross-platform
+    ///   smoke test);
+    /// - the timeline contains one of the user's own replies
+    ///   (`m.in_reply_to`) targeting it — same cross-device story for
+    ///   the `ask_user` text-reply channel.
+    ///
+    /// Already-expired prompts are skipped entirely: popping a sheet
+    /// whose `awaitExpiry` would immediately dismiss it is just a
+    /// flash of dead UI.
+    public func pendingAsk() -> AskUserPromptContext? {
+        var answeredInTimeline: Set<String> = []
+        for item in items {
+            if case .askUserAnswer(let promptID, _) = item.kind, !promptID.isEmpty {
+                answeredInTimeline.insert(promptID)
+            }
+            if item.isOwn, let target = item.inReplyToEventID {
+                answeredInTimeline.insert(target)
+            }
+        }
+        for item in items.reversed() {
+            guard case .askUser(let id, let evt) = item.kind else { continue }
+            if answeredPromptIDs.contains(id) { continue }
+            if answeredInTimeline.contains(id) { continue }
+            if let expiresAt = evt.expiresAt, Date.now >= expiresAt { continue }
+            return AskUserPromptContext(id: id, event: evt)
+        }
+        return nil
+    }
+
+    /// Called after a successful send (or explicit dismissal) so the
+    /// prompt can't re-pop — push re-decryption can re-deliver the
+    /// same event after the user already answered. Persisted per room.
+    public func markPromptAnswered(_ eventID: String) {
+        answeredPromptIDs.insert(eventID)
+        UserDefaults.standard.set(Array(answeredPromptIDs), forKey: answeredPromptsDefaultsKey)
+    }
+
+    /// Builds the sheet ViewModel for a pending prompt. Factory lives
+    /// here so the `TimelineService` stays private to this class —
+    /// the Views never hold a service reference directly.
+    public func makeAskUserSheetViewModel(
+        eventID: String,
+        event: AskUserEvent,
+        onClose: @escaping () -> Void
+    ) -> AskUserSheetViewModel {
+        AskUserSheetViewModel(
+            event: event,
+            promptEventID: eventID,
+            timeline: timeline,
+            onClose: onClose
+        )
+    }
+
     /// Live count of cached resolved images. Test seam for asserting
     /// LRU eviction without exposing the raw storage.
     public var resolvedImageCount: Int { resolvedImages.count }
@@ -536,6 +615,21 @@ public final class ChatViewModel {
     /// Live count of remembered decode failures. Test seam for asserting
     /// LRU eviction without exposing the raw storage.
     public var failedRequestCount: Int { failedRequests.count }
+}
+
+/// Identifiable payload for the ask-user sheet presentation —
+/// `.sheet(item:)` keys on the prompt's event ID, so a NEW prompt
+/// arriving while a sheet is up swaps the content, while re-snapshots
+/// of the SAME prompt leave the presented sheet untouched.
+public struct AskUserPromptContext: Identifiable, Equatable, Sendable {
+    /// The prompt's Matrix event ID.
+    public let id: String
+    public let event: AskUserEvent
+
+    public init(id: String, event: AskUserEvent) {
+        self.id = id
+        self.event = event
+    }
 }
 
 /// Single-shot signal used by `ChatViewModel.start()` to bridge "first
