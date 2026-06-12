@@ -380,65 +380,20 @@ struct MatronApp: App {
     }
 
     /// Phase 4 Task 5 — full push pipeline bootstrap for `session`.
-    /// Builds a `PushBootstrap` with the live SDK-bridging deps and
-    /// runs:
-    ///
-    /// 1. `bootstrap()` — system permission prompt (or cached
-    ///    decision), per-room `.allMessages` mode, register-for-remote.
-    /// 2. `PushTokenStore.shared.waitForToken()` — suspends until the
-    ///    `MatronAppDelegate` receives the APNs token. Returns
-    ///    immediately if the token already arrived (cold-start path).
-    /// 3. `register(token:)` — writes the pusher record on the
-    ///    homeserver via `Client.setPusher(...)`.
-    ///
-    /// Errors surface as no-ops today (Phase 4 doesn't gate UX on
-    /// "did push wire up successfully"); a Settings UI in a later
-    /// phase will surface persistent failures.
+    /// The flow (permission → per-room mode → waitForToken →
+    /// register, with the cancellation and error-swallow semantics)
+    /// lives in `PushBootstrap.bootstrapHost` — shared with
+    /// `MatronMacApp` since the two copies were byte-identical
+    /// (cursor PR #5 fourth-pass finding).
     @MainActor
     private func bootstrapPush(for session: UserSession) async {
-        do {
-            let client = try await dependencies.clientProvider.client(for: session)
-            let settings = await LiveMatronNotificationSettings.from(client: client)
-            let pushService = PushServiceLive(
-                provider: dependencies.clientProvider,
-                session: session
-            )
-            let chat = dependencies.chatService(for: session)
-            let bootstrap = PushBootstrap(
-                pushService: pushService,
-                pusherBaseURL: Self.pusherBaseURL,
-                notificationSettings: settings,
-                joinedRoomIDs: {
-                    // One snapshot off the long-lived chatSummaries
-                    // stream — never consumed past the first yield, so
-                    // the broadcaster's other registered consumers
-                    // (ChatListViewModel, NewChatSheet) are unaffected.
-                    var iterator = chat.chatSummaries().makeAsyncIterator()
-                    if let snapshot = try? await iterator.next() {
-                        return snapshot.map(\.id)
-                    }
-                    return []
-                }
-            )
-            let granted = await bootstrap.bootstrap()
-            guard granted else { return }
-            // `try await` so a sign-out that cancels this `.task`
-            // surfaces as `CancellationError` and the catch arm
-            // exits without registering — without that, a stale
-            // bootstrap could resume on the NEXT session's setToken
-            // and write a pusher row for the signed-out account
-            // (cursor PR #5 third-pass finding).
-            let token = try await PushTokenStore.shared.waitForToken()
-            await bootstrap.register(token: token)
-        } catch {
-            // Failure to resolve a Client typically means sync isn't
-            // ready yet — the next user-switch / relaunch will retry.
-            // `CancellationError` from the waitForToken cancellation
-            // path also lands here; a cancelled bootstrap is the
-            // expected exit, no surfacing needed. Phase 4 doesn't
-            // gate UX on this; later Settings UI surfaces persistent
-            // failures.
-        }
+        let chat = dependencies.chatService(for: session)
+        await PushBootstrap.bootstrapHost(
+            provider: dependencies.clientProvider,
+            session: session,
+            pusherBaseURL: Self.pusherBaseURL,
+            joinedRoomIDs: { await chat.firstSnapshotRoomIDs() }
+        )
     }
 
     /// Sygnal pusher endpoint URL. **Out of scope for Phase 4 plan**:

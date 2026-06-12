@@ -57,4 +57,33 @@ final class ChatServiceFakeTests: XCTestCase {
         XCTAssertEqual(received[0].count, 1)
         XCTAssertEqual(received[1].count, 2)
     }
+
+    // MARK: firstSnapshotRoomIDs (PushBootstrap.bootstrapHost's
+    // joinedRoomIDs source — extracted in the PR #5 fourth-pass dedup)
+
+    func test_firstSnapshotRoomIDs_mapsFirstYieldOnly() async {
+        let bot = BotIdentity(matrixID: "@bot:s", displayName: "Bot", avatarURL: nil)
+        let fake = FakeChatService()
+        fake.snapshotsToEmit = [
+            [ChatSummary(id: "!1:s", title: "A", bot: bot, lastActivity: .distantPast, unreadCount: 0),
+             ChatSummary(id: "!2:s", title: "B", bot: bot, lastActivity: .now, unreadCount: 1)],
+            [ChatSummary(id: "!3:s", title: "C", bot: bot, lastActivity: .now, unreadCount: 0)],
+        ]
+        let ids = await fake.firstSnapshotRoomIDs()
+        XCTAssertEqual(ids, ["!1:s", "!2:s"], "first yield only — later snapshots belong to other consumers")
+    }
+
+    func test_firstSnapshotRoomIDs_emptyOnImmediateFinish() async {
+        let fake = FakeChatService()
+        fake.snapshotsToEmit = []
+        let ids = await fake.firstSnapshotRoomIDs()
+        XCTAssertEqual(ids, [])
+    }
+
+    func test_firstSnapshotRoomIDs_emptyOnStreamError() async {
+        let fake = FakeChatService()
+        fake.streamError = URLError(.notConnectedToInternet)
+        let ids = await fake.firstSnapshotRoomIDs()
+        XCTAssertEqual(ids, [], "throwing stream maps to [] — bootstrap shouldn't fail on a cold chat list")
+    }
 }
