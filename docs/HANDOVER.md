@@ -121,13 +121,58 @@ decode onto the one `AskUserEvent` DTO and sheet UI:
 - Tasks 7 + 10 (session_meta) — blocked on the SDK state-event reader;
   contract pinned in `ChatService.swift`. The bridge can start
   emitting the state event now (write side exists).
-- Bridge-side emission of `tool_call`/`ask_user` — spec drafted (see
-  above); bridge engineer's court.
+- Bridge-side emission of `tool_call`/`ask_user` — spec committed to
+  claude-matrix-bridge `master` (`1420757`); bridge engineer's court.
 - iOS-side snapshot variants: repo convention is mac-only 3-variant
   baselines (Phase 2 precedent), not the plan's 6-variant matrix.
 - Everything open from Phase 4 (CI billing, Sygnal config for this
   app's four app_ids, Mac silent-push follow-up, real-device push
   validation) — see the Phase 4 front-matter below.
+
+### Next session — recommended plan (written 2026-06-12 at session close)
+
+Work items in priority order. 1–3 are this repo's; 4–6 live elsewhere
+or need infra. A fresh session can take 1+2 comfortably; 3 only if the
+review cycle converges fast.
+
+1. **Bugbot review cycle on PR #6** (Phase 5, stacked onto
+   `phase-4-task-1`). Same loop as PR #4/#5: `gh pr view 6 --json
+   reviews` + check cursor inline comments, fix real findings in
+   iterative passes until a zero-finding run. History says expect 2–4
+   passes. Re-run the full gate after each pass (`swift test` from
+   `MatronShared/`, MatronMacTests, MatronTests, both host builds —
+   all green at handover: 421 SPM / 73 Mac / 54+ iOS).
+2. **Manual Phase 5 validation against the live bridge** —
+   `manual-tests.md` §Phase 5, the buttons-protocol block specifically
+   (it's the only part exercisable today): agent question → half-sheet
+   on iOS sim + fixed sheet on signed Mac build, structured
+   `button_response` accepted by the bridge, hidden response event, no
+   re-pop after dismiss. The tool_call/ask_user blocks need bridge
+   adoption (item 5) or manual `sendRaw` injection — a quick injection
+   script against the Docker harness from
+   `tests/integration/` would cover them without waiting on the bridge.
+3. **Merge logistics.** PR #5 (Phase 4) is still the gate: CI-billing
+   block outstanding since session 8 — either the budget refreshed
+   (check first: a green run may just need a re-trigger) or
+   admin-override per the session 9/10 pattern. After PR #5 merges,
+   PR #6 retargets to `main` automatically (stacked-PR behaviour) —
+   verify the diff collapses to the 11 Phase 5 commits before merging.
+4. **Bridge: emit `tool_call` / `ask_user` / `session_meta`** per
+   claude-matrix-bridge `docs/superpowers/specs/2026-06-12-matron-events-protocol.md`
+   (separate repo / session; tool_call wants `m.replace` updates,
+   note the spec's caveat about ask_user answers being visible plain
+   replies vs hidden button_responses).
+5. **Server-side push config** (yearbook-infra): add this app's four
+   `chat.matron.{ios,mac}[.dev]` app_ids to `dev_server.sygnal.apps`
+   on dev-2 + re-provision, and stand up the `sygnal.matron.chat`
+   hostname `pusherBaseURL` hardcodes (or repoint at
+   `https://matrix-dev2.yearbooks.be` like Matron X). Then real-device
+   push validation incl. the Task 12 hint bodies.
+6. **Phase 6 plan (search)** — per Phase 5 acceptance, write it once
+   Phase 5's manual checks pass. Also keep an eye on
+   matrix-rust-components-swift releases for a `Room` state-event
+   reader: that unblocks deferred Tasks 7 + 10 (session_meta header),
+   whose contract is pinned in `ChatService.swift`.
 
 ---
 
