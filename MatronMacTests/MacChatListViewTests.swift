@@ -76,7 +76,16 @@ final class MacChatListViewTests: XCTestCase {
         // isolation, slow when the suite is fanned out). Polling
         // exits the moment the assertion can pass while keeping a
         // generous ceiling for CI / busy hosts.
-        await waitUntil(timeout: 2.0) { !vm.groups.isEmpty }
+        //
+        // The predicate waits for the SECOND snapshot (unreadCount 3),
+        // not just non-empty: the hash assertion below compares
+        // against `updated`'s field values, and under suite load the
+        // poll could win between the two snapshots — the session-12
+        // `!groups.isEmpty` de-flake still failed fast (~0.2s, i.e.
+        // not the timeout) whenever the assert ran on `initial`.
+        await waitUntil(timeout: 2.0) {
+            vm.groups.flatMap(\.summaries).first?.unreadCount == 3
+        }
         XCTAssertFalse(vm.groups.isEmpty)
 
         // Hash invariant: the new snapshot's struct hash differs from the
