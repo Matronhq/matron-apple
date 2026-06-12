@@ -1,4 +1,135 @@
-# Handover — Matron iOS+Mac, Phase 4 substantially shipped on PR #5
+# Handover — Matron iOS+Mac, Phase 5 implemented on `phase-5-custom-events`
+
+## 2026-06-12 session — Phase 5 (custom events) implemented, Tasks 7+10 deferred
+
+**TL;DR:** Picked up on `phase-5-custom-events` (stacked on the unmerged
+Phase 4 branch; Tasks 1–6 + the Task 7 SDK-gap doc were already there).
+This session shipped **Tasks 8, 9, 9b, 11, 12, 13** — the full
+tool-call-card + ask-user-sheet surface on both platforms — plus a
+**buttons-protocol interop layer** that wasn't in the plan as written.
+Tasks 7 + 10 (session_meta read + header) stay deferred on the v26 SDK
+state-event-reader gap. All verification green at close: **421 SPM
+tests** (4 skipped), **73 MatronMacTests**, **MatronTests**, both hosts
+build clean.
+
+### The protocol decision (read this before touching ask-user code)
+
+The plan's `chat.matron.ask_user`/`tool_call` event types are a
+*future* bridge contract — the bridge TODAY emits
+`chat.matron.buttons` content keys on ordinary `m.room.message`s and
+reads `chat.matron.button_response` answers (canonical:
+matron-web `src/matron/EventTypes.ts`; Matron X ships the same).
+Decision (user-confirmed): **plan + buttons interop** — both protocols
+decode onto the one `AskUserEvent` DTO and sheet UI:
+
+- `AskUserEvent.parseButtons` mirrors Matron X's
+  `MatronButtonsContent.parse` field-for-field (`mode`
+  pick_one/pick_many → choice/multiChoice; buttons `[{id,label,value}]`,
+  ≥1 required). `Option.value` is what `selected_values` carries and can
+  differ from the label (`label: "Cancel message 1"`, `value:
+  "cancel:0"`); for `ask_user` options value defaults to label.
+- `AskUserEvent.replyChannel` picks the answer wire format:
+  `.textReply` → `Timeline.sendReply` (rich-reply fallback added by the
+  SDK) per spec §4.2; `.buttonResponse` → `Room.sendRaw` with
+  `selected_values` + `m.relates_to: {rel_type:
+  chat.matron.button_answer}`, byte-compatible with Matron X
+  `TimelineController.sendButtonResponse`.
+- Incoming `button_response` events map to a hidden
+  `TimelineItem.Kind.askUserAnswer` (Matron X hides them too) and double
+  as the **cross-device answered signal**: `ChatViewModel.pendingAsk()`
+  treats a prompt answered if (a) this device answered it
+  (UserDefaults `matron.answeredPrompts.<roomID>`), (b) the timeline
+  has a button_response for it, or (c) the timeline has one of the
+  user's own `m.in_reply_to` replies targeting it
+  (`TimelineItem.inReplyToEventID`, new). (b)+(c) are what make the
+  Task 13 cross-platform smoke test possible at all — the plan's
+  UserDefaults-only idempotency is per-device.
+
+### What shipped (per task, one commit each unless noted)
+
+- **Task 8** `e3ed07e` — ToolCallCard + 21 snapshots. Deviations:
+  `Color.matronCodeBg` convention instead of iOS-only `systemGray6`;
+  `NSCursor.pointingHand` on hover because `.pointerStyle(.link)` needs
+  macOS 15 (package targets macOS 14).
+- **Buttons interop** `5bd0728` (events layer) + `1b66e6c` (timeline
+  send/map): see above. `TimelineServiceLive` now caches the `Room`
+  beside the `Timeline` (`sendRaw` is Room-level FFI). Buttons
+  detection pulls `debugInfo().originalJson` per text message behind a
+  cheap `contains("chat.matron.")` pre-check (Matron X's trick).
+- **Task 9** `2e7cd8e` — AskUserSheetViewModel (@Observable,
+  MatronViewModels) + shared `AskUserSheetBody` (DesignSystem) + thin
+  wrappers: iOS `AskUserSheet` (NavigationStack, presented at
+  `.medium/.large` detents), Mac `MacAskUserSheet` (header + Esc-bound
+  Close, presented at fixed 520×400). Expiry: `isExpired` gates send;
+  `awaitExpiry` drives `.task(id: promptEventID)` auto-dismiss.
+- **Task 9b** `9fbb7bb` — 18 AskUserSheetBody snapshots.
+  `Binding.constant` instead of the plan's StatefulPreviewWrapper.
+- **Task 11** `10fcb7e` — pendingAsk machinery + both views present the
+  sheet off `.onChange(of: viewModel.items)`; placeholders from Task 5
+  replaced with ToolCallCard (320pt iOS / 420pt Mac) + the
+  pending-question pill. Interactive dismissal (swipe-down / Esc)
+  marks the prompt answered so it doesn't re-pop next snapshot; an
+  answer from another device nils `pendingAsk()` and auto-dismisses.
+  Expired prompts never pop. `makeAskUserSheetViewModel` factory keeps
+  the TimelineService private to the VM.
+- **Task 12** `8b7bf98` — PushDecoder hints. Plan's `event.eventType()`
+  is fictional in v26; hints are parsed from `NotificationItem.rawEvent`
+  JSON (pure + tested): tool_call → "🔧 Tool call", ask_user →
+  "❓ Question — needs your answer", buttons message → "❓ <prompt>".
+- **Task 13** `529e191` — manual-tests.md Phase 5 section, split per
+  wire protocol (buttons checks run against the live bridge; tool_call/
+  ask_user checks need bridge adoption or manual sendRaw injection).
+- **Bridge spec** (plan acceptance #3) — drafted at
+  `claude-matrix-bridge/docs/superpowers/specs/2026-06-12-matron-events-protocol.md`
+  — **left UNCOMMITTED in that repo**, review + commit it there.
+
+### Maintenance landed en route
+
+- `4df41e4` + `664a8c1` — 54 Mac snapshot baselines re-recorded (30 SPM
+  + 24 MatronMacTests). All were sub-pixel antialiasing drift from a
+  macOS update since 2026-05-06; every pair eyeballed identical. Use
+  `SNAPSHOT_TESTING_RECORD=failed swift test` / env-var
+  `TEST_RUNNER_SNAPSHOT_TESTING_RECORD=failed xcodebuild test` next
+  time.
+- `664a8c1` also FINISHED the session-12 selection-state de-flake: the
+  `waitUntil` predicate only waited for the FIRST snapshot
+  (`!groups.isEmpty`) but the hash assert needs the SECOND — under
+  suite load it failed fast (~0.2s, not the 2s timeout). Predicate now
+  waits for `unreadCount == 3`.
+
+### Things to NOT undo (Phase 5 session)
+
+- **Don't "simplify" `.askUserAnswer` away or render it.** Hidden in
+  three places (both `shouldRender`s + `ChatViewModel` row builder);
+  it's load-bearing for cross-device answered detection AND for not
+  showing raw `cancel:0` bodies as chat text.
+- **Don't send button answers as text replies.** The bridge prefers
+  `selected_values` over body, and `value ≠ label` for queue actions —
+  a label-text reply would send "Cancel message 1" where the bridge
+  expects "cancel:0".
+- **Don't move buttons detection onto `MsgLikeKind.other`.** Buttons
+  ride `msgtype: m.text` messages; only the original JSON shows them.
+  The `contains("chat.matron.")` pre-check is the hot-path guard.
+- **Don't drop the `Room` cache from TimelineServiceLive** — `sendRaw`
+  is not on `Timeline`; re-resolving per send re-introduces the
+  cold-start `roomNotFound` dance for no reason.
+- **Don't re-introduce `pointerStyle(.link)`** until the deployment
+  target is macOS 15+.
+
+### Open / deferred after this session
+
+- Tasks 7 + 10 (session_meta) — blocked on the SDK state-event reader;
+  contract pinned in `ChatService.swift`. The bridge can start
+  emitting the state event now (write side exists).
+- Bridge-side emission of `tool_call`/`ask_user` — spec drafted (see
+  above); bridge engineer's court.
+- iOS-side snapshot variants: repo convention is mac-only 3-variant
+  baselines (Phase 2 precedent), not the plan's 6-variant matrix.
+- Everything open from Phase 4 (CI billing, Sygnal config for this
+  app's four app_ids, Mac silent-push follow-up, real-device push
+  validation) — see the Phase 4 front-matter below.
+
+---
 
 ## 2026-06-12 update — push infrastructure now EXISTS (from the Matron X rebrand sessions)
 
