@@ -458,7 +458,15 @@ struct ChatView: View {
 
     private func closeAskUserSheet(_ ctx: AskUserPromptContext) {
         viewModel.markPromptAnswered(ctx.id)
-        pendingAskPrompt = nil
+        // Guard the same prompt is still presented: a send completing
+        // AFTER the user swipe-dismissed (Send is a commitment — the
+        // in-flight answer isn't revoked by dismissal) calls this late,
+        // and the `onDismiss` re-query may have presented the NEXT
+        // prompt by then — blindly nil-ing would dismiss (and via the
+        // binding, mark answered) a sheet the user never saw.
+        if pendingAskPrompt?.id == ctx.id {
+            pendingAskPrompt = nil
+        }
     }
 
     /// iOS file-share sheet body. Presents the filename + a system

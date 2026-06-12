@@ -400,7 +400,11 @@ struct MacChatView: View {
 
     private func closeAskUserSheet(_ ctx: AskUserPromptContext) {
         viewModel.markPromptAnswered(ctx.id)
-        pendingAskPrompt = nil
+        // Same-prompt guard — see iOS `ChatView.closeAskUserSheet` for
+        // the late-completing-send rationale.
+        if pendingAskPrompt?.id == ctx.id {
+            pendingAskPrompt = nil
+        }
     }
 
     /// Per-bot verification evaluation. See iOS `ChatView` for details —

@@ -54,6 +54,18 @@ public final class AskUserSheetViewModel {
         return Date.now >= expiresAt
     }
 
+    /// Deliberate semantics (bugbot PR #6 finding "dismissed sheet
+    /// still sends answer", resolved as by-design): tapping Send is a
+    /// commitment. Dismissing the sheet while the send is suspended on
+    /// the timeline call does NOT revoke the in-flight answer — same
+    /// convention as closing a composer after hitting send in any
+    /// messaging app — and the SDK's FFI send isn't cooperatively
+    /// cancellable mid-flight anyway, so a cancellation check here
+    /// could only skip `onClose()`, not stop the wire write.
+    /// "Dismissal = declining" applies to prompts dismissed WITHOUT
+    /// Send. The view-layer `closeAskUserSheet` carries a same-prompt
+    /// guard so this late `onClose()` can't tear down a successor
+    /// prompt's sheet.
     public func send() async {
         guard !isExpired, !isSending, !hasSent else { return }
         isSending = true
