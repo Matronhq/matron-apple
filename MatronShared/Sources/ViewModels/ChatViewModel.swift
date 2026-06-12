@@ -574,6 +574,27 @@ public final class ChatViewModel {
                 answeredInTimeline.insert(target)
             }
         }
+        // Persist cross-device answers the moment the timeline shows
+        // them (bugbot PR #6 finding): on a fresh timeline the
+        // encrypted answer event can lag decryption behind the prompt,
+        // and a snapshot caught in that window would re-pop a sheet
+        // for a prompt already answered elsewhere. Folding timeline
+        // knowledge into the UserDefaults set makes the answered state
+        // survive snapshots that temporarily lack the answer event.
+        // Intersected with the prompts actually present: only a
+        // visible prompt can re-pop, and `answeredInTimeline` also
+        // holds the user's replies to ORDINARY messages — persisting
+        // those would grow the defaults set without bound.
+        var promptIDsInTimeline: Set<String> = []
+        for item in items {
+            if case .askUser(let id, _) = item.kind {
+                promptIDsInTimeline.insert(id)
+            }
+        }
+        for id in answeredInTimeline.intersection(promptIDsInTimeline)
+        where !answeredPromptIDs.contains(id) {
+            markPromptAnswered(id)
+        }
         for item in items.reversed() {
             guard case .askUser(let id, let evt) = item.kind else { continue }
             if answeredPromptIDs.contains(id) { continue }

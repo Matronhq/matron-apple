@@ -620,6 +620,29 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_pendingAsk_persistsCrossDeviceAnswer_acrossSnapshots() async {
+        // Bugbot PR #6 finding "cross-device answers not persisted":
+        // once a snapshot shows the answer event, the answered state
+        // must be folded into UserDefaults — a later snapshot (or a
+        // fresh timeline whose encrypted answer lags decryption) that
+        // contains the prompt WITHOUT the answer must not re-pop it.
+        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
+        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        let answer = TimelineItem(
+            id: "$2", sender: "@me:s", timestamp: .now,
+            kind: .askUserAnswer(promptEventID: "$1", selectedValues: ["yes"]),
+            isOwn: true
+        )
+        let vm = await makeAskVM(items: [askItem(id: "$1"), answer])
+        XCTAssertNil(vm.pendingAsk(), "answer visible in timeline")
+
+        // Fresh VM, prompt present but answer event missing (decrypt
+        // lag / re-delivery window) — persisted knowledge must hold.
+        let vm2 = await makeAskVM(items: [askItem(id: "$1")])
+        XCTAssertNil(vm2.pendingAsk(), "cross-device answer must survive the snapshot losing the answer event")
+    }
+
+    @MainActor
     func test_pendingAsk_notClearedBy_othersReplies() async {
         // A reply from someone ELSE (e.g. the bot threading a follow-
         // up onto its own prompt) must not count as the user's answer.
