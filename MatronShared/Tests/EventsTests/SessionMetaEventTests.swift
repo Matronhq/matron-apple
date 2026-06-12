@@ -15,6 +15,18 @@ final class SessionMetaEventTests: XCTestCase {
         XCTAssertEqual(evt.startedAt.timeIntervalSince1970, 1745000000.0)
     }
 
+    func test_parses_integerStartedAt_fromRealJSON() throws {
+        // See ToolCallEventTests.test_parses_integerTimestamps_fromRealJSON
+        // — pins the JSONSerialization NSNumber → `as? Double` bridge for
+        // integer ms timestamps (the bridge's wire shape).
+        let json = #"{"session_id": "abc", "started_at": 1745000000000}"#
+        let content = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: XCTUnwrap(json.data(using: .utf8))) as? [String: Any]
+        )
+        let evt = try XCTUnwrap(SessionMetaEvent.parse(content: content))
+        XCTAssertEqual(evt.startedAt.timeIntervalSince1970, 1745000000.0)
+    }
+
     func test_parses_partial() throws {
         // Older bots emit only the required fields; newer fields
         // gracefully default to nil rather than failing the event.

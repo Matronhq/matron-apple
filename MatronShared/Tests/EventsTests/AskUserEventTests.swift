@@ -12,6 +12,18 @@ final class AskUserEventTests: XCTestCase {
         XCTAssertNil(evt.expiresAt)
     }
 
+    func test_parses_integerExpiresAt_fromRealJSON() throws {
+        // See ToolCallEventTests.test_parses_integerTimestamps_fromRealJSON
+        // — pins the JSONSerialization NSNumber → `as? Double` bridge for
+        // integer ms timestamps (the bridge's wire shape).
+        let json = #"{"prompt": "Q?", "input": {"kind": "text"}, "expires_at": 1745000600000}"#
+        let content = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: XCTUnwrap(json.data(using: .utf8))) as? [String: Any]
+        )
+        let evt = try XCTUnwrap(AskUserEvent.parse(content: content))
+        XCTAssertEqual(evt.expiresAt?.timeIntervalSince1970, 1745000600.0)
+    }
+
     func test_parses_choice() throws {
         let evt = try XCTUnwrap(AskUserEvent.parse(content: [
             "prompt": "Which file?",

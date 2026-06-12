@@ -18,6 +18,23 @@ final class ToolCallEventTests: XCTestCase {
         XCTAssertEqual(evt.startedAt.timeIntervalSince1970, 1745000000.0)
     }
 
+    func test_parses_integerTimestamps_fromRealJSON() throws {
+        // Wire-realistic shape (bugbot PR #6 pass-3 finding, rebutted):
+        // the bridge emits integer ms timestamps, and the production
+        // path runs them through JSONSerialization → NSNumber, whose
+        // `as? Double` bridge succeeds for any losslessly-representable
+        // integer (every real timestamp; only ~2^53+ magnitudes fail).
+        // Swift-literal dictionaries in the other tests skip that
+        // bridge, so this pins the NSNumber path explicitly.
+        let json = #"{"tool": "Read", "args": {}, "status": "ok", "result": "x", "started_at": 1745000000000, "ended_at": 1745000001000}"#
+        let content = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: XCTUnwrap(json.data(using: .utf8))) as? [String: Any]
+        )
+        let evt = try XCTUnwrap(ToolCallEvent.parse(content: content))
+        XCTAssertEqual(evt.startedAt.timeIntervalSince1970, 1745000000.0)
+        XCTAssertEqual(evt.endedAt?.timeIntervalSince1970, 1745000001.0)
+    }
+
     func test_parses_okWithStringResult() throws {
         let content: [String: Any] = [
             "tool": "Read",
