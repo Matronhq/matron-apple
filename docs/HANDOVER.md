@@ -1,5 +1,93 @@
 # Handover — Matron iOS+Mac, Phase 5 implemented on `phase-5-custom-events`
 
+## 2026-06-12 evening session — PR #6 bugbot-clean; CI billing block LIFTED
+
+**TL;DR:** Handover plan items 1+2 done, item 3 mostly done. PR #6's
+bugbot cycle converged in **two fix passes** (zero-finding success run
+on `90e74c6`). The Phase 5 injection tooling shipped and was
+smoke-tested end-to-end against the Docker harness. And the big
+unblock: **the Actions billing block has lifted** — PR #5's CI is all
+green for the first time ever; only the (never-green) `cla` check
+stands, root-caused with a fix open as **PR #7**.
+
+### Bugbot cycle on PR #6 (handover item 1) — DONE, 2 passes
+
+- **Pass 1** (medium, real): every ask-user sheet close path set
+  `pendingAskPrompt = nil` without re-querying, so a second unanswered
+  prompt stayed hidden until the next timeline snapshot. Fix `ea75c3d`:
+  both platforms pass `onDismiss` to `.sheet(item:)` and re-query
+  `viewModel.pendingAsk()` after dismissal completes (re-querying
+  inside the binding's set-nil would fight the interactive-dismissal
+  animation). VM contract pinned by
+  `test_pendingAsk_surfacesOlderPrompt_onceNewestIsAnswered`.
+- **Pass 2** (low, real): `ToolCallCard`'s hover `NSCursor.push()`
+  leaked when the card left the hierarchy mid-hover (scroll-off, or an
+  `m.replace` landing on a hovered running card). Fix `90e74c6`:
+  `cursorPushed` flag + `.onDisappear` pop. Separate flag from
+  `isHovering` because `forceHovered` (snapshot seam) seeds hover
+  state with no matching push — don't "simplify" them together.
+- **Pass 3: SUCCESS, zero findings.** Gate green at every push:
+  422 SPM (4 skipped) / 73 MatronMacTests / 54 MatronTests / both
+  host builds.
+
+### Phase 5 injection tooling (handover item 2's script) — DONE
+
+`1c752c2` — four new `partner.mjs` sub-commands: generic `send-event`
+plus `inject-tool-calls` (ok + error + running→`m.replace`,
+`--replace-delay`), `inject-ask-user` (`--kind text|choice|
+multi_choice|boolean`, `--expired` / `--expires-in`), `inject-buttons`
+(value ≠ label: `proceed` / `cancel:0`). Smoke-tested against the
+Docker harness: all events go out `m.room.encrypted`, the `m.replace`
+edit's `m.relates_to` is hoisted to cleartext (matrix-js-sdk does it),
+which is what lets rust-sdk aggregate the card update. Workflow in
+`tests/integration/README.md` §"Phase 5 event injection";
+manual-tests.md §Phase 5 intro points there. The **human-eyes manual
+checks themselves remain to be run** (buttons block against the live
+bridge; tool_call/ask_user blocks via these injectors).
+
+### Merge logistics (handover item 3) — CI green, cla root-caused
+
+- **Billing block LIFTED.** Today's check failures actually *execute*
+  (vs May's "job was not started… payments have failed"). May runs are
+  >1 month old and unrerunnable, so re-triggered via empty commit
+  `fce81fb` on `phase-4-task-1` (plumbing: `git commit-tree` + push the
+  SHA; zsh eats unquoted `:r` in refspecs).
+- **PR #5: `shared-package-tests` + `ios-build-and-test` +
+  `mac-build-and-test` ALL PASS** — first full green CI in repo
+  history. Only `cla` fails.
+- **`cla` has NEVER been green (30/30 failures).** With billing gone
+  the real error surfaced: contributor-assistant can't read committers
+  ("Resource not accessible by integration") — repo default workflow
+  permissions are read-only and `cla.yml` declares none. Fix = the
+  action README's `permissions:` block, opened as **PR #7**
+  (`fix-cla-workflow-permissions`). Caveats: `pull_request_target`
+  runs the workflow from the BASE branch, so PR #7 only takes effect
+  once on `main` — its own cla check still fails; needs admin-override.
+  The `CLA_PAT` secret doesn't exist but isn't needed (same-repo
+  signatures).
+- **Dan's decisions:** admin-override-merge PR #7 → re-trigger cla on
+  PR #5 (close/reopen or empty commit) → PR #5 merges clean; or
+  admin-override PR #5 directly per the session 9/10 pattern. After
+  PR #5 merges, PR #6 auto-retargets to `main` — verify the diff
+  collapses to the Phase 5 commits before merging it.
+
+### Gate-command gotcha (cost a near-miss this session)
+
+A `xcodebuild … | grep | tail` pipeline returned empty+exit-0 on a
+**destination error** and nearly passed for green. This machine has
+iPhone 17-family simulators (no "iPhone 16"). Capture xcodebuild to a
+log, echo its own exit code, and require the literal
+"Executed N tests, with 0 failures" line.
+
+### Still open after this session
+
+- Manual Phase 5 validation (human eyes; injectors ready) — then the
+  Phase 6 (search) plan per Phase 5 acceptance.
+- Bridge-side emission, Sygnal app_id config, real-device push — items
+  4+5 of the previous plan below, unchanged.
+
+---
+
 ## 2026-06-12 session — Phase 5 (custom events) implemented, Tasks 7+10 deferred
 
 **TL;DR:** Picked up on `phase-5-custom-events` (stacked on the unmerged
