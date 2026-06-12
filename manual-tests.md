@@ -320,8 +320,10 @@ Run before every TestFlight build (iOS) and every Mac App Store build.
 > TODAY — those checks run against the live bridge. The **custom event
 > types** (`chat.matron.tool_call` / `chat.matron.ask_user`) are the
 > forward-looking contract; until the bridge adopts them, exercise those
-> checks by sending the events manually (e.g. `sendRaw` from a script)
-> and expect graceful plain-text fallback from older app builds.
+> checks with the partner injectors — `partner.mjs inject-tool-calls` /
+> `inject-ask-user` / `inject-buttons`, see
+> `tests/integration/README.md` §"Phase 5 event injection" — and expect
+> graceful plain-text fallback from older app builds.
 
 ### Tool call card — iOS (needs bridge `tool_call` adoption)
 

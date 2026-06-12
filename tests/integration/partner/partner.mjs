@@ -13,6 +13,14 @@
  *   wait-verify         — accept incoming verification + auto-confirm SAS
  *   send-message        — send a test message into a room
  *   create-dm           — create a DM with a target user (encryption on)
+ *   send-event          — send a raw custom-typed event (--type / --content JSON)
+ *   inject-tool-calls   — send the manual-tests §Phase 5 tool_call set
+ *                         (ok + error + running→m.replace) into a room
+ *   inject-ask-user     — send one chat.matron.ask_user prompt
+ *                         (--kind text|choice|multi_choice|boolean,
+ *                          --expired / --expires-in <secs>)
+ *   inject-buttons      — send one buttons-protocol question (the live
+ *                         bridge wire format, value ≠ label)
  *
  * Each command emits one JSON object on stdout per state transition so the
  * shell harness can assert without parsing free-form logs.
@@ -294,6 +302,174 @@ async function cmdSendMessage(args) {
   }
 }
 
+// --- send-event ---
+//
+// Generic raw sender for custom-typed events. matrix-js-sdk encrypts
+// type+content under megolm in encrypted rooms and hoists `m.relates_to`
+// to the cleartext envelope, so edits/relations aggregate correctly on
+// the receiving rust-sdk timeline.
+async function cmdSendEvent(args) {
+  const { "store-file": storeFile, room, type, content } = args;
+  if (!type || !content) { emit({ ok: false, error: "--type and --content required" }); return 1; }
+  const session = await resumeSession(storeFile);
+  try {
+    const res = await session.client.sendEvent(room, type, JSON.parse(content));
+    emit({ ok: true, event_id: res.event_id });
+    return 0;
+  } finally {
+    session.client.stopClient();
+  }
+}
+
+// --- Phase 5 manual-test injectors ---
+//
+// The bridge doesn't emit `chat.matron.tool_call` / `chat.matron.ask_user`
+// yet (see claude-matrix-bridge docs/superpowers/specs/
+// 2026-06-12-matron-events-protocol.md) — these commands inject the
+// spec's wire shapes so manual-tests.md §Phase 5 can be exercised
+// against the Docker harness without waiting on bridge adoption.
+// Content shapes mirror the spec §1/§2 examples field-for-field;
+// the app-side parsers are ToolCallEvent.parse / AskUserEvent.parse /
+// AskUserEvent.parseButtons in MatronShared/Sources/Events/.
+
+async function cmdInjectToolCalls(args) {
+  const { "store-file": storeFile, room, "replace-delay": replaceDelay = "8" } = args;
+  const session = await resumeSession(storeFile);
+  const send = (content) => session.client.sendEvent(room, "chat.matron.tool_call", content);
+  try {
+    const now = () => Date.now();
+
+    // 1. Completed-ok card — collapsed card + expand checks.
+    const ok = await send({
+      tool: "Read",
+      args: { file_path: "/etc/hosts" },
+      status: "ok",
+      result: "127.0.0.1 localhost\n::1     localhost",
+      started_at: now() - 1200,
+      ended_at: now(),
+    });
+    emit({ event: "tool_call_ok", event_id: ok.event_id });
+
+    // 2. Failed card — red ✗ icon + error-string result check.
+    const err = await send({
+      tool: "Bash",
+      args: { command: "cat /no/such/file" },
+      status: "error",
+      result: "cat: /no/such/file: No such file or directory (exit 1)",
+      started_at: now() - 800,
+      ended_at: now(),
+    });
+    emit({ event: "tool_call_error", event_id: err.event_id });
+
+    // 3. Running card, then m.replace → ok after a pause long enough
+    //    for the operator to see the spinner.
+    const startedAt = now();
+    const running = await send({
+      tool: "WebSearch",
+      args: { query: "matrix m.replace aggregation" },
+      status: "running",
+      started_at: startedAt,
+    });
+    emit({ event: "tool_call_running", event_id: running.event_id });
+
+    const delayMs = parseInt(replaceDelay, 10) * 1000;
+    await new Promise((r) => setTimeout(r, delayMs));
+
+    const newContent = {
+      tool: "WebSearch",
+      args: { query: "matrix m.replace aggregation" },
+      status: "ok",
+      result: "3 results found",
+      started_at: startedAt,
+      ended_at: now(),
+    };
+    const replaced = await send({
+      ...newContent,
+      "m.new_content": newContent,
+      "m.relates_to": { rel_type: "m.replace", event_id: running.event_id },
+    });
+    emit({ event: "tool_call_replaced", event_id: replaced.event_id, replaces: running.event_id });
+    emit({ ok: true });
+    return 0;
+  } finally {
+    session.client.stopClient();
+  }
+}
+
+async function cmdInjectAskUser(args) {
+  const { "store-file": storeFile, room, kind = "choice", prompt,
+          "expires-in": expiresIn } = args;
+  const inputs = {
+    text: { kind: "text" },
+    choice: {
+      kind: "choice",
+      allow_other: true,
+      options: [
+        { id: "a", label: "src/main.rs" },
+        { id: "b", label: "src/lib.rs" },
+      ],
+    },
+    multi_choice: {
+      kind: "multi_choice",
+      options: [
+        { id: "lint", label: "Run the linter" },
+        { id: "test", label: "Run the tests" },
+        { id: "build", label: "Build the app" },
+      ],
+    },
+    boolean: { kind: "boolean" },
+  };
+  if (!inputs[kind]) { emit({ ok: false, error: `unknown --kind ${kind}` }); return 1; }
+  const content = {
+    prompt: prompt ?? {
+      text: "Describe the change you want in one sentence.",
+      choice: "Which file should I edit?",
+      multi_choice: "Which checks should I run before committing?",
+      boolean: "Proceed with the merge?",
+    }[kind],
+    input: inputs[kind],
+  };
+  // `--expired` (bare flag or any value — parseArgs records the key
+  // either way) backdates the prompt so the sheet must never pop;
+  // `--expires-in <secs>` exercises the open-sheet auto-dismiss +
+  // greyed-controls path.
+  if ("expired" in args) content.expires_at = Date.now() - 60_000;
+  else if (expiresIn !== undefined) content.expires_at = Date.now() + parseInt(expiresIn, 10) * 1000;
+
+  const session = await resumeSession(storeFile);
+  try {
+    const res = await session.client.sendEvent(room, "chat.matron.ask_user", content);
+    emit({ ok: true, event_id: res.event_id, kind, expires_at: content.expires_at ?? null });
+    return 0;
+  } finally {
+    session.client.stopClient();
+  }
+}
+
+async function cmdInjectButtons(args) {
+  const { "store-file": storeFile, room, prompt = "The send queue has 1 pending message. What should I do?" } = args;
+  // value ≠ label on purpose (the live bridge's queue actions do this) —
+  // the hidden-response check is only meaningful if a label-text reply
+  // would be wrong. App must send back `cancel:0`, not "Cancel message 1".
+  const buttons = [
+    { id: "proceed", label: "Proceed", value: "proceed" },
+    { id: "cancel0", label: "Cancel message 1", value: "cancel:0" },
+  ];
+  const content = {
+    msgtype: "m.text",
+    body: `${prompt}\n(1) Proceed (2) Cancel message 1`,
+    "chat.matron.buttons": { mode: "pick_one", prompt, buttons },
+  };
+  const session = await resumeSession(storeFile);
+  try {
+    const res = await session.client.sendEvent(room, "m.room.message", content);
+    emit({ ok: true, event_id: res.event_id });
+    return 0;
+  } finally {
+    session.client.stopClient();
+  }
+}
+
 // --- create-dm ---
 async function cmdCreateDm(args) {
   const { "store-file": storeFile, "target-user": target } = args;
@@ -481,6 +657,10 @@ const commands = {
   "wait-verify": cmdWaitVerify,
   "send-message": cmdSendMessage,
   "create-dm": cmdCreateDm,
+  "send-event": cmdSendEvent,
+  "inject-tool-calls": cmdInjectToolCalls,
+  "inject-ask-user": cmdInjectAskUser,
+  "inject-buttons": cmdInjectButtons,
 };
 
 const argv = parseArgs(process.argv.slice(2));
