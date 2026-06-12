@@ -114,4 +114,96 @@ final class AskUserEventTests: XCTestCase {
             "input": ["kind": "alien"]
         ]))
     }
+
+    func test_parse_setsTextReplyChannel() throws {
+        let evt = try XCTUnwrap(AskUserEvent.parse(content: [
+            "prompt": "x",
+            "input": ["kind": "text"]
+        ]))
+        XCTAssertEqual(evt.replyChannel, .textReply)
+    }
+
+    func test_parse_optionValueDefaultsToLabel() throws {
+        // ask_user options carry no `value` field — replies send the
+        // label text per spec §4.2, so the parsed Option's value must
+        // equal its label.
+        let evt = try XCTUnwrap(AskUserEvent.parse(content: [
+            "prompt": "x",
+            "input": [
+                "kind": "choice",
+                "options": [["id": "a", "label": "main.rs"]]
+            ]
+        ]))
+        guard case .choice(let options, _) = evt.kind else {
+            return XCTFail("Expected .choice")
+        }
+        XCTAssertEqual(options[0].value, "main.rs")
+    }
+
+    // MARK: - parseButtons (Matron X / bridge buttons protocol)
+
+    /// Content shape as emitted by claude-matrix-bridge
+    /// `sendButtonMessage` — the buttons dict lives under the
+    /// `chat.matron.buttons` content key on an m.room.message.
+    private func buttonsContent(
+        mode: String = "pick_one",
+        buttons: [[String: Any]] = [["id": "a", "label": "Yes", "value": "yes"]]
+    ) -> [String: Any] {
+        [
+            "msgtype": "m.text",
+            "body": "Pick one: Yes",
+            "chat.matron.buttons": [
+                "mode": mode,
+                "prompt": "Proceed?",
+                "buttons": buttons,
+            ],
+        ]
+    }
+
+    func test_parseButtons_pickOne_mapsToChoice() throws {
+        let evt = try XCTUnwrap(AskUserEvent.parseButtons(content: buttonsContent(
+            mode: "pick_one",
+            buttons: [
+                ["id": "a", "label": "Send now", "value": "interrupt"],
+                ["id": "b", "label": "Cancel message 1", "value": "cancel:0"],
+            ]
+        )))
+        XCTAssertEqual(evt.prompt, "Proceed?")
+        XCTAssertEqual(evt.replyChannel, .buttonResponse)
+        XCTAssertNil(evt.expiresAt)
+        guard case .choice(let options, let allowOther) = evt.kind else {
+            return XCTFail("Expected .choice")
+        }
+        XCTAssertFalse(allowOther)
+        XCTAssertEqual(options.map(\.label), ["Send now", "Cancel message 1"])
+        // The wire `value` (what selected_values carries) is distinct
+        // from the label — must be preserved verbatim.
+        XCTAssertEqual(options.map(\.value), ["interrupt", "cancel:0"])
+    }
+
+    func test_parseButtons_pickMany_mapsToMultiChoice() throws {
+        let evt = try XCTUnwrap(AskUserEvent.parseButtons(content: buttonsContent(mode: "pick_many")))
+        guard case .multiChoice = evt.kind else {
+            return XCTFail("Expected .multiChoice")
+        }
+    }
+
+    func test_parseButtons_returnsNil_whenModeUnknown() {
+        XCTAssertNil(AskUserEvent.parseButtons(content: buttonsContent(mode: "pick_some")))
+    }
+
+    func test_parseButtons_returnsNil_whenNoButtonsKey() {
+        XCTAssertNil(AskUserEvent.parseButtons(content: [
+            "msgtype": "m.text", "body": "plain message"
+        ]))
+    }
+
+    func test_parseButtons_returnsNil_whenAllButtonsMalformed() {
+        // Matron X parity: `guard !buttons.isEmpty` — a buttons dict
+        // whose entries all drop a required field degrades to the
+        // plaintext fallback rather than an empty sheet.
+        XCTAssertNil(AskUserEvent.parseButtons(content: buttonsContent(
+            buttons: [["id": "a", "label": "no value field"]]
+        )))
+    }
 }
