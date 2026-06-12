@@ -129,6 +129,49 @@ every switch — the gitignored project.pbxproj keeps the OTHER branch's
 file list, which surfaces as `cannot find 'MacAskUserSheet' in scope`
 (phase-5 files missing from a phase-4-generated project) or similar.
 
+### Second bugbot wave on PR #6 (after the sync-merge push) — passes 3–6
+
+The phase-4 sync-merge push re-triggered bugbot, which found four more
+issues across three passes before the clean run. **Final state:
+bugbot SUCCESS on `df9d257`, zero unresolved threads.** Per pass:
+
+- **Integer-timestamp finding — FALSE POSITIVE, rebutted with
+  evidence** (`898ee40`): bugbot claimed `as? Double` fails on integer
+  JSON timestamps. Empirically wrong on the production path —
+  JSONSerialization yields NSNumber, which bridges any
+  losslessly-representable integer (verified: `1745000000000` →
+  `1745000000000.0`; only ~2^53+ magnitudes fail). The wire shape WAS
+  untested though: three new tests parse integer-ms JSON end-to-end;
+  the bridging contract is documented on `ToolCallEvent.parse`
+  (pure-Swift `Int` does NOT bridge — don't build content dicts with
+  literal Ints).
+- **Empty tool args still show (LOW, real)** (`05b2766`): parse
+  pretty-printed empty args as `"{\n\n}"`, defeating ToolCallCard's
+  `!= "{}"` hide check. Now normalises to the exact `{}` literal;
+  `argSummary` shows nothing for it.
+- **Double submit (MED, real)** (`05b2766`): `send()` set `isSending`
+  but never checked it. Now guards `!isSending && !hasSent`; `hasSent`
+  latches only on success (error path stays retryable). Three tests,
+  incl. a genuinely-overlapped concurrent re-tap via the fake's new
+  `sendDelayNanos` seam.
+- **Dismissed sheet still sends (MED, by-design + hardening)**
+  (`a24b8e8`): Send is a commitment — dismissal doesn't revoke an
+  in-flight answer, and the FFI send isn't cancellable mid-flight
+  anyway (semantics documented on `send()`). Real adjacent edge fixed:
+  a late-completing send's `onClose()` could tear down a SUCCESSOR
+  prompt's sheet presented by the pass-1 onDismiss re-query —
+  `closeAskUserSheet` now guards the closing prompt is still the
+  presented one.
+- **Cross-device answers not persisted (MED, real)** (`df9d257`):
+  `pendingAsk()` suppressed answered prompts only by scanning the
+  current snapshot; a fresh timeline whose encrypted answer lags
+  decryption could re-pop an already-answered prompt. Timeline-detected
+  answers now fold into the UserDefaults set (intersected with prompts
+  actually present so ordinary-reply targets don't grow it unbounded).
+
+Final gate: **432 SPM (4 skipped) / 73 MatronMacTests / 54
+MatronTests / both host builds clean.**
+
 ### Still open after this session
 
 - **Dan: sign the CLA on PR #5** (one comment) → merge PR #5 → check
