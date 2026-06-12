@@ -17,6 +17,12 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
     /// `true` if the local user sent this event.
     public let isOwn: Bool
     public let sendState: SendState
+    /// Event ID this message replies to (`m.in_reply_to`), if any.
+    /// Phase 5: lets `ChatViewModel.pendingAsk()` mark an `ask_user`
+    /// prompt answered when a reply targeting it appears in the
+    /// timeline — including replies sent from the user's other
+    /// devices, which per-device `UserDefaults` bookkeeping can't see.
+    public let inReplyToEventID: String?
 
     public enum Kind: Equatable, Sendable {
         case text(body: String, formattedHTML: String?)
@@ -36,6 +42,14 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         /// sheet's reply path to set `m.in_reply_to` so the bot can
         /// correlate the answer.
         case askUser(eventID: String, AskUserEvent)
+        /// A `chat.matron.button_response` answer to a buttons prompt
+        /// (Matron X protocol). `promptEventID` is the buttons event
+        /// this answers (from the `chat.matron.button_answer`
+        /// relation). NOT rendered — Matron X hides button responses
+        /// from the timeline entirely, own and others' — but kept in
+        /// the snapshot so `ChatViewModel.pendingAsk()` can mark the
+        /// prompt answered across devices.
+        case askUserAnswer(promptEventID: String, selectedValues: [String])
         /// Catch-all for events we don't render specially yet (encrypted but
         /// undecryptable, polls, stickers, etc.). UI shows a placeholder so
         /// the event isn't silently dropped.
@@ -54,7 +68,8 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         timestamp: Date,
         kind: Kind,
         isOwn: Bool,
-        sendState: SendState = .sent
+        sendState: SendState = .sent,
+        inReplyToEventID: String? = nil
     ) {
         self.id = id
         self.sender = sender
@@ -62,5 +77,6 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         self.kind = kind
         self.isOwn = isOwn
         self.sendState = sendState
+        self.inReplyToEventID = inReplyToEventID
     }
 }

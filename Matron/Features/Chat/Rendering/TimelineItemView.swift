@@ -171,6 +171,13 @@ struct TimelineItemView: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Question: \(evt.prompt)"))
 
+        case .askUserAnswer:
+            // `chat.matron.button_response` answers are bookkeeping for
+            // `ChatViewModel.pendingAsk()`, never rendered — Matron X
+            // hides them too (own and others'). The user's choice is
+            // visible through the answered prompt UI instead.
+            EmptyView()
+
         case .unknown(let eventType):
             // Encrypted-but-not-yet-decrypted is the SDK's
             // `MsgLikeKind.unableToDecrypt` mapped to
@@ -227,6 +234,12 @@ struct TimelineItemView: View {
         // power-level setup, encryption-on, etc. Phase 7 polish can
         // bring back a "show metadata events" toggle if anyone asks.
         if case .stateChange = item.kind {
+            return false
+        }
+        // Button-response answers (`chat.matron.button_response`) are
+        // pendingAsk bookkeeping, never visible — Matron X hides them
+        // too. See the `.askUserAnswer` case doc in TimelineItem.swift.
+        if case .askUserAnswer = item.kind {
             return false
         }
         return true

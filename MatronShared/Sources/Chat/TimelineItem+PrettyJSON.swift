@@ -95,6 +95,12 @@ extension TimelineItem {
                 "kind": askInputKindAsJSON(evt.kind),
                 "expiresAt": evt.expiresAt.map(ISO8601DateFormatter().string(from:)) ?? NSNull(),
             ]
+        case .askUserAnswer(let promptEventID, let selectedValues):
+            return [
+                "type": "askUserAnswer",
+                "promptEventID": promptEventID,
+                "selectedValues": selectedValues,
+            ]
         case .unknown(let eventType):
             return [
                 "type": "unknown",
@@ -113,13 +119,13 @@ extension TimelineItem {
             return [
                 "kind": "choice",
                 "allowOther": allowOther,
-                "options": options.map { ["id": $0.id, "label": $0.label] },
+                "options": options.map { ["id": $0.id, "label": $0.label, "value": $0.value] },
             ]
         case .multiChoice(let options, let allowOther):
             return [
                 "kind": "multiChoice",
                 "allowOther": allowOther,
-                "options": options.map { ["id": $0.id, "label": $0.label] },
+                "options": options.map { ["id": $0.id, "label": $0.label, "value": $0.value] },
             ]
         }
     }

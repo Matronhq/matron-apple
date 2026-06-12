@@ -170,6 +170,11 @@ public final class ChatViewModel {
             // participating in day bucketing — the filter here is
             // what kept that fix in place.
             if case .stateChange = item.kind { continue }
+            // `.askUserAnswer` is pendingAsk bookkeeping (button
+            // responses are hidden, matching Matron X) — keep it out
+            // of the rows AND out of day bucketing, same reasoning as
+            // the virtual stateChange filter above.
+            if case .askUserAnswer = item.kind { continue }
             if first == nil { first = item.id }
             last = item.id
             let day = calendar.startOfDay(for: item.timestamp)

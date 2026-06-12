@@ -43,6 +43,11 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
     /// parallel) doesn't build two Timelines.
     private let timelineLock = NSLock()
     private var cachedTimeline: Timeline?
+    /// The `Room` the timeline was built from, cached under the same
+    /// lock. `sendButtonResponse` needs it because `sendRaw` is a
+    /// Room-level API (the Timeline FFI surface has no raw-event
+    /// send) — same call Matron X routes button responses through.
+    private var cachedRoom: Room?
 
     public init(
         provider: ClientProvider,
@@ -87,10 +92,41 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
         }
     }
 
-    public func sendText(_ body: String) async throws {
+    public func sendText(_ body: String, inReplyTo: String?) async throws {
         let timeline = try await timeline()
         let content = messageEventContentFromMarkdown(md: body)
-        _ = try await timeline.send(msg: content)
+        if let replyID = inReplyTo {
+            // `sendReply` (vs hand-rolling `m.relates_to`) so the SDK
+            // adds the rich-reply fallback formatting automatically.
+            try await timeline.sendReply(msg: content, eventId: replyID)
+        } else {
+            _ = try await timeline.send(msg: content)
+        }
+    }
+
+    public func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {
+        let room = try await room()
+        // Byte-compatible with Matron X `TimelineController.sendButtonResponse`
+        // and what the bridge's reader expects: structured
+        // `selected_values` (preferred by the bridge) + the joined
+        // plaintext fallback in `body`, related to the prompt via the
+        // `chat.matron.button_answer` rel_type.
+        let content: [String: Any] = [
+            "msgtype": "m.text",
+            "body": selectedValues.joined(separator: ", "),
+            MatronEventType.buttonResponse: [
+                "selected_values": selectedValues
+            ],
+            "m.relates_to": [
+                "rel_type": MatronEventType.buttonAnswer,
+                "event_id": promptEventID,
+            ],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: content)
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw TimelineServiceError.encodingFailed
+        }
+        try await room.sendRaw(eventType: "m.room.message", content: json)
     }
 
     public func sendImage(_ data: Data, filename: String, mimeType: String) async throws {
@@ -181,7 +217,7 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
             return cached
         }
         timelineLock.unlock()
-        let room = try await Self.resolveRoom(roomID: roomID, sync: sync, provider: provider, session: session)
+        let room = try await room()
         let built = try await room.timeline()
         timelineLock.lock()
         // Re-check under the lock — a parallel first call may have
@@ -195,6 +231,28 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
         cachedTimeline = built
         timelineLock.unlock()
         return built
+    }
+
+    /// Returns the cached `Room`, resolving it on first call. Same
+    /// lock + re-check-after-await shape as `timeline()`; the two
+    /// caches stay independent so `sendButtonResponse` on a freshly-
+    /// opened room doesn't force a Timeline build it never uses.
+    private func room() async throws -> Room {
+        timelineLock.lock()
+        if let cached = cachedRoom {
+            timelineLock.unlock()
+            return cached
+        }
+        timelineLock.unlock()
+        let resolved = try await Self.resolveRoom(roomID: roomID, sync: sync, provider: provider, session: session)
+        timelineLock.lock()
+        if let winner = cachedRoom {
+            timelineLock.unlock()
+            return winner
+        }
+        cachedRoom = resolved
+        timelineLock.unlock()
+        return resolved
     }
 
     /// Bridges from the chat-list-visible `summary.id` to a usable
@@ -235,6 +293,10 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
 
 public enum TimelineServiceError: Error, Equatable, Sendable {
     case roomNotFound(String)
+    /// `JSONSerialization` produced non-UTF8 output for a raw event
+    /// body — practically unreachable, but typed so the send path
+    /// never crashes on a force-unwrap.
+    case encodingFailed
 }
 
 /// Owns the setup `Task` and the SDK listener `TaskHandle` for a single
@@ -466,16 +528,86 @@ final class TimelineSnapshotListener: TimelineListener, @unchecked Sendable {
         // into the typed DTO. Falls through to `mapContent` when the event
         // isn't a Matron custom type or its JSON couldn't be parsed (graceful
         // degradation: a malformed payload still renders as `.unknown`).
-        let kind = mapMatronCustomEvent(ev) ?? mapContent(ev.content)
+        let kind = mapMatronCustomEvent(ev) ?? mapButtonsMessage(ev) ?? mapContent(ev.content)
         let sendState: TimelineItem.SendState = mapSendState(ev.localSendState)
+        // Surface the `m.in_reply_to` target so `ChatViewModel` can
+        // mark `ask_user` prompts answered when a reply to them lands
+        // (including from the user's other devices).
+        var inReplyToEventID: String?
+        if case .msgLike(let msg) = ev.content {
+            inReplyToEventID = msg.inReplyTo?.eventId()
+        }
         return TimelineItem(
             id: id,
             sender: ev.sender,
             timestamp: ts,
             kind: kind,
             isOwn: ev.isOwn,
-            sendState: sendState
+            sendState: sendState,
+            inReplyToEventID: inReplyToEventID
         )
+    }
+
+    /// Returns `.askUser` / `.askUserAnswer` when `ev` is an ordinary
+    /// `m.room.message` carrying one of the Matron X buttons-protocol
+    /// content keys (`chat.matron.buttons` / `.button_response`),
+    /// else nil so the caller falls through to standard mapping.
+    ///
+    /// Unlike the Phase 5 custom event types (which arrive as
+    /// `MsgLikeKind.other`), buttons piggyback on plain `m.text`
+    /// messages, so the only place they're visible is the original
+    /// event JSON. Pulling `debugInfo().originalJson` per message has
+    /// an FFI cost; the cheap `contains("chat.matron.")` substring
+    /// pre-check (same trick Matron X's factory uses) keeps the JSON
+    /// parse off the hot path for normal traffic.
+    private func mapButtonsMessage(_ ev: EventTimelineItem) -> TimelineItem.Kind? {
+        guard case .msgLike(let msg) = ev.content,
+              case .message = msg.kind else {
+            return nil
+        }
+        guard let json = ev.lazyProvider.debugInfo().originalJson,
+              json.contains("chat.matron.") else {
+            return nil
+        }
+        guard case .eventId(let eventID) = ev.eventOrTransactionId else {
+            return nil
+        }
+        return Self.parseButtonsMessage(originalJson: json, eventID: eventID)
+    }
+
+    /// Pure JSON → Kind mapping for the buttons protocol, split out of
+    /// `mapButtonsMessage` so unit tests can exercise it without a
+    /// real `EventTimelineItem` Rust handle (same pattern as
+    /// `parseCustomEvent`).
+    ///
+    /// Checked in this order:
+    /// 1. `chat.matron.button_response` content key → `.askUserAnswer`
+    ///    (hidden by the renderers, consumed by `pendingAsk()`).
+    ///    Matron X hides every button-response message including the
+    ///    legacy `button_response: true` form, so a response whose
+    ///    structured fields don't parse still maps to `.askUserAnswer`
+    ///    with whatever could be recovered rather than rendering its
+    ///    raw `value1, value2` body as chat text.
+    /// 2. `chat.matron.buttons` content key parsing cleanly →
+    ///    `.askUser` riding the same sheet UI as `ask_user` events.
+    /// 3. Anything else → nil (plaintext fallback rendering).
+    static func parseButtonsMessage(originalJson: String, eventID: String) -> TimelineItem.Kind? {
+        guard let data = originalJson.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let content = parsed["content"] as? [String: Any] else {
+            return nil
+        }
+        if content[MatronEventType.buttonResponse] != nil {
+            let response = content[MatronEventType.buttonResponse] as? [String: Any]
+            let values = response?["selected_values"] as? [String] ?? []
+            let relates = content["m.relates_to"] as? [String: Any]
+            let promptID = relates?["event_id"] as? String ?? ""
+            return .askUserAnswer(promptEventID: promptID, selectedValues: values)
+        }
+        if let evt = AskUserEvent.parseButtons(content: content) {
+            return .askUser(eventID: eventID, evt)
+        }
+        return nil
     }
 
     /// Returns a `.toolCall` / `.askUser` `TimelineItem.Kind` when `ev`

@@ -153,4 +153,124 @@ final class TimelineServiceLiveCustomEventTests: XCTestCase {
         }
         XCTAssertEqual(id, "$specific-event-id:server")
     }
+
+    // MARK: - parseButtonsMessage (Matron X buttons protocol)
+
+    /// Wire shape per claude-matrix-bridge `sendButtonMessage`: plain
+    /// m.room.message with the buttons dict under a content key.
+    func test_parsesButtonsMessage_asAskUser() {
+        let json = #"""
+        {
+          "type": "m.room.message",
+          "content": {
+            "msgtype": "m.text",
+            "body": "Proceed? [Yes] [No]",
+            "chat.matron.buttons": {
+              "mode": "pick_one",
+              "prompt": "Proceed?",
+              "buttons": [
+                {"id": "y", "label": "Yes", "value": "yes"},
+                {"id": "n", "label": "No", "value": "no"}
+              ]
+            }
+          }
+        }
+        """#
+        let kind = TimelineSnapshotListener.parseButtonsMessage(
+            originalJson: json,
+            eventID: "$btns:server"
+        )
+        guard case .askUser(let id, let evt) = kind else {
+            return XCTFail("Expected .askUser, got \(String(describing: kind))")
+        }
+        XCTAssertEqual(id, "$btns:server")
+        XCTAssertEqual(evt.prompt, "Proceed?")
+        XCTAssertEqual(evt.replyChannel, .buttonResponse)
+    }
+
+    /// Wire shape per Matron X `TimelineController.sendButtonResponse`.
+    func test_parsesButtonResponse_asAskUserAnswer() {
+        let json = #"""
+        {
+          "type": "m.room.message",
+          "content": {
+            "msgtype": "m.text",
+            "body": "yes",
+            "chat.matron.button_response": {"selected_values": ["yes"]},
+            "m.relates_to": {
+              "rel_type": "chat.matron.button_answer",
+              "event_id": "$btns:server"
+            }
+          }
+        }
+        """#
+        let kind = TimelineSnapshotListener.parseButtonsMessage(
+            originalJson: json,
+            eventID: "$resp:server"
+        )
+        guard case .askUserAnswer(let promptID, let values) = kind else {
+            return XCTFail("Expected .askUserAnswer, got \(String(describing: kind))")
+        }
+        XCTAssertEqual(promptID, "$btns:server")
+        XCTAssertEqual(values, ["yes"])
+    }
+
+    /// The bridge accepts a legacy `button_response: true` form (body
+    /// carries the value). Matron X hides every button-response
+    /// message regardless of shape — match that: still map to
+    /// `.askUserAnswer`, just with nothing recoverable.
+    func test_parsesLegacyBooleanButtonResponse_asAskUserAnswer() {
+        let json = #"""
+        {
+          "type": "m.room.message",
+          "content": {
+            "msgtype": "m.text",
+            "body": "yes",
+            "chat.matron.button_response": true
+          }
+        }
+        """#
+        let kind = TimelineSnapshotListener.parseButtonsMessage(
+            originalJson: json,
+            eventID: "$resp:server"
+        )
+        guard case .askUserAnswer(let promptID, let values) = kind else {
+            return XCTFail("Expected .askUserAnswer, got \(String(describing: kind))")
+        }
+        XCTAssertEqual(promptID, "")
+        XCTAssertEqual(values, [])
+    }
+
+    func test_buttonsMessage_returnsNilForPlainText() {
+        let json = #"""
+        {
+          "type": "m.room.message",
+          "content": {"msgtype": "m.text", "body": "just chatting"}
+        }
+        """#
+        XCTAssertNil(TimelineSnapshotListener.parseButtonsMessage(
+            originalJson: json,
+            eventID: "$x"
+        ))
+    }
+
+    func test_buttonsMessage_returnsNilForMalformedButtonsDict() {
+        // buttons key present but unparseable (no buttons array) —
+        // graceful degradation to the plaintext `body` fallback the
+        // bridge always includes.
+        let json = #"""
+        {
+          "type": "m.room.message",
+          "content": {
+            "msgtype": "m.text",
+            "body": "Pick one: A, B",
+            "chat.matron.buttons": {"mode": "pick_one", "prompt": "Pick"}
+          }
+        }
+        """#
+        XCTAssertNil(TimelineSnapshotListener.parseButtonsMessage(
+            originalJson: json,
+            eventID: "$x"
+        ))
+    }
 }
