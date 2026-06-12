@@ -68,6 +68,9 @@ let package = Package(
             dependencies: [
                 "MatronAuth",
                 "MatronChat",
+                // Phase 5: AskUserSheetViewModel consumes the
+                // AskUserEvent DTO directly.
+                "MatronEvents",
                 "MatronModels",
                 "MatronStorage",
                 // Phase 3 Task 6: SasViewModel exposes `SasFlowState` /
@@ -148,7 +151,7 @@ let package = Package(
         .testTarget(name: "AuthTests", dependencies: ["MatronAuth", "MatronModels", "MatronStorage"], path: "Tests/AuthTests"),
         .testTarget(name: "SyncTests", dependencies: ["MatronSync", "MatronModels"], path: "Tests/SyncTests"),
         .testTarget(name: "ChatTests", dependencies: ["MatronChat", "MatronEvents", "MatronModels", "MatronSync"], path: "Tests/ChatTests"),
-        .testTarget(name: "ViewModelTests", dependencies: ["MatronViewModels", "MatronAuth", "MatronChat", "MatronModels", "MatronStorage", "MatronVerification"], path: "Tests/ViewModelTests"),
+        .testTarget(name: "ViewModelTests", dependencies: ["MatronViewModels", "MatronAuth", "MatronChat", "MatronEvents", "MatronModels", "MatronStorage", "MatronVerification"], path: "Tests/ViewModelTests"),
         .testTarget(
             name: "DesignSystemSnapshotTests",
             dependencies: [
