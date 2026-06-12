@@ -1,5 +1,65 @@
 # Handover — Matron iOS+Mac, Phase 4 substantially shipped on PR #5
 
+## 2026-06-12 update — push infrastructure now EXISTS (from the Matron X rebrand sessions)
+
+Written from the sessions that shipped **Matron X** (the Element X fork,
+`Matronhq/matron-x-ios`, local `~/Dev/matron-x-ios`) to TestFlight as the
+stopgap until this app is ready. Several things below change Phase 4's
+"deferred / owned by dev-boxer" assumptions:
+
+- **A live Sygnal exists and APNs push is proven end-to-end on a real
+  device** (for Matron X). It runs on dev-2 via Chef —
+  `dev_server::sygnal` recipe in `yearbook-infra` (PR #230, merged
+  2026-06-12) — Docker `matrixdotorg/sygnal:latest` bound to
+  `127.0.0.1:5000`, exposed through the dev-2 Cloudflare tunnel at
+  `https://matrix-dev2.yearbooks.be/_matrix/push/*` (path rule above the
+  homeserver rule).
+- **A team-scoped APNs key exists**: Key ID `JKB3Z5DFZN`, team
+  `4LJ7WRRRFD`, Sandbox & Production, Team Scoped (All Topics) — stored
+  in the encrypted `development` credentials data bag under `sygnal`
+  (`apns_key_id`, `apns_team_id`, `apns_key_p8`). It covers **all** the
+  team's bundle IDs, including this app's `chat.matron.app` and
+  `chat.matron.mac` topics. Do NOT create another key.
+- **What this app still needs**: only configuration, no new infra —
+  (1) add its four app entries (`chat.matron.ios[.dev]`,
+  `chat.matron.mac[.dev]`) to `dev_server.sygnal.apps` in the dev-2 node
+  attributes and re-provision; (2) either stand up the
+  `sygnal.matron.chat` hostname this app hardcodes in `pusherBaseURL`
+  (a Cloudflare tunnel route to dev-2:5000), or point `pusherBaseURL` at
+  `https://matrix-dev2.yearbooks.be` like Matron X does.
+- **Gotchas learned the hard way (cost real debugging time):**
+  - `use_sandbox` is NOT a valid Sygnal field (silently ignored; both
+    entries default to production). Current Sygnal wants
+    `platform: sandbox|production`. `docs/push-setup.md` has been
+    corrected, but treat any other copy of that runbook as suspect.
+  - Sygnal's config needs an `http: { bind_addresses: ['0.0.0.0'],
+    port: 5000 }` block or it binds to localhost *inside* the container
+    and Docker's published port can't reach it (container shows
+    "unhealthy", curl gives connection refused).
+  - The dev-2 Cloudflare tunnel is **remotely managed** — the dashboard
+    pushes ingress config that overrides `/etc/cloudflared/config.yml`,
+    so tunnel routes must be edited in the dashboard/API, and rule
+    ORDER matters (path rules must sit above the same hostname's
+    no-path rule). No stored API token can edit tunnel config, but the
+    bearer token embedded in `~/.cloudflared/cert.pem` (the
+    `ARGO TUNNEL TOKEN` PEM block decodes to JSON with an `apiToken`
+    field) authenticates against
+    `/accounts/{acct}/cfd_tunnel/{id}/configurations`.
+  - Sandbox/production mismatch really does fail silently as
+    `BadDeviceToken` (confirmed live): a Release-config build signed
+    with a development profile registers the `.prod` app_id but holds a
+    sandbox token and can never receive push — only TestFlight/App
+    Store builds (or true Debug builds against the `.dev` entries) are
+    testable.
+- **Cross-client event context**: Matron X ships the
+  `chat.matron.buttons` / `chat.matron.button_response` /
+  `chat.matron.button_answer` events (canonical definitions in
+  matron-web `src/matron/EventTypes.ts`), interoperating with the
+  bridge today. Phase 5's `tool_call`/`ask_user` work should stay
+  byte-compatible with that file.
+
+---
+
 **As of 2026-05-06 late evening (session 12)**, after twelve working
 sessions. **Phase 2.5** is on `main` as `ef00f5a` (PR #4, session 10).
 **Phase 4 Push & NSE is open on `phase-4-task-1` branch (PR #5,
