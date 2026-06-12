@@ -12,6 +12,10 @@ public struct ToolCallCard: View {
     let event: ToolCallEvent
     @State private var expanded: Bool
     @State private var isHovering: Bool
+    /// True while we owe AppKit's cursor stack a pop — set on the hover
+    /// push, cleared by the unhover/onDisappear pop. See the `.onHover`
+    /// doc-comment for why this isn't just `isHovering`.
+    @State private var cursorPushed = false
 
     /// `expanded` defaults to `false` for production tap-toggle behaviour.
     /// Callers (notably snapshot tests) may pass `true` to render the
@@ -49,13 +53,27 @@ public struct ToolCallCard: View {
             #if os(macOS)
             // `.pointerStyle(.link)` would be the modern spelling but needs
             // macOS 15; the package targets macOS 14, so push/pop the cursor
-            // by hand on hover.
+            // by hand on hover. SwiftUI doesn't guarantee a final
+            // `onHover(false)` when the view leaves the hierarchy mid-hover
+            // (scrolled off, or the row replaced by an `m.replace` update
+            // landing on a hovered running card), so `cursorPushed` tracks
+            // the unbalanced push and `.onDisappear` pops it. `isHovering`
+            // can't double as the flag: `forceHovered` seeds it true with
+            // no matching push.
             .onHover { hovering in
                 isHovering = hovering
                 if hovering {
                     NSCursor.pointingHand.push()
-                } else {
+                    cursorPushed = true
+                } else if cursorPushed {
                     NSCursor.pop()
+                    cursorPushed = false
+                }
+            }
+            .onDisappear {
+                if cursorPushed {
+                    NSCursor.pop()
+                    cursorPushed = false
                 }
             }
             #endif
