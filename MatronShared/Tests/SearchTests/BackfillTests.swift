@@ -149,4 +149,21 @@ final class BackfillTests: XCTestCase {
         let old2 = try await svc.query("old2", limit: 10)
         XCTAssertEqual(old2.count, 0)
     }
+
+    func test_coordinator_runsAllRoomsAndPublishesProgress() async throws {
+        // Empty batches → every room's backfill completes immediately.
+        let runner = BackfillRunner(timeline: FakePager(batches: []), search: svc)
+        let coordinator = BackfillCoordinator(runner: runner, cutoff: .distantPast)
+
+        await coordinator.run(roomIDs: ["!a:s", "!b:s", "!c:s"])
+
+        let final = await coordinator.progress
+        XCTAssertEqual(final, AggregateBackfillProgress(roomsCompleted: 3, roomsTotal: 3))
+        XCTAssertFalse(final.inProgress)
+
+        // Idempotent: a second run must not restart the sweep (would reset to 0/1).
+        await coordinator.run(roomIDs: ["!x:s"])
+        let afterSecond = await coordinator.progress
+        XCTAssertEqual(afterSecond.roomsTotal, 3)
+    }
 }

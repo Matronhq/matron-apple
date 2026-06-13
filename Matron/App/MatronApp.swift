@@ -180,6 +180,16 @@ struct MatronApp: App {
                             }
                             await bootstrapPush(for: session)
                         }
+                        // Phase 6 (Search): sweep room history into the FTS
+                        // index once per session. Waits for the first chat-list
+                        // snapshot so rooms are known, then backfills serially.
+                        // Resume-guarded (BackfillRunner skips completed rooms),
+                        // so a relaunch just re-checks each room cheaply.
+                        .task(id: session.userID) {
+                            guard let coordinator = dependencies.backfillCoordinator(for: session) else { return }
+                            let roomIDs = await dependencies.chatService(for: session).firstSnapshotRoomIDs()
+                            await coordinator.run(roomIDs: roomIDs)
+                        }
                         .onDisappear {
                             verificationCenter?.stop()
                             verificationCenter = nil
