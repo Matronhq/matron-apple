@@ -357,10 +357,18 @@ struct MacChatView: View {
             )
         }
         // Phase 5 Task 11: ask-user prompt sheet. Same drive logic as
-        // iOS `ChatView`; the presentation differs — fixed 520×400
-        // frame because Mac sheets have no detents (spec §5.9).
+        // iOS `ChatView` — an open sheet closes only when its prompt is
+        // answered, never on a transient clear or a newer prompt; see
+        // that view for the full rationale. Presentation differs: fixed
+        // 520×400 frame because Mac sheets have no detents (spec §5.9).
         .onChange(of: viewModel.items) { _, _ in
-            pendingAskPrompt = viewModel.pendingAsk()
+            if let current = pendingAskPrompt {
+                if viewModel.isPromptAnswered(current.id) {
+                    pendingAskPrompt = nil
+                }
+            } else {
+                pendingAskPrompt = viewModel.pendingAsk()
+            }
         }
         // `onDismiss` re-queries after dismissal so a second unanswered
         // prompt presents next instead of waiting for another timeline

@@ -658,6 +658,30 @@ public final class ChatViewModel {
         return nil
     }
 
+    /// True if `eventID`'s ask-user prompt has been answered — on this
+    /// device (persisted in `answeredPromptIDs`) or on another device (a
+    /// `button_response` or the user's own `m.in_reply_to` reply for it
+    /// is in the current timeline). Distinct from `pendingAsk()`'s
+    /// "should a prompt pop" test: this answers "is THIS prompt resolved",
+    /// which the views use to decide whether an already-open sheet should
+    /// close. Critically it does NOT key on `pendingAsk()` returning nil —
+    /// a transient sliding-sync clear empties `items` momentarily, and an
+    /// open sheet must not drop on that (bugbot "Ask sheet drops on
+    /// clear") nor be yanked to a newer prompt (bugbot "New prompt
+    /// replaces open sheet").
+    public func isPromptAnswered(_ eventID: String) -> Bool {
+        if answeredPromptIDs.contains(eventID) { return true }
+        for item in items {
+            if case .askUserAnswer(let promptID, _) = item.kind, promptID == eventID {
+                return true
+            }
+            if item.isOwn, item.inReplyToEventID == eventID {
+                return true
+            }
+        }
+        return false
+    }
+
     /// Called after a successful send (or explicit dismissal) so the
     /// prompt can't re-pop — push re-decryption can re-deliver the
     /// same event after the user already answered. Persisted per room.

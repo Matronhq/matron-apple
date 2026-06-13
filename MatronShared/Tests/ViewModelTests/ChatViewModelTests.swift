@@ -704,6 +704,39 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertNil(vm.pendingAsk(), "expired prompt must not pop a dead sheet")
     }
 
+    // MARK: - isPromptAnswered (open-sheet close decision; bugbot PR #6)
+
+    @MainActor
+    func test_isPromptAnswered_trueOnlyWhenAnsweredHereOrCrossDevice() async {
+        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
+        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        let answer = TimelineItem(
+            id: "$2", sender: "@me:s", timestamp: .now,
+            kind: .askUserAnswer(promptEventID: "$x", selectedValues: ["yes"]),
+            isOwn: true
+        )
+        let vm = await makeAskVM(items: [askItem(id: "$1"), askItem(id: "$x"), answer])
+        // $1 unanswered → false (an open sheet for it must NOT close).
+        XCTAssertFalse(vm.isPromptAnswered("$1"))
+        // $x answered cross-device (button_response in timeline) → true.
+        XCTAssertTrue(vm.isPromptAnswered("$x"))
+        // Marking $1 answered on this device flips it.
+        vm.markPromptAnswered("$1")
+        XCTAssertTrue(vm.isPromptAnswered("$1"))
+    }
+
+    @MainActor
+    func test_isPromptAnswered_falseWhenItemsTransientlyEmpty() async {
+        // Finding "Ask sheet drops on clear": during a sliding-sync clear
+        // `items` is momentarily empty. An unanswered prompt must read as
+        // NOT answered so the view keeps the open sheet (and its
+        // in-progress input) rather than dismissing it.
+        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
+        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        let vm = await makeAskVM(items: [])
+        XCTAssertFalse(vm.isPromptAnswered("$1"))
+    }
+
     @MainActor
     func test_answeredPromptIDs_persistAcrossInstances() async {
         UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)

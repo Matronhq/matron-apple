@@ -409,12 +409,24 @@ struct ChatView: View {
             }
         }
         // Phase 5 Task 11: surface the most recent unanswered ask-user
-        // prompt as a half-sheet. Driven off the snapshot (not a
-        // one-shot on appear) so prompts arriving while the chat is
-        // open pop immediately, and answers landing from another
-        // device dismiss the open sheet (pendingAsk() goes nil).
+        // prompt as a half-sheet. Driven off the snapshot so prompts
+        // arriving while the chat is open pop immediately.
+        //
+        // When a sheet is ALREADY open, only its prompt being *answered*
+        // (here or cross-device) closes it — a transient sliding-sync
+        // clear (`items` momentarily empty) must NOT drop it (bugbot
+        // "Ask sheet drops on clear") and a newer prompt must NOT yank
+        // the sheet away mid-input (bugbot "New prompt replaces open
+        // sheet"). `onDismiss` re-queries `pendingAsk()` once the open
+        // sheet closes, so a queued newer prompt surfaces then.
         .onChange(of: viewModel.items) { _, _ in
-            pendingAskPrompt = viewModel.pendingAsk()
+            if let current = pendingAskPrompt {
+                if viewModel.isPromptAnswered(current.id) {
+                    pendingAskPrompt = nil
+                }
+            } else {
+                pendingAskPrompt = viewModel.pendingAsk()
+            }
         }
         // `onDismiss` re-queries once the dismissal animation has
         // finished: if the timeline holds ANOTHER unanswered prompt
