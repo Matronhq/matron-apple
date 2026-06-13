@@ -60,10 +60,16 @@ public final class PushBootstrap {
     }
 
     /// Run once per session, post-sync, post-verify. Idempotent on the
-    /// homeserver side: re-asking for permission is a no-op, re-setting
-    /// `.allMessages` on a room already in `.allMessages` is a no-op,
-    /// re-calling `registerForRemoteNotifications` just re-delivers the
-    /// existing token to the application delegate.
+    /// homeserver side: re-asking for permission is a no-op, re-calling
+    /// `registerForRemoteNotifications` just re-delivers the existing
+    /// token to the application delegate.
+    ///
+    /// This is the pusher-registration critical path — permission, then
+    /// kick off APNs token delivery. The per-room `.allMessages` pass is
+    /// deliberately NOT here: `bootstrapHost` runs it AFTER the pusher
+    /// write so its wait for the first non-empty room snapshot can't
+    /// delay registration (cursor PR #5 finding "push rules miss late
+    /// rooms").
     ///
     /// Returns `true` on permission grant, `false` if the user declined
     /// — caller can stash the latter to surface in Settings later.
@@ -71,7 +77,6 @@ public final class PushBootstrap {
     public func bootstrap() async -> Bool {
         let granted = await pushService.requestPermission()
         guard granted else { return false }
-        await setPerRoomNotificationMode()
         registerForRemoteNotifications()
         return true
     }
@@ -103,12 +108,15 @@ public final class PushBootstrap {
         await task.value
     }
 
-    /// Walks the current joined-room snapshot and sets each room to
-    /// `.allMessages`. The closure-injected `joinedRoomIDs` lets the
-    /// caller derive room IDs from whatever it has (chat-list snapshot,
-    /// SDK roomList, etc.) without coupling PushBootstrap to the sync
-    /// layer. `internal` so `PushBootstrapTests` can call it without
-    /// also exercising the system-permission prompt.
+    /// Sets each joined room to `.allMessages`. The closure-injected
+    /// `joinedRoomIDs` lets the caller derive room IDs from whatever it
+    /// has (chat-list snapshot, SDK roomList, etc.) without coupling
+    /// PushBootstrap to the sync layer; the host wires it to
+    /// `ChatService.firstSnapshotRoomIDs()`, which waits for the first
+    /// non-empty snapshot. `bootstrapHost` calls this AFTER the pusher
+    /// write so that wait can't delay registration (cursor PR #5 finding
+    /// "push rules miss late rooms"). `internal` so `PushBootstrapTests`
+    /// can call it without also exercising the system-permission prompt.
     func setPerRoomNotificationMode() async {
         let roomIDs = await joinedRoomIDs()
         for roomID in roomIDs {
@@ -136,7 +144,7 @@ public final class PushBootstrap {
     /// byte-identical — cursor PR #5 fourth-pass finding). Runs:
     ///
     /// 1. `bootstrap()` — system permission prompt (or cached
-    ///    decision), per-room `.allMessages` mode, register-for-remote.
+    ///    decision), then `registerForRemoteNotifications`.
     /// 2. `tokenStore.waitForToken()` — suspends until the application
     ///    delegate receives the APNs token. Returns immediately if the
     ///    token already arrived (cold-start path). `try await` so a
@@ -147,6 +155,17 @@ public final class PushBootstrap {
     ///    the signed-out account (cursor PR #5 third-pass finding).
     /// 3. `register(token:)` — writes the pusher record on the
     ///    homeserver via `Client.setPusher(...)`.
+    /// 4. `setPerRoomNotificationMode()` — per-room `.allMessages`,
+    ///    LAST so its wait for the first non-empty room snapshot
+    ///    (`joinedRoomIDs` → `firstSnapshotRoomIDs`, which blocks while
+    ///    sliding sync warms) can't delay the pusher write. The prior
+    ///    shape ran it inside `bootstrap()` off the FIRST snapshot, so
+    ///    a cold sign-in could set rules on zero rooms for the session
+    ///    (cursor PR #5 finding "push rules miss late rooms"). A
+    ///    sign-out cancelling the host `.task` mid-wait just yields `[]`
+    ///    rooms (no-op); the pusher row written in step 3 was for the
+    ///    then-current session and the host's sign-out unregister
+    ///    clears it.
     ///
     /// Errors are swallowed: a Client-resolution failure typically
     /// means sync isn't ready yet (next user-switch / relaunch
@@ -177,6 +196,10 @@ public final class PushBootstrap {
             guard granted else { return }
             let token = try await tokenStore.waitForToken()
             await bootstrap.register(token: token)
+            // Off the critical path: the pusher row is already written, so
+            // waiting here for sliding sync to surface the joined rooms
+            // can't delay push registration.
+            await bootstrap.setPerRoomNotificationMode()
         } catch {
             // Intentionally swallowed — see method doc.
         }

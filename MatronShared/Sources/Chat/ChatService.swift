@@ -87,18 +87,46 @@ public protocol ChatService: Sendable {
 }
 
 public extension ChatService {
-    /// One snapshot off the long-lived `chatSummaries()` stream, mapped
-    /// to room IDs. Never consumed past the first yield, so the
-    /// broadcaster's other registered consumers (ChatListViewModel,
-    /// NewChatSheet) are unaffected. `PushBootstrap.bootstrapHost`'s
-    /// `joinedRoomIDs` source on both hosts — lives here (not in
-    /// MatronPush) so the push module stays decoupled from the chat
-    /// layer.
-    func firstSnapshotRoomIDs() async -> [String] {
-        var iterator = chatSummaries().makeAsyncIterator()
-        if let snapshot = try? await iterator.next() {
-            return snapshot.map(\.id)
+    /// Joined-room IDs for the push bootstrap's per-room `.allMessages`
+    /// pass, sourced from `chatSummaries()`. `PushBootstrap.bootstrapHost`'s
+    /// `joinedRoomIDs` source on both hosts — lives here (not in MatronPush)
+    /// so the push module stays decoupled from the chat layer.
+    ///
+    /// **Waits for the first NON-EMPTY snapshot**, bounded by `timeout`.
+    /// The stream's first yield is `[]` while sliding sync is still warming
+    /// (per the `chatSummaries()` doc); the prior one-shot read took that
+    /// `[]` and returned, so a cold sign-in set push rules on zero rooms
+    /// for the whole session — bootstrap runs once per
+    /// `.task(id: session.userID)` and never re-fires (cursor PR #5 finding
+    /// "push rules miss late rooms"). The bound is required because a
+    /// genuinely room-less account yields `[]` and then nothing, so there's
+    /// no non-empty snapshot to wait for; on timeout this returns `[]`.
+    ///
+    /// The caller runs this OFF the pusher-registration critical path
+    /// (after `register(token:)`), so the wait can never delay the
+    /// `setPusher` write. The subscription is short-lived — torn down on
+    /// return or task cancellation (sign-out) — and never advances the
+    /// broadcaster's other consumers (ChatListViewModel, NewChatSheet).
+    func firstSnapshotRoomIDs(timeout: Duration = .seconds(30)) async -> [String] {
+        await withTaskGroup(of: [String].self) { group in
+            group.addTask {
+                var iterator = chatSummaries().makeAsyncIterator()
+                while !Task.isCancelled {
+                    // `try?` collapses a thrown stream (SyncReadyError) and a
+                    // finished stream alike to "give up" — a room-less or
+                    // failed-sync account isn't worth failing push setup over.
+                    guard let snapshot = try? await iterator.next() else { return [] }
+                    if !snapshot.isEmpty { return snapshot.map(\.id) }
+                }
+                return []
+            }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return []
+            }
+            let result = await group.next() ?? []
+            group.cancelAll()
+            return result
         }
-        return []
     }
 }
