@@ -37,6 +37,10 @@ struct ChatListView: View {
     @State private var showingNewChat = false
     /// Phase 6 (Search): drives the `.sheet` presenting `SearchView`.
     @State private var showingSearch = false
+    /// Phase 6 (Search): latest aggregate backfill progress, mirrored from the
+    /// `BackfillCoordinator`'s stream. Drives the "Indexing chats…" footer while
+    /// `inProgress`; hidden once every room has been swept.
+    @State private var indexingProgress: AggregateBackfillProgress?
     /// The chat whose ⓘ button was tapped. Setting this drives the
     /// `.sheet(item:)` presentation of `BotProfileView`. Cleared back to
     /// `nil` either by the sheet's onDismiss or when the user picks a chat
@@ -109,6 +113,22 @@ struct ChatListView: View {
     var body: some View {
         chatListColumn
         .navigationTitle("Matron")
+        // Phase 6 (Search): "Indexing chats…" footer while history backfill is
+        // in flight. Mirrors the BackfillCoordinator's aggregate progress;
+        // zero-height (no inset) once complete. Mac uses the search empty-state
+        // for the equivalent signal (Task 10).
+        .safeAreaInset(edge: .bottom) {
+            if let progress = indexingProgress, progress.inProgress {
+                indexingFooter(progress)
+            }
+        }
+        .task(id: session?.userID) {
+            guard let deps, let session,
+                  let coordinator = deps.backfillCoordinator(for: session) else { return }
+            for await progress in await coordinator.progressStream() {
+                indexingProgress = progress
+            }
+        }
         .toolbar {
             // Phase 6 (Search): leading search button → SearchView sheet. Only
             // shown when the index is available (deps.search non-nil).
@@ -666,6 +686,20 @@ struct ChatListView: View {
         guard let deps, let session else { return }
         let chat = deps.chatService(for: session)
         Task { try? await action(chat) }
+    }
+
+    /// "Indexing chats…" footer shown while search backfill is in flight.
+    @ViewBuilder
+    private func indexingFooter(_ progress: AggregateBackfillProgress) -> some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text("Indexing chats… (\(progress.roomsCompleted) of \(progress.roomsTotal))")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial)
     }
 
 }
