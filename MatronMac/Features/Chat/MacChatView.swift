@@ -364,6 +364,9 @@ struct MacChatView: View {
         .onChange(of: viewModel.items) { _, _ in
             if let current = pendingAskPrompt {
                 if viewModel.isPromptAnswered(current.id) {
+                    // Persist on close so a transient clear can't drop the
+                    // answer before it's recorded — see iOS `ChatView`.
+                    viewModel.markPromptAnswered(current.id)
                     pendingAskPrompt = nil
                 }
             } else {

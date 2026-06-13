@@ -422,6 +422,13 @@ struct ChatView: View {
         .onChange(of: viewModel.items) { _, _ in
             if let current = pendingAskPrompt {
                 if viewModel.isPromptAnswered(current.id) {
+                    // Persist NOW rather than leaning on onDismiss's
+                    // pendingAsk() fold — a transient clear between this
+                    // close and the dismiss could skip that fold (bugbot
+                    // "Cross-device dismiss skips persistence"), letting
+                    // the prompt re-pop when items return without the
+                    // answer event.
+                    viewModel.markPromptAnswered(current.id)
                     pendingAskPrompt = nil
                 }
             } else {
