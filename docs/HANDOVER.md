@@ -172,10 +172,42 @@ bugbot SUCCESS on `df9d257`, zero unresolved threads.** Per pass:
 Final gate: **432 SPM (4 skipped) / 73 MatronMacTests / 54
 MatronTests / both host builds clean.**
 
+### Seventh finding — "push rules miss late rooms" (PR #5, MED, real)
+
+Bugbot flagged a genuine bug in the PR #5 push code (`a32eff6`):
+`ChatService.firstSnapshotRoomIDs()` read only the FIRST
+`chatSummaries()` yield, which is `[]` while sliding sync warms — so a
+cold sign-in set per-room `.allMessages` on zero rooms for the whole
+session (bootstrap runs once per `.task(id: session.userID)`). Scope:
+the pusher registration itself was unaffected and server-default rules
+still notify; only the per-room override was missed. Fix: (1)
+`firstSnapshotRoomIDs` now waits for the first NON-EMPTY snapshot,
+bounded by a timeout (`withTaskGroup` race — room-less accounts yield
+`[]` forever, so the bound is required); (2) the per-room pass moved
+out of `bootstrap()` to AFTER `register(token:)` in `bootstrapHost`,
+so the wait runs off the pusher-registration critical path. Documented
+residual: a room first appearing AFTER the first non-empty snapshot
+(incremental sync on a new device) is covered by the next-launch
+idempotent re-run + server defaults — no long-lived per-room observer
+added for a mechanism supplementary to the pusher. Merged into
+phase-5 (`c5c51b7`). **Both PRs bugbot-clean after this.** Gate on
+merged phase-5: **434 SPM / 73 Mac / 54 iOS / both builds.**
+
+### Don't-undo (this fix)
+
+- **Don't fold `setPerRoomNotificationMode()` back into `bootstrap()`.**
+  It runs after `register()` in `bootstrapHost` specifically so the
+  wait-for-non-empty-snapshot can't delay the pusher write.
+- **Don't drop the timeout from `firstSnapshotRoomIDs`.** A room-less
+  account's stream yields `[]` then never again; without the bound the
+  push bootstrap hangs.
+
 ### Still open after this session
 
-- **Dan: sign the CLA on PR #5** (one comment) → merge PR #5 → check
-  PR #6's collapsed diff → merge PR #6.
+- ~~Dan: sign the CLA on PR #5~~ — **DONE; `cla` now passes on both
+  PRs.** Remaining: merge PR #5 → check PR #6's collapsed diff → merge
+  PR #6. (Both are CI-green and bugbot-clean; PR #5's
+  `ios-build-and-test` was the last job finishing at handover.)
 - Manual Phase 5 validation (human eyes; injectors ready) — then the
   Phase 6 (search) plan per Phase 5 acceptance.
 - Bridge-side emission, Sygnal app_id config, real-device push — items
