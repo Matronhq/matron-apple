@@ -92,6 +92,12 @@ struct MatronApp: App {
                             ChatListView(
                                 viewModel: ChatListViewModel(chat: dependencies.chatService(for: session)),
                                 onSignOut: { signOut() },
+                                // Phase 6 (Search): a search result navigates by
+                                // appending the room ID onto the stack path the
+                                // host owns (same mechanism as a notification tap).
+                                onOpenChat: { roomID in
+                                    if chatPath.last != roomID { chatPath.append(roomID) }
+                                },
                                 verificationCenter: verificationCenter
                             )
                         }

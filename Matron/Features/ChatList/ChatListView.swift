@@ -3,6 +3,7 @@ import UserNotifications
 import MatronChat
 import MatronDesignSystem
 import MatronModels
+import MatronSearch
 import MatronStorage
 import MatronSync
 import MatronVerification
@@ -34,6 +35,8 @@ struct ChatListView: View {
     @Environment(\.appDependencies) private var deps
     @Environment(\.currentSession) private var session
     @State private var showingNewChat = false
+    /// Phase 6 (Search): drives the `.sheet` presenting `SearchView`.
+    @State private var showingSearch = false
     /// The chat whose ⓘ button was tapped. Setting this drives the
     /// `.sheet(item:)` presentation of `BotProfileView`. Cleared back to
     /// `nil` either by the sheet's onDismiss or when the user picks a chat
@@ -78,6 +81,11 @@ struct ChatListView: View {
     /// hook keeps the user from being stranded once Sign Out is exposed
     /// from the menu (QA finding #7).
     var onSignOut: (() -> Void)? = nil
+    /// Phase 6 (Search): opens a room by ID. Owned by `MatronApp` (it holds the
+    /// `NavigationStack` path); wired so a search result can navigate to its
+    /// chat after the search sheet dismisses. Optional so previews / tests
+    /// without the full nav stack still construct the view.
+    var onOpenChat: ((String) -> Void)? = nil
     /// Cross-platform incoming-verification orchestrator (spec §7.1, §5.9).
     /// Optional so previews / tests that exercise only the chat-list
     /// rendering can construct the view without standing up a full
@@ -102,6 +110,14 @@ struct ChatListView: View {
         chatListColumn
         .navigationTitle("Matron")
         .toolbar {
+            // Phase 6 (Search): leading search button → SearchView sheet. Only
+            // shown when the index is available (deps.search non-nil).
+            if deps?.search != nil {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { showingSearch = true } label: { Image(systemName: "magnifyingglass") }
+                        .accessibilityLabel("Search")
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showingNewChat = true } label: { Image(systemName: "square.and.pencil") }
             }
@@ -245,6 +261,34 @@ struct ChatListView: View {
             } else {
                 Text("Settings unavailable")
                     .padding()
+            }
+        }
+        .sheet(isPresented: $showingSearch) {
+            // Phase 6 (Search): dedicated two-section search screen. Built with
+            // the current chat-list snapshot so chat (title/bot) hits resolve
+            // without another fetch. Selecting a result dismisses the sheet and
+            // routes through `onOpenChat` (MatronApp owns the nav path).
+            if let deps, let session, let search = deps.search {
+                NavigationStack {
+                    SearchView(
+                        viewModel: SearchViewModel(
+                            search: search,
+                            allChats: viewModel.groups.flatMap(\.summaries)
+                        ),
+                        onSelectChat: { chat in
+                            showingSearch = false
+                            onOpenChat?(chat.id)
+                        },
+                        onSelectMessage: { hit in
+                            // Opens the hit's room. Precise scroll-to-event
+                            // (focused-timeline) is a Phase 6 follow-up — see
+                            // the search plan's jump-to-message note.
+                            showingSearch = false
+                            onOpenChat?(hit.roomID)
+                        },
+                        backfillCoordinator: deps.backfillCoordinator(for: session)
+                    )
+                }
             }
         }
         .navigationDestination(for: ChatSummary.ID.self) { id in

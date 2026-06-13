@@ -13,10 +13,10 @@ struct SearchView: View {
     @State var viewModel: SearchViewModel
     let onSelectChat: (ChatSummary) -> Void
     let onSelectMessage: (SearchHit) -> Void
-    /// Optional backfill progress stream from the app's `BackfillCoordinator`.
-    /// When present, the empty state shows "Indexing chats… (X of Y rooms)"
-    /// while history is still being indexed (Task 9 wires it).
-    var backfillProgress: AsyncStream<AggregateBackfillProgress>? = nil
+    /// Optional backfill coordinator from the app. When present, its progress
+    /// stream drives the "Indexing chats… (X of Y rooms)" empty state while
+    /// history is still being indexed.
+    var backfillCoordinator: BackfillCoordinator? = nil
 
     var body: some View {
         List {
@@ -54,7 +54,9 @@ struct SearchView: View {
             Task { await viewModel.search() }
         }
         .task {
-            if let backfillProgress { await viewModel.observeBackfill(backfillProgress) }
+            if let backfillCoordinator {
+                await viewModel.observeBackfill(backfillCoordinator.progressStream())
+            }
         }
         .navigationTitle("Search")
     }
