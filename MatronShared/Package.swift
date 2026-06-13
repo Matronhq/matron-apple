@@ -17,6 +17,7 @@ let package = Package(
         .library(name: "MatronDesignSystem", targets: ["MatronDesignSystem"]),
         .library(name: "MatronVerification", targets: ["MatronVerification"]),
         .library(name: "MatronPush", targets: ["MatronPush"]),
+        .library(name: "MatronEvents", targets: ["MatronEvents"]),
     ],
     dependencies: [
         .package(url: "https://github.com/matrix-org/matrix-rust-components-swift", from: "26.04.01"),
@@ -49,6 +50,12 @@ let package = Package(
             dependencies: [
                 "MatronModels",
                 "MatronSync",
+                // Phase 5 Task 5: TimelineItem.Kind gains `.toolCall` /
+                // `.askUser` cases that wrap MatronEvents DTOs. The
+                // dependency only pulls in pure value types — no
+                // SwiftUI, no SDK FFI — so MatronChat stays the same
+                // weight as before.
+                "MatronEvents",
                 .product(name: "MatrixRustSDK", package: "matrix-rust-components-swift"),
             ],
             path: "Sources/Chat"
@@ -61,6 +68,9 @@ let package = Package(
             dependencies: [
                 "MatronAuth",
                 "MatronChat",
+                // Phase 5: AskUserSheetViewModel consumes the
+                // AskUserEvent DTO directly.
+                "MatronEvents",
                 "MatronModels",
                 "MatronStorage",
                 // Phase 3 Task 6: SasViewModel exposes `SasFlowState` /
@@ -89,6 +99,12 @@ let package = Package(
                 // creating a cycle or pulling MatrixRustSDK.
                 "MatronModels",
                 "MatronSync",
+                // Phase 5: ToolCallCard / AskUserSheetBody /
+                // SessionMetaHeader render the MatronEvents DTOs
+                // directly. MatronEvents is a leaf module (Foundation
+                // only), so the design-system target still pulls no
+                // SDK surface.
+                "MatronEvents",
             ],
             path: "Sources/DesignSystem"
         ),
@@ -113,6 +129,10 @@ let package = Package(
         .target(
             name: "MatronPush",
             dependencies: [
+                // Phase 5 Task 12: PushDecoder reads the
+                // MatronEventType constants for the notification-body
+                // hints (tool_call / ask_user / buttons).
+                "MatronEvents",
                 "MatronModels",
                 "MatronStorage",
                 "MatronSync",
@@ -120,15 +140,27 @@ let package = Package(
             ],
             path: "Sources/Push"
         ),
+        // Phase 5 Task 1: parsers + DTOs for the three Matron-specific
+        // event types (`chat.matron.tool_call`, `.ask_user`,
+        // `.session_meta`). Pure value types — no SwiftUI, no SDK FFI —
+        // so this target stays a leaf. The SDK-side mapping lives in
+        // `MatronChat`'s `TimelineServiceLive` (which depends on this
+        // target via the Phase 5 Task 6 wiring).
+        .target(
+            name: "MatronEvents",
+            dependencies: ["MatronModels"],
+            path: "Sources/Events"
+        ),
         .testTarget(name: "StorageTests", dependencies: ["MatronStorage"], path: "Tests/StorageTests"),
         .testTarget(name: "AuthTests", dependencies: ["MatronAuth", "MatronModels", "MatronStorage"], path: "Tests/AuthTests"),
         .testTarget(name: "SyncTests", dependencies: ["MatronSync", "MatronModels"], path: "Tests/SyncTests"),
-        .testTarget(name: "ChatTests", dependencies: ["MatronChat", "MatronModels", "MatronSync"], path: "Tests/ChatTests"),
-        .testTarget(name: "ViewModelTests", dependencies: ["MatronViewModels", "MatronAuth", "MatronChat", "MatronModels", "MatronStorage", "MatronVerification"], path: "Tests/ViewModelTests"),
+        .testTarget(name: "ChatTests", dependencies: ["MatronChat", "MatronEvents", "MatronModels", "MatronSync"], path: "Tests/ChatTests"),
+        .testTarget(name: "ViewModelTests", dependencies: ["MatronViewModels", "MatronAuth", "MatronChat", "MatronEvents", "MatronModels", "MatronStorage", "MatronVerification"], path: "Tests/ViewModelTests"),
         .testTarget(
             name: "DesignSystemSnapshotTests",
             dependencies: [
                 "MatronDesignSystem",
+                "MatronEvents",
                 "MatronModels",
                 "MatronSync",
                 .product(name: "SnapshotTesting", package: "swift-snapshot-testing"),
@@ -144,6 +176,11 @@ let package = Package(
             name: "PushTests",
             dependencies: ["MatronPush"],
             path: "Tests/PushTests"
+        ),
+        .testTarget(
+            name: "EventsTests",
+            dependencies: ["MatronEvents", "MatronModels"],
+            path: "Tests/EventsTests"
         ),
     ]
 )

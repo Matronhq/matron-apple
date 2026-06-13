@@ -33,6 +33,13 @@ endpoint when a notify-action event lands; Sygnal forwards to APNs.
 
 ## Sygnal
 
+> **2026-06-12:** a live Sygnal already runs on dev-2, Chef-managed by
+> the `dev_server::sygnal` recipe in `infra-repo` (apps list comes
+> from the `dev_server.sygnal.apps` node attribute; APNs key
+> `KEYID00000` lives in the encrypted `development` data bag). It
+> currently serves Matron X (`chat.matron.x.ios.{prod,dev}`); add this
+> app's four entries there rather than standing up a second instance.
+
 Run upstream Sygnal — Apache 2.0, no fork needed.
 
 ```bash
@@ -45,9 +52,15 @@ docker run -d --name sygnal \
 
 `sygnal.yaml` — **four app entries**, one per (platform × build-type).
 The `app_id` keys MUST match the four-way switch in
-`PushConfig.appID` (`MatronShared/Sources/Push/PushConfig.swift`):
+`PushConfig.appID` (`MatronShared/Sources/Push/PushConfig.swift`).
+The `http` block is required — without it Sygnal binds to localhost
+inside the container and Docker's published port can't reach it:
 
 ```yaml
+http:
+  bind_addresses: ['0.0.0.0']
+  port: 5000
+
 apps:
   chat.matron.ios:
     type: apns
@@ -55,7 +68,7 @@ apps:
     key_id: XXXXXXXXXX
     team_id: YYYYYYYYYY
     topic: chat.matron.app          # iOS host bundle ID
-    use_sandbox: false              # production iOS (TestFlight + App Store)
+    platform: production            # production iOS (TestFlight + App Store)
     push_type: alert
   chat.matron.ios.dev:
     type: apns
@@ -63,7 +76,7 @@ apps:
     key_id: XXXXXXXXXX
     team_id: YYYYYYYYYY
     topic: chat.matron.app
-    use_sandbox: true               # iOS Debug builds (Xcode Run, simulator, ad-hoc)
+    platform: sandbox               # iOS Debug builds (Xcode Run, simulator, ad-hoc)
     push_type: alert
   chat.matron.mac:
     type: apns
@@ -71,7 +84,7 @@ apps:
     key_id: XXXXXXXXXX
     team_id: YYYYYYYYYY
     topic: chat.matron.mac          # Mac host bundle ID
-    use_sandbox: false              # production Mac (Mac App Store + notarized)
+    platform: production            # production Mac (Mac App Store + notarized)
     push_type: alert
   chat.matron.mac.dev:
     type: apns
@@ -79,7 +92,7 @@ apps:
     key_id: XXXXXXXXXX
     team_id: YYYYYYYYYY
     topic: chat.matron.mac
-    use_sandbox: true               # Mac Debug builds (Xcode Run, locally signed)
+    platform: sandbox               # Mac Debug builds (Xcode Run, locally signed)
     push_type: alert
 log:
   setup:
@@ -93,7 +106,7 @@ log:
 
 All four entries reference the same `.p8` keyfile (one APNs auth key
 covers the whole team) but split on `topic` (bundle ID) and
-`use_sandbox` (Debug → APNs sandbox, Release → APNs production).
+`platform` (Debug → `sandbox`, Release → `production`).
 
 ### APNs sandbox vs production
 
@@ -108,21 +121,21 @@ sees a notification.
 Each app build picks the right `app_id` at compile time via
 `PushConfig.appID`'s `#if os(iOS)` / `#if os(macOS)` × `#if DEBUG`
 switch. Whenever you cut a TestFlight or Mac App Store build,
-double-check that `use_sandbox` on the matching Sygnal entry is
+double-check that `platform` on the matching Sygnal entry is
 `false` — a stray `true` here is the single most common cause of
 "push works on my dev build but not in TestFlight".
 
 ## Entitlements (client-side cross-check)
 
 The app-side `aps-environment` entitlement value must match the
-Sygnal `use_sandbox` flag for the same `app_id`:
+Sygnal `platform` value for the same `app_id`:
 
-| Build              | App-side entitlement                                | Sygnal `use_sandbox` |
+| Build              | App-side entitlement                                | Sygnal `platform` |
 |--------------------|-----------------------------------------------------|----------------------|
-| iOS Debug          | `aps-environment = development`                     | `true`               |
-| iOS Release        | `aps-environment = production`                      | `false`              |
-| Mac Debug          | `com.apple.developer.aps-environment = development` | `true`               |
-| Mac Release        | `com.apple.developer.aps-environment = production`  | `false`              |
+| iOS Debug          | `aps-environment = development`                     | `sandbox`            |
+| iOS Release        | `aps-environment = production`                      | `production`         |
+| Mac Debug          | `com.apple.developer.aps-environment = development` | `sandbox`            |
+| Mac Release        | `com.apple.developer.aps-environment = production`  | `production`         |
 
 **iOS uses `aps-environment`; macOS uses `com.apple.developer.aps-environment`**
 — this is a longstanding macOS-only quirk per Apple's
@@ -159,7 +172,7 @@ it, that's deliberate and PushBootstrap doesn't override (see
 ## Smoke test
 
 **Pre-flight: verify all four app entries are present, AND that
-`use_sandbox` matches the build type you're testing against.**
+`platform` matches the build type you're testing against.**
 
 ```bash
 # 1. All four app_ids must be present in the running config:
@@ -172,17 +185,17 @@ docker exec sygnal grep -E "^  chat\.matron\.(ios|mac)(\.dev)?:" /etc/sygnal.yam
 
 # 2. Sandbox flag for the specific app_id we're about to hit:
 APP_ID=chat.matron.ios.dev    # or .ios, .mac, .mac.dev — pick one per smoke run
-docker exec sygnal awk -v id="$APP_ID:" '$0 ~ id {found=1} found && /use_sandbox/ {print; exit}' /etc/sygnal.yaml
-# Expect: use_sandbox: true   for a Debug/dev build of either platform
-# Expect: use_sandbox: false  for a TestFlight / App Store / Mac App Store build
+docker exec sygnal awk -v id="$APP_ID:" '$0 ~ id {found=1} found && /platform/ {print; exit}' /etc/sygnal.yaml
+# Expect: platform: sandbox      for a Debug/dev build of either platform
+# Expect: platform: production   for a TestFlight / App Store / Mac App Store build
 
 # 3a. iOS: cross-check by reading the embedded.mobileprovision from
-#     the .ipa. The aps-environment value must pair with use_sandbox:
+#     the .ipa. The aps-environment value must pair with platform:
 unzip -p Matron.ipa "Payload/Matron.app/embedded.mobileprovision" \
   | security cms -D \
   | plutil -extract aps-environment xml1 -o - -
-# Expect: <string>development</string>  → must pair with use_sandbox: true
-# Expect: <string>production</string>   → must pair with use_sandbox: false
+# Expect: <string>development</string>  → must pair with platform: sandbox
+# Expect: <string>production</string>   → must pair with platform: production
 
 # 3b. Mac: read com.apple.developer.aps-environment out of the signed
 #     .app's entitlements (note the macOS-namespaced key — iOS uses
@@ -473,7 +486,7 @@ Before submitting a TestFlight or App Store build:
    configuration (Debug → `chat.matron.{ios,mac}.dev`; Release →
    `chat.matron.{ios,mac}`). Pinned by `PushConfigTests`.
 2. Confirm the matching `app_id` in Sygnal's config has
-   `use_sandbox: true` (dev) or `false` (production) per the
+   `platform: sandbox` (dev) or `production` per the
    Smoke test step 2 cross-check.
 3. Confirm the signing profile's `aps-environment` value pairs
    correctly: `development` ↔ sandbox, `production` ↔ production

@@ -23,7 +23,22 @@ public protocol TimelineService: Sendable {
 
     /// Sends a plain text message. Body may include markdown.
     /// Returns when the SDK has accepted the send (not when the server confirms it).
-    func sendText(_ body: String) async throws
+    ///
+    /// When `inReplyTo` is non-nil the wire content carries
+    /// `m.relates_to.m.in_reply_to.event_id` (the SDK's `sendReply`
+    /// adds the rich-reply fallback automatically) so a bot can
+    /// correlate the message with the prompt it answers — the
+    /// `chat.matron.ask_user` reply contract (spec §4.2).
+    func sendText(_ body: String, inReplyTo: String?) async throws
+
+    /// Sends a `chat.matron.button_response` answer to a
+    /// `chat.matron.buttons` prompt (the live bridge / Matron X
+    /// protocol — see `AskUserEvent.ReplyChannel.buttonResponse`).
+    /// `selectedValues` carries the chosen buttons' wire `value`
+    /// fields; the plaintext fallback `body` is the values joined
+    /// with ", " — byte-compatible with Matron X's
+    /// `TimelineController.sendButtonResponse`.
+    func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws
 
     /// Sends an image attachment as an `m.image` event.
     func sendImage(_ data: Data, filename: String, mimeType: String) async throws
@@ -40,4 +55,12 @@ public protocol TimelineService: Sendable {
 
     /// Marks the most recent visible event as read.
     func markAsRead() async throws
+}
+
+public extension TimelineService {
+    /// Plain send with no reply relation — the shape every pre-Phase-5
+    /// call site (composer, slash commands) uses.
+    func sendText(_ body: String) async throws {
+        try await sendText(body, inReplyTo: nil)
+    }
 }

@@ -13,6 +13,10 @@ final class FakeTimelineService: TimelineService, @unchecked Sendable {
     /// added in QA finding #10.
     var streamError: Error?
     var sentText: [String] = []
+    /// Reply target passed alongside each `sentText` entry (nil for
+    /// plain sends) — index-aligned with `sentText`.
+    var sentInReplyTo: [String?] = []
+    var sentButtonResponses: [(selectedValues: [String], inReplyTo: String)] = []
     var sentImages: [(filename: String, mime: String, sizeBytes: Int)] = []
     var sentFiles: [(filename: String, mime: String, sizeBytes: Int)] = []
     var paginateCalls: Int = 0
@@ -31,8 +35,12 @@ final class FakeTimelineService: TimelineService, @unchecked Sendable {
         }
     }
 
-    func sendText(_ body: String) async throws {
+    func sendText(_ body: String, inReplyTo: String?) async throws {
         sentText.append(body)
+        sentInReplyTo.append(inReplyTo)
+    }
+    func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {
+        sentButtonResponses.append((selectedValues, promptEventID))
     }
     func sendImage(_ data: Data, filename: String, mimeType: String) async throws {
         sentImages.append((filename, mimeType, data.count))
@@ -72,6 +80,24 @@ final class TimelineServiceFakeTests: XCTestCase {
         try await fake.sendText("/start")
         try await fake.sendText("hello")
         XCTAssertEqual(fake.sentText, ["/start", "hello"])
+        // The no-arg overload (protocol extension) routes through the
+        // designated requirement with a nil reply target.
+        XCTAssertEqual(fake.sentInReplyTo, [nil, nil])
+    }
+
+    func test_sendText_withReply_recordsInReplyTo() async throws {
+        let fake = FakeTimelineService()
+        try await fake.sendText("yes", inReplyTo: "$prompt-evt-1")
+        XCTAssertEqual(fake.sentText, ["yes"])
+        XCTAssertEqual(fake.sentInReplyTo, ["$prompt-evt-1"])
+    }
+
+    func test_sendButtonResponse_recordsValuesAndTarget() async throws {
+        let fake = FakeTimelineService()
+        try await fake.sendButtonResponse(selectedValues: ["interrupt"], inReplyTo: "$buttons-1")
+        XCTAssertEqual(fake.sentButtonResponses.count, 1)
+        XCTAssertEqual(fake.sentButtonResponses[0].selectedValues, ["interrupt"])
+        XCTAssertEqual(fake.sentButtonResponses[0].inReplyTo, "$buttons-1")
     }
 
     func test_sendImage_recordsFilenameMimeAndSize() async throws {

@@ -31,6 +31,39 @@ verification + recovery requests.
     bootstrapped session. Kept for the AppleScript scenario.
   - `send-message` — send a test message into a room (decryption check)
   - `create-dm` — create an encrypted DM with a target user
+  - `send-event` — send a raw custom-typed event (`--type`, `--content`
+    JSON). Generic escape hatch for any wire shape.
+  - `inject-tool-calls` / `inject-ask-user` / `inject-buttons` — Phase 5
+    manual-test injectors (see "Phase 5 event injection" below)
+
+### Phase 5 event injection (manual-tests.md §Phase 5)
+
+The bridge doesn't emit `chat.matron.tool_call` / `chat.matron.ask_user`
+yet, so the tool_call/ask_user blocks of `manual-tests.md` §Phase 5 are
+exercised by injecting the spec wire shapes (claude-matrix-bridge
+`docs/superpowers/specs/2026-06-12-matron-events-protocol.md`) from the
+partner. Sign the app under test into the harness homeserver, open the
+target room, then:
+
+```sh
+P=tests/integration/partner/partner.mjs
+STORE=tests/integration/artifacts/<run>/partner-store.json  # from run-harness.sh
+
+# Three tool-call cards: ok, error, running→m.replace after 8s
+node $P inject-tool-calls --store-file $STORE --room '!room:id' [--replace-delay 8]
+
+# One ask_user prompt per invocation
+node $P inject-ask-user --store-file $STORE --room '!room:id' \
+  --kind text|choice|multi_choice|boolean \
+  [--expired] [--expires-in <secs>] [--prompt "…"]
+
+# One buttons-protocol question (value ≠ label, like the live bridge)
+node $P inject-buttons --store-file $STORE --room '!room:id'
+```
+
+The partner is a second device of the same user — `pendingAsk()` doesn't
+filter by sender, so injected prompts pop the sheet exactly like
+bridge-sent ones.
 
 ### SDK-level scenarios (canonical, headless)
 

@@ -17,7 +17,8 @@ final class FakeTimelineForComposer: TimelineService, @unchecked Sendable {
     func items() -> AsyncThrowingStream<[TimelineItem], Error> {
         AsyncThrowingStream { $0.finish() }
     }
-    func sendText(_ body: String) async throws { sentText.append(body) }
+    func sendText(_ body: String, inReplyTo: String?) async throws { sentText.append(body) }
+    func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {}
     func sendImage(_ data: Data, filename: String, mimeType: String) async throws {
         sentAttachments.append((filename, mimeType))
     }

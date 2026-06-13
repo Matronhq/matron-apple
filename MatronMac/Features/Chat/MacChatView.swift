@@ -61,6 +61,11 @@ struct MacChatView: View {
     /// the temp file to QuickLook / the user's preferred app, which
     /// means no SwiftUI sheet is needed. Only image taps land here.
     @State private var imagePreview: ImagePreview?
+    /// The ask-user prompt currently presented as a fixed-size sheet
+    /// (Phase 5 Task 11). Same contract as iOS `ChatView`: refreshed
+    /// from `viewModel.pendingAsk()` per snapshot, nil hides, an
+    /// answer from another device auto-dismisses.
+    @State private var pendingAskPrompt: AskUserPromptContext?
 
     /// Identifiable wrapper around a SwiftUI `Image` so
     /// `.sheet(item:)` has something to key on. Per-present UUID so
@@ -105,14 +110,11 @@ struct MacChatView: View {
                     .background(Color.red.opacity(0.9))
                     .accessibilityLabel("Chat error: \(errorMessage)")
             }
-            if viewModel.items.isEmpty
-                && viewModel.hasReceivedFirstSnapshot
-                && viewModel.error == nil {
-                // Settled-empty branch — see iOS `ChatView` for the
-                // full rationale. `hasReceivedFirstSnapshot` is the
-                // disambiguator between "still loading" and "settled
-                // empty"; without it the placeholder would flash on
-                // every cold-start chat open before sliding-sync warms.
+            if viewModel.settledEmpty && viewModel.error == nil {
+                // Settled-empty branch — see iOS `ChatView` and
+                // `ChatViewModel.settledEmpty`. The debounced flag keeps
+                // the placeholder from flashing on cold-start warm-up OR a
+                // transient sliding-sync timeline reset.
                 EmptyChatPlaceholder(botName: chatTitle)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -353,6 +355,63 @@ struct MacChatView: View {
                 image: preview.image,
                 onDismiss: { imagePreview = nil }
             )
+        }
+        // Phase 5 Task 11: ask-user prompt sheet. Same drive logic as
+        // iOS `ChatView` — an open sheet closes only when its prompt is
+        // answered, never on a transient clear or a newer prompt; see
+        // that view for the full rationale. Presentation differs: fixed
+        // 520×400 frame because Mac sheets have no detents (spec §5.9).
+        .onChange(of: viewModel.items) { _, _ in
+            if let current = pendingAskPrompt {
+                if viewModel.isPromptAnswered(current.id) {
+                    // Persist on close so a transient clear can't drop the
+                    // answer before it's recorded — see iOS `ChatView`.
+                    viewModel.markPromptAnswered(current.id)
+                    pendingAskPrompt = nil
+                }
+            } else {
+                pendingAskPrompt = viewModel.pendingAsk()
+            }
+        }
+        // `onDismiss` re-queries after dismissal so a second unanswered
+        // prompt presents next instead of waiting for another timeline
+        // snapshot — see iOS `ChatView` for the full rationale.
+        .sheet(item: askUserSheetBinding, onDismiss: {
+            pendingAskPrompt = viewModel.pendingAsk()
+        }) { ctx in
+            MacAskUserSheet(
+                viewModel: viewModel.makeAskUserSheetViewModel(
+                    eventID: ctx.id,
+                    event: ctx.event,
+                    onClose: { closeAskUserSheet(ctx) }
+                ),
+                onClose: { closeAskUserSheet(ctx) }
+            )
+            .frame(width: 520, height: 400)
+        }
+    }
+
+    /// See iOS `ChatView.askUserSheetBinding` — intercepts interactive
+    /// dismissal (Esc / Close) so the prompt doesn't re-pop on the
+    /// next snapshot.
+    private var askUserSheetBinding: Binding<AskUserPromptContext?> {
+        Binding(
+            get: { pendingAskPrompt },
+            set: { newValue in
+                if newValue == nil, let ctx = pendingAskPrompt {
+                    viewModel.markPromptAnswered(ctx.id)
+                }
+                pendingAskPrompt = newValue
+            }
+        )
+    }
+
+    private func closeAskUserSheet(_ ctx: AskUserPromptContext) {
+        viewModel.markPromptAnswered(ctx.id)
+        // Same-prompt guard — see iOS `ChatView.closeAskUserSheet` for
+        // the late-completing-send rationale.
+        if pendingAskPrompt?.id == ctx.id {
+            pendingAskPrompt = nil
         }
     }
 

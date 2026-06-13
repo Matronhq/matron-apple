@@ -1,5 +1,6 @@
 import Foundation
 import MatrixRustSDK
+import MatronEvents
 import MatronModels
 import MatronStorage
 import MatronSync
@@ -115,10 +116,20 @@ public final class PushDecoder: @unchecked Sendable {
     static func decoded(from item: NotificationItem, roomID: String) -> DecodedNotification {
         let title = item.senderInfo.displayName ?? Self.senderID(of: item)
         let body: String
-        do {
-            body = try Self.body(for: item.event)
-        } catch {
-            body = "New message"
+        if let hint = Self.matronHintBody(rawEvent: item.rawEvent) {
+            // Phase 5 Task 12: Matron-specific events get a typed hint.
+            // Checked BEFORE the content() path because the custom
+            // event types (`chat.matron.tool_call` / `.ask_user`)
+            // aren't in the FFI's MessageLikeEventContent surface —
+            // `content()` throws on them and they'd all collapse into
+            // the generic "New message" fallback.
+            body = hint
+        } else {
+            do {
+                body = try Self.body(for: item.event)
+            } catch {
+                body = "New message"
+            }
         }
         return DecodedNotification(
             title: title,
@@ -126,6 +137,44 @@ public final class PushDecoder: @unchecked Sendable {
             threadIdentifier: item.threadId ?? roomID,
             badge: nil
         )
+    }
+
+    /// Pure (no FFI) — testable. Returns the Phase 5 notification hint
+    /// for Matron-specific events, or nil for everything else (caller
+    /// falls through to the standard content-based body).
+    ///
+    /// Three shapes are recognised from the raw event JSON
+    /// (`NotificationItem.rawEvent` — the v26 SDK exposes no
+    /// `eventType()` on TimelineEvent, so the type is read from the
+    /// JSON directly):
+    /// - `type: chat.matron.tool_call`  → "🔧 Tool call"
+    /// - `type: chat.matron.ask_user`   → "❓ Question — needs your answer"
+    /// - `m.room.message` carrying a `chat.matron.buttons` content key
+    ///   (the bridge's live protocol) → "❓ <prompt>" — the prompt is
+    ///   already present in the message's plaintext fallback `body`,
+    ///   so surfacing it here is not a new plaintext exposure.
+    static func matronHintBody(rawEvent: String) -> String? {
+        guard rawEvent.contains("chat.matron.") else { return nil }
+        guard let data = rawEvent.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        switch parsed["type"] as? String {
+        case MatronEventType.toolCall:
+            return "🔧 Tool call"
+        case MatronEventType.askUser:
+            return "❓ Question — needs your answer"
+        default:
+            break
+        }
+        if let content = parsed["content"] as? [String: Any],
+           let buttons = content[MatronEventType.buttons] as? [String: Any] {
+            if let prompt = buttons["prompt"] as? String, !prompt.isEmpty {
+                return "❓ \(prompt)"
+            }
+            return "❓ Question — needs your answer"
+        }
+        return nil
     }
 
     static func senderID(of item: NotificationItem) -> String {

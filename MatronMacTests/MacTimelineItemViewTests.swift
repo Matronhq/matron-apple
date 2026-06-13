@@ -50,6 +50,20 @@ final class MacTimelineItemViewTests: XCTestCase {
     // The Mac view calls `SendStateGlyph.from(_:)` directly, so there's
     // no Mac-specific mapping left to pin here.
 
+
+    func test_shouldRender_returnsFalse_forAskUserAnswer() {
+        // Phase 5: button responses are pendingAsk bookkeeping, never
+        // rendered (Matron X hides them too).
+        let item = TimelineItem(
+            id: "a", sender: "@me:s",
+            timestamp: Date(timeIntervalSince1970: 0),
+            kind: .askUserAnswer(promptEventID: "$1", selectedValues: ["yes"]),
+            isOwn: true, sendState: .sent
+        )
+        XCTAssertFalse(MacTimelineItemView.shouldRender(item),
+                       "button-response answers must stay hidden")
+    }
+
     func test_shouldRender_returnsTrue_forContentKinds() {
         let kinds: [TimelineItem.Kind] = [
             .text(body: "hi", formattedHTML: nil),
