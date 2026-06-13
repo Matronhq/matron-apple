@@ -46,5 +46,26 @@
 	<array>
 		<string>$(AppIdentifierPrefix)chat.matron.mac</string>
 	</array>
+	<!--
+		Phase 4 Task 12: APNs environment for Debug builds. Pairs with
+		`use_sandbox: true` on the matching Sygnal `app_id`
+		(`chat.matron.mac.dev`). Mismatch (Debug build hitting an
+		`app_id` mapped to `use_sandbox: false`) silently rejects the
+		token at Sygnal with `{"rejected": [<token>]}` and never
+		reaches APNs — hard to diagnose live. The entitlement-vs-app_id
+		pairing is pinned on both sides; see
+		`docs/superpowers/plans/2026-05-02-matron-ios-phase-4-push-nse.md`
+		§"Push setup runbook" for the cross-check.
+
+		**macOS-specific key**: macOS uses
+		`com.apple.developer.aps-environment` (NOT the iOS-only bare
+		`aps-environment`). Initial Task 12 commit landed the iOS form
+		on Mac, which fails to grant push capability — `NSApplication.registerForRemoteNotifications()`
+		never produces a token. Bug spotted by cursor on PR #5 review;
+		the right key per Apple's macOS entitlements docs is the
+		`com.apple.developer.*` namespaced form.
+	-->
+	<key>com.apple.developer.aps-environment</key>
+	<string>development</string>
 </dict>
 </plist>

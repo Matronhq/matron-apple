@@ -247,3 +247,67 @@ Run before every TestFlight build (iOS) and every Mac App Store build.
 - Live device-list query for "no other device reachable → fall back to recovery key" branch (deferred — needs SDK device-fetch surface).
 - The full Settings → Account → Sign Out reauth flow (Phase 7).
 - Snapshot pixel-mismatch on macos-15 CI runners (gated behind `MATRON_SKIP_SNAPSHOT_TESTS=1`).
+
+## Phase 4 (Push & NSE)
+
+> **Prerequisite:** Sygnal + APNs auth keys + Cloudflare Tunnel hostname must be reachable. The Smoke test cURL chain in [`docs/push-setup.md`](docs/push-setup.md) is the gate — if its step 4 (live cURL) returns `{"rejected": ["<token>"]}` or no notification arrives, none of the below will pass either; fix Sygnal/APNs first. End-to-end failure-mode diagnostics live alongside each scenario in `push-setup.md` "Manual test walkthroughs"; this section is the pre-submit checkbox checklist.
+
+### iOS — permission + token registration
+
+- [ ] Fresh install on a real iOS device (the Simulator can't receive APNs). Sign in + verify → notification permission prompt appears.
+- [ ] Allow → device unified log shows `PushTokenStore.setToken(...)` then `PushServiceLive.registerToken` posting to the Sygnal URL.
+- [ ] matron-server pusher list (admin API) shows a fresh row for `(<device-token>, chat.matron.ios.dev)` (Debug build) or `chat.matron.ios` (Release).
+- [ ] Background the app. Send a message from another Matrix client to the user.
+- [ ] Notification arrives on the lock screen with the sender's display name in the title and the decrypted body (NOT "New message" or the encrypted placeholder).
+
+### iOS — notification tap
+
+- [ ] Tap the notification while the app is backgrounded → app resumes and the chat-list NavigationStack pushes directly to the matching chat.
+- [ ] **Cold-start tap:** force-quit the app, then send + tap a notification. App launches and the first render lands directly inside the chat (cursor PR #5 pass-1 buffer fix — `consumePendingRoomID` drains on post-verify `.task` mount).
+
+### iOS — multiple chats
+
+- [ ] Receive notifications from two different bots in succession → notifications stack as separate threads in Notification Center (per `threadIdentifier` — defaults to `room_id` when the NSE doesn't supply one explicitly).
+
+### iOS — failure modes
+
+- [ ] Disable notifications in iOS Settings → Notifications → Matron → Allow Notifications: off. Re-launch the app: bootstrap doesn't re-prompt (cached decline) and pusher row is NOT written. (Re-enabling in Settings then re-launching re-runs bootstrap and writes the row.)
+- [ ] Sign out → matron-server pusher list shows the row for this account disappear within ~5s. Send another message → no notification (the unregister landed before the message).
+- [ ] **Sign-out → sign-in to a different account, fast cycle.** Confirm the new account's pusher row appears AND the prior account's row is gone (cursor PR #5 pass-1 + pass-2 race fixes — the serialised push-operation chain on `PushTokenStore.shared` orders unregister + register so a stale unregister can't erase the new row).
+
+### Mac — permission + token registration
+
+- [ ] Fresh sign-in on Mac → `UNUserNotificationCenter` permission prompt appears.
+- [ ] Allow → no error in logs; `PushTokenStore.shared.cachedToken` is non-nil after `application(_:didRegisterForRemoteNotificationsWithDeviceToken:)` fires.
+- [ ] matron-server pusher list shows a fresh row for `(<device-token>, chat.matron.mac.dev)` (Debug build) or `chat.matron.mac` (Release).
+
+### Mac — push delivery (in-process, body-construction DEFERRED)
+
+> **Caveat:** Mac silent-push body construction is deferred from PR #5 — the `phase-4-mac-silent-push` follow-up branch will land it. Until then the displayed body is the encrypted placeholder APNs delivers (NOT the decrypted text). The `room_id` + `event_id` are still in `userInfo` so tap routing works.
+
+- [ ] Background the Mac app. Send a message from another Matrix client.
+- [ ] Notification arrives on Mac. Body shows the encrypted placeholder; title shows the bot/sender. **Once `phase-4-mac-silent-push` lands**, expect the body to be the decrypted text + sender display name.
+- [ ] Foreground the app + receive a notification → in-app banner appears (`willPresent` returns `[.banner, .sound, .list]`).
+
+### Mac — tap to open
+
+- [ ] Tap notification while app is backgrounded → main window focuses, sidebar selects the right room, detail column shows that chat.
+- [ ] If the app was hidden (`⌘H`) prior to the tap → un-hides + activates first, then the selection lands.
+- [ ] **Cold-start tap (Mac):** quit the app (`⌘Q`), then send + click a notification. App launches; first `MacChatListView` render lands selected on the room (cursor PR #5 pass-3 buffer fix — `MacNotificationHandler.consumePendingRoomID` drained from `.task` on first appearance).
+
+### Mac — failure modes
+
+- [ ] Disable notifications for Matron at the OS level (System Settings → Notifications → Matron → Allow Notifications: off) → registration still completes without crashing; subsequent silent pushes are dropped silently by the OS, with no user-visible error.
+- [ ] Sign out on Mac → pusher row disappears from matron-server. Subsequent messages don't arrive on the Mac.
+- [ ] **Sign-out → sign-in to a different account, fast cycle (Mac).** Same cursor-fix regression guard as iOS, mirrored on Mac via the same shared `PushTokenStore` chain.
+
+### Cross-platform smoke
+
+- [ ] Same account signed in on iOS + Mac. Send a message from a third client. Both devices receive a push notification within seconds of each other.
+- [ ] **Operator-side cross-check before each TestFlight / App Store submission:** run [`docs/push-setup.md`](docs/push-setup.md) "Walkthrough 9 — sandbox vs production cross-check". `app_id` ↔ Sygnal `use_sandbox` ↔ provisioning-profile `aps-environment` triple must agree; a mismatch is silent on the client and surfaces only as `BadDeviceToken` in Sygnal logs.
+
+### What is NOT tested in Phase 4
+
+- Mac decrypted-body display (deferred — `phase-4-mac-silent-push`).
+- Notification badge counts on the app icon (Phase 4 doesn't manipulate `UIApplication.applicationIconBadgeNumber`; `NotificationService.deliver` only sets `content.badge` from the decoded payload if present).
+- App Store distribution `aps-environment: production` for iOS (Phase 7 wires the Debug/Release entitlements split that Mac already has).

@@ -44,19 +44,11 @@ final class MacTimelineItemViewTests: XCTestCase {
                        "populated state-change rows are meta-noise in a bot chat — hide them")
     }
 
-    // MARK: - sendStateGlyph mapping
-
-    /// Mac mirror — pins the model → design-system enum mapping so a
-    /// future refactor doesn't silently drop the failed-send retry
-    /// affordance from own messages.
-    func test_sendStateGlyph_mapsAllCases() {
-        XCTAssertEqual(MacTimelineItemView.sendStateGlyph(for: .sent), .sent)
-        XCTAssertEqual(MacTimelineItemView.sendStateGlyph(for: .sending), .sending)
-        XCTAssertEqual(
-            MacTimelineItemView.sendStateGlyph(for: .failed(reason: "boom")),
-            .failed(reason: "boom")
-        )
-    }
+    // MARK: - SendStateGlyph mapping
+    // The `TimelineSendState → SendStateGlyph` bridge is exercised by
+    // `MatronShared/Tests/DesignSystemSnapshotTests/StateBridgesTests`.
+    // The Mac view calls `SendStateGlyph.from(_:)` directly, so there's
+    // no Mac-specific mapping left to pin here.
 
     func test_shouldRender_returnsTrue_forContentKinds() {
         let kinds: [TimelineItem.Kind] = [

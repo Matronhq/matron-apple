@@ -69,7 +69,23 @@ final class MacChatListViewTests: XCTestCase {
         let vm = ChatListViewModel(chat: fake)
         _ = MacChatListView(viewModel: vm)
         vm.start()
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        // Poll up to 2s for the upstream stream's snapshots to land on
+        // `vm.groups`. A fixed 50ms `Task.sleep` was the prior shape
+        // but flaked under MatronMacTests suite load (the actor hop
+        // off `chatSummaries()` → `groups` mutation is fast in
+        // isolation, slow when the suite is fanned out). Polling
+        // exits the moment the assertion can pass while keeping a
+        // generous ceiling for CI / busy hosts.
+        //
+        // The predicate waits for the SECOND snapshot (unreadCount 3),
+        // not just non-empty: the hash assertion below compares
+        // against `updated`'s field values, and under suite load the
+        // poll could win between the two snapshots — the session-12
+        // `!groups.isEmpty` de-flake still failed fast (~0.2s, i.e.
+        // not the timeout) whenever the assert ran on `initial`.
+        await waitUntil(timeout: 2.0) {
+            vm.groups.flatMap(\.summaries).first?.unreadCount == 3
+        }
         XCTAssertFalse(vm.groups.isEmpty)
 
         // Hash invariant: the new snapshot's struct hash differs from the
@@ -84,6 +100,20 @@ final class MacChatListViewTests: XCTestCase {
         // `selectedSummaryID` binds to.
         XCTAssertEqual(initial.first?.id, "!1:s")
         XCTAssertEqual(vm.groups.flatMap(\.summaries).first?.id, "!1:s")
+    }
+
+    /// Poll-based wait: yields until `predicate` returns true or
+    /// `timeout` seconds elapse. 25ms slice keeps the polling
+    /// overhead negligible while still bounding wake latency. Used
+    /// instead of `Task.sleep` for assertions that depend on async
+    /// upstream work landing — fixes flakiness without making
+    /// the happy path slower (returns immediately once true).
+    private func waitUntil(timeout: TimeInterval, _ predicate: () -> Bool) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if predicate() { return }
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
     }
 }
 

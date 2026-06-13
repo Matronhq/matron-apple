@@ -2,12 +2,23 @@ import SwiftUI
 import MatronAuth
 import MatronDesignSystem
 import MatronModels
+import MatronPush
 import MatronStorage
 import MatronVerification
 import MatronViewModels
 
 @main
 struct MatronApp: App {
+    /// Phase 4 Task 5 — APNs token capture lives on the
+    /// `UIApplicationDelegate`, not on the SwiftUI scene. The adaptor
+    /// keeps a single delegate instance alive for the process lifetime
+    /// so the system can hand `didRegisterForRemoteNotificationsWithDeviceToken`
+    /// back to the same object every push registration cycle. The
+    /// delegate forwards tokens into `PushTokenStore.shared` which
+    /// the `.task` on the post-verify branch awaits via
+    /// `PushBootstrap.bootstrap()` + `register(token:)`.
+    @UIApplicationDelegateAdaptor(MatronAppDelegate.self) private var appDelegate
+
     @State private var dependencies = AppDependencies()
     @State private var session: UserSession?
     @State private var bootstrapDone = false
@@ -32,6 +43,13 @@ struct MatronApp: App {
     /// keeps the center stable across body re-evaluations and (correctly)
     /// rebuilds when the user changes.
     @State private var verificationCenter: VerificationCenter?
+    /// Phase 4 Task 6 — chat-list `NavigationStack` path. Hoisted to
+    /// the host so a notification tap (routed via
+    /// `NotificationDelegate.shared.tappedRoomID`) can append a room
+    /// ID and SwiftUI's stack drives the existing
+    /// `ChatListView.navigationDestination(for: ChatSummary.ID.self)`
+    /// branch. `[String]` because `ChatSummary.ID == String`.
+    @State private var chatPath: [String] = []
     /// Set by `bootstrap()` when the setup-time `KeychainProbe.run(...)`
     /// fails (Phase 3 / Wave 3 / M1 — parity with Mac Task 13). When
     /// non-nil, every other UI branch is short-circuited and
@@ -70,7 +88,7 @@ struct MatronApp: App {
                         // already an `Optional<VerificationCenter>` and
                         // its banner code short-circuits on `nil` until
                         // the task installs the real instance.
-                        NavigationStack {
+                        NavigationStack(path: $chatPath) {
                             ChatListView(
                                 viewModel: ChatListViewModel(chat: dependencies.chatService(for: session)),
                                 onSignOut: { signOut() },
@@ -79,6 +97,22 @@ struct MatronApp: App {
                         }
                         .environment(\.appDependencies, dependencies)
                         .environment(\.currentSession, session)
+                        // Phase 4 Task 6: notification-tap deep link.
+                        // The NSE-rewritten userInfo carries `room_id`;
+                        // NotificationDelegate publishes that ID and we
+                        // append it onto the navigation path so the
+                        // existing `navigationDestination(for: ChatSummary.ID.self)`
+                        // branch in ChatListView pushes the chat. Idempotent
+                        // on duplicate sends (re-appending a room already
+                        // at the top of the stack just no-ops the user
+                        // visually); cleared on sign-out via `signOut()`
+                        // below so a tap from the previous session can't
+                        // strand the new user inside a stale room.
+                        .onReceive(NotificationDelegate.shared.tappedRoomID) { roomID in
+                            if chatPath.last != roomID {
+                                chatPath.append(roomID)
+                            }
+                        }
                         .task { try? await dependencies.syncService(for: session).start() }
                         // Wave 7 bug #1+#7: dropped the eager
                         // `verificationService(for: session).start()`
@@ -118,6 +152,33 @@ struct MatronApp: App {
                             )
                             center.start()
                             verificationCenter = center
+                        }
+                        // Phase 4 Task 5: request push permission, set
+                        // every joined room to `.allMessages`, register
+                        // for remote notifications, and plumb the APNs
+                        // token to the homeserver pusher record. Keyed on
+                        // `session.userID` so a multi-account switch
+                        // re-runs the bootstrap against the new user's
+                        // pusher row. The task body completes once the
+                        // token is registered (or the user denies
+                        // permission); SwiftUI keeps the Task struct
+                        // around until the view dies.
+                        .task(id: session.userID) {
+                            // Cold-start tap drain (cursor PR #5
+                            // finding): if iOS launched the app
+                            // specifically because the user tapped a
+                            // notification on the lock screen,
+                            // `didReceive` ran before the
+                            // `.onReceive(tappedRoomID)` below
+                            // subscribed and `PassthroughSubject`
+                            // dropped the value. The delegate buffers
+                            // such taps in `pendingRoomID`; drain it
+                            // here.
+                            if let pending = NotificationDelegate.shared.consumePendingRoomID(),
+                               chatPath.last != pending {
+                                chatPath.append(pending)
+                            }
+                            await bootstrapPush(for: session)
                         }
                         .onDisappear {
                             verificationCenter?.stop()
@@ -281,13 +342,78 @@ struct MatronApp: App {
     /// the gate would silently no-op for a user who signed out + back in
     /// to retry verification.
     private func signOut() {
+        // Phase 4 Task 8: best-effort pusher unregister BEFORE clearing
+        // the session. Enqueued through the shared `pushOperationTail`
+        // chain on PushTokenStore so a fast sign-out → sign-in cycle's
+        // unregister can't land AFTER the new session's register and
+        // delete the freshly-written pusher row (cursor PR #5 finding).
+        // Capture provider + session up front because
+        // `dependencies.signOut()` invalidates the ClientProvider
+        // immediately below — the chain's work runs later but uses
+        // the snapshot.
+        if let session, let token = PushTokenStore.shared.cachedToken {
+            let provider = dependencies.clientProvider
+            let pusherURL = Self.pusherBaseURL
+            PushTokenStore.shared.enqueuePushOperation {
+                let pushService = PushServiceLive(provider: provider, session: session)
+                try? await pushService.unregister(
+                    deviceToken: token,
+                    pusherBaseURL: pusherURL
+                )
+            }
+        }
         if let session {
             UserDefaults.standard.removeObject(forKey: session.verifyDoneKey)
         }
         dependencies.signOut()
         session = nil
         verifyDone = false
+        // Drop any deep-linked room from the prior session so the next
+        // sign-in lands at the chat list root, not stranded inside a
+        // (now-inaccessible) prior-account room.
+        chatPath = []
+        // Drop any buffered cold-start tap so the next sign-in's
+        // post-verify `.task(id: session.userID)` doesn't drain a
+        // stale room ID from the prior account (cursor PR #5
+        // second-pass finding "live taps leave stale pending rooms").
+        NotificationDelegate.shared.clearPendingRoomID()
     }
+
+    /// Phase 4 Task 5 — full push pipeline bootstrap for `session`.
+    /// The flow (permission → per-room mode → waitForToken →
+    /// register, with the cancellation and error-swallow semantics)
+    /// lives in `PushBootstrap.bootstrapHost` — shared with
+    /// `MatronMacApp` since the two copies were byte-identical
+    /// (cursor PR #5 fourth-pass finding).
+    @MainActor
+    private func bootstrapPush(for session: UserSession) async {
+        let chat = dependencies.chatService(for: session)
+        await PushBootstrap.bootstrapHost(
+            provider: dependencies.clientProvider,
+            session: session,
+            pusherBaseURL: Self.pusherBaseURL,
+            joinedRoomIDs: { await chat.firstSnapshotRoomIDs() }
+        )
+    }
+
+    /// Sygnal pusher endpoint URL. **Out of scope for Phase 4 plan**:
+    /// Sygnal pusher endpoint — the public HTTPS URL the homeserver
+    /// will POST notification payloads to once a pusher record has
+    /// been written for this device. The hostname is the planned
+    /// production target (`sygnal.matron.chat`, served via Cloudflare
+    /// Tunnel from the box that runs `matron-server`); end-to-end
+    /// delivery still depends on (a) the Sygnal container being up,
+    /// (b) APNs `.p8` auth credentials provisioned in Sygnal's config
+    /// for all four `app_id`s, (c) DNS resolving the hostname. Until
+    /// (a)–(c) are in place, `bootstrap.register(token:)` writes the
+    /// pusher row successfully (the homeserver accepts any URL); the
+    /// homeserver then logs DNS-resolution failures when it tries to
+    /// deliver. Path suffix `_matrix/push/v1/notify` is the Matrix
+    /// spec endpoint Sygnal serves; do NOT change it without
+    /// changing Sygnal's listener route too.
+    private static let pusherBaseURL = URL(
+        string: "https://sygnal.matron.chat/_matrix/push/v1/notify"
+    )!
 }
 
 /// Sentinel error thrown by the timeout branch of `MatronApp.bootstrap()`'s

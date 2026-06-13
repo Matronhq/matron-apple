@@ -16,6 +16,7 @@ let package = Package(
         .library(name: "MatronViewModels", targets: ["MatronViewModels"]),
         .library(name: "MatronDesignSystem", targets: ["MatronDesignSystem"]),
         .library(name: "MatronVerification", targets: ["MatronVerification"]),
+        .library(name: "MatronPush", targets: ["MatronPush"]),
     ],
     dependencies: [
         .package(url: "https://github.com/matrix-org/matrix-rust-components-swift", from: "26.04.01"),
@@ -78,13 +79,15 @@ let package = Package(
             name: "MatronDesignSystem",
             dependencies: [
                 .product(name: "MarkdownUI", package: "swift-markdown-ui"),
-                // `StateBridges.swift` declares
-                // `SyncBannerState.from(_ state: SyncConnectionState)`
-                // — the single source of truth for the service-layer
-                // → design-system banner-state mapping. MatronSync
-                // is a leaf module with no SwiftUI surface, so this
-                // dep keeps the bridge close to the target type
-                // without creating a cycle.
+                // `StateBridges.swift` is the single source of truth
+                // for service-layer → design-system enum mappings:
+                // `SyncBannerState.from(_:)` (uses `SyncConnectionState`
+                // from `MatronSync`) and `SendStateGlyph.from(_:)` (uses
+                // `TimelineSendState` from `MatronModels`). Both deps
+                // are leaf modules with no SwiftUI / SDK surface, so
+                // the bridges live next to the target enums without
+                // creating a cycle or pulling MatrixRustSDK.
+                "MatronModels",
                 "MatronSync",
             ],
             path: "Sources/DesignSystem"
@@ -102,6 +105,21 @@ let package = Package(
             ],
             path: "Sources/Verification"
         ),
+        // Phase 4 Task 1: Push protocol surface + (Task 2) the live
+        // SDK-bridging impl + (Task 3) the cross-platform PushDecoder.
+        // Depends on Sync for `ClientProvider` (Task 2's PushServiceLive
+        // resolves a `Client` per-session) and on the SDK for the
+        // notification-client APIs. Mac and iOS NSE both link this.
+        .target(
+            name: "MatronPush",
+            dependencies: [
+                "MatronModels",
+                "MatronStorage",
+                "MatronSync",
+                .product(name: "MatrixRustSDK", package: "matrix-rust-components-swift"),
+            ],
+            path: "Sources/Push"
+        ),
         .testTarget(name: "StorageTests", dependencies: ["MatronStorage"], path: "Tests/StorageTests"),
         .testTarget(name: "AuthTests", dependencies: ["MatronAuth", "MatronModels", "MatronStorage"], path: "Tests/AuthTests"),
         .testTarget(name: "SyncTests", dependencies: ["MatronSync", "MatronModels"], path: "Tests/SyncTests"),
@@ -111,6 +129,8 @@ let package = Package(
             name: "DesignSystemSnapshotTests",
             dependencies: [
                 "MatronDesignSystem",
+                "MatronModels",
+                "MatronSync",
                 .product(name: "SnapshotTesting", package: "swift-snapshot-testing"),
             ],
             path: "Tests/DesignSystemSnapshotTests"
@@ -119,6 +139,11 @@ let package = Package(
             name: "VerificationTests",
             dependencies: ["MatronVerification", "MatronModels", "MatronStorage"],
             path: "Tests/VerificationTests"
+        ),
+        .testTarget(
+            name: "PushTests",
+            dependencies: ["MatronPush"],
+            path: "Tests/PushTests"
         ),
     ]
 )
