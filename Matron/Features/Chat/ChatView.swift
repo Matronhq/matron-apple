@@ -136,16 +136,13 @@ struct ChatView: View {
                     .background(Color.red.opacity(0.9))
                     .accessibilityLabel("Chat error: \(errorMessage)")
             }
-            if viewModel.items.isEmpty
-                && viewModel.hasReceivedFirstSnapshot
-                && viewModel.error == nil {
-                // Settled-empty branch: the timeline has definitively
-                // yielded an empty snapshot (not just "still loading"),
-                // so the user sees a placeholder instead of a blank
-                // scroll. Gating on `hasReceivedFirstSnapshot` avoids
-                // flashing the placeholder during sliding-sync warm-up
-                // — `items.isEmpty` alone collapses both "loading" and
-                // "settled empty" into the same UI state.
+            if viewModel.settledEmpty && viewModel.error == nil {
+                // Settled-empty branch: gated on the debounced
+                // `settledEmpty` (not raw `items.isEmpty`) so the
+                // placeholder doesn't flash during sliding-sync warm-up
+                // OR a transient timeline reset — both produce a
+                // momentary empty `items` that repopulates within a tick.
+                // See `ChatViewModel.settledEmpty`.
                 EmptyChatPlaceholder(botName: chatTitle)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {

@@ -234,6 +234,22 @@ public final class ChatViewModel {
     /// `items.isEmpty` ambiguously means both "still loading" and
     /// "settled empty room" until we've definitively seen one snapshot.
     public private(set) var hasReceivedFirstSnapshot: Bool = false
+    /// True only once the timeline has been CONTINUOUSLY empty for
+    /// `emptyPlaceholderGraceMs`. The empty-state placeholder gates on
+    /// this rather than raw `items.isEmpty`, because the matrix-rust-sdk
+    /// timeline can transiently clear and repopulate within a sync tick
+    /// (a sliding-sync reset against a live homeserver delivers a bare
+    /// `Clear` then re-`Append`s) — applying that empty snapshot directly
+    /// flashed "no messages yet" until the events came back. Debouncing
+    /// the empty→settled transition rides those resets; a genuinely empty
+    /// room stays empty past the grace and still surfaces the placeholder.
+    public private(set) var settledEmpty: Bool = false
+    /// Grace window before an empty timeline counts as settled-empty.
+    /// `var` so tests can shorten it; ~400ms comfortably covers a
+    /// sliding-sync clear+repopulate without a perceptible delay before a
+    /// genuinely empty room shows its placeholder.
+    var emptyPlaceholderGraceMs: Int = 400
+    private var emptyDebounceTask: Task<Void, Never>?
     /// Cache of `mxc://` URL → resolved SwiftUI `Image`. Populated lazily by
     /// `image(for:)` so SwiftUI can re-render the row once the bytes arrive.
     /// Backed by an `LRUCache` (capped at `mediaCacheLimit`) so a long
@@ -295,8 +311,34 @@ public final class ChatViewModel {
     /// first open the SDK marked "no events" as read and unread counts
     /// were never cleared.
     @discardableResult
+    /// Debounces the empty → `settledEmpty` transition (see `settledEmpty`).
+    /// A non-empty snapshot clears it immediately and cancels any pending
+    /// flip; an empty one schedules the flip after the grace, so a
+    /// transient clear that repopulates first never surfaces the
+    /// placeholder. `@MainActor` (the whole VM is) so the scheduled task
+    /// touches `settledEmpty` on the main actor.
+    private func updateSettledEmpty(isEmpty: Bool) {
+        emptyDebounceTask?.cancel()
+        emptyDebounceTask = nil
+        guard isEmpty else {
+            settledEmpty = false
+            return
+        }
+        let graceMs = emptyPlaceholderGraceMs
+        emptyDebounceTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(graceMs))
+            guard !Task.isCancelled, let self else { return }
+            self.settledEmpty = true
+        }
+    }
+
     public func start() async -> Task<Void, Never> {
         observationTask?.cancel()
+        // Fresh subscription — drop any stale settled-empty state from a
+        // prior room/timeline before the new stream's snapshots arrive.
+        settledEmpty = false
+        emptyDebounceTask?.cancel()
+        emptyDebounceTask = nil
         let timeline = self.timeline
         // Box wrapping a single-shot CheckedContinuation. The observation
         // Task resumes it on the first snapshot processed (or on stream
@@ -322,6 +364,10 @@ public final class ChatViewModel {
                         // empty-state placeholder gates correctly even
                         // when the snapshot itself is empty.
                         self.hasReceivedFirstSnapshot = true
+                        // Debounce the empty-state so a transient timeline
+                        // clear (sliding-sync reset) doesn't flash the
+                        // "no messages yet" placeholder.
+                        self.updateSettledEmpty(isEmpty: snapshot.isEmpty)
                     }
                     firstSignal.fireOnce()
                 }
@@ -341,7 +387,12 @@ public final class ChatViewModel {
             // flag too so the empty-state placeholder isn't stuck
             // hidden on rooms whose live timeline never warms up.
             if let self {
-                await MainActor.run { self.hasReceivedFirstSnapshot = true }
+                await MainActor.run {
+                    self.hasReceivedFirstSnapshot = true
+                    // A room whose live timeline never warmed up is
+                    // genuinely empty — let the placeholder settle in.
+                    self.updateSettledEmpty(isEmpty: self.items.isEmpty)
+                }
             }
             firstSignal.fireOnce()
         }
@@ -355,6 +406,8 @@ public final class ChatViewModel {
     public func stop() {
         observationTask?.cancel()
         observationTask = nil
+        emptyDebounceTask?.cancel()
+        emptyDebounceTask = nil
     }
 
     public func paginateBackward() async {

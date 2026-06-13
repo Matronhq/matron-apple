@@ -523,6 +523,42 @@ final class ChatViewModelTests: XCTestCase {
         vm.stop()
     }
 
+    // MARK: - Empty-state debounce (transient timeline-reset flash)
+
+    @MainActor
+    func test_settledEmpty_falseAfterTransientClear() async {
+        // populated → empty → populated within the grace: the empty is a
+        // transient sliding-sync reset, so the "no messages yet"
+        // placeholder must never surface — the repopulation cancels the
+        // pending flip, and settledEmpty stays false even past the grace.
+        let populated = [TimelineItem(
+            id: "$1", sender: "@bot:s", timestamp: .now,
+            kind: .text(body: "hi", formattedHTML: nil), isOwn: false
+        )]
+        let fake = FakeTimelineService()
+        fake.snapshotsToEmit = [populated, [], populated]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        vm.emptyPlaceholderGraceMs = 30
+        let task = await vm.start()
+        await task.value
+        try? await Task.sleep(for: .milliseconds(70))
+        XCTAssertFalse(vm.settledEmpty, "a transient clear+repopulate must not flash the empty placeholder")
+    }
+
+    @MainActor
+    func test_settledEmpty_trueForGenuinelyEmptyRoom() async {
+        // Empty and stays empty past the grace → the placeholder settles
+        // in (a real empty room still shows "no messages yet").
+        let fake = FakeTimelineService()
+        fake.snapshotsToEmit = [[]]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        vm.emptyPlaceholderGraceMs = 30
+        let task = await vm.start()
+        await task.value
+        try? await Task.sleep(for: .milliseconds(70))
+        XCTAssertTrue(vm.settledEmpty, "a room still empty past the grace shows the placeholder")
+    }
+
     // MARK: - pendingAsk (Phase 5 Task 11)
 
     private static let askDefaultsKey = "matron.answeredPrompts.!ask-room:s"

@@ -110,14 +110,11 @@ struct MacChatView: View {
                     .background(Color.red.opacity(0.9))
                     .accessibilityLabel("Chat error: \(errorMessage)")
             }
-            if viewModel.items.isEmpty
-                && viewModel.hasReceivedFirstSnapshot
-                && viewModel.error == nil {
-                // Settled-empty branch — see iOS `ChatView` for the
-                // full rationale. `hasReceivedFirstSnapshot` is the
-                // disambiguator between "still loading" and "settled
-                // empty"; without it the placeholder would flash on
-                // every cold-start chat open before sliding-sync warms.
+            if viewModel.settledEmpty && viewModel.error == nil {
+                // Settled-empty branch — see iOS `ChatView` and
+                // `ChatViewModel.settledEmpty`. The debounced flag keeps
+                // the placeholder from flashing on cold-start warm-up OR a
+                // transient sliding-sync timeline reset.
                 EmptyChatPlaceholder(botName: chatTitle)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {

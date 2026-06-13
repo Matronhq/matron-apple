@@ -1,4 +1,5 @@
 import Foundation
+import os
 import MatrixRustSDK
 import MatronEvents
 import MatronModels
@@ -439,6 +440,13 @@ final class PendingButtonAnswerStore: @unchecked Sendable {
 /// production switch-statement is regression-protected without standing
 /// up a real SDK.
 final class TimelineSnapshotListener: TimelineListener, @unchecked Sendable {
+    /// Always-on (not `MatronDebug`-gated) so a timeline that clears to
+    /// empty is visible in Console without a debug flag — clears are rare
+    /// and significant. Confirms the "messages flash away then come back"
+    /// trigger: a non-empty→empty snapshot names the diff kinds that
+    /// caused it (a bare `clear` vs an atomic `reset`).
+    private static let logger = os.Logger(subsystem: "chat.matron", category: "timeline-listener")
+
     private let continuation: AsyncThrowingStream<[TimelineItem], Error>.Continuation
 
     /// Maintains the current ordered snapshot. Items are keyed by their
@@ -476,9 +484,11 @@ final class TimelineSnapshotListener: TimelineListener, @unchecked Sendable {
     /// under back-pressure); yielding inside the lock would block the
     /// SDK's timeline thread waiting for the consumer to drain.
     func onUpdate(diff: [TimelineDiff]) {
+        var countBefore = 0
         let snapshot: [TimelineItem] = {
             lock.lock()
             defer { lock.unlock() }
+            countBefore = order.count
             for d in diff {
                 switch d {
                 case .append(let values):
@@ -514,7 +524,32 @@ final class TimelineSnapshotListener: TimelineListener, @unchecked Sendable {
             }
             return order.compactMap { byID[$0] }
         }()
+        if snapshot.isEmpty && countBefore > 0 {
+            Self.logger.notice("timeline cleared to empty (was \(countBefore, privacy: .public) items); diffs=[\(Self.describe(diff), privacy: .public)]")
+        }
         continuation.yield(snapshot)
+    }
+
+    /// Names the diff kinds in an update for the cleared-to-empty log —
+    /// a bare `clear` means the SDK didn't repopulate in the same batch
+    /// (the flash window), vs an atomic `reset` which carries the new
+    /// values and never yields empty.
+    private static func describe(_ diff: [TimelineDiff]) -> String {
+        diff.map { d in
+            switch d {
+            case .append: return "append"
+            case .clear: return "clear"
+            case .pushFront: return "pushFront"
+            case .pushBack: return "pushBack"
+            case .popFront: return "popFront"
+            case .popBack: return "popBack"
+            case .insert: return "insert"
+            case .set: return "set"
+            case .remove: return "remove"
+            case .truncate: return "truncate"
+            case .reset: return "reset"
+            }
+        }.joined(separator: ",")
     }
 
     // MARK: - Snapshot mutators
