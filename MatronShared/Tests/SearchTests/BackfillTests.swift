@@ -1,0 +1,152 @@
+import XCTest
+import GRDB
+@testable import MatronSearch
+
+/// Minimal fake pager: returns pre-canned batches in order, then `hitStartOfTimeline = true`.
+actor FakePager: TimelinePager {
+    var batches: [[BackfillItem]]
+    var hitStartAfterLast: Bool
+
+    init(batches: [[BackfillItem]], hitStartAfterLast: Bool = true) {
+        self.batches = batches
+        self.hitStartAfterLast = hitStartAfterLast
+    }
+
+    func paginateBackward(roomID: String, batchSize: Int) async throws -> (items: [BackfillItem], hitStartOfTimeline: Bool) {
+        if batches.isEmpty { return ([], hitStartAfterLast) }
+        let next = batches.removeFirst()
+        return (next, batches.isEmpty && hitStartAfterLast)
+    }
+}
+
+final class BackfillTests: XCTestCase {
+    var url: URL!
+    var svc: SearchServiceLive!
+
+    override func setUp() async throws {
+        url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("bf-\(UUID().uuidString).sqlite")
+        svc = try SearchServiceLive(databaseURL: url)
+    }
+
+    override func tearDown() async throws {
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    // Note: async expressions are bound to `let`s before asserting — XCTAssert*
+    // take non-async autoclosures, so `try await` cannot live inside them.
+
+    func test_recordsProgressAndCompletion() async throws {
+        try await svc.recordBackfillProgress(roomID: "!r:s", indexedCount: 20, oldestEventID: "$o", complete: false)
+        let incomplete = try await svc.backfillComplete(roomID: "!r:s")
+        XCTAssertFalse(incomplete)
+
+        try await svc.recordBackfillProgress(roomID: "!r:s", indexedCount: 50, oldestEventID: "$o2", complete: true)
+        let complete = try await svc.backfillComplete(roomID: "!r:s")
+        XCTAssertTrue(complete)
+    }
+
+    func test_backfill_indexesAllIndexableEventsAcrossBatches_andTracksOldest() async throws {
+        // Three batches, walking backward in time. Mix in one non-indexable item per batch
+        // (image/state/etc) — the runner must skip those.
+        let now = Date(timeIntervalSince1970: 1_745_000_000)
+        let batches: [[BackfillItem]] = [
+            [
+                BackfillItem(eventID: "$3", sender: "@a:s", timestamp: now.addingTimeInterval(-30), body: "third newest", indexable: true),
+                BackfillItem(eventID: "$skipA", sender: "@a:s", timestamp: now.addingTimeInterval(-31), body: "", indexable: false),
+            ],
+            [
+                BackfillItem(eventID: "$2", sender: "@a:s", timestamp: now.addingTimeInterval(-60), body: "older mid", indexable: true),
+            ],
+            [
+                BackfillItem(eventID: "$1", sender: "@a:s", timestamp: now.addingTimeInterval(-90), body: "oldest event", indexable: true),
+                BackfillItem(eventID: "$skipB", sender: "@a:s", timestamp: now.addingTimeInterval(-91), body: "", indexable: false),
+            ],
+        ]
+        let pager = FakePager(batches: batches)
+        let runner = BackfillRunner(timeline: pager, search: svc)
+
+        try await runner.backfill(roomID: "!r:s", depthLimit: 1000, sinceCutoff: .distantPast)
+
+        // All three indexable events present.
+        let count = try await svc.eventCount(roomID: "!r:s")
+        XCTAssertEqual(count, 3)
+        let oldestHits = try await svc.query("oldest", limit: 10)
+        XCTAssertEqual(oldestHits.count, 1)
+        let midHits = try await svc.query("mid", limit: 10)
+        XCTAssertEqual(midHits.count, 1)
+
+        // Oldest tracked correctly + completion flag set.
+        let complete = try await svc.backfillComplete(roomID: "!r:s")
+        XCTAssertTrue(complete)
+        // (We can't introspect oldestEventID directly via the protocol; verify via SQL.)
+        let queue = try DatabaseQueue(path: url.path)
+        try await queue.read { db in
+            let oldest = try String.fetchOne(db, sql: "SELECT backfill_oldest_event_id FROM indexed_rooms WHERE room_id = ?", arguments: ["!r:s"])
+            XCTAssertEqual(oldest, "$1")
+        }
+    }
+
+    func test_backfill_skipsAlreadyIndexedEvents() async throws {
+        let now = Date(timeIntervalSince1970: 1_745_000_000)
+        // Pre-index $1 with body "previous-body".
+        try await svc.index(roomID: "!r:s", eventID: "$1", sender: "@a:s",
+                            timestamp: now.addingTimeInterval(-90), body: "previous-body")
+        let batches: [[BackfillItem]] = [
+            [
+                BackfillItem(eventID: "$1", sender: "@a:s", timestamp: now.addingTimeInterval(-90), body: "stale-overwrite", indexable: true),
+                BackfillItem(eventID: "$2", sender: "@a:s", timestamp: now.addingTimeInterval(-60), body: "fresh", indexable: true),
+            ],
+        ]
+        let runner = BackfillRunner(timeline: FakePager(batches: batches), search: svc)
+        try await runner.backfill(roomID: "!r:s", depthLimit: 1000, sinceCutoff: .distantPast)
+
+        // $1 must not be re-indexed (still has "previous-body"), $2 added.
+        let prev = try await svc.query("previous-body", limit: 10)
+        XCTAssertEqual(prev.count, 1)
+        let stale = try await svc.query("stale-overwrite", limit: 10)
+        XCTAssertEqual(stale.count, 0)
+        let fresh = try await svc.query("fresh", limit: 10)
+        XCTAssertEqual(fresh.count, 1)
+    }
+
+    func test_backfill_honoursDepthLimit() async throws {
+        let now = Date(timeIntervalSince1970: 1_745_000_000)
+        // Five indexable events in one batch, but depth limit = 3.
+        let batches: [[BackfillItem]] = [
+            (1...5).map {
+                BackfillItem(eventID: "$\($0)", sender: "@a:s", timestamp: now.addingTimeInterval(Double(-$0) * 10), body: "msg-\($0)", indexable: true)
+            }
+        ]
+        let runner = BackfillRunner(timeline: FakePager(batches: batches, hitStartAfterLast: false), search: svc)
+        try await runner.backfill(roomID: "!r:s", depthLimit: 3, sinceCutoff: .distantPast)
+
+        let count = try await svc.eventCount(roomID: "!r:s")
+        XCTAssertEqual(count, 3)
+    }
+
+    func test_backfill_stopsAtSinceCutoff() async throws {
+        let now = Date(timeIntervalSince1970: 1_745_000_000)
+        let cutoff = now.addingTimeInterval(-45) // accept events newer than this
+        // Two events newer than cutoff, two older. Older must NOT be indexed.
+        let batches: [[BackfillItem]] = [
+            [
+                BackfillItem(eventID: "$new1", sender: "@a:s", timestamp: now.addingTimeInterval(-10), body: "new1", indexable: true),
+                BackfillItem(eventID: "$new2", sender: "@a:s", timestamp: now.addingTimeInterval(-30), body: "new2", indexable: true),
+                BackfillItem(eventID: "$old1", sender: "@a:s", timestamp: now.addingTimeInterval(-60), body: "old1", indexable: true),
+                BackfillItem(eventID: "$old2", sender: "@a:s", timestamp: now.addingTimeInterval(-90), body: "old2", indexable: true),
+            ]
+        ]
+        let runner = BackfillRunner(timeline: FakePager(batches: batches, hitStartAfterLast: false), search: svc)
+        try await runner.backfill(roomID: "!r:s", depthLimit: 1000, sinceCutoff: cutoff)
+
+        let new1 = try await svc.query("new1", limit: 10)
+        XCTAssertEqual(new1.count, 1)
+        let new2 = try await svc.query("new2", limit: 10)
+        XCTAssertEqual(new2.count, 1)
+        let old1 = try await svc.query("old1", limit: 10)
+        XCTAssertEqual(old1.count, 0)
+        let old2 = try await svc.query("old2", limit: 10)
+        XCTAssertEqual(old2.count, 0)
+    }
+}

@@ -170,20 +170,18 @@ let package = Package(
             path: "Sources/Events"
         ),
         // Phase 6 (Search): local SQLite FTS5 index + per-room backfill.
-        // The schema, service, models, and BackfillRunner are pure (GRDB +
-        // Foundation) and fully unit-tested. Only `TimelinePagerLive` touches
-        // the SDK — it wraps `Timeline.paginateBackwards`, so the target also
-        // needs MatronSync (ClientProvider/UserSession) + MatrixRustSDK. The
-        // rest of MatronSearch stays SDK-agnostic so BackfillRunner is testable
-        // against a fake pager.
+        // PURE module — GRDB + Foundation only, no SDK. Schema, service, models,
+        // the `TimelinePager` seam, and `BackfillRunner` are all fully
+        // unit-tested against a fake pager. The one SDK-backed pager
+        // (`TimelinePagerLive`) lives in MatronChat instead — MatronChat already
+        // links the SDK + owns the timeline machinery + the SDK→DTO mapping it
+        // reuses, and keeping it there means MatronSearch never imports the SDK.
         .target(
             name: "MatronSearch",
             dependencies: [
                 "MatronModels",
                 "MatronStorage",
-                "MatronSync",
                 .product(name: "GRDB", package: "GRDB.swift"),
-                .product(name: "MatrixRustSDK", package: "matrix-rust-components-swift"),
             ],
             path: "Sources/Search"
         ),
