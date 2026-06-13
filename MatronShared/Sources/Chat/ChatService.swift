@@ -54,6 +54,36 @@ public protocol ChatService: Sendable {
     /// the room for the bot. Phase 4 will add a confirmation alert in the
     /// UI so this isn't a one-tap destructive action.
     func leave(roomID: String) async throws
+
+    // MARK: - Phase 5 Task 7 — DEFERRED
+    //
+    // The plan called for `func sessionMeta(for roomID: String) async
+    // throws -> SessionMetaEvent?` reading the
+    // `chat.matron.session_meta` state event via `Room.getStateEvent`.
+    // **v26 of `matrix-rust-components-swift` does not expose a state-
+    // event read API on `Room`** — only `sendStateEventRaw(...)` (the
+    // write side) and a handful of typed accessors (`name()`,
+    // `topic()`, `encryptionState()`, etc.). Arbitrary state-event
+    // reading by `eventType` + `stateKey` is not in the FFI surface.
+    // Confirmed by walking the `RoomProtocol` declaration in
+    // `Sources/MatrixRustSDK/matrix_sdk_ffi.swift`.
+    //
+    // Consequences:
+    // - Task 7 + Task 10 (`SessionMetaHeader`) are both deferred until
+    //   either (a) the SDK adds a state-event reader, or (b) we work
+    //   around it via a raw HTTP call to
+    //   `GET /_matrix/client/v3/rooms/{roomId}/state/{eventType}` using
+    //   the SDK's auth token.
+    // - The Task 4 `SessionMetaEvent` parser ships unused on the
+    //   client side for now; the bot can still write the event via
+    //   `Room.sendStateEventRaw`, the data just doesn't surface in
+    //   the UI yet.
+    //
+    // Adding this method as a TODO instead of leaving it silently
+    // unimplemented so a future agent picking up the deferred work
+    // has the contract pinned where they expect it.
+    //
+    // func sessionMeta(for roomID: String) async throws -> SessionMetaEvent?
 }
 
 public extension ChatService {

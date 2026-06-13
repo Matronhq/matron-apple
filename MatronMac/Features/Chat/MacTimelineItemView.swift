@@ -116,6 +116,40 @@ struct MacTimelineItemView: View {
             }
             .padding(.vertical, 4)
 
+        case .toolCall(_, let evt):
+            HStack {
+                ToolCallCard(event: evt)
+                    .frame(maxWidth: 420, alignment: .leading)  // wider on Mac
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Tool call: \(evt.tool)"))
+
+        case .askUser(_, let evt):
+            // The interaction surface is the `MacAskUserSheet` that
+            // `MacChatView` presents off `viewModel.pendingAsk()`;
+            // the timeline row is just a pill marker — same as iOS.
+            HStack {
+                Spacer()
+                Label(evt.prompt, systemImage: "questionmark.circle")
+                    .labelStyle(.titleAndIcon)
+                    .font(.caption)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(Color.accentColor.opacity(0.12))
+                    .clipShape(Capsule())
+                Spacer()
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Question: \(evt.prompt)"))
+
+        case .askUserAnswer:
+            // `chat.matron.button_response` answers are bookkeeping for
+            // `ChatViewModel.pendingAsk()`, never rendered — Matron X
+            // hides them too (own and others'). The user's choice is
+            // visible through the answered prompt UI instead.
+            EmptyView()
+
         case .unknown(let eventType):
             // `m.room.encrypted` is the SDK's `unableToDecrypt` mapped
             // through; the SDK retries decryption as keys arrive and
@@ -145,6 +179,11 @@ struct MacTimelineItemView: View {
     /// noise; Phase 7 polish can bring back a metadata-events toggle).
     static func shouldRender(_ item: TimelineItem) -> Bool {
         if case .stateChange = item.kind {
+            return false
+        }
+        // Button-response answers are pendingAsk bookkeeping, never
+        // visible — same as iOS `TimelineItemView.shouldRender`.
+        if case .askUserAnswer = item.kind {
             return false
         }
         return true

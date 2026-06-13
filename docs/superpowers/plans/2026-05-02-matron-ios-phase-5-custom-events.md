@@ -11,6 +11,18 @@
 
 **Reference:** Spec §4.1–4.6 (custom events + bridge change list).
 
+> **2026-06-12 amendment — buttons-protocol interop.** The bridge today
+> emits `chat.matron.buttons` content keys (answered via
+> `chat.matron.button_response`), NOT this plan's `ask_user` events —
+> canonical definitions in matron-web `src/matron/EventTypes.ts`, also
+> shipped by Matron X. Per the HANDOVER byte-compat note, Phase 5 was
+> implemented as *plan + buttons interop*: both protocols decode onto the
+> same `AskUserEvent` DTO / sheet UI, and `AskUserEvent.replyChannel`
+> picks the answer wire format (`m.in_reply_to` text vs
+> `button_response` + `button_answer` relation). Button-response events
+> are hidden from the timeline (Matron X parity) and double as the
+> cross-device answered signal for `ChatViewModel.pendingAsk()`.
+
 ---
 
 ## Companion bridge spec
@@ -79,7 +91,7 @@ matron-iOS-app/
 - Create: `MatronShared/Sources/Events/EventTypes.swift`
 - Modify: `MatronShared/Package.swift`
 
-- [ ] **Step 1: Add MatronEvents library**
+- [x] **Step 1: Add MatronEvents library**
 
 ```swift
 .library(name: "MatronEvents", targets: ["MatronEvents"]),
@@ -87,7 +99,7 @@ matron-iOS-app/
 .testTarget(name: "EventsTests", dependencies: ["MatronEvents"], path: "Tests/EventsTests"),
 ```
 
-- [ ] **Step 2: Define type constants**
+- [x] **Step 2: Define type constants**
 
 ```swift
 import Foundation
@@ -99,7 +111,7 @@ public enum MatronEventType {
 }
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add MatronShared/Sources/Events/EventTypes.swift MatronShared/Package.swift
@@ -115,7 +127,7 @@ git push
 - Create: `MatronShared/Sources/Events/ToolCallEvent.swift`
 - Create: `MatronShared/Tests/EventsTests/ToolCallEventTests.swift`
 
-- [ ] **Step 1: Define DTO + parser**
+- [x] **Step 1: Define DTO + parser**
 
 ```swift
 import Foundation
@@ -176,7 +188,7 @@ public struct ToolCallEvent: Equatable, Sendable {
 }
 ```
 
-- [ ] **Step 2: Tests**
+- [x] **Step 2: Tests**
 
 ```swift
 import XCTest
@@ -218,7 +230,7 @@ final class ToolCallEventTests: XCTestCase {
 }
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 cd MatronShared && swift test --filter ToolCallEventTests
@@ -235,7 +247,7 @@ git push
 - Create: `MatronShared/Sources/Events/AskUserEvent.swift`
 - Create: `MatronShared/Tests/EventsTests/AskUserEventTests.swift`
 
-- [ ] **Step 1: Define DTO + parser**
+- [x] **Step 1: Define DTO + parser**
 
 ```swift
 import Foundation
@@ -290,7 +302,7 @@ public struct AskUserEvent: Equatable, Sendable {
 }
 ```
 
-- [ ] **Step 2: Tests**
+- [x] **Step 2: Tests**
 
 ```swift
 import XCTest
@@ -335,7 +347,7 @@ final class AskUserEventTests: XCTestCase {
 }
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 cd MatronShared && swift test --filter AskUserEventTests
@@ -352,7 +364,7 @@ git push
 - Create: `MatronShared/Sources/Events/SessionMetaEvent.swift`
 - Create: `MatronShared/Tests/EventsTests/SessionMetaEventTests.swift`
 
-- [ ] **Step 1: DTO + parser**
+- [x] **Step 1: DTO + parser**
 
 ```swift
 import Foundation
@@ -382,7 +394,7 @@ public struct SessionMetaEvent: Equatable, Sendable {
 }
 ```
 
-- [ ] **Step 2: Tests**
+- [x] **Step 2: Tests**
 
 ```swift
 import XCTest
@@ -411,7 +423,7 @@ final class SessionMetaEventTests: XCTestCase {
 }
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 cd MatronShared && swift test --filter SessionMetaEventTests
@@ -428,7 +440,7 @@ git push
 - Modify: `MatronShared/Sources/Chat/TimelineItem.swift`
 - Modify: `MatronShared/Tests/ChatTests/TimelineItemTests.swift`
 
-- [ ] **Step 1: Extend the enum**
+- [x] **Step 1: Extend the enum**
 
 In `TimelineItem.Kind`:
 
@@ -446,7 +458,7 @@ public enum Kind: Equatable, Sendable {
 
 (`eventID` is the underlying Matrix event ID — needed to correlate replies and to send `m.replace` updates. `SessionMetaEvent` is a *state* event, not a timeline event — handled separately in Task 7.)
 
-- [ ] **Step 2: Add tests**
+- [x] **Step 2: Add tests**
 
 ```swift
 func test_toolCallKind_equality() {
@@ -464,7 +476,7 @@ func test_toolCallKind_equality() {
 }
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add MatronShared/Sources/Chat/TimelineItem.swift MatronShared/Tests/ChatTests/TimelineItemTests.swift
@@ -479,7 +491,7 @@ git push
 **Files:**
 - Modify: `MatronShared/Sources/Chat/TimelineServiceLive.swift`
 
-- [ ] **Step 1: Inside `TimelineListener`, when an event's `eventType()` returns one of the matron event types, parse it and emit the appropriate `TimelineItem.Kind`**
+- [x] **Step 1: Inside `TimelineListener`, when an event's `eventType()` returns one of the matron event types, parse it and emit the appropriate `TimelineItem.Kind`**
 
 Pseudocode (real code depends on SDK):
 
@@ -508,7 +520,7 @@ default:
 
 `m.replace` updates: the SDK delivers a *replacement* timeline item with the same `eventID`. The listener should overwrite the corresponding entry in its mutable buffer, preserving order, and emit a fresh snapshot.
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git commit -am "feat: TimelineServiceLive maps chat.matron.tool_call and ask_user"
@@ -518,6 +530,11 @@ git push
 ---
 
 ### Task 7: SessionMeta — fetch state event in ChatService
+
+> **DEFERRED (2026-06-12):** v26 of `matrix-rust-components-swift` has no
+> arbitrary state-event READ API on `Room` (only `sendStateEventRaw`).
+> Contract + unblock paths pinned in the doc-comment at the bottom of
+> `MatronShared/Sources/Chat/ChatService.swift` (commit `7895020`).
 
 **Files:**
 - Modify: `MatronShared/Sources/Chat/ChatService.swift`
@@ -563,7 +580,7 @@ git push
 
 (Lives in DesignSystem so it's snapshottable in isolation.)
 
-- [ ] **Step 1: Implement**
+- [x] **Step 1: Implement**
 
 ```swift
 import SwiftUI
@@ -664,7 +681,7 @@ public struct ToolCallCard: View {
 }
 ```
 
-- [ ] **Step 2: Snapshot tests for collapsed + expanded + each status (+ Mac hover)**
+- [x] **Step 2: Snapshot tests for collapsed + expanded + each status (+ Mac hover)**
 
 Each test uses the shared `assertVariants` helper from Phase 2, so every case
 records **6 baselines** ({iOS, Mac} × {light, dark, accessibility5}).
@@ -755,7 +772,7 @@ final class ToolCallCardSnapshotTests: XCTestCase {
 }
 ```
 
-- [ ] **Step 3: Add MatronEvents to MatronDesignSystem dependencies**
+- [x] **Step 3: Add MatronEvents to MatronDesignSystem dependencies**
 
 In `MatronShared/Package.swift`:
 
@@ -770,7 +787,7 @@ In `MatronShared/Package.swift`:
 ),
 ```
 
-- [ ] **Step 4: Run on both schemes + commit**
+- [x] **Step 4: Run on both schemes + commit**
 
 ```bash
 cd MatronShared && swift test --filter ToolCallCardSnapshotTests
@@ -800,7 +817,7 @@ differs between platforms — iOS uses `.presentationDetents([.medium, .large])`
 for a half-sheet; Mac uses a fixed-size frame since macOS sheets don't support
 detents.)
 
-- [ ] **Step 1: Extend `TimelineService` with reply support (TDD)**
+- [x] **Step 1: Extend `TimelineService` with reply support (TDD)**
 
 Per spec §4.2: "the user's response goes back as a normal `m.room.message` with `m.in_reply_to` referencing the prompt event so the bot can correlate." Add an optional reply event ID to `sendText` (or a dedicated `sendReply`).
 
@@ -863,7 +880,7 @@ final class FakeTimelineService: TimelineService {
 }
 ```
 
-- [ ] **Step 2: ViewModel**
+- [x] **Step 2: ViewModel**
 
 ```swift
 import Foundation
@@ -951,7 +968,7 @@ func test_send_passesPromptEventID_asInReplyTo() async {
 }
 ```
 
-- [ ] **Step 3: Sheet wrappers (iOS + Mac)**
+- [x] **Step 3: Sheet wrappers (iOS + Mac)**
 
 Both wrappers are thin — they own the `AskUserSheetViewModel`, render the
 shared `AskUserSheetBody` from `MatronShared/Sources/DesignSystem/` (extracted
@@ -1080,7 +1097,7 @@ presentation wrapper differs.
 
 > **Note:** `promptEventID` is exposed on the ViewModel so SwiftUI can key the auto-dismiss task on it. Mark the property `let` (immutable, public to module).
 
-- [ ] **Step 4: TDD — auto-dismiss on expiry**
+- [x] **Step 4: TDD — auto-dismiss on expiry**
 
 The auto-dismiss timer lives in the `.task(id:)` modifier on `AskUserSheet`. We extract the sleep-and-fire body into a small helper on the ViewModel so it's deterministically testable:
 
@@ -1160,7 +1177,7 @@ func test_send_isNoop_whenExpired() async {
 }
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Matron/Features/Chat/Rendering/AskUserSheet.swift \
@@ -1187,7 +1204,7 @@ The sheet view itself lives in the app target, but for snapshotting we extract t
 
 Prefer (1) — keeps DesignSystem decoupled from app types.
 
-- [ ] **Step 1: Extract `AskUserSheetBody` into DesignSystem**
+- [x] **Step 1: Extract `AskUserSheetBody` into DesignSystem**
 
 `AskUserSheetBody` lives in `MatronShared/Sources/DesignSystem/` and is the
 single source of truth for the body rendering on **both iOS and Mac**. Only
@@ -1325,7 +1342,7 @@ public struct AskUserSheetBody: View {
 Both wrappers (iOS `AskUserSheet`, Mac `MacAskUserSheet` from Task 9 Step 3)
 embed this view and connect it to the shared `AskUserSheetViewModel`.
 
-- [ ] **Step 2: Snapshot tests for all four input kinds + expired variant**
+- [x] **Step 2: Snapshot tests for all four input kinds + expired variant**
 
 Each test uses the shared `assertVariants` helper from Phase 2 → 6 baselines
 per case ({iOS, Mac} × {light, dark, accessibility5}). The Mac variants
@@ -1395,7 +1412,7 @@ final class AskUserSheetSnapshotTests: XCTestCase {
 
 > **Implementer note:** `StatefulPreviewWrapper` is a tiny SwiftUI helper that gives a snapshot test a mutable backing store for a `@Binding`. If one isn't already in the test helpers, add it to `MatronShared/Tests/DesignSystemSnapshotTests/Support/StatefulPreviewWrapper.swift`. Make sure the helper is platform-agnostic — no `UITraitCollection` references — so the same file compiles on both iOS and macOS test schemes.
 
-- [ ] **Step 3: Run on both schemes + commit**
+- [x] **Step 3: Run on both schemes + commit**
 
 ```bash
 cd MatronShared && swift test --filter AskUserSheetSnapshotTests
@@ -1412,6 +1429,9 @@ git push
 ---
 
 ### Task 10: SessionMetaHeader
+
+> **DEFERRED (2026-06-12):** depends on Task 7's `sessionMeta(for:)`
+> accessor — same v26 SDK state-event-reader gap.
 
 **Files:**
 - Create: `MatronShared/Sources/DesignSystem/SessionMetaHeader.swift`
@@ -1532,7 +1552,7 @@ git push
 - Modify: `MatronShared/Sources/ViewModels/ChatViewModel.swift` (shared, target-agnostic)
 - Modify: `MatronShared/Sources/ViewModels/ComposerViewModel.swift` (shared) — verify `inReplyTo` wiring (no change expected; see Step 7)
 
-- [ ] **Step 1: Update `TimelineItemView` to render new cases**
+- [x] **Step 1: Update `TimelineItemView` to render new cases**
 
 ```swift
 case .toolCall(_, let event):
@@ -1562,7 +1582,7 @@ case .askUser(_, let event):
     }
 ```
 
-- [ ] **Step 2: ChatViewModel tracks already-answered prompts (idempotency)**
+- [x] **Step 2: ChatViewModel tracks already-answered prompts (idempotency)**
 
 Push decryption can re-deliver an `ask_user` event after the user has already answered (e.g. NSE ran for a backgrounded notification, then the foregrounded app re-decrypts the same event). We must NOT re-pop the sheet.
 
@@ -1605,7 +1625,7 @@ final class ChatViewModel: ObservableObject {
 }
 ```
 
-- [ ] **Step 3: TDD — re-delivered prompt does not re-present**
+- [x] **Step 3: TDD — re-delivered prompt does not re-present**
 
 ```swift
 @MainActor
@@ -1639,7 +1659,7 @@ func test_answeredPromptIDs_persistAcrossLaunches() {
 }
 ```
 
-- [ ] **Step 4: ChatView presents the AskUserSheet for the most recent unanswered ask_user**
+- [x] **Step 4: ChatView presents the AskUserSheet for the most recent unanswered ask_user**
 
 Add `@State private var pendingAsk: (eventID: String, AskUserEvent)?` and:
 
@@ -1671,7 +1691,7 @@ Add `@State private var pendingAsk: (eventID: String, AskUserEvent)?` and:
 
 (Define `AskUserSheetIdentifier: Identifiable` locally — `id` = `eventID`.)
 
-- [ ] **Step 5: ChatView shows SessionMetaHeader at the top**
+- [x] **Step 5: ChatView shows SessionMetaHeader at the top**
 
 Add `@State private var sessionMeta: SessionMetaEvent?`:
 
@@ -1689,7 +1709,7 @@ if let meta = sessionMeta {
 }
 ```
 
-- [ ] **Step 6: Mac equivalents — `MacTimelineItemView` + `MacChatView`**
+- [x] **Step 6: Mac equivalents — `MacTimelineItemView` + `MacChatView`**
 
 The Mac chat surface mirrors iOS: same ViewModel, same DesignSystem primitives,
 different presentation wrapper for the sheet.
@@ -1745,7 +1765,7 @@ identical — `ChatViewModel` is shared:
 }
 ```
 
-- [ ] **Step 7: Verify `m.in_reply_to` wiring on Mac composer**
+- [x] **Step 7: Verify `m.in_reply_to` wiring on Mac composer**
 
 The Mac composer view (introduced in Phase 2's `MacChatView.swift`) shares
 the same `ComposerViewModel` from `MatronShared/Sources/ViewModels/`, which
@@ -1764,7 +1784,7 @@ No code change needed; this is a verification sub-step. If the Mac composer
 in Phase 2 was inadvertently dropped or differs, fix it here so both
 platforms route through the same protocol.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add Matron/Features/Chat/Rendering/TimelineItemView.swift \
@@ -1784,7 +1804,7 @@ git push
 **Files:**
 - Modify: `MatronShared/Sources/Push/PushDecoder.swift`
 
-- [ ] **Step 1: Recognise the matron event types**
+- [x] **Step 1: Recognise the matron event types**
 
 In the body construction switch:
 
@@ -1799,7 +1819,7 @@ default:
 
 (Use `event.kind` / `event.eventType()` per SDK API.)
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git commit -am "feat: PushDecoder shows tool-call / ask-user hints in notification body"

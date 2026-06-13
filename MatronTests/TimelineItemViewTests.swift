@@ -84,6 +84,20 @@ final class TimelineItemViewTests: XCTestCase {
     // no platform-specific mapping left to pin here.
 
     /// Sanity: text / image / file / unknown kinds always render.
+
+    func test_shouldRender_returnsFalse_forAskUserAnswer() {
+        // Phase 5: button responses are pendingAsk bookkeeping, never
+        // rendered (Matron X hides them too).
+        let item = TimelineItem(
+            id: "a", sender: "@me:s",
+            timestamp: Date(timeIntervalSince1970: 0),
+            kind: .askUserAnswer(promptEventID: "$1", selectedValues: ["yes"]),
+            isOwn: true, sendState: .sent
+        )
+        XCTAssertFalse(TimelineItemView.shouldRender(item),
+                       "button-response answers must stay hidden")
+    }
+
     func test_shouldRender_returnsTrue_forContentKinds() {
         let kinds: [TimelineItem.Kind] = [
             .text(body: "hi", formattedHTML: nil),

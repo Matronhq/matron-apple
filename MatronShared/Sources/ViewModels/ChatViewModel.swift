@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import os
 import MatronChat
+import MatronEvents
 import MatronModels
 import MatronStorage
 
@@ -170,6 +171,11 @@ public final class ChatViewModel {
             // participating in day bucketing — the filter here is
             // what kept that fix in place.
             if case .stateChange = item.kind { continue }
+            // `.askUserAnswer` is pendingAsk bookkeeping (button
+            // responses are hidden, matching Matron X) — keep it out
+            // of the rows AND out of day bucketing, same reasoning as
+            // the virtual stateChange filter above.
+            if case .askUserAnswer = item.kind { continue }
             if first == nil { first = item.id }
             last = item.id
             let day = calendar.startOfDay(for: item.timestamp)
@@ -228,6 +234,22 @@ public final class ChatViewModel {
     /// `items.isEmpty` ambiguously means both "still loading" and
     /// "settled empty room" until we've definitively seen one snapshot.
     public private(set) var hasReceivedFirstSnapshot: Bool = false
+    /// True only once the timeline has been CONTINUOUSLY empty for
+    /// `emptyPlaceholderGraceMs`. The empty-state placeholder gates on
+    /// this rather than raw `items.isEmpty`, because the matrix-rust-sdk
+    /// timeline can transiently clear and repopulate within a sync tick
+    /// (a sliding-sync reset against a live homeserver delivers a bare
+    /// `Clear` then re-`Append`s) — applying that empty snapshot directly
+    /// flashed "no messages yet" until the events came back. Debouncing
+    /// the empty→settled transition rides those resets; a genuinely empty
+    /// room stays empty past the grace and still surfaces the placeholder.
+    public private(set) var settledEmpty: Bool = false
+    /// Grace window before an empty timeline counts as settled-empty.
+    /// `var` so tests can shorten it; ~400ms comfortably covers a
+    /// sliding-sync clear+repopulate without a perceptible delay before a
+    /// genuinely empty room shows its placeholder.
+    var emptyPlaceholderGraceMs: Int = 400
+    private var emptyDebounceTask: Task<Void, Never>?
     /// Cache of `mxc://` URL → resolved SwiftUI `Image`. Populated lazily by
     /// `image(for:)` so SwiftUI can re-render the row once the bytes arrive.
     /// Backed by an `LRUCache` (capped at `mediaCacheLimit`) so a long
@@ -253,10 +275,24 @@ public final class ChatViewModel {
     /// fire duplicate fetches on every SwiftUI re-render.
     private var inFlightRequests: Set<URL> = []
 
+    /// Event IDs of ask-user prompts the user has answered (or
+    /// dismissed) on THIS device, persisted across launches under
+    /// `matron.answeredPrompts.<roomID>` so push re-decryption /
+    /// re-opening the room can't re-pop an already-answered sheet.
+    /// Cross-DEVICE answers are detected from the timeline instead —
+    /// see `pendingAsk()`.
+    private var answeredPromptIDs: Set<String>
+
+    private var answeredPromptsDefaultsKey: String {
+        "matron.answeredPrompts.\(roomID)"
+    }
+
     public init(roomID: String, timeline: TimelineService, media: MediaService) {
         self.roomID = roomID
         self.timeline = timeline
         self.media = media
+        let stored = UserDefaults.standard.stringArray(forKey: "matron.answeredPrompts.\(roomID)") ?? []
+        self.answeredPromptIDs = Set(stored)
     }
 
     /// Starts observing the timeline. Returns *after* the first snapshot has
@@ -275,8 +311,34 @@ public final class ChatViewModel {
     /// first open the SDK marked "no events" as read and unread counts
     /// were never cleared.
     @discardableResult
+    /// Debounces the empty → `settledEmpty` transition (see `settledEmpty`).
+    /// A non-empty snapshot clears it immediately and cancels any pending
+    /// flip; an empty one schedules the flip after the grace, so a
+    /// transient clear that repopulates first never surfaces the
+    /// placeholder. `@MainActor` (the whole VM is) so the scheduled task
+    /// touches `settledEmpty` on the main actor.
+    private func updateSettledEmpty(isEmpty: Bool) {
+        emptyDebounceTask?.cancel()
+        emptyDebounceTask = nil
+        guard isEmpty else {
+            settledEmpty = false
+            return
+        }
+        let graceMs = emptyPlaceholderGraceMs
+        emptyDebounceTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(graceMs))
+            guard !Task.isCancelled, let self else { return }
+            self.settledEmpty = true
+        }
+    }
+
     public func start() async -> Task<Void, Never> {
         observationTask?.cancel()
+        // Fresh subscription — drop any stale settled-empty state from a
+        // prior room/timeline before the new stream's snapshots arrive.
+        settledEmpty = false
+        emptyDebounceTask?.cancel()
+        emptyDebounceTask = nil
         let timeline = self.timeline
         // Box wrapping a single-shot CheckedContinuation. The observation
         // Task resumes it on the first snapshot processed (or on stream
@@ -302,6 +364,10 @@ public final class ChatViewModel {
                         // empty-state placeholder gates correctly even
                         // when the snapshot itself is empty.
                         self.hasReceivedFirstSnapshot = true
+                        // Debounce the empty-state so a transient timeline
+                        // clear (sliding-sync reset) doesn't flash the
+                        // "no messages yet" placeholder.
+                        self.updateSettledEmpty(isEmpty: snapshot.isEmpty)
                     }
                     firstSignal.fireOnce()
                 }
@@ -321,7 +387,12 @@ public final class ChatViewModel {
             // flag too so the empty-state placeholder isn't stuck
             // hidden on rooms whose live timeline never warms up.
             if let self {
-                await MainActor.run { self.hasReceivedFirstSnapshot = true }
+                await MainActor.run {
+                    self.hasReceivedFirstSnapshot = true
+                    // A room whose live timeline never warmed up is
+                    // genuinely empty — let the placeholder settle in.
+                    self.updateSettledEmpty(isEmpty: self.items.isEmpty)
+                }
             }
             firstSignal.fireOnce()
         }
@@ -335,6 +406,8 @@ public final class ChatViewModel {
     public func stop() {
         observationTask?.cancel()
         observationTask = nil
+        emptyDebounceTask?.cancel()
+        emptyDebounceTask = nil
     }
 
     public func paginateBackward() async {
@@ -524,6 +597,124 @@ public final class ChatViewModel {
         return stripped
     }
 
+    // MARK: - Ask-user prompts (Phase 5 Task 11)
+
+    /// The most recent ask-user prompt the user still needs to answer,
+    /// or nil. Views key the sheet presentation off this from
+    /// `.onChange(of: viewModel.items)`.
+    ///
+    /// A prompt counts as answered when ANY of:
+    /// - it was answered/dismissed on this device
+    ///   (`answeredPromptIDs`, UserDefaults-persisted);
+    /// - the timeline contains a `chat.matron.button_response` for it
+    ///   (`.askUserAnswer`) — covers the user's other devices, which
+    ///   per-device bookkeeping can't see (Task 13's cross-platform
+    ///   smoke test);
+    /// - the timeline contains one of the user's own replies
+    ///   (`m.in_reply_to`) targeting it — same cross-device story for
+    ///   the `ask_user` text-reply channel.
+    ///
+    /// Already-expired prompts are skipped entirely: popping a sheet
+    /// whose `awaitExpiry` would immediately dismiss it is just a
+    /// flash of dead UI.
+    public func pendingAsk() -> AskUserPromptContext? {
+        var answeredInTimeline: Set<String> = []
+        for item in items {
+            // `isOwn` on BOTH paths: a `button_response` / reply only
+            // counts as OUR answer if it came from this Matrix user
+            // (this device or another of ours — both `isOwn`). In a
+            // multi-user room another member's button answer must NOT
+            // suppress the prompt for us (bugbot "Others' button answers
+            // dismiss sheet").
+            if case .askUserAnswer(let promptID, _) = item.kind,
+               !promptID.isEmpty, item.isOwn {
+                answeredInTimeline.insert(promptID)
+            }
+            if item.isOwn, let target = item.inReplyToEventID {
+                answeredInTimeline.insert(target)
+            }
+        }
+        // Persist cross-device answers the moment the timeline shows
+        // them (bugbot PR #6 finding): on a fresh timeline the
+        // encrypted answer event can lag decryption behind the prompt,
+        // and a snapshot caught in that window would re-pop a sheet
+        // for a prompt already answered elsewhere. Folding timeline
+        // knowledge into the UserDefaults set makes the answered state
+        // survive snapshots that temporarily lack the answer event.
+        // Intersected with the prompts actually present: only a
+        // visible prompt can re-pop, and `answeredInTimeline` also
+        // holds the user's replies to ORDINARY messages — persisting
+        // those would grow the defaults set without bound.
+        var promptIDsInTimeline: Set<String> = []
+        for item in items {
+            if case .askUser(let id, _) = item.kind {
+                promptIDsInTimeline.insert(id)
+            }
+        }
+        for id in answeredInTimeline.intersection(promptIDsInTimeline)
+        where !answeredPromptIDs.contains(id) {
+            markPromptAnswered(id)
+        }
+        for item in items.reversed() {
+            guard case .askUser(let id, let evt) = item.kind else { continue }
+            if answeredPromptIDs.contains(id) { continue }
+            if answeredInTimeline.contains(id) { continue }
+            if let expiresAt = evt.expiresAt, Date.now >= expiresAt { continue }
+            return AskUserPromptContext(id: id, event: evt)
+        }
+        return nil
+    }
+
+    /// True if `eventID`'s ask-user prompt has been answered by US — on
+    /// this device (persisted in `answeredPromptIDs`) or on another of
+    /// our devices (an `isOwn` `button_response` or `m.in_reply_to` reply
+    /// for it is in the current timeline). Another user's button answer
+    /// in a multi-member room does NOT count (bugbot "Others' button
+    /// answers dismiss sheet"). Distinct from `pendingAsk()`'s
+    /// "should a prompt pop" test: this answers "is THIS prompt resolved",
+    /// which the views use to decide whether an already-open sheet should
+    /// close. Critically it does NOT key on `pendingAsk()` returning nil —
+    /// a transient sliding-sync clear empties `items` momentarily, and an
+    /// open sheet must not drop on that (bugbot "Ask sheet drops on
+    /// clear") nor be yanked to a newer prompt (bugbot "New prompt
+    /// replaces open sheet").
+    public func isPromptAnswered(_ eventID: String) -> Bool {
+        if answeredPromptIDs.contains(eventID) { return true }
+        for item in items where item.isOwn {
+            if case .askUserAnswer(let promptID, _) = item.kind, promptID == eventID {
+                return true
+            }
+            if item.inReplyToEventID == eventID {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Called after a successful send (or explicit dismissal) so the
+    /// prompt can't re-pop — push re-decryption can re-deliver the
+    /// same event after the user already answered. Persisted per room.
+    public func markPromptAnswered(_ eventID: String) {
+        answeredPromptIDs.insert(eventID)
+        UserDefaults.standard.set(Array(answeredPromptIDs), forKey: answeredPromptsDefaultsKey)
+    }
+
+    /// Builds the sheet ViewModel for a pending prompt. Factory lives
+    /// here so the `TimelineService` stays private to this class —
+    /// the Views never hold a service reference directly.
+    public func makeAskUserSheetViewModel(
+        eventID: String,
+        event: AskUserEvent,
+        onClose: @escaping () -> Void
+    ) -> AskUserSheetViewModel {
+        AskUserSheetViewModel(
+            event: event,
+            promptEventID: eventID,
+            timeline: timeline,
+            onClose: onClose
+        )
+    }
+
     /// Live count of cached resolved images. Test seam for asserting
     /// LRU eviction without exposing the raw storage.
     public var resolvedImageCount: Int { resolvedImages.count }
@@ -531,6 +722,21 @@ public final class ChatViewModel {
     /// Live count of remembered decode failures. Test seam for asserting
     /// LRU eviction without exposing the raw storage.
     public var failedRequestCount: Int { failedRequests.count }
+}
+
+/// Identifiable payload for the ask-user sheet presentation —
+/// `.sheet(item:)` keys on the prompt's event ID, so a NEW prompt
+/// arriving while a sheet is up swaps the content, while re-snapshots
+/// of the SAME prompt leave the presented sheet untouched.
+public struct AskUserPromptContext: Identifiable, Equatable, Sendable {
+    /// The prompt's Matrix event ID.
+    public let id: String
+    public let event: AskUserEvent
+
+    public init(id: String, event: AskUserEvent) {
+        self.id = id
+        self.event = event
+    }
 }
 
 /// Single-shot signal used by `ChatViewModel.start()` to bridge "first

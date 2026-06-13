@@ -116,6 +116,46 @@ final class PushDecoderDefaultsTests: XCTestCase {
         XCTAssertEqual(PushDecoder.body(forMessageLike: .sticker), "Sticker")
     }
 
+    // MARK: - matronHintBody (Phase 5 Task 12)
+
+    func test_hint_toolCall() {
+        let raw = #"{"type": "chat.matron.tool_call", "content": {"tool": "Read", "status": "running", "started_at": 1745000000000}}"#
+        XCTAssertEqual(PushDecoder.matronHintBody(rawEvent: raw), "🔧 Tool call")
+    }
+
+    func test_hint_askUser() {
+        let raw = #"{"type": "chat.matron.ask_user", "content": {"prompt": "Which file?", "input": {"kind": "text"}}}"#
+        XCTAssertEqual(PushDecoder.matronHintBody(rawEvent: raw), "❓ Question — needs your answer")
+    }
+
+    func test_hint_buttonsMessage_usesPrompt() {
+        // The bridge's live protocol: ordinary m.room.message with a
+        // chat.matron.buttons content key. The prompt is already in
+        // the plaintext fallback body, so no new exposure.
+        let raw = #"""
+        {"type": "m.room.message", "content": {
+            "msgtype": "m.text", "body": "Proceed? [Yes] [No]",
+            "chat.matron.buttons": {"mode": "pick_one", "prompt": "Proceed?",
+                "buttons": [{"id": "y", "label": "Yes", "value": "yes"}]}
+        }}
+        """#
+        XCTAssertEqual(PushDecoder.matronHintBody(rawEvent: raw), "❓ Proceed?")
+    }
+
+    func test_hint_buttonsMessage_missingPrompt_fallsBackToGeneric() {
+        let raw = #"{"type": "m.room.message", "content": {"body": "x", "chat.matron.buttons": {"mode": "pick_one"}}}"#
+        XCTAssertEqual(PushDecoder.matronHintBody(rawEvent: raw), "❓ Question — needs your answer")
+    }
+
+    func test_hint_nilForPlainMessage() {
+        let raw = #"{"type": "m.room.message", "content": {"msgtype": "m.text", "body": "hello"}}"#
+        XCTAssertNil(PushDecoder.matronHintBody(rawEvent: raw))
+    }
+
+    func test_hint_nilForMalformedJson() {
+        XCTAssertNil(PushDecoder.matronHintBody(rawEvent: "{chat.matron. not json"))
+    }
+
     // MARK: - Helpers
 
     /// `MediaSource` is a Rust-handle class — there's no value-type

@@ -63,6 +63,13 @@ struct ChatView: View {
     /// user can save / forward the attachment without leaving the
     /// chat.
     @State private var attachmentPreview: AttachmentPreview?
+    /// The ask-user prompt currently presented as a half-sheet (Phase
+    /// 5 Task 11). Refreshed from `viewModel.pendingAsk()` on every
+    /// timeline snapshot; `nil` hides the sheet. Identity is the
+    /// prompt's event ID so re-snapshots of the same prompt don't
+    /// re-present, while an answer landing from another device nils
+    /// this out and auto-dismisses.
+    @State private var pendingAskPrompt: AskUserPromptContext?
 
     /// Sheet payload for fullscreen attachment previews. Identifiable
     /// via a per-present UUID so two consecutive taps re-mount the
@@ -129,16 +136,13 @@ struct ChatView: View {
                     .background(Color.red.opacity(0.9))
                     .accessibilityLabel("Chat error: \(errorMessage)")
             }
-            if viewModel.items.isEmpty
-                && viewModel.hasReceivedFirstSnapshot
-                && viewModel.error == nil {
-                // Settled-empty branch: the timeline has definitively
-                // yielded an empty snapshot (not just "still loading"),
-                // so the user sees a placeholder instead of a blank
-                // scroll. Gating on `hasReceivedFirstSnapshot` avoids
-                // flashing the placeholder during sliding-sync warm-up
-                // — `items.isEmpty` alone collapses both "loading" and
-                // "settled empty" into the same UI state.
+            if viewModel.settledEmpty && viewModel.error == nil {
+                // Settled-empty branch: gated on the debounced
+                // `settledEmpty` (not raw `items.isEmpty`) so the
+                // placeholder doesn't flash during sliding-sync warm-up
+                // OR a transient timeline reset — both produce a
+                // momentary empty `items` that repopulates within a tick.
+                // See `ChatViewModel.settledEmpty`.
                 EmptyChatPlaceholder(botName: chatTitle)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -403,6 +407,81 @@ struct ChatView: View {
             case .file(_, let url, let filename):
                 fileShareSheet(url: url, filename: filename)
             }
+        }
+        // Phase 5 Task 11: surface the most recent unanswered ask-user
+        // prompt as a half-sheet. Driven off the snapshot so prompts
+        // arriving while the chat is open pop immediately.
+        //
+        // When a sheet is ALREADY open, only its prompt being *answered*
+        // (here or cross-device) closes it — a transient sliding-sync
+        // clear (`items` momentarily empty) must NOT drop it (bugbot
+        // "Ask sheet drops on clear") and a newer prompt must NOT yank
+        // the sheet away mid-input (bugbot "New prompt replaces open
+        // sheet"). `onDismiss` re-queries `pendingAsk()` once the open
+        // sheet closes, so a queued newer prompt surfaces then.
+        .onChange(of: viewModel.items) { _, _ in
+            if let current = pendingAskPrompt {
+                if viewModel.isPromptAnswered(current.id) {
+                    // Persist NOW rather than leaning on onDismiss's
+                    // pendingAsk() fold — a transient clear between this
+                    // close and the dismiss could skip that fold (bugbot
+                    // "Cross-device dismiss skips persistence"), letting
+                    // the prompt re-pop when items return without the
+                    // answer event.
+                    viewModel.markPromptAnswered(current.id)
+                    pendingAskPrompt = nil
+                }
+            } else {
+                pendingAskPrompt = viewModel.pendingAsk()
+            }
+        }
+        // `onDismiss` re-queries once the dismissal animation has
+        // finished: if the timeline holds ANOTHER unanswered prompt
+        // (the closed one is excluded — every close path marks it
+        // answered first), it presents next rather than staying hidden
+        // until a later snapshot. Re-querying inside the binding's
+        // set-nil would fight the in-flight swipe-down animation.
+        .sheet(item: askUserSheetBinding, onDismiss: {
+            pendingAskPrompt = viewModel.pendingAsk()
+        }) { ctx in
+            AskUserSheet(
+                viewModel: viewModel.makeAskUserSheetViewModel(
+                    eventID: ctx.id,
+                    event: ctx.event,
+                    onClose: { closeAskUserSheet(ctx) }
+                ),
+                onClose: { closeAskUserSheet(ctx) }
+            )
+            .presentationDetents([.medium, .large])
+        }
+    }
+
+    /// Binding for the ask-user sheet that intercepts interactive
+    /// dismissal (swipe-down): a user pushing the sheet away is a
+    /// "not answering this" signal — mark the prompt answered so the
+    /// next snapshot's `.onChange` doesn't immediately re-present it.
+    private var askUserSheetBinding: Binding<AskUserPromptContext?> {
+        Binding(
+            get: { pendingAskPrompt },
+            set: { newValue in
+                if newValue == nil, let ctx = pendingAskPrompt {
+                    viewModel.markPromptAnswered(ctx.id)
+                }
+                pendingAskPrompt = newValue
+            }
+        )
+    }
+
+    private func closeAskUserSheet(_ ctx: AskUserPromptContext) {
+        viewModel.markPromptAnswered(ctx.id)
+        // Guard the same prompt is still presented: a send completing
+        // AFTER the user swipe-dismissed (Send is a commitment — the
+        // in-flight answer isn't revoked by dismissal) calls this late,
+        // and the `onDismiss` re-query may have presented the NEXT
+        // prompt by then — blindly nil-ing would dismiss (and via the
+        // binding, mark answered) a sheet the user never saw.
+        if pendingAskPrompt?.id == ctx.id {
+            pendingAskPrompt = nil
         }
     }
 
