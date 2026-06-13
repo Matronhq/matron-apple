@@ -695,6 +695,22 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_pendingAsk_notClearedBy_othersButtonResponse() async {
+        // A `button_response` from ANOTHER member (isOwn=false) in a
+        // multi-user room must not suppress the prompt for us (bugbot
+        // "Others' button answers dismiss sheet").
+        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
+        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        let othersAnswer = TimelineItem(
+            id: "$2", sender: "@someone-else:s", timestamp: .now,
+            kind: .askUserAnswer(promptEventID: "$1", selectedValues: ["yes"]),
+            isOwn: false
+        )
+        let vm = await makeAskVM(items: [askItem(id: "$1"), othersAnswer])
+        XCTAssertEqual(vm.pendingAsk()?.id, "$1", "another user's button answer must not count as ours")
+    }
+
+    @MainActor
     func test_pendingAsk_skipsExpiredPrompts() async {
         UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
         defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
@@ -715,11 +731,20 @@ final class ChatViewModelTests: XCTestCase {
             kind: .askUserAnswer(promptEventID: "$x", selectedValues: ["yes"]),
             isOwn: true
         )
-        let vm = await makeAskVM(items: [askItem(id: "$1"), askItem(id: "$x"), answer])
+        // Another member's button answer (isOwn=false) for $other must
+        // NOT count (bugbot "Others' button answers dismiss sheet").
+        let othersAnswer = TimelineItem(
+            id: "$3", sender: "@someone-else:s", timestamp: .now,
+            kind: .askUserAnswer(promptEventID: "$other", selectedValues: ["no"]),
+            isOwn: false
+        )
+        let vm = await makeAskVM(items: [askItem(id: "$1"), askItem(id: "$x"), askItem(id: "$other"), answer, othersAnswer])
         // $1 unanswered → false (an open sheet for it must NOT close).
         XCTAssertFalse(vm.isPromptAnswered("$1"))
-        // $x answered cross-device (button_response in timeline) → true.
+        // $x answered by us cross-device (own button_response) → true.
         XCTAssertTrue(vm.isPromptAnswered("$x"))
+        // $other answered only by someone else → still false for us.
+        XCTAssertFalse(vm.isPromptAnswered("$other"))
         // Marking $1 answered on this device flips it.
         vm.markPromptAnswered("$1")
         XCTAssertTrue(vm.isPromptAnswered("$1"))

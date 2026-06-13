@@ -620,7 +620,14 @@ public final class ChatViewModel {
     public func pendingAsk() -> AskUserPromptContext? {
         var answeredInTimeline: Set<String> = []
         for item in items {
-            if case .askUserAnswer(let promptID, _) = item.kind, !promptID.isEmpty {
+            // `isOwn` on BOTH paths: a `button_response` / reply only
+            // counts as OUR answer if it came from this Matrix user
+            // (this device or another of ours — both `isOwn`). In a
+            // multi-user room another member's button answer must NOT
+            // suppress the prompt for us (bugbot "Others' button answers
+            // dismiss sheet").
+            if case .askUserAnswer(let promptID, _) = item.kind,
+               !promptID.isEmpty, item.isOwn {
                 answeredInTimeline.insert(promptID)
             }
             if item.isOwn, let target = item.inReplyToEventID {
@@ -658,10 +665,12 @@ public final class ChatViewModel {
         return nil
     }
 
-    /// True if `eventID`'s ask-user prompt has been answered — on this
-    /// device (persisted in `answeredPromptIDs`) or on another device (a
-    /// `button_response` or the user's own `m.in_reply_to` reply for it
-    /// is in the current timeline). Distinct from `pendingAsk()`'s
+    /// True if `eventID`'s ask-user prompt has been answered by US — on
+    /// this device (persisted in `answeredPromptIDs`) or on another of
+    /// our devices (an `isOwn` `button_response` or `m.in_reply_to` reply
+    /// for it is in the current timeline). Another user's button answer
+    /// in a multi-member room does NOT count (bugbot "Others' button
+    /// answers dismiss sheet"). Distinct from `pendingAsk()`'s
     /// "should a prompt pop" test: this answers "is THIS prompt resolved",
     /// which the views use to decide whether an already-open sheet should
     /// close. Critically it does NOT key on `pendingAsk()` returning nil —
@@ -671,11 +680,11 @@ public final class ChatViewModel {
     /// replaces open sheet").
     public func isPromptAnswered(_ eventID: String) -> Bool {
         if answeredPromptIDs.contains(eventID) { return true }
-        for item in items {
+        for item in items where item.isOwn {
             if case .askUserAnswer(let promptID, _) = item.kind, promptID == eventID {
                 return true
             }
-            if item.isOwn, item.inReplyToEventID == eventID {
+            if item.inReplyToEventID == eventID {
                 return true
             }
         }
