@@ -143,6 +143,10 @@ targets:
         product: MatronVerification
       - package: MatronShared
         product: MatronPush
+      # Phase 6 (Search): local FTS5 index + search UI. Platform-agnostic
+      # library; both apps link it directly.
+      - package: MatronShared
+        product: MatronSearch
       - package: MatrixRustSDK
         product: MatrixRustSDK
       # Phase 4 Task 1: embed the NSE app-extension target inside the
@@ -211,6 +215,9 @@ targets:
         product: MatronVerification
       - package: MatronShared
         product: MatronPush
+      # Phase 6 (Search): same platform-agnostic library as iOS.
+      - package: MatronShared
+        product: MatronSearch
 
   MatronTests:
     type: bundle.unit-test
@@ -254,6 +261,10 @@ targets:
         product: MatronViewModels
       - package: MatronShared
         product: MatronVerification
+      # Phase 6 (Search): MacSearchViewSnapshotTests renders MacSearchResultsView
+      # and imports MatronSearch (SearchHit) + the shared SearchViewModel.
+      - package: MatronShared
+        product: MatronSearch
       # Phase 3 Task 12: Mac-side snapshot tests for the verification chrome.
       # Pixel-equality is gated behind MATRON_SKIP_SNAPSHOT_TESTS=1 on CI to
       # dodge macOS / Xcode renderer drift; baselines remain useful locally.
