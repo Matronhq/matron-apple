@@ -1,4 +1,5 @@
 import Foundation
+import MatronModels
 
 /// DTO consumed by the UI for a single timeline row.
 ///
@@ -29,11 +30,11 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         case unknown(eventType: String)
     }
 
-    public enum SendState: Equatable, Sendable {
-        case sent
-        case sending
-        case failed(reason: String)
-    }
+    /// Source compatibility shim — the enum lives in `MatronModels` as
+    /// `TimelineSendState` so `MatronDesignSystem` can bridge it without
+    /// transitively pulling `MatrixRustSDK`. Existing call sites
+    /// referencing `TimelineItem.SendState` keep compiling unchanged.
+    public typealias SendState = TimelineSendState
 
     public init(
         id: String,

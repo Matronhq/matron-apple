@@ -102,6 +102,18 @@ targets:
         # green. Real-device + signed-CI builds get the probe.
         keychain-access-groups:
           - $(AppIdentifierPrefix)chat.matron
+        # Phase 4 Task 5 follow-up: APNs entitlement. Without this,
+        # `UIApplication.registerForRemoteNotifications()` fails before
+        # `PushTokenStore` ever sees a token, so the pusher record is
+        # never written and APNs delivery never starts. iOS uses
+        # `aps-environment` (NOT the macOS `com.apple.developer.aps-environment`
+        # — that's the macOS-specific variant). Single value `development`
+        # for now; Phase 7's App Store split adds a Release entitlements
+        # file with `production` to pair with the App Store provisioning
+        # profile. Mismatch (Debug build with `production` provisioning
+        # or vice versa) silently rejects tokens at Sygnal — see
+        # `MatronMac.entitlements` for the parallel Mac comment.
+        aps-environment: development
     # `scheme.testTargets` populates `<Testables>` on the auto-generated
     # `Matron.xcscheme`. Without this, `xcodebuild test -scheme Matron`
     # fails with "Scheme is not currently configured for the test action"
@@ -129,8 +141,19 @@ targets:
         product: MatronDesignSystem
       - package: MatronShared
         product: MatronVerification
+      - package: MatronShared
+        product: MatronPush
       - package: MatrixRustSDK
         product: MatrixRustSDK
+      # Phase 4 Task 1: embed the NSE app-extension target inside the
+      # iOS host bundle so APNs can invoke it on incoming silent push.
+      # Without `embed: true`, the .appex builds standalone but is
+      # never copied into Matron.app/PlugIns/, so iOS has no extension
+      # to wake on push delivery and the encrypted notif decryption
+      # path (Tasks 2-8) is unreachable end-to-end.
+      - target: MatronNSE
+        embed: true
+        codeSign: true
 
   MatronMac:
     type: application
@@ -186,6 +209,8 @@ targets:
         product: MatronDesignSystem
       - package: MatronShared
         product: MatronVerification
+      - package: MatronShared
+        product: MatronPush
 
   MatronTests:
     type: bundle.unit-test
@@ -316,14 +341,24 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: chat.matron.app.nse
         CODE_SIGN_ENTITLEMENTS: MatronNSE/MatronNSE.entitlements
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
-    entitlements:
-      path: MatronNSE/MatronNSE.entitlements
-      properties:
-        com.apple.security.application-groups:
-          - group.chat.matron
-        # keychain-access-groups omitted — see note on the Matron target.
+    # Note: target-level `entitlements:` block intentionally NOT set
+    # here — XcodeGen would otherwise overwrite the on-disk
+    # `MatronNSE.entitlements` plist on every `xcodegen generate`,
+    # losing the manually-maintained `keychain-access-groups` entry.
+    # `CODE_SIGN_ENTITLEMENTS` above points the build system at the
+    # plist; same pattern as `MatronMac` (see its comment).
     dependencies:
+      # Phase 4 Task 1: NSE links the shared Push library so Task 4's
+      # NotificationService can call into PushDecoder + PushConfig
+      # without re-implementing the SDK bridge inside the extension.
+      # MatronPush transitively pulls MatronStorage + MatronSync +
+      # MatrixRustSDK.
       - package: MatronShared
-        product: MatronStorage
-      - package: MatrixRustSDK
-        product: MatrixRustSDK
+        product: MatronPush
+      # Phase 4 Task 4: NotificationService bootstraps the SDK from
+      # the same on-disk session state the iOS host writes (FileSessionStore
+      # + the App-Group-shared `sdk-store/` directory). `AuthServiceLive.restoreSession`
+      # is the entry point. Not a transitive dep of MatronPush — MatronPush
+      # only consumes ClientProvider + UserSession, never the auth flow itself.
+      - package: MatronShared
+        product: MatronAuth

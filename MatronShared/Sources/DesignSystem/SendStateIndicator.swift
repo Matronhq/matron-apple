@@ -1,11 +1,10 @@
 import SwiftUI
 
-/// Tri-state mirror of `TimelineItem.SendState` for the design-system
-/// surface. Kept here as a separate enum (rather than re-exporting the
-/// `MatronChat` type) so `MatronDesignSystem` doesn't have to depend
-/// on `MatronChat` / `MatronModels` for one row primitive — same
-/// independence rationale that keeps `MessageBubble`'s style enum
-/// local to this module.
+/// Tri-state mirror of `TimelineSendState` for the design-system
+/// surface. Kept as a distinct enum (rather than re-exporting the
+/// model-layer type) so glyph UX can diverge from the model — bridged
+/// from `TimelineSendState` via `SendStateGlyph.from(_:)` in
+/// `StateBridges.swift`.
 public enum SendStateGlyph: Equatable, Sendable {
     case sending
     case sent

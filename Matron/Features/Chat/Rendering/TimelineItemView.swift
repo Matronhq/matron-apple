@@ -56,27 +56,13 @@ struct TimelineItemView: View {
                 renderedBody
                     .opacity(item.sendState == .sending ? 0.7 : 1.0)
                 SendStateIndicator(
-                    state: Self.sendStateGlyph(for: item.sendState),
+                    state: SendStateGlyph.from(item.sendState),
                     onRetry: onRetry.map { handler in { handler(item.id) } }
                 )
                 .padding(.horizontal)
             }
         } else {
             renderedBody
-        }
-    }
-
-    /// Maps `TimelineItem.SendState` (lives in `MatronChat`, transitively
-    /// pulls MatrixRustSDK) to the design-system glyph enum. Stays
-    /// local rather than hoisted to `MatronDesignSystem` because that
-    /// would force the design-system target to depend on the SDK
-    /// (`SendState` is in MatronChat, not MatronModels). Keep
-    /// in lockstep with `MacTimelineItemView.sendStateGlyph(for:)`.
-    static func sendStateGlyph(for state: TimelineItem.SendState) -> SendStateGlyph {
-        switch state {
-        case .sent: return .sent
-        case .sending: return .sending
-        case .failed(let reason): return .failed(reason: reason)
         }
     }
 
