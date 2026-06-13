@@ -90,8 +90,13 @@ public enum SearchSchema {
             try db.execute(sql: "PRAGMA foreign_keys = ON")
         }
         let queue = try DatabaseQueue(path: path.path, configuration: config)
-        #if os(iOS)
+        #if os(iOS) && !targetEnvironment(simulator)
         // Defensive check: confirm protection is set on the resulting file.
+        // Device + signed builds only — the iOS Simulator doesn't enforce data
+        // protection (NSFileProtectionComplete is a no-op there and the
+        // attribute reads back absent), so the assert would spuriously fire
+        // under xcodebuild test on a Simulator. Mirrors MatronApp's
+        // `#if !targetEnvironment(simulator)`-gated KeychainProbe.
         let attrs = try FileManager.default.attributesOfItem(atPath: path.path)
         assert((attrs[.protectionKey] as? FileProtectionType) == .complete, "matron-search.sqlite missing NSFileProtectionComplete")
         #endif

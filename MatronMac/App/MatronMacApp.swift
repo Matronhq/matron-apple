@@ -156,6 +156,13 @@ struct MatronMacApp: App {
                         .task(id: session.userID) {
                             await bootstrapPush(for: session)
                         }
+                        // Phase 6 (Search): sweep room history into the FTS
+                        // index once per session — mirrors the iOS host.
+                        .task(id: session.userID) {
+                            guard let coordinator = dependencies.backfillCoordinator(for: session) else { return }
+                            let roomIDs = await dependencies.chatService(for: session).firstSnapshotRoomIDs()
+                            await coordinator.run(roomIDs: roomIDs)
+                        }
                         .onDisappear {
                             verificationCenter?.stop()
                             verificationCenter = nil

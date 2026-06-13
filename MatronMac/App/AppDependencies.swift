@@ -3,6 +3,7 @@ import SwiftUI
 import MatronAuth
 import MatronChat
 import MatronModels
+import MatronSearch
 import MatronStorage
 import MatronSync
 import MatronVerification
@@ -11,6 +12,9 @@ import MatronVerification
 final class AppDependencies {
     let auth: AuthService
     let clientProvider: ClientProvider
+    /// Phase 6 (Search): local FTS index. Optional — see iOS `AppDependencies`
+    /// for the graceful-degradation rationale.
+    let search: SearchService?
 
     private var syncCache: [String: SyncService] = [:]
     /// Per-session `VerificationServiceLive` cache. Mirrors the iOS
@@ -38,6 +42,8 @@ final class AppDependencies {
     /// timeline handle per room forever. See iOS `AppDependencies` for
     /// the full rationale.
     private var timelineCache: LRUCache<TimelineCacheKey, TimelineService> = .init(limit: AppDependencies.timelineCacheLimit)
+    /// Per-session `BackfillCoordinator` cache — see iOS `AppDependencies`.
+    private var backfillCache: [String: BackfillCoordinator] = [:]
 
     init() {
         // Mac uses Application Support — single-process, no App Group.
@@ -57,6 +63,14 @@ final class AppDependencies {
         let sessionStore = FileSessionStore(directory: sessionsDir)
         self.auth = AuthServiceLive(sessionStore: sessionStore, basePath: sdkStore)
         self.clientProvider = ClientProvider(basePath: sdkStore)
+        // Phase 6 (Search): FTS index in Application Support, alongside the
+        // crypto store. `try?` keeps init non-throwing (search disabled on a
+        // failed open). On Mac there's no file-protection class — FileVault
+        // covers encryption at rest (SearchSchema gates that block to iOS).
+        // `searchDBPath` is a non-optional URL on macOS (vs. the App-Group
+        // optional on iOS) — it resolves under the same `appSupport` dir as
+        // `container`.
+        self.search = try? SearchServiceLive(databaseURL: StoragePaths.searchDBPath)
     }
 
     func syncService(for session: UserSession) -> SyncService {
@@ -107,10 +121,28 @@ final class AppDependencies {
             provider: clientProvider,
             session: session,
             sync: syncService(for: session),
-            roomID: roomID
+            roomID: roomID,
+            search: search
         )
         timelineCache[key] = svc
         return svc
+    }
+
+    /// Per-session `BackfillCoordinator`, or `nil` when search is disabled.
+    /// See iOS `AppDependencies.backfillCoordinator(for:)`.
+    func backfillCoordinator(for session: UserSession) -> BackfillCoordinator? {
+        guard let search else { return nil }
+        if let existing = backfillCache[session.userID] { return existing }
+        let pager = TimelinePagerLive(
+            provider: clientProvider,
+            session: session,
+            sync: syncService(for: session)
+        )
+        let runner = BackfillRunner(timeline: pager, search: search)
+        let cutoff = Date().addingTimeInterval(-90 * 86_400)
+        let coordinator = BackfillCoordinator(runner: runner, cutoff: cutoff)
+        backfillCache[session.userID] = coordinator
+        return coordinator
     }
 
     /// Test seam — see iOS `AppDependencies.timelineCacheLimit` for the
@@ -136,6 +168,10 @@ final class AppDependencies {
         mediaCache.removeAll()
         chatCache.removeAll()
         timelineCache = .init(limit: AppDependencies.timelineCacheLimit)
+        backfillCache.removeAll()
+        // Phase 6 (Search): wipe the index on sign-out — see iOS AppDependencies.
+        // On Mac this clears ~/Library/Application Support/chat.matron.mac/matron-search.sqlite.
+        Task { [search] in try? await search?.wipe() }
     }
 }
 
