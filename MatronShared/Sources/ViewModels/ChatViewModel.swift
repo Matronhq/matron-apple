@@ -379,14 +379,17 @@ public final class ChatViewModel {
 
     public func start() async -> Task<Void, Never> {
         observationTask?.cancel()
-        // Fresh subscription — drop any stale settled-empty / resume state
-        // from a prior room/timeline before the new stream's snapshots arrive.
+        // Fresh subscription — drop stale settled-empty state before the
+        // new stream's snapshots arrive. Deliberately does NOT touch
+        // `isResuming` / `resumeTask`: a background→foreground resume can
+        // be in flight when `start()` runs (or runs just before it), and
+        // clobbering it here would undo the suppression and flash the
+        // placeholder during the rebuild (bugbot "Start clears resume
+        // window"). The resume window ends on its own — content arrival or
+        // the ceiling — and a fresh VM has it cleared already.
         settledEmpty = false
         emptyDebounceTask?.cancel()
         emptyDebounceTask = nil
-        isResuming = false
-        resumeTask?.cancel()
-        resumeTask = nil
         let timeline = self.timeline
         // Box wrapping a single-shot CheckedContinuation. The observation
         // Task resumes it on the first snapshot processed (or on stream
