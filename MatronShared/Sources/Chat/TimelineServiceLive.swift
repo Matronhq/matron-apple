@@ -49,6 +49,13 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
     /// send) — same call Matron X routes button responses through.
     private var cachedRoom: Room?
 
+    /// Signatures of button responses this device has sent. Owned here
+    /// (the writer is `sendButtonResponse`) and handed to every
+    /// `TimelineSnapshotListener` so the SDK→DTO mapping can recognise our
+    /// own LOCAL echo of a button response and hide it. See
+    /// `PendingButtonAnswerStore`.
+    private let pendingButtonAnswers = PendingButtonAnswerStore()
+
     public init(
         provider: ClientProvider,
         session: UserSession,
@@ -74,7 +81,10 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
                 do {
                     try await sync.waitUntilReady()
                     let timeline = try await timeline()
-                    let listener = TimelineSnapshotListener(continuation: continuation)
+                    let listener = TimelineSnapshotListener(
+                        continuation: continuation,
+                        pendingButtonAnswers: pendingButtonAnswers
+                    )
                     let handle = await timeline.addListener(listener: listener)
                     holder.setHandle(handle)
                 } catch {
@@ -111,9 +121,10 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
         // `selected_values` (preferred by the bridge) + the joined
         // plaintext fallback in `body`, related to the prompt via the
         // `chat.matron.button_answer` rel_type.
+        let body = selectedValues.joined(separator: ", ")
         let content: [String: Any] = [
             "msgtype": "m.text",
-            "body": selectedValues.joined(separator: ", "),
+            "body": body,
             MatronEventType.buttonResponse: [
                 "selected_values": selectedValues
             ],
@@ -126,6 +137,9 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
         guard let json = String(data: data, encoding: .utf8) else {
             throw TimelineServiceError.encodingFailed
         }
+        // Record BEFORE the send so the signature exists before the local
+        // echo can surface on the timeline (see `pendingButtonAnswers`).
+        pendingButtonAnswers.record(body: body, promptID: promptEventID, values: selectedValues)
         try await room.sendRaw(eventType: "m.room.message", content: json)
     }
 
@@ -359,6 +373,64 @@ final class TimelineLifecycleHolder: @unchecked Sendable {
     }
 }
 
+// MARK: - Pending button-answer signatures
+
+/// Thread-safe record of button responses this device has sent, keyed by
+/// the joined `body` on the wire. `TimelineServiceLive.sendButtonResponse`
+/// writes; the `TimelineSnapshotListener` it owns reads (and clears on the
+/// server echo) to recognise our own LOCAL echo of a button response.
+///
+/// Why this exists: `Room.sendRaw` returns no send handle and rust-sdk
+/// exposes no raw content for a local echo, so the echo arrives as a plain
+/// `m.text` with no `originalJson` and a `transactionId` — the JSON path in
+/// `mapButtonsMessage` can't see the `chat.matron.button_response` key and
+/// the echo would render its raw `selected_values` body (e.g. "cancel:0")
+/// until the server echo lands. matrix-js-sdk (Matron X) keeps the full
+/// content on its local echoes, so it doesn't need this; rust-sdk does.
+///
+/// FIFO-capped so a failed send — which never produces a clearing server
+/// echo — can't grow the store without bound. Body-keyed matching can in
+/// principle collide with a genuine own text message of the same body, but
+/// the consequence is only hiding it for the ~1s until its own echo
+/// re-maps it; for the queue-action shape (value ≠ label, e.g. "cancel:0")
+/// a collision is essentially impossible.
+final class PendingButtonAnswerStore: @unchecked Sendable {
+    struct PendingButtonAnswer: Equatable {
+        let promptID: String
+        let values: [String]
+    }
+
+    private let lock = NSLock()
+    private var byBody: [String: PendingButtonAnswer] = [:]
+    private var order: [String] = []
+    private let cap = 16
+
+    func record(body: String, promptID: String, values: [String]) {
+        lock.lock()
+        defer { lock.unlock() }
+        if byBody[body] == nil { order.append(body) }
+        byBody[body] = PendingButtonAnswer(promptID: promptID, values: values)
+        while order.count > cap {
+            let oldest = order.removeFirst()
+            byBody[oldest] = nil
+        }
+    }
+
+    func match(forBody body: String) -> PendingButtonAnswer? {
+        lock.lock()
+        defer { lock.unlock() }
+        return byBody[body]
+    }
+
+    func clear(forBody body: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        if byBody.removeValue(forKey: body) != nil {
+            order.removeAll { $0 == body }
+        }
+    }
+}
+
 // MARK: - Diff listener
 
 /// Walks `MatrixRustSDK.TimelineDiff` updates and rebuilds an ordered
@@ -376,12 +448,21 @@ final class TimelineSnapshotListener: TimelineListener, @unchecked Sendable {
     private var order: [String] = []
     private let lock = NSLock()
 
+    /// Shared with the owning `TimelineServiceLive` so `mapButtonsMessage`
+    /// can recognise our own local-echo button responses. Read (and cleared
+    /// on the server echo) here; written by `sendButtonResponse`.
+    private let pendingButtonAnswers: PendingButtonAnswerStore
+
     /// `isOwn` is sourced from `EventTimelineItem.isOwn` — the SDK already
     /// knows which events came from us, so we don't need to thread the
     /// user ID through here. (Earlier drafts stored `myID` for a manual
     /// comparison; the property was unused and has been removed.)
-    init(continuation: AsyncThrowingStream<[TimelineItem], Error>.Continuation) {
+    init(
+        continuation: AsyncThrowingStream<[TimelineItem], Error>.Continuation,
+        pendingButtonAnswers: PendingButtonAnswerStore = PendingButtonAnswerStore()
+    ) {
         self.continuation = continuation
+        self.pendingButtonAnswers = pendingButtonAnswers
     }
 
     /// SDK callback. Apply each diff to the in-memory snapshot, then
@@ -562,17 +643,53 @@ final class TimelineSnapshotListener: TimelineListener, @unchecked Sendable {
     /// parse off the hot path for normal traffic.
     private func mapButtonsMessage(_ ev: EventTimelineItem) -> TimelineItem.Kind? {
         guard case .msgLike(let msg) = ev.content,
-              case .message = msg.kind else {
+              case .message(let messageContent) = msg.kind else {
             return nil
         }
-        guard let json = ev.lazyProvider.debugInfo().originalJson,
-              json.contains("chat.matron.") else {
-            return nil
+        // Remote echo: the server has the event, so the raw JSON (with the
+        // `chat.matron.button_response` / `.buttons` keys) is available.
+        if let json = ev.lazyProvider.debugInfo().originalJson,
+           json.contains("chat.matron.") {
+            guard case .eventId(let eventID) = ev.eventOrTransactionId,
+                  let kind = Self.parseButtonsMessage(originalJson: json, eventID: eventID) else {
+                return nil
+            }
+            // Our button response's server echo has landed — the local-echo
+            // signature is no longer needed.
+            if case .askUserAnswer = kind {
+                pendingButtonAnswers.clear(forBody: messageContent.body)
+            }
+            return kind
         }
-        guard case .eventId(let eventID) = ev.eventOrTransactionId else {
-            return nil
-        }
-        return Self.parseButtonsMessage(originalJson: json, eventID: eventID)
+        // Local echo: no `originalJson`, a `transactionId` rather than an
+        // `eventId`, and rust-sdk surfaces no raw content for it — so the
+        // JSON path above can't recognise our own just-sent button
+        // response. Match it against the body recorded in
+        // `sendButtonResponse` so it's hidden (`.askUserAnswer`) instead of
+        // flashing its raw `selected_values` body. See `pendingButtonAnswers`.
+        let isLocalEcho: Bool
+        if case .transactionId = ev.eventOrTransactionId { isLocalEcho = true } else { isLocalEcho = false }
+        return Self.localEchoButtonAnswer(
+            isOwn: ev.isOwn,
+            isLocalEcho: isLocalEcho,
+            body: messageContent.body,
+            pending: pendingButtonAnswers.match(forBody: messageContent.body)
+        )
+    }
+
+    /// Pure decision for the local-echo branch of `mapButtonsMessage`,
+    /// split out so it's unit-testable without a Rust-handle-backed
+    /// `EventTimelineItem`. Returns the hidden `.askUserAnswer` only for an
+    /// own, not-yet-sent (`transactionId`) echo whose body matches a
+    /// recorded button-response signature.
+    static func localEchoButtonAnswer(
+        isOwn: Bool,
+        isLocalEcho: Bool,
+        body: String,
+        pending: PendingButtonAnswerStore.PendingButtonAnswer?
+    ) -> TimelineItem.Kind? {
+        guard isOwn, isLocalEcho, let pending else { return nil }
+        return .askUserAnswer(promptEventID: pending.promptID, selectedValues: pending.values)
     }
 
     /// Pure JSON → Kind mapping for the buttons protocol, split out of
