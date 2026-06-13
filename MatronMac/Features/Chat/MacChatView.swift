@@ -32,6 +32,11 @@ private let paginateLogger = Logger(subsystem: "chat.matron", category: "mac-cha
 struct MacChatView: View {
     @State var viewModel: ChatViewModel
     @State var composerVM: ComposerViewModel
+    /// App lifecycle — drives `viewModel.handleForeground()` so a
+    /// background→foreground timeline re-sync doesn't flash the empty
+    /// placeholder. See iOS `ChatView`.
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var wasBackgrounded = false
     /// Backing state for the right-click "View source" sheet (Task 16).
     /// `TimelineItem` is `Identifiable` (the SDK's stable
     /// `TimelineUniqueId.id`), so `.sheet(item:)` re-presents a fresh sheet
@@ -361,6 +366,14 @@ struct MacChatView: View {
         // answered, never on a transient clear or a newer prompt; see
         // that view for the full rationale. Presentation differs: fixed
         // 520×400 frame because Mac sheets have no detents (spec §5.9).
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .background {
+                wasBackgrounded = true
+            } else if newPhase == .active, wasBackgrounded {
+                wasBackgrounded = false
+                viewModel.handleForeground()
+            }
+        }
         .onChange(of: viewModel.items) { _, _ in
             if let current = pendingAskPrompt {
                 if viewModel.isPromptAnswered(current.id) {

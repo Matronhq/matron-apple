@@ -24,6 +24,12 @@ import MatronDesignSystem
 struct ChatView: View {
     @State var viewModel: ChatViewModel
     @State var composerVM: ComposerViewModel
+    /// App lifecycle — drives `viewModel.handleForeground()` so a
+    /// background→foreground timeline re-sync doesn't flash the empty
+    /// placeholder. `wasBackgrounded` filters out `.inactive`↔`.active`
+    /// blips (notification centre, etc.) so only a real resume triggers it.
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var wasBackgrounded = false
     /// Backing state for the "View source" sheet. `TimelineItem` is
     /// `Identifiable` (the SDK's stable `TimelineUniqueId.id`), so
     /// `.sheet(item:)` re-presents a fresh sheet whenever the user picks a
@@ -419,6 +425,14 @@ struct ChatView: View {
         // the sheet away mid-input (bugbot "New prompt replaces open
         // sheet"). `onDismiss` re-queries `pendingAsk()` once the open
         // sheet closes, so a queued newer prompt surfaces then.
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .background {
+                wasBackgrounded = true
+            } else if newPhase == .active, wasBackgrounded {
+                wasBackgrounded = false
+                viewModel.handleForeground()
+            }
+        }
         .onChange(of: viewModel.items) { _, _ in
             if let current = pendingAskPrompt {
                 if viewModel.isPromptAnswered(current.id) {
