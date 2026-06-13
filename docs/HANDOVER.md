@@ -1,4 +1,86 @@
-# Handover — Matron iOS+Mac, Phase 5 implemented on `phase-5-custom-events`
+# Handover — Matron iOS+Mac. Phases 1–5 + 2.5 SHIPPED to `main`. Next: Phase 6 (Search).
+
+## 2026-06-13 session — Phase 5 MERGED; PR #4/5/6/7 all on main; Phase 6 next
+
+**TL;DR:** Everything backed up behind the CI-billing block cleared.
+**PR #5 (Phase 4 Push/NSE), PR #7 (cla-permissions fix), and PR #6
+(Phase 5 custom events) are all MERGED to `main`** — `main` now carries
+Phases 1–5 + 2.5. The session was mostly review-cycle + merge logistics
++ on-device hardening; little new feature work. Phase 6 (Search) is the
+next phase and is execution-ready.
+
+### What landed on main
+- **PR #5 → `c4efe2c`** (Phase 4). Closed out its review backlog first:
+  three 2026-05-07 fourth-pass bugbot findings (NSE data race →
+  `NSLock` take-first; dead `awaitPendingPushOperations` → internal;
+  `bootstrapPush` dedup → `PushBootstrap.bootstrapHost`) plus a
+  **"push rules miss late rooms"** finding (`firstSnapshotRoomIDs` now
+  waits for the first NON-EMPTY snapshot off the pusher critical path).
+- **PR #7 → `e910670`** — the `cla` workflow had failed 30/30 forever;
+  root cause was a missing `permissions:` block (not billing). Added it;
+  Dan signed the CLA; `cla` is green now.
+- **PR #6 → `81a384d`** (Phase 5). Merged after a manual reconciliation:
+  PR #5 was SQUASH-merged, so the stacked Phase 5 branch had to merge
+  `main` in (keeping its tree, grafting `cla.yml`+`signatures/cla.json`)
+  to avoid a squash-revert of the CLA setup. **Keep this in mind for any
+  future stacked PR over a squash-merge.**
+
+### Phase 5 on-device hardening (all bugbot-clean before merge)
+Ran the signed app on Dan's **real iPhone** against the live bridge,
+which surfaced real bugs the Docker harness/tests never could:
+- **Button-answer local echo** showed raw `selected_values` (e.g.
+  `cancel:0`) until the server echo — `PendingButtonAnswerStore` hides
+  the own local echo (rust-sdk gives no send-handle / local-echo content
+  like matrix-js-sdk does).
+- **Empty-state flash** ("no messages yet") on a transient sliding-sync
+  timeline clear — `ChatViewModel.settledEmpty` debounces the
+  placeholder (400ms); always-on `os_log` in `TimelineSnapshotListener`
+  logs each clear→empty for trigger confirmation.
+- **SIX ask-user-sheet findings** converged the snapshot-driven sheet
+  presentation: onDismiss re-query, same-prompt close guard, drop-on-
+  clear, newer-prompt-preempt, cross-device-persist-on-close, and
+  others'-button-answers (isOwn filter). See "ask-sheet invariants"
+  below — that surface is correct but edge-prone.
+
+### Ask-sheet / timeline invariants — DON'T undo (a state-machine refactor must preserve these)
+- `ChatViewModel.isPromptAnswered` requires `item.isOwn` on BOTH the
+  `.askUserAnswer` (button_response) and `m.in_reply_to` paths — another
+  member's answer must not resolve the prompt for us.
+- An OPEN ask-sheet closes ONLY when `isPromptAnswered(current)` — never
+  on a transient clear (`items` momentarily empty) or a newer prompt;
+  the close path calls `markPromptAnswered` to persist immediately, and
+  `onDismiss` re-queries `pendingAsk()` to surface any queued prompt.
+- Empty-state placeholder gates on debounced `settledEmpty`, not raw
+  `items.isEmpty`.
+- `.askUserAnswer` stays hidden in the renderers; the local-echo of our
+  own button response is hidden via `PendingButtonAnswerStore`.
+
+### Next: Phase 6 (Search)
+Plan + **"Pre-execution readiness (validated 2026-06-13)"** note already
+in `docs/superpowers/plans/2026-05-02-matron-ios-phase-6-search.md`.
+Design needs no re-brainstorm (local SQLite FTS5 via GRDB + per-room
+backfill — Matrix has no E2EE server search). Branch Phase 6 from
+`main`. Main drift to handle: indexing hook is `TimelineServiceLive`'s
+listener (not `ChatServiceLive`), and `TimelinePagerLive` is the only
+real SDK-mapping work. `StoragePaths.searchDB*` + `ToolCallEvent.resultText`
++ timeline pagination already exist.
+
+### Open / deferred
+- **Manual Phase 5 validation** (Dan, on the iPhone — all the above
+  fixes are deployed; the flash + ask-sheet edges should be gone). The
+  buttons flow runs against the live bridge; tool_call/ask_user via the
+  `partner.mjs` injectors.
+- **Optional: ask-sheet state-machine refactor** as a focused follow-up
+  PR — replace snapshot-derived presentation with an event-driven state
+  machine. Correct today; this is durability against future edges.
+- Cross-repo (unchanged): bridge `tool_call`/`ask_user`/`session_meta`
+  emission; Sygnal app_id config on dev-2 + real-device push validation.
+- Deferred Tasks 7+10 (`session_meta` header) — v26 SDK state-event
+  reader gap; contract pinned in `ChatService.swift`.
+- Cleanup: merged branches `phase-4-task-1`, `phase-5-custom-events`,
+  `fix-cla-workflow-permissions` can be deleted from origin.
+
+---
 
 ## 2026-06-12 evening session — PR #6 bugbot-clean; CI billing block LIFTED
 
