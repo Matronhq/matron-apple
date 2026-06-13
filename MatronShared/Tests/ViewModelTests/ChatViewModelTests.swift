@@ -555,8 +555,69 @@ final class ChatViewModelTests: XCTestCase {
         vm.emptyPlaceholderGraceMs = 30
         let task = await vm.start()
         await task.value
-        try? await Task.sleep(for: .milliseconds(70))
+        await waitUntil { vm.settledEmpty }
         XCTAssertTrue(vm.settledEmpty, "a room still empty past the grace shows the placeholder")
+    }
+
+    /// Polls until `predicate` is true or the timeout elapses — deterministic
+    /// replacement for fixed `Task.sleep`-then-assert, which flakes for
+    /// "becomes true after a debounce" assertions under CI load. Exits the
+    /// moment the predicate passes, so the happy path stays fast.
+    @MainActor
+    private func waitUntil(timeoutMs: Int = 2000, _ predicate: () -> Bool) async {
+        let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000)
+        while Date() < deadline {
+            if predicate() { return }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    // MARK: - Foreground resume (lock→unlock re-sync; bug repro 2026-06-13)
+
+    @MainActor
+    func test_handleForeground_suppressesPlaceholderDuringResync() async {
+        // App returns from background; the timeline rebuild clears for
+        // longer than the normal empty grace. The placeholder must stay
+        // hidden through that window, then content arrival keeps it hidden.
+        let vm = ChatViewModel(roomID: "!r:s", timeline: FakeTimelineService(), media: FakeMediaService())
+        vm.emptyPlaceholderGraceMs = 20
+        vm.resumeGraceMs = 600
+        vm.handleForeground()
+        vm.updateSettledEmpty(isEmpty: true)         // the resync clear
+        try? await Task.sleep(for: .milliseconds(60)) // past empty grace, within ceiling
+        XCTAssertFalse(vm.settledEmpty, "no placeholder while resuming/re-syncing")
+        vm.updateSettledEmpty(isEmpty: false)        // messages came back
+        XCTAssertFalse(vm.settledEmpty)
+    }
+
+    @MainActor
+    func test_handleForeground_showsPlaceholderForGenuinelyEmptyRoom_afterCeiling() async {
+        // A genuinely empty room: no content arrives during the resume
+        // window, so once the ceiling elapses the placeholder settles in.
+        let vm = ChatViewModel(roomID: "!r:s", timeline: FakeTimelineService(), media: FakeMediaService())
+        vm.emptyPlaceholderGraceMs = 20
+        vm.resumeGraceMs = 60
+        vm.handleForeground()
+        vm.updateSettledEmpty(isEmpty: true)
+        // Poll (not a fixed sleep) so the chained ceiling+grace timers can
+        // land under CI load without flaking.
+        await waitUntil { vm.settledEmpty }
+        XCTAssertTrue(vm.settledEmpty, "empty room shows placeholder once re-sync ceiling passes")
+    }
+
+    @MainActor
+    func test_handleForeground_contentArrivalEndsResumeWindow() async {
+        // Once content returns, the resume suppression ends — a LATER
+        // empty timeline clear debounces normally (not held by a stale
+        // resume window).
+        let vm = ChatViewModel(roomID: "!r:s", timeline: FakeTimelineService(), media: FakeMediaService())
+        vm.emptyPlaceholderGraceMs = 20
+        vm.resumeGraceMs = 5_000
+        vm.handleForeground()
+        vm.updateSettledEmpty(isEmpty: false)        // content back → window ends
+        vm.updateSettledEmpty(isEmpty: true)         // a later normal clear
+        await waitUntil { vm.settledEmpty }
+        XCTAssertTrue(vm.settledEmpty, "after content ended the resume window, normal empty debounce resumes")
     }
 
     // MARK: - pendingAsk (Phase 5 Task 11)
