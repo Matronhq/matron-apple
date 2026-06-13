@@ -208,8 +208,18 @@ merged phase-5: **434 SPM / 73 Mac / 54 iOS / both builds.**
   PRs.** Remaining: merge PR #5 → check PR #6's collapsed diff → merge
   PR #6. (Both are CI-green and bugbot-clean; PR #5's
   `ios-build-and-test` was the last job finishing at handover.)
-- Manual Phase 5 validation (human eyes; injectors ready) — then the
-  Phase 6 (search) plan per Phase 5 acceptance.
+- Manual Phase 5 validation (human eyes; injectors ready).
+- **Phase 6 (Search) is next and execution-ready.** A full plan already
+  exists at
+  `docs/superpowers/plans/2026-05-02-matron-ios-phase-6-search.md`
+  (local SQLite FTS5 index via GRDB + per-room backfill — no
+  re-brainstorm needed). A **"Pre-execution readiness (validated
+  2026-06-13)"** section was added to the top of that plan: gating
+  prereq is **merge PR #6 first** (don't stack Phase 6 on the unmerged
+  branch); validated that `StoragePaths.searchDB*` + `ToolCallEvent.resultText`
+  + timeline pagination already exist; main drift is the indexing hook
+  (it's `TimelineServiceLive`'s listener, not `ChatServiceLive`) and the
+  `TimelinePagerLive` SDK mapping.
 - Bridge-side emission, Sygnal app_id config, real-device push — items
   4+5 of the previous plan below, unchanged.
 

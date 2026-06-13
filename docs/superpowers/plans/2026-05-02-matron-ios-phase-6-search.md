@@ -3,6 +3,70 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 > **Prereq:** Phase 5 (Custom events) merged and CI green.
 
+---
+
+## Pre-execution readiness (validated 2026-06-13)
+
+The plan was written 2026-05-02, before the codebase was built out. This
+is a drift-check against the current tree — every prior phase plan had
+SDK / architecture drift, so this is mandatory before starting. The
+design is sound and **does not need re-brainstorming**: a local SQLite
+FTS5 index is the right call (Matrix has no server-side search for E2EE
+rooms), and the storage seams it depends on already exist.
+
+**Gating prereq — merge PR #6 FIRST.** Phase 5 is on `phase-5-custom-events`
+(PR #6), CI-green and mergeable but **not yet merged**. Start Phase 6
+from `main` AFTER PR #6 squash-merges — do NOT branch Phase 6 off the
+unmerged PR #6, or you re-create the stacked-PR-over-squash-merge mess
+the 2026-06-13 session had to untangle by hand.
+
+**Validated — already in place (no work needed):**
+- `StoragePaths.searchDBPath` + `StoragePaths.searchDB(in:)` exist with
+  the platform-conditional paths Task 7 assumes (iOS App-Group container
+  / Mac `~/Library/Application Support/chat.matron.mac/`). Task 7's
+  "verify the assumption" step is already satisfied; just use them.
+- `ToolCallEvent.resultText` exists (Phase 5) — tool-call result
+  indexing (Task 5 Step 2) is wireable as written.
+- Timeline backward-pagination exists and works
+  (`TimelineServiceLive.paginateBackward`, behind the Phase 2 paginate
+  fix) — `TimelinePagerLive` wraps it rather than calling the SDK cold.
+
+**Drift to handle during execution:**
+- **Indexing hook is in `TimelineServiceLive`, NOT `ChatServiceLive`**
+  (Task 5 + plan self-review §6.2 are stale on this). The per-room
+  timeline listener is `TimelineServiceLive.TimelineSnapshotListener`
+  (`ChatServiceLive` is the room-LIST service). Wire `search?.index(...)`
+  into that listener's `map`/`onUpdate` where decrypted items flow, and
+  thread the `SearchService` into `TimelineServiceLive`'s init. **Index
+  `.text` and `.toolCall(resultText)` only** — Phase 5 added
+  `.askUserAnswer` (hidden) plus `.askUser` / button items; do NOT index
+  those (you'd index `cancel:0`-style answer bodies). `.stateChange` is
+  already hidden.
+- **Live indexing only covers the OPEN room.** The timeline listener
+  runs for whatever room `ChatView` has open; a message arriving in a
+  never-opened room isn't live-indexed until that room is next opened
+  (its timeline reset re-delivers items → re-index) or backfill runs.
+  This matches the spec (backfill is the primary history mechanism) —
+  acceptable, but note it. If closer-to-real-time matters later, the
+  chat-list last-message decrypt (`chatSummaries`) is the other place
+  plaintext is available for closed rooms.
+- **`TimelinePagerLive` (Task 6 Step 4) is the only real SDK work** and
+  the plan already flags it (`// TODO: map from result/timeline
+  snapshot`). Map the v26 snapshot → `BackfillItem` there; `.text` /
+  tool-call → `indexable: true`, everything else `false`. `BackfillRunner`
+  is fully fake-pager-tested, so this is the one piece without unit
+  coverage — validate it against the harness or a live room.
+- **GRDB.swift is a new SPM dependency** (MIT, Task 1) — first
+  third-party dep beyond the SDK + markdown/image libs. Fine per spec,
+  but it adds to the dependency + CLA/licence surface.
+
+**Net:** the plan is execution-ready once PR #6 merges. The bulk (schema,
+FTS5 service, backfill loop, view models, both UIs) is faithful to the
+current architecture and fully test-covered; the only genuine unknowns
+are the `TimelinePagerLive` SDK mapping and the hook relocation above.
+
+---
+
 **Goal:** Local full-text search across every chat on **both iOS and macOS**. Each decrypted message text is indexed into SQLite FTS5. A unified search UI shows two sections — Chats (title/bot match) and Messages (FTS match) — with snippets and tap-to-open behaviour. Backfill runs asynchronously on first launch per room.
 
 **Architecture:** New `MatronSearch` library with a `SearchService` protocol and a SQLite-backed `SearchServiceLive`. The library, schema, and `SearchViewModel` are platform-agnostic and live in `MatronShared`; iOS and Mac just bind different UI surfaces. Indexing hook lives in `ChatServiceLive`'s timeline listener: every `m.text` (and tool-call result text) gets inserted into `messages_fts`. Backfill is a Task per room that paginates the SDK timeline backward until depth limit. UI: a `SearchView` invoked from the chat list's search bar (iOS) or a `MacSearchView` whose field lives in the chat-window toolbar and whose results panel replaces the detail column (Mac).
