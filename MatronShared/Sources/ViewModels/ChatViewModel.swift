@@ -250,6 +250,22 @@ public final class ChatViewModel {
     /// genuinely empty room shows its placeholder.
     var emptyPlaceholderGraceMs: Int = 400
     private var emptyDebounceTask: Task<Void, Never>?
+    /// True from app-foreground (`handleForeground`) until the timeline
+    /// re-populates or the re-sync ceiling elapses. While set, the empty
+    /// placeholder is suppressed: returning from background tears the
+    /// timeline down to empty and rebuilds it over SECONDS (the encrypted
+    /// SDK store is sealed under file protection while locked, sync pauses,
+    /// then a full re-sync clears+re-appends) — far longer than
+    /// `emptyPlaceholderGraceMs`, so the debounce alone would flash
+    /// "no messages yet" mid-resync.
+    private var isResuming = false
+    /// Ceiling on the resume-suppression window. A re-sync shorter than
+    /// this never flashes the placeholder; content arrival ends the window
+    /// early. Only a genuinely-empty room waits the full ceiling before its
+    /// placeholder shows — generous on purpose (re-sync over a poor mobile
+    /// link can take several seconds). `var` for tests.
+    var resumeGraceMs: Int = 10_000
+    private var resumeTask: Task<Void, Never>?
     /// Cache of `mxc://` URL → resolved SwiftUI `Image`. Populated lazily by
     /// `image(for:)` so SwiftUI can re-render the row once the bytes arrive.
     /// Backed by an `LRUCache` (capped at `mediaCacheLimit`) so a long
@@ -312,18 +328,24 @@ public final class ChatViewModel {
     /// were never cleared.
     @discardableResult
     /// Debounces the empty → `settledEmpty` transition (see `settledEmpty`).
-    /// A non-empty snapshot clears it immediately and cancels any pending
-    /// flip; an empty one schedules the flip after the grace, so a
-    /// transient clear that repopulates first never surfaces the
-    /// placeholder. `@MainActor` (the whole VM is) so the scheduled task
-    /// touches `settledEmpty` on the main actor.
-    private func updateSettledEmpty(isEmpty: Bool) {
+    /// A non-empty snapshot clears it immediately (and ends any resume
+    /// window — content is back); an empty one schedules the flip after the
+    /// grace, so a transient clear that repopulates first never surfaces
+    /// the placeholder. While `isResuming` (just returned from background),
+    /// an empty snapshot is held — re-sync may still be repopulating, and
+    /// `handleForeground`'s ceiling is what eventually trusts an empty
+    /// room. `internal` so tests can drive the state machine directly.
+    func updateSettledEmpty(isEmpty: Bool) {
         emptyDebounceTask?.cancel()
         emptyDebounceTask = nil
         guard isEmpty else {
             settledEmpty = false
+            isResuming = false
+            resumeTask?.cancel()
+            resumeTask = nil
             return
         }
+        if isResuming { return }
         let graceMs = emptyPlaceholderGraceMs
         emptyDebounceTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(graceMs))
@@ -332,13 +354,39 @@ public final class ChatViewModel {
         }
     }
 
-    public func start() async -> Task<Void, Never> {
-        observationTask?.cancel()
-        // Fresh subscription — drop any stale settled-empty state from a
-        // prior room/timeline before the new stream's snapshots arrive.
+    /// Call when the app returns to the foreground (scenePhase → `.active`
+    /// from background). Enters the resume window: hides the empty
+    /// placeholder and suppresses it until the timeline re-populates (a
+    /// content snapshot ends the window) or the `resumeGraceMs` ceiling
+    /// elapses and the room is confirmed still empty. Without this, a
+    /// background→foreground timeline rebuild flashes "no messages yet"
+    /// because the rebuild's empty window outlasts `emptyPlaceholderGraceMs`.
+    public func handleForeground() {
         settledEmpty = false
         emptyDebounceTask?.cancel()
         emptyDebounceTask = nil
+        isResuming = true
+        let ceilingMs = resumeGraceMs
+        resumeTask?.cancel()
+        resumeTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(ceilingMs))
+            guard !Task.isCancelled, let self else { return }
+            // Re-sync window elapsed — trust the current state now.
+            self.isResuming = false
+            self.updateSettledEmpty(isEmpty: self.items.isEmpty)
+        }
+    }
+
+    public func start() async -> Task<Void, Never> {
+        observationTask?.cancel()
+        // Fresh subscription — drop any stale settled-empty / resume state
+        // from a prior room/timeline before the new stream's snapshots arrive.
+        settledEmpty = false
+        emptyDebounceTask?.cancel()
+        emptyDebounceTask = nil
+        isResuming = false
+        resumeTask?.cancel()
+        resumeTask = nil
         let timeline = self.timeline
         // Box wrapping a single-shot CheckedContinuation. The observation
         // Task resumes it on the first snapshot processed (or on stream
@@ -408,6 +456,8 @@ public final class ChatViewModel {
         observationTask = nil
         emptyDebounceTask?.cancel()
         emptyDebounceTask = nil
+        resumeTask?.cancel()
+        resumeTask = nil
     }
 
     public func paginateBackward() async {
