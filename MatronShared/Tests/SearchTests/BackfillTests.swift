@@ -150,6 +150,40 @@ final class BackfillTests: XCTestCase {
         XCTAssertEqual(old2.count, 0)
     }
 
+    func test_backfill_emptyBatchWithoutStartOfTimeline_doesNotMarkComplete() async throws {
+        // bugbot "Empty page marks backfill done": a single empty batch that
+        // is NOT the authoritative start-of-timeline signal (the live pager's
+        // listener diff hasn't landed yet) must leave the room incomplete, so
+        // a later open / next launch retries. Marking it complete would
+        // persist a "done" flag and permanently skip the room's history.
+        let pager = FakePager(batches: [[]], hitStartAfterLast: false)
+        let runner = BackfillRunner(timeline: pager, search: svc)
+        try await runner.backfill(roomID: "!r:s", depthLimit: 1000, sinceCutoff: .distantPast)
+
+        let complete = try await svc.backfillComplete(roomID: "!r:s")
+        XCTAssertFalse(complete, "an empty, non-terminal batch must leave the room retryable")
+    }
+
+    func test_coordinator_emptyRoomList_doesNotLatch_soLaterSweepRuns() async throws {
+        // bugbot "Backfill never retries empty snapshot": an empty room list
+        // (first non-empty chat-list snapshot hadn't landed) must NOT latch
+        // the coordinator — a later call with a populated list must still
+        // sweep instead of being skipped for the rest of the session.
+        let runner = BackfillRunner(timeline: FakePager(batches: []), search: svc)
+        let coordinator = BackfillCoordinator(runner: runner, cutoff: .distantPast)
+
+        await coordinator.run(roomIDs: [])
+        let afterEmpty = await coordinator.progress
+        XCTAssertEqual(afterEmpty, AggregateBackfillProgress(roomsCompleted: 0, roomsTotal: 0))
+
+        await coordinator.run(roomIDs: ["!a:s", "!b:s"])
+        let afterReal = await coordinator.progress
+        XCTAssertEqual(
+            afterReal, AggregateBackfillProgress(roomsCompleted: 2, roomsTotal: 2),
+            "the empty run must not have latched hasRun"
+        )
+    }
+
     func test_coordinator_runsAllRoomsAndPublishesProgress() async throws {
         // Empty batches → every room's backfill completes immediately.
         let runner = BackfillRunner(timeline: FakePager(batches: []), search: svc)

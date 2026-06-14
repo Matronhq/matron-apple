@@ -193,8 +193,26 @@ struct MatronApp: App {
                         // so a relaunch just re-checks each room cheaply.
                         .task(id: session.userID) {
                             guard let coordinator = dependencies.backfillCoordinator(for: session) else { return }
-                            let roomIDs = await dependencies.chatService(for: session).firstSnapshotRoomIDs()
-                            await coordinator.run(roomIDs: roomIDs)
+                            // Wait out any in-flight sign-out index wipe so a
+                            // fast sign-out → sign-in doesn't backfill against a
+                            // half-wiped DB (bugbot "Sign-out wipe races login").
+                            await dependencies.awaitPendingIndexWipe()
+                            let chat = dependencies.chatService(for: session)
+                            // `firstSnapshotRoomIDs()` returns [] if sync hasn't
+                            // produced the first non-empty chat-list snapshot
+                            // within its 30s bound. Retry a few times so a slow
+                            // cold start doesn't skip the per-session sweep for
+                            // every room (bugbot "Backfill never retries empty
+                            // snapshot"); `coordinator.run` no-ops once it has
+                            // swept, so a late success can't double-sweep.
+                            for attempt in 0..<3 {
+                                let roomIDs = await chat.firstSnapshotRoomIDs()
+                                if !roomIDs.isEmpty {
+                                    await coordinator.run(roomIDs: roomIDs)
+                                    return
+                                }
+                                if attempt < 2 { try? await Task.sleep(for: .seconds(10)) }
+                            }
                         }
                         .onDisappear {
                             verificationCenter?.stop()
