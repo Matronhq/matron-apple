@@ -564,14 +564,12 @@ final class TimelineSnapshotListener: TimelineListener, @unchecked Sendable {
         if snapshot.isEmpty && countBefore > 0 {
             Self.logger.notice("timeline cleared to empty (was \(countBefore, privacy: .public) items); diffs=[\(Self.describe(diff), privacy: .public)]")
         }
-        // TEMPORARY verification log for the room-subscription live-update fix
-        // (downgrade to `Self.logger.diag` before merge). Always-on so it's
-        // visible on a real device via Console.app without enabling MatronDebug.
-        // Every SDK timeline update prints its diff kinds + resulting count: if
-        // a new message arrives while you're viewing a chat and NO line appears,
-        // the SDK isn't feeding the listener (the room subscription didn't
-        // take); a line with `append`/`pushBack` means live updates are flowing.
-        Self.logger.notice("onUpdate room=\(self.roomID, privacy: .public) diffs=[\(Self.describe(diff), privacy: .public)] count \(countBefore, privacy: .public)→\(snapshot.count, privacy: .public)")
+        // Live-update diagnostic for the room-subscription fix (MatronDebug-
+        // gated, so free in shipped builds). With the flag on, every SDK
+        // timeline update prints its diff kinds + resulting count: a new
+        // message that prints an `append`/`pushBack` line confirms the SDK is
+        // feeding the listener; no line means the room subscription didn't take.
+        Self.logger.diag("onUpdate room=\(self.roomID) diffs=[\(Self.describe(diff))] count \(countBefore)→\(snapshot.count)")
         continuation.yield(snapshot)
     }
 
