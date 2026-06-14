@@ -238,6 +238,12 @@ private struct MacAskUserCardHost: View {
     @Bindable var viewModel: AskUserSheetViewModel
     let isAnswered: Bool
     let answerSummary: String?
+    /// Mac mirror of `AskUserCardHost.expiryTick`: toggled when
+    /// `expires_at` passes so the card re-renders into its expired
+    /// state. `isExpired` is `Date.now`-derived, so nothing wakes the
+    /// view at the deadline without this (bugbot "Expiry timer no longer
+    /// scheduled").
+    @State private var expiryTick = false
 
     var body: some View {
         AskUserCard(
@@ -252,5 +258,8 @@ private struct MacAskUserCardHost: View {
             error: viewModel.error,
             onSend: { Task { await viewModel.send() } }
         )
+        .task(id: viewModel.promptEventID) {
+            await viewModel.awaitExpiry { expiryTick.toggle() }
+        }
     }
 }

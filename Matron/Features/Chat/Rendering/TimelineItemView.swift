@@ -295,6 +295,14 @@ private struct AskUserCardHost: View {
     @Bindable var viewModel: AskUserSheetViewModel
     let isAnswered: Bool
     let answerSummary: String?
+    /// Toggled when the prompt's `expires_at` passes, forcing the card
+    /// to re-render into its expired state. `isExpired` is computed from
+    /// `Date.now`, so without a scheduled wake nothing re-evaluates it
+    /// at the deadline — the card keeps showing active controls until an
+    /// unrelated render, and only `send()` rejects (bugbot "Expiry timer
+    /// no longer scheduled"). The old half-sheet drove this via a
+    /// `.task(id:)` calling `awaitExpiry`; the inline card does the same.
+    @State private var expiryTick = false
 
     var body: some View {
         AskUserCard(
@@ -309,5 +317,10 @@ private struct AskUserCardHost: View {
             error: viewModel.error,
             onSend: { Task { await viewModel.send() } }
         )
+        // Keyed on the prompt event ID so a recycled host (cells reuse)
+        // restarts the timer for the new prompt.
+        .task(id: viewModel.promptEventID) {
+            await viewModel.awaitExpiry { expiryTick.toggle() }
+        }
     }
 }
