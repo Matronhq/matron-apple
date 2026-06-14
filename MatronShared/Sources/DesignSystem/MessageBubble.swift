@@ -35,6 +35,13 @@ public struct MessageBubble<Content: View>: View {
 
     public var body: some View {
         HStack {
+            // The me/bot spacers do the left/right alignment. The bot spacer
+            // uses `minLength: 0` so a long bot message can extend to the same
+            // `.padding(.horizontal)` margin on the right as it has on the left
+            // (even margins) instead of being held ~32pt short of the right
+            // edge. Short messages still hug left because the spacer stays
+            // greedy. `me` keeps a real min so sent bubbles don't span the full
+            // width.
             if style == .me { Spacer(minLength: 32) }
             // Content + timestamp sit side by side on the SAME line:
             // `.lastTextBaseline` drops the time onto the baseline of the
@@ -59,7 +66,7 @@ public struct MessageBubble<Content: View>: View {
             // and would break the Mac build.
             .background(style == .me ? Color.matronCodeBg : Color.clear)
             .clipShape(RoundedRectangle(cornerRadius: 14))
-            if style == .bot { Spacer(minLength: 32) }
+            if style == .bot { Spacer(minLength: 0) }
         }
         .padding(.horizontal)
     }
