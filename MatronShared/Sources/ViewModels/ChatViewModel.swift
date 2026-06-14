@@ -671,6 +671,7 @@ public final class ChatViewModel {
     /// whose `awaitExpiry` would immediately dismiss it is just a
     /// flash of dead UI.
     public func pendingAsk() -> AskUserPromptContext? {
+        persistVisibleAnswers()
         var answeredInTimeline: Set<String> = []
         for item in items {
             // `isOwn` on BOTH paths: a `button_response` / reply only
@@ -687,27 +688,6 @@ public final class ChatViewModel {
                 answeredInTimeline.insert(target)
             }
         }
-        // Persist cross-device answers the moment the timeline shows
-        // them (bugbot PR #6 finding): on a fresh timeline the
-        // encrypted answer event can lag decryption behind the prompt,
-        // and a snapshot caught in that window would re-pop a sheet
-        // for a prompt already answered elsewhere. Folding timeline
-        // knowledge into the UserDefaults set makes the answered state
-        // survive snapshots that temporarily lack the answer event.
-        // Intersected with the prompts actually present: only a
-        // visible prompt can re-pop, and `answeredInTimeline` also
-        // holds the user's replies to ORDINARY messages — persisting
-        // those would grow the defaults set without bound.
-        var promptIDsInTimeline: Set<String> = []
-        for item in items {
-            if case .askUser(let id, _) = item.kind {
-                promptIDsInTimeline.insert(id)
-            }
-        }
-        for id in answeredInTimeline.intersection(promptIDsInTimeline)
-        where !answeredPromptIDs.contains(id) {
-            markPromptAnswered(id)
-        }
         for item in items.reversed() {
             guard case .askUser(let id, let evt) = item.kind else { continue }
             if answeredPromptIDs.contains(id) { continue }
@@ -716,6 +696,46 @@ public final class ChatViewModel {
             return AskUserPromptContext(id: id, event: evt)
         }
         return nil
+    }
+
+    /// Folds cross-device answers visible in the current timeline into
+    /// the persisted `answeredPromptIDs` set, so a prompt resolved on
+    /// another device (or here) stays resolved across later snapshots.
+    ///
+    /// The inline `AskUserCard` reads answered-state from the live
+    /// timeline via `isPromptAnswered`. On a fresh timeline the
+    /// encrypted answer event can lag decryption behind the prompt, and
+    /// a transient sliding-sync snapshot can momentarily drop it; in
+    /// that window `isPromptAnswered` flips back to `false`, so a
+    /// resolved prompt looks unanswered again and accepts a duplicate
+    /// reply (bugbot "Cross-device answers not persisted"). Folding the
+    /// answer into the UserDefaults set the moment it's first seen makes
+    /// the resolved state sticky. The old half-sheet folded inside
+    /// `pendingAsk()` on every `items` change; the inline cards no
+    /// longer call `pendingAsk()`, so the views drive this on `items`.
+    ///
+    /// Intersected with the prompts actually present: `answeredInTimeline`
+    /// also holds the user's replies to ORDINARY messages, and persisting
+    /// those would grow the defaults set without bound.
+    public func persistVisibleAnswers() {
+        var answeredInTimeline: Set<String> = []
+        var promptIDsInTimeline: Set<String> = []
+        for item in items {
+            if case .askUserAnswer(let promptID, _) = item.kind,
+               !promptID.isEmpty, item.isOwn {
+                answeredInTimeline.insert(promptID)
+            }
+            if item.isOwn, let target = item.inReplyToEventID {
+                answeredInTimeline.insert(target)
+            }
+            if case .askUser(let id, _) = item.kind {
+                promptIDsInTimeline.insert(id)
+            }
+        }
+        for id in answeredInTimeline.intersection(promptIDsInTimeline)
+        where !answeredPromptIDs.contains(id) {
+            markPromptAnswered(id)
+        }
     }
 
     /// True if `eventID`'s ask-user prompt has been answered by US — on
@@ -766,6 +786,65 @@ public final class ChatViewModel {
             timeline: timeline,
             onClose: onClose
         )
+    }
+
+    /// Stable per-prompt `AskUserSheetViewModel` cache for the inline
+    /// `AskUserCard`. The card looks its VM up by prompt event ID every render;
+    /// without caching, a fresh VM each timeline snapshot would reset the user's
+    /// in-progress selection / typing. Keyed by prompt event ID, bounded by the
+    /// room's open-prompt count and torn down with this (per-room) view model.
+    private var askViewModels: [String: AskUserSheetViewModel] = [:]
+
+    /// Returns the stable `AskUserSheetViewModel` for the `.askUser` prompt with
+    /// `eventID`, creating + caching it on first use. `nil` if no such prompt is
+    /// in the current timeline. Send-success marks the prompt answered (via the
+    /// VM's `onClose`) so the inline card flips to its resolved state.
+    public func askViewModel(forPrompt eventID: String) -> AskUserSheetViewModel? {
+        if let existing = askViewModels[eventID] { return existing }
+        guard let event = askEvent(forPrompt: eventID) else { return nil }
+        let vm = makeAskUserSheetViewModel(eventID: eventID, event: event) { [weak self] in
+            self?.markPromptAnswered(eventID)
+        }
+        askViewModels[eventID] = vm
+        return vm
+    }
+
+    /// The chosen answer for `promptEventID`, for the card's resolved state, or
+    /// `nil` if not yet answered. Buttons: maps the hidden `.askUserAnswer`
+    /// `selectedValues` back to option labels via the prompt's options (so
+    /// cross-device answers display). Text channel: the reply message body.
+    public func answerSummary(forPrompt promptEventID: String) -> String? {
+        for item in items {
+            if case .askUserAnswer(let pid, let values) = item.kind,
+               pid == promptEventID, item.isOwn {
+                return mapValuesToLabels(values, promptEventID: promptEventID)
+            }
+        }
+        for item in items where item.isOwn && item.inReplyToEventID == promptEventID {
+            if case .text(let body, _) = item.kind { return body }
+        }
+        return nil
+    }
+
+    /// The `AskUserEvent` for a prompt event ID, scanned from the timeline.
+    private func askEvent(forPrompt eventID: String) -> AskUserEvent? {
+        for item in items {
+            if case .askUser(let id, let evt) = item.kind, id == eventID { return evt }
+        }
+        return nil
+    }
+
+    private func mapValuesToLabels(_ values: [String], promptEventID: String) -> String {
+        var labelByValue: [String: String] = [:]
+        if let evt = askEvent(forPrompt: promptEventID) {
+            switch evt.kind {
+            case .choice(let options, _), .multiChoice(let options, _):
+                for opt in options { labelByValue[opt.value] = opt.label }
+            case .text, .boolean:
+                break
+            }
+        }
+        return values.map { labelByValue[$0] ?? $0 }.joined(separator: ", ")
     }
 
     /// Live count of cached resolved images. Test seam for asserting
