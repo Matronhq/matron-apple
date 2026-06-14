@@ -15,14 +15,24 @@ import MarkdownUI
 ///     surface a "no app to handle this URL" error sheet to the user.
 public struct MarkdownText: View {
     let raw: String
+    let theme: Theme
+    let lineSpacing: CGFloat
 
-    public init(_ raw: String) {
+    /// - Parameters:
+    ///   - theme: markdown theme. Defaults to `.matron`; chat messages pass
+    ///     `.matronMessage` for a slightly larger body size.
+    ///   - lineSpacing: extra spacing between wrapped lines. Defaults to `0`;
+    ///     chat messages pass a small value for more comfortable line height.
+    public init(_ raw: String, theme: Theme = .matron, lineSpacing: CGFloat = 0) {
         self.raw = raw
+        self.theme = theme
+        self.lineSpacing = lineSpacing
     }
 
     public var body: some View {
         Markdown(raw)
-            .markdownTheme(.matron)
+            .markdownTheme(theme)
+            .lineSpacing(lineSpacing)
             .textSelection(.enabled)
             .environment(\.openURL, OpenURLAction { url in
                 Self.handle(url: url)
@@ -73,6 +83,17 @@ public extension Theme {
         .link {
             ForegroundColor(.accentColor)
             UnderlineStyle(.single)
+        }
+
+    /// Chat-message variant of `.matron`: same chrome, one step larger body
+    /// text. Scoped to messages so tool-call cards / other markdown keep the
+    /// base size. Pair with a small `lineSpacing` on `MarkdownText` for the
+    /// roomier line height.
+    static let matronMessage: Theme = matron
+        .text {
+            FontFamily(.system(.default))
+            ForegroundColor(.primary)
+            FontSize(.em(1.0625))
         }
 }
 
