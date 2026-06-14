@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Aggregate backfill progress across all rooms (distinct from the per-room
 /// `BackfillProgress`). Surfaced to the search UI for the "Indexing chats…"
@@ -25,6 +26,9 @@ public struct AggregateBackfillProgress: Equatable, Sendable {
 /// (each subscriber gets the current value replayed immediately, then live
 /// updates), so any number of `SearchViewModel`s can render the indexing state.
 public actor BackfillCoordinator {
+    // DIAGNOSTIC (throwaway branch): always-on sweep summary.
+    private static let logger = os.Logger(subsystem: "chat.matron", category: "backfill")
+
     private let runner: BackfillRunner
     private let cutoff: Date
     /// Pause between sweep retry passes over rooms whose backfill failed
@@ -70,9 +74,13 @@ public actor BackfillCoordinator {
         // (bugbot "Backfill never retries empty snapshot"). The caller retries
         // with a populated list, and per-room `backfillComplete` still guards
         // against redundant work.
-        guard !roomIDs.isEmpty else { return }
+        guard !roomIDs.isEmpty else {
+            Self.logger.notice("backfill sweep: empty room list (sync not warm yet) — not latching")
+            return
+        }
         hasRun = true
         let total = roomIDs.count
+        Self.logger.notice("backfill sweep START: total=\(total, privacy: .public) rooms")
         publish(AggregateBackfillProgress(roomsCompleted: 0, roomsTotal: total))
 
         // Count only rooms whose backfill actually succeeds. A room can fail
@@ -105,6 +113,7 @@ public actor BackfillCoordinator {
             if pending.isEmpty || Task.isCancelled { break }
             if attempt < 2 { try? await Task.sleep(for: retryDelay) }
         }
+        Self.logger.notice("backfill sweep END: completed=\(completed, privacy: .public)/\(total, privacy: .public) stillPending=\(pending.count, privacy: .public)")
     }
 
     private func publish(_ progress: AggregateBackfillProgress) {
