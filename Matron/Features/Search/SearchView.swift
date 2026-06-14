@@ -17,6 +17,12 @@ struct SearchView: View {
     /// stream drives the "Indexing chats… (X of Y rooms)" empty state while
     /// history is still being indexed.
     var backfillCoordinator: BackfillCoordinator? = nil
+    /// Live chat-list snapshot from the parent. `viewModel` is held as `@State`,
+    /// so the `allChats` it was built with freezes when the sheet opens; folding
+    /// later updates in here keeps new rooms and renamed titles searchable while
+    /// the sheet stays open (bugbot "iOS search chat snapshot stale"). Defaulted
+    /// so previews / tests that don't track the list keep compiling.
+    var liveChats: [ChatSummary] = []
 
     var body: some View {
         List {
@@ -52,6 +58,9 @@ struct SearchView: View {
         .searchable(text: $viewModel.query, placement: .navigationBarDrawer(displayMode: .always))
         .onChange(of: viewModel.query) { _, _ in
             Task { await viewModel.search() }
+        }
+        .onChange(of: liveChats) { _, chats in
+            viewModel.updateChats(chats)
         }
         .task {
             if let backfillCoordinator {
