@@ -3,6 +3,7 @@ import SwiftUI
 import MatronAuth
 import MatronChat
 import MatronModels
+import MatronSearch
 import MatronStorage
 import MatronSync
 import MatronVerification
@@ -11,6 +12,11 @@ import MatronVerification
 final class AppDependencies {
     let auth: AuthService
     let clientProvider: ClientProvider
+    /// Phase 6 (Search): the local FTS index. Optional — `nil` only if the
+    /// SQLite store can't be opened (rare); `ChatServiceLive`/`TimelineServiceLive`
+    /// and the backfill coordinator all treat search as optional, so the app
+    /// degrades to "search disabled" rather than failing to launch.
+    let search: SearchService?
 
     private var syncCache: [String: SyncService] = [:]
     /// Per-session `VerificationServiceLive` cache. The service owns the
@@ -52,6 +58,11 @@ final class AppDependencies {
     /// flip between; older entries fall out and are reconstructed on next
     /// visit (a cheap rebuild from the SDK's persisted store).
     private var timelineCache: LRUCache<TimelineCacheKey, TimelineService> = .init(limit: AppDependencies.timelineCacheLimit)
+    /// Per-session `BackfillCoordinator` cache. One coordinator per session owns
+    /// the SDK-backed pager + runner and drives the once-per-session history
+    /// sweep; caching keeps `run(...)`'s idempotency guard meaningful across the
+    /// post-login `.task`'s lifetime.
+    private var backfillCache: [String: BackfillCoordinator] = [:]
 
     init() {
         // iOS shares its crypto store + search DB with the NSE via the App
@@ -82,6 +93,10 @@ final class AppDependencies {
         let sessionStore = FileSessionStore(directory: sessionsDir)
         self.auth = AuthServiceLive(sessionStore: sessionStore, basePath: sdkStore)
         self.clientProvider = ClientProvider(basePath: sdkStore)
+        // Phase 6 (Search): the FTS index lives in the App Group container,
+        // alongside the crypto store, so the NSE/host share it. `try?` keeps
+        // init non-throwing — a failed open just disables search.
+        self.search = try? SearchServiceLive(databaseURL: StoragePaths.searchDB(in: container))
     }
 
     func syncService(for session: UserSession) -> SyncService {
@@ -148,10 +163,30 @@ final class AppDependencies {
             provider: clientProvider,
             session: session,
             sync: syncService(for: session),
-            roomID: roomID
+            roomID: roomID,
+            search: search
         )
         timelineCache[key] = svc
         return svc
+    }
+
+    /// Per-session `BackfillCoordinator`, or `nil` when search is disabled.
+    /// Wires the SDK-backed `TimelinePagerLive` (MatronChat) into the SDK-free
+    /// `BackfillRunner` (MatronSearch). The 90-day `sinceCutoff` matches spec
+    /// §9.3 — older history isn't indexed.
+    func backfillCoordinator(for session: UserSession) -> BackfillCoordinator? {
+        guard let search else { return nil }
+        if let existing = backfillCache[session.userID] { return existing }
+        let pager = TimelinePagerLive(
+            provider: clientProvider,
+            session: session,
+            sync: syncService(for: session)
+        )
+        let runner = BackfillRunner(timeline: pager, search: search)
+        let cutoff = Date().addingTimeInterval(-90 * 86_400)
+        let coordinator = BackfillCoordinator(runner: runner, cutoff: cutoff)
+        backfillCache[session.userID] = coordinator
+        return coordinator
     }
 
     /// Test seam: how many distinct rooms the timeline cache holds before
@@ -190,6 +225,30 @@ final class AppDependencies {
         mediaCache.removeAll()
         chatCache.removeAll()
         timelineCache = .init(limit: AppDependencies.timelineCacheLimit)
+        backfillCache.removeAll()
+        // Phase 6 (Search): wipe the index so the next user can't search the
+        // previous user's messages. `search` is a `let` (the same DB instance
+        // persists across sign-out → sign-in). signOut is synchronous, so the
+        // wipe runs in a Task — but it must finish BEFORE the next session's
+        // backfill, otherwise the wipe can land mid-backfill (clearing
+        // freshly-indexed rows, after which `BackfillCoordinator.hasRun`
+        // blocks a re-sweep and search stays empty) or the new sweep can race
+        // the prior user's rows and surface them. The handle is stored so the
+        // backfill kickoff can `await awaitPendingIndexWipe()` first.
+        pendingIndexWipe = Task { [search] in try? await search?.wipe() }
+    }
+
+    /// The in-flight `signOut()` index wipe, or `nil` if none is pending /
+    /// already finished. Awaited by the next session's backfill kickoff via
+    /// `awaitPendingIndexWipe()` (bugbot "Sign-out wipe races login").
+    private var pendingIndexWipe: Task<Void, Never>?
+
+    /// Awaits any in-flight sign-out index wipe so a fast sign-out → sign-in
+    /// can't start backfill against a half-wiped DB. No-op when nothing is
+    /// pending (the prior wipe already completed, or the user never signed
+    /// out this launch).
+    func awaitPendingIndexWipe() async {
+        await pendingIndexWipe?.value
     }
 }
 

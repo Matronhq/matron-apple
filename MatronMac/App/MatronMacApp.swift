@@ -156,6 +156,28 @@ struct MatronMacApp: App {
                         .task(id: session.userID) {
                             await bootstrapPush(for: session)
                         }
+                        // Phase 6 (Search): sweep room history into the FTS
+                        // index once per session — mirrors the iOS host.
+                        .task(id: session.userID) {
+                            guard let coordinator = dependencies.backfillCoordinator(for: session) else { return }
+                            // Mirror iOS: wait out any sign-out index wipe so
+                            // backfill never runs against a half-wiped DB
+                            // (bugbot "Sign-out wipe races login").
+                            await dependencies.awaitPendingIndexWipe()
+                            let chat = dependencies.chatService(for: session)
+                            // Retry the empty-snapshot case so a slow cold start
+                            // doesn't skip the per-session sweep (bugbot
+                            // "Backfill never retries empty snapshot"); run()
+                            // no-ops once it has swept.
+                            for attempt in 0..<3 {
+                                let roomIDs = await chat.firstSnapshotRoomIDs()
+                                if !roomIDs.isEmpty {
+                                    await coordinator.run(roomIDs: roomIDs)
+                                    return
+                                }
+                                if attempt < 2 { try? await Task.sleep(for: .seconds(10)) }
+                            }
+                        }
                         .onDisappear {
                             verificationCenter?.stop()
                             verificationCenter = nil

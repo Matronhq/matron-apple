@@ -368,3 +368,46 @@ Run before every TestFlight build (iOS) and every Mac App Store build.
 
 - Session-meta header (`chat.matron.session_meta`) — Tasks 7 + 10 deferred: v26 SDK has no state-event read API (see `ChatService.swift` doc-comment).
 - Bridge emission of `tool_call` / `ask_user` events — tracked by the companion bridge spec; until then those events fall back to plain text on builds without Phase 5 and render via Phase 5 UI when sent manually.
+
+## Phase 6 (Search)
+
+> **Tester notes — what's NOT unit-covered and needs live validation here:**
+> - **`TimelinePagerLive`** (the SDK pager that drives per-room history backfill) is the one component without unit tests — the listener/paginate timing can only be exercised against a real homeserver. Backfill correctness (does history actually get indexed?) is the key thing to validate.
+> - **Jump-to-message** opens the matched message's *room* but does **not** yet scroll to / flash the exact event (focused-timeline is a documented follow-up). Verify the correct room opens.
+
+### Indexing (both platforms)
+
+- [ ] On first launch after upgrade, the iOS chat-list shows a bottom footer "Indexing chats… (X of Y)" with a spinner; on Mac, an in-progress query shows "Indexing chats… (X of Y rooms)" in the results empty-state.
+- [ ] After backfill finishes, the iOS footer disappears; the Mac empty-state flips to "No results." for non-matching queries.
+- [ ] Send a new message in an **open** room → it's searchable within seconds (live indexing via the timeline listener).
+- [ ] (Known limitation) A message arriving in a never-opened room isn't live-indexed until that room is next opened or backfill reaches it — backfill is the primary history mechanism.
+
+### Search UI — iOS
+
+- [ ] Tap the magnifying-glass button (top-left of the chat list) → the SearchView sheet appears with a search bar.
+- [ ] Type "auth" — the Chats section lists chats whose title or bot matches; the Messages section lists FTS hits with `<mark>`-highlighted snippets.
+- [ ] Tap a Chat result → the sheet dismisses and that chat opens.
+- [ ] Tap a Message result → the sheet dismisses and the message's room opens. (Precise scroll-to-event is a known follow-up.)
+- [ ] Empty query → "Search across chat titles, bots, and messages." placeholder.
+- [ ] No matches with backfill complete → "No results."
+- [ ] No matches while backfill in progress → "Indexing chats… (X of Y rooms)" instead of "No results."
+
+### Search UI — Mac
+
+- [ ] `⌘F` (Find in Chat menu item) focuses the search field in the chat-window toolbar.
+- [ ] Typing in the search field replaces the chat detail column with the results panel.
+- [ ] Results show the same two-section layout (Chats / Messages) with `<mark>`-highlighted snippets.
+- [ ] Clicking a Chat result clears the field, restores the detail column, and selects that chat in the sidebar.
+- [ ] Clicking a Message result clears the field and opens that room in the detail column. (Precise scroll-to-event is a known follow-up.)
+- [ ] Clearing the field returns the detail column to the previously-selected chat.
+- [ ] Empty-state shows "Indexing chats… (X of Y rooms)" during backfill, "No results." once complete.
+
+### Sign-out
+
+- [ ] After sign-out + sign-in on iOS, search returns no hits until backfill re-runs (the index is wiped on sign-out).
+- [ ] After sign-out on Mac, the file at `~/Library/Application Support/chat.matron.mac/matron-search.sqlite` is wiped (verify via Finder or `ls`); after sign-in, search returns no hits until backfill re-runs.
+
+### File protection
+
+- [ ] **iOS (real device):** the matron-search.sqlite file has `NSFileProtectionComplete` (the in-app defensive assert is device-only — it's `#if !targetEnvironment(simulator)`-gated since the Simulator doesn't enforce data protection). On a locked, powered-off device the file should be unreadable pre-unlock.
+- [ ] **Mac:** no file-protection check — encryption at rest is FileVault's responsibility (user-managed). Confirm the file path is sandbox-private (`~/Library/Application Support/chat.matron.mac/matron-search.sqlite` is inside the app's container).

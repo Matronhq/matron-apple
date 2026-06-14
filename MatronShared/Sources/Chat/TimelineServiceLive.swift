@@ -3,6 +3,7 @@ import os
 import MatrixRustSDK
 import MatronEvents
 import MatronModels
+import MatronSearch
 import MatronSync
 
 /// Live `TimelineService` backed by the Matrix Rust SDK.
@@ -19,6 +20,11 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
     private let session: UserSession
     private let sync: MatronSync.SyncService
     private let roomID: String
+
+    /// Phase 6 (Search): when present, the snapshot listener indexes decrypted
+    /// `.text` / tool-call bodies into the FTS index as they flow through.
+    /// Optional so tests and any non-indexing construction path can omit it.
+    private let search: SearchService?
 
     /// Single `MatrixRustSDK.Timeline` instance shared by `items()`,
     /// every send, paginate, and markAsRead. Built lazily on first use.
@@ -61,12 +67,14 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
         provider: ClientProvider,
         session: UserSession,
         sync: MatronSync.SyncService,
-        roomID: String
+        roomID: String,
+        search: SearchService? = nil
     ) {
         self.provider = provider
         self.session = session
         self.sync = sync
         self.roomID = roomID
+        self.search = search
     }
 
     public func items() -> AsyncThrowingStream<[TimelineItem], Error> {
@@ -84,7 +92,9 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
                     let timeline = try await timeline()
                     let listener = TimelineSnapshotListener(
                         continuation: continuation,
-                        pendingButtonAnswers: pendingButtonAnswers
+                        pendingButtonAnswers: pendingButtonAnswers,
+                        roomID: roomID,
+                        search: search
                     )
                     let handle = await timeline.addListener(listener: listener)
                     holder.setHandle(handle)
@@ -461,16 +471,26 @@ final class TimelineSnapshotListener: TimelineListener, @unchecked Sendable {
     /// on the server echo) here; written by `sendButtonResponse`.
     private let pendingButtonAnswers: PendingButtonAnswerStore
 
+    /// Phase 6 (Search): the room this timeline belongs to + the index to write
+    /// decrypted bodies into. `search` is nil when indexing is disabled (tests,
+    /// or any construction without an injected service).
+    private let roomID: String
+    private let search: SearchService?
+
     /// `isOwn` is sourced from `EventTimelineItem.isOwn` — the SDK already
     /// knows which events came from us, so we don't need to thread the
     /// user ID through here. (Earlier drafts stored `myID` for a manual
     /// comparison; the property was unused and has been removed.)
     init(
         continuation: AsyncThrowingStream<[TimelineItem], Error>.Continuation,
-        pendingButtonAnswers: PendingButtonAnswerStore = PendingButtonAnswerStore()
+        pendingButtonAnswers: PendingButtonAnswerStore = PendingButtonAnswerStore(),
+        roomID: String = "",
+        search: SearchService? = nil
     ) {
         self.continuation = continuation
         self.pendingButtonAnswers = pendingButtonAnswers
+        self.roomID = roomID
+        self.search = search
     }
 
     /// SDK callback. Apply each diff to the in-memory snapshot, then
@@ -645,6 +665,7 @@ final class TimelineSnapshotListener: TimelineListener, @unchecked Sendable {
         // isn't a Matron custom type or its JSON couldn't be parsed (graceful
         // degradation: a malformed payload still renders as `.unknown`).
         let kind = mapMatronCustomEvent(ev) ?? mapButtonsMessage(ev) ?? mapContent(ev.content)
+        indexIfNeeded(kind: kind, ev: ev, timestamp: ts)
         let sendState: TimelineItem.SendState = mapSendState(ev.localSendState)
         // Surface the `m.in_reply_to` target so `ChatViewModel` can
         // mark `ask_user` prompts answered when a reply to them lands
@@ -662,6 +683,59 @@ final class TimelineSnapshotListener: TimelineListener, @unchecked Sendable {
             sendState: sendState,
             inReplyToEventID: inReplyToEventID
         )
+    }
+
+    /// Phase 6 (Search): index a decrypted `.text` / tool-call body into the FTS
+    /// index as it flows through the snapshot mapper. No-op when no `search`
+    /// service is wired (tests / non-indexing paths).
+    ///
+    /// Only events with a server-acked Matrix event ID are indexed. Local echoes
+    /// (`.transactionId`) are skipped: their unique IDs aren't navigable, and the
+    /// same event re-indexes under its real event ID once the server echo lands
+    /// (a `.set` diff re-runs the mapper). Storing the real event ID is what lets
+    /// search's jump-to-message focus the timeline via the SDK's `focusedAt`.
+    ///
+    /// `.text` and tool-call *results* only. `.askUser` / `.askUserAnswer`
+    /// (buttons) bodies are protocol noise (e.g. "cancel:0"); images / files /
+    /// state changes carry no searchable text. Idempotent re-indexing on every
+    /// re-map (incl. `.reset` on re-sync) is harmless — `index` is INSERT OR
+    /// REPLACE keyed on the UNIQUE event ID.
+    private func indexIfNeeded(kind: TimelineItem.Kind, ev: EventTimelineItem, timestamp: Date) {
+        guard let search else { return }
+        guard case .eventId(let eventID) = ev.eventOrTransactionId else { return }
+        let roomID = self.roomID
+
+        // Redaction: an event indexed as `.text` earlier is later re-mapped
+        // (a `.set` diff) as redacted ("Message deleted"). Its decrypted body
+        // is already in the FTS index, and `index` is never re-called for it,
+        // so without an explicit remove the deleted message stays searchable
+        // (bugbot "Redacted messages stay searchable"). Drop the row here.
+        // `remove` is keyed on the event ID and is a no-op for rows that were
+        // never indexed (images / state / non-text), so the unconditional
+        // call is safe.
+        if case .msgLike(let msg) = ev.content, case .redacted = msg.kind {
+            Task { [search] in try? await search.remove(eventID: eventID) }
+            return
+        }
+
+        let body: String
+        switch kind {
+        case .text(let text, _):
+            body = text
+        case .toolCall(_, let evt):
+            guard let result = evt.resultText else { return }
+            body = "[\(evt.tool)] \(result)"
+        default:
+            return
+        }
+        let sender = ev.sender
+        // Fire-and-forget: the SDK drives `onUpdate` synchronously on its timeline
+        // thread and we're inside the snapshot lock here, so the SQLite write must
+        // not block. A failed index is non-fatal — the next snapshot or backfill
+        // re-attempts.
+        Task { [search] in
+            try? await search.index(roomID: roomID, eventID: eventID, sender: sender, timestamp: timestamp, body: body)
+        }
     }
 
     /// Returns `.askUser` / `.askUserAnswer` when `ev` is an ordinary
