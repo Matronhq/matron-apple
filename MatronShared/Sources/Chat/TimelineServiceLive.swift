@@ -89,6 +89,23 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
             let task = Task { [self] in
                 do {
                     try await sync.waitUntilReady()
+                    // Subscribe the room to sliding sync so its timeline
+                    // receives LIVE events while it's open. The room-list
+                    // window (`entriesWithDynamicAdapters`, page 100) only
+                    // syncs each room with a minimal preview timeline, and the
+                    // per-room `subscribeToRoomInfoUpdates` carries RoomInfo
+                    // (unread/name), NOT timeline events — so without an
+                    // explicit room subscription new messages reach the open
+                    // timeline only when the room-list sync happens to deliver
+                    // them, i.e. intermittently ("new messages stop coming
+                    // in"). `subscribeToRooms` is the matrix-rust-sdk mechanism
+                    // for a proper live room subscription (mirrors Element X on
+                    // room entry); 26.4.1 has no unsubscribe, the SDK manages
+                    // settling. Best-effort — a failure degrades to the prior
+                    // window-only behaviour, so it doesn't block the timeline.
+                    if let rls = await sync.sdkService()?.roomListService() {
+                        try? await rls.subscribeToRooms(roomIds: [roomID])
+                    }
                     let timeline = try await timeline()
                     let listener = TimelineSnapshotListener(
                         continuation: continuation,
@@ -547,6 +564,12 @@ final class TimelineSnapshotListener: TimelineListener, @unchecked Sendable {
         if snapshot.isEmpty && countBefore > 0 {
             Self.logger.notice("timeline cleared to empty (was \(countBefore, privacy: .public) items); diffs=[\(Self.describe(diff), privacy: .public)]")
         }
+        // Live-update diagnostic for the room-subscription fix (MatronDebug-
+        // gated, so free in shipped builds). With the flag on, every SDK
+        // timeline update prints its diff kinds + resulting count: a new
+        // message that prints an `append`/`pushBack` line confirms the SDK is
+        // feeding the listener; no line means the room subscription didn't take.
+        Self.logger.diag("onUpdate room=\(self.roomID) diffs=[\(Self.describe(diff))] count \(countBefore)→\(snapshot.count)")
         continuation.yield(snapshot)
     }
 
