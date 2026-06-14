@@ -112,6 +112,14 @@ struct MacChatListView: View {
     /// "Reconnecting…" copy. Sticky once true.
     @State private var hasEverConnected: Bool = false
 
+    /// Flattened chat-list snapshot, used to seed and refresh the search VM.
+    /// Hoisted into a typed property so the large `body` doesn't infer the
+    /// `flatMap` result inline — that tipped the Xcode 16.4 type-checker over
+    /// its time budget once the search-refresh `.onChange` was added.
+    private var allChatSummaries: [ChatSummary] {
+        viewModel.groups.flatMap(\.summaries)
+    }
+
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebarColumn
@@ -169,7 +177,7 @@ struct MacChatListView: View {
         .task(id: viewModel.groups.isEmpty) {
             guard searchModel == nil, !viewModel.groups.isEmpty,
                   let deps, let session, let search = deps.search else { return }
-            let vm = SearchViewModel(search: search, allChats: viewModel.groups.flatMap(\.summaries))
+            let vm = SearchViewModel(search: search, allChats: allChatSummaries)
             searchModel = vm
             if let coordinator = deps.backfillCoordinator(for: session) {
                 await vm.observeBackfill(coordinator.progressStream())
@@ -180,7 +188,7 @@ struct MacChatListView: View {
         // reach chat-title search or `chatTitle(for:)` until relaunch (bugbot
         // "Mac chat search snapshot stale"). Keyed on the flattened summaries
         // because `GroupedSummaries` isn't Equatable.
-        .onChange(of: viewModel.groups.flatMap(\.summaries)) { _, summaries in
+        .onChange(of: allChatSummaries) { _, summaries in
             searchModel?.updateChats(summaries)
         }
         // Toggle Sidebar — menu-bar item (`Commands.swift`), ⌘⇧S, and the
