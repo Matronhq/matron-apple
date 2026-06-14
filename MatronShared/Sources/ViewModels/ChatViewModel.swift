@@ -671,6 +671,7 @@ public final class ChatViewModel {
     /// whose `awaitExpiry` would immediately dismiss it is just a
     /// flash of dead UI.
     public func pendingAsk() -> AskUserPromptContext? {
+        persistVisibleAnswers()
         var answeredInTimeline: Set<String> = []
         for item in items {
             // `isOwn` on BOTH paths: a `button_response` / reply only
@@ -687,27 +688,6 @@ public final class ChatViewModel {
                 answeredInTimeline.insert(target)
             }
         }
-        // Persist cross-device answers the moment the timeline shows
-        // them (bugbot PR #6 finding): on a fresh timeline the
-        // encrypted answer event can lag decryption behind the prompt,
-        // and a snapshot caught in that window would re-pop a sheet
-        // for a prompt already answered elsewhere. Folding timeline
-        // knowledge into the UserDefaults set makes the answered state
-        // survive snapshots that temporarily lack the answer event.
-        // Intersected with the prompts actually present: only a
-        // visible prompt can re-pop, and `answeredInTimeline` also
-        // holds the user's replies to ORDINARY messages — persisting
-        // those would grow the defaults set without bound.
-        var promptIDsInTimeline: Set<String> = []
-        for item in items {
-            if case .askUser(let id, _) = item.kind {
-                promptIDsInTimeline.insert(id)
-            }
-        }
-        for id in answeredInTimeline.intersection(promptIDsInTimeline)
-        where !answeredPromptIDs.contains(id) {
-            markPromptAnswered(id)
-        }
         for item in items.reversed() {
             guard case .askUser(let id, let evt) = item.kind else { continue }
             if answeredPromptIDs.contains(id) { continue }
@@ -716,6 +696,46 @@ public final class ChatViewModel {
             return AskUserPromptContext(id: id, event: evt)
         }
         return nil
+    }
+
+    /// Folds cross-device answers visible in the current timeline into
+    /// the persisted `answeredPromptIDs` set, so a prompt resolved on
+    /// another device (or here) stays resolved across later snapshots.
+    ///
+    /// The inline `AskUserCard` reads answered-state from the live
+    /// timeline via `isPromptAnswered`. On a fresh timeline the
+    /// encrypted answer event can lag decryption behind the prompt, and
+    /// a transient sliding-sync snapshot can momentarily drop it; in
+    /// that window `isPromptAnswered` flips back to `false`, so a
+    /// resolved prompt looks unanswered again and accepts a duplicate
+    /// reply (bugbot "Cross-device answers not persisted"). Folding the
+    /// answer into the UserDefaults set the moment it's first seen makes
+    /// the resolved state sticky. The old half-sheet folded inside
+    /// `pendingAsk()` on every `items` change; the inline cards no
+    /// longer call `pendingAsk()`, so the views drive this on `items`.
+    ///
+    /// Intersected with the prompts actually present: `answeredInTimeline`
+    /// also holds the user's replies to ORDINARY messages, and persisting
+    /// those would grow the defaults set without bound.
+    public func persistVisibleAnswers() {
+        var answeredInTimeline: Set<String> = []
+        var promptIDsInTimeline: Set<String> = []
+        for item in items {
+            if case .askUserAnswer(let promptID, _) = item.kind,
+               !promptID.isEmpty, item.isOwn {
+                answeredInTimeline.insert(promptID)
+            }
+            if item.isOwn, let target = item.inReplyToEventID {
+                answeredInTimeline.insert(target)
+            }
+            if case .askUser(let id, _) = item.kind {
+                promptIDsInTimeline.insert(id)
+            }
+        }
+        for id in answeredInTimeline.intersection(promptIDsInTimeline)
+        where !answeredPromptIDs.contains(id) {
+            markPromptAnswered(id)
+        }
     }
 
     /// True if `eventID`'s ask-user prompt has been answered by US — on

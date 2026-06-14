@@ -367,6 +367,12 @@ struct MacChatView: View {
                 viewModel.handleForeground()
             }
         }
+        // Mac mirror of iOS: fold cross-device ask-user answers into the
+        // persisted set on every snapshot so resolved inline cards stay
+        // resolved (bugbot "Cross-device answers not persisted").
+        .onChange(of: viewModel.items) { _, _ in
+            viewModel.persistVisibleAnswers()
+        }
     }
 
     /// Per-bot verification evaluation. See iOS `ChatView` for details —

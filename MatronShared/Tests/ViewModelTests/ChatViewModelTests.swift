@@ -740,6 +740,36 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_persistVisibleAnswers_keepsInlineCardResolved_acrossSnapshots() async {
+        // Bugbot PR #10 finding "cross-device answers not persisted":
+        // the inline AskUserCard reads answered-state via
+        // `isPromptAnswered`, not `pendingAsk()`. The views call
+        // `persistVisibleAnswers()` on every snapshot, so once the answer
+        // event is seen it's folded into UserDefaults. A later snapshot
+        // that drops the answer event (or a fresh launch whose encrypted
+        // answer lags decryption) must keep the card resolved rather than
+        // re-enabling a duplicate reply.
+        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
+        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        let answer = TimelineItem(
+            id: "$2", sender: "@me:s", timestamp: .now,
+            kind: .askUserAnswer(promptEventID: "$1", selectedValues: ["yes"]),
+            isOwn: true
+        )
+        let vm = await makeAskVM(items: [askItem(id: "$1"), answer])
+        vm.persistVisibleAnswers()
+        XCTAssertTrue(vm.isPromptAnswered("$1"), "answer visible in timeline")
+
+        // Fresh VM, prompt present but answer event missing — only the
+        // persisted fold keeps the card resolved.
+        let vm2 = await makeAskVM(items: [askItem(id: "$1")])
+        XCTAssertTrue(
+            vm2.isPromptAnswered("$1"),
+            "inline card must stay resolved after the answer event drops from the snapshot"
+        )
+    }
+
+    @MainActor
     func test_pendingAsk_notClearedBy_othersReplies() async {
         // A reply from someone ELSE (e.g. the bot threading a follow-
         // up onto its own prompt) must not count as the user's answer.

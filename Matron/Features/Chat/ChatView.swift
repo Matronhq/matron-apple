@@ -417,6 +417,15 @@ struct ChatView: View {
                 viewModel.handleForeground()
             }
         }
+        // Persist cross-device ask-user answers the moment a snapshot
+        // shows them, so a resolved inline card stays resolved even if a
+        // later transient snapshot drops the answer event (bugbot
+        // "Cross-device answers not persisted"). The old half-sheet
+        // folded these inside `pendingAsk()`; the inline cards read
+        // answered-state directly, so the fold is driven here.
+        .onChange(of: viewModel.items) { _, _ in
+            viewModel.persistVisibleAnswers()
+        }
     }
 
     /// iOS file-share sheet body. Presents the filename + a system
