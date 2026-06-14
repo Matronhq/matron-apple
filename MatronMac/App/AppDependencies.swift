@@ -169,9 +169,21 @@ final class AppDependencies {
         chatCache.removeAll()
         timelineCache = .init(limit: AppDependencies.timelineCacheLimit)
         backfillCache.removeAll()
-        // Phase 6 (Search): wipe the index on sign-out — see iOS AppDependencies.
-        // On Mac this clears ~/Library/Application Support/chat.matron.mac/matron-search.sqlite.
-        Task { [search] in try? await search?.wipe() }
+        // Phase 6 (Search): wipe the index on sign-out — see iOS AppDependencies
+        // for the race rationale. On Mac this clears
+        // ~/Library/Application Support/chat.matron.mac/matron-search.sqlite.
+        // Stored so the next session's backfill awaits it before sweeping
+        // (bugbot "Sign-out wipe races login").
+        pendingIndexWipe = Task { [search] in try? await search?.wipe() }
+    }
+
+    /// The in-flight `signOut()` index wipe — see iOS `AppDependencies`.
+    private var pendingIndexWipe: Task<Void, Never>?
+
+    /// Awaits any in-flight sign-out index wipe so backfill never runs against
+    /// a half-wiped DB (bugbot "Sign-out wipe races login").
+    func awaitPendingIndexWipe() async {
+        await pendingIndexWipe?.value
     }
 }
 

@@ -104,12 +104,19 @@ public final class TimelinePagerLive: TimelinePager, @unchecked Sendable {
         return pager
     }
 
-    /// Returns the snapshot items not yet handed back, recording them as returned.
+    /// Returns the snapshot items not yet handed back, recording them as
+    /// returned. Sorted newest-first: `PaginationAccumulator.snapshot()` yields
+    /// `byEventID.values` in arbitrary dict order, but `BackfillRunner`'s cutoff
+    /// logic assumes descending timestamps — it stops at the first event older
+    /// than `sinceCutoff`. Without this a batch spanning the 90-day boundary
+    /// could index messages that should be excluded, or stop early and skip
+    /// in-window messages in the same batch (bugbot "Backfill batches lack time
+    /// order").
     private func takeFresh(from snapshot: [BackfillItem], pager: RoomPager) -> [BackfillItem] {
         lock.lock(); defer { lock.unlock() }
         let fresh = snapshot.filter { !pager.returned.contains($0.eventID) }
         for item in fresh { pager.returned.insert(item.eventID) }
-        return fresh
+        return fresh.sorted { $0.timestamp > $1.timestamp }
     }
 
     /// Same resolution path as `TimelineServiceLive.resolveRoom`: `getRoom` first,

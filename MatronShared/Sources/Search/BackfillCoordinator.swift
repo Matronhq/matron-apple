@@ -58,6 +58,15 @@ public actor BackfillCoordinator {
     /// resume-guarded by `BackfillRunner` via `backfillComplete`).
     public func run(roomIDs: [String]) async {
         guard !hasRun else { return }
+        // An empty list means the first non-empty chat-list snapshot hadn't
+        // landed yet (sync still warming, or `firstSnapshotRoomIDs()` hit its
+        // 30s bound). Don't latch `hasRun`: a 0/0 sweep isn't a real sweep, and
+        // latching would permanently skip every room for the session — later
+        // rooms would only ever get indexed by being opened for live indexing
+        // (bugbot "Backfill never retries empty snapshot"). The caller retries
+        // with a populated list, and per-room `backfillComplete` still guards
+        // against redundant work.
+        guard !roomIDs.isEmpty else { return }
         hasRun = true
         let total = roomIDs.count
         publish(AggregateBackfillProgress(roomsCompleted: 0, roomsTotal: total))

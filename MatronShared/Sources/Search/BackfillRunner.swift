@@ -26,15 +26,19 @@ public final class BackfillRunner: @unchecked Sendable {
         var indexedCount = (try? await search.eventCount(roomID: roomID)) ?? 0
         var oldestEventID: String? = nil
         var oldestTimestamp: Date = .distantFuture
+        // Whether we reached a genuine terminus — start-of-timeline, the age
+        // cutoff, or the depth limit. Only then is the room marked complete.
+        // An empty batch is NOT a terminus (see below), so it must not flip
+        // this.
+        var reachedEnd = false
 
         outer: while indexedCount < depthLimit {
             let result = try await timeline.paginateBackward(roomID: roomID, batchSize: 50)
-            if result.items.isEmpty { break }
 
             for item in result.items where item.indexable {
                 // Newest-first ordering: the first event older than the cutoff means
                 // every remaining event is older too. Stop here, leaving it unindexed.
-                if item.timestamp < sinceCutoff { break outer }
+                if item.timestamp < sinceCutoff { reachedEnd = true; break outer }
                 if try await search.contains(eventID: item.eventID) { continue }
                 try await search.index(
                     roomID: roomID,
@@ -51,14 +55,30 @@ public final class BackfillRunner: @unchecked Sendable {
                 if indexedCount >= depthLimit { break outer }
             }
 
-            if result.hitStartOfTimeline { break }
+            // Authoritative "history exhausted" signal from the pager.
+            if result.hitStartOfTimeline { reachedEnd = true; break }
+
+            // No events surfaced this round but history isn't exhausted: the
+            // pager's listener hasn't delivered the paginated diff yet
+            // (TimelinePagerLive documents this timing gap). Stop WITHOUT
+            // marking the room complete — recording `complete: true` here
+            // persists a "done" flag that permanently skips the room, even
+            // across sessions, so its history would never get indexed (bugbot
+            // "Empty page marks backfill done"). A later open / next launch
+            // retries; already-indexed events are deduped via `contains`.
+            if result.items.isEmpty { break }
         }
+
+        // Hitting the depth limit is a genuine terminus too (we've indexed our
+        // cap), including the resume case where the room was already at the
+        // limit on entry and the loop body never ran.
+        if indexedCount >= depthLimit { reachedEnd = true }
 
         try await search.recordBackfillProgress(
             roomID: roomID,
             indexedCount: indexedCount,
             oldestEventID: oldestEventID,
-            complete: true
+            complete: reachedEnd
         )
     }
 }

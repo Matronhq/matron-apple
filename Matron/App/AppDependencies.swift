@@ -228,10 +228,27 @@ final class AppDependencies {
         backfillCache.removeAll()
         // Phase 6 (Search): wipe the index so the next user can't search the
         // previous user's messages. `search` is a `let` (the same DB instance
-        // persists across sign-out → sign-in); fire-and-forget since signOut is
-        // synchronous. Backfill for the next session only re-runs after this
-        // completes in practice (it's gated behind a fresh login + first sync).
-        Task { [search] in try? await search?.wipe() }
+        // persists across sign-out → sign-in). signOut is synchronous, so the
+        // wipe runs in a Task — but it must finish BEFORE the next session's
+        // backfill, otherwise the wipe can land mid-backfill (clearing
+        // freshly-indexed rows, after which `BackfillCoordinator.hasRun`
+        // blocks a re-sweep and search stays empty) or the new sweep can race
+        // the prior user's rows and surface them. The handle is stored so the
+        // backfill kickoff can `await awaitPendingIndexWipe()` first.
+        pendingIndexWipe = Task { [search] in try? await search?.wipe() }
+    }
+
+    /// The in-flight `signOut()` index wipe, or `nil` if none is pending /
+    /// already finished. Awaited by the next session's backfill kickoff via
+    /// `awaitPendingIndexWipe()` (bugbot "Sign-out wipe races login").
+    private var pendingIndexWipe: Task<Void, Never>?
+
+    /// Awaits any in-flight sign-out index wipe so a fast sign-out → sign-in
+    /// can't start backfill against a half-wiped DB. No-op when nothing is
+    /// pending (the prior wipe already completed, or the user never signed
+    /// out this launch).
+    func awaitPendingIndexWipe() async {
+        await pendingIndexWipe?.value
     }
 }
 
