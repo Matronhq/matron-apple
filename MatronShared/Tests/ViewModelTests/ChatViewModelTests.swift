@@ -835,4 +835,67 @@ final class ChatViewModelTests: XCTestCase {
         let vm2 = await makeAskVM(items: [askItem(id: "$persist-1")])
         XCTAssertNil(vm2.pendingAsk())
     }
+
+    // MARK: - Inline ask-user cards (askViewModel cache + answerSummary)
+
+    @MainActor
+    func test_askViewModel_isStablePerPrompt() async {
+        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
+        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        let prompt = TimelineItem(
+            id: "p1", sender: "@bot:s", timestamp: .now,
+            kind: .askUser(eventID: "p1", AskUserEvent(
+                prompt: "Q", kind: .choice(options: [
+                    AskUserEvent.Option(id: "s", label: "Send", value: "send:0")
+                ], allowOther: false), expiresAt: nil, replyChannel: .buttonResponse)),
+            isOwn: false
+        )
+        let vm = await makeAskVM(items: [prompt])
+        let first = vm.askViewModel(forPrompt: "p1")
+        let second = vm.askViewModel(forPrompt: "p1")
+        XCTAssertNotNil(first)
+        XCTAssertTrue(first === second, "same prompt must return the same cached VM")
+        XCTAssertNil(vm.askViewModel(forPrompt: "missing"))
+    }
+
+    @MainActor
+    func test_answerSummary_buttons_mapsValuesToLabels() async {
+        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
+        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        let prompt = TimelineItem(
+            id: "p1", sender: "@bot:s", timestamp: .now,
+            kind: .askUser(eventID: "p1", AskUserEvent(
+                prompt: "Q", kind: .choice(options: [
+                    AskUserEvent.Option(id: "s", label: "Send", value: "send:0"),
+                    AskUserEvent.Option(id: "c", label: "Cancel", value: "cancel:0"),
+                ], allowOther: false), expiresAt: nil, replyChannel: .buttonResponse)),
+            isOwn: false
+        )
+        let answer = TimelineItem(
+            id: "a1", sender: "@me:s", timestamp: .now,
+            kind: .askUserAnswer(promptEventID: "p1", selectedValues: ["send:0"]),
+            isOwn: true
+        )
+        let vm = await makeAskVM(items: [prompt, answer])
+        XCTAssertEqual(vm.answerSummary(forPrompt: "p1"), "Send")
+        XCTAssertNil(vm.answerSummary(forPrompt: "p1-unanswered"))
+    }
+
+    @MainActor
+    func test_answerSummary_textReply_returnsReplyBody() async {
+        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
+        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        let prompt = TimelineItem(
+            id: "p2", sender: "@bot:s", timestamp: .now,
+            kind: .askUser(eventID: "p2", AskUserEvent(prompt: "Workdir?", kind: .text, expiresAt: nil)),
+            isOwn: false
+        )
+        let reply = TimelineItem(
+            id: "r1", sender: "@me:s", timestamp: .now,
+            kind: .text(body: "src/", formattedHTML: nil), isOwn: true,
+            sendState: .sent, inReplyToEventID: "p2"
+        )
+        let vm = await makeAskVM(items: [prompt, reply])
+        XCTAssertEqual(vm.answerSummary(forPrompt: "p2"), "src/")
+    }
 }
