@@ -175,6 +175,14 @@ struct MacChatListView: View {
                 await vm.observeBackfill(coordinator.progressStream())
             }
         }
+        // Keep the long-lived search VM's chat snapshot current: the toolbar
+        // VM is built once, so without this new rooms and renamed titles never
+        // reach chat-title search or `chatTitle(for:)` until relaunch (bugbot
+        // "Mac chat search snapshot stale"). Keyed on the flattened summaries
+        // because `GroupedSummaries` isn't Equatable.
+        .onChange(of: viewModel.groups.flatMap(\.summaries)) { _, summaries in
+            searchModel?.updateChats(summaries)
+        }
         // Toggle Sidebar — menu-bar item (`Commands.swift`), ⌘⇧S, and the
         // sidebar-toggle toolbar button in `MacChatToolbar` all post the
         // same notification. Listener flips between `.automatic` (shown)

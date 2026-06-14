@@ -703,6 +703,21 @@ final class TimelineSnapshotListener: TimelineListener, @unchecked Sendable {
     private func indexIfNeeded(kind: TimelineItem.Kind, ev: EventTimelineItem, timestamp: Date) {
         guard let search else { return }
         guard case .eventId(let eventID) = ev.eventOrTransactionId else { return }
+        let roomID = self.roomID
+
+        // Redaction: an event indexed as `.text` earlier is later re-mapped
+        // (a `.set` diff) as redacted ("Message deleted"). Its decrypted body
+        // is already in the FTS index, and `index` is never re-called for it,
+        // so without an explicit remove the deleted message stays searchable
+        // (bugbot "Redacted messages stay searchable"). Drop the row here.
+        // `remove` is keyed on the event ID and is a no-op for rows that were
+        // never indexed (images / state / non-text), so the unconditional
+        // call is safe.
+        if case .msgLike(let msg) = ev.content, case .redacted = msg.kind {
+            Task { [search] in try? await search.remove(eventID: eventID) }
+            return
+        }
+
         let body: String
         switch kind {
         case .text(let text, _):
@@ -714,7 +729,6 @@ final class TimelineSnapshotListener: TimelineListener, @unchecked Sendable {
             return
         }
         let sender = ev.sender
-        let roomID = self.roomID
         // Fire-and-forget: the SDK drives `onUpdate` synchronously on its timeline
         // thread and we're inside the snapshot lock here, so the SQLite write must
         // not block. A failed index is non-fatal — the next snapshot or backfill
