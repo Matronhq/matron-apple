@@ -110,6 +110,14 @@ struct ChatListView: View {
     /// resets only when the View itself remounts (e.g. sign-out + back-in).
     @State private var hasEverConnected: Bool = false
 
+    /// Flattened chat-list snapshot. Hoisted into a typed property so the large
+    /// `body` doesn't infer the `flatMap` result inline (keeps the Xcode 16.4
+    /// type-checker under its budget) and so the search sheet's seed + live
+    /// refresh share one source.
+    private var allChatSummaries: [ChatSummary] {
+        viewModel.groups.flatMap(\.summaries)
+    }
+
     var body: some View {
         chatListColumn
         .navigationTitle("Matron")
@@ -293,7 +301,7 @@ struct ChatListView: View {
                     SearchView(
                         viewModel: SearchViewModel(
                             search: search,
-                            allChats: viewModel.groups.flatMap(\.summaries)
+                            allChats: allChatSummaries
                         ),
                         onSelectChat: { chat in
                             showingSearch = false
@@ -306,7 +314,11 @@ struct ChatListView: View {
                             showingSearch = false
                             onOpenChat?(hit.roomID)
                         },
-                        backfillCoordinator: deps.backfillCoordinator(for: session)
+                        backfillCoordinator: deps.backfillCoordinator(for: session),
+                        // Keep `allChats` fresh while the sheet is open — the VM
+                        // is `@State` inside SearchView and freezes otherwise
+                        // (bugbot "iOS search chat snapshot stale").
+                        liveChats: allChatSummaries
                     )
                 }
             }

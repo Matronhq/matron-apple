@@ -27,13 +27,17 @@ public struct AggregateBackfillProgress: Equatable, Sendable {
 public actor BackfillCoordinator {
     private let runner: BackfillRunner
     private let cutoff: Date
+    /// Pause between sweep retry passes over rooms whose backfill failed
+    /// (e.g. a not-yet-synced room). Injectable so tests don't sleep.
+    private let retryDelay: Duration
     private var current = AggregateBackfillProgress(roomsCompleted: 0, roomsTotal: 0)
     private var observers: [UUID: AsyncStream<AggregateBackfillProgress>.Continuation] = [:]
     private var hasRun = false
 
-    public init(runner: BackfillRunner, cutoff: Date) {
+    public init(runner: BackfillRunner, cutoff: Date, retryDelay: Duration = .seconds(5)) {
         self.runner = runner
         self.cutoff = cutoff
+        self.retryDelay = retryDelay
     }
 
     /// The latest aggregate progress (for pull-style reads).
@@ -70,9 +74,32 @@ public actor BackfillCoordinator {
         hasRun = true
         let total = roomIDs.count
         publish(AggregateBackfillProgress(roomsCompleted: 0, roomsTotal: total))
-        for (index, roomID) in roomIDs.enumerated() {
-            try? await runner.backfill(roomID: roomID, sinceCutoff: cutoff)
-            publish(AggregateBackfillProgress(roomsCompleted: index + 1, roomsTotal: total))
+
+        // Count only rooms whose backfill actually succeeds. A room can fail
+        // transiently — e.g. `TimelinePagerError.roomNotFound` when it's on the
+        // chat list but not yet in the SDK store on a cold start. The old
+        // `try?`-then-advance counted such a room as done even though nothing
+        // was indexed (bugbot "Failed room backfill still counts"). Failures
+        // are retried a few times within the sweep (succeeded rooms are skipped
+        // cheaply by `BackfillRunner.backfillComplete`); anything still failing
+        // is left uncounted and `backfillComplete == false`, so the next launch
+        // retries it instead of treating it as done.
+        var completed = 0
+        var pending = roomIDs
+        for attempt in 0..<3 {
+            var stillPending: [String] = []
+            for roomID in pending {
+                do {
+                    try await runner.backfill(roomID: roomID, sinceCutoff: cutoff)
+                    completed += 1
+                    publish(AggregateBackfillProgress(roomsCompleted: completed, roomsTotal: total))
+                } catch {
+                    stillPending.append(roomID)
+                }
+            }
+            pending = stillPending
+            if pending.isEmpty { break }
+            if attempt < 2 { try? await Task.sleep(for: retryDelay) }
         }
     }
 

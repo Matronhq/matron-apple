@@ -19,6 +19,25 @@ actor FakePager: TimelinePager {
     }
 }
 
+/// Pager that throws for a given room until a target attempt, succeeding
+/// thereafter (empty history). Models a room that's on the chat list but not yet
+/// in the SDK store on a cold start (`roomNotFound`), then becomes available.
+actor FlakyPager: TimelinePager {
+    private var remainingFailures: [String: Int]   // roomID → failures left
+
+    init(remainingFailures: [String: Int]) { self.remainingFailures = remainingFailures }
+
+    func paginateBackward(roomID: String, batchSize: Int) async throws -> (items: [BackfillItem], hitStartOfTimeline: Bool) {
+        if let left = remainingFailures[roomID], left > 0 {
+            remainingFailures[roomID] = left - 1
+            throw TimelinePagerError.roomNotFound(roomID)
+        }
+        return ([], true)
+    }
+}
+
+private enum TimelinePagerError: Error { case roomNotFound(String) }
+
 final class BackfillTests: XCTestCase {
     var url: URL!
     var svc: SearchServiceLive!
@@ -182,6 +201,34 @@ final class BackfillTests: XCTestCase {
             afterReal, AggregateBackfillProgress(roomsCompleted: 2, roomsTotal: 2),
             "the empty run must not have latched hasRun"
         )
+    }
+
+    func test_coordinator_permanentlyFailingRoom_notCountedAsCompleted() async throws {
+        // bugbot "Failed room backfill still counts": a room whose backfill
+        // keeps throwing must NOT advance `roomsCompleted` — it was never
+        // indexed, so counting it done both misreports progress and (with
+        // `backfillComplete == false`) it stays retryable next launch.
+        let runner = BackfillRunner(timeline: FlakyPager(remainingFailures: ["!b:s": 99]), search: svc)
+        let coordinator = BackfillCoordinator(runner: runner, cutoff: .distantPast, retryDelay: .zero)
+
+        await coordinator.run(roomIDs: ["!a:s", "!b:s", "!c:s"])
+
+        let final = await coordinator.progress
+        XCTAssertEqual(final.roomsCompleted, 2, "only the two healthy rooms count as done")
+        XCTAssertEqual(final.roomsTotal, 3)
+        XCTAssertTrue(final.inProgress, "the failed room keeps the sweep visibly incomplete")
+    }
+
+    func test_coordinator_transientlyFailingRoom_retriedAndCounted() async throws {
+        // A room that fails once (cold-start `roomNotFound`) then succeeds must
+        // be retried within the sweep and counted, reaching a full 3/3.
+        let runner = BackfillRunner(timeline: FlakyPager(remainingFailures: ["!b:s": 1]), search: svc)
+        let coordinator = BackfillCoordinator(runner: runner, cutoff: .distantPast, retryDelay: .zero)
+
+        await coordinator.run(roomIDs: ["!a:s", "!b:s", "!c:s"])
+
+        let final = await coordinator.progress
+        XCTAssertEqual(final, AggregateBackfillProgress(roomsCompleted: 3, roomsTotal: 3))
     }
 
     func test_coordinator_runsAllRoomsAndPublishesProgress() async throws {
