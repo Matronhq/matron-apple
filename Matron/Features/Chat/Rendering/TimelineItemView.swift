@@ -81,9 +81,9 @@ struct TimelineItemView: View {
         case .text(let body, _):
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
-                senderLabel: item.isOwn ? nil : displayName(for: item.sender)
+                timestamp: item.timestamp
             ) {
-                MarkdownText(body)
+                MarkdownText(body, theme: .matronMessage, lineSpacing: 4)
             }
             // VoiceOver previously announced the body text without sender
             // context — `.combine` collapses the bubble + label into a
@@ -95,7 +95,7 @@ struct TimelineItemView: View {
         case .image(let url, let caption, let sizeBytes):
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
-                senderLabel: item.isOwn ? nil : displayName(for: item.sender)
+                timestamp: item.timestamp
             ) {
                 AttachmentImage(
                     image: resolvedImage(for: url),
@@ -120,7 +120,7 @@ struct TimelineItemView: View {
         case .file(let url, let filename, let sizeBytes):
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
-                senderLabel: item.isOwn ? nil : displayName(for: item.sender)
+                timestamp: item.timestamp
             ) {
                 AttachmentFile(
                     filename: filename,
