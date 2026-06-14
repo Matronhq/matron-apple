@@ -63,6 +63,11 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
     /// `PendingButtonAnswerStore`.
     private let pendingButtonAnswers = PendingButtonAnswerStore()
 
+    // DIAGNOSTIC (throwaway branch): always-on so it's visible on a real device
+    // via Console.app. Traces the live-update path: room subscription on open
+    // and every SDK timeline diff thereafter.
+    private static let diag = os.Logger(subsystem: "chat.matron", category: "live-update")
+
     public init(
         provider: ClientProvider,
         session: UserSession,
@@ -104,7 +109,14 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
                     // settling. Best-effort — a failure degrades to the prior
                     // window-only behaviour, so it doesn't block the timeline.
                     if let rls = await sync.sdkService()?.roomListService() {
-                        try? await rls.subscribeToRooms(roomIds: [roomID])
+                        do {
+                            try await rls.subscribeToRooms(roomIds: [roomID])
+                            Self.diag.notice("items: subscribed room=\(roomID, privacy: .public)")
+                        } catch {
+                            Self.diag.notice("items: subscribe FAILED room=\(roomID, privacy: .public) err=\(String(describing: error), privacy: .public)")
+                        }
+                    } else {
+                        Self.diag.notice("items: NO roomListService (sdkService nil) room=\(roomID, privacy: .public)")
                     }
                     let timeline = try await timeline()
                     let listener = TimelineSnapshotListener(
@@ -115,6 +127,7 @@ public final class TimelineServiceLive: TimelineService, @unchecked Sendable {
                     )
                     let handle = await timeline.addListener(listener: listener)
                     holder.setHandle(handle)
+                    Self.diag.notice("items: listener attached room=\(roomID, privacy: .public)")
                 } catch {
                     // Surface the failure to the consumer instead of
                     // silently completing — `ChatViewModel` routes this
@@ -564,12 +577,12 @@ final class TimelineSnapshotListener: TimelineListener, @unchecked Sendable {
         if snapshot.isEmpty && countBefore > 0 {
             Self.logger.notice("timeline cleared to empty (was \(countBefore, privacy: .public) items); diffs=[\(Self.describe(diff), privacy: .public)]")
         }
-        // Live-update diagnostic for the room-subscription fix (MatronDebug-
-        // gated, so free in shipped builds). With the flag on, every SDK
-        // timeline update prints its diff kinds + resulting count: a new
-        // message that prints an `append`/`pushBack` line confirms the SDK is
-        // feeding the listener; no line means the room subscription didn't take.
-        Self.logger.diag("onUpdate room=\(self.roomID) diffs=[\(Self.describe(diff))] count \(countBefore)→\(snapshot.count)")
+        // DIAGNOSTIC (throwaway branch): ALWAYS-ON so it shows on a real device
+        // without MatronDebug. Every SDK timeline update prints its diff kinds +
+        // resulting count: a new message that prints an `append`/`pushBack` line
+        // means the SDK IS feeding the listener; if a message arrives in the
+        // open chat and no line appears, the SDK isn't delivering it.
+        Self.logger.notice("onUpdate room=\(self.roomID, privacy: .public) diffs=[\(Self.describe(diff), privacy: .public)] count \(countBefore, privacy: .public)→\(snapshot.count, privacy: .public)")
         continuation.yield(snapshot)
     }
 
