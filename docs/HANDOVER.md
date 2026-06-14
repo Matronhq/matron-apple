@@ -1,14 +1,13 @@
-# Handover — Matron iOS+Mac. Phases 1–5 + 2.5 on `main`. Phase 6 (Search) in PR #9 (open). Inline ask-user cards branch ready.
+# Handover — Matron iOS+Mac. Phases 1–5 + 2.5 on `main`. Phase 6 (Search) in PR #9 (open). Inline ask-user cards in PR #10 (open).
 
-## 2026-06-14 session — Phase 6 (Search) BUILT → PR #9; inline ask-user cards BUILT (branch, unpushed)
+## 2026-06-14 session — Phase 6 (Search) BUILT → PR #9; inline ask-user cards BUILT → PR #10
 
 **TL;DR:** Two features built + verified this session, each on its own branch
-off `main`; **`main` is unchanged (`5ac4baa`).** Nothing merged.
+off `main`; **`main` is unchanged (`5ac4baa`).** Nothing merged — both await review.
 1. **Phase 6 (Search)** — complete on `phase-6-search`, **PR #9 OPEN**, awaiting
    review/merge.
-2. **Inline ask-user cards** — complete on `inline-ask-user-cards` (off `main`,
-   **7 commits, NOT pushed**). Paused at the finishing step: a device build is
-   installed for the user to try; push + open PR is pending their OK.
+2. **Inline ask-user cards** — complete on `inline-ask-user-cards`, pushed,
+   **PR #10 OPEN**, awaiting review/merge. Device-tested on Dan's iPhone.
 
 Current checkout: **`inline-ask-user-cards`** (clean). A Debug build of THIS
 branch is installed on Dan's iPhone (so it does NOT have search — see below).
@@ -37,7 +36,7 @@ app builds green (SPM 465; iOS; Mac unit 75).
   `AppDependencies.search` optional (avoid throwing-init ripple); file-protection
   assert gated `#if !targetEnvironment(simulator)`.
 
-### 2. Inline ask-user cards — `inline-ask-user-cards` (off `main`, UNPUSHED)
+### 2. Inline ask-user cards — PR #10 `inline-ask-user-cards`
 Replaces the blocking ask-user **sheet** with **inline, non-blocking cards** in
 the timeline (matron-x / matron-web parity). The buttons-protocol "message
 queued → Cancel/Send" prompt now renders as an inline card, not a modal.
@@ -51,9 +50,9 @@ queued → Cancel/Send" prompt now renders as an inline card, not a modal.
 - Verified: SPM 452 (0 fail; +6 new tests), iOS build + MatronTests, Mac build +
   MatronMacTests (73). **No automated UI coverage** (snapshot pixels CI-skipped)
   → device validation matters.
-- **Next:** once the user confirms the inline cards on-device → push + open PR
-  (finishing-a-development-branch option 2), or merge. Optionally: a combined
-  search+inline branch if the user wants both on the phone at once.
+- **Next:** PR #10 is open and awaiting review/merge — device validation done.
+  Optionally: a combined search+inline branch if the user wants both on the
+  phone at once.
 
 ### Ask-sheet invariants — UPDATED (the old "DON'T undo" list below is now partly obsolete)
 The inline-cards work **removed the ask-sheet**. What still holds vs what's gone:
