@@ -62,9 +62,9 @@ struct MacTimelineItemView: View {
         case .text(let body, _):
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
-                senderLabel: item.isOwn ? nil : Self.displayName(for: item.sender)
+                timestamp: item.timestamp
             ) {
-                MarkdownText(body)
+                MarkdownText(body, theme: .matronMessage, lineSpacing: 4)
             }
             // Mac VoiceOver mirror of the iOS accessibility wiring — see
             // `TimelineItemView.accessibilityLabel(for:body:)` (QA finding #13).
@@ -74,7 +74,7 @@ struct MacTimelineItemView: View {
         case .image(let url, let caption, let sizeBytes):
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
-                senderLabel: item.isOwn ? nil : Self.displayName(for: item.sender)
+                timestamp: item.timestamp
             ) {
                 AttachmentImage(
                     image: resolvedImage(for: url),
@@ -99,7 +99,7 @@ struct MacTimelineItemView: View {
         case .file(let url, let filename, let sizeBytes):
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
-                senderLabel: item.isOwn ? nil : Self.displayName(for: item.sender)
+                timestamp: item.timestamp
             ) {
                 AttachmentFile(
                     filename: filename,

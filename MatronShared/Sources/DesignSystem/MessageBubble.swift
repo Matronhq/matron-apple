@@ -1,9 +1,8 @@
 import SwiftUI
 
 /// Visual style of a message bubble. Bots render flat (no bubble background,
-/// left-aligned, with a small caption above for the bot's display name);
-/// "me" renders right-aligned with a subtle filled rounded rectangle so the
-/// user can tell at a glance which messages they sent.
+/// left-aligned); "me" renders right-aligned with a subtle filled rounded
+/// rectangle so the user can tell at a glance which messages they sent.
 public enum MessageAuthorStyle {
     case bot
     case me
@@ -15,37 +14,51 @@ public enum MessageAuthorStyle {
 /// `MatronDesignSystem` so both iOS (`TimelineItemView`) and macOS
 /// (`MacChatView`) consume the same primitive and the snapshot test
 /// baselines guard a single source of truth.
+///
+/// `timestamp`, when supplied, renders as a subtle light-grey time tucked into
+/// the bubble's bottom-right corner. The sender name is deliberately NOT shown
+/// above messages — these are 1:1 chats with one bot, so the label was noise.
 public struct MessageBubble<Content: View>: View {
     let style: MessageAuthorStyle
-    let senderLabel: String?
+    let timestamp: Date?
     let content: () -> Content
 
     public init(
         style: MessageAuthorStyle,
-        senderLabel: String? = nil,
+        timestamp: Date? = nil,
         @ViewBuilder content: @escaping () -> Content
     ) {
         self.style = style
-        self.senderLabel = senderLabel
+        self.timestamp = timestamp
         self.content = content
     }
 
     public var body: some View {
         HStack {
             if style == .me { Spacer(minLength: 32) }
-            VStack(alignment: .leading, spacing: 4) {
-                if let label = senderLabel, style == .bot {
-                    Text(label).font(.caption).foregroundStyle(.secondary)
-                }
+            // Content + timestamp sit side by side on the SAME line:
+            // `.lastTextBaseline` drops the time onto the baseline of the
+            // message's last line, so a short message reads inline
+            // ("Hi  12:15") and a multi-line one tucks the time at the
+            // bottom-right after the final line.
+            HStack(alignment: .lastTextBaseline, spacing: 6) {
                 content()
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    // `Color.matronCodeBg` is the cross-platform alias defined
-                    // in MarkdownText.swift — `Color(.systemGray6)` is iOS-only
-                    // and would break the Mac build.
-                    .background(style == .me ? Color.matronCodeBg : Color.clear)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                if let timestamp {
+                    Text(timestamp, format: .dateTime.hour().minute())
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        // Don't let the time wrap or get squeezed — the
+                        // message text yields width to it instead.
+                        .fixedSize()
+                }
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            // `Color.matronCodeBg` is the cross-platform alias defined
+            // in MarkdownText.swift — `Color(.systemGray6)` is iOS-only
+            // and would break the Mac build.
+            .background(style == .me ? Color.matronCodeBg : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 14))
             if style == .bot { Spacer(minLength: 32) }
         }
         .padding(.horizontal)
