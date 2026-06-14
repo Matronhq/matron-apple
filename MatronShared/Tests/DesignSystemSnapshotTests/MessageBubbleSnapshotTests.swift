@@ -29,4 +29,20 @@ final class MessageBubbleSnapshotTests: XCTestCase {
         .frame(width: 320)
         assertVariants(of: view, named: "meBubble")
     }
+
+    /// Column at phone width: guards that a long bot message extends to the
+    /// same horizontal margin on the right as on the left (even margins).
+    func test_column_evenMargins() {
+        let view = VStack(spacing: 8) {
+            MessageBubble(style: .bot, timestamp: Self.sampleTime) {
+                MarkdownText("This is a longer assistant reply that should wrap and reach the same margin on the right edge as it has on the left, using the full width of the column.",
+                             theme: .matronMessage, lineSpacing: 4)
+            }
+            MessageBubble(style: .me, timestamp: Self.sampleTime) {
+                MarkdownText("Short one from me", theme: .matronMessage, lineSpacing: 4)
+            }
+        }
+        .frame(width: 390)
+        assertVariants(of: view, named: "column")
+    }
 }
