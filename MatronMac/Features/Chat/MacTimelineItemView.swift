@@ -1,7 +1,9 @@
 import SwiftUI
 import MatronChat
+import MatronEvents
 import MatronModels
 import MatronDesignSystem
+import MatronViewModels
 
 /// Mac-side mirror of `Matron/Features/Chat/Rendering/TimelineItemView`.
 /// Body is byte-identical bar the missing `displayName` static helper
@@ -25,6 +27,10 @@ struct MacTimelineItemView: View {
     /// `MacChatView` wires this through to a temp-file write +
     /// `NSWorkspace.shared.open(_:)`.
     var onTapFile: ((URL, String) -> Void)? = nil
+    /// Inline ask-user — mirrors the iOS surface.
+    var askViewModel: ((String) -> AskUserSheetViewModel?)? = nil
+    var isPromptAnswered: ((String) -> Bool)? = nil
+    var answerSummary: ((String) -> String?)? = nil
 
     var body: some View {
         // See iOS `TimelineItemView.body` — `shouldRender` is dead
@@ -126,20 +132,14 @@ struct MacTimelineItemView: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Tool call: \(evt.tool)"))
 
-        case .askUser(_, let evt):
-            // The interaction surface is the `MacAskUserSheet` that
-            // `MacChatView` presents off `viewModel.pendingAsk()`;
-            // the timeline row is just a pill marker — same as iOS.
+        case .askUser(let eventID, let evt):
+            // Inline, non-blocking card (bot-aligned like .toolCall) — same as iOS.
             HStack {
-                Spacer()
-                Label(evt.prompt, systemImage: "questionmark.circle")
-                    .labelStyle(.titleAndIcon)
-                    .font(.caption)
-                    .padding(.horizontal, 10).padding(.vertical, 6)
-                    .background(Color.accentColor.opacity(0.12))
-                    .clipShape(Capsule())
-                Spacer()
+                askCard(eventID: eventID, event: evt)
+                    .frame(maxWidth: 360, alignment: .leading)
+                Spacer(minLength: 0)
             }
+            .padding(.horizontal)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Question: \(evt.prompt)"))
 
@@ -197,6 +197,27 @@ struct MacTimelineItemView: View {
         return withoutSigil.split(separator: ":").first.map(String.init) ?? senderID
     }
 
+    /// Builds the inline ask-user card — Mac mirror of
+    /// `TimelineItemView.askCard(eventID:event:)`.
+    @ViewBuilder
+    private func askCard(eventID: String, event: AskUserEvent) -> some View {
+        if let askViewModel, let isPromptAnswered, let answerSummary,
+           let vm = askViewModel(eventID) {
+            MacAskUserCardHost(
+                viewModel: vm,
+                isAnswered: isPromptAnswered(eventID),
+                answerSummary: answerSummary(eventID)
+            )
+        } else {
+            AskUserCard(
+                event: event, isAnswered: false, answerSummary: nil,
+                textInput: .constant(""), selectedChoiceIDs: .constant([]),
+                booleanAnswer: .constant(nil),
+                isSending: false, isExpired: false, error: nil, onSend: {}
+            )
+        }
+    }
+
     /// Mac mirror of `TimelineItemView.accessibilityLabel(for:body:)` —
     /// see iOS for the rationale (QA finding #13).
     static func accessibilityLabel(for item: TimelineItem, body: String) -> String {
@@ -207,5 +228,29 @@ struct MacTimelineItemView: View {
     private func resolvedImage(for url: URL?) -> Image? {
         guard let url, let resolveImage else { return nil }
         return resolveImage(url)
+    }
+}
+
+/// Mac mirror of `AskUserCardHost`: binds a cached `AskUserSheetViewModel` to the
+/// shared `AskUserCard`. Separate `@Bindable` view because property wrappers
+/// can't be declared inline in a `@ViewBuilder` switch.
+private struct MacAskUserCardHost: View {
+    @Bindable var viewModel: AskUserSheetViewModel
+    let isAnswered: Bool
+    let answerSummary: String?
+
+    var body: some View {
+        AskUserCard(
+            event: viewModel.event,
+            isAnswered: isAnswered,
+            answerSummary: answerSummary,
+            textInput: $viewModel.textInput,
+            selectedChoiceIDs: $viewModel.selectedChoiceIDs,
+            booleanAnswer: $viewModel.booleanAnswer,
+            isSending: viewModel.isSending,
+            isExpired: viewModel.isExpired,
+            error: viewModel.error,
+            onSend: { Task { await viewModel.send() } }
+        )
     }
 }
