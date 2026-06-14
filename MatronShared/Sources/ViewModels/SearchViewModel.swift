@@ -16,12 +16,23 @@ public final class SearchViewModel {
     public private(set) var isSearching = false
     public private(set) var backfillProgress: AggregateBackfillProgress?
 
-    public let allChats: [ChatSummary]
+    public private(set) var allChats: [ChatSummary]
     private let search: SearchService
 
     public init(search: SearchService, allChats: [ChatSummary]) {
         self.search = search
         self.allChats = allChats
+    }
+
+    /// Refreshes the chat-list snapshot backing chat-title hits and
+    /// `chatTitle(for:)`. The Mac search VM is long-lived (built once, lives in
+    /// the window toolbar), so it must track later chat-list updates — new
+    /// rooms, renamed titles — instead of clinging to the first snapshot
+    /// (bugbot "Mac chat search snapshot stale"). On iOS the VM is rebuilt per
+    /// sheet presentation, so it already sees a fresh snapshot; calling this is
+    /// harmless there.
+    public func updateChats(_ chats: [ChatSummary]) {
+        allChats = chats
     }
 
     public var chatHits: [ChatSummary] {

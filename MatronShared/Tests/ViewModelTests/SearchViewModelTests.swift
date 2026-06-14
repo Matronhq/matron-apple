@@ -61,6 +61,28 @@ final class SearchViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_updateChats_refreshesChatHitsAndTitles() {
+        // bugbot "Mac chat search snapshot stale": the long-lived Mac search VM
+        // must reflect later chat-list updates (new rooms, renamed titles)
+        // instead of clinging to the snapshot it was built with.
+        let claude = BotIdentity(matrixID: "@claude:s", displayName: "Claude", avatarURL: nil)
+        let vm = SearchViewModel(
+            search: FakeSearchService(),
+            allChats: [ChatSummary(id: "!1:s", title: "Auth bug", bot: claude, lastActivity: nil, unreadCount: 0)]
+        )
+        vm.query = "refactor"
+        XCTAssertEqual(vm.chatHits.map(\.id), [], "no match in the original snapshot")
+
+        // A new room arrives and the existing room is renamed.
+        vm.updateChats([
+            ChatSummary(id: "!1:s", title: "Auth fix", bot: claude, lastActivity: nil, unreadCount: 0),
+            ChatSummary(id: "!2:s", title: "Refactor search", bot: claude, lastActivity: nil, unreadCount: 0),
+        ])
+        XCTAssertEqual(vm.chatHits.map(\.id), ["!2:s"], "new room is now searchable")
+        XCTAssertEqual(vm.chatTitle(for: "!1:s"), "Auth fix", "renamed title resolves to the new value")
+    }
+
+    @MainActor
     func test_emptyState_whenBackfillInProgress_showsIndexingMessage() async {
         let vm = SearchViewModel(search: FakeSearchService(), allChats: [])
         vm.query = "anything"
