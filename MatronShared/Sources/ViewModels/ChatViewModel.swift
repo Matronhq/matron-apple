@@ -768,6 +768,65 @@ public final class ChatViewModel {
         )
     }
 
+    /// Stable per-prompt `AskUserSheetViewModel` cache for the inline
+    /// `AskUserCard`. The card looks its VM up by prompt event ID every render;
+    /// without caching, a fresh VM each timeline snapshot would reset the user's
+    /// in-progress selection / typing. Keyed by prompt event ID, bounded by the
+    /// room's open-prompt count and torn down with this (per-room) view model.
+    private var askViewModels: [String: AskUserSheetViewModel] = [:]
+
+    /// Returns the stable `AskUserSheetViewModel` for the `.askUser` prompt with
+    /// `eventID`, creating + caching it on first use. `nil` if no such prompt is
+    /// in the current timeline. Send-success marks the prompt answered (via the
+    /// VM's `onClose`) so the inline card flips to its resolved state.
+    public func askViewModel(forPrompt eventID: String) -> AskUserSheetViewModel? {
+        if let existing = askViewModels[eventID] { return existing }
+        guard let event = askEvent(forPrompt: eventID) else { return nil }
+        let vm = makeAskUserSheetViewModel(eventID: eventID, event: event) { [weak self] in
+            self?.markPromptAnswered(eventID)
+        }
+        askViewModels[eventID] = vm
+        return vm
+    }
+
+    /// The chosen answer for `promptEventID`, for the card's resolved state, or
+    /// `nil` if not yet answered. Buttons: maps the hidden `.askUserAnswer`
+    /// `selectedValues` back to option labels via the prompt's options (so
+    /// cross-device answers display). Text channel: the reply message body.
+    public func answerSummary(forPrompt promptEventID: String) -> String? {
+        for item in items {
+            if case .askUserAnswer(let pid, let values) = item.kind,
+               pid == promptEventID, item.isOwn {
+                return mapValuesToLabels(values, promptEventID: promptEventID)
+            }
+        }
+        for item in items where item.isOwn && item.inReplyToEventID == promptEventID {
+            if case .text(let body, _) = item.kind { return body }
+        }
+        return nil
+    }
+
+    /// The `AskUserEvent` for a prompt event ID, scanned from the timeline.
+    private func askEvent(forPrompt eventID: String) -> AskUserEvent? {
+        for item in items {
+            if case .askUser(let id, let evt) = item.kind, id == eventID { return evt }
+        }
+        return nil
+    }
+
+    private func mapValuesToLabels(_ values: [String], promptEventID: String) -> String {
+        var labelByValue: [String: String] = [:]
+        if let evt = askEvent(forPrompt: promptEventID) {
+            switch evt.kind {
+            case .choice(let options, _), .multiChoice(let options, _):
+                for opt in options { labelByValue[opt.value] = opt.label }
+            case .text, .boolean:
+                break
+            }
+        }
+        return values.map { labelByValue[$0] ?? $0 }.joined(separator: ", ")
+    }
+
     /// Live count of cached resolved images. Test seam for asserting
     /// LRU eviction without exposing the raw storage.
     public var resolvedImageCount: Int { resolvedImages.count }
