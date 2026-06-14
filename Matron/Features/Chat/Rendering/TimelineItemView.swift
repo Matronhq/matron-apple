@@ -1,7 +1,9 @@
 import SwiftUI
 import MatronChat
+import MatronEvents
 import MatronModels
 import MatronDesignSystem
+import MatronViewModels
 
 /// Renders a single `TimelineItem` row. Text/image/file kinds are wrapped in
 /// a `MessageBubble`; state changes and unknown events render as small
@@ -34,6 +36,13 @@ struct TimelineItemView: View {
     /// temp file and present `ShareLink` (iOS) / `NSWorkspace.open`
     /// (Mac).
     var onTapFile: ((URL, String) -> Void)? = nil
+    /// Inline ask-user: resolves the stable per-prompt `AskUserSheetViewModel`
+    /// (nil for previews/tests without a `ChatViewModel`).
+    var askViewModel: ((String) -> AskUserSheetViewModel?)? = nil
+    /// Whether the prompt with this event ID has been answered.
+    var isPromptAnswered: ((String) -> Bool)? = nil
+    /// The chosen-answer summary for an answered prompt (nil = not answered).
+    var answerSummary: ((String) -> String?)? = nil
 
     var body: some View {
         // Note: `shouldRender(_:)` is the contract for "is this Kind
@@ -148,21 +157,15 @@ struct TimelineItemView: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Tool call: \(evt.tool)"))
 
-        case .askUser(_, let evt):
-            // The interaction surface is the sheet `ChatView` presents
-            // off `viewModel.pendingAsk()`; the timeline row is just a
-            // pill so the user can see there's an (un)answered prompt
-            // at this point in the conversation.
+        case .askUser(let eventID, let evt):
+            // Inline, non-blocking card (bot-aligned like .toolCall) — the
+            // interactive surface lives in the timeline, not a sheet.
             HStack {
-                Spacer()
-                Label(evt.prompt, systemImage: "questionmark.circle")
-                    .labelStyle(.titleAndIcon)
-                    .font(.caption)
-                    .padding(.horizontal, 10).padding(.vertical, 6)
-                    .background(Color.accentColor.opacity(0.12))
-                    .clipShape(Capsule())
-                Spacer()
+                askCard(eventID: eventID, event: evt)
+                    .frame(maxWidth: 360, alignment: .leading)
+                Spacer(minLength: 0)
             }
+            .padding(.horizontal)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Question: \(evt.prompt)"))
 
@@ -196,6 +199,28 @@ struct TimelineItemView: View {
                 Spacer()
             }
             .padding(.vertical, 4)
+        }
+    }
+
+    /// Builds the inline ask-user card. Uses the cached per-prompt VM when the
+    /// ask closures are wired (production); falls back to a static, non-
+    /// interactive card for previews / tests without a `ChatViewModel`.
+    @ViewBuilder
+    private func askCard(eventID: String, event: AskUserEvent) -> some View {
+        if let askViewModel, let isPromptAnswered, let answerSummary,
+           let vm = askViewModel(eventID) {
+            AskUserCardHost(
+                viewModel: vm,
+                isAnswered: isPromptAnswered(eventID),
+                answerSummary: answerSummary(eventID)
+            )
+        } else {
+            AskUserCard(
+                event: event, isAnswered: false, answerSummary: nil,
+                textInput: .constant(""), selectedChoiceIDs: .constant([]),
+                booleanAnswer: .constant(nil),
+                isSending: false, isExpired: false, error: nil, onSend: {}
+            )
         }
     }
 
@@ -260,5 +285,42 @@ struct TimelineItemView: View {
     private func resolvedImage(for url: URL?) -> Image? {
         guard let url, let resolveImage else { return nil }
         return resolveImage(url)
+    }
+}
+
+/// Binds a cached `AskUserSheetViewModel` to the shared `AskUserCard`. Separate
+/// `@Bindable` view because property wrappers can't be declared inline in a
+/// `@ViewBuilder` switch.
+private struct AskUserCardHost: View {
+    @Bindable var viewModel: AskUserSheetViewModel
+    let isAnswered: Bool
+    let answerSummary: String?
+    /// Toggled when the prompt's `expires_at` passes, forcing the card
+    /// to re-render into its expired state. `isExpired` is computed from
+    /// `Date.now`, so without a scheduled wake nothing re-evaluates it
+    /// at the deadline — the card keeps showing active controls until an
+    /// unrelated render, and only `send()` rejects (bugbot "Expiry timer
+    /// no longer scheduled"). The old half-sheet drove this via a
+    /// `.task(id:)` calling `awaitExpiry`; the inline card does the same.
+    @State private var expiryTick = false
+
+    var body: some View {
+        AskUserCard(
+            event: viewModel.event,
+            isAnswered: isAnswered,
+            answerSummary: answerSummary,
+            textInput: $viewModel.textInput,
+            selectedChoiceIDs: $viewModel.selectedChoiceIDs,
+            booleanAnswer: $viewModel.booleanAnswer,
+            isSending: viewModel.isSending,
+            isExpired: viewModel.isExpired,
+            error: viewModel.error,
+            onSend: { Task { await viewModel.send() } }
+        )
+        // Keyed on the prompt event ID so a recycled host (cells reuse)
+        // restarts the timer for the new prompt.
+        .task(id: viewModel.promptEventID) {
+            await viewModel.awaitExpiry { expiryTick.toggle() }
+        }
     }
 }
