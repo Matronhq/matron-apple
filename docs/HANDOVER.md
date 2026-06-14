@@ -1,4 +1,82 @@
-# Handover — Matron iOS+Mac. Phases 1–5 + 2.5 SHIPPED to `main`. Next: Phase 6 (Search).
+# Handover — Matron iOS+Mac. Phases 1–5 + 2.5 on `main`. Phase 6 (Search) in PR #9 (open). Inline ask-user cards branch ready.
+
+## 2026-06-14 session — Phase 6 (Search) BUILT → PR #9; inline ask-user cards BUILT (branch, unpushed)
+
+**TL;DR:** Two features built + verified this session, each on its own branch
+off `main`; **`main` is unchanged (`5ac4baa`).** Nothing merged.
+1. **Phase 6 (Search)** — complete on `phase-6-search`, **PR #9 OPEN**, awaiting
+   review/merge.
+2. **Inline ask-user cards** — complete on `inline-ask-user-cards` (off `main`,
+   **7 commits, NOT pushed**). Paused at the finishing step: a device build is
+   installed for the user to try; push + open PR is pending their OK.
+
+Current checkout: **`inline-ask-user-cards`** (clean). A Debug build of THIS
+branch is installed on Dan's iPhone (so it does NOT have search — see below).
+
+### 1. Phase 6 (Search) — PR #9 `phase-6-search`
+Local SQLite **FTS5** index + per-room backfill + unified search UI (iOS sheet,
+Mac toolbar field + detail-column results). New **pure** `MatronSearch` module
+(GRDB), indexing hook in `TimelineServiceLive`'s snapshot listener, SDK pager
+`TimelinePagerLive` in `MatronChat`, `BackfillRunner`/`BackfillCoordinator`,
+shared `SearchViewModel`. 12 plan tasks, one commit each. All unit tests + both
+app builds green (SPM 465; iOS; Mac unit 75).
+- **Two validation gaps (flagged in PR + manual-tests.md):**
+  (a) **`TimelinePagerLive`** — the only piece with NO unit coverage; its
+  listener/paginate timing only exercises against a real homeserver. **Validate
+  backfill actually indexes history.** A fresh `room.timeline()` + paginate
+  silently no-ops, so it uses a cached timeline + accumulating listener.
+  (b) **Jump-to-message** opens the matched message's ROOM but does not scroll to
+  the exact event (focused-timeline `TimelineFocus.event` follow-up).
+- **CI watch-item:** the `mac-build-and-test` job runs the full `MatronMac`
+  scheme incl. the XCUITest bundle; locally the unsigned runner trips Gatekeeper
+  ("damaged"). Pre-existing, not introduced by the PR — watch it on #9.
+- Plan: `docs/superpowers/plans/2026-05-02-matron-ios-phase-6-search.md`.
+  Several deviations (all in commit messages): indexing hook relocated +
+  real-event-ID extraction; **backfill cutoff bugfix** (plan failed its own
+  test); `TimelinePagerLive` moved to MatronChat to keep MatronSearch SDK-free;
+  `AppDependencies.search` optional (avoid throwing-init ripple); file-protection
+  assert gated `#if !targetEnvironment(simulator)`.
+
+### 2. Inline ask-user cards — `inline-ask-user-cards` (off `main`, UNPUSHED)
+Replaces the blocking ask-user **sheet** with **inline, non-blocking cards** in
+the timeline (matron-x / matron-web parity). The buttons-protocol "message
+queued → Cancel/Send" prompt now renders as an inline card, not a modal.
+- Spec: `docs/superpowers/specs/2026-06-13-inline-ask-user-cards-design.md`.
+  Plan: `docs/superpowers/plans/2026-06-13-inline-ask-user-cards.md`.
+- New shared `AskUserCard` (MatronDesignSystem) reusing `AskUserSheetBody`;
+  `ChatViewModel.askViewModel(forPrompt:)` (stable per-prompt VM cache) +
+  `answerSummary(forPrompt:)` (buttons value→label, text reply body, cross-device);
+  `TimelineItemView`/`MacTimelineItemView` render the card; `ChatView`/`MacChatView`
+  sheet wiring + `AskUserSheet`/`MacAskUserSheet` DELETED.
+- Verified: SPM 452 (0 fail; +6 new tests), iOS build + MatronTests, Mac build +
+  MatronMacTests (73). **No automated UI coverage** (snapshot pixels CI-skipped)
+  → device validation matters.
+- **Next:** once the user confirms the inline cards on-device → push + open PR
+  (finishing-a-development-branch option 2), or merge. Optionally: a combined
+  search+inline branch if the user wants both on the phone at once.
+
+### Ask-sheet invariants — UPDATED (the old "DON'T undo" list below is now partly obsolete)
+The inline-cards work **removed the ask-sheet**. What still holds vs what's gone:
+- **KEPT:** `ChatViewModel.isPromptAnswered` still requires `item.isOwn` on BOTH
+  the `.askUserAnswer` and `m.in_reply_to` paths (now drives the card's resolved
+  state + `answerSummary`). `markPromptAnswered` kept. `.askUserAnswer` stays
+  hidden; own button-response local echo still hidden via `PendingButtonAnswerStore`.
+- **OBSOLETE (no sheet to manage):** the sheet open/close, `onDismiss` re-query,
+  same-prompt close guard, drop-on-clear, newer-prompt-preempt logic. `pendingAsk()`
+  is **kept but no longer called by the UI** (a later cleanup can remove it).
+
+### Environment / gotchas (carry forward)
+- This Mac has **iPhone 17** sims (no 16). Full `MatronMac` scheme test fails
+  locally on the unsigned XCUITest runner → scope to
+  `-only-testing:MatronMacTests` (+ `MATRON_SKIP_SNAPSHOT_TESTS=1`
+  `TEST_RUNNER_MATRON_SKIP_SNAPSHOT_TESTS=1`).
+- **Device install** (Dan's iPhone, UDID `00008140-0011146C2093C01C`, devicectl
+  id `CA47988A-6782-5DDA-9A5B-A89549ECA908`): build signed Debug with
+  `-allowProvisioningUpdates` (cert "Apple Development: Dan Barker (MHQ4X3KS8L)"),
+  then `xcrun devicectl device install app --device <id> <…/Debug-iphoneos/Matron.app>`.
+  Launch fails while the phone is **locked** — that's the only reason, not a build problem.
+
+---
 
 ## 2026-06-13 session — Phase 5 MERGED; PR #4/5/6/7 all on main; Phase 6 next
 
