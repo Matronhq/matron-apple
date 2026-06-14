@@ -79,6 +79,13 @@ public final class ChatViewModel {
     /// streams together in `os_log` consumers.
     private static let logger = os.Logger(subsystem: "chat.matron", category: "chat-view-model")
 
+    // DIAGNOSTIC (throwaway branch): always-on, grouped with the timeline logs.
+    // Logs this VM's instance id at init/start/applySnapshot so we can tell
+    // whether the VM the View is bound to is the one actually receiving live
+    // snapshots (vs. a churned/duplicate instance).
+    private static let live = os.Logger(subsystem: "chat.matron", category: "live-update")
+    private let instanceID = String(UUID().uuidString.prefix(4))
+
 
     public let roomID: String
     /// The raw timeline snapshot from the SDK. Setter is private so
@@ -147,6 +154,7 @@ public final class ChatViewModel {
     private func applySnapshot(_ snapshot: [TimelineItem]) {
         self.items = snapshot
         applyDerivedRecompute()
+        Self.live.notice("ChatVM applySnapshot id=\(self.instanceID, privacy: .public) room=\(self.roomID, privacy: .public) items=\(snapshot.count, privacy: .public) rows=\(self.rows.count, privacy: .public)")
     }
 
     /// Rebuilds `rows` + `firstRenderableItemID` + `lastRenderableItemID`
@@ -309,6 +317,7 @@ public final class ChatViewModel {
         self.media = media
         let stored = UserDefaults.standard.stringArray(forKey: "matron.answeredPrompts.\(roomID)") ?? []
         self.answeredPromptIDs = Set(stored)
+        Self.live.notice("ChatVM init id=\(self.instanceID, privacy: .public) room=\(roomID, privacy: .public)")
     }
 
     /// Starts observing the timeline. Returns *after* the first snapshot has
@@ -378,6 +387,7 @@ public final class ChatViewModel {
     }
 
     public func start() async -> Task<Void, Never> {
+        Self.live.notice("ChatVM start id=\(self.instanceID, privacy: .public) room=\(self.roomID, privacy: .public)")
         observationTask?.cancel()
         // Fresh subscription — drop stale settled-empty state before the
         // new stream's snapshots arrive. Deliberately does NOT touch

@@ -1,4 +1,5 @@
 import Foundation
+import os
 import MatronChat
 import MatronModels
 import UniformTypeIdentifiers
@@ -29,10 +30,17 @@ public final class ComposerViewModel {
     private let timeline: TimelineService
     private let commands: [BotCommand]
 
+    // DIAGNOSTIC (throwaway branch): always-on. Instance id ties a send (and
+    // its input-clear) to a specific composer so we can tell if the visible
+    // composer is the one that sent.
+    private static let live = os.Logger(subsystem: "chat.matron", category: "live-update")
+    private let instanceID = String(UUID().uuidString.prefix(4))
+
     public init(roomID: String, timeline: TimelineService, commands: [BotCommand]) {
         self.roomID = roomID
         self.timeline = timeline
         self.commands = commands
+        Self.live.notice("Composer init id=\(self.instanceID, privacy: .public) room=\(roomID, privacy: .public)")
     }
 
     /// Whether the slash palette should be visible. True when the input is
@@ -84,8 +92,10 @@ public final class ComposerViewModel {
             input = ""
             sendError = nil
             ComposerDraftMemory.forget(roomID: roomID)
+            Self.live.notice("Composer send OK id=\(self.instanceID, privacy: .public) room=\(self.roomID, privacy: .public) input now empty=\(self.input.isEmpty, privacy: .public)")
         } catch {
             sendError = error.localizedDescription
+            Self.live.notice("Composer send FAILED id=\(self.instanceID, privacy: .public) room=\(self.roomID, privacy: .public) err=\(error.localizedDescription, privacy: .public)")
         }
     }
 
