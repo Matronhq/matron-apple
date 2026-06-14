@@ -89,6 +89,10 @@ public actor BackfillCoordinator {
         for attempt in 0..<3 {
             var stillPending: [String] = []
             for roomID in pending {
+                // Sign-out cancels the driving `.task`. Stop promptly rather
+                // than treating the resulting CancellationError as a room
+                // failure and retrying it.
+                if Task.isCancelled { return }
                 do {
                     try await runner.backfill(roomID: roomID, sinceCutoff: cutoff)
                     completed += 1
@@ -98,7 +102,7 @@ public actor BackfillCoordinator {
                 }
             }
             pending = stillPending
-            if pending.isEmpty { break }
+            if pending.isEmpty || Task.isCancelled { break }
             if attempt < 2 { try? await Task.sleep(for: retryDelay) }
         }
     }
