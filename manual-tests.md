@@ -339,21 +339,20 @@ Run before every TestFlight build (iOS) and every Mac App Store build.
 - [ ] Move cursor away → hint disappears.
 - [ ] Click anywhere on the card → expands, hint hides (already expanded).
 
-### Ask-user sheet — iOS
+### Ask-user inline cards — iOS
 
-- [ ] **Buttons protocol (live bridge):** have the agent ask a question (AskUserQuestion routed through the bridge) → **half-sheet** appears (`.medium` detent) with the prompt + radio options; the timeline shows a centred "❓ <prompt>" pill.
-- [ ] Pick an option → Send → sheet closes; the bridge receives the answer (agent proceeds); the reply does NOT appear as a raw `value1, value2` text bubble (button responses are hidden).
-- [ ] Drag the sheet up → grows to `.large`.
-- [ ] Swipe the sheet down without answering → it does NOT re-pop on the next message; the pill stays in the timeline.
-- [ ] **ask_user events (manual / future bridge):** text prompt → free-text field, reply lands as a normal message replying (`m.in_reply_to`) to the prompt.
-- [ ] multi-choice → checkbox list → comma-separated reply. boolean → Yes/No buttons.
-- [ ] Prompt with `expires_at` in the past never pops a sheet; one expiring while open auto-dismisses and the controls grey out.
+- [ ] **Buttons protocol (live bridge):** queue a message (or have the agent ask via AskUserQuestion) → an **inline card** appears in the timeline (NOT a sheet) with the prompt + options; the chat stays scrollable behind it (non-blocking).
+- [ ] Pick an option → Send → the card flips to "✓ You chose: <label>"; the reply does NOT appear as a raw `value1, value2` text bubble (button responses are hidden).
+- [ ] A second prompt arrives while the first is unanswered → BOTH cards show inline; answering one doesn't disturb the other; typing/selection in one card isn't reset when a new snapshot arrives.
+- [ ] **ask_user events (manual / future bridge):** text prompt → inline text field in the card; Send posts a normal message replying (`m.in_reply_to`) to the prompt; card resolves to "✓ You chose: <text>".
+- [ ] multi-choice → inline checkbox list → comma-separated reply. boolean → inline Yes/No buttons.
+- [ ] Prompt with `expires_at` in the past → card controls disabled + "This question has expired."; nothing pops as a modal.
+- [ ] Answer a prompt on another device → this device's card flips to the resolved state within seconds (no re-pop, no sheet).
 
-### Ask-user sheet — Mac
+### Ask-user inline cards — Mac
 
-- [ ] Buttons-protocol question → **fixed-size sheet (520×400)** centered over the main window — no detents, no drag-to-resize.
-- [ ] Same input kinds + expiry behaviour as iOS.
-- [ ] Esc (⎋ / Close button) closes the sheet without sending; no re-pop on the next message.
+- [ ] Same inline-card behaviour as iOS — the card renders in the timeline, NOT a fixed-size sheet; the detail column stays interactive while a prompt is unanswered.
+- [ ] Buttons / free-text / multi-choice / boolean / expired all render + resolve inline; answered cards echo "✓ You chose: …".
 
 ### Push notifications — both platforms
 
