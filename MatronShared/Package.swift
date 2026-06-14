@@ -18,11 +18,17 @@ let package = Package(
         .library(name: "MatronVerification", targets: ["MatronVerification"]),
         .library(name: "MatronPush", targets: ["MatronPush"]),
         .library(name: "MatronEvents", targets: ["MatronEvents"]),
+        .library(name: "MatronSearch", targets: ["MatronSearch"]),
     ],
     dependencies: [
         .package(url: "https://github.com/matrix-org/matrix-rust-components-swift", from: "26.04.01"),
         .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.4.0"),
         .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.17.0"),
+        // Phase 6 (Search): GRDB wraps SQLite with FTS5 + WAL + Data Protection
+        // support — easier than raw sqlite3 for the content-table FTS5 index.
+        // Pinned to 6.x (`from: 6.29.0` excludes 7.0) because GRDB 7 requires the
+        // Swift 6 language mode; this package builds in the 5.10 mode.
+        .package(url: "https://github.com/groue/GRDB.swift", from: "6.29.0"),
     ],
     targets: [
         .target(name: "MatronModels", path: "Sources/Models"),
@@ -56,6 +62,12 @@ let package = Package(
                 // SwiftUI, no SDK FFI — so MatronChat stays the same
                 // weight as before.
                 "MatronEvents",
+                // Phase 6 (Search): TimelineServiceLive's snapshot listener
+                // indexes decrypted `.text` / tool-call bodies into the
+                // SearchService. MatronSearch is a leaf w.r.t. MatronChat
+                // (it depends on Models/Storage/Sync/SDK, never Chat) so this
+                // adds no cycle.
+                "MatronSearch",
                 .product(name: "MatrixRustSDK", package: "matrix-rust-components-swift"),
             ],
             path: "Sources/Chat"
@@ -79,6 +91,9 @@ let package = Package(
                 // doesn't work here because the VM's `state` property is
                 // typed `SasFlowState` and views switch on it.
                 "MatronVerification",
+                // Phase 6 (Search): SearchViewModel drives both iOS and Mac
+                // search chrome and refers to SearchService / SearchHit.
+                "MatronSearch",
             ],
             path: "Sources/ViewModels"
         ),
@@ -105,6 +120,9 @@ let package = Package(
                 // only), so the design-system target still pulls no
                 // SDK surface.
                 "MatronEvents",
+                // Phase 6 (Search): SearchResultRow renders a SearchHit
+                // (snippet with <mark> highlighting), shared by iOS + Mac.
+                "MatronSearch",
             ],
             path: "Sources/DesignSystem"
         ),
@@ -151,11 +169,27 @@ let package = Package(
             dependencies: ["MatronModels"],
             path: "Sources/Events"
         ),
+        // Phase 6 (Search): local SQLite FTS5 index + per-room backfill.
+        // PURE module — GRDB + Foundation only, no SDK. Schema, service, models,
+        // the `TimelinePager` seam, and `BackfillRunner` are all fully
+        // unit-tested against a fake pager. The one SDK-backed pager
+        // (`TimelinePagerLive`) lives in MatronChat instead — MatronChat already
+        // links the SDK + owns the timeline machinery + the SDK→DTO mapping it
+        // reuses, and keeping it there means MatronSearch never imports the SDK.
+        .target(
+            name: "MatronSearch",
+            dependencies: [
+                "MatronModels",
+                "MatronStorage",
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ],
+            path: "Sources/Search"
+        ),
         .testTarget(name: "StorageTests", dependencies: ["MatronStorage"], path: "Tests/StorageTests"),
         .testTarget(name: "AuthTests", dependencies: ["MatronAuth", "MatronModels", "MatronStorage"], path: "Tests/AuthTests"),
         .testTarget(name: "SyncTests", dependencies: ["MatronSync", "MatronModels"], path: "Tests/SyncTests"),
         .testTarget(name: "ChatTests", dependencies: ["MatronChat", "MatronEvents", "MatronModels", "MatronSync"], path: "Tests/ChatTests"),
-        .testTarget(name: "ViewModelTests", dependencies: ["MatronViewModels", "MatronAuth", "MatronChat", "MatronEvents", "MatronModels", "MatronStorage", "MatronVerification"], path: "Tests/ViewModelTests"),
+        .testTarget(name: "ViewModelTests", dependencies: ["MatronViewModels", "MatronAuth", "MatronChat", "MatronEvents", "MatronModels", "MatronStorage", "MatronVerification", "MatronSearch"], path: "Tests/ViewModelTests"),
         .testTarget(
             name: "DesignSystemSnapshotTests",
             dependencies: [
@@ -182,5 +216,6 @@ let package = Package(
             dependencies: ["MatronEvents", "MatronModels"],
             path: "Tests/EventsTests"
         ),
+        .testTarget(name: "SearchTests", dependencies: ["MatronSearch"], path: "Tests/SearchTests"),
     ]
 )

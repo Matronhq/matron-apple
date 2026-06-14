@@ -3,6 +3,7 @@ import AppKit
 import MatronChat
 import MatronDesignSystem
 import MatronModels
+import MatronSearch
 import MatronSync
 import MatronVerification
 import MatronViewModels
@@ -33,6 +34,12 @@ struct MacChatListView: View {
     @Environment(\.currentSession) private var session
     @State private var selectedSummaryID: ChatSummary.ID?
     @State private var showingNewChat = false
+    /// Phase 6 (Search): the shared search VM, built once the session + index
+    /// resolve and the chat list has loaded (so chat-title hits have a snapshot).
+    /// A non-empty `searchModel.query` swaps the detail column for
+    /// `MacSearchResultsView`. `focusSearch` is flipped by ⌘F ("Find in Chat").
+    @State private var searchModel: SearchViewModel?
+    @State private var focusSearch = false
     /// The chat whose ⓘ button was tapped. Drives the
     /// `.sheet(item: $botProfileSummary)` presentation of
     /// `MacBotProfileSheet`. Cleared by the sheet's onDismiss / row tap /
@@ -105,6 +112,14 @@ struct MacChatListView: View {
     /// "Reconnecting…" copy. Sticky once true.
     @State private var hasEverConnected: Bool = false
 
+    /// Flattened chat-list snapshot, used to seed and refresh the search VM.
+    /// Hoisted into a typed property so the large `body` doesn't infer the
+    /// `flatMap` result inline — that tipped the Xcode 16.4 type-checker over
+    /// its time budget once the search-refresh `.onChange` was added.
+    private var allChatSummaries: [ChatSummary] {
+        viewModel.groups.flatMap(\.summaries)
+    }
+
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebarColumn
@@ -119,7 +134,62 @@ struct MacChatListView: View {
                     }
                 }
         } detail: {
-            detail
+            if let searchModel, !searchModel.query.isEmpty {
+                // Phase 6 (Search): a non-empty query replaces the chat detail
+                // with the results panel. Selecting a result clears the query
+                // (restoring the chat detail) and points the sidebar selection
+                // at the chosen room.
+                MacSearchResultsView(
+                    viewModel: searchModel,
+                    onSelectChat: { chat in
+                        selectedSummaryID = chat.id
+                        searchModel.query = ""
+                    },
+                    onSelectMessage: { hit in
+                        // Opens the hit's room. Precise scroll-to-event
+                        // (focused-timeline) is a Phase 6 follow-up — same scope
+                        // as iOS jump-to-message.
+                        selectedSummaryID = hit.roomID
+                        searchModel.query = ""
+                    }
+                )
+            } else {
+                detail
+            }
+        }
+        // Phase 6 (Search): the search field lives in the window toolbar at the
+        // split-view level so it persists when the results panel replaces the
+        // chat detail. ⌘F ("Find in Chat") focuses it via `focusSearch`.
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                if let searchModel {
+                    MacSearchView(viewModel: searchModel, focusRequest: $focusSearch)
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.findInChat))) { _ in
+            focusSearch = true
+        }
+        // Build the shared search VM once the chat list has loaded (so chat-title
+        // hits have a snapshot) and observe backfill progress for the empty
+        // state. Keyed on `groups.isEmpty` so it fires when the first snapshot
+        // lands; the `searchModel == nil` guard keeps it a one-shot build.
+        .task(id: viewModel.groups.isEmpty) {
+            guard searchModel == nil, !viewModel.groups.isEmpty,
+                  let deps, let session, let search = deps.search else { return }
+            let vm = SearchViewModel(search: search, allChats: allChatSummaries)
+            searchModel = vm
+            if let coordinator = deps.backfillCoordinator(for: session) {
+                await vm.observeBackfill(coordinator.progressStream())
+            }
+        }
+        // Keep the long-lived search VM's chat snapshot current: the toolbar
+        // VM is built once, so without this new rooms and renamed titles never
+        // reach chat-title search or `chatTitle(for:)` until relaunch (bugbot
+        // "Mac chat search snapshot stale"). Keyed on the flattened summaries
+        // because `GroupedSummaries` isn't Equatable.
+        .onChange(of: allChatSummaries) { _, summaries in
+            searchModel?.updateChats(summaries)
         }
         // Toggle Sidebar — menu-bar item (`Commands.swift`), ⌘⇧S, and the
         // sidebar-toggle toolbar button in `MacChatToolbar` all post the
