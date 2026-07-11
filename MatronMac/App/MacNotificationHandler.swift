@@ -1,7 +1,6 @@
 import AppKit
 import Foundation
 import UserNotifications
-import MatronPush
 
 /// Mac-side `UNUserNotificationCenterDelegate`. Two surfaces:
 ///

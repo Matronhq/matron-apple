@@ -27,7 +27,7 @@ final class MacCommandsTests: XCTestCase {
         let triggers: [MatronCommand] = [
             .newChat, .signOut, .findInChat, .slashCommand,
             .toggleSidebar, .increaseFontSize, .decreaseFontSize, .resetFontSize,
-            .verifyDevice, .showRecoveryKey, .refresh,
+            .refresh,
         ]
         for trigger in triggers {
             XCTAssertTrue(MatronCommand.allCases.contains(trigger), "missing \(trigger)")
@@ -55,34 +55,5 @@ final class MacCommandsTests: XCTestCase {
         _ = ChatCommands()
     }
 
-    /// Phase 3 wires the Help menu's "Verify This Device…" item to a
-    /// listener on `MatronMacApp`'s WindowGroup root. The item posts
-    /// `.matronCommand(.verifyDevice)`; the listener flips a sheet
-    /// presentation flag. Round-trip post → observe pins the contract
-    /// that the notification name actually reaches a registered handler
-    /// — same shape as `test_post_newChat_notifiesObserver`.
-    func test_post_verifyDevice_notifiesObserver() {
-        let exp = expectation(description: "verifyDevice observed")
-        let observer = NotificationCenter.default.addObserver(
-            forName: .matronCommand(.verifyDevice), object: nil, queue: nil
-        ) { _ in exp.fulfill() }
-        NotificationCenter.default.post(name: .matronCommand(.verifyDevice), object: nil)
-        wait(for: [exp], timeout: 1)
-        NotificationCenter.default.removeObserver(observer)
-    }
-
-    /// Phase 3 sibling to `test_post_verifyDevice_notifiesObserver` — the
-    /// "Show Recovery Key…" Help-menu item posts
-    /// `.matronCommand(.showRecoveryKey)` for the WindowGroup-root listener
-    /// to flip a sheet presentation flag.
-    func test_post_showRecoveryKey_notifiesObserver() {
-        let exp = expectation(description: "showRecoveryKey observed")
-        let observer = NotificationCenter.default.addObserver(
-            forName: .matronCommand(.showRecoveryKey), object: nil, queue: nil
-        ) { _ in exp.fulfill() }
-        NotificationCenter.default.post(name: .matronCommand(.showRecoveryKey), object: nil)
-        wait(for: [exp], timeout: 1)
-        NotificationCenter.default.removeObserver(observer)
-    }
 }
 #endif

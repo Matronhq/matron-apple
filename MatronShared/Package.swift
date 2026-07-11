@@ -15,14 +15,12 @@ let package = Package(
         .library(name: "MatronModels", targets: ["MatronModels"]),
         .library(name: "MatronViewModels", targets: ["MatronViewModels"]),
         .library(name: "MatronDesignSystem", targets: ["MatronDesignSystem"]),
-        .library(name: "MatronVerification", targets: ["MatronVerification"]),
         .library(name: "MatronPush", targets: ["MatronPush"]),
         .library(name: "MatronEvents", targets: ["MatronEvents"]),
         .library(name: "MatronSearch", targets: ["MatronSearch"]),
         .library(name: "MatronJournal", targets: ["MatronJournal"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/matrix-org/matrix-rust-components-swift", from: "26.04.01"),
         .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.4.0"),
         .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.17.0"),
         // Phase 6 (Search): GRDB wraps SQLite with FTS5 + WAL + Data Protection
@@ -40,7 +38,6 @@ let package = Package(
                 "MatronModels",
                 "MatronStorage",
                 "MatronJournal",
-                .product(name: "MatrixRustSDK", package: "matrix-rust-components-swift"),
             ],
             path: "Sources/Auth"
         ),
@@ -50,12 +47,10 @@ let package = Package(
                 "MatronModels",
                 "MatronStorage",
                 // Journal Task 10: JournalSyncConformance.swift bridges
-                // JournalSyncEngine into the legacy SyncService protocol
-                // while sdkService() still exists on it (Task 14 removes
-                // both). MatronJournal never imports MatronSync back, so
-                // this doesn't create a cycle.
+                // JournalSyncEngine into the SyncService protocol.
+                // MatronJournal never imports MatronSync back, so this
+                // doesn't create a cycle.
                 "MatronJournal",
-                .product(name: "MatrixRustSDK", package: "matrix-rust-components-swift"),
             ],
             path: "Sources/Sync"
         ),
@@ -70,17 +65,16 @@ let package = Package(
                 // SwiftUI, no SDK FFI — so MatronChat stays the same
                 // weight as before.
                 "MatronEvents",
-                // Phase 6 (Search): TimelineServiceLive's snapshot listener
-                // indexes decrypted `.text` / tool-call bodies into the
+                // Phase 6 (Search): the journal timeline path indexes
+                // decrypted `.text` / tool-call bodies into the
                 // SearchService. MatronSearch is a leaf w.r.t. MatronChat
-                // (it depends on Models/Storage/Sync/SDK, never Chat) so this
+                // (it depends on Models/Storage, never Chat) so this
                 // adds no cycle.
                 "MatronSearch",
                 // Phase 7 Task 6: JournalTimelineMapper maps journal events
-                // to TimelineItems. MatronJournal is a leaf (no SDK), so no
-                // cycle risk.
+                // to TimelineItems. MatronJournal is a leaf, so no cycle
+                // risk.
                 "MatronJournal",
-                .product(name: "MatrixRustSDK", package: "matrix-rust-components-swift"),
             ],
             path: "Sources/Chat"
         ),
@@ -97,12 +91,6 @@ let package = Package(
                 "MatronEvents",
                 "MatronModels",
                 "MatronStorage",
-                // Phase 3 Task 6: SasViewModel exposes `SasFlowState` /
-                // `SasEmoji` (from `MatronVerification`) on its public
-                // surface. Closure-only injection à la RecoveryKeyViewModel
-                // doesn't work here because the VM's `state` property is
-                // typed `SasFlowState` and views switch on it.
-                "MatronVerification",
                 // Phase 6 (Search): SearchViewModel drives both iOS and Mac
                 // search chrome and refers to SearchService / SearchHit.
                 "MatronSearch",
@@ -122,9 +110,8 @@ let package = Package(
                 // both consume enums that live in `MatronModels`
                 // (`SyncConnectionState` moved here from `MatronSync` in
                 // the journal swap; `TimelineSendState` was always here).
-                // A leaf module with no SwiftUI / SDK surface, so the
-                // bridges live next to the target enums without creating
-                // a cycle or pulling MatrixRustSDK.
+                // A leaf module with no SwiftUI surface, so the bridges
+                // live next to the target enums without creating a cycle.
                 "MatronModels",
                 // Phase 5: ToolCallCard / AskUserSheetBody /
                 // SessionMetaHeader render the MatronEvents DTOs
@@ -138,60 +125,29 @@ let package = Package(
             ],
             path: "Sources/DesignSystem"
         ),
-        // Verification target wraps the SDK's E2EE / SAS surface. Phase 3
-        // Task 1 lands DTOs only; later tasks layer on the protocol, live
-        // impl, recovery key manager, and observers.
-        .target(
-            name: "MatronVerification",
-            dependencies: [
-                "MatronModels",
-                "MatronStorage",
-                "MatronSync",
-                .product(name: "MatrixRustSDK", package: "matrix-rust-components-swift"),
-            ],
-            path: "Sources/Verification"
-        ),
-        // Phase 4 Task 1: Push protocol surface + (Task 2) the live
-        // SDK-bridging impl + (Task 3) the cross-platform PushDecoder.
-        // Depends on Sync for `ClientProvider` (Task 2's PushServiceLive
-        // resolves a `Client` per-session) and on the SDK for the
-        // notification-client APIs. Mac and iOS NSE both link this.
+        // Phase 4 Task 1: Push protocol surface. Journal Task 10 replaced
+        // the SDK-bridging live impl with `JournalPushService`, which
+        // registers device tokens via JournalAPI.registerPush/unregisterPush.
+        // Mac and iOS NSE both link this.
         .target(
             name: "MatronPush",
             dependencies: [
-                // Phase 5 Task 12: PushDecoder reads the
-                // MatronEventType constants for the notification-body
-                // hints (tool_call / ask_user / buttons).
-                "MatronEvents",
-                "MatronModels",
-                "MatronStorage",
-                "MatronSync",
-                // Journal Task 10: JournalPushService registers device
-                // tokens via JournalAPI.registerPush/unregisterPush
-                // instead of the SDK's setPusher/deletePusher.
                 "MatronJournal",
-                .product(name: "MatrixRustSDK", package: "matrix-rust-components-swift"),
             ],
             path: "Sources/Push"
         ),
         // Phase 5 Task 1: parsers + DTOs for the three Matron-specific
         // event types (`chat.matron.tool_call`, `.ask_user`,
         // `.session_meta`). Pure value types — no SwiftUI, no SDK FFI —
-        // so this target stays a leaf. The SDK-side mapping lives in
-        // `MatronChat`'s `TimelineServiceLive` (which depends on this
-        // target via the Phase 5 Task 6 wiring).
+        // so this target stays a leaf. `MatronChat`'s journal timeline
+        // path depends on this target for the event-to-DTO mapping.
         .target(
             name: "MatronEvents",
             dependencies: ["MatronModels"],
             path: "Sources/Events"
         ),
-        // Phase 6 (Search): local SQLite FTS5 index + per-room backfill.
-        // PURE module — GRDB + Foundation only, no SDK. Schema, service, models,
-        // the `TimelinePager` seam, and `BackfillRunner` are all fully
-        // unit-tested against a fake pager. The one SDK-backed pager
-        // (`TimelinePagerLive`) lives in MatronChat instead — MatronChat already
-        // links the SDK + owns the timeline machinery + the SDK→DTO mapping it
-        // reuses, and keeping it there means MatronSearch never imports the SDK.
+        // Phase 6 (Search): local SQLite FTS5 index. PURE module — GRDB +
+        // Foundation only.
         .target(
             name: "MatronSearch",
             dependencies: [
@@ -215,9 +171,8 @@ let package = Package(
         ),
         .testTarget(name: "StorageTests", dependencies: ["MatronStorage"], path: "Tests/StorageTests"),
         .testTarget(name: "AuthTests", dependencies: ["MatronAuth", "MatronModels", "MatronStorage", "MatronJournal"], path: "Tests/AuthTests"),
-        .testTarget(name: "SyncTests", dependencies: ["MatronSync", "MatronModels"], path: "Tests/SyncTests"),
         .testTarget(name: "ChatTests", dependencies: ["MatronChat", "MatronEvents", "MatronJournal", "MatronModels", "MatronSync"], path: "Tests/ChatTests"),
-        .testTarget(name: "ViewModelTests", dependencies: ["MatronViewModels", "MatronAuth", "MatronChat", "MatronEvents", "MatronModels", "MatronStorage", "MatronVerification", "MatronSearch"], path: "Tests/ViewModelTests"),
+        .testTarget(name: "ViewModelTests", dependencies: ["MatronViewModels", "MatronAuth", "MatronChat", "MatronEvents", "MatronModels", "MatronStorage", "MatronSearch"], path: "Tests/ViewModelTests"),
         .testTarget(
             name: "DesignSystemSnapshotTests",
             dependencies: [
@@ -227,11 +182,6 @@ let package = Package(
                 .product(name: "SnapshotTesting", package: "swift-snapshot-testing"),
             ],
             path: "Tests/DesignSystemSnapshotTests"
-        ),
-        .testTarget(
-            name: "VerificationTests",
-            dependencies: ["MatronVerification", "MatronModels", "MatronStorage"],
-            path: "Tests/VerificationTests"
         ),
         .testTarget(
             name: "PushTests",

@@ -16,31 +16,22 @@ final class MacChatListViewTests: XCTestCase {
         XCTAssertNotNil(view.body)
     }
 
-    /// Wave 6 / live-test #1+#2: the Sign Out / Verify Device / Show
-    /// Recovery Key menu commands route through the host via injected
-    /// closures because `.onReceive` on the WindowGroup root's
-    /// type-switching `Group { … }` content silently dropped
-    /// notifications on macOS. Constructing the view with the closures
-    /// pins the contract that they survive the new shape; invoking
-    /// each closure pins the round-trip.
+    /// Wave 6 / live-test #1: the Sign Out menu command routes through the
+    /// host via an injected closure because `.onReceive` on the
+    /// WindowGroup root's type-switching `Group { … }` content silently
+    /// dropped notifications on macOS. Constructing the view with the
+    /// closure pins the contract that it survives the new shape; invoking
+    /// it pins the round-trip.
     func test_menuCommandClosures_arePlumbed_throughInit() {
         let vm = ChatListViewModel(chat: LocalFakeChatActions(snapshots: []))
         var signOutCount = 0
-        var verifyCount = 0
-        var recoveryCount = 0
         let view = MacChatListView(
             viewModel: vm,
-            onSignOut: { signOutCount += 1 },
-            onVerifyDevice: { verifyCount += 1 },
-            onShowRecoveryKey: { recoveryCount += 1 }
+            onSignOut: { signOutCount += 1 }
         )
         XCTAssertNotNil(view.body)
         view.onSignOut?()
-        view.onVerifyDevice?()
-        view.onShowRecoveryKey?()
         XCTAssertEqual(signOutCount, 1)
-        XCTAssertEqual(verifyCount, 1)
-        XCTAssertEqual(recoveryCount, 1)
     }
 
     /// Verifies the view drives selection through `ChatSummary.ID` (a

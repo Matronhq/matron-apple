@@ -47,6 +47,13 @@ final class AppDependencies {
     }
 
     private var cores: [String: JournalCore] = [:]
+    /// Per-session `MediaService` cache. Task 11's journal swap dropped the
+    /// old `mediaCache` when `MediaServiceLive`'s NSCache-backed instance
+    /// was replaced by `JournalMediaService` — `mediaService(for:)` briefly
+    /// returned a fresh instance (and a fresh empty image cache) on every
+    /// call. Mirrors `cores`/`timelineCache`: one instance per signed-in
+    /// session, cleared on sign-out.
+    private var mediaServices: [String: any MediaService] = [:]
     /// Per-room `TimelineService` cache, bounded LRU so a long session that
     /// visits many rooms doesn't accumulate one journal timeline handle per
     /// room forever. Mirrors the pre-journal `timelineCache` — see
@@ -122,7 +129,10 @@ final class AppDependencies {
     }
 
     func mediaService(for session: UserSession) -> any MediaService {
-        JournalMediaService(api: core(for: session).api)
+        if let existing = mediaServices[session.userID] { return existing }
+        let service = JournalMediaService(api: core(for: session).api)
+        mediaServices[session.userID] = service
+        return service
     }
 
     func pushService(for session: UserSession) -> any PushService {
@@ -182,6 +192,7 @@ final class AppDependencies {
             }
         }
         cores.removeAll()
+        mediaServices.removeAll()
         timelineCache = LRUCache(limit: AppDependencies.timelineCacheLimit)
         // Phase 6 (Search): wipe the index so the next user can't search the
         // previous user's messages. `search` is a `let` (the same DB
