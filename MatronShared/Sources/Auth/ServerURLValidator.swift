@@ -32,6 +32,7 @@ public enum ServerURLValidator {
         let isLocalhostHost = host == "localhost"
             || host == "127.0.0.1"
             || host == "::1"
+            || host == "[::1]"
         if scheme == "http" {
             guard isLocalhostHost else { throw ValidationError.insecureScheme }
         } else if scheme != "https" {
