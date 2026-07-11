@@ -3204,6 +3204,33 @@ Steps: harness + first test → run scenario script → see it fail/skip → fix
 
 ---
 
+## Amendments (2026-07-11, mid-execution: server v1-completion is LIVE)
+
+The journal server shipped v1-completion and is live at `https://chat.example.com`
+(bridge dual-posting real data). Verified against `~/Dev/matron-journal` master:
+
+1. **Push registration** (supersedes Task 3/10 guesses): `POST /push/register`
+   (Bearer, client devices only) with `{apns_token: String, environment: "sandbox"|"prod"}`;
+   `apns_token: null` unregisters. `JournalAPI.registerAPNsToken` is replaced by
+   `registerPush(tokenHex:environment:)` / `unregisterPush()`. Debug builds are
+   `sandbox` (Xcode), release is `prod`.
+2. **`snapshot_required` is real now** (sent post-hello when `headSeq - cursor >
+   MATRON_MAX_REPLAY`, then socket closes 4009). The engine MUST handle it: decode
+   as a first-class `ServerFrame.snapshotRequired`, wipe the store, and let the
+   next loop iteration cold-start from `/snapshot`. (Was a no-op unknownControl
+   while the valve didn't exist server-side.)
+3. **Media endpoints are live** (`POST /media`, `GET /media/:id`) — JournalMediaService
+   works as designed. `CLIENT_SEND_TYPES` is still text-only, so composer
+   attachments stay gated off (`mediaAvailable = false`): displaying agent-sent
+   images works; client upload still needs a protocol op.
+4. **Server unread is now honest** (own `user:*` senders never inflate). Client
+   still computes locally — same semantics for a single-user journal.
+5. **Still open (asks remain in PR/spec §7):** `convo_create`, `message_ref` echoed
+   in finalize payload, `local_id` echoed on send fan-out, `convo_meta` live sync.
+6. Integration/manual tasks (15/16) run against the sibling checkout's `master`
+   (138 server tests) and can manually verify against the live hostname with real
+   data (`ssh -p 22 youruser@devbox.example.com 'cat ~/.config/matron/dan.password'`).
+
 ## Self-review notes (already applied)
 
 - Spec §2 "liveness watchdog: server pings" corrected here: URLSession can't observe server pings — the engine uses its own `sendPing` round-trips (Task 5 watchdog).
