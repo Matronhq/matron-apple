@@ -69,6 +69,10 @@ let package = Package(
                 // (it depends on Models/Storage/Sync/SDK, never Chat) so this
                 // adds no cycle.
                 "MatronSearch",
+                // Phase 7 Task 6: JournalTimelineMapper maps journal events
+                // to TimelineItems. MatronJournal is a leaf (no SDK), so no
+                // cycle risk.
+                "MatronJournal",
                 .product(name: "MatrixRustSDK", package: "matrix-rust-components-swift"),
             ],
             path: "Sources/Chat"
@@ -201,7 +205,7 @@ let package = Package(
         .testTarget(name: "StorageTests", dependencies: ["MatronStorage"], path: "Tests/StorageTests"),
         .testTarget(name: "AuthTests", dependencies: ["MatronAuth", "MatronModels", "MatronStorage"], path: "Tests/AuthTests"),
         .testTarget(name: "SyncTests", dependencies: ["MatronSync", "MatronModels"], path: "Tests/SyncTests"),
-        .testTarget(name: "ChatTests", dependencies: ["MatronChat", "MatronEvents", "MatronModels", "MatronSync"], path: "Tests/ChatTests"),
+        .testTarget(name: "ChatTests", dependencies: ["MatronChat", "MatronEvents", "MatronJournal", "MatronModels", "MatronSync"], path: "Tests/ChatTests"),
         .testTarget(name: "ViewModelTests", dependencies: ["MatronViewModels", "MatronAuth", "MatronChat", "MatronEvents", "MatronModels", "MatronStorage", "MatronVerification", "MatronSearch"], path: "Tests/ViewModelTests"),
         .testTarget(
             name: "DesignSystemSnapshotTests",
