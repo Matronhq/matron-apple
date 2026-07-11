@@ -39,6 +39,7 @@ let package = Package(
             dependencies: [
                 "MatronModels",
                 "MatronStorage",
+                "MatronJournal",
                 .product(name: "MatrixRustSDK", package: "matrix-rust-components-swift"),
             ],
             path: "Sources/Auth"
@@ -203,7 +204,7 @@ let package = Package(
             path: "Sources/Journal"
         ),
         .testTarget(name: "StorageTests", dependencies: ["MatronStorage"], path: "Tests/StorageTests"),
-        .testTarget(name: "AuthTests", dependencies: ["MatronAuth", "MatronModels", "MatronStorage"], path: "Tests/AuthTests"),
+        .testTarget(name: "AuthTests", dependencies: ["MatronAuth", "MatronModels", "MatronStorage", "MatronJournal"], path: "Tests/AuthTests"),
         .testTarget(name: "SyncTests", dependencies: ["MatronSync", "MatronModels"], path: "Tests/SyncTests"),
         .testTarget(name: "ChatTests", dependencies: ["MatronChat", "MatronEvents", "MatronJournal", "MatronModels", "MatronSync"], path: "Tests/ChatTests"),
         .testTarget(name: "ViewModelTests", dependencies: ["MatronViewModels", "MatronAuth", "MatronChat", "MatronEvents", "MatronModels", "MatronStorage", "MatronVerification", "MatronSearch"], path: "Tests/ViewModelTests"),
