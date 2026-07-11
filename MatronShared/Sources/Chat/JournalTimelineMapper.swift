@@ -52,7 +52,11 @@ public enum JournalTimelineMapper {
             let target = (payload["target_seq"] as? NSNumber)?.int64Value
             inReplyTo = target.map(String.init)
             if let choice = payload["choice"] as? String {
-                kind = .askUserAnswer(promptEventID: inReplyTo ?? "", selectedValues: [choice])
+                if let targetID = inReplyTo {
+                    kind = .askUserAnswer(promptEventID: targetID, selectedValues: [choice])
+                } else {
+                    kind = .unknown(eventType: JournalEventType.promptReply)
+                }
             } else {
                 kind = .text(body: payload["text"] as? String ?? "", formattedHTML: nil)
             }

@@ -82,6 +82,14 @@ final class JournalTimelineMapperTests: XCTestCase {
         XCTAssertEqual(item.inReplyToEventID, "4")
     }
 
+    func testPromptReplyWithoutTargetFallsBackToUnknown() throws {
+        let item = try XCTUnwrap(map(event(12, type: "prompt_reply", sender: "user:dan",
+                                           payload: ["choice": "Yes"])))
+        guard case .unknown(let type) = item.kind else { return XCTFail("expected labeled fallback") }
+        XCTAssertEqual(type, "prompt_reply")
+        XCTAssertNil(item.inReplyToEventID)
+    }
+
     func testImageBuildsMediaURL() throws {
         let item = try XCTUnwrap(map(event(8, type: "image",
                                            payload: ["blob_ref": "b123", "content_type": "image/png"])))
