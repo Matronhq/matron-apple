@@ -314,6 +314,79 @@ final class JournalTimelineServiceTests: XCTestCase {
         XCTAssertFalse(hasMore)
         XCTAssertTrue(try store.events(convoID: "c1").isEmpty)
     }
+
+    // MARK: (f) sendText failure flips the local echo to .failed instead of
+    // leaving it stuck in .sending forever, and rethrows so the caller
+    // (ComposerViewModel) can surface the error and keep the user's text.
+
+    func testSendTextFailureMarksEchoFailed() async throws {
+        let store = try makeStore()
+        let api = JournalAPI(serverURL: URL(string: "https://x")!)
+        // No socket at all and `beginSync()` never called: `liveConnection`
+        // stays nil, so `sendOp` throws `.offline` synchronously, exactly
+        // like calling send while genuinely offline.
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api, session: makeSession())
+
+        let (collector, task) = collectItems(service.items())
+        try await waitUntil { await collector.values.last != nil } // initial empty snapshot
+
+        do {
+            try await service.sendText("hi there", inReplyTo: nil)
+            XCTFail("expected sendText to rethrow the offline send failure")
+        } catch {
+            XCTAssertEqual(error as? JournalSyncError, .offline)
+        }
+
+        try await waitUntil {
+            guard let last = await collector.values.last else { return false }
+            return last.contains { $0.isOwn && $0.sendState == .failed(reason: "Not delivered") }
+        }
+        let failed = await collector.values.last!
+        XCTAssertEqual(failed.count, 1)
+        XCTAssertEqual(failed.first?.sendState, .failed(reason: "Not delivered"))
+        if case let .text(body, _) = failed.first?.kind {
+            XCTAssertEqual(body, "hi there")
+        } else {
+            XCTFail("expected echo .text kind")
+        }
+
+        task.cancel()
+    }
+
+    // MARK: (g) a stalled overlay (no finalize, no further activity) self-
+    // prunes via the periodic sweep instead of sitting in the snapshot
+    // forever waiting for the next store/ephemeral/echo event.
+
+    func testStalledOverlaySelfPrunesViaPeriodicSweep() async throws {
+        let store = try makeStore()
+        let socket = FakeJournalSocket()
+        socket.serve(helloOK(0))
+        let api = JournalAPI(serverURL: URL(string: "https://x")!)
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([socket]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api,
+                                             session: makeSession(),
+                                             overlayStaleness: .milliseconds(80), sweepInterval: .milliseconds(40))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        let (collector, task) = collectItems(service.items())
+        try await waitUntil { await collector.values.last != nil } // initial empty snapshot
+
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","message_ref":"m1","replace_text":"thinking…"}"#)
+        try await waitUntil { await collector.values.last?.contains { $0.id == "eph:m1" } == true }
+
+        // No further store/ephemeral/echo activity from here on: only the
+        // periodic sweep can trigger the re-emit that lets `reconcile`'s
+        // staleness cutoff prune this row.
+        try await waitUntil(timeout: 1) {
+            guard let last = await collector.values.last else { return false }
+            return !last.contains { $0.id == "eph:m1" }
+        }
+
+        task.cancel()
+        await engine.endSync()
+    }
 }
 
 // MARK: - Local test fakes

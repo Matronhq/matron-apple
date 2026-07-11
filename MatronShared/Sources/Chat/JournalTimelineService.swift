@@ -3,6 +3,18 @@ import MatronJournal
 import MatronModels
 import MatronSearch
 
+private extension Duration {
+    /// `Task.sleep(for:)` takes a `Duration` directly, but overlay staleness
+    /// cutoffs are computed against `Date`, which only understands
+    /// `TimeInterval` (seconds as `Double`). This is the one conversion
+    /// point so call sites stay in `Duration` (the injectable, testable
+    /// unit) end to end.
+    var timeInterval: TimeInterval {
+        let c = components
+        return TimeInterval(c.seconds) + TimeInterval(c.attoseconds) / 1e18
+    }
+}
+
 /// `TimelineService` over the local journal mirror (Phase 7 replacement for
 /// the Matrix-SDK-backed `TimelineServiceLive`). One instance per open room.
 ///
@@ -23,11 +35,13 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
     private let api: JournalAPI
     private let ownSender: String
     private let search: (any SearchService)?
-    private let overlay = OverlayState()
+    private let overlay: OverlayState
+    private let sweepInterval: Duration
 
     public init(
         convoID: String, store: JournalStore, engine: JournalSyncEngine,
-        api: JournalAPI, session: UserSession, search: (any SearchService)? = nil
+        api: JournalAPI, session: UserSession, search: (any SearchService)? = nil,
+        overlayStaleness: Duration = .seconds(30), sweepInterval: Duration = .seconds(10)
     ) {
         self.convoID = convoID
         self.store = store
@@ -35,6 +49,8 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         self.api = api
         self.ownSender = "user:\(session.userID)"
         self.search = search
+        self.overlay = OverlayState(staleness: overlayStaleness.timeInterval)
+        self.sweepInterval = sweepInterval
     }
 
     /// Streaming overlays + local echoes, isolated on one actor.
@@ -55,10 +71,15 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
     /// registered continuations. This supports multiple concurrent `items()`
     /// callers correctly and needs no mutable stored closures.
     actor OverlayState {
-        struct Echo { let localID: String; let body: String; let created: Date }
+        struct Echo { let localID: String; let body: String; let created: Date; var failed = false }
         private(set) var streaming: [String: (text: String, updated: Date)] = [:]
         private(set) var echoes: [Echo] = []
         private var changeContinuations: [UUID: AsyncStream<Void>.Continuation] = [:]
+        private let staleness: TimeInterval
+
+        init(staleness: TimeInterval) {
+            self.staleness = staleness
+        }
 
         func applyEphemeral(_ update: EphemeralUpdate) {
             let current = streaming[update.messageRef]?.text ?? ""
@@ -77,13 +98,22 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                     echoes.remove(at: index)
                 }
             }
-            let cutoff = Date().addingTimeInterval(-30)
+            let cutoff = Date().addingTimeInterval(-staleness)
             streaming = streaming.filter { $0.value.updated > cutoff }
-            echoes = echoes.filter { $0.created > Date().addingTimeInterval(-30) }
+            echoes = echoes.filter { $0.created > cutoff }
         }
 
         func addEcho(localID: String, body: String) {
             echoes.append(Echo(localID: localID, body: body, created: Date()))
+            broadcastChange()
+        }
+
+        /// A `sendText` op failed (e.g. offline): flip the echo to `.failed`
+        /// so it renders as undelivered instead of spinning forever. It
+        /// still expires via the normal staleness sweep in `reconcile`.
+        func markEchoFailed(localID: String) {
+            guard let index = echoes.firstIndex(where: { $0.localID == localID }) else { return }
+            echoes[index].failed = true
             broadcastChange()
         }
 
@@ -120,6 +150,7 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         let overlay = overlay
         let ownSender = ownSender
         let serverURL = api.serverURL
+        let sweepInterval = sweepInterval
         return AsyncThrowingStream { continuation in
             let emit: @Sendable () async -> Void = {
                 let events = (try? store.events(convoID: convoID)) ?? []
@@ -135,28 +166,65 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                     items.append(TimelineItem(id: "echo:\(echo.localID)", sender: ownSender,
                                               timestamp: echo.created,
                                               kind: .text(body: echo.body, formattedHTML: nil),
-                                              isOwn: true, sendState: .sending))
+                                              isOwn: true,
+                                              sendState: echo.failed ? .failed(reason: "Not delivered") : .sending))
                 }
                 continuation.yield(items)
             }
+
+            // Producers (store changes, ephemeral fan-out, echo changes, the
+            // staleness sweep) never call `emit()` directly — they just
+            // signal this tick stream. A single consumer loop below performs
+            // the read-store -> reconcile -> yield sequence strictly
+            // serially, so two producers firing back-to-back can never race
+            // to `continuation.yield` out of order (an in-flight emit
+            // reading older state finishing after a newer one). Buffering
+            // the ticks at 1 and keeping "newest" coalesces any signals that
+            // pile up while an emit is in flight into a single follow-up
+            // emit, rather than replaying every intermediate state.
+            let (ticks, tickContinuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+            let signal: @Sendable () -> Void = { tickContinuation.yield(()) }
+
+            let emitTask = Task {
+                for await _ in ticks { await emit() }
+            }
             let storeTask = Task {
                 await engine.setViewing(convoID: convoID)
-                for await _ in store.eventsStream(convoID: convoID) { await emit() }
+                for await _ in store.eventsStream(convoID: convoID) { signal() }
                 continuation.finish()
             }
             let ephemeralTask = Task {
                 for await update in engine.ephemerals(convoID: convoID) {
                     await overlay.applyEphemeral(update)
-                    await emit()
+                    signal()
                 }
             }
             let echoTask = Task {
-                for await _ in overlay.changes() { await emit() }
+                for await _ in overlay.changes() { signal() }
+            }
+            // Overlays (streaming + echoes) only get pruned inside
+            // `reconcile`, which only runs from `emit()`. Without this, a
+            // stalled overlay (e.g. an ephemeral stream that never gets a
+            // finalize, or a failed echo nobody retries) sits in the
+            // snapshot forever once activity stops, since nothing else
+            // triggers another emit. This sweep guarantees a re-emit at
+            // least every `sweepInterval` for as long as the stream is
+            // being observed, so `reconcile`'s staleness cutoff always gets
+            // a chance to run.
+            let sweepTask = Task {
+                while true {
+                    try? await Task.sleep(for: sweepInterval)
+                    if Task.isCancelled { break }
+                    signal()
+                }
             }
             continuation.onTermination = { _ in
                 storeTask.cancel()
                 ephemeralTask.cancel()
                 echoTask.cancel()
+                sweepTask.cancel()
+                emitTask.cancel()
+                tickContinuation.finish()
                 Task { await engine.setViewing(convoID: nil) }
             }
         }
@@ -169,7 +237,15 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         }
         let localID = UUID().uuidString
         await overlay.addEcho(localID: localID, body: body)
-        try await engine.sendOp(.send(convoID: convoID, body: body, localID: localID))
+        do {
+            try await engine.sendOp(.send(convoID: convoID, body: body, localID: localID))
+        } catch {
+            // Flip the echo to failed rather than leave it stuck in
+            // `.sending` forever, and rethrow so the composer surfaces the
+            // error and keeps the user's text instead of silently eating it.
+            await overlay.markEchoFailed(localID: localID)
+            throw error
+        }
     }
 
     public func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {
