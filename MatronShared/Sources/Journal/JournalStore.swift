@@ -329,15 +329,17 @@ public final class JournalStore: @unchecked Sendable {
         in dbQueue: DatabaseQueue
     ) -> AsyncStream<T> {
         AsyncStream { continuation in
-            var cancellable: DatabaseCancellable?
-            DispatchQueue.main.async {
-                cancellable = observation.start(in: dbQueue, scheduling: .immediate) { _ in
-                    continuation.finish()
-                } onChange: { value in
-                    continuation.yield(value)
-                }
+            // .async(onQueue:) may be started from any thread (unlike .immediate,
+            // which asserts off-main); the initial value is fetched and delivered
+            // on the next main-queue hop, which is "immediate" from an
+            // AsyncStream consumer's point of view. Crucially the cancellable is
+            // assigned synchronously, so onTermination can never miss it.
+            let cancellable = observation.start(in: dbQueue, scheduling: .async(onQueue: .main)) { _ in
+                continuation.finish()
+            } onChange: { value in
+                continuation.yield(value)
             }
-            continuation.onTermination = { _ in cancellable?.cancel() }
+            continuation.onTermination = { _ in cancellable.cancel() }
         }
     }
 }

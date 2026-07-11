@@ -104,4 +104,14 @@ final class JournalStoreTests: XCTestCase {
         XCTAssertEqual(store.cursor, 0)
         XCTAssertEqual(try store.conversations().count, 0)
     }
+
+    func testStreamsWorkFromBackgroundThread() async throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1))
+        let first = await Task.detached {
+            var iterator = store.conversationsStream().makeAsyncIterator()
+            return await iterator.next()
+        }.value
+        XCTAssertEqual(first?.first?.id, "c1")
+    }
 }
