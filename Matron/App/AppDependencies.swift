@@ -94,8 +94,7 @@ final class AppDependencies {
     /// caller would have to null-check.
     private func core(for session: UserSession) -> JournalCore {
         if let existing = cores[session.userID] { return existing }
-        let api = JournalAPI(serverURL: session.homeserverURL)
-        Task { await api.setToken(session.accessToken) }
+        let api = JournalAPI(serverURL: session.homeserverURL, token: session.accessToken)
         let dbURL = journalDirectory.appendingPathComponent("\(session.userID).sqlite")
         let store = try! JournalStore(databaseURL: dbURL, ownSender: "user:\(session.userID)")
         let engine = JournalSyncEngine(
@@ -165,10 +164,22 @@ final class AppDependencies {
     /// `restoreSession()` returns `nil` and a fresh login lands in a clean
     /// state. Callers (`MatronApp`) drop their `session` state regardless
     /// so the UI flips to the SignInView.
+    ///
+    /// Each core's teardown runs as one sequenced `Task` — best-effort push
+    /// deregistration first (while the API still holds a valid token),
+    /// then `endSync()` to stop the engine from writing to the store, and
+    /// only then `store.wipe()` — so the wipe can never race a still-running
+    /// sync write. The `Task` closes over its own `core` reference, so it's
+    /// safe to clear `cores`/`timelineCache` synchronously right after.
     func signOut() {
         for core in cores.values {
-            Task { await core.engine.endSync() }
-            try? core.store.wipe()
+            Task {
+                // Best-effort server-side push deregistration while the API
+                // still holds a valid token (Finding 3).
+                try? await core.api.unregisterPush()
+                await core.engine.endSync()          // stop the writer first…
+                try? core.store.wipe()               // …then clear the mirror
+            }
         }
         cores.removeAll()
         timelineCache = LRUCache(limit: AppDependencies.timelineCacheLimit)

@@ -31,9 +31,10 @@ public actor JournalAPI {
     private let urlSession: URLSession
     private var token: String?
 
-    public init(serverURL: URL, urlSession: URLSession = .shared) {
+    public init(serverURL: URL, urlSession: URLSession = .shared, token: String? = nil) {
         self.serverURL = serverURL
         self.urlSession = urlSession
+        self.token = token
     }
 
     public nonisolated var wsURL: URL {

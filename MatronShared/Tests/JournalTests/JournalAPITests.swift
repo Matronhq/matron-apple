@@ -118,6 +118,17 @@ final class JournalAPITests: XCTestCase {
         }
     }
 
+    func testTokenPassedAtInitIsUsedWithoutSetToken() async throws {
+        StubURLProtocol.responses = ["/snapshot": (200, #"{"conversations":[],"seq":0}"#)]
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubURLProtocol.self]
+        let api = JournalAPI(serverURL: URL(string: "https://chat.example.com")!,
+                             urlSession: URLSession(configuration: config),
+                             token: "t0")
+        _ = try await api.snapshot()
+        XCTAssertEqual(StubURLProtocol.lastRequest?.value(forHTTPHeaderField: "Authorization"), "Bearer t0")
+    }
+
     func testWsURL() {
         let api = JournalAPI(serverURL: URL(string: "https://chat.example.com")!)
         XCTAssertEqual(api.wsURL.absoluteString, "wss://chat.example.com/ws")
