@@ -49,6 +49,12 @@ let package = Package(
             dependencies: [
                 "MatronModels",
                 "MatronStorage",
+                // Journal Task 10: JournalSyncConformance.swift bridges
+                // JournalSyncEngine into the legacy SyncService protocol
+                // while sdkService() still exists on it (Task 14 removes
+                // both). MatronJournal never imports MatronSync back, so
+                // this doesn't create a cycle.
+                "MatronJournal",
                 .product(name: "MatrixRustSDK", package: "matrix-rust-components-swift"),
             ],
             path: "Sources/Sync"
@@ -160,6 +166,10 @@ let package = Package(
                 "MatronModels",
                 "MatronStorage",
                 "MatronSync",
+                // Journal Task 10: JournalPushService registers device
+                // tokens via JournalAPI.registerPush/unregisterPush
+                // instead of the SDK's setPusher/deletePusher.
+                "MatronJournal",
                 .product(name: "MatrixRustSDK", package: "matrix-rust-components-swift"),
             ],
             path: "Sources/Push"
@@ -225,7 +235,7 @@ let package = Package(
         ),
         .testTarget(
             name: "PushTests",
-            dependencies: ["MatronPush"],
+            dependencies: ["MatronPush", "MatronJournal"],
             path: "Tests/PushTests"
         ),
         .testTarget(
