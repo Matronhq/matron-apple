@@ -28,6 +28,7 @@ public actor JournalSyncEngine {
     private var viewingConvoID: String?
     private var backoffSleeper: Task<Void, Never>?
     private var attempt = 0
+    private var refreshSummariesTask: Task<Void, Never>?
 
     private var state: SyncConnectionState = .connecting
     private var stateContinuations: [UUID: AsyncStream<SyncConnectionState>.Continuation] = [:]
@@ -52,16 +53,24 @@ public actor JournalSyncEngine {
 
     public func beginSync() {
         guard runTask == nil else { return }
+        attempt = 0
         runTask = Task { await runLoop() }
     }
 
     public func endSync() async {
         runTask?.cancel()
         runTask = nil
+        failReadyWaiters(JournalSyncError.offline)
         liveConnection?.close()
         liveConnection = nil
         backoffSleeper?.cancel()
-        setState(.offline(reason: nil))
+        refreshSummariesTask?.cancel()
+        refreshSummariesTask = nil
+        // Don't clobber a terminal offline reason (e.g. auth revocation) that
+        // was already set before endSync() was called.
+        if case .offline = state {} else {
+            setState(.offline(reason: nil))
+        }
     }
 
     public var isRunning: Bool { runTask != nil }
@@ -163,7 +172,16 @@ public actor JournalSyncEngine {
                 if let viewingConvoID {
                     try? await connection.send(.viewing(convoID: viewingConvoID))
                 }
-                Task { await self.refreshSummaries() } // title/state stopgap (spec §7 ask 4)
+                // Ack cursor progress on every connect: a dead socket can't
+                // take a final flush, so the only place to guarantee the
+                // server's stored device cursor isn't stale by more than one
+                // reconnect's worth of frames is right after establishing
+                // the next one.
+                if store.cursor > 0 {
+                    try? await connection.send(.ack(cursor: store.cursor))
+                }
+                refreshSummariesTask?.cancel()
+                refreshSummariesTask = Task { await self.refreshSummaries() } // title/state stopgap (spec §7 ask 4)
                 if store.cursor >= headSeq { setState(.running) }
 
                 let watchdog = Task {
@@ -207,6 +225,7 @@ public actor JournalSyncEngine {
                 liveConnection = nil
                 setState(.offline(reason: "Signed out by server"))
                 failReadyWaiters(JournalSyncError.authRevoked)
+                runTask = nil
                 return
             } catch {
                 // fall through to backoff

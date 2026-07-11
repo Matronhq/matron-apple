@@ -100,3 +100,63 @@ final class FakeConnector: WebSocketConnecting, @unchecked Sendable {
         return queue.removeFirst()
     }
 }
+
+/// Simulates the journal server: replies to hello with events > cursor from
+/// a canonical journal, then kills the connection after a random number of
+/// frames. Every reconnect resumes from whatever cursor the client sends —
+/// exactly the real server's contract.
+final class ChaosServerConnector: WebSocketConnecting, @unchecked Sendable {
+    private let lock = NSLock()
+    private let journal: [String]        // journalLine(seq:) strings, seq 1...N
+    private let headSeq: Int64
+    private(set) var connectCount = 0
+
+    init(journal: [String], headSeq: Int64) {
+        self.journal = journal
+        self.headSeq = headSeq
+    }
+
+    func connect(to url: URL) async throws -> any WebSocketConnection {
+        lock.lock()
+        connectCount += 1
+        lock.unlock()
+        return ChaosServerConnection(journal: journal, headSeq: headSeq)
+    }
+}
+
+final class ChaosServerConnection: WebSocketConnection, @unchecked Sendable {
+    private let inner = FakeWebSocketConnection()
+    private let journal: [String]
+    private let headSeq: Int64
+
+    init(journal: [String], headSeq: Int64) {
+        self.journal = journal
+        self.headSeq = headSeq
+    }
+
+    func sendText(_ text: String) async throws {
+        // Intercept the hello to learn the client's cursor; ignore other ops.
+        guard let obj = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
+              obj["op"] as? String == "hello"
+        else {
+            try await inner.sendText(text)
+            return
+        }
+        let cursor = (obj["cursor"] as? NSNumber)?.int64Value ?? 0
+        inner.serve(#"{"kind":"control","op":"hello_ok","seq":\#(headSeq)}"#)
+        let remaining = journal.dropFirst(Int(cursor))
+        let cutAfter = Int.random(in: 1...12) // kill mid-replay, often mid-batch
+        for (offset, line) in remaining.enumerated() {
+            if offset == cutAfter {
+                inner.closeFromServer()
+                return
+            }
+            inner.serve(line)
+        }
+        // Served to the end without cutting: leave the connection open.
+    }
+
+    func receiveText() async throws -> String { try await inner.receiveText() }
+    func ping() async throws { try await inner.ping() }
+    func close() { inner.close() }
+}

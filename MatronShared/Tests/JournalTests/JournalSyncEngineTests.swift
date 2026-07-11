@@ -12,11 +12,13 @@ final class JournalSyncEngineTests: XCTestCase {
         #"{"kind":"control","op":"hello_ok","seq":\#(head)}"#
     }
 
-    private func makeEngine(store: JournalStore, connector: FakeConnector) -> JournalSyncEngine {
+    private func makeEngine(
+        store: JournalStore, connector: any WebSocketConnecting, backoffBaseSeconds: Double = 0.01
+    ) -> JournalSyncEngine {
         let api = JournalAPI(serverURL: URL(string: "https://x")!) // HTTP unused in these tests: store pre-seeded
         return JournalSyncEngine(api: api, store: store, connector: connector,
                                  token: "t", ownSender: "user:dan", search: nil,
-                                 backoffBaseSeconds: 0.01)
+                                 backoffBaseSeconds: backoffBaseSeconds)
     }
 
     /// Pre-seed the store so the engine skips the cold /snapshot fetch.
@@ -119,36 +121,86 @@ final class JournalSyncEngineTests: XCTestCase {
         await engine.endSync()
     }
 
-    /// Chaos-style: 60 events over connections that die every ~15 frames.
-    /// The store must converge to an exact, gap-free prefix copy.
+    /// Chaos-style: a cursor-aware fake server that cuts the connection at a
+    /// random point mid-replay on every connect (see ChaosServerConnector).
+    /// The store must still converge to an exact, gap-free prefix copy.
     func testChaosResumeConvergence() async throws {
-        var sockets: [FakeWebSocketConnection] = []
-        var next: Int64 = 1
-        while next <= 60 {
-            let socket = FakeWebSocketConnection()
-            socket.serve(helloOK(60))
-            let batchEnd = min(next + 14, 60)
-            // overlap: re-serve up to 3 already-delivered events (server replays > cursor;
-            // the fake approximates a race by double-sending — apply must dedupe)
-            for seq in max(1, next - 3)...batchEnd { socket.serve(journalLine(seq)) }
-            next = batchEnd + 1
-            sockets.append(socket)
-        }
+        let journal = (1...200).map { journalLine(Int64($0)) }
+        let connector = ChaosServerConnector(journal: journal, headSeq: 200)
         let store = try seededStore()
-        let engine = makeEngine(store: store, connector: FakeConnector(sockets))
+        let engine = makeEngine(store: store, connector: connector, backoffBaseSeconds: 0.001)
         await engine.beginSync()
-        for (index, socket) in sockets.enumerated() where index < sockets.count - 1 {
-            let target = Int64(min((index + 1) * 15, 60))
-            for _ in 0..<300 where store.cursor < target {
-                try await Task.sleep(for: .milliseconds(10))
-            }
-            socket.closeFromServer()
-        }
-        for _ in 0..<500 where store.cursor < 60 {
+        for _ in 0..<3000 where store.cursor < 200 {
             try await Task.sleep(for: .milliseconds(10))
         }
-        XCTAssertEqual(store.cursor, 60)
-        XCTAssertEqual(try store.events(convoID: "c1").map(\.seq), Array(1...60), "gap-free exactly-once")
+        XCTAssertEqual(store.cursor, 200)
+        XCTAssertEqual(try store.events(convoID: "c1").map(\.seq), Array(1...200), "gap-free exactly-once")
+        XCTAssertGreaterThan(connector.connectCount, 3, "chaos must actually force reconnects")
         await engine.endSync()
+    }
+
+    /// Regression for endSync() stranding waitUntilReady() callers: previously
+    /// endSync() never resumed readyWaiters, so a caller blocked in
+    /// waitUntilReady() while the engine was still trying (and failing) to
+    /// connect would hang forever. Races the waiter against a generous
+    /// timeout so a regression fails the test instead of hanging the suite.
+    func testEndSyncFailsReadyWaitersInsteadOfHanging() async throws {
+        let connector = FakeConnector([])
+        connector.connectError = JournalConnectionError.socketClosed
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: connector, backoffBaseSeconds: 0.001)
+        await engine.beginSync()
+        let waiter = Task { try await engine.waitUntilReady() }
+        // Give the run loop a moment to actually be mid-connect/backoff
+        // before we tear it down.
+        try await Task.sleep(for: .milliseconds(20))
+        await engine.endSync()
+
+        enum RaceResult { case waiterThrew(Error), waiterSucceeded, timedOut }
+        let result = await withTaskGroup(of: RaceResult.self) { group -> RaceResult in
+            group.addTask {
+                do {
+                    try await waiter.value
+                    return .waiterSucceeded
+                } catch {
+                    return .waiterThrew(error)
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(5))
+                return .timedOut
+            }
+            let first = await group.next()!
+            group.cancelAll()
+            return first
+        }
+
+        switch result {
+        case .waiterThrew(let error):
+            XCTAssertEqual(error as? JournalSyncError, .offline)
+        case .waiterSucceeded:
+            XCTFail("waitUntilReady() should have thrown after endSync(), not resumed successfully")
+        case .timedOut:
+            XCTFail("waitUntilReady() hung after endSync() (regression on Finding 1)")
+        }
+    }
+
+    /// Regression for isRunning staying true after an auth-rejected start:
+    /// runLoop() used to return from the authRejected catch without clearing
+    /// runTask, so isRunning stayed true forever.
+    func testIsRunningFalseAfterAuthRejected() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(#"{"kind":"control","op":"error","code":"auth"}"#)
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+
+        var attempts = 0
+        while await engine.isRunning, attempts < 200 {
+            try await Task.sleep(for: .milliseconds(10))
+            attempts += 1
+        }
+        let isRunning = await engine.isRunning
+        XCTAssertFalse(isRunning, "isRunning should be false once the run loop has exited after auth rejection")
     }
 }
