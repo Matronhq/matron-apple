@@ -1,4 +1,5 @@
 import XCTest
+import Foundation
 import MatronModels
 @testable import MatronJournal
 
@@ -323,24 +324,171 @@ final class JournalSyncEngineTests: XCTestCase {
 
         await engine.endSync()
     }
+
+    /// Epoch-fence regression: an externally-triggered refreshSummaries()
+    /// (e.g. pull-to-refresh → JournalChatService.forceSnapshot) that is
+    /// suspended on its /snapshot request across a snapshot_required wipe
+    /// must NOT repopulate the store with its now-stale result once it
+    /// resumes — that would defeat coldStartIfNeeded()'s emptiness guard and
+    /// strand the cursor at 0. Pins the external refresh's request in flight
+    /// with a gate, drives the snapshot_required wipe + cold-start to
+    /// completion behind it, then releases the gate and asserts the stale
+    /// result was discarded.
+    func testExternalRefreshSummariesDiscardedAfterSnapshotRequiredWipe() async throws {
+        SnapshotRequiredStubURLProtocol.reset()
+        let staleJSON = #"""
+            {"conversations":[{"id":"c1","title":"stale","session_state":"running","last_seq":5,"unread_count":0,"snippet":"s","created_at":0}],"seq":5}
+            """#
+        let freshJSON = #"""
+            {"conversations":[{"id":"c9","title":"fresh","session_state":"running","last_seq":400,"unread_count":0,"snippet":"s","created_at":0}],"seq":400}
+            """#
+        SnapshotRequiredStubURLProtocol.snapshotBody = freshJSON
+        SnapshotRequiredStubURLProtocol.gatedRequestIndex = 1
+        SnapshotRequiredStubURLProtocol.gatedBody = staleJSON
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SnapshotRequiredStubURLProtocol.self]
+        let api = JournalAPI(serverURL: URL(string: "https://x")!,
+                             urlSession: URLSession(configuration: config))
+
+        // Seed a store with cursor 5 and one convo ("c1") — the mirror that
+        // must get wiped, and whose stale re-population must be prevented.
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:dan")
+        try store.applyColdSnapshot([ConvoSummaryDTO(id: "c1", title: "", sessionState: "running",
+                                                     lastSeq: 0, snippet: "", createdAt: 0)], headSeq: 0)
+        for seq: Int64 in 1...5 {
+            _ = try store.applyJournal(JournalEvent(
+                seq: seq, convoID: "c1", ts: Date(), sender: "agent:a", type: "text",
+                payloadData: Data(#"{"body":"m\#(seq)"}"#.utf8)))
+        }
+        XCTAssertEqual(store.cursor, 5)
+
+        let socket1 = FakeWebSocketConnection()
+        socket1.serve(helloOK(500))
+        socket1.serve(#"{"kind":"control","op":"snapshot_required"}"#)
+        // Mirror the real server: it closes right after snapshot_required,
+        // deferred so it doesn't race the hello send during establish().
+        Task {
+            try? await Task.sleep(for: .milliseconds(50))
+            socket1.closeFromServer()
+        }
+        let socket2 = FakeWebSocketConnection()
+        socket2.serve(helloOK(400))
+        let connector = FakeConnector([socket1, socket2])
+
+        let engine = JournalSyncEngine(api: api, store: store, connector: connector,
+                                       token: "t", ownSender: "user:dan", search: nil,
+                                       backoffBaseSeconds: 0.001)
+
+        // Kick the external, pull-to-refresh-style call first and wait for
+        // its /snapshot request to actually be in flight (real
+        // synchronization via a semaphore in the stub, not a timing guess)
+        // before driving the engine — this pins it as request #1, the one
+        // the gate blocks.
+        async let refresh: () = engine.refreshSummaries()
+        await SnapshotRequiredStubURLProtocol.waitForGateReached()
+
+        await engine.beginSync()
+        for _ in 0..<500 where store.cursor != 400 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(store.cursor, 400, "cold start after wipe must land the fresh cursor")
+
+        // Only now release the gated external refresh — its result is
+        // stale relative to the wipe that already happened above.
+        SnapshotRequiredStubURLProtocol.releaseGate()
+        await refresh
+
+        let conversations = try store.conversations()
+        XCTAssertFalse(conversations.contains { $0.id == "c1" },
+                       "stale refreshSummaries() result must not resurrect the wiped conversation")
+        XCTAssertTrue(conversations.contains { $0.id == "c9" },
+                      "cold-start snapshot's conversation must still be present")
+        XCTAssertEqual(store.cursor, 400, "cursor must stay at the cold-start value, not be stranded")
+
+        await engine.endSync()
+    }
 }
 
-/// Local stub for the snapshot_required engine test — deliberately separate
+/// Local stub for the snapshot_required engine tests — deliberately separate
 /// from JournalAPITests' StubURLProtocol to avoid cross-file coupling.
 /// Always answers GET /snapshot with `snapshotBody` (the engine calls
 /// /snapshot both from the cold-start path and from refreshSummaries() on
-/// every connect; the same canned response is fine for both).
+/// every connect; the same canned response is fine for both) unless the
+/// request's 1-based order matches `gatedRequestIndex`, in which case it
+/// blocks on a real semaphore (signalling `gateReachedSemaphore` first, so
+/// callers can synchronously confirm the request is actually in flight
+/// before proceeding — no sleep-based guessing) until `releaseGate()` is
+/// called, and answers with `gatedBody` instead.
 final class SnapshotRequiredStubURLProtocol: URLProtocol {
     nonisolated(unsafe) static var snapshotBody: String = ""
+    nonisolated(unsafe) static var gatedRequestIndex: Int?
+    nonisolated(unsafe) static var gatedBody: String?
+
+    private static let countLock = NSLock()
+    nonisolated(unsafe) private static var requestCount = 0
+    private static let gateReachedSemaphore = DispatchSemaphore(value: 0)
+    private static let releaseSemaphore = DispatchSemaphore(value: 0)
+
+    /// Resets all static gate/counter state. Call at the start of any test
+    /// that uses gating, since this stub's state is process-wide.
+    static func reset() {
+        countLock.lock()
+        requestCount = 0
+        countLock.unlock()
+        gatedRequestIndex = nil
+        gatedBody = nil
+    }
+
+    /// Suspends until the gated request's startLoading() has actually been
+    /// entered and is parked on the gate. The real blocking wait happens on
+    /// a plain GCD thread (not one of Swift's cooperative-pool threads) so
+    /// this can't starve the pool and stall the engine's own tasks.
+    static func waitForGateReached() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                _ = gateReachedSemaphore.wait(timeout: .now() + 5)
+                continuation.resume()
+            }
+        }
+    }
+
+    static func releaseGate() {
+        releaseSemaphore.signal()
+    }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
+        Self.countLock.lock()
+        Self.requestCount += 1
+        let myIndex = Self.requestCount
+        Self.countLock.unlock()
+
+        // startLoading() must return promptly: CFNetwork serializes protocol
+        // loading per-session, so blocking here (rather than deferring the
+        // wait to a background queue) would starve every other in-flight
+        // request on the same URLSession — including the cold-start's own
+        // /snapshot call this test depends on completing while the gate is
+        // held.
+        if let gatedIndex = Self.gatedRequestIndex, myIndex == gatedIndex {
+            let gatedBody = Self.gatedBody ?? Self.snapshotBody
+            Self.gateReachedSemaphore.signal()
+            DispatchQueue.global().async {
+                Self.releaseSemaphore.wait()
+                self.respond(body: gatedBody)
+            }
+        } else {
+            respond(body: Self.snapshotBody)
+        }
+    }
+    override func stopLoading() {}
+
+    private func respond(body: String) {
         let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
                                        headerFields: ["Content-Type": "application/json"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Data(Self.snapshotBody.utf8))
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
         client?.urlProtocolDidFinishLoading(self)
     }
-    override func stopLoading() {}
 }

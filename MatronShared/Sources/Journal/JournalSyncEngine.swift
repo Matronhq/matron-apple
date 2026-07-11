@@ -29,6 +29,9 @@ public actor JournalSyncEngine {
     private var backoffSleeper: Task<Void, Never>?
     private var attempt = 0
     private var refreshSummariesTask: Task<Void, Never>?
+    /// Bumped on every store wipe; in-flight refreshSummaries results from
+    /// before the wipe are discarded (pull-to-refresh racing snapshot_required).
+    private var storeEpoch = 0
 
     private var state: SyncConnectionState = .connecting
     private var stateContinuations: [UUID: AsyncStream<SyncConnectionState>.Continuation] = [:]
@@ -100,7 +103,9 @@ public actor JournalSyncEngine {
     }
 
     public func refreshSummaries() async {
+        let epoch = storeEpoch
         guard let snapshot = try? await api.snapshot() else { return }
+        guard epoch == storeEpoch else { return } // store wiped mid-flight; stale
         try? store.refreshSummaries(snapshot.conversations)
     }
 
@@ -229,6 +234,10 @@ public actor JournalSyncEngine {
                         // frame and the next loop iteration cold-starts
                         // from /snapshot.
                         refreshSummariesTask?.cancel()
+                        storeEpoch += 1
+                        // A failed wipe leaves stale rows in place; the server will
+                        // simply re-issue snapshot_required on the next connect
+                        // (bounded by the reconnect backoff), so this isn't silently lost.
                         try? store.wipe()
                     case .error, .helloOK, .unknownControl:
                         break // post-hello control frames are advisory
