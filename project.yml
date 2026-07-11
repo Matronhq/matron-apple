@@ -292,8 +292,9 @@ targets:
 
   # Phase 3.5 — integration tests driving `MatronShared`'s public surface
   # directly against a live server, bypassing the UI + XCUITest complexity.
-  # Task 14 purged the Matrix-era verification/chat-list scenarios; currently
-  # empty pending Task 15's journal-protocol coverage.
+  # Task 14 purged the Matrix-era verification/chat-list scenarios; Task 15
+  # replaced them with journal-protocol coverage against a real
+  # matron-journal server subprocess (see JournalServerHarness.swift).
   MatronIntegrationTests:
     type: bundle.unit-test
     platform: macOS
@@ -317,6 +318,8 @@ targets:
         product: MatronChat
       - package: MatronShared
         product: MatronViewModels
+      - package: MatronShared
+        product: MatronJournal
 
   MatronNSE:
     type: app-extension
