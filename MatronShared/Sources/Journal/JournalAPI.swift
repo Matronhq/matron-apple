@@ -79,14 +79,14 @@ public actor JournalAPI {
         if let beforeSeq {
             query.append(URLQueryItem(name: "before_seq", value: String(beforeSeq)))
         }
-        let escaped = convoID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? convoID
+        let escaped = Self.pathSegment(convoID)
         let obj = try await request(path: "/convo/\(escaped)/messages", query: query)
         return (obj["events"] as? [[String: Any]] ?? []).compactMap(JournalEvent.init(frameObject:))
     }
 
     /// Dormant until the server lands `GET /media/:id` (v1-completion).
     public func mediaData(blobRef: String) async throws -> Data {
-        let escaped = blobRef.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? blobRef
+        let escaped = Self.pathSegment(blobRef)
         let (data, response) = try await rawRequest(path: "/media/\(escaped)", method: "GET", body: nil)
         guard response.statusCode == 200 else { throw Self.error(status: response.statusCode, data: data) }
         return data
@@ -103,6 +103,14 @@ public actor JournalAPI {
     }
 
     // MARK: Internals
+
+    /// Escapes one path segment: everything but unreserved characters is
+    /// percent-encoded, including "/" (which .urlPathAllowed would let through).
+    private static func pathSegment(_ raw: String) -> String {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        return raw.addingPercentEncoding(withAllowedCharacters: allowed) ?? raw
+    }
 
     private func request(
         path: String, method: String = "GET", body: [String: Any]? = nil,
@@ -122,7 +130,7 @@ public actor JournalAPI {
         query: [URLQueryItem] = [], authenticated: Bool = true
     ) async throws -> (Data, HTTPURLResponse) {
         var components = URLComponents(url: serverURL, resolvingAgainstBaseURL: false)!
-        components.path = path
+        components.percentEncodedPath = path
         if !query.isEmpty { components.queryItems = query }
         var request = URLRequest(url: components.url!)
         request.httpMethod = method

@@ -101,4 +101,28 @@ final class JournalAPITests: XCTestCase {
         let api = JournalAPI(serverURL: URL(string: "https://chat.example.com")!)
         XCTAssertEqual(api.wsURL.absoluteString, "wss://chat.example.com/ws")
     }
+
+    func testMessagesEscapesConvoIDSegment() async throws {
+        StubURLProtocol.responses = ["/convo/c 1/x/messages": (200, #"{"events":[]}"#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        _ = try await api.messages(convoID: "c 1/x", beforeSeq: nil, limit: 10)
+        let url = StubURLProtocol.lastRequest?.url
+        XCTAssertTrue(url?.absoluteString.contains("/convo/c%201%2Fx/messages") ?? false)
+    }
+
+    func testRegisterAPNsTokenSwallowsNotFound() async throws {
+        StubURLProtocol.responses = ["/devices/apns": (404, #"{"error":"not_found"}"#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        try await api.registerAPNsToken("aabbcc") // must NOT throw
+    }
+
+    func testMediaDataReturnsBytes() async throws {
+        StubURLProtocol.responses = ["/media/b1": (200, "PNGDATA")]
+        let api = makeAPI()
+        await api.setToken("t")
+        let data = try await api.mediaData(blobRef: "b1")
+        XCTAssertEqual(String(decoding: data, as: UTF8.self), "PNGDATA")
+    }
 }
