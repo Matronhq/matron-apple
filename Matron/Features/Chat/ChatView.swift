@@ -1,26 +1,21 @@
 import SwiftUI
 import MatronChat
 import MatronModels
-import MatronVerification
 import MatronViewModels
 import MatronDesignSystem
 
 /// iOS chat screen. Hosts a scrollable timeline (LazyVStack rendering each
 /// `TimelineItem` via `TimelineItemView`) above a `ComposerView`. The
 /// navigation toolbar shows the chat title and an info button that calls
-/// `onShowBotProfile` (Phase 5+ wires this to a profile sheet).
+/// `onShowBotProfile`.
 ///
 /// `viewModel.start()` runs in `.task`; `viewModel.stop()` runs in
 /// `.onDisappear` to release the AsyncStream's continuation. This mirrors
 /// the `ChatListView` pattern from Phase 1.
 ///
-/// Task 10 (Phase 3) adds the per-bot verification banner (spec §7.3,
-/// §7.5). When `verificationService` + `botMatrixID` are wired, the view
-/// queries `isUserVerified(matrixID:)` once on appear; if the bot's
-/// identity is unverified, an inline banner sits above the timeline
-/// offering a "Verify" tap that presents `SasView` against the bot's
-/// user. Both parameters are optional so existing callers / tests keep
-/// compiling — same opt-in pattern `ChatListView.verificationCenter` uses.
+/// Task 11 (journal rewire) drops the per-bot verification banner and its
+/// SAS sheet — the journal stack has no per-bot identity-verification
+/// concept.
 struct ChatView: View {
     @State var viewModel: ChatViewModel
     @State var composerVM: ComposerViewModel
@@ -35,27 +30,6 @@ struct ChatView: View {
     /// `.sheet(item:)` re-presents a fresh sheet whenever the user picks a
     /// different row instead of clinging to the prior one.
     @State private var sourceItem: TimelineItem?
-    /// `nil` until `evaluateBotVerification()` resolves; otherwise the
-    /// tri-state result from `VerificationService.isUserVerified(matrixID:)`
-    /// (M2). Banner renders ONLY on `.unverified` — `.verified` hides it,
-    /// `.unknown` (cold-start: identity not yet in the local crypto store)
-    /// also hides it so the banner doesn't flash on every fresh chat open
-    /// before sliding-sync warms up `/keys/query`. §7.5 trust posture is
-    /// preserved because nothing is auto-trusted: the unknown branch will
-    /// re-evaluate on the next sync tick.
-    @State private var botVerification: UserVerificationResult? = nil
-    /// Drives the per-bot SAS sheet via `.sheet(item:)`. B2/M5 expert-QA
-    /// fix: previously this was a `Bool`-keyed `.sheet(isPresented:)`
-    /// whose body rebuilt the `SasViewModel` + stream on every body
-    /// re-evaluation (any unrelated `@State` change ran the closure
-    /// fresh). With `.sheet(item:)` the sheet body executes exactly
-    /// once per present — the new VM keeps its registered continuation
-    /// across the parent's re-renders so partner-side SAS state
-    /// transitions actually reach the visible sheet. The sheet still
-    /// has only one possible `botMatrixID` per chat (so the wrapper's
-    /// `id` is the matrixID itself); the wrapper exists to satisfy
-    /// `Identifiable` and to give `.sheet(item:)` a stable identity.
-    @State private var verifyBotContext: VerifyBotSheetContext?
     /// The bottom-anchored visible item id, bound to `.scrollPosition`
     /// on the timeline ScrollView. Drives both the per-room scroll
     /// memory (so reopening a chat lands where the user left off) and
@@ -85,41 +59,11 @@ struct ChatView: View {
         }
     }
 
-    /// Identifiable wrapper for `.sheet(item:)`. Identity is the bot's
-    /// matrixID — one bot per chat, so two sequential taps re-use the
-    /// same identity (which is exactly what we want: the second present
-    /// does NOT cancel and re-build the sheet body, but a dismiss-then-
-    /// re-tap DOES because we set the optional to `nil` between).
-    fileprivate struct VerifyBotSheetContext: Identifiable, Hashable {
-        let id: String
-    }
-
     let chatTitle: String
     let onShowBotProfile: () -> Void
-    /// Per-bot verification service (spec §7.3). Optional so existing
-    /// tests / previews that construct `ChatView` without a verification
-    /// stack keep compiling. When wired, the view evaluates
-    /// `isUserVerified(matrixID:)` on appear and renders the inline
-    /// banner above the timeline if the bot is unverified.
-    var verificationService: VerificationService? = nil
-    /// The bot user's matrix ID. Required alongside `verificationService`
-    /// for the per-bot banner to render — without it the view has no
-    /// user to query the verification state for. Optional for the same
-    /// existing-callers reason.
-    var botMatrixID: String? = nil
 
     var body: some View {
         VStack(spacing: 0) {
-            // Per-bot verification banner (spec §7.3, §7.5). Renders
-            // above the error banner so a user who's both unverified
-            // *and* hit a sliding-sync timeout sees both signals.
-            // Only `.unverified` draws — `.unknown` (cold-start; identity
-            // not yet loaded in the local crypto store) and `.verified`
-            // both hide. §7.5 still holds because the `.unknown` arm
-            // re-evaluates on the next sync tick (M2).
-            if botVerification == .unverified {
-                botVerificationBanner
-            }
             // QA finding #10: surface upstream stream failures (e.g.
             // `SyncReadyError.timeout`) in a banner above the timeline
             // so the user understands why nothing is loading instead
@@ -359,21 +303,6 @@ struct ChatView: View {
             // something to scroll into.
             await viewModel.paginateBackward()
         }
-        // Evaluate per-bot verification on appear AND each time the
-        // timeline gains its first items — that's the cheapest signal
-        // we have for "sliding-sync delivered enough state that the
-        // local crypto store probably has the user identity now". Keying
-        // on `items.isEmpty` (rather than `.count`) re-fires exactly
-        // once when the empty initial snapshot transitions to a
-        // populated one, so M2's `.unknown` cold-start result gets a
-        // chance to resolve to `.verified` / `.unverified` without
-        // requiring the user to leave and re-open the chat. Separate
-        // `.task` so the (cheap) identity lookup doesn't share a
-        // cancellation lifecycle with the long-lived timeline
-        // observation. Throws → `.unknown` (was `false` under the prior
-        // Bool shape) so the banner errs hidden on transient errors
-        // and re-checks on the next tick (§7.5 trust posture).
-        .task(id: viewModel.items.isEmpty) { await evaluateBotVerification() }
         .onDisappear {
             // Capture the user's scroll position so the next open of
             // this room lands where they left off. Drop the entry on
@@ -388,9 +317,6 @@ struct ChatView: View {
         }
         .sheet(item: $sourceItem) { item in
             EventSourceSheet(item: item)
-        }
-        .sheet(item: $verifyBotContext) { context in
-            verifyBotSheetBody(for: context.id)
         }
         // Fullscreen attachment preview. Presented from a tap on
         // either an `AttachmentImage` or `AttachmentFile` row;
@@ -461,106 +387,5 @@ struct ChatView: View {
         .presentationDetents([.medium])
     }
 
-    /// Per-bot verification evaluation. `nil` keeps the banner hidden
-    /// during the async query; resolves to one of:
-    ///   * `.verified`   — banner hides.
-    ///   * `.unverified` — banner renders.
-    ///   * `.unknown`    — banner hides (cold-start path); next sync
-    ///                     tick re-runs this evaluation.
-    /// Catching a thrown error resolves to `.unknown` rather than
-    /// `.unverified` so a flaky network doesn't promote the bot to a
-    /// concrete trust state — the next evaluation tick can re-check.
-    /// (M2: was previously `Bool?` collapsing `.unknown` into `.unverified`,
-    /// causing the banner to flash on every cold-start chat open.)
-    private func evaluateBotVerification() async {
-        guard let svc = verificationService, let botMatrixID else {
-            botVerification = nil
-            return
-        }
-        do {
-            botVerification = try await svc.isUserVerified(matrixID: botMatrixID)
-        } catch {
-            botVerification = .unknown
-        }
-    }
-
-    /// Inline banner above the timeline. Mirrors the shape /
-    /// affordances of `VerificationBanner` (the chat-list incoming-
-    /// request banner) so the UX is consistent across surfaces. No
-    /// dismiss "X" — the banner reflects an actual trust state, not a
-    /// transient request, so dismissing without verifying would just
-    /// re-appear on the next mount.
-    @ViewBuilder
-    private var botVerificationBanner: some View {
-        HStack {
-            Image(systemName: "exclamationmark.shield.fill")
-                .foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 2) {
-                // PR #3 review #13 — copy reflects bot identity, not
-                // device. The banner renders when `botVerification ==
-                // .unverified`; tapping triggers user-verification SAS
-                // against the bot's matrixID.
-                Text("This bot's identity hasn't been verified")
-                    .font(.callout)
-                    .bold()
-                Text("Messages may show a warning until you verify.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            Button("Verify") {
-                if let botMatrixID {
-                    verifyBotContext = VerifyBotSheetContext(id: botMatrixID)
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-        }
-        .padding(.horizontal)
-        .padding(.vertical, 10)
-        .background(.ultraThinMaterial)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("This bot's identity hasn't been verified. Verify.")
-    }
-
-    /// Builds the SAS sheet for verifying the bot user. The SasViewModel
-    /// + stream are owned by the inner `SasSheetWrapper` view's `@State`
-    /// so they're constructed exactly once per present (B2/M5 expert-QA
-    /// fix). Mirrors the FlowStore cache-key choice in
-    /// `VerificationServiceLive.startSAS` for per-user verification
-    /// flows: `requestID` is the bot's matrixID. Re-evaluates the
-    /// verification state on `onFinished` so a successful match
-    /// auto-hides the banner without waiting for a remount.
-    @ViewBuilder
-    private func verifyBotSheetBody(for botMatrixID: String) -> some View {
-        if let svc = verificationService {
-            SasSheetWrapper(
-                service: svc,
-                requestID: botMatrixID,
-                title: "Verify \(botMatrixID)",
-                streamFactory: { $0.startSAS(withUser: botMatrixID, deviceID: nil) },
-                onFinished: {
-                    verifyBotContext = nil
-                    Task { await evaluateBotVerification() }
-                },
-                onCancelled: {
-                    // SAS .cancelled state's "Close" button hits this.
-                    // Same dismissal as onFinished — clear the context;
-                    // re-evaluating bot verification is harmless on cancel
-                    // (state hasn't changed) and keeps the call sites
-                    // symmetric.
-                    verifyBotContext = nil
-                    Task { await evaluateBotVerification() }
-                }
-            )
-        } else {
-            // Defensive: if `verificationService` is nil at sheet-
-            // present time (impossible under normal flow since the
-            // banner only renders when both inputs are wired), surface
-            // a no-op message rather than crashing.
-            Text("Verification unavailable")
-                .padding()
-        }
-    }
 }
 

@@ -2,191 +2,147 @@ import Foundation
 import SwiftUI
 import MatronAuth
 import MatronChat
+import MatronJournal
 import MatronModels
+import MatronPush
 import MatronSearch
 import MatronStorage
 import MatronSync
-import MatronVerification
 
+/// Task 11 (Phase 7): wires the iOS app onto the matron-journal stack
+/// instead of the Matrix SDK. One `JournalCore` (API client + local SQLite
+/// mirror + sync engine) is built per signed-in session; every per-session
+/// / per-room service factory below is a thin wrapper over the same core so
+/// the sync engine, the store, and the API client stay singletons for the
+/// session's lifetime — same motivation as the pre-journal
+/// `syncCache`/`mediaCache`/`chatCache` per-session caches this replaces.
+///
+/// Matrix code still exists in `MatronShared` (Task 14 deletes it); this
+/// type simply stops referencing it.
 @MainActor
 final class AppDependencies {
     let auth: AuthService
-    let clientProvider: ClientProvider
     /// Phase 6 (Search): the local FTS index. Optional — `nil` only if the
-    /// SQLite store can't be opened (rare); `ChatServiceLive`/`TimelineServiceLive`
-    /// and the backfill coordinator all treat search as optional, so the app
-    /// degrades to "search disabled" rather than failing to launch.
+    /// SQLite store can't be opened (rare); the journal services all treat
+    /// search as optional, so the app degrades to "search disabled" rather
+    /// than failing to launch.
     let search: SearchService?
 
-    private var syncCache: [String: SyncService] = [:]
-    /// Per-session `VerificationServiceLive` cache. The service owns the
-    /// FlowStore (in-flight SAS controllers + open `AsyncStream` continuations)
-    /// AND the registered `LiveSessionVerificationDelegate`. Returning a fresh
-    /// instance every call would (a) hand the SAS UI an empty FlowStore so
-    /// `acceptIncoming(requestID:)` would immediately yield
-    /// `.cancelled("Unknown request: …")`, and (b) fail to register the
-    /// delegate so `incomingRequests()` would never produce. Caching per
-    /// `userID` mirrors `syncCache`.
-    private var verificationCache: [String: VerificationServiceLive] = [:]
-    /// Per-session `MediaService` cache. `MediaServiceLive` owns its own
-    /// 64 MB `NSCache` for resolved `mxc://` bytes; returning a fresh
-    /// instance every call (the prior behaviour) defeated that cache and
-    /// re-fetched the same image bytes on every view re-render. Caching
-    /// per `userID` keeps the cache shared across rooms in a session.
-    private var mediaCache: [String: MediaService] = [:]
-    /// Per-session `ChatService` cache. `ChatServiceLive` owns the
-    /// shared `ChatSummaryBroadcaster` and the `BootstrapState` that
-    /// holds the single upstream `RoomListSubscription` (Phase 2.5
-    /// fan-out design). Without this cache, every consumer
-    /// (`ChatListViewModel.start()`, `NewChatSheet.loadBots()`, etc.)
-    /// would build its own `ChatServiceLive` → its own broadcaster →
-    /// its own `entriesWithDynamicAdapters` listener, which exactly
-    /// defeats the singleton design the broadcaster was added to enable.
-    private var chatCache: [String: ChatService] = [:]
-    /// Per-room timeline cache keyed by `(userID, roomID)`. Re-using the
-    /// same `TimelineServiceLive` across navigations to the same room
-    /// preserves the SDK timeline handle and the in-memory snapshot the
-    /// diff listener has built up — re-creating would cause a UI flicker
-    /// on every push/pop.
-    ///
-    /// Bounded with an LRU cap (`timelineCacheLimit`) so a long session
-    /// that visits many rooms doesn't accumulate one SDK timeline handle
-    /// (+ in-memory snapshot) per room forever. `mediaCache` and
-    /// `syncCache` are bounded by user-count, but the timeline cache
-    /// scales with rooms-visited, which is unbounded over a session.
-    /// 16 entries comfortably covers the recently-active rooms most users
-    /// flip between; older entries fall out and are reconstructed on next
-    /// visit (a cheap rebuild from the SDK's persisted store).
-    private var timelineCache: LRUCache<TimelineCacheKey, TimelineService> = .init(limit: AppDependencies.timelineCacheLimit)
-    /// Per-session `BackfillCoordinator` cache. One coordinator per session owns
-    /// the SDK-backed pager + runner and drives the once-per-session history
-    /// sweep; caching keeps `run(...)`'s idempotency guard meaningful across the
-    /// post-login `.task`'s lifetime.
-    private var backfillCache: [String: BackfillCoordinator] = [:]
+    private let sessionsDirectory: URL
+    private let journalDirectory: URL
+
+    /// One journal stack per signed-in session: the API client, the local
+    /// SQLite mirror, and the sync engine that's the sole writer of that
+    /// mirror. Grouping these means `core(for:)` is a single dictionary
+    /// lookup instead of three parallel per-session caches.
+    final class JournalCore {
+        let api: JournalAPI
+        let store: JournalStore
+        let engine: JournalSyncEngine
+        init(api: JournalAPI, store: JournalStore, engine: JournalSyncEngine) {
+            self.api = api
+            self.store = store
+            self.engine = engine
+        }
+    }
+
+    private var cores: [String: JournalCore] = [:]
+    /// Per-room `TimelineService` cache, bounded LRU so a long session that
+    /// visits many rooms doesn't accumulate one journal timeline handle per
+    /// room forever. Mirrors the pre-journal `timelineCache` — see
+    /// `timelineCacheLimit`.
+    private var timelineCache = LRUCache<TimelineCacheKey, JournalTimelineService>(limit: AppDependencies.timelineCacheLimit)
 
     init() {
-        // iOS shares its crypto store + search DB with the NSE via the App
+        // iOS shares its journal store + search DB with the NSE via the App
         // Group container. Falls back to a tmp dir only when running outside
         // an entitlement (test runner / Previews).
-        let container: URL
-        #if os(iOS)
-        container = (FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: StoragePaths.appGroupIdentifier))
-            ?? URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("matron-fallback")
-        #else
-        container = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("matron-fallback")
-        #endif
+        let container = StoragePaths.groupContainer
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("matron-dev")
         // Split the container into two sibling directories so a fresh-login
-        // wipe of the SDK store can never take out the persisted session JSON.
-        // - `sdkStore`  : SDK's SQLite + crypto store. Wiped before each login.
-        // - `sessions`  : FileSessionStore lives here. Never wiped during login.
-        let sdkStore = container.appendingPathComponent("sdk-store")
-        let sessionsDir = container.appendingPathComponent("sessions")
-        try? FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
-        try? FileManager.default.createDirectory(at: sdkStore, withIntermediateDirectories: true)
-        try? FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
+        // wipe of the journal store can never take out the persisted
+        // session JSON.
+        // - `journal-store` : the per-user SQLite mirror. Wiped on sign-out.
+        // - `sessions`       : FileSessionStore lives here. Never wiped.
+        sessionsDirectory = container.appendingPathComponent("sessions")
+        journalDirectory = container.appendingPathComponent("journal-store")
+        try? FileManager.default.createDirectory(at: sessionsDirectory, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: journalDirectory, withIntermediateDirectories: true)
 
-        // Phase 1 uses a file-backed session store rather than Keychain. The
-        // iOS Simulator rejects keychain-access-groups entitlements without a
-        // signing team, and ad-hoc signing strips them. Phase 3 (verification
-        // / recovery key) will add a SessionStore that picks Keychain when
-        // entitlements resolve and falls back to file storage otherwise.
-        let sessionStore = FileSessionStore(directory: sessionsDir)
-        self.auth = AuthServiceLive(sessionStore: sessionStore, basePath: sdkStore)
-        self.clientProvider = ClientProvider(basePath: sdkStore)
+        auth = JournalAuthService(sessionStore: FileSessionStore(directory: sessionsDirectory))
         // Phase 6 (Search): the FTS index lives in the App Group container,
-        // alongside the crypto store, so the NSE/host share it. `try?` keeps
-        // init non-throwing — a failed open just disables search.
-        self.search = try? SearchServiceLive(databaseURL: StoragePaths.searchDB(in: container))
+        // alongside the journal store, so the NSE/host share it. `try?`
+        // keeps init non-throwing — a failed open just disables search.
+        search = StoragePaths.searchDBPath.flatMap { try? SearchServiceLive(databaseURL: $0) }
     }
 
-    func syncService(for session: UserSession) -> SyncService {
-        if let existing = syncCache[session.userID] { return existing }
-        let svc = SyncServiceLive(provider: clientProvider, session: session)
-        syncCache[session.userID] = svc
-        return svc
+    /// Xcode debug builds register sandbox APNs tokens; TestFlight/App
+    /// Store builds are prod. Written as a full statement body (not an
+    /// inline `#if` expression) because a computed property's getter can't
+    /// use `#if`/`#else` as a value-producing expression directly.
+    private var pushEnvironment: JournalAPI.PushEnvironment {
+        #if DEBUG
+        return .sandbox
+        #else
+        return .prod
+        #endif
     }
 
-    /// Per-session `VerificationServiceLive` factory. Cached by `session.userID`
-    /// so every consumer (chat-list banner, per-bot ChatView banner, Settings
-    /// → Device, post-login gate, Mac Help menu) shares the SAME FlowStore
-    /// + the SAME registered SDK delegate. Without this cache, each
-    /// inline `VerificationServiceLive(...)` construction would have its
-    /// own empty FlowStore (so any `acceptIncoming(requestID:)` would yield
-    /// `.cancelled("Unknown request: …")`) AND its own un-registered
-    /// delegate (so `incomingRequests()` would never produce). Mirrors the
-    /// `syncCache` per-session strategy.
-    ///
-    /// `start()` must still be called on the returned service to fetch the
-    /// SDK's session-verification controller and register the delegate; the
-    /// cache only guarantees identity, not lifecycle. `MatronApp` drives
-    /// `start()` from a `.task` block alongside `syncService.start()`.
-    func verificationService(for session: UserSession) -> VerificationServiceLive {
-        if let existing = verificationCache[session.userID] { return existing }
-        let svc = VerificationServiceLive(provider: clientProvider, session: session)
-        verificationCache[session.userID] = svc
-        return svc
-    }
-
-    func chatService(for session: UserSession) -> ChatService {
-        if let existing = chatCache[session.userID] { return existing }
-        let svc = ChatServiceLive(
-            provider: clientProvider,
-            session: session,
-            sync: syncService(for: session)
+    /// Builds (or returns the cached) journal stack for `session`. A store
+    /// that fails to open is unrecoverable dev-time config; crashing loudly
+    /// here is preferable to limping along with a `nil` store that every
+    /// caller would have to null-check.
+    private func core(for session: UserSession) -> JournalCore {
+        if let existing = cores[session.userID] { return existing }
+        let api = JournalAPI(serverURL: session.homeserverURL)
+        Task { await api.setToken(session.accessToken) }
+        let dbURL = journalDirectory.appendingPathComponent("\(session.userID).sqlite")
+        let store = try! JournalStore(databaseURL: dbURL, ownSender: "user:\(session.userID)")
+        let engine = JournalSyncEngine(
+            api: api, store: store,
+            connector: URLSessionWebSocketConnector(),
+            token: session.accessToken,
+            ownSender: "user:\(session.userID)", search: search
         )
-        chatCache[session.userID] = svc
-        return svc
+        let core = JournalCore(api: api, store: store, engine: engine)
+        cores[session.userID] = core
+        return core
     }
 
-    /// SDK-backed `MediaService` that resolves `mxc://` URLs into bytes via
-    /// `Client.getMediaContent`. Cached per `session.userID` so the
-    /// 64 MB `NSCache` inside `MediaServiceLive` is shared across rooms
-    /// for the lifetime of the session — mirrors the `syncCache` strategy.
-    func mediaService(for session: UserSession) -> MediaService {
-        if let existing = mediaCache[session.userID] { return existing }
-        let svc = MediaServiceLive(provider: clientProvider, session: session)
-        mediaCache[session.userID] = svc
-        return svc
+    /// `any SyncService` (not `JournalSyncEngine` directly) so existing
+    /// view code calling `sync.start()` / `.stateStream()` keeps working
+    /// unchanged — `JournalSyncEngine` conforms via the
+    /// `JournalSyncConformance.swift` shim. Callers that need engine-only
+    /// behaviour (e.g. the scenePhase reconnect `nudge()`) downcast with
+    /// `as? JournalSyncEngine`.
+    func syncService(for session: UserSession) -> any SyncService { core(for: session).engine }
+
+    func chatService(for session: UserSession) -> any ChatService {
+        let core = core(for: session)
+        return JournalChatService(store: core.store, engine: core.engine)
+    }
+
+    func mediaService(for session: UserSession) -> any MediaService {
+        JournalMediaService(api: core(for: session).api)
+    }
+
+    func pushService(for session: UserSession) -> any PushService {
+        JournalPushService(api: core(for: session).api, environment: pushEnvironment)
     }
 
     /// Per-room `TimelineService` factory. Cached by `(userID, roomID)` so
-    /// repeat navigations to the same room re-use the same SDK timeline
-    /// handle — that handle owns the in-memory snapshot, so re-creating
-    /// it would force the row diff listener to rebuild from scratch and
-    /// flicker the UI on every push/pop. Mirrors the `syncCache`
-    /// per-session strategy, but bounded by `timelineCacheLimit` LRU
-    /// entries so the cache doesn't grow unbounded with rooms-visited.
-    func timelineService(for session: UserSession, roomID: String) -> TimelineService {
+    /// repeat navigations to the same room re-use the same journal timeline
+    /// handle instead of rebuilding the overlay state from scratch.
+    func timelineService(for session: UserSession, roomID: String) -> any TimelineService {
         let key = TimelineCacheKey(userID: session.userID, roomID: roomID)
-        if let existing = timelineCache[key] { return existing }
-        let svc = TimelineServiceLive(
-            provider: clientProvider,
-            session: session,
-            sync: syncService(for: session),
-            roomID: roomID,
-            search: search
+        if let cached = timelineCache[key] { return cached }
+        let core = core(for: session)
+        let service = JournalTimelineService(
+            convoID: roomID, store: core.store, engine: core.engine,
+            api: core.api, session: session, search: search
         )
-        timelineCache[key] = svc
-        return svc
-    }
-
-    /// Per-session `BackfillCoordinator`, or `nil` when search is disabled.
-    /// Wires the SDK-backed `TimelinePagerLive` (MatronChat) into the SDK-free
-    /// `BackfillRunner` (MatronSearch). The 90-day `sinceCutoff` matches spec
-    /// §9.3 — older history isn't indexed.
-    func backfillCoordinator(for session: UserSession) -> BackfillCoordinator? {
-        guard let search else { return nil }
-        if let existing = backfillCache[session.userID] { return existing }
-        let pager = TimelinePagerLive(
-            provider: clientProvider,
-            session: session,
-            sync: syncService(for: session)
-        )
-        let runner = BackfillRunner(timeline: pager, search: search)
-        let cutoff = Date().addingTimeInterval(-90 * 86_400)
-        let coordinator = BackfillCoordinator(runner: runner, cutoff: cutoff)
-        backfillCache[session.userID] = coordinator
-        return coordinator
+        timelineCache[key] = service
+        return service
     }
 
     /// Test seam: how many distinct rooms the timeline cache holds before
@@ -195,60 +151,33 @@ final class AppDependencies {
     static let timelineCacheLimit = 16
 
     /// Test seam: number of entries currently held by the timeline cache.
-    /// Used by `AppDependenciesTests` to verify the LRU bound holds after
-    /// a barrage of distinct rooms.
     var timelineCacheCount: Int { timelineCache.count }
 
     /// Test seam: whether the timeline cache currently holds an entry for
-    /// `(userID, roomID)`. The cached value type is a protocol so we
-    /// can't expose it directly without leaking concrete `TimelineService`
-    /// identity — this boolean is enough to assert eviction.
+    /// `(userID, roomID)`.
     func timelineCacheContains(userID: String, roomID: String) -> Bool {
         timelineCache.contains(TimelineCacheKey(userID: userID, roomID: roomID))
     }
 
-    /// Sign-out path. Wipes the persisted session on disk and clears every
-    /// per-session cache so a subsequent `restoreSession()` returns nil
-    /// and a fresh login lands in a clean state.
-    ///
-    /// Errors thrown by `auth.clearSession()` are ignored — typical
-    /// failure mode is "no session file to delete," which is exactly
-    /// what we want post sign-out. Callers (`MatronApp`) drop their
-    /// `session` state regardless so the UI flips to the SignInView.
-    /// Per-session caches (`syncCache`, `mediaCache`, `timelineCache`)
-    /// are cleared so the next login doesn't reuse stale handles bound
-    /// to the previous user's SDK state.
+    /// Sign-out path. Ends every session's sync engine, wipes its local
+    /// journal mirror, clears every per-session/per-room cache, wipes the
+    /// search index, and drops the persisted auth session so a subsequent
+    /// `restoreSession()` returns `nil` and a fresh login lands in a clean
+    /// state. Callers (`MatronApp`) drop their `session` state regardless
+    /// so the UI flips to the SignInView.
     func signOut() {
-        try? auth.clearSession()
-        syncCache.removeAll()
-        verificationCache.removeAll()
-        mediaCache.removeAll()
-        chatCache.removeAll()
-        timelineCache = .init(limit: AppDependencies.timelineCacheLimit)
-        backfillCache.removeAll()
+        for core in cores.values {
+            Task { await core.engine.endSync() }
+            try? core.store.wipe()
+        }
+        cores.removeAll()
+        timelineCache = LRUCache(limit: AppDependencies.timelineCacheLimit)
         // Phase 6 (Search): wipe the index so the next user can't search the
-        // previous user's messages. `search` is a `let` (the same DB instance
-        // persists across sign-out → sign-in). signOut is synchronous, so the
-        // wipe runs in a Task — but it must finish BEFORE the next session's
-        // backfill, otherwise the wipe can land mid-backfill (clearing
-        // freshly-indexed rows, after which `BackfillCoordinator.hasRun`
-        // blocks a re-sweep and search stays empty) or the new sweep can race
-        // the prior user's rows and surface them. The handle is stored so the
-        // backfill kickoff can `await awaitPendingIndexWipe()` first.
-        pendingIndexWipe = Task { [search] in try? await search?.wipe() }
-    }
-
-    /// The in-flight `signOut()` index wipe, or `nil` if none is pending /
-    /// already finished. Awaited by the next session's backfill kickoff via
-    /// `awaitPendingIndexWipe()` (bugbot "Sign-out wipe races login").
-    private var pendingIndexWipe: Task<Void, Never>?
-
-    /// Awaits any in-flight sign-out index wipe so a fast sign-out → sign-in
-    /// can't start backfill against a half-wiped DB. No-op when nothing is
-    /// pending (the prior wipe already completed, or the user never signed
-    /// out this launch).
-    func awaitPendingIndexWipe() async {
-        await pendingIndexWipe?.value
+        // previous user's messages. `search` is a `let` (the same DB
+        // instance persists across sign-out → sign-in); signOut is
+        // synchronous so the wipe runs in a detached Task.
+        Task { [search] in try? await search?.wipe() }
+        try? auth.clearSession()
     }
 }
 

@@ -4,9 +4,7 @@ import MatronChat
 import MatronDesignSystem
 import MatronModels
 import MatronSearch
-import MatronStorage
 import MatronSync
-import MatronVerification
 import MatronViewModels
 
 /// iOS chat-list screen. Phase 2 wires `NavigationLink(value:)` rows that
@@ -37,46 +35,12 @@ struct ChatListView: View {
     @State private var showingNewChat = false
     /// Phase 6 (Search): drives the `.sheet` presenting `SearchView`.
     @State private var showingSearch = false
-    /// Phase 6 (Search): latest aggregate backfill progress, mirrored from the
-    /// `BackfillCoordinator`'s stream. Drives the "Indexing chats…" footer while
-    /// `inProgress`; hidden once every room has been swept.
-    @State private var indexingProgress: AggregateBackfillProgress?
     /// The chat whose ⓘ button was tapped. Setting this drives the
     /// `.sheet(item:)` presentation of `BotProfileView`. Cleared back to
     /// `nil` either by the sheet's onDismiss or when the user picks a chat
     /// from inside the sheet.
     @State private var botProfileSummary: ChatSummary?
-    /// The summary whose "Verify" button on a `VerificationBanner` was
-    /// tapped. Drives the `.sheet(item:)` presentation of `SasView`.
-    /// Cleared back to `nil` by the sheet's `onFinished` (the SAS reaches
-    /// `.verified`) or by an explicit dismiss inside the sheet.
-    @State private var sasSummary: VerificationRequestSummary?
-    /// Tri-state per-this-device verification state (Wave 6 / live-test
-    /// #3). `nil` until the async query resolves, then `true` (verified)
-    /// or `false` (unverified). The `UnverifiedDeviceBanner` only renders
-    /// on `false` so it doesn't flash for verified devices during the
-    /// initial query — same pattern as the per-bot banner
-    /// (`ChatView.botVerification`). Pre-Phase-3 users (sessions
-    /// predating the post-login verify gate) hit `false` here and get
-    /// the in-app re-verify prompt they otherwise lack.
-    @State private var isThisDeviceVerified: Bool? = nil
-    /// Drives the self-verify SAS sheet via `.sheet(item:)`. Set when
-    /// the user taps the in-list `UnverifiedDeviceBanner` "Verify"
-    /// button. Identifiable wrapper exists so `.sheet(item:)` gets a
-    /// stable id; the encoded value is the user's matrixID (the
-    /// FlowStore cache key `VerificationServiceLive.startSAS` registers
-    /// under for self-verification flows).
-    @State private var verifyThisDeviceContext: VerifyThisDeviceContext?
-
-    /// Identifiable wrapper for `.sheet(item:)`. See `verifyThisDeviceContext`.
-    fileprivate struct VerifyThisDeviceContext: Identifiable, Hashable {
-        let id: String
-    }
-    /// Settings → Device sheet visibility (Task 11). Phase 7 will land
-    /// the full Settings UI; this Phase-3 surface ships the
-    /// device-verification + recovery-key reveal flow inside an
-    /// otherwise-empty sheet so users can read their key without
-    /// digging through the menu bar.
+    /// Settings → Device sheet visibility.
     @State private var showingDeviceSettings = false
     /// Sign-out callback owned by `MatronApp` (drops the in-memory session
     /// + clears persistent state). Optional so previews / tests that
@@ -90,14 +54,6 @@ struct ChatListView: View {
     /// chat after the search sheet dismisses. Optional so previews / tests
     /// without the full nav stack still construct the view.
     var onOpenChat: ((String) -> Void)? = nil
-    /// Cross-platform incoming-verification orchestrator (spec §7.1, §5.9).
-    /// Optional so previews / tests that exercise only the chat-list
-    /// rendering can construct the view without standing up a full
-    /// verification stack. When non-nil, `start()` runs in `.onAppear` and
-    /// `stop()` in `.onDisappear` — Swift 6 strict concurrency forbids a
-    /// `@MainActor deinit` reaching into isolated state, so the lifecycle
-    /// hooks are explicit (mirrors the `ChatListViewModel.cancel()` pattern).
-    var verificationCenter: VerificationCenter? = nil
     /// Latest user-facing connection state, fed by the host's
     /// `SyncService.stateStream()`. `.running` hides the banner;
     /// `.connecting` / `.offline` render it. Drives
@@ -121,22 +77,6 @@ struct ChatListView: View {
     var body: some View {
         chatListColumn
         .navigationTitle("Matron")
-        // Phase 6 (Search): "Indexing chats…" footer while history backfill is
-        // in flight. Mirrors the BackfillCoordinator's aggregate progress;
-        // zero-height (no inset) once complete. Mac uses the search empty-state
-        // for the equivalent signal (Task 10).
-        .safeAreaInset(edge: .bottom) {
-            if let progress = indexingProgress, progress.inProgress {
-                indexingFooter(progress)
-            }
-        }
-        .task(id: session?.userID) {
-            guard let deps, let session,
-                  let coordinator = deps.backfillCoordinator(for: session) else { return }
-            for await progress in await coordinator.progressStream() {
-                indexingProgress = progress
-            }
-        }
         .toolbar {
             // Phase 6 (Search): leading search button → SearchView sheet. Only
             // shown when the index is available (deps.search non-nil).
@@ -213,73 +153,13 @@ struct ChatListView: View {
                 }
             )
         }
-        .sheet(item: $sasSummary) { summary in
-            // SAS sheet driven by the banner's "Verify" tap. Build the
-            // service inline (mirrors `PostLoginVerificationView`) so the
-            // sheet body owns no long-lived SDK state — when the sheet
-            // dismisses the controller is released. Without `deps` /
-            // `session` we render a minimal placeholder so the binding is
-            // still observable in tests / previews.
-            if let deps, let session {
-                sasSheetContent(for: summary, deps: deps, session: session)
-            } else {
-                Text("Verification unavailable")
-                    .padding()
-            }
-        }
-        .sheet(item: $verifyThisDeviceContext) { context in
-            // Self-verify SAS sheet driven by the
-            // `UnverifiedDeviceBanner`'s "Verify" tap (Wave 6 /
-            // live-test #3). Hand construction to the per-present
-            // `SelfVerifyThisDeviceSheet` so the SasViewModel + stream
-            // survive parent re-renders (Wave 5 bugbot #2 pattern). Re-
-            // evaluates the per-this-device verification on close so a
-            // successful verify clears the banner without requiring a
-            // full chat-list re-mount.
-            if let deps, let session {
-                SelfVerifyThisDeviceSheet(
-                    service: verificationCenter?.service
-                        ?? deps.verificationService(for: session),
-                    userID: context.id,
-                    recoveryKeyRestore: { key in
-                        let mgr = RecoveryKeyManager(
-                            provider: deps.clientProvider,
-                            session: session,
-                            keychain: KeychainStore.recoveryStore()
-                        )
-                        try await mgr.restore(usingKey: key)
-                    },
-                    onFinished: {
-                        verifyThisDeviceContext = nil
-                        Task { await evaluateThisDeviceVerification() }
-                    },
-                    onCancelled: {
-                        // Same teardown as onFinished — close the sheet
-                        // and re-evaluate verification status. We don't
-                        // distinguish the cancel vs success paths here
-                        // because the banner-clearing semantics are
-                        // identical: post-close we re-read isThisDeviceVerified.
-                        verifyThisDeviceContext = nil
-                        Task { await evaluateThisDeviceVerification() }
-                    }
-                )
-            } else {
-                Text("Verification unavailable")
-                    .padding()
-            }
-        }
         .sheet(isPresented: $showingDeviceSettings) {
             // Settings → Device. Wraps `DeviceSettingsView` in a
             // `NavigationStack` so the navigationTitle renders + the
-            // sheet has a Done button. Construction reuses the
-            // `verificationCenter.service` (so the FlowStore stays
-            // shared with the incoming-request banner) and forwards
-            // a closure that reads `RecoveryKeyManager.currentKey()`
-            // — the closure indirection keeps the view itself free
-            // of the manager so it stays trivially testable.
-            if let deps, let session {
+            // sheet has a Done button.
+            if let session {
                 NavigationStack {
-                    deviceSettingsSheetBody(for: deps, session: session)
+                    DeviceSettingsView(session: session)
                         .toolbar {
                             ToolbarItem(placement: .topBarTrailing) {
                                 Button("Done") { showingDeviceSettings = false }
@@ -296,7 +176,7 @@ struct ChatListView: View {
             // the current chat-list snapshot so chat (title/bot) hits resolve
             // without another fetch. Selecting a result dismisses the sheet and
             // routes through `onOpenChat` (MatronApp owns the nav path).
-            if let deps, let session, let search = deps.search {
+            if let deps, let search = deps.search {
                 NavigationStack {
                     SearchView(
                         viewModel: SearchViewModel(
@@ -314,7 +194,6 @@ struct ChatListView: View {
                             showingSearch = false
                             onOpenChat?(hit.roomID)
                         },
-                        backfillCoordinator: deps.backfillCoordinator(for: session),
                         // Keep `allChats` fresh while the sheet is open — the VM
                         // is `@State` inside SearchView and freezes otherwise
                         // (bugbot "iOS search chat snapshot stale").
@@ -327,13 +206,6 @@ struct ChatListView: View {
             chatDestination(for: id)
         }
         .task { viewModel.start() }
-        // VerificationCenter lifecycle is owned by `MatronApp`'s
-        // `.task(id: session.userID)` + `.onDisappear` on the verifyDone
-        // branch (B2/M5). ChatListView only consumes the binding — no
-        // start/stop here, just the view-model cancel. Earlier code had
-        // a defensive `verificationCenter?.start()` in `.onAppear` but
-        // the binding is always nil at that point (the task runs after
-        // onAppear), so it was unreachable.
         .onDisappear { viewModel.cancel() }
         // Sync connection-state banner. Subscribes to the host's
         // long-lived `stateStream()` and mirrors yields into the local
@@ -363,83 +235,19 @@ struct ChatListView: View {
         .onChange(of: viewModel.totalUnread) { _, newValue in
             UNUserNotificationCenter.current().setBadgeCount(newValue) { _ in }
         }
-        // Wave 6 / live-test #3: per-this-device verification check.
-        // Pre-Phase-3 users skipped the post-login verify gate
-        // (`verifyDone` was never set on their session) so they have
-        // no in-app prompt to verify. The async result drives
-        // `UnverifiedDeviceBanner` visibility. See the property
-        // declaration for the tri-state rationale.
-        .task { await evaluateThisDeviceVerification() }
-        // Reactively bind the banner to the SDK's verification-state
-        // listener. The previous "re-evaluate on sheet dismiss" design
-        // (`.task(id: verifyDeviceDismissToken)` on Mac, plus the
-        // .onChange-based flips here on iOS) raced the SDK's own
-        // state propagation: a successful SAS could complete and the
-        // sheet dismiss could fire BEFORE `verificationState()`
-        // returned `.verified`, so the banner cached `false` and stuck
-        // until the user manually re-opened the chooser. Subscribing
-        // to the stream means each SDK `verificationStateListener`
-        // fire (including the post-SAS `.verified` transition)
-        // immediately updates the banner — no token, no sheet
-        // round-trip required.
-        .task {
-            guard let svc = currentVerificationService else { return }
-            for await state in svc.verificationStateStream() {
-                isThisDeviceVerified = state
-            }
-        }
     }
 
-    /// Prefer the `VerificationCenter`'s cached service so we share the
-    /// same `verificationStateStream()` continuation source as the
-    /// incoming-request banner; fall back to the env-derived factory.
-    private var currentVerificationService: (any VerificationService)? {
-        if let svc = verificationCenter?.service { return svc }
-        guard let deps, let session else { return nil }
-        return deps.verificationService(for: session)
-    }
-
-    /// Resolves `isThisDeviceVerified` from the active session's
-    /// verification service (preferring the `VerificationCenter`'s
-    /// cached service so the FlowStore stays shared with the
-    /// incoming-request banner). Failure resolves to `nil` (banner
-    /// stays hidden) so a transient SDK error doesn't prompt a
-    /// verified user to re-verify — same posture as the per-bot
-    /// banner's `.unknown` arm. The next sync tick / sheet dismiss
-    /// triggers a re-evaluate (`SelfVerifyThisDeviceSheet.onFinished`
-    /// fires this same closure so a successful verify clears the
-    /// banner without requiring a full chat-list re-mount).
-    private func evaluateThisDeviceVerification() async {
-        guard let deps, let session else {
-            isThisDeviceVerified = nil
-            return
-        }
-        let svc: any VerificationService = verificationCenter?.service
-            ?? deps.verificationService(for: session)
-        do {
-            isThisDeviceVerified = try await svc.isThisDeviceVerified()
-        } catch {
-            isThisDeviceVerified = nil
-        }
-    }
-
-    /// Column wrapper: when the connection-state banner is visible OR
-    /// the verification center has pending requests OR this device is
-    /// explicitly unverified, stack the relevant banner(s) above the
-    /// existing chat-list content. Banner order (top-down): connection
-    /// state → unverified-device (most actionable) → incoming requests
-    /// → list. Empty / no-banner case falls straight through to
-    /// `chatListContent` so the loading `ProgressView` keeps its
-    /// full-screen vertical centering — wrapping the content in a
-    /// top-down `VStack` unconditionally (the prior shape) collapsed
-    /// the progress view to the top of the column. Mirrors
-    /// `MacChatListView.sidebarColumn`.
+    /// Column wrapper: when the connection-state banner is visible, stack
+    /// it above the existing chat-list content. Empty / no-banner case
+    /// falls straight through to `chatListContent` so the loading
+    /// `ProgressView` keeps its full-screen vertical centering — wrapping
+    /// the content in a top-down `VStack` unconditionally (the prior
+    /// shape) collapsed the progress view to the top of the column.
+    /// Mirrors `MacChatListView.sidebarColumn`.
     @ViewBuilder
     private var chatListColumn: some View {
-        let hasIncoming = (verificationCenter?.pending.isEmpty == false)
-        let showUnverified = (isThisDeviceVerified == false) && (session != nil)
         let showConnection = (connectionState != .running)
-        if hasIncoming || showUnverified || showConnection {
+        if showConnection {
             VStack(spacing: 0) {
                 // Connection-state banner sits at the very top so the
                 // user's first read of the list is "what's the current
@@ -452,41 +260,6 @@ struct ChatListView: View {
                     hasEverConnected: hasEverConnected
                 )
                 .animation(.easeInOut(duration: 0.2), value: connectionState)
-                // Wave 6 / live-test #3: in-list "this device hasn't been
-                // verified" banner. Sits above the incoming-verification-
-                // request banners (most actionable first — a user who's
-                // unverified should fix that before responding to other
-                // devices' verification requests). Renders only on
-                // explicit `false`; `nil` (still loading) hides the banner
-                // so verified users never see it flash. Tap → opens the
-                // self-verify SAS sheet via `verifyThisDeviceContext`.
-                if showUnverified, let session {
-                    UnverifiedDeviceBanner(
-                        onVerify: {
-                            verifyThisDeviceContext = VerifyThisDeviceContext(id: session.userID)
-                        }
-                    )
-                    .padding(.top, 8)
-                }
-                // Verification banners surface above whatever list state
-                // is showing — loading, error, empty, or populated. One
-                // banner per pending request (spec §7.1, §5.9). The host
-                // wires `verificationCenter` from `MatronApp`; tests /
-                // previews omit it and the `if let` short-circuits.
-                if let center = verificationCenter, !center.pending.isEmpty {
-                    VStack(spacing: 8) {
-                        ForEach(center.pending) { summary in
-                            VerificationBanner(
-                                summary: summary,
-                                onAccept: { sasSummary = $0 },
-                                onDismiss: { dismissed in
-                                    Task { await center.dismiss(dismissed) }
-                                }
-                            )
-                        }
-                    }
-                    .padding(.top, 8)
-                }
                 chatListContent
             }
         } else {
@@ -494,9 +267,9 @@ struct ChatListView: View {
         }
     }
 
-    /// Extracted to keep `body` readable now that the verification banner
-    /// sits above this list. Same render branches as before — loading /
-    /// error / empty / populated — just lifted out.
+    /// Extracted to keep `body` readable now that the connection-state
+    /// banner sits above this list. Same render branches as before —
+    /// loading / error / empty / populated — just lifted out.
     @ViewBuilder
     private var chatListContent: some View {
         if viewModel.isLoading {
@@ -559,77 +332,6 @@ struct ChatListView: View {
         }
     }
 
-    /// Builds the SAS sheet shown when a banner's "Verify" is tapped.
-    /// Hands construction to the per-present `SasSheetWrapper` view whose
-    /// `@State`-stored SasViewModel survives parent re-renders (Wave 4
-    /// expert-QA #8 — mirrors the Wave 2 fix to `ChatView`'s per-bot
-    /// SAS sheet). The prior inline construction here rebuilt the VM +
-    /// reopened a fresh `acceptIncoming` stream on every parent
-    /// `@State` mutation (`viewModel.groups` updates, `botProfileSummary`
-    /// flips, etc.), so partner-side SAS state transitions could reach
-    /// an orphaned VM whose continuation the visible sheet was no
-    /// longer observing.
-    @ViewBuilder
-    private func sasSheetContent(
-        for summary: VerificationRequestSummary,
-        deps: AppDependencies,
-        session: UserSession
-    ) -> some View {
-        // Reuse the VerificationCenter's service so acceptIncoming hits the
-        // SAME FlowStore that registered the incoming request. A fresh
-        // VerificationServiceLive would have an empty FlowStore and yield
-        // .cancelled("Unknown request: …") immediately. Falls back to the
-        // cached `verificationService(for:)` only if no center is wired
-        // (test/preview path); the cached instance is itself shared with
-        // every other consumer in the app.
-        let svc: any VerificationService = verificationCenter?.service
-            ?? deps.verificationService(for: session)
-        // Both terminal states (verified + cancelled) drain pending +
-        // close the sheet — leaving a stale banner under a cancelled
-        // SAS is the same UX bug as leaving a stale banner over a
-        // verified one. The closure is the same for both.
-        let drainAndDismiss: () -> Void = {
-            verificationCenter?.markCompleted(summary)
-            sasSummary = nil
-        }
-        SasSheetWrapper(
-            service: svc,
-            requestID: summary.id,
-            title: "Verify device",
-            streamFactory: { $0.acceptIncoming(requestID: summary.id) },
-            onFinished: drainAndDismiss,
-            onCancelled: drainAndDismiss
-        )
-    }
-
-    /// Builds the `DeviceSettingsView` body for the Settings sheet
-    /// (Task 11). Reuses the `VerificationCenter.service` so any
-    /// per-account verification check shares the same cache as the
-    /// incoming-request banner; falls back to a fresh
-    /// `VerificationServiceLive` when no center is wired (test /
-    /// preview path). The recovery-key closure forwards
-    /// `RecoveryKeyManager.currentKey()` — closure indirection keeps
-    /// the view free of `RecoveryKeyManager` so it stays trivially
-    /// testable without a real Keychain.
-    @ViewBuilder
-    private func deviceSettingsSheetBody(
-        for deps: AppDependencies,
-        session: UserSession
-    ) -> some View {
-        let svc: any VerificationService = verificationCenter?.service
-            ?? deps.verificationService(for: session)
-        let mgr = RecoveryKeyManager(
-            provider: deps.clientProvider,
-            session: session,
-            keychain: KeychainStore.recoveryStore()
-        )
-        DeviceSettingsView(
-            session: session,
-            verificationService: svc,
-            currentRecoveryKey: { try mgr.currentKey() }
-        )
-    }
-
     /// Builds the `ChatView` destination for a tapped row. Wrapped in a
     /// helper so `body` stays readable and the `nil`-environment branch
     /// doesn't leak SwiftUI conditional-content quirks into the main flow.
@@ -651,17 +353,7 @@ struct ChatListView: View {
                 viewModel: chatVM,
                 composerVM: composerVM,
                 chatTitle: summary.title,
-                onShowBotProfile: { botProfileSummary = summary },
-                // Reuse the VerificationCenter's service so the per-bot
-                // banner's SAS sheet hits the SAME FlowStore that any
-                // incoming verification request was registered against
-                // — building a fresh `VerificationServiceLive` would
-                // hit an empty FlowStore (mirrors the comment on
-                // `sasSheetContent`). Falls back to a fresh instance
-                // when no center is wired (test/preview path).
-                verificationService: verificationCenter?.service
-                    ?? deps.verificationService(for: session),
-                botMatrixID: summary.bot.matrixID
+                onShowBotProfile: { botProfileSummary = summary }
             )
         } else {
             ContentUnavailableView(
@@ -700,20 +392,6 @@ struct ChatListView: View {
         Task { try? await action(chat) }
     }
 
-    /// "Indexing chats…" footer shown while search backfill is in flight.
-    @ViewBuilder
-    private func indexingFooter(_ progress: AggregateBackfillProgress) -> some View {
-        HStack(spacing: 8) {
-            ProgressView().controlSize(.small)
-            Text("Indexing chats… (\(progress.roomsCompleted) of \(progress.roomsTotal))")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
-        .background(.ultraThinMaterial)
-    }
-
 }
 
 private struct ChatRow: View {
@@ -734,187 +412,6 @@ private struct ChatRow: View {
             }
             UnreadBadge(count: summary.unreadCount)
         }
-    }
-}
-
-/// Per-present SAS sheet body for the "verify this device" self-verify
-/// flow triggered by `UnverifiedDeviceBanner` (Wave 6 / live-test #3).
-/// Owns the chooser / recovery-key phase machine; the SAS sub-flow
-/// itself is delegated to `SasSheetWrapper`, where `requestID` is the
-/// SIGNED-IN USER's matrixID (NOT a bot's) — the FlowStore cache key
-/// `VerificationServiceLive.startSAS` registers under for self-verification
-/// flows. See `SasSheetWrapper.swift` for the Wave 5 bugbot #2 rationale
-/// behind the `.task(id:)` shape (vs. the prior `init`-side seed that
-/// fired on every re-render).
-private struct SelfVerifyThisDeviceSheet: View {
-    let service: VerificationService
-    let userID: String
-    /// Closure that runs `RecoveryKeyManager.restore(usingKey:)` against
-    /// the host's session — the sheet itself doesn't construct a manager
-    /// so it stays free of `RecoveryKeyManager` / `KeychainStore`
-    /// dependencies; the caller wires the right instance based on the
-    /// active session.
-    let recoveryKeyRestore: (String) async throws -> Void
-    let onFinished: () -> Void
-    let onCancelled: () -> Void
-
-    /// Sheet phase. `.chooser` renders the two-button picker — without
-    /// it the only path the chat-list `UnverifiedDeviceBanner` surfaced
-    /// was SAS, which strands users when no other verified device is
-    /// online (e.g. both devices' SDK stores got wiped on re-login).
-    /// `.alreadyVerified` short-circuits the chooser when the device
-    /// is already verified by the time the user taps the banner —
-    /// avoids running a redundant SAS for a verified device. Mirrors
-    /// the Mac `HelpMenuVerifyDeviceSheet` pattern (PR #3 review #6).
-    enum Phase { case probing, alreadyVerified, chooser, sas, recoveryKey }
-    @State private var phase: Phase = .probing
-    @State private var recoveryKeyViewModel: RecoveryKeyViewModel?
-    /// `nil` while the probe is in flight; `true` if the SDK reports
-    /// at least one other already-verified device of the same user
-    /// (`Encryption.hasDevicesToVerifyAgainst()`); `false` if there's
-    /// nothing online to SAS-verify against. Drives the disabled
-    /// state on the "Verify with another device" button — without
-    /// this, users with no other verified peer get stranded waiting
-    /// on a SAS that can never complete.
-    @State private var hasOtherDevices: Bool? = nil
-
-    var body: some View {
-        Group {
-            switch phase {
-            case .probing:
-                ProgressView("Loading…")
-            case .alreadyVerified:
-                alreadyVerifiedView
-            case .chooser:
-                chooserView
-            case .sas:
-                // SAS sub-flow delegated to `SasSheetWrapper` (PR #3
-                // review #1). The phase state machine (chooser /
-                // recovery-key / probing / alreadyVerified) stays here;
-                // only the SAS surface is the wrapped pattern.
-                SasSheetWrapper(
-                    service: service,
-                    requestID: userID,
-                    title: "Verify this device",
-                    streamFactory: { $0.startSAS(withUser: userID, deviceID: nil) },
-                    onFinished: onFinished,
-                    onCancelled: onCancelled
-                )
-            case .recoveryKey:
-                if let vm = recoveryKeyViewModel {
-                    // Wrap in NavigationStack here because RecoveryKeyView
-                    // itself no longer hosts one (would nest with the
-                    // PostLoginVerificationView outer NavStack and break
-                    // pushed navigation). This sheet has no parent
-                    // NavStack, so we provide the navigation chrome
-                    // (title bar) at the call site.
-                    NavigationStack {
-                        RecoveryKeyView(
-                            viewModel: vm,
-                            onFinished: onFinished
-                        )
-                    }
-                } else {
-                    ProgressView("Loading…")
-                }
-            }
-        }
-        .task(id: userID) {
-            guard phase == .probing else { return }
-            // Re-probe verification status on tap. The chat-list
-            // banner's evaluation can lag (it runs on `.task` of the
-            // ChatListView's appearance and only re-runs on sheet
-            // dismiss). If the device became verified between banner
-            // render and the user tapping Verify, short-circuit to
-            // `.alreadyVerified` so we don't run a redundant SAS.
-            // Mirrors Mac `HelpMenuVerifyDeviceSheet` (PR #3 review #6).
-            // Tri-state probe: only short-circuit on an explicit `true`.
-            // `nil` (unknown) and `false` (unverified) both fall through
-            // to the chooser — falsy unknown would have falsely shown
-            // "already verified" before the SDK loaded the identity.
-            let verified = try? await service.isThisDeviceVerified()
-            if verified == true {
-                phase = .alreadyVerified
-                return
-            }
-            hasOtherDevices = (try? await service.hasOtherVerifiedDevices()) ?? false
-            phase = .chooser
-        }
-    }
-
-    private var alreadyVerifiedView: some View {
-        // See `MacAppMain.alreadyVerifiedView` for the full rationale —
-        // cross-signing-verified ≠ backup-key-available, so even
-        // already-verified devices need a path to enter the recovery
-        // key when historical messages aren't decrypting.
-        VStack(spacing: 16) {
-            Image(systemName: "checkmark.shield.fill")
-                .font(.system(size: 60))
-                .foregroundStyle(.green)
-            Text("This device is already verified")
-                .font(.title2).bold()
-            Text("If your historical messages aren't decrypting, restoring from your recovery key fetches the backup decryption key for this device.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            VStack(spacing: 12) {
-                Button("Restore from recovery key…") {
-                    recoveryKeyViewModel = .restoring(restore: recoveryKeyRestore)
-                    phase = .recoveryKey
-                }
-                .accessibilityIdentifier("verifychooser.alreadyVerified.recovery")
-                Button("Close") { onFinished() }
-                    .buttonStyle(.borderedProminent)
-                    .accessibilityIdentifier("verifychooser.alreadyVerified.close")
-            }
-        }
-        .padding()
-    }
-
-    private var chooserView: some View {
-        let sasAvailable = hasOtherDevices ?? false
-        return VStack(spacing: 16) {
-            Image(systemName: "lock.shield")
-                .font(.system(size: 60))
-                .foregroundStyle(.tint)
-            Text("Verify this device")
-                .font(.title2).bold()
-            Text("Choose how to verify this device.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            VStack(spacing: 4) {
-                Button {
-                    // The wrapper now owns SAS VM construction; just
-                    // flip the phase. `SasSheetWrapper.task(id:)` opens
-                    // the stream once on entry into `.sas`.
-                    phase = .sas
-                } label: {
-                    Label("Verify with another device", systemImage: "laptopcomputer")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!sasAvailable)
-                .accessibilityIdentifier("verifychooser.sas")
-                if !sasAvailable {
-                    Text("No other verified devices found for your account.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Button {
-                recoveryKeyViewModel = .restoring(restore: recoveryKeyRestore)
-                phase = .recoveryKey
-            } label: {
-                Label("Use recovery key", systemImage: "key")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .accessibilityIdentifier("verifychooser.recoveryKey")
-            Button("Close") { onCancelled() }
-                .padding(.top, 8)
-        }
-        .padding(32)
     }
 }
 

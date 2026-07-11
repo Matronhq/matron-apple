@@ -36,7 +36,13 @@ struct ComposerView: View {
             }
 
             HStack(alignment: .bottom, spacing: 4) {
-                AttachmentPicker(photoItem: $photoItem, showFileImporter: $showFileImporter)
+                // Journal stack: media DISPLAY is live server-side, but the
+                // client send whitelist is text-only, so composing an
+                // attachment would fail server-side. Gated on the VM flag
+                // rather than deleted outright.
+                if ComposerViewModel.mediaAvailable {
+                    AttachmentPicker(photoItem: $photoItem, showFileImporter: $showFileImporter)
+                }
 
                 TextField("Message…", text: $viewModel.input, axis: .vertical)
                     .lineLimit(1...8)
