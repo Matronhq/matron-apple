@@ -63,4 +63,35 @@ final class JournalConnectionTests: XCTestCase {
         try await connection.send(.ack(cursor: 5))
         XCTAssertEqual(socket.lastSentObject?["op"] as? String, "ack")
     }
+
+    func testEstablishTimesOutWhenServerSilent() async {
+        let socket = FakeWebSocketConnection() // never serves hello_ok
+        do {
+            _ = try await JournalConnection.establish(
+                connector: FakeConnector([socket]), wsURL: wsURL, token: "t", cursor: 0,
+                handshakeTimeout: .milliseconds(100))
+            XCTFail("expected handshakeTimeout")
+        } catch let error as JournalConnectionError {
+            XCTAssertEqual(error, .handshakeTimeout)
+        } catch {
+            XCTFail("unexpected \(error)")
+        }
+        XCTAssertTrue(socket.isClosed)
+    }
+
+    func testFramesTerminationClosesSocket() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(#"{"kind":"control","op":"hello_ok","seq":0}"#)
+        let (connection, _) = try await JournalConnection.establish(
+            connector: FakeConnector([socket]), wsURL: wsURL, token: "t", cursor: 0)
+        let task = Task {
+            for try await _ in connection.frames() { }
+        }
+        try await Task.sleep(for: .milliseconds(50)) // let the pump suspend in receiveText
+        task.cancel() // terminates the stream -> onTermination must close the socket
+        for _ in 0..<100 where !socket.isClosed {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(socket.isClosed)
+    }
 }

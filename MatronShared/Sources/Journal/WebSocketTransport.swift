@@ -16,6 +16,7 @@ public enum JournalConnectionError: Error, Equatable, Sendable {
     case authRejected
     case badHandshake
     case socketClosed
+    case handshakeTimeout
 }
 
 public final class URLSessionWebSocketConnector: WebSocketConnecting {

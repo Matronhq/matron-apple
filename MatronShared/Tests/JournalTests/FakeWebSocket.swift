@@ -69,6 +69,12 @@ final class FakeWebSocketConnection: WebSocketConnection, @unchecked Sendable {
 
     func close() { closeFromServer() }
 
+    var isClosed: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return closed
+    }
+
     /// Convenience: last sent frame decoded as a JSON object.
     var lastSentObject: [String: Any]? {
         guard let last = sent.last else { return nil }
