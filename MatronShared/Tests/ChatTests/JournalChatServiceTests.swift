@@ -61,6 +61,14 @@ final class JournalChatServiceTests: XCTestCase {
         try await service.leave(roomID: "c1")
         XCTAssertEqual(try store.conversations().count, 0)
     }
+
+    func testForceSnapshotIsBestEffortWhenOffline() async throws {
+        // refreshSummaries is best-effort: unreachable API must not throw.
+        let store = try makeStore()
+        let service = makeService(store)
+        try await service.forceSnapshot() // must not throw or hang
+    }
+
 }
 
 /// Never connects — enough for list tests that only read the store.
