@@ -23,8 +23,9 @@ public enum JournalAPIError: Error, Equatable, Sendable {
 }
 
 /// Thin HTTP surface of the journal server: login, snapshot, pagination,
-/// plus the dormant media/APNs endpoints (spec'd; server lands them in
-/// v1-completion — callers must tolerate `.notFound` until then).
+/// push registration, plus the still-dormant media endpoint (spec'd; the
+/// server lands it later in v1-completion — callers must tolerate
+/// `.notFound` until then).
 public actor JournalAPI {
     public nonisolated let serverURL: URL
     private let urlSession: URLSession
@@ -92,14 +93,23 @@ public actor JournalAPI {
         return data
     }
 
-    /// Dormant until the server lands APNs registration (v1-completion).
-    /// A 404 (endpoint missing today) is swallowed as a no-op.
-    public func registerAPNsToken(_ tokenHex: String) async throws {
-        do {
-            _ = try await request(path: "/devices/apns", method: "POST", body: ["apns_token": tokenHex])
-        } catch JournalAPIError.notFound {
-            // Server doesn't support push registration yet.
-        }
+    public enum PushEnvironment: String, Sendable {
+        case sandbox
+        case prod
+    }
+
+    /// Registers this device for APNs pushes. Server: POST /push/register
+    /// (client devices only). Xcode debug builds register sandbox tokens;
+    /// TestFlight/App Store builds are prod.
+    public func registerPush(tokenHex: String, environment: PushEnvironment) async throws {
+        _ = try await request(path: "/push/register", method: "POST",
+                              body: ["apns_token": tokenHex, "environment": environment.rawValue])
+    }
+
+    /// Clears this device's push registration (apns_token: null per protocol).
+    public func unregisterPush() async throws {
+        _ = try await request(path: "/push/register", method: "POST",
+                              body: ["apns_token": NSNull()])
     }
 
     // MARK: Internals

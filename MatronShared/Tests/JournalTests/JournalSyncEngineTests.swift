@@ -203,4 +203,144 @@ final class JournalSyncEngineTests: XCTestCase {
         let isRunning = await engine.isRunning
         XCTAssertFalse(isRunning, "isRunning should be false once the run loop has exited after auth rejection")
     }
+
+    /// waitUntilReady() on an engine that was never started must throw
+    /// immediately rather than park the caller forever (there is no run loop
+    /// left to ever resume it).
+    func testWaitUntilReadyOnNeverStartedEngineThrows() async throws {
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([]))
+        do {
+            try await engine.waitUntilReady()
+            XCTFail("expected waitUntilReady() to throw on a never-started engine")
+        } catch {
+            XCTAssertEqual(error as? JournalSyncError, .offline)
+        }
+    }
+
+    /// Regression: waitUntilReady() called AFTER endSync() must throw right
+    /// away instead of parking a fresh continuation that nothing will ever
+    /// resume. Races against a generous timeout so a regression fails the
+    /// test instead of hanging the suite.
+    func testWaitUntilReadyAfterEndSyncThrowsInsteadOfHanging() async throws {
+        let connector = FakeConnector([])
+        connector.connectError = JournalConnectionError.socketClosed
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: connector, backoffBaseSeconds: 0.001)
+        await engine.beginSync()
+        try await Task.sleep(for: .milliseconds(30))
+        await engine.endSync()
+
+        enum RaceResult { case waiterThrew(Error), waiterSucceeded, timedOut }
+        let result = await withTaskGroup(of: RaceResult.self) { group -> RaceResult in
+            group.addTask {
+                do {
+                    try await engine.waitUntilReady()
+                    return .waiterSucceeded
+                } catch {
+                    return .waiterThrew(error)
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(5))
+                return .timedOut
+            }
+            let first = await group.next()!
+            group.cancelAll()
+            return first
+        }
+
+        switch result {
+        case .waiterThrew(let error):
+            XCTAssertEqual(error as? JournalSyncError, .offline)
+        case .waiterSucceeded:
+            XCTFail("waitUntilReady() should have thrown on a stopped engine, not resumed successfully")
+        case .timedOut:
+            XCTFail("waitUntilReady() hung after endSync() (regression on stopped-engine guard)")
+        }
+    }
+
+    /// The server's replay-gap valve (spec: src/ws.js snapshot_required):
+    /// too large a gap between the client's cursor and the head seq gets a
+    /// `snapshot_required` control frame instead of a replay, and the socket
+    /// is closed right after. The engine must wipe its mirror and cold-start
+    /// from GET /snapshot on the next connect.
+    func testSnapshotRequiredWipesMirrorAndColdStarts() async throws {
+        let snapshotJSON = #"""
+            {"conversations":[{"id":"c9","title":"fresh","session_state":"running","last_seq":400,"unread_count":0,"snippet":"s","created_at":0}],"seq":400}
+            """#
+        SnapshotRequiredStubURLProtocol.snapshotBody = snapshotJSON
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SnapshotRequiredStubURLProtocol.self]
+        let api = JournalAPI(serverURL: URL(string: "https://x")!,
+                             urlSession: URLSession(configuration: config))
+
+        // Seed a store with cursor 5 and one convo ("c1") carrying events —
+        // this is the mirror that must get wiped.
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:dan")
+        try store.applyColdSnapshot([ConvoSummaryDTO(id: "c1", title: "", sessionState: "running",
+                                                     lastSeq: 0, snippet: "", createdAt: 0)], headSeq: 0)
+        for seq: Int64 in 1...5 {
+            _ = try store.applyJournal(JournalEvent(
+                seq: seq, convoID: "c1", ts: Date(), sender: "agent:a", type: "text",
+                payloadData: Data(#"{"body":"m\#(seq)"}"#.utf8)))
+        }
+        XCTAssertEqual(store.cursor, 5)
+
+        let socket1 = FakeWebSocketConnection()
+        socket1.serve(helloOK(500))
+        socket1.serve(#"{"kind":"control","op":"snapshot_required"}"#)
+        // Mirror the real server: it closes right after snapshot_required.
+        // Deferred so `sendText(hello)` (done during establish, right after
+        // beginSync) isn't rejected by an already-closed socket — it must
+        // only close once the queued frames above have been drained.
+        Task {
+            try? await Task.sleep(for: .milliseconds(50))
+            socket1.closeFromServer()
+        }
+        let socket2 = FakeWebSocketConnection()
+        socket2.serve(helloOK(400))
+        let connector = FakeConnector([socket1, socket2])
+
+        let engine = JournalSyncEngine(api: api, store: store, connector: connector,
+                                       token: "t", ownSender: "user:dan", search: nil,
+                                       backoffBaseSeconds: 0.001)
+        await engine.beginSync()
+
+        for _ in 0..<500 where store.cursor != 400 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(store.cursor, 400)
+        let conversations = try store.conversations()
+        XCTAssertFalse(conversations.contains { $0.id == "c1" }, "old conversation must be wiped")
+        XCTAssertTrue(conversations.contains { $0.id == "c9" }, "cold-start snapshot's conversation must be present")
+        XCTAssertTrue(try store.events(convoID: "c1").isEmpty, "old events must be wiped")
+
+        let hello = try XCTUnwrap(socket2.sent.first.flatMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+        })
+        XCTAssertEqual(hello["cursor"] as? Int64, 400, "reconnect after cold-start must carry the fresh cursor")
+
+        await engine.endSync()
+    }
+}
+
+/// Local stub for the snapshot_required engine test — deliberately separate
+/// from JournalAPITests' StubURLProtocol to avoid cross-file coupling.
+/// Always answers GET /snapshot with `snapshotBody` (the engine calls
+/// /snapshot both from the cold-start path and from refreshSummaries() on
+/// every connect; the same canned response is fine for both).
+final class SnapshotRequiredStubURLProtocol: URLProtocol {
+    nonisolated(unsafe) static var snapshotBody: String = ""
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
+                                       headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(Self.snapshotBody.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
 }

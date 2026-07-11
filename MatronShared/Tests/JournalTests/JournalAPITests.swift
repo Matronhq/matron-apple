@@ -5,11 +5,16 @@ final class StubURLProtocol: URLProtocol {
     /// path → (status, body). Set per-test; read by the loader.
     nonisolated(unsafe) static var responses: [String: (Int, String)] = [:]
     nonisolated(unsafe) static var lastRequest: URLRequest?
+    /// Recorded body of the last request, read from `httpBody` when present
+    /// and falling back to draining `httpBodyStream` otherwise (URLSession
+    /// sometimes only populates the stream form for the loaded request).
+    nonisolated(unsafe) static var lastRequestBody: Data?
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         Self.lastRequest = request
+        Self.lastRequestBody = Self.body(of: request)
         let path = request.url!.path
         let (status, body) = Self.responses[path] ?? (404, #"{"error":"not_found"}"#)
         let response = HTTPURLResponse(url: request.url!, statusCode: status,
@@ -19,6 +24,22 @@ final class StubURLProtocol: URLProtocol {
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
+
+    private static func body(of request: URLRequest) -> Data? {
+        if let httpBody = request.httpBody { return httpBody }
+        guard let stream = request.httpBodyStream else { return nil }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        let bufferSize = 4096
+        var buffer = [UInt8](repeating: 0, count: bufferSize)
+        while stream.hasBytesAvailable {
+            let read = stream.read(&buffer, maxLength: bufferSize)
+            if read <= 0 { break }
+            data.append(buffer, count: read)
+        }
+        return data
+    }
 }
 
 final class JournalAPITests: XCTestCase {
@@ -111,11 +132,27 @@ final class JournalAPITests: XCTestCase {
         XCTAssertTrue(url?.absoluteString.contains("/convo/c%201%2Fx/messages") ?? false)
     }
 
-    func testRegisterAPNsTokenSwallowsNotFound() async throws {
-        StubURLProtocol.responses = ["/devices/apns": (404, #"{"error":"not_found"}"#)]
+    func testRegisterPushPostsTokenAndEnvironment() async throws {
+        StubURLProtocol.responses = ["/push/register": (200, #"{"ok":true}"#)]
         let api = makeAPI()
         await api.setToken("t")
-        try await api.registerAPNsToken("aabbcc") // must NOT throw
+        try await api.registerPush(tokenHex: "aabbcc", environment: .sandbox)
+        XCTAssertEqual(StubURLProtocol.lastRequest?.url?.path, "/push/register")
+        XCTAssertEqual(StubURLProtocol.lastRequest?.httpMethod, "POST")
+        let body = try XCTUnwrap(StubURLProtocol.lastRequestBody)
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(obj["apns_token"] as? String, "aabbcc")
+        XCTAssertEqual(obj["environment"] as? String, "sandbox")
+    }
+
+    func testUnregisterPushSendsNullToken() async throws {
+        StubURLProtocol.responses = ["/push/register": (200, #"{"ok":true}"#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        try await api.unregisterPush()
+        let body = try XCTUnwrap(StubURLProtocol.lastRequestBody)
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertTrue(obj["apns_token"] is NSNull)
     }
 
     func testMediaDataReturnsBytes() async throws {

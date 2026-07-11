@@ -77,6 +77,7 @@ public actor JournalSyncEngine {
 
     public func waitUntilReady() async throws {
         if case .running = state { return }
+        guard runTask != nil else { throw JournalSyncError.offline }
         try await withCheckedThrowingContinuation { continuation in
             readyWaiters.append(continuation)
         }
@@ -217,6 +218,18 @@ public actor JournalSyncEngine {
                         for (_, entry) in ephemeralContinuations where entry.convoID == update.convoID {
                             entry.continuation.yield(update)
                         }
+                    case .snapshotRequired:
+                        // Gap too large to replay (server valve). Cancel any
+                        // in-flight refreshSummaries() first — its response
+                        // is stale relative to the wipe and, if it lands
+                        // after we clear the store, would repopulate it with
+                        // pre-wipe data and defeat coldStartIfNeeded()'s
+                        // empty-store check on the next connect. Then wipe
+                        // the mirror; the socket closes right after this
+                        // frame and the next loop iteration cold-starts
+                        // from /snapshot.
+                        refreshSummariesTask?.cancel()
+                        try? store.wipe()
                     case .error, .helloOK, .unknownControl:
                         break // post-hello control frames are advisory
                     }

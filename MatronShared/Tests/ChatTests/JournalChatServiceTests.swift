@@ -69,6 +69,22 @@ final class JournalChatServiceTests: XCTestCase {
         try await service.forceSnapshot() // must not throw or hang
     }
 
+    func testRefreshThrowsWhenEngineStopped() async throws {
+        let store = try makeStore()
+        let api = JournalAPI(serverURL: URL(string: "https://x")!)
+        let engine = JournalSyncEngine(api: api, store: store, connector: FakeChatConnector(),
+                                       token: "t", ownSender: "user:dan", search: nil,
+                                       backoffBaseSeconds: 0.01)
+        let service = JournalChatService(store: store, engine: engine)
+        await engine.beginSync()
+        try await Task.sleep(for: .milliseconds(30))
+        await engine.endSync()
+        do {
+            try await service.refresh()
+            XCTFail("expected refresh to throw once the engine is stopped")
+        } catch { }
+    }
+
 }
 
 /// Never connects — enough for list tests that only read the store.

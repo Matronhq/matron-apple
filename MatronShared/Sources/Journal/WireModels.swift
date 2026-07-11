@@ -86,6 +86,7 @@ public enum ServerFrame: Equatable, Sendable {
     case ephemeral(EphemeralUpdate)
     case helloOK(headSeq: Int64)
     case error(code: String, ref: String?)
+    case snapshotRequired
     case unknownControl(op: String)
 
     public static func decode(_ text: String) -> ServerFrame? {
@@ -110,6 +111,8 @@ public enum ServerFrame: Equatable, Sendable {
                 return .helloOK(headSeq: (obj["seq"] as? NSNumber)?.int64Value ?? 0)
             case "error":
                 return .error(code: obj["code"] as? String ?? "unknown", ref: obj["ref"] as? String)
+            case "snapshot_required":
+                return .snapshotRequired
             default:
                 return .unknownControl(op: op)
             }

@@ -27,10 +27,9 @@ final class WireModelsTests: XCTestCase {
         XCTAssertEqual(code, "forbidden")
         XCTAssertEqual(ref, "send")
 
-        guard case let .unknownControl(op)? = ServerFrame.decode(#"{"kind":"control","op":"snapshot_required"}"#) else {
-            return XCTFail("unknown control ops must decode as no-op frames")
+        guard case .snapshotRequired? = ServerFrame.decode(#"{"kind":"control","op":"snapshot_required"}"#) else {
+            return XCTFail("snapshot_required must decode as its own first-class case")
         }
-        XCTAssertEqual(op, "snapshot_required")
 
         guard case let .ephemeral(update)? = ServerFrame.decode(#"{"kind":"ephemeral","convo_id":"c1","message_ref":"m7","replace_text":"progress 3"}"#) else {
             return XCTFail("expected ephemeral")
