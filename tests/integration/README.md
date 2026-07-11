@@ -1,3 +1,7 @@
+> **STALE (2026-07-11):** the Matrix-era harness this README describes (docker
+> compose, partner client, scenario scripts) was deleted with the Matrix stack.
+> A journal-server harness replaces it — see MatronIntegrationTests.
+
 # Matron integration test harness
 
 Drives both Matron apps through real flows against a local matron-server

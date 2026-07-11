@@ -18,8 +18,7 @@ import MatronSync
 /// lifetime — same motivation as the pre-journal
 /// `syncCache`/`mediaCache`/`chatCache` per-session caches this replaces.
 ///
-/// Matrix code still exists in `MatronShared` (Task 14 deletes it); this
-/// type simply stops referencing it.
+/// Built entirely on the journal stack; the Matrix SDK is gone from the repo.
 @MainActor
 final class AppDependencies {
     let auth: AuthService
