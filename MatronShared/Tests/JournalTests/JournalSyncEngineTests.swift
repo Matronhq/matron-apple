@@ -140,6 +140,51 @@ final class JournalSyncEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    /// Finding 1: a thrown store write (disk full, sqlite I/O error) must not
+    /// be swallowed. Previously `if (try? store.applyJournal(event)) == true`
+    /// discarded the throw, leaving the cursor stuck and the loop quietly
+    /// discarding every subsequent frame on a still-live socket — a permanent
+    /// silent wedge in `.connecting`. Exercised via `JournalStore`'s
+    /// test-only `failApplyForTesting` hook (JournalStore is `final`, so a
+    /// subclass/wrapper can't intercept the call; a fake store would mean
+    /// not exercising the real transactional cursor-advance behavior this
+    /// test is pinning) rather than the weaker "just check connectCount"
+    /// property, so the assertions can also confirm the two things that
+    /// actually matter operationally: no event is lost, and the cursor never
+    /// advances past a failed write.
+    func testStoreWriteFailureReconnectsRatherThanWedging() async throws {
+        let socket1 = FakeWebSocketConnection()
+        socket1.serve(helloOK(3))
+        socket1.serve(journalLine(1))
+        socket1.serve(journalLine(2)) // write fails once on this seq
+        socket1.serve(journalLine(3)) // must never be lost even though queued behind the failure
+        let socket2 = FakeWebSocketConnection()
+        socket2.serve(helloOK(3))
+        socket2.serve(journalLine(2)) // resumed from the unchanged cursor (1)
+        socket2.serve(journalLine(3))
+        let store = try seededStore()
+        var hasFailedOnce = false
+        store.failApplyForTesting = { seq in
+            guard seq == 2, !hasFailedOnce else { return false }
+            hasFailedOnce = true
+            return true
+        }
+        let connector = FakeConnector([socket1, socket2])
+        let engine = makeEngine(store: store, connector: connector)
+        await engine.beginSync()
+
+        for _ in 0..<500 where store.cursor < 3 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(store.cursor, 3,
+                       "engine must reconnect and resume from the cursor left unchanged by the failed write, not wedge")
+        XCTAssertEqual(try store.events(convoID: "c1").map(\.seq), [1, 2, 3],
+                       "seq 2 must not be lost: a transient throw must not let the cursor jump past it")
+        XCTAssertGreaterThanOrEqual(connector.connectCount, 2,
+                                    "a store-write failure must force a fresh connect, never go quiet")
+        await engine.endSync()
+    }
+
     /// Regression for endSync() stranding waitUntilReady() callers: previously
     /// endSync() never resumed readyWaiters, so a caller blocked in
     /// waitUntilReady() while the engine was still trying (and failing) to
@@ -312,6 +357,77 @@ final class JournalSyncEngineTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertEqual(store.cursor, 400)
+        let conversations = try store.conversations()
+        XCTAssertFalse(conversations.contains { $0.id == "c1" }, "old conversation must be wiped")
+        XCTAssertTrue(conversations.contains { $0.id == "c9" }, "cold-start snapshot's conversation must be present")
+        XCTAssertTrue(try store.events(convoID: "c1").isEmpty, "old events must be wiped")
+
+        let hello = try XCTUnwrap(socket2.sent.first.flatMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+        })
+        XCTAssertEqual(hello["cursor"] as? Int64, 400, "reconnect after cold-start must carry the fresh cursor")
+
+        await engine.endSync()
+    }
+
+    /// Finding 2: snapshot_required must force a reconnect on its own, not
+    /// rely on the server closing the socket right after the frame. This
+    /// fake server deliberately leaves socket1 open and idle after
+    /// snapshot_required — if the engine only wiped and waited for the
+    /// socket to die, this test would hang (or, worse in the real world, a
+    /// server that kept the socket open would let later journal frames land
+    /// on the freshly-wiped store and diverge the mirror). Asserts the
+    /// engine reconnects (connectCount reaches 2) and cold-starts from
+    /// /snapshot on its own initiative.
+    func testSnapshotRequiredForcesReconnectEvenIfSocketStaysOpen() async throws {
+        SnapshotRequiredStubURLProtocol.reset()
+        let snapshotJSON = #"""
+            {"conversations":[{"id":"c9","title":"fresh","session_state":"running","last_seq":400,"unread_count":0,"snippet":"s","created_at":0}],"seq":400}
+            """#
+        SnapshotRequiredStubURLProtocol.snapshotBody = snapshotJSON
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SnapshotRequiredStubURLProtocol.self]
+        let api = JournalAPI(serverURL: URL(string: "https://x")!,
+                             urlSession: URLSession(configuration: config))
+
+        // Seed a store with cursor 5 and one convo ("c1") carrying events —
+        // this is the mirror that must get wiped.
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:dan")
+        try store.applyColdSnapshot([ConvoSummaryDTO(id: "c1", title: "", sessionState: "running",
+                                                     lastSeq: 0, snippet: "", createdAt: 0)], headSeq: 0)
+        for seq: Int64 in 1...5 {
+            _ = try store.applyJournal(JournalEvent(
+                seq: seq, convoID: "c1", ts: Date(), sender: "agent:a", type: "text",
+                payloadData: Data(#"{"body":"m\#(seq)"}"#.utf8)))
+        }
+        XCTAssertEqual(store.cursor, 5)
+
+        let socket1 = FakeWebSocketConnection()
+        socket1.serve(helloOK(500))
+        socket1.serve(#"{"kind":"control","op":"snapshot_required"}"#)
+        // Deliberately NOT calling closeFromServer(): this fake server keeps
+        // the socket open and idle after the valve frame, unlike every other
+        // snapshot_required test in this file. The engine must reconnect
+        // anyway.
+        let socket2 = FakeWebSocketConnection()
+        socket2.serve(helloOK(400))
+        let connector = FakeConnector([socket1, socket2])
+
+        let engine = JournalSyncEngine(api: api, store: store, connector: connector,
+                                       token: "t", ownSender: "user:dan", search: nil,
+                                       backoffBaseSeconds: 0.001)
+        await engine.beginSync()
+
+        for _ in 0..<500 where connector.connectCount < 2 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertGreaterThanOrEqual(connector.connectCount, 2,
+                                    "engine must force its own reconnect; it cannot depend on the server closing the socket")
+
+        for _ in 0..<500 where store.cursor != 400 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(store.cursor, 400, "reconnect must cold-start from /snapshot with the fresh head")
         let conversations = try store.conversations()
         XCTAssertFalse(conversations.contains { $0.id == "c1" }, "old conversation must be wiped")
         XCTAssertTrue(conversations.contains { $0.id == "c9" }, "cold-start snapshot's conversation must be present")

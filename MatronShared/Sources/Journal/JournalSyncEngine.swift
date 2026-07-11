@@ -207,10 +207,24 @@ public actor JournalSyncEngine {
                 defer { watchdog.cancel() }
 
                 var appliedSinceAck: Int64 = 0
-                for try await frame in connection.frames() {
+                frameLoop: for try await frame in connection.frames() {
                     switch frame {
                     case .journal(let event):
-                        if (try? store.applyJournal(event)) == true {
+                        // Propagate a throw (disk full, sqlite I/O error) rather than
+                        // swallowing it: the cursor is only advanced inside the same
+                        // transaction as a successful write (JournalStore.applyJournal),
+                        // so on failure it's untouched, and letting the error escape
+                        // this loop routes to the catch below → close → backoff →
+                        // reconnect from that unchanged cursor. Swallowing it here
+                        // instead would leave the loop discarding frames on a live
+                        // socket forever (silent wedge in .connecting), and — worse —
+                        // if a later frame then applied successfully, the cursor would
+                        // jump past the failed seq and the server would never resend
+                        // it (it only replays above the acked cursor).
+                        //
+                        // `false` (duplicate, seq <= cursor) is a legitimate no-op:
+                        // it must not count toward the ack batch.
+                        if try store.applyJournal(event) {
                             indexForSearch(event)
                             appliedSinceAck += 1
                             if appliedSinceAck >= 50 {
@@ -230,15 +244,24 @@ public actor JournalSyncEngine {
                         // after we clear the store, would repopulate it with
                         // pre-wipe data and defeat coldStartIfNeeded()'s
                         // empty-store check on the next connect. Then wipe
-                        // the mirror; the socket closes right after this
-                        // frame and the next loop iteration cold-starts
-                        // from /snapshot.
+                        // the mirror.
                         refreshSummariesTask?.cancel()
                         storeEpoch += 1
                         // A failed wipe leaves stale rows in place; the server will
                         // simply re-issue snapshot_required on the next connect
                         // (bounded by the reconnect backoff), so this isn't silently lost.
                         try? store.wipe()
+                        // Force the reconnect deterministically rather than relying on
+                        // the server closing the socket right after this frame: if it
+                        // ever kept the connection open, later journal frames would
+                        // apply onto the freshly-wiped store (seq > cursor 0) and skip
+                        // coldStartIfNeeded() on this same connection, diverging the
+                        // mirror. Breaking here always falls through to the same
+                        // close/backoff/reconnect path used for every other exit from
+                        // this loop, and the next iteration's coldStartIfNeeded() picks
+                        // up from /snapshot regardless of what the server does with
+                        // the socket.
+                        break frameLoop
                     case .error, .helloOK, .unknownControl:
                         break // post-hello control frames are advisory
                     }

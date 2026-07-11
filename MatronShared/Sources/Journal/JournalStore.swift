@@ -76,6 +76,12 @@ struct EventRecord: Codable, FetchableRecord, PersistableRecord {
     }
 }
 
+/// Test-only error thrown by `JournalStore.failApplyForTesting`'s injection
+/// hook. Not meant to be pattern-matched by production code.
+enum JournalStoreTestError: Error {
+    case simulatedWriteFailure
+}
+
 /// Local mirror of the user's journal. The UI reads ONLY this store; the
 /// sync engine is the only writer. `cursor` advances inside the same
 /// transaction as the event insert — the wedge-proof property.
@@ -178,9 +184,22 @@ public final class JournalStore: @unchecked Sendable {
 
     // MARK: Journal apply
 
+    /// Test-only failure injection: when set and it returns `true` for a
+    /// given seq, `applyJournal` throws instead of writing, simulating a
+    /// disk-full / SQLite I/O error without needing a real failing backend.
+    /// Checked at the very top of `applyJournal`, before the transaction
+    /// opens, so nothing is written and the cursor is left untouched — the
+    /// same shape a real write failure takes. Internal (not public):
+    /// production code never sets this; only `@testable import` test targets
+    /// can reach it.
+    var failApplyForTesting: ((Int64) -> Bool)?
+
     @discardableResult
     public func applyJournal(_ event: JournalEvent) throws -> Bool {
-        try dbQueue.write { db in
+        if failApplyForTesting?(event.seq) == true {
+            throw JournalStoreTestError.simulatedWriteFailure
+        }
+        return try dbQueue.write { db in
             let current = try Int64.fetchOne(db, sql: "SELECT value FROM meta WHERE key = 'cursor'") ?? 0
             guard event.seq > current else { return false }
             try EventRecord(event).save(db)
