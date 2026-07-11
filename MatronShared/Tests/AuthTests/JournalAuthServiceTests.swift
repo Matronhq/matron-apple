@@ -57,6 +57,35 @@ final class JournalAuthServiceTests: XCTestCase {
             XCTFail("unexpected \(error)")
         }
     }
+
+    func testProbeRejectsNonJournalServer() async {
+        // A 200 from /snapshot means it is NOT a journal server (they 401 unauthenticated).
+        StubAuthURLProtocol.responses = ["/snapshot": (200, #"{"whatever":"ok"}"#)]
+        let (service, _) = makeService()
+        do {
+            _ = try await service.probe("chat.example.com")
+            XCTFail("expected serverUnreachable")
+        } catch let error as AuthError {
+            XCTAssertEqual(error, .serverUnreachable)
+        } catch {
+            XCTFail("unexpected \(error)")
+        }
+    }
+
+    func testLockedOutMapsToUnexpectedWithRetryMessage() async {
+        StubAuthURLProtocol.responses = ["/login": (429, #"{"error":"locked_out","retry_after":90}"#)]
+        let (service, _) = makeService()
+        do {
+            _ = try await service.loginPassword(
+                homeserverURL: URL(string: "https://chat.example.com")!,
+                username: "dan", password: "pw", initialDeviceDisplayName: "x")
+            XCTFail("expected throw")
+        } catch let AuthError.unexpected(message) {
+            XCTAssertTrue(message.contains("90"), "retry seconds should surface: \(message)")
+        } catch {
+            XCTFail("unexpected \(error)")
+        }
+    }
 }
 
 final class StubAuthURLProtocol: URLProtocol {
