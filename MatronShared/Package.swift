@@ -107,14 +107,14 @@ let package = Package(
                 .product(name: "MarkdownUI", package: "swift-markdown-ui"),
                 // `StateBridges.swift` is the single source of truth
                 // for service-layer → design-system enum mappings:
-                // `SyncBannerState.from(_:)` (uses `SyncConnectionState`
-                // from `MatronSync`) and `SendStateGlyph.from(_:)` (uses
-                // `TimelineSendState` from `MatronModels`). Both deps
-                // are leaf modules with no SwiftUI / SDK surface, so
-                // the bridges live next to the target enums without
-                // creating a cycle or pulling MatrixRustSDK.
+                // `SyncBannerState.from(_:)` and `SendStateGlyph.from(_:)`
+                // both consume enums that live in `MatronModels`
+                // (`SyncConnectionState` moved here from `MatronSync` in
+                // the journal swap; `TimelineSendState` was always here).
+                // A leaf module with no SwiftUI / SDK surface, so the
+                // bridges live next to the target enums without creating
+                // a cycle or pulling MatrixRustSDK.
                 "MatronModels",
-                "MatronSync",
                 // Phase 5: ToolCallCard / AskUserSheetBody /
                 // SessionMetaHeader render the MatronEvents DTOs
                 // directly. MatronEvents is a leaf module (Foundation
@@ -209,7 +209,6 @@ let package = Package(
                 "MatronDesignSystem",
                 "MatronEvents",
                 "MatronModels",
-                "MatronSync",
                 .product(name: "SnapshotTesting", package: "swift-snapshot-testing"),
             ],
             path: "Tests/DesignSystemSnapshotTests"

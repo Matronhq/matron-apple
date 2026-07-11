@@ -1,6 +1,5 @@
 import XCTest
 import MatronModels
-import MatronSync
 @testable import MatronDesignSystem
 
 /// Pins the service-layer / model-layer → design-system enum bridges
