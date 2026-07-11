@@ -87,39 +87,54 @@ final class JournalServerHarness {
         let serverPath = try requireServerRepo()
         let nodePath = try resolveNodePath()
 
+        // tempDir is only created once the XCTSkip-worthy preconditions
+        // above have already passed — a skip must never leave a directory
+        // behind to clean up. Everything below this point runs under a
+        // single cleanup `catch`: any throw (provisioning, port probe,
+        // boot, readiness) terminates a booted server process (if any) and
+        // removes tempDir before rethrowing, so a failed start() never
+        // leaks a temp DB directory or a subprocess.
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("matron-journal-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         let dbPath = tempDir.appendingPathComponent("matron.sqlite").path
 
-        for user in users {
-            _ = try runAdminCLI(nodePath: nodePath, serverPath: serverPath, dbPath: dbPath,
-                                arguments: ["user", "add", user.name, "--password", user.password])
-        }
-        var tokens: [String: String] = [:]
-        for agent in agents {
-            let output = try runAdminCLI(nodePath: nodePath, serverPath: serverPath, dbPath: dbPath,
-                                         arguments: ["agent", "add", agent.user, agent.name])
-            tokens[agent.name] = try parseAgentToken(output, agentName: agent.name)
-        }
-
-        let port = try findFreePort()
-        let (process, diagnostics) = try bootServer(nodePath: nodePath, serverPath: serverPath, dbPath: dbPath, port: port)
-        let baseURL = URL(string: "http://127.0.0.1:\(port)")!
-
+        var bootedProcess: Process?
         do {
-            try await waitForReadiness(baseURL: baseURL)
-        } catch {
-            process.terminate()
-            process.waitUntilExit()
-            try? FileManager.default.removeItem(at: tempDir)
-            throw HarnessError.serverDidNotBecomeReady(lastError: error, diagnostics: diagnostics.contents)
-        }
+            for user in users {
+                _ = try runAdminCLI(nodePath: nodePath, serverPath: serverPath, dbPath: dbPath,
+                                    arguments: ["user", "add", user.name, "--password", user.password])
+            }
+            var tokens: [String: String] = [:]
+            for agent in agents {
+                let output = try runAdminCLI(nodePath: nodePath, serverPath: serverPath, dbPath: dbPath,
+                                             arguments: ["agent", "add", agent.user, agent.name])
+                tokens[agent.name] = try parseAgentToken(output, agentName: agent.name)
+            }
 
-        return JournalServerHarness(
-            baseURL: baseURL, process: process, tempDir: tempDir, dbPath: dbPath,
-            serverPath: serverPath, nodePath: nodePath, agentTokens: tokens, diagnostics: diagnostics
-        )
+            let port = try findFreePort()
+            let (process, diagnostics) = try bootServer(nodePath: nodePath, serverPath: serverPath, dbPath: dbPath, port: port)
+            bootedProcess = process
+            let baseURL = URL(string: "http://127.0.0.1:\(port)")!
+
+            do {
+                try await waitForReadiness(baseURL: baseURL)
+            } catch {
+                throw HarnessError.serverDidNotBecomeReady(lastError: error, diagnostics: diagnostics.contents)
+            }
+
+            return JournalServerHarness(
+                baseURL: baseURL, process: process, tempDir: tempDir, dbPath: dbPath,
+                serverPath: serverPath, nodePath: nodePath, agentTokens: tokens, diagnostics: diagnostics
+            )
+        } catch {
+            if let bootedProcess {
+                bootedProcess.terminate()
+                bootedProcess.waitUntilExit()
+            }
+            try? FileManager.default.removeItem(at: tempDir)
+            throw error
+        }
     }
 
     /// Provisions an additional user against the already-running server.
@@ -181,11 +196,50 @@ final class JournalServerHarness {
     /// PATH the xctest host process happens to have) and invoking that
     /// absolute path directly for every subsequent node call sidesteps the
     /// whole PATH question.
+    ///
+    /// The interactive shell is a subprocess of unknown provenance — a
+    /// hung/blocking `.zshrc` (network call, prompt, whatever) must not be
+    /// able to wedge the whole test job forever, so it's bounded to 10s via
+    /// `run(withTimeout:_:)`. On a timeout (or any other failure to resolve
+    /// via the shell) this falls through to a short list of common
+    /// absolute install locations before giving up with `XCTSkip`. The
+    /// result (success AND failure) is cached in a process-wide static so
+    /// this cost — normally a fork/exec plus up to 10s of waiting in the
+    /// worst case — is paid at most once per test process, not once per
+    /// `start()` call.
+    private static let nodePathLock = NSLock()
+    private static var cachedNodePathResult: Result<String, Error>?
+
     private static func resolveNodePath() throws -> String {
+        nodePathLock.lock()
+        defer { nodePathLock.unlock() }
+        if let cached = cachedNodePathResult {
+            return try cached.get()
+        }
+        let result = Result { try resolveNodePathUncached() }
+        cachedNodePathResult = result
+        return try result.get()
+    }
+
+    private static func resolveNodePathUncached() throws -> String {
         if let overridden = ProcessInfo.processInfo.environment["MATRON_NODE_PATH"],
            FileManager.default.isExecutableFile(atPath: overridden) {
             return overridden
         }
+        if let viaShell = resolveNodePathViaInteractiveShell(timeout: 10) {
+            return viaShell
+        }
+        for candidate in ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"] {
+            if FileManager.default.isExecutableFile(atPath: candidate) {
+                return candidate
+            }
+        }
+        throw XCTSkip("node not resolvable via `zsh -i -c 'command -v node'` (timed out or failed), MATRON_NODE_PATH, or common install paths — set MATRON_NODE_PATH to override")
+    }
+
+    /// Returns `nil` (never throws) on timeout or any resolution failure —
+    /// callers fall through to the next link in the chain.
+    private static func resolveNodePathViaInteractiveShell(timeout: TimeInterval) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         process.arguments = ["-i", "-c", "command -v node"]
@@ -195,20 +249,33 @@ final class JournalServerHarness {
         let outPipe = Pipe()
         process.standardOutput = outPipe
         process.standardError = Pipe()
-        do {
-            try process.run()
-        } catch {
-            throw XCTSkip("could not launch an interactive shell to resolve node: \(error)")
-        }
-        process.waitUntilExit()
+
+        guard run(withTimeout: timeout, process) else { return nil }
+
         let path = String(decoding: outPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard process.terminationStatus == 0, !path.isEmpty,
               FileManager.default.isExecutableFile(atPath: path)
-        else {
-            throw XCTSkip("node not resolvable via `zsh -i -c 'command -v node'` (exited \(process.terminationStatus)) — set MATRON_NODE_PATH to override")
-        }
+        else { return nil }
         return path
+    }
+
+    /// Runs `process`, waiting at most `seconds` for it to exit on its own.
+    /// Returns `false` (having already sent `terminate()` and given it a
+    /// short grace period to die) if it timed out, or if it couldn't even
+    /// be launched. Used to bound subprocesses whose behavior (e.g. an
+    /// interactive shell sourcing an unknown `.zshrc`) isn't fully within
+    /// this harness's control.
+    private static func run(withTimeout seconds: TimeInterval, _ process: Process) -> Bool {
+        let done = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in done.signal() }
+        do { try process.run() } catch { return false }
+        if done.wait(timeout: .now() + seconds) == .timedOut {
+            process.terminate()
+            _ = done.wait(timeout: .now() + 2)
+            return false
+        }
+        return true
     }
 
     // MARK: Admin CLI
@@ -283,12 +350,43 @@ final class JournalServerHarness {
 
     // MARK: Server boot
 
+    /// Boots `node src/server.js` wrapped in a small `/bin/sh` watchdog
+    /// rather than as a direct child, so the node process can't outlive
+    /// this harness even if the xctest host is SIGKILLed (a signal
+    /// `stop()`/`defer`/`terminate()` never gets a chance to run for).
+    ///
+    /// The watchdog does two things:
+    /// - `trap ... TERM INT` handles the normal `stop()` path: `stop()`
+    ///   calls `Process.terminate()`, which sends SIGTERM to this shell
+    ///   (not to node); the trap forwards that into a `kill` of the node
+    ///   child before the shell exits.
+    /// - The `kill -0 "$PPID"` loop handles the SIGKILL case, where the
+    ///   shell itself is never signaled: `$PPID` is captured by the shell
+    ///   at startup and does NOT track re-parenting, so once the original
+    ///   parent (the xctest process) is gone — even via SIGKILL, which
+    ///   bypasses all Swift-side cleanup — `kill -0 "$PPID"` starts failing
+    ///   and the loop kills the orphaned node child itself, within ~1s.
+    ///
+    /// (Considered instead: a pid-file-based sweep of stale runs at the
+    /// start of `start()`. Rejected as strictly more moving parts for the
+    /// same guarantee — this needs no shared/discoverable state across
+    /// runs, just a watchdog for whichever run is problematic.)
     private static func bootServer(
         nodePath: String, serverPath: String, dbPath: String, port: UInt16
     ) throws -> (Process, DiagnosticsBuffer) {
+        let watchdogScript = """
+        trap 'kill "$SERVER" 2>/dev/null; wait "$SERVER" 2>/dev/null; exit 0' TERM INT
+        "\(nodePath)" src/server.js &
+        SERVER=$!
+        while kill -0 "$PPID" 2>/dev/null; do
+            sleep 1
+        done
+        kill "$SERVER" 2>/dev/null
+        wait "$SERVER" 2>/dev/null
+        """
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: nodePath)
-        process.arguments = ["src/server.js"]
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", watchdogScript]
         process.currentDirectoryURL = URL(fileURLWithPath: serverPath)
         var env = ProcessInfo.processInfo.environment
         env["MATRON_DB"] = dbPath
