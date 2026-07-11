@@ -31,7 +31,7 @@ Non-goals: Matrix history import; E2EE; multi-account.
 ```
 Views (SwiftUI, ~unchanged)
    │  TimelineItem / ChatSummary (kept render models)
-ViewModels (re-seamed onto 3 slim protocols)
+ViewModels (~unchanged: existing protocols, journal impls)
    │
 MatronJournal module (NEW, no FFI)
  ├─ JournalAPI     URLSession HTTP: /login, /snapshot, /convo/:id/messages
@@ -105,20 +105,31 @@ Mapping to the kept `TimelineItem.Kind`:
 | `file`/`image` | `.file`/`.image` (dormant until /media) |
 | `read_marker`/`edit` | not rendered; applied to state |
 
-## 3. Service seams (replacing the Matrix five)
+## 3. Service seams (amended during planning: reuse the existing protocols)
 
-- **`SessionController`** — `signIn(serverURL, username, password, deviceName)` →
-  `POST /login`, token stored via existing `KeychainStore`; `signOut()` (clear token,
-  wipe store); published session state. Sign-in screen defaults the server field to
-  `https://chat.example.com` (editable).
-- **`ConversationListService`** — `AsyncStream<[ChatSummary]>` from store observation;
-  `setMuted(convoID:)` local; `createConversation(title:)` via `convo_create` (§7).
-  `ChatSummary` keeps its shape (roomID field carries the convo id; name carries title;
-  gains a session-state badge).
-- **`ConversationService`** (per open conversation) — timeline
-  `AsyncStream<[TimelineItem]>` (store rows + ephemeral overlay), `send(text:)`,
-  `promptReply(targetSeq:choice:text:)`, `markRead(upToSeq:)`,
-  `loadOlder()` (HTTP pagination → insert into store → FTS), `setViewing(Bool)`.
+Planning surfaced that `UserSession` and the existing service protocols
+(`AuthService`, `ChatService`, `TimelineService`, `MediaService`, `PushService`,
+`SyncService`) are already protocol-agnostic value shapes — only their `*Live`
+implementations are Matrix-coupled. So instead of three new protocol names, the
+journal layer **implements the existing protocols**, which leaves ViewModels and
+views nearly untouched:
+
+- **`JournalAuthService: AuthService`** — `loginPassword` → `POST /login`, mapping to
+  `UserSession(userID: username, deviceID: String(device_id), homeserverURL:
+  serverURL, accessToken: token)`; persist/restore via the existing `SessionStore`.
+  Sign-in screen defaults the server field to `https://chat.example.com` (editable).
+- **`JournalChatService: ChatService`** — `chatSummaries()` from store observation;
+  `mute`/`leave` local-only; `createChat` surfaces a graceful "not supported yet"
+  error until `convo_create` lands (§7).
+- **`JournalTimelineService: TimelineService`** — `items()` (store rows + ephemeral
+  overlay + local echo), `sendText(_:inReplyTo:)` (reply-to a prompt seq becomes
+  `prompt_reply`), `sendButtonResponse` → `prompt_reply`, `paginateBackward` (HTTP
+  pagination → store → FTS), `markAsRead` → `read_marker`; declares `viewing` while
+  the items stream is consumed. `sendImage`/`sendFile` throw until `/media` lands.
+- **`JournalSyncEngine: SyncService`** — `start`/`stop`/`waitUntilReady`/
+  `stateStream`; `sdkService()` is deleted from the protocol with the SDK.
+- **`JournalMediaService: MediaService`**, **`JournalPushService: PushService`** —
+  dormant implementations against the spec'd `/media` and APNs-registration surface.
 
 ### Streaming overlay & local echo
 
