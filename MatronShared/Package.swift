@@ -19,6 +19,7 @@ let package = Package(
         .library(name: "MatronPush", targets: ["MatronPush"]),
         .library(name: "MatronEvents", targets: ["MatronEvents"]),
         .library(name: "MatronSearch", targets: ["MatronSearch"]),
+        .library(name: "MatronJournal", targets: ["MatronJournal"]),
     ],
     dependencies: [
         .package(url: "https://github.com/matrix-org/matrix-rust-components-swift", from: "26.04.01"),
@@ -185,6 +186,18 @@ let package = Package(
             ],
             path: "Sources/Search"
         ),
+        // Journal protocol core (2026-07 Matrix replacement): wire DTOs,
+        // GRDB mirror, HTTP API, WebSocket client, sync engine. No FFI.
+        .target(
+            name: "MatronJournal",
+            dependencies: [
+                "MatronModels",
+                "MatronStorage",
+                "MatronSearch",
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ],
+            path: "Sources/Journal"
+        ),
         .testTarget(name: "StorageTests", dependencies: ["MatronStorage"], path: "Tests/StorageTests"),
         .testTarget(name: "AuthTests", dependencies: ["MatronAuth", "MatronModels", "MatronStorage"], path: "Tests/AuthTests"),
         .testTarget(name: "SyncTests", dependencies: ["MatronSync", "MatronModels"], path: "Tests/SyncTests"),
@@ -217,5 +230,6 @@ let package = Package(
             path: "Tests/EventsTests"
         ),
         .testTarget(name: "SearchTests", dependencies: ["MatronSearch"], path: "Tests/SearchTests"),
+        .testTarget(name: "JournalTests", dependencies: ["MatronJournal", "MatronModels"], path: "Tests/JournalTests"),
     ]
 )
