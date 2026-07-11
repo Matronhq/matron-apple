@@ -4,11 +4,14 @@ import MatronModels
 
 public enum JournalChatError: Error, LocalizedError, Equatable {
     case creationNotSupported
+    case mediaNotSupported
 
     public var errorDescription: String? {
         switch self {
         case .creationNotSupported:
             return "Creating conversations from the app needs server support (convo_create) — coming soon."
+        case .mediaNotSupported:
+            return "Attachments need the server's /media endpoint — coming soon."
         }
     }
 }
