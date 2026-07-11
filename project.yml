@@ -75,6 +75,13 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         ITSAppUsesNonExemptEncryption: false
+        # Production talks to https://chat.example.com, so ATS stays on.
+        # The one carve-out is cleartext to loopback, so a locally-run
+        # matron-journal dev server (http://127.0.0.1:9810, per the README
+        # dev recipe) is reachable. ServerURLValidator already restricts
+        # explicit http:// to loopback hosts.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: chat.matron.app
@@ -163,6 +170,12 @@ targets:
         CFBundleDisplayName: Matron
         LSApplicationCategoryType: public.app-category.social-networking
         ITSAppUsesNonExemptEncryption: false
+        # See the iOS target: ATS stays on for production https; the only
+        # carve-out is cleartext to loopback for a local matron-journal
+        # dev server. ServerURLValidator restricts explicit http:// to
+        # loopback hosts.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: chat.matron.mac
