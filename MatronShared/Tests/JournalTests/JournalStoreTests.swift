@@ -60,6 +60,14 @@ final class JournalStoreTests: XCTestCase {
                        "metadata frames are not messages")
     }
 
+    func testConversationExists() throws {
+        let store = try makeStore()
+        XCTAssertFalse(try store.conversationExists("c1"))
+        try store.applyJournal(event(1, convo: "c1"))
+        XCTAssertTrue(try store.conversationExists("c1"))
+        XCTAssertFalse(try store.conversationExists("other"))
+    }
+
     func testOwnMessagesDoNotBumpUnread() throws {
         let store = try makeStore()
         try store.applyJournal(event(1, sender: "user:dan"))

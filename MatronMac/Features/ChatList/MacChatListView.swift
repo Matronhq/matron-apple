@@ -265,6 +265,18 @@ struct MacChatListView: View {
                 if state == .running { hasEverConnected = true }
             }
         }
+        // Auto-open a conversation the bridge just created while we're live
+        // (e.g. the user sent /start). The engine only emits ids for convos
+        // born while running, so this won't fire for the cold-start /
+        // reconnect backlog. Drives the same `selectedSummaryID` the
+        // notification-tap deep link uses, so the detail column flips to the
+        // new chat without the user hunting for it. Mirrors the iOS host.
+        .task(id: session?.userID) {
+            guard let deps, let session else { return }
+            for await roomID in await deps.syncService(for: session).newConversations() {
+                selectedSummaryID = roomID
+            }
+        }
         // Dock-tile badge mirrors the chat list's running unread total.
         // `NSApp.dockTile.badgeLabel` accepts a String; `nil` removes
         // the badge so a zero count produces no overlay. AppKit handles

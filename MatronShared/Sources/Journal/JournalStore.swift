@@ -300,6 +300,16 @@ public final class JournalStore: @unchecked Sendable {
         }
     }
 
+    /// Whether a conversation row already exists. Used by the sync engine to
+    /// tell a brand-new conversation (its first-ever frame) apart from a
+    /// later frame on an existing one, so it can surface only the former.
+    public func conversationExists(_ convoID: String) throws -> Bool {
+        try dbQueue.read { db in
+            try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM conversation WHERE id = ?)",
+                              arguments: [convoID]) ?? false
+        }
+    }
+
     public func minSeq(convoID: String) throws -> Int64? {
         try dbQueue.read { db in
             try Int64.fetchOne(db, sql: "SELECT MIN(seq) FROM event WHERE convo_id = ?", arguments: [convoID])

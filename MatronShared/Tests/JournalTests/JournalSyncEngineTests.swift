@@ -103,6 +103,66 @@ final class JournalSyncEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    /// A conversation whose first-ever frame arrives while the engine is
+    /// live (`.running`) — the /start case — must be published on
+    /// `newConversations()`. Frames on already-known convos, and repeat
+    /// frames on the same new convo, must NOT fire. Serving an existing-convo
+    /// frame and a repeat-convo frame interleaved with the new ones proves
+    /// the filter: the only two ids the stream yields are the two genuinely
+    /// new convos, in order.
+    func testNewConversationsEmittedOnlyForLiveBornConvos() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1)) // c1 — seeded/existing, drives us to running
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.newConversations().makeAsyncIterator()
+        // Let the async continuation registration land before we serve the
+        // frames it must catch (publish only reaches registered continuations).
+        try await Task.sleep(for: .milliseconds(50))
+
+        socket.serve(journalLine(2, convo: "c1"))  // existing → no emit
+        socket.serve(journalLine(3, convo: "c2"))  // brand new → emit "c2"
+        socket.serve(journalLine(4, convo: "c2"))  // now existing → no emit
+        socket.serve(journalLine(5, convo: "c3"))  // brand new → emit "c3"
+
+        let first = await iterator.next()
+        XCTAssertEqual(first, "c2")
+        let second = await iterator.next()
+        XCTAssertEqual(second, "c3", "only brand-new convos fire; existing and repeat frames don't")
+        await engine.endSync()
+    }
+
+    /// The reconnect / cold-start backlog must NOT auto-open: new convos whose
+    /// first frame lands during the catch-up burst (state still `.connecting`)
+    /// are filtered, so a subscriber sees nothing from them. A convo born
+    /// after `.running` still fires and is the FIRST id yielded, proving the
+    /// backlog was filtered out rather than merely delayed.
+    func testReconnectBacklogNewConvosDoNotAutoOpen() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(3))
+        socket.serve(journalLine(1, convo: "cX")) // new, but during catch-up
+        socket.serve(journalLine(2, convo: "cY")) // new, during catch-up
+        socket.serve(journalLine(3, convo: "cZ")) // new, the frame that reaches head
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+
+        var iterator = engine.newConversations().makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(20)) // registration lands before sync
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        try await Task.sleep(for: .milliseconds(20))
+        socket.serve(journalLine(4, convo: "cLive")) // born live → must fire
+        let emitted = await iterator.next()
+        XCTAssertEqual(emitted, "cLive",
+                       "catch-up backlog convos must not auto-open; only live-born ones do")
+        await engine.endSync()
+    }
+
     func testStateStreamTransitions() async throws {
         let socket = FakeWebSocketConnection()
         socket.serve(helloOK(0))

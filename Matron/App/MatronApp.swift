@@ -62,6 +62,18 @@ struct MatronApp: App {
                         }
                     }
                     .task { try? await dependencies.syncService(for: session).start() }
+                    // Auto-open a conversation the bridge just created while
+                    // we're live (e.g. the user sent /start in another chat).
+                    // The engine only emits ids for convos born while running,
+                    // so this won't fire for the cold-start / reconnect
+                    // backlog. Appends onto the same nav path a notification
+                    // tap uses, so the new chat pushes into view without the
+                    // user hunting for it in the list.
+                    .task(id: session.userID) {
+                        for await roomID in await dependencies.syncService(for: session).newConversations() {
+                            if chatPath.last != roomID { chatPath.append(roomID) }
+                        }
+                    }
                     .task(id: session.userID) {
                         // Cold-start tap drain: if iOS launched the app
                         // specifically because the user tapped a

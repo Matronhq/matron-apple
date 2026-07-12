@@ -36,6 +36,7 @@ public actor JournalSyncEngine {
     private var state: SyncConnectionState = .connecting
     private var stateContinuations: [UUID: AsyncStream<SyncConnectionState>.Continuation] = [:]
     private var ephemeralContinuations: [UUID: (convoID: String, continuation: AsyncStream<EphemeralUpdate>.Continuation)] = [:]
+    private var newConvoContinuations: [UUID: AsyncStream<String>.Continuation] = [:]
     private var readyWaiters: [CheckedContinuation<Void, Error>] = []
 
     public init(
@@ -129,6 +130,23 @@ public actor JournalSyncEngine {
         }
     }
 
+    /// Emits the id of a conversation created live — one whose first-ever
+    /// frame arrives while we're connected and caught up (`.running`), e.g.
+    /// the chat the bridge spins up in response to `/start`. Hosts subscribe
+    /// to auto-open it so the user doesn't have to hunt for it in the list.
+    /// A reconnect backlog does NOT replay through here: only convos born
+    /// after the client reached `.running` fire, so resuming after a long
+    /// offline stretch can't yank the user through a pile of old sessions.
+    public nonisolated func newConversations() -> AsyncStream<String> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerNewConvo(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in
+                Task { await self.unregisterNewConvo(id: id) }
+            }
+        }
+    }
+
     // MARK: Registry plumbing
 
     private func registerState(id: UUID, continuation: AsyncStream<SyncConnectionState>.Continuation) {
@@ -146,6 +164,18 @@ public actor JournalSyncEngine {
 
     private func unregisterEphemeral(id: UUID) {
         ephemeralContinuations.removeValue(forKey: id)
+    }
+
+    private func registerNewConvo(id: UUID, continuation: AsyncStream<String>.Continuation) {
+        newConvoContinuations[id] = continuation
+    }
+
+    private func unregisterNewConvo(id: UUID) {
+        newConvoContinuations.removeValue(forKey: id)
+    }
+
+    private func publishNewConversation(_ convoID: String) {
+        for continuation in newConvoContinuations.values { continuation.yield(convoID) }
     }
 
     private func setState(_ new: SyncConnectionState) {
@@ -224,12 +254,27 @@ public actor JournalSyncEngine {
                         //
                         // `false` (duplicate, seq <= cursor) is a legitimate no-op:
                         // it must not count toward the ack batch.
+                        // Whether this convo had no row before this frame —
+                        // read before applyJournal creates one. Only the
+                        // first-ever frame of a convo sees `false`, so this
+                        // is true exactly once per new conversation.
+                        let isNewConvo = (try? store.conversationExists(event.convoID)) == false
                         if try store.applyJournal(event) {
                             indexForSearch(event)
                             appliedSinceAck += 1
                             if appliedSinceAck >= 50 {
                                 try? await connection.send(.ack(cursor: store.cursor))
                                 appliedSinceAck = 0
+                            }
+                            // Surface a conversation the bridge just created
+                            // while we're live (e.g. the user sent /start).
+                            // Gated on `.running`: during the initial
+                            // catch-up burst state is still `.connecting`, so
+                            // a reconnect that replays new-since-offline convos
+                            // won't auto-navigate — only ones born while the
+                            // user is actively connected do.
+                            if isNewConvo, case .running = state {
+                                publishNewConversation(event.convoID)
                             }
                         }
                         if store.cursor >= headSeq { setState(.running) }
