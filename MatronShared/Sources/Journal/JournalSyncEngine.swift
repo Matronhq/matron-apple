@@ -36,6 +36,7 @@ public actor JournalSyncEngine {
     private var state: SyncConnectionState = .connecting
     private var stateContinuations: [UUID: AsyncStream<SyncConnectionState>.Continuation] = [:]
     private var ephemeralContinuations: [UUID: (convoID: String, continuation: AsyncStream<EphemeralUpdate>.Continuation)] = [:]
+    private var activityContinuations: [UUID: (convoID: String, continuation: AsyncStream<ActivityUpdate>.Continuation)] = [:]
     private var newConvoContinuations: [UUID: AsyncStream<String>.Continuation] = [:]
     private var readyWaiters: [CheckedContinuation<Void, Error>] = []
 
@@ -130,6 +131,20 @@ public actor JournalSyncEngine {
         }
     }
 
+    /// Per-conversation stream of activity indicators (typing / tool-use).
+    /// Mirrors `ephemerals(convoID:)` — the timeline subscribes while it's
+    /// the viewed conversation and renders a trailing indicator row until
+    /// an `.idle` update (or staleness) clears it.
+    public nonisolated func activities(convoID: String) -> AsyncStream<ActivityUpdate> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerActivity(id: id, convoID: convoID, continuation: continuation) }
+            continuation.onTermination = { _ in
+                Task { await self.unregisterActivity(id: id) }
+            }
+        }
+    }
+
     /// Emits the id of a conversation created live — one whose first-ever
     /// frame arrives while we're connected and caught up (`.running`), e.g.
     /// the chat the bridge spins up in response to `/start`. Hosts subscribe
@@ -164,6 +179,14 @@ public actor JournalSyncEngine {
 
     private func unregisterEphemeral(id: UUID) {
         ephemeralContinuations.removeValue(forKey: id)
+    }
+
+    private func registerActivity(id: UUID, convoID: String, continuation: AsyncStream<ActivityUpdate>.Continuation) {
+        activityContinuations[id] = (convoID, continuation)
+    }
+
+    private func unregisterActivity(id: UUID) {
+        activityContinuations.removeValue(forKey: id)
     }
 
     private func registerNewConvo(id: UUID, continuation: AsyncStream<String>.Continuation) {
@@ -280,6 +303,10 @@ public actor JournalSyncEngine {
                         if store.cursor >= headSeq { setState(.running) }
                     case .ephemeral(let update):
                         for (_, entry) in ephemeralContinuations where entry.convoID == update.convoID {
+                            entry.continuation.yield(update)
+                        }
+                    case .activity(let update):
+                        for (_, entry) in activityContinuations where entry.convoID == update.convoID {
                             entry.continuation.yield(update)
                         }
                     case .snapshotRequired:

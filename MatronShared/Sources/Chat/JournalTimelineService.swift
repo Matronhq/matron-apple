@@ -73,6 +73,10 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
     actor OverlayState {
         struct Echo { let localID: String; let body: String; let created: Date; var failed = false }
         private(set) var streaming: [String: (text: String, updated: Date)] = [:]
+        /// Current activity indicator (typing / tool-use), if any. Per-convo,
+        /// latest-wins; `.idle` clears it. Pruned by the same staleness sweep
+        /// as streaming so a crashed agent's indicator can't stick forever.
+        private(set) var activity: (label: String, updated: Date)?
         private(set) var echoes: [Echo] = []
         private var changeContinuations: [UUID: AsyncStream<Void>.Continuation] = [:]
         private let staleness: TimeInterval
@@ -87,10 +91,33 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             streaming[update.messageRef] = (text, Date())
         }
 
+        /// Applies an activity update. `.idle` clears the indicator; any
+        /// other state (re)arms it with a freshly-computed label. A `nil`
+        /// label (only `.idle` yields that) also clears.
+        func applyActivity(_ update: ActivityUpdate) {
+            if let label = JournalTimelineMapper.activityLabel(state: update.state, detail: update.detail) {
+                activity = (label, Date())
+            } else {
+                activity = nil
+            }
+        }
+
         func reconcile(with events: [JournalEvent], ownSender: String) {
             for event in events {
                 if let ref = event.payload["message_ref"] as? String {
                     streaming.removeValue(forKey: ref)
+                }
+                // Finalize de-dup fallback: the bridge may omit `message_ref`
+                // from the finalized row's payload (it's only guaranteed in
+                // the stream frames and the server-side idem key). An agent
+                // text row whose body equals a live overlay's accumulated
+                // text IS that stream's finalized form — retire the overlay
+                // so it doesn't double-show the message until staleness.
+                if event.sender != ownSender, event.type == JournalEventType.text,
+                   let body = event.payload["body"] as? String {
+                    for (ref, entry) in streaming where entry.text == body {
+                        streaming.removeValue(forKey: ref)
+                    }
                 }
                 if event.sender == ownSender, event.type == JournalEventType.text,
                    let body = event.payload["body"] as? String,
@@ -101,6 +128,7 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             let cutoff = Date().addingTimeInterval(-staleness)
             streaming = streaming.filter { $0.value.updated > cutoff }
             echoes = echoes.filter { $0.created > cutoff }
+            if let current = activity, current.updated <= cutoff { activity = nil }
         }
 
         func addEcho(localID: String, body: String) {
@@ -169,6 +197,15 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                                               isOwn: true,
                                               sendState: echo.failed ? .failed(reason: "Not delivered") : .sending))
                 }
+                // Activity indicator sits below every other row. Dated to the
+                // last row's timestamp (not "now") so it stays in that row's
+                // day bucket — using `now` would spawn a spurious "Today"
+                // separator above the indicator whenever the last message is
+                // from an earlier day.
+                if let activity = await overlay.activity {
+                    let ts = items.last?.timestamp ?? activity.updated
+                    items.append(JournalTimelineMapper.activityItem(label: activity.label, convoTS: ts))
+                }
                 continuation.yield(items)
             }
 
@@ -199,6 +236,12 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                     signal()
                 }
             }
+            let activityTask = Task {
+                for await update in engine.activities(convoID: convoID) {
+                    await overlay.applyActivity(update)
+                    signal()
+                }
+            }
             let echoTask = Task {
                 for await _ in overlay.changes() { signal() }
             }
@@ -221,6 +264,7 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             continuation.onTermination = { _ in
                 storeTask.cancel()
                 ephemeralTask.cancel()
+                activityTask.cancel()
                 echoTask.cancel()
                 sweepTask.cancel()
                 emitTask.cancel()

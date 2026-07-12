@@ -141,4 +141,23 @@ final class JournalTimelineMapperTests: XCTestCase {
         guard case .text(let body, _) = item.kind else { return XCTFail() }
         XCTAssertEqual(body, "working…")
     }
+
+    func testActivityLabels() {
+        XCTAssertEqual(JournalTimelineMapper.activityLabel(state: .thinking, detail: nil), "Thinking…")
+        XCTAssertEqual(JournalTimelineMapper.activityLabel(state: .tool, detail: "Bash"), "Running Bash")
+        // Empty / whitespace detail falls back to a generic label.
+        XCTAssertEqual(JournalTimelineMapper.activityLabel(state: .tool, detail: "  "), "Working…")
+        XCTAssertEqual(JournalTimelineMapper.activityLabel(state: .tool, detail: nil), "Working…")
+        // idle has no label — the caller renders nothing.
+        XCTAssertNil(JournalTimelineMapper.activityLabel(state: .idle, detail: nil))
+    }
+
+    func testActivityItem() {
+        let item = JournalTimelineMapper.activityItem(label: "Thinking…",
+                                                      convoTS: Date(timeIntervalSince1970: 99))
+        XCTAssertEqual(item.id, "activity")
+        XCTAssertFalse(item.isOwn)
+        guard case .activityIndicator(let label) = item.kind else { return XCTFail() }
+        XCTAssertEqual(label, "Thinking…")
+    }
 }

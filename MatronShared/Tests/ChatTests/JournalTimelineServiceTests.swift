@@ -142,6 +142,71 @@ final class JournalTimelineServiceTests: XCTestCase {
         await engine.endSync()
     }
 
+    // MARK: (b2) activity ephemeral surfaces a trailing indicator row; idle clears it
+
+    func testActivityIndicatorAppearsAndIdleClears() async throws {
+        let store = try makeStore()
+        let socket = FakeJournalSocket()
+        socket.serve(helloOK(0))
+        let api = JournalAPI(serverURL: URL(string: "https://x")!)
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([socket]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api, session: makeSession())
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        let (collector, task) = collectItems(service.items())
+        try await waitUntil { await collector.values.last != nil }
+
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","activity":{"state":"tool","detail":"Bash"}}"#)
+        try await waitUntil { await collector.values.last?.contains { $0.id == "activity" } == true }
+        let withIndicator = await collector.values.last!
+        guard case let .activityIndicator(label) = withIndicator.first(where: { $0.id == "activity" })?.kind else {
+            return XCTFail("expected an activityIndicator row")
+        }
+        XCTAssertEqual(label, "Running Bash")
+
+        // idle clears the indicator.
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","activity":{"state":"idle"}}"#)
+        try await waitUntil { await collector.values.last?.contains { $0.id == "activity" } == false }
+
+        task.cancel()
+        await engine.endSync()
+    }
+
+    // MARK: (b3) finalize with no message_ref still retires the overlay by body
+
+    func testFinalizeWithoutMessageRefRetiresOverlayByBody() async throws {
+        let store = try makeStore()
+        let socket = FakeJournalSocket()
+        socket.serve(helloOK(0))
+        let api = JournalAPI(serverURL: URL(string: "https://x")!)
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([socket]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api, session: makeSession())
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        let (collector, task) = collectItems(service.items())
+        try await waitUntil { await collector.values.last != nil }
+
+        // Stream builds an overlay to the final text.
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","message_ref":"m1","replace_text":"final answer"}"#)
+        try await waitUntil { await collector.values.last?.contains { $0.id == "eph:m1" } == true }
+
+        // Finalize lands as a real row whose body matches — but WITHOUT the
+        // message_ref in its payload (the bridge omitted it). The body-match
+        // fallback must still retire the overlay so it doesn't double-show.
+        socket.serve(journalFrame(seq: 1, type: "text", payload: ["body": "final answer"]))
+        try await waitUntil {
+            guard let last = await collector.values.last else { return false }
+            return last.count == 1 && !last.contains { $0.id == "eph:m1" }
+        }
+        let finalItems = await collector.values.last!
+        XCTAssertEqual(finalItems.first?.id, "1")
+
+        task.cancel()
+        await engine.endSync()
+    }
+
     // MARK: (c) sendText emits a .sending local echo immediately, op reaches
     // the socket, and the echo reconciles when the own journal row arrives
 

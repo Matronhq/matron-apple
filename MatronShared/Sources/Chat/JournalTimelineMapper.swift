@@ -160,4 +160,29 @@ public enum JournalTimelineMapper {
             id: "eph:\(messageRef)", sender: "agent", timestamp: convoTS,
             kind: .text(body: text, formattedHTML: nil), isOwn: false, sendState: .sent)
     }
+
+    /// Human label for an activity indicator. `nil` for `.idle` — the caller
+    /// never renders an idle indicator, so there's nothing to show.
+    public static func activityLabel(state: ActivityUpdate.State, detail: String?) -> String? {
+        switch state {
+        case .thinking:
+            return "Thinking…"
+        case .tool:
+            let trimmed = detail?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let trimmed, !trimmed.isEmpty { return "Running \(trimmed)" }
+            return "Working…"
+        case .idle:
+            return nil
+        }
+    }
+
+    /// A trailing indicator row. Stable `id` ("activity") so successive
+    /// updates redraw one row in place rather than stacking. `convoTS`
+    /// should match the last real row's day so it never spawns a date
+    /// separator.
+    public static func activityItem(label: String, convoTS: Date) -> TimelineItem {
+        TimelineItem(
+            id: "activity", sender: "agent", timestamp: convoTS,
+            kind: .activityIndicator(label: label), isOwn: false, sendState: .sent)
+    }
 }

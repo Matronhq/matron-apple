@@ -176,6 +176,9 @@ struct TimelineItemView: View {
             // visible through the answered prompt UI instead.
             EmptyView()
 
+        case .activityIndicator(let label):
+            ActivityIndicatorRow(label: label)
+
         case .unknown(let eventType):
             // Encrypted-but-not-yet-decrypted is the SDK's
             // `MsgLikeKind.unableToDecrypt` mapped to

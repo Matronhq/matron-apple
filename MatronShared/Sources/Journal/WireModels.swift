@@ -82,11 +82,37 @@ public struct EphemeralUpdate: Equatable, Sendable {
     }
 }
 
+/// A transient activity indicator (typing / tool-use). Per-conversation and
+/// not tied to any message; `state == .idle` clears whatever indicator is
+/// showing. Never persisted; delivered only while the client is `viewing`
+/// the conversation, so a missed update is harmless.
+public struct ActivityUpdate: Equatable, Sendable {
+    public enum State: String, Sendable {
+        /// Agent is composing/thinking — a bare "working" indicator.
+        case thinking
+        /// Agent is running a tool; `detail` carries the tool name.
+        case tool
+        /// Nothing in flight — clears any showing indicator.
+        case idle
+    }
+
+    public let convoID: String
+    public let state: State
+    public let detail: String?
+
+    public init(convoID: String, state: State, detail: String?) {
+        self.convoID = convoID
+        self.state = state
+        self.detail = detail
+    }
+}
+
 /// Server → client frames. Unknown `kind`s decode to nil (skip); unknown
 /// control ops decode to `.unknownControl` so the protocol can grow.
 public enum ServerFrame: Equatable, Sendable {
     case journal(JournalEvent)
     case ephemeral(EphemeralUpdate)
+    case activity(ActivityUpdate)
     case helloOK(headSeq: Int64)
     case error(code: String, ref: String?)
     case snapshotRequired
@@ -100,8 +126,21 @@ public enum ServerFrame: Equatable, Sendable {
         case "journal":
             return JournalEvent(frameObject: obj).map(ServerFrame.journal)
         case "ephemeral":
-            guard let convoID = obj["convo_id"] as? String,
-                  let ref = obj["message_ref"] as? String else { return nil }
+            guard let convoID = obj["convo_id"] as? String else { return nil }
+            // Two shapes share `kind: "ephemeral"`: a streaming-text update
+            // (keyed by `message_ref`) and an activity indicator (an
+            // `activity` object, no `message_ref`). Branch on the `activity`
+            // key so a valid activity frame isn't dropped by a `message_ref`
+            // guard meant only for the streaming case.
+            if let activity = obj["activity"] as? [String: Any] {
+                guard let stateRaw = activity["state"] as? String,
+                      let state = ActivityUpdate.State(rawValue: stateRaw) else { return nil }
+                return .activity(ActivityUpdate(
+                    convoID: convoID, state: state,
+                    detail: activity["detail"] as? String
+                ))
+            }
+            guard let ref = obj["message_ref"] as? String else { return nil }
             return .ephemeral(EphemeralUpdate(
                 convoID: convoID, messageRef: ref,
                 textDelta: obj["text"] as? String,

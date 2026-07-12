@@ -150,6 +150,9 @@ struct MacTimelineItemView: View {
             // visible through the answered prompt UI instead.
             EmptyView()
 
+        case .activityIndicator(let label):
+            ActivityIndicatorRow(label: label)
+
         case .unknown(let eventType):
             // `m.room.encrypted` is the SDK's `unableToDecrypt` mapped
             // through; the SDK retries decryption as keys arrive and

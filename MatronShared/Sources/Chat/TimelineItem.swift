@@ -50,6 +50,11 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         /// the snapshot so `ChatViewModel.pendingAsk()` can mark the
         /// prompt answered across devices.
         case askUserAnswer(promptEventID: String, selectedValues: [String])
+        /// Transient typing / tool-use indicator (matron-journal `activity`
+        /// ephemeral). Not persisted and not part of history — appended as a
+        /// trailing overlay row while the agent is thinking or running a
+        /// tool, and dropped when it goes idle or the stream goes stale.
+        case activityIndicator(label: String)
         /// Catch-all for events we don't render specially yet (encrypted but
         /// undecryptable, polls, stickers, etc.). UI shows a placeholder so
         /// the event isn't silently dropped.

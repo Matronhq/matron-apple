@@ -101,6 +101,11 @@ extension TimelineItem {
                 "promptEventID": promptEventID,
                 "selectedValues": selectedValues,
             ]
+        case .activityIndicator(let label):
+            return [
+                "type": "activityIndicator",
+                "label": label,
+            ]
         case .unknown(let eventType):
             return [
                 "type": "unknown",

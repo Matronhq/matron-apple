@@ -39,6 +39,38 @@ final class WireModelsTests: XCTestCase {
         XCTAssertNil(update.textDelta)
     }
 
+    func testDecodeActivityEphemeralFrames() throws {
+        // `thinking` — a bare working indicator, no detail.
+        guard case let .activity(thinking)? = ServerFrame.decode(#"{"kind":"ephemeral","convo_id":"c1","activity":{"state":"thinking"}}"#) else {
+            return XCTFail("expected thinking activity")
+        }
+        XCTAssertEqual(thinking.convoID, "c1")
+        XCTAssertEqual(thinking.state, .thinking)
+        XCTAssertNil(thinking.detail)
+
+        // `tool` carries the tool name in `detail`.
+        guard case let .activity(tool)? = ServerFrame.decode(#"{"kind":"ephemeral","convo_id":"c1","activity":{"state":"tool","detail":"Bash"}}"#) else {
+            return XCTFail("expected tool activity")
+        }
+        XCTAssertEqual(tool.state, .tool)
+        XCTAssertEqual(tool.detail, "Bash")
+
+        // `idle` clears — decodes as a valid activity update.
+        guard case let .activity(idle)? = ServerFrame.decode(#"{"kind":"ephemeral","convo_id":"c1","activity":{"state":"idle"}}"#) else {
+            return XCTFail("expected idle activity")
+        }
+        XCTAssertEqual(idle.state, .idle)
+
+        // An unknown state is dropped (nil), not misdecoded.
+        XCTAssertNil(ServerFrame.decode(#"{"kind":"ephemeral","convo_id":"c1","activity":{"state":"dancing"}}"#))
+    }
+
+    func testStreamEphemeralStillRequiresMessageRef() {
+        // Relaxing the ephemeral guard for activity frames must not let a
+        // streaming frame through without its `message_ref`.
+        XCTAssertNil(ServerFrame.decode(#"{"kind":"ephemeral","convo_id":"c1","text":"hi"}"#))
+    }
+
     func testDecodeGarbageReturnsNil() {
         XCTAssertNil(ServerFrame.decode("not json"))
         XCTAssertNil(ServerFrame.decode(#"{"kind":"journal","seq":"nope"}"#))
