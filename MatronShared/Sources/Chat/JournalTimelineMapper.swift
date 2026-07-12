@@ -19,7 +19,8 @@ public enum JournalTimelineMapper {
         var inReplyTo: String?
 
         switch event.type {
-        case JournalEventType.readMarker, JournalEventType.edit, JournalEventType.sessionStatus:
+        case JournalEventType.readMarker, JournalEventType.edit,
+             JournalEventType.sessionStatus, JournalEventType.convoMeta:
             return nil
 
         case JournalEventType.text:
@@ -90,6 +91,23 @@ public enum JournalTimelineMapper {
     public static func toolCallEvent(fromToolOutput payload: [String: Any], ts: Date) -> ToolCallEvent {
         // Rich payloads (bridge keeps chat.matron.tool_call keys) parse directly.
         if let parsed = ToolCallEvent.parse(content: payload) { return parsed }
+        // Bridge command-tool shape: {tool_use_id, command, viewer_url}. The
+        // command is the only human-meaningful content in the journal — the
+        // actual output streams to viewer_url and is never persisted here — so
+        // surface the command as the tool's args. Without this the fallback
+        // below produced tool "tool" with empty args and no result, which
+        // rendered as a blank, un-expandable card.
+        if let command = payload["command"] as? String, !command.isEmpty {
+            return ToolCallEvent(
+                tool: commandLabel(command),
+                argsJSON: command,
+                status: .ok,
+                resultText: nil,
+                resultTruncated: false,
+                startedAt: ts,
+                endedAt: nil
+            )
+        }
         return ToolCallEvent(
             tool: payload["tool_name"] as? String ?? "tool",
             argsJSON: "{}",
@@ -99,6 +117,16 @@ public enum JournalTimelineMapper {
             startedAt: ts,
             endedAt: nil
         )
+    }
+
+    /// A short label for a shell command: the first whitespace-delimited
+    /// token of the first non-empty line (e.g. "grep -rn …" → "grep",
+    /// a script starting "cd /x\n…" → "cd"). Bounded so a pathological
+    /// one-liner can't produce a runaway label; empty input → "command".
+    static func commandLabel(_ command: String) -> String {
+        let firstLine = command.split(whereSeparator: \.isNewline).first ?? ""
+        let token = firstLine.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? ""
+        return token.isEmpty ? "command" : String(token.prefix(24))
     }
 
     public static func askUserEvent(fromPrompt payload: [String: Any]) -> AskUserEvent {

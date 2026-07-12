@@ -43,6 +43,35 @@ final class JournalTimelineMapperTests: XCTestCase {
         XCTAssertEqual(tool.status, .ok)
     }
 
+    func testToolOutputCommandShapeShowsCommand() throws {
+        // The bridge's real tool_output payload: {tool_use_id, command,
+        // viewer_url} — no tool_name/snippet/status. Must render the command,
+        // not a blank "tool" card.
+        let item = try XCTUnwrap(map(event(3, type: "tool_output", payload: [
+            "tool_use_id": "toolu_01ABC",
+            "command": "grep -rn \"needle\" src/ | head -40",
+            "viewer_url": "https://viewer2.example.com/live?token=eyJhbGc",
+        ])))
+        guard case .toolCall(let eventID, let tool) = item.kind else { return XCTFail() }
+        XCTAssertEqual(eventID, "3")
+        XCTAssertEqual(tool.tool, "grep")
+        XCTAssertEqual(tool.argsJSON, "grep -rn \"needle\" src/ | head -40")
+        XCTAssertNotEqual(tool.argsJSON, "{}", "command must survive as args so the card is non-empty")
+    }
+
+    func testToolOutputMultilineCommandLabelIsFirstToken() throws {
+        let item = try XCTUnwrap(map(event(4, type: "tool_output", payload: [
+            "command": "cd /home/x\necho hi\ngrep foo bar",
+        ])))
+        guard case .toolCall(_, let tool) = item.kind else { return XCTFail() }
+        XCTAssertEqual(tool.tool, "cd")
+    }
+
+    func testConvoMetaIsSkippedInTimeline() throws {
+        XCTAssertNil(map(event(5, type: "convo_meta", payload: ["title": "New title"])),
+                     "convo_meta updates the conversation row, not the timeline")
+    }
+
     func testPromptWithOptions() throws {
         let item = try XCTUnwrap(map(event(3, type: "prompt", payload: [
             "question": "Deploy?",

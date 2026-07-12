@@ -14,6 +14,9 @@ public enum JournalEventType {
     public static let image = "image"
     public static let readMarker = "read_marker"
     public static let edit = "edit"
+    /// Conversation metadata (title, etc.). Carries no message body — it
+    /// updates the conversation row and is skipped in the timeline.
+    public static let convoMeta = "convo_meta"
 
     /// Types that bump unread counts and set the conversation snippet —
     /// mirrors the server's MESSAGE_TYPES (src/journal.js).

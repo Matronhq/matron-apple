@@ -33,6 +33,33 @@ final class JournalStoreTests: XCTestCase {
         XCTAssertEqual(convo.unreadCount, 1)
     }
 
+    func testConvoMetaSetsTitleForNewConversation() throws {
+        // A conversation first seen over the socket (e.g. one the bridge just
+        // created) must pick up its title from the convo_meta frame, not stay
+        // blank until a reconnect/snapshot.
+        let store = try makeStore()
+        try store.applyJournal(event(1, convo: "new1", type: "convo_meta", payload: ["title": "Fresh chat"]))
+        let convo = try XCTUnwrap(try store.conversations().first { $0.id == "new1" })
+        XCTAssertEqual(convo.title, "Fresh chat")
+    }
+
+    func testConvoMetaUpdatesExistingTitleAndIgnoresEmpty() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, convo: "c1", type: "convo_meta", payload: ["title": "First"]))
+        try store.applyJournal(event(2, convo: "c1", type: "convo_meta", payload: ["title": "Renamed"]))
+        XCTAssertEqual(try store.conversations().first?.title, "Renamed")
+        // An empty title must not wipe the good one.
+        try store.applyJournal(event(3, convo: "c1", type: "convo_meta", payload: ["title": ""]))
+        XCTAssertEqual(try store.conversations().first?.title, "Renamed")
+    }
+
+    func testConvoMetaDoesNotBumpUnread() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, convo: "c1", type: "convo_meta", payload: ["title": "T"]))
+        XCTAssertEqual(try store.conversations().first?.unreadCount, 0,
+                       "metadata frames are not messages")
+    }
+
     func testOwnMessagesDoNotBumpUnread() throws {
         let store = try makeStore()
         try store.applyJournal(event(1, sender: "user:dan"))

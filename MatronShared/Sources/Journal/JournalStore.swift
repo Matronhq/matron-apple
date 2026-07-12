@@ -213,7 +213,17 @@ public final class JournalStore: @unchecked Sendable {
             convo.lastActivityTS = Int64(event.ts.timeIntervalSince1970 * 1000)
 
             let payload = event.payload
-            if event.type == JournalEventType.sessionStatus {
+            if event.type == JournalEventType.convoMeta {
+                // Live title updates (and the title of a conversation that
+                // first appears over the socket, e.g. one the bridge just
+                // created). Without this branch, titles only ever came from
+                // /snapshot, so newly-created convos rendered blank until a
+                // reconnect. Empty titles are ignored so a stray meta frame
+                // can't wipe a good title.
+                if let title = payload["title"] as? String, !title.isEmpty {
+                    convo.title = title
+                }
+            } else if event.type == JournalEventType.sessionStatus {
                 if let state = payload["state"] as? String { convo.sessionState = state }
             } else if event.type == JournalEventType.readMarker {
                 // All read_markers are the user's own (other devices included).
