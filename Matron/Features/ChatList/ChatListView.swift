@@ -338,22 +338,30 @@ struct ChatListView: View {
     ///
     /// Resolves the destination's `ChatSummary` from `viewModel.groups`
     /// by id rather than capturing it at navigation time — see the file
-    /// header for the stale-capture rationale. If the lookup returns
-    /// `nil` (the room left the snapshot while the user was tapping),
-    /// the `Session unavailable`-style placeholder shows the same way
-    /// it does for a missing environment.
+    /// header for the stale-capture rationale. The lookup can legitimately
+    /// return `nil` for a valid, open room: a conversation the bridge just
+    /// created (`/start`) auto-opens the instant its first frame hits the
+    /// store, but the chat-list snapshot arrives a GRDB `ValueObservation`
+    /// main-hop later — so `currentSummary` is briefly `nil` for a room
+    /// that is very much live. We therefore build the `ChatView` for any
+    /// valid id whenever the session is present; the title falls back to
+    /// empty and fills in live when the snapshot lands (the `ChatView`'s
+    /// `@State` view models and the roomID-keyed timeline persist across
+    /// that re-render). The `Session unavailable` placeholder is reserved
+    /// for the case its copy actually describes — no session / signed out.
     @ViewBuilder
     func chatDestination(for id: ChatSummary.ID) -> some View {
-        if let deps, let session, let summary = currentSummary(for: id) {
-            let timelineSvc = deps.timelineService(for: session, roomID: summary.id)
+        if let deps, let session {
+            let summary = currentSummary(for: id)
+            let timelineSvc = deps.timelineService(for: session, roomID: id)
             let mediaSvc = deps.mediaService(for: session)
-            let chatVM = ChatViewModel(roomID: summary.id, timeline: timelineSvc, media: mediaSvc)
-            let composerVM = ComposerViewModel(roomID: summary.id, timeline: timelineSvc, commands: BotCommandCatalog.claudeBridge)
+            let chatVM = ChatViewModel(roomID: id, timeline: timelineSvc, media: mediaSvc)
+            let composerVM = ComposerViewModel(roomID: id, timeline: timelineSvc, commands: BotCommandCatalog.claudeBridge)
             ChatView(
                 viewModel: chatVM,
                 composerVM: composerVM,
-                chatTitle: summary.title,
-                onShowBotProfile: { botProfileSummary = summary }
+                chatTitle: summary?.title ?? "",
+                onShowBotProfile: { if let summary { botProfileSummary = summary } }
             )
         } else {
             ContentUnavailableView(

@@ -372,14 +372,17 @@ struct MacChatListView: View {
     /// `viewModel.groups` by id, then routes it into `MacChatView`,
     /// which constructs its per-room `ChatViewModel` + `ComposerViewModel`
     /// from the cached `TimelineService` + `MediaService`. The
-    /// "select a chat" content-unavailable view stays as the empty state
-    /// for both `nil` selection and an id whose row has been removed
-    /// from the latest snapshot (e.g. user left the room from another
-    /// device while it was selected).
+    /// "select a chat" content-unavailable view is the empty state for a
+    /// `nil` selection. A non-nil selection always opens the detail column,
+    /// even if `currentSummary` is momentarily `nil` — a conversation the
+    /// bridge just created (`/start`) selects the instant its first frame
+    /// hits the store, but the sidebar snapshot lands a GRDB
+    /// `ValueObservation` main-hop later. `chatDetail(for:)` builds from the
+    /// id with a title that fills in live once the snapshot arrives.
     @ViewBuilder
     private var detail: some View {
-        if let id = selectedSummaryID, let summary = currentSummary(for: id) {
-            chatDetail(for: summary)
+        if let id = selectedSummaryID {
+            chatDetail(for: id)
         } else {
             ContentUnavailableView(
                 "Select a chat",
@@ -405,26 +408,28 @@ struct MacChatListView: View {
         return nil
     }
 
-    /// Builds the `MacChatView` for the currently-selected summary. Wrapped
-    /// in a helper so the missing-environment branch (no deps / session)
-    /// stays out of the main `body` flow. The `id(summary.id)` modifier
-    /// forces a fresh instance per row selection — so `@State` view
-    /// models reset rather than holding stale data from the previous
-    /// room.
+    /// Builds the `MacChatView` for the selected id. Wrapped in a helper so
+    /// the missing-environment branch (no deps / session) stays out of the
+    /// main `body` flow. The `id(id)` modifier forces a fresh instance per
+    /// row selection — so `@State` view models reset rather than holding
+    /// stale data from the previous room. `currentSummary` may be `nil` for
+    /// a just-created room whose sidebar snapshot hasn't landed yet; the
+    /// title falls back to empty and fills in live once it does.
     @ViewBuilder
-    private func chatDetail(for summary: ChatSummary) -> some View {
+    private func chatDetail(for id: ChatSummary.ID) -> some View {
         if let deps, let session {
-            let timelineSvc = deps.timelineService(for: session, roomID: summary.id)
+            let summary = currentSummary(for: id)
+            let timelineSvc = deps.timelineService(for: session, roomID: id)
             let mediaSvc = deps.mediaService(for: session)
-            let chatVM = ChatViewModel(roomID: summary.id, timeline: timelineSvc, media: mediaSvc)
-            let composerVM = ComposerViewModel(roomID: summary.id, timeline: timelineSvc, commands: BotCommandCatalog.claudeBridge)
+            let chatVM = ChatViewModel(roomID: id, timeline: timelineSvc, media: mediaSvc)
+            let composerVM = ComposerViewModel(roomID: id, timeline: timelineSvc, commands: BotCommandCatalog.claudeBridge)
             MacChatView(
                 viewModel: chatVM,
                 composerVM: composerVM,
-                chatTitle: summary.title,
-                onShowBotProfile: { botProfileSummary = summary }
+                chatTitle: summary?.title ?? "",
+                onShowBotProfile: { if let summary { botProfileSummary = summary } }
             )
-            .id(summary.id)
+            .id(id)
         } else {
             ContentUnavailableView(
                 "Session unavailable",
