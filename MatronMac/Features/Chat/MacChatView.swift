@@ -87,81 +87,22 @@ struct MacChatView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
             ScrollView {
-                LazyVStack(spacing: 8) {
-                    // Render `rows` (messages interleaved with date
-                    // separators) instead of `items` directly. Mirrors
-                    // the iOS surface — the bucketing logic lives in
-                    // `ChatViewModel.rows` so the two platforms can't
-                    // drift.
-                    ForEach(viewModel.rows) { row in
-                        switch row {
-                        case .separator(let date):
-                            DateSeparator(date: date)
-                                .id(row.id)
-                        case .message(let item):
-                            MacTimelineItemView(
-                                item: item,
-                                resolveImage: { viewModel.image(for: $0) },
-                                onRetry: { id in viewModel.retrySend(itemID: id) },
-                                onTapImage: { img in
-                                    imagePreview = ImagePreview(image: img)
-                                },
-                                onTapFile: { mxc, filename in
-                                    Task {
-                                        if let url = await viewModel.writeTempFile(
-                                            mxcURL: mxc, filename: filename
-                                        ) {
-                                            // Hand off to the system —
-                                            // QuickLook / the user's
-                                            // chosen app handles the
-                                            // open. Stays inside the
-                                            // SwiftUI surface (no
-                                            // need for a sheet on
-                                            // Mac since the OS shell
-                                            // owns the open path).
-                                            await MainActor.run {
-                                                NSWorkspace.shared.open(url)
-                                            }
-                                        }
-                                    }
-                                },
-                                askViewModel: { viewModel.askViewModel(forPrompt: $0) },
-                                isPromptAnswered: { viewModel.isPromptAnswered($0) },
-                                answerSummary: { viewModel.answerSummary(forPrompt: $0) }
-                            )
-                                .id(item.id)
-                                .onAppear {
-                                    let match = (item.id == viewModel.firstRenderableItemID)
-                                    paginateLogger.diag("onAppear: id=\(item.id) first=\(viewModel.firstRenderableItemID ?? "nil") match=\(match)")
-                                    if match {
-                                        Task { await viewModel.paginateBackward() }
-                                    }
-                                }
-                                .contextMenu {
-                                    if case .text(let body, _) = item.kind {
-                                        Button {
-                                            Pasteboard.copy(body)
-                                        } label: {
-                                            Label("Copy", systemImage: "doc.on.doc")
-                                        }
-                                        ShareLink(item: body) {
-                                            Label("Share", systemImage: "square.and.arrow.up")
-                                        }
-                                    }
-                                    // "View source" applies to every kind —
-                                    // text, image, file, stateChange, unknown
-                                    // — so it lives outside the `.text` guard.
-                                    Button {
-                                        sourceItem = item
-                                    } label: {
-                                        Label("View source", systemImage: "curlybraces")
-                                    }
-                                }
-                        }
-                    }
-                }
-                .scrollTargetLayout()
-                .padding(.vertical)
+                // `.equatable()` + the reference-identity `==` on
+                // `MacTimelineListContent` is the scroll-perf fix — see
+                // the iOS `ChatView` call site for the full rationale.
+                // In short: the `.scrollPosition(id:)` binding below
+                // writes `scrolledItemID` on every row crossing, each
+                // write re-evaluates this body, and without the fence
+                // that cascaded into every mounted row (~60% of
+                // main-thread time in a scroll profile). Timeline
+                // changes still propagate via `@Observable` tracking,
+                // which invalidates the child directly.
+                MacTimelineListContent(
+                    viewModel: viewModel,
+                    onPreviewImage: { imagePreview = ImagePreview(image: $0) },
+                    onShowSource: { sourceItem = $0 }
+                )
+                .equatable()
             }
             // Warm-up state — see iOS `ChatView`: no rows yet but not
             // settled-empty, previously a fully blank message area. The
@@ -331,5 +272,101 @@ struct MacChatView: View {
         }
     }
 
+}
+
+/// The timeline's `LazyVStack` + `ForEach`, fenced off behind
+/// `Equatable` so the parent's scroll-position `@State` churn can't
+/// re-evaluate every mounted row (see the call site in
+/// `MacChatView.body` and the iOS twin in `ChatView.swift`). `==`
+/// compares only the view-model reference: row data is delivered
+/// through `@Observable` tracking, which invalidates this view
+/// directly when `viewModel.rows` (or anything else its body reads)
+/// changes — the equatable check only gates parent-driven invalidation.
+private struct MacTimelineListContent: View, Equatable {
+    let viewModel: ChatViewModel
+    let onPreviewImage: (Image) -> Void
+    let onShowSource: (TimelineItem) -> Void
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.viewModel === rhs.viewModel
+    }
+
+    var body: some View {
+        LazyVStack(spacing: 8) {
+            // Render `rows` (messages interleaved with date
+            // separators) instead of `items` directly. Mirrors
+            // the iOS surface — the bucketing logic lives in
+            // `ChatViewModel.rows` so the two platforms can't
+            // drift.
+            ForEach(viewModel.rows) { row in
+                switch row {
+                case .separator(let date):
+                    DateSeparator(date: date)
+                        .id(row.id)
+                case .message(let item):
+                    MacTimelineItemView(
+                        item: item,
+                        resolveImage: { viewModel.image(for: $0) },
+                        onRetry: { id in viewModel.retrySend(itemID: id) },
+                        onTapImage: { img in
+                            onPreviewImage(img)
+                        },
+                        onTapFile: { mxc, filename in
+                            Task {
+                                if let url = await viewModel.writeTempFile(
+                                    mxcURL: mxc, filename: filename
+                                ) {
+                                    // Hand off to the system —
+                                    // QuickLook / the user's
+                                    // chosen app handles the
+                                    // open. Stays inside the
+                                    // SwiftUI surface (no
+                                    // need for a sheet on
+                                    // Mac since the OS shell
+                                    // owns the open path).
+                                    await MainActor.run {
+                                        NSWorkspace.shared.open(url)
+                                    }
+                                }
+                            }
+                        },
+                        askViewModel: { viewModel.askViewModel(forPrompt: $0) },
+                        isPromptAnswered: { viewModel.isPromptAnswered($0) },
+                        answerSummary: { viewModel.answerSummary(forPrompt: $0) }
+                    )
+                        .id(item.id)
+                        .onAppear {
+                            let match = (item.id == viewModel.firstRenderableItemID)
+                            paginateLogger.diag("onAppear: id=\(item.id) first=\(viewModel.firstRenderableItemID ?? "nil") match=\(match)")
+                            if match {
+                                Task { await viewModel.paginateBackward() }
+                            }
+                        }
+                        .contextMenu {
+                            if case .text(let body, _) = item.kind {
+                                Button {
+                                    Pasteboard.copy(body)
+                                } label: {
+                                    Label("Copy", systemImage: "doc.on.doc")
+                                }
+                                ShareLink(item: body) {
+                                    Label("Share", systemImage: "square.and.arrow.up")
+                                }
+                            }
+                            // "View source" applies to every kind —
+                            // text, image, file, stateChange, unknown
+                            // — so it lives outside the `.text` guard.
+                            Button {
+                                onShowSource(item)
+                            } label: {
+                                Label("View source", systemImage: "curlybraces")
+                            }
+                        }
+                }
+            }
+        }
+        .scrollTargetLayout()
+        .padding(.vertical)
+    }
 }
 

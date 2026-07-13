@@ -89,88 +89,26 @@ struct ChatView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
             ScrollView {
-                LazyVStack(spacing: 8) {
-                    // Render `rows` (messages interleaved with date
-                    // separators) instead of `items` directly. The
-                    // separator stream is computed on the view-model
-                    // so iOS and Mac don't have to duplicate the
-                    // calendar-day bucketing.
-                    ForEach(viewModel.rows) { row in
-                        switch row {
-                        case .separator(let date):
-                            DateSeparator(date: date)
-                                .id(row.id)
-                        case .message(let item):
-                            TimelineItemView(
-                                item: item,
-                                resolveImage: { viewModel.image(for: $0) },
-                                onRetry: { id in viewModel.retrySend(itemID: id) },
-                                onTapImage: { img in
-                                    attachmentPreview = .image(img)
-                                },
-                                onTapFile: { mxc, filename in
-                                    Task {
-                                        if let url = await viewModel.writeTempFile(
-                                            mxcURL: mxc, filename: filename
-                                        ) {
-                                            attachmentPreview = .file(url, filename: filename)
-                                        }
-                                    }
-                                },
-                                askViewModel: { viewModel.askViewModel(forPrompt: $0) },
-                                isPromptAnswered: { viewModel.isPromptAnswered($0) },
-                                answerSummary: { viewModel.answerSummary(forPrompt: $0) }
-                            )
-                                .id(item.id)
-                                // Infinite-scroll backward pagination
-                                // trigger. Compares against
-                                // `firstRenderableItemID` (the first
-                                // non-`.stateChange` item) rather than
-                                // `items.first?.id` — Matrix room
-                                // timelines virtually always start
-                                // with `.stateChange` rows (room
-                                // create / encryption setup) that the
-                                // view filters out, so the raw
-                                // `items.first` comparison never
-                                // matched any rendered row and
-                                // scroll-up paginate silently never
-                                // fired. See
-                                // `ChatViewModel.firstRenderableItemID`
-                                // for the full rationale.
-                                .onAppear {
-                                    if item.id == viewModel.firstRenderableItemID {
-                                        Task { await viewModel.paginateBackward() }
-                                    }
-                                }
-                                .contextMenu {
-                                    if case .text(let body, _) = item.kind {
-                                        Button {
-                                            // Use the cross-platform helper from
-                                            // MatronDesignSystem so iOS and Mac stay
-                                            // on a single Pasteboard surface
-                                            // (QA finding #3).
-                                            Pasteboard.copy(body)
-                                        } label: {
-                                            Label("Copy", systemImage: "doc.on.doc")
-                                        }
-                                        ShareLink(item: body) {
-                                            Label("Share", systemImage: "square.and.arrow.up")
-                                        }
-                                    }
-                                    // "View source" applies to every kind —
-                                    // text, image, file, stateChange, unknown
-                                    // — so it lives outside the `.text` guard.
-                                    Button {
-                                        sourceItem = item
-                                    } label: {
-                                        Label("View source", systemImage: "curlybraces")
-                                    }
-                                }
-                        }
-                    }
-                }
-                .scrollTargetLayout()
-                .padding(.vertical)
+                // `.equatable()` + the reference-identity `==` on
+                // `TimelineListContent` is the scroll-perf fix: the
+                // `.scrollPosition(id:)` binding below writes
+                // `scrolledItemID` every time a row crosses the bottom
+                // anchor, and each write re-evaluates this whole body.
+                // Without the equatable fence, that re-evaluation
+                // cascaded into every mounted row (observation-tracking
+                // teardown/reinstall, row body re-eval, contextMenu
+                // rebuild — ~60% of main-thread time in a scroll
+                // profile). With it, scroll churn stops at the fence;
+                // actual timeline changes still propagate because
+                // `@Observable` tracking installed by the child's body
+                // (reading `viewModel.rows`) invalidates the child
+                // directly, bypassing the `==` check.
+                TimelineListContent(
+                    viewModel: viewModel,
+                    onPreview: { attachmentPreview = $0 },
+                    onShowSource: { sourceItem = $0 }
+                )
+                .equatable()
             }
             // Warm-up state: no rows yet, but not settled-empty either
             // (that's the branch above). This window used to render as a
@@ -391,5 +329,107 @@ struct ChatView: View {
         .presentationDetents([.medium])
     }
 
+}
+
+/// The timeline's `LazyVStack` + `ForEach`, fenced off behind
+/// `Equatable` so the parent's scroll-position `@State` churn can't
+/// re-evaluate every mounted row (see the call site in `ChatView.body`).
+/// `==` compares only the view-model reference: the row data itself is
+/// delivered through `@Observable` tracking, which invalidates this view
+/// directly when `viewModel.rows` (or anything else its body reads)
+/// changes — the equatable check only gates parent-driven invalidation.
+private struct TimelineListContent: View, Equatable {
+    let viewModel: ChatViewModel
+    let onPreview: (ChatView.AttachmentPreview) -> Void
+    let onShowSource: (TimelineItem) -> Void
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.viewModel === rhs.viewModel
+    }
+
+    var body: some View {
+        LazyVStack(spacing: 8) {
+            // Render `rows` (messages interleaved with date
+            // separators) instead of `items` directly. The
+            // separator stream is computed on the view-model
+            // so iOS and Mac don't have to duplicate the
+            // calendar-day bucketing.
+            ForEach(viewModel.rows) { row in
+                switch row {
+                case .separator(let date):
+                    DateSeparator(date: date)
+                        .id(row.id)
+                case .message(let item):
+                    TimelineItemView(
+                        item: item,
+                        resolveImage: { viewModel.image(for: $0) },
+                        onRetry: { id in viewModel.retrySend(itemID: id) },
+                        onTapImage: { img in
+                            onPreview(.image(img))
+                        },
+                        onTapFile: { mxc, filename in
+                            Task {
+                                if let url = await viewModel.writeTempFile(
+                                    mxcURL: mxc, filename: filename
+                                ) {
+                                    onPreview(.file(url, filename: filename))
+                                }
+                            }
+                        },
+                        askViewModel: { viewModel.askViewModel(forPrompt: $0) },
+                        isPromptAnswered: { viewModel.isPromptAnswered($0) },
+                        answerSummary: { viewModel.answerSummary(forPrompt: $0) }
+                    )
+                        .id(item.id)
+                        // Infinite-scroll backward pagination
+                        // trigger. Compares against
+                        // `firstRenderableItemID` (the first
+                        // non-`.stateChange` item) rather than
+                        // `items.first?.id` — Matrix room
+                        // timelines virtually always start
+                        // with `.stateChange` rows (room
+                        // create / encryption setup) that the
+                        // view filters out, so the raw
+                        // `items.first` comparison never
+                        // matched any rendered row and
+                        // scroll-up paginate silently never
+                        // fired. See
+                        // `ChatViewModel.firstRenderableItemID`
+                        // for the full rationale.
+                        .onAppear {
+                            if item.id == viewModel.firstRenderableItemID {
+                                Task { await viewModel.paginateBackward() }
+                            }
+                        }
+                        .contextMenu {
+                            if case .text(let body, _) = item.kind {
+                                Button {
+                                    // Use the cross-platform helper from
+                                    // MatronDesignSystem so iOS and Mac stay
+                                    // on a single Pasteboard surface
+                                    // (QA finding #3).
+                                    Pasteboard.copy(body)
+                                } label: {
+                                    Label("Copy", systemImage: "doc.on.doc")
+                                }
+                                ShareLink(item: body) {
+                                    Label("Share", systemImage: "square.and.arrow.up")
+                                }
+                            }
+                            // "View source" applies to every kind —
+                            // text, image, file, stateChange, unknown
+                            // — so it lives outside the `.text` guard.
+                            Button {
+                                onShowSource(item)
+                            } label: {
+                                Label("View source", systemImage: "curlybraces")
+                            }
+                        }
+                }
+            }
+        }
+        .scrollTargetLayout()
+        .padding(.vertical)
+    }
 }
 
