@@ -252,7 +252,7 @@ public final class ChatViewModel {
         // Un-gated (notice, not diag): fires at most once per send and is
         // the breadcrumb that distinguishes "echo won the 50ms race" from
         // the other blank-timeline mechanisms in the persisted log.
-        Self.logger.notice("auto-follow target \(candidate, privacy: .public) left the row set mid-flight — following live tail instead")
+        Self.logger.breadcrumb("auto-follow target \(candidate) left the row set mid-flight — following live tail instead")
         return lastRenderableItemID
     }
 
@@ -514,6 +514,7 @@ public final class ChatViewModel {
                 // an open view is exactly the "panel went blank/stale"
                 // evidence we need persisted after the fact.
                 Self.logger.warning("timeline stream threw under an open view: \(error.localizedDescription, privacy: .public)")
+                MatronFileLog.append("timeline stream threw under an open view: \(error.localizedDescription)")
                 let message = error.localizedDescription
                 if let self {
                     await MainActor.run { self.error = message }
@@ -531,6 +532,7 @@ public final class ChatViewModel {
             // report. Cancellation (view closed) is routine; skip it.
             if !Task.isCancelled {
                 Self.logger.warning("timeline stream finished under an open view (items=\(self?.items.count ?? -1))")
+                MatronFileLog.append("timeline stream finished under an open view (items=\(self?.items.count ?? -1))")
             }
             if let self {
                 await MainActor.run {
@@ -584,7 +586,7 @@ public final class ChatViewModel {
         // Un-gated (notice, not diag): this fires at most once per mirror
         // wipe and is the pivotal breadcrumb for any "chat went blank"
         // report — it must be in the persisted log even with MatronDebug off.
-        Self.logger.notice("timeline went empty under an open view — refetching newest page")
+        Self.logger.breadcrumb("timeline went empty under an open view — refetching newest page")
         historyRefillTask = Task { [weak self] in
             await self?.paginateBackward()
             self?.historyRefillTask = nil

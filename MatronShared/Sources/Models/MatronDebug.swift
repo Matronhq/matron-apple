@@ -71,5 +71,18 @@ public extension Logger {
         // parameter into an escaping context and fail to compile.
         let resolved = message()
         self.notice("\(resolved, privacy: .public)")
+        MatronFileLog.append(resolved)
+    }
+
+    /// Un-gated forensic breadcrumb: always logs (notice-level, public)
+    /// AND mirrors to the in-container `MatronFileLog`, which is
+    /// retrievable over WiFi without root or user involvement. Use for
+    /// the rare pivotal events any field incident will be diagnosed
+    /// from (anchor deaths, view mounts, empty-state flips) — the
+    /// unified-log-only breadcrumbs proved effectively unreachable on a
+    /// physical iPhone during the 2026-07-13 blank-chat hunt.
+    func breadcrumb(_ message: String) {
+        self.notice("\(message, privacy: .public)")
+        MatronFileLog.append(message)
     }
 }

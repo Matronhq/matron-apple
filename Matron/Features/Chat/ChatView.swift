@@ -178,7 +178,7 @@ struct ChatView: View {
                         // binding write just keeps state consistent for
                         // anything that reads it this frame.
                         if let anchor = scrolledItemID, !viewModel.rowAnchorIDs.contains(anchor) {
-                            chatViewLogger.notice("scroll anchor \(anchor, privacy: .public) left the row set — re-anchoring to tail")
+                            chatViewLogger.breadcrumb("scroll anchor \(anchor) left the row set — re-anchoring to tail")
                             guard let tail = viewModel.lastRenderableItemID else {
                                 scrolledItemID = nil
                                 return
@@ -391,6 +391,7 @@ struct ChatView: View {
             await viewModel.markAsRead()
         }
         .onDisappear {
+            chatViewLogger.breadcrumb("chat view disappear room=\(viewModel.roomID) anchor=\(scrolledItemID ?? "nil")")
             tailReassertTask?.cancel()
             tailReassertTask = nil
             // Capture the user's scroll position so the next open of
@@ -435,6 +436,22 @@ struct ChatView: View {
                 wasBackgrounded = false
                 viewModel.handleForeground()
             }
+        }
+        // Forensic breadcrumbs for the blank-chat hunt: the two branch
+        // swaps that replace the message area with something else
+        // (placeholder / warm-up spinner) and the view's own lifecycle.
+        // The 2026-07-13 traces had silent gaps exactly where these
+        // events would have been — a "blank chat" report that shows a
+        // placeholder flip here and no anchor activity is a state bug,
+        // not a scroll bug, and vice versa.
+        .onAppear {
+            chatViewLogger.breadcrumb("chat view appear room=\(viewModel.roomID) rows=\(viewModel.rows.count)")
+        }
+        .onChange(of: viewModel.settledEmpty) { _, isEmpty in
+            chatViewLogger.breadcrumb("settledEmpty → \(isEmpty) (rows=\(viewModel.rows.count), items=\(viewModel.items.count))")
+        }
+        .onChange(of: viewModel.rows.isEmpty) { _, isEmpty in
+            chatViewLogger.breadcrumb("rows \(isEmpty ? "EMPTY — warm-up spinner over blank area" : "populated") (items=\(viewModel.items.count))")
         }
         // (The items observer — ask-user answer persistence + the
         // dead-anchor guard — lives inside the ScrollViewReader above:

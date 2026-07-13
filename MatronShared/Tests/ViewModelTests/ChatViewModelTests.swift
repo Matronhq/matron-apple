@@ -217,6 +217,24 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertNil(ChatScrollPositionMemory.retrieve(roomID: "!r:s"))
     }
 
+    func test_fileLog_appendsTimestampedLines_withSessionHeader() throws {
+        MatronFileLog._resetForTesting()
+        defer { MatronFileLog._resetForTesting() }
+
+        MatronFileLog.append("first line")
+        MatronFileLog.append("second line")
+        MatronFileLog._flushForTesting()
+
+        let contents = try String(contentsOf: MatronFileLog.url, encoding: .utf8)
+        let lines = contents.split(separator: "\n")
+        XCTAssertEqual(lines.count, 3, "session header + two appends")
+        XCTAssertTrue(lines[0].contains("=== session start pid="))
+        XCTAssertTrue(lines[1].hasSuffix("first line"))
+        XCTAssertTrue(lines[2].hasSuffix("second line"))
+        // Every line carries a parseable timestamp prefix.
+        XCTAssertTrue(lines[1].count > "yyyy-MM-dd HH:mm:ss.SSS ".count)
+    }
+
     @MainActor
     func test_paginate_invokesService() async throws {
         let fake = FakeTimelineService()

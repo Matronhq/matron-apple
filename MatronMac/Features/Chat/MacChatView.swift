@@ -128,7 +128,7 @@ struct MacChatView: View {
                         // viewport. `rowAnchorIDs` is the scroll-position
                         // namespace (bugbot "Scroll anchor ID mismatch").
                         if let anchor = scrolledItemID, !viewModel.rowAnchorIDs.contains(anchor) {
-                            paginateLogger.notice("scroll anchor \(anchor, privacy: .public) left the row set — re-anchoring to tail")
+                            paginateLogger.breadcrumb("scroll anchor \(anchor) left the row set — re-anchoring to tail")
                             guard let tail = viewModel.lastRenderableItemID else {
                                 scrolledItemID = nil
                                 return
