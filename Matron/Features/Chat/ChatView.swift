@@ -1,8 +1,13 @@
 import SwiftUI
+import os
 import MatronChat
 import MatronModels
 import MatronViewModels
 import MatronDesignSystem
+
+/// Un-gated (notice-level) breadcrumbs for rare view-layer anomalies —
+/// same forensic role as the sync layer's lifecycle warnings.
+private let chatViewLogger = Logger(subsystem: "chat.matron", category: "ios-chat-view")
 
 /// iOS chat screen. Hosts a scrollable timeline (LazyVStack rendering each
 /// `TimelineItem` via `TimelineItemView`) above a `ComposerView`. The
@@ -36,6 +41,9 @@ struct ChatView: View {
     /// the floating "jump to latest" button (visible iff this isn't
     /// `items.last?.id`).
     @State private var scrolledItemID: String?
+    /// Generation token from the observation THIS view instance started;
+    /// `onDisappear` only stops the VM if it still matches (see there).
+    @State private var startedGeneration = 0
     /// Backing state for the fullscreen attachment preview. `nil`
     /// hides the sheet; setting either case presents it via
     /// `.sheet(item:)`. `.image` draws the pinch-zoom viewer; `.file`
@@ -233,6 +241,15 @@ struct ChatView: View {
             // marks the actual head of the timeline as read instead of
             // racing the empty initial state. See `ChatViewModel.start()`
             // for the underlying signal mechanism (round-3 bugbot fix #3).
+            // Record the generation BEFORE awaiting: start() bumps it
+            // synchronously at entry, but it doesn't RETURN until the
+            // first snapshot lands — if this view disappears mid-await, a
+            // post-await assignment never runs and onDisappear's guarded
+            // stop no-ops against generation 0, leaking the observation
+            // (bugbot "Observation leak on fast exit"). This .task is the
+            // only starter between here and the call, so current+1 is
+            // exactly the generation start() will use.
+            startedGeneration = viewModel.observationGeneration + 1
             await viewModel.start()
             // Explicit paginate-on-open BEFORE markAsRead. The store seeds
             // the timeline with whatever's mirrored locally (possibly
@@ -255,7 +272,11 @@ struct ChatView: View {
             } else {
                 ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
             }
-            viewModel.stop()
+            // Generation-guarded: the VM is cached per room (ChatVMCache in
+            // ChatListView), and on a same-room remount SwiftUI can run the
+            // NEW view's `.task`/start() before the OLD view's onDisappear —
+            // an unconditional stop() would kill the successor's stream.
+            viewModel.stop(ifGeneration: startedGeneration)
         }
         .sheet(item: $sourceItem) { item in
             EventSourceSheet(item: item)
@@ -293,6 +314,21 @@ struct ChatView: View {
         // answered-state directly, so the fold is driven here.
         .onChange(of: viewModel.items) { _, _ in
             viewModel.persistVisibleAnswers()
+            // Dead-anchor guard: if the row the scroll position is pinned
+            // to vanished from this snapshot (an echo clearing, a transient
+            // row drop), `.scrollPosition(id:)` is left pointing at nothing
+            // and the viewport can land on blank space — the leading
+            // suspect for the "chat went blank after sending" reports.
+            // Snap to the tail and leave a breadcrumb.
+            // Membership checks against `rowAnchorIDs` — the actual
+            // scroll-position namespace (item ids + separator ids), not
+            // `TimelineRow.id`'s `msg:`-prefixed form, which never matched
+            // a message anchor and snapped to the tail on every snapshot
+            // (bugbot "Scroll anchor ID mismatch").
+            if let anchor = scrolledItemID, !viewModel.rowAnchorIDs.contains(anchor) {
+                chatViewLogger.notice("scroll anchor \(anchor, privacy: .public) left the row set — re-anchoring to tail")
+                scrolledItemID = viewModel.lastRenderableItemID
+            }
         }
     }
 

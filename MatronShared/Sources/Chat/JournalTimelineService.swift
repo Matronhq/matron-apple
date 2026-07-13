@@ -153,7 +153,17 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             }
         }
 
+        /// High-water mark of seqs already walked by `reconcile`. Echo
+        /// retirement must only react to rows ARRIVING, not to the full
+        /// event list re-walked on every emit — otherwise any old own
+        /// message with the same body retires a fresh echo immediately
+        /// (and, worse, clears a failed echo's "Not delivered" state
+        /// while the send is still failed — bugbot "History clears
+        /// failed echo").
+        private var lastReconciledSeq: Int64 = 0
+
         func reconcile(with events: [JournalEvent], ownSender: String) {
+            let newSeqFloor = lastReconciledSeq
             for event in events {
                 if let ref = event.payload["message_ref"] as? String {
                     streaming.removeValue(forKey: ref)
@@ -174,17 +184,29 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                 // `local_id` into the row's idem_key and strips idem_key from
                 // broadcast/pagination rows, so the echo's id never comes
                 // back. FIFO removal is order-correct for sequential sends of
-                // identical text; skip failed echoes so a *delivered* copy's
-                // ack can't retire an *undelivered* one and hide the failure.
-                if event.sender == ownSender, event.type == JournalEventType.text,
+                // identical text; prefer a *pending* echo so a delivered
+                // copy's ack can't retire an undelivered one — but when only
+                // a failed copy matches, this own-row IS its successful
+                // retry landing, so the failure is resolved and can go.
+                // Gated on seq > newSeqFloor: only rows arriving in THIS
+                // reconcile may retire echoes — see `lastReconciledSeq`.
+                if event.seq > newSeqFloor,
+                   event.sender == ownSender, event.type == JournalEventType.text,
                    let body = event.payload["body"] as? String,
-                   let index = echoes.firstIndex(where: { $0.body == body && !$0.failed }) {
+                   let index = echoes.firstIndex(where: { $0.body == body && !$0.failed })
+                            ?? echoes.firstIndex(where: { $0.body == body }) {
                     echoes.remove(at: index)
                 }
+                lastReconciledSeq = max(lastReconciledSeq, event.seq)
             }
             let cutoff = Date().addingTimeInterval(-staleness)
             streaming = streaming.filter { $0.value.updated > cutoff }
-            echoes = echoes.filter { $0.created > cutoff }
+            // Failed echoes are exempt from staleness: sweeping a "Not
+            // delivered" row away 30s later silently vanishes the user's
+            // message (2026-07-13 phone incident — send on a dead socket,
+            // message evaporated). They clear on a delivered retry (above)
+            // or when the per-room service is dropped.
+            echoes = echoes.filter { $0.failed || $0.created > cutoff }
             if let current = activity, current.updated <= cutoff { activity = nil }
         }
 

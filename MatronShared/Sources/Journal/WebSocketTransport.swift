@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 public protocol WebSocketConnecting: Sendable {
     func connect(to url: URL) async throws -> any WebSocketConnection
@@ -34,6 +35,7 @@ public final class URLSessionWebSocketConnector: WebSocketConnecting {
 }
 
 final class URLSessionWebSocketConnection: WebSocketConnection, @unchecked Sendable {
+    private static let logger = os.Logger(subsystem: "chat.matron", category: "ws-transport")
     private let task: URLSessionWebSocketTask
 
     init(task: URLSessionWebSocketTask) {
@@ -41,15 +43,35 @@ final class URLSessionWebSocketConnection: WebSocketConnection, @unchecked Senda
     }
 
     func sendText(_ text: String) async throws {
-        try await task.send(.string(text))
+        do {
+            try await task.send(.string(text))
+        } catch {
+            logRejectedUpgrade(error)
+            throw error
+        }
     }
 
     func receiveText() async throws -> String {
-        switch try await task.receive() {
-        case .string(let text): return text
-        case .data(let data): return String(decoding: data, as: UTF8.self)
-        @unknown default: throw JournalConnectionError.socketClosed
+        do {
+            switch try await task.receive() {
+            case .string(let text): return text
+            case .data(let data): return String(decoding: data, as: UTF8.self)
+            @unknown default: throw JournalConnectionError.socketClosed
+            }
+        } catch {
+            logRejectedUpgrade(error)
+            throw error
         }
+    }
+
+    /// A refused HTTP upgrade (proxy 4xx/5xx in front of the journal
+    /// server, wrong endpoint, captive portal…) surfaces as a generic
+    /// URLError with the status only on `task.response`. Log it un-gated:
+    /// the 2026-07-13 phone incident retried a rejected upgrade silently
+    /// for 90 minutes with nothing in the persisted log.
+    private func logRejectedUpgrade(_ error: Error) {
+        guard let http = task.response as? HTTPURLResponse else { return }
+        Self.logger.warning("ws upgrade rejected: HTTP \(http.statusCode, privacy: .public) from \(http.url?.host ?? "?", privacy: .public) (\(error.localizedDescription, privacy: .public))")
     }
 
     func ping() async throws {

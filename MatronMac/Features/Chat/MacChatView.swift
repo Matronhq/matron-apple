@@ -36,6 +36,9 @@ struct MacChatView: View {
     /// placeholder. See iOS `ChatView`.
     @Environment(\.scenePhase) private var scenePhase
     @State private var wasBackgrounded = false
+    /// Generation token from the observation THIS view instance started;
+    /// `onDisappear` only stops the VM if it still matches (see there).
+    @State private var startedGeneration = 0
     /// Backing state for the right-click "View source" sheet (Task 16).
     /// `TimelineItem` is `Identifiable` (the SDK's stable
     /// `TimelineUniqueId.id`), so `.sheet(item:)` re-presents a fresh sheet
@@ -196,6 +199,10 @@ struct MacChatView: View {
             // timeline snapshot has been applied, so the chained
             // `markAsRead()` marks the actual head of the timeline as
             // read instead of racing the empty initial state.
+            // BEFORE the await — see iOS ChatView: a mid-await disappear
+            // would skip a post-await assignment and leak the observation
+            // (bugbot "Early disappear skips observation stop").
+            startedGeneration = viewModel.observationGeneration + 1
             await viewModel.start()
             // Explicit paginate-on-open BEFORE markAsRead — see iOS
             // `ChatView`: history loads over HTTP and must not wait on
@@ -212,7 +219,12 @@ struct MacChatView: View {
             } else {
                 ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
             }
-            viewModel.stop()
+            // Generation-guarded: the VM is cached per room (ChatVMCache),
+            // and on a same-room remount SwiftUI can run the NEW view's
+            // `.task`/start() before the OLD view's onDisappear — an
+            // unconditional stop() here would kill the successor's fresh
+            // stream and freeze the timeline.
+            viewModel.stop(ifGeneration: startedGeneration)
         }
         // ⌘K opens the slash palette without typing `/`. The hidden
         // button is the SwiftUI-recommended pattern for a global keyboard
@@ -269,6 +281,18 @@ struct MacChatView: View {
         // resolved (bugbot "Cross-device answers not persisted").
         .onChange(of: viewModel.items) { _, _ in
             viewModel.persistVisibleAnswers()
+            // Dead-anchor guard, mirroring iOS ChatView: a scroll anchor
+            // whose row vanished from the snapshot leaves
+            // `.scrollPosition(id:)` pointing at nothing and can strand
+            // the viewport over blank space. Snap to the tail + breadcrumb.
+            // `rowAnchorIDs` is the scroll-position namespace (item ids +
+            // separator ids) — see iOS ChatView (bugbot "Scroll anchor ID
+            // mismatch": checking TimelineRow.id's msg:-prefixed form
+            // false-positived on every message anchor).
+            if let anchor = scrolledItemID, !viewModel.rowAnchorIDs.contains(anchor) {
+                paginateLogger.notice("scroll anchor \(anchor, privacy: .public) left the row set — re-anchoring to tail")
+                scrolledItemID = viewModel.lastRenderableItemID
+            }
         }
     }
 

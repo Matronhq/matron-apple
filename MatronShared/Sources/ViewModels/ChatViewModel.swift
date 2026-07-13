@@ -146,6 +146,15 @@ public final class ChatViewModel {
     /// and both platforms were rebuilding this Set per tick.
     public private(set) var topRowIDs: Set<String> = []
 
+    /// Every id `.scrollPosition(id:)` can legally hold for the current
+    /// snapshot: `item.id` for message rows (the views tag rows with the
+    /// ITEM id, not `TimelineRow.id`'s `msg:`-prefixed form) plus the
+    /// separator row ids. The dead-anchor guard checks membership here —
+    /// checking `rows` directly compared apples to `msg:`-oranges and
+    /// snapped the viewport to the tail on every snapshot while anchored
+    /// to any message (bugbot "Scroll anchor ID mismatch").
+    public private(set) var rowAnchorIDs: Set<String> = []
+
     /// Single mutation entry point for `items`. Updates the raw
     /// snapshot and the three derived caches atomically so a body
     /// re-eval that reads any combination of `items` / `rows` /
@@ -196,6 +205,10 @@ public final class ChatViewModel {
         self.firstRenderableItemID = first
         self.lastRenderableItemID = last
         self.topRowIDs = Set(nextRows.prefix(10).map { row in
+            if case .message(let item) = row { return item.id }
+            return row.id
+        })
+        self.rowAnchorIDs = Set(nextRows.map { row in
             if case .message(let item) = row { return item.id }
             return row.id
         })
@@ -388,7 +401,15 @@ public final class ChatViewModel {
         }
     }
 
+    /// Monotonic token identifying the current observation run; bumped by
+    /// every `start()`. Views that share a cached VM record it after their
+    /// `start()` and pass it to `stop(ifGeneration:)` on disappear, so a
+    /// stale view instance's teardown can never cancel a successor's
+    /// freshly-started stream (Mac same-room remount hazard).
+    public private(set) var observationGeneration: Int = 0
+
     public func start() async -> Task<Void, Never> {
+        observationGeneration += 1
         observationTask?.cancel()
         // Fresh subscription — drop stale settled-empty state before the
         // new stream's snapshots arrive. Deliberately does NOT touch
@@ -482,6 +503,15 @@ public final class ChatViewModel {
         observationTask = task
         await firstSignal.wait()
         return task
+    }
+
+    /// Generation-guarded `stop()`: no-op unless `generation` still names
+    /// the current observation. Use from views sharing a cached VM — an
+    /// unconditional `stop()` in `onDisappear` can fire AFTER a same-room
+    /// successor view's `start()` and kill its live stream.
+    public func stop(ifGeneration generation: Int) {
+        guard generation == observationGeneration else { return }
+        stop()
     }
 
     /// Cancels the in-flight observation task. Call from `View.onDisappear`
