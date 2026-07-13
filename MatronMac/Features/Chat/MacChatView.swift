@@ -100,12 +100,42 @@ struct MacChatView: View {
                 // main-thread time in a scroll profile). Timeline
                 // changes still propagate via `@Observable` tracking,
                 // which invalidates the child directly.
-                MacTimelineListContent(
-                    viewModel: viewModel,
-                    onPreviewImage: { imagePreview = ImagePreview(image: $0) },
-                    onShowSource: { sourceItem = $0 }
-                )
-                .equatable()
+                ScrollViewReader { proxy in
+                    MacTimelineListContent(
+                        viewModel: viewModel,
+                        onPreviewImage: { imagePreview = ImagePreview(image: $0) },
+                        onShowSource: { sourceItem = $0 }
+                    )
+                    .equatable()
+                    // Mac mirror of iOS: fold cross-device ask-user answers
+                    // into the persisted set on every snapshot so resolved
+                    // inline cards stay resolved (bugbot "Cross-device
+                    // answers not persisted").
+                    .onChange(of: viewModel.items) { _, _ in
+                        viewModel.persistVisibleAnswers()
+                        // Dead-anchor guard, mirroring iOS ChatView. Routine
+                        // triggers: send echoes retired on delivery, and the
+                        // trailing `activity` indicator row removed when the
+                        // bot finishes. The binding write alone loses to the
+                        // ScrollView's post-layout write-back in the same
+                        // transaction (2026-07-13 iOS device trace: guard
+                        // fired, viewport still blanked) — the proxy scroll
+                        // on the next tick is what actually restores the
+                        // viewport. `rowAnchorIDs` is the scroll-position
+                        // namespace (bugbot "Scroll anchor ID mismatch").
+                        if let anchor = scrolledItemID, !viewModel.rowAnchorIDs.contains(anchor) {
+                            paginateLogger.notice("scroll anchor \(anchor, privacy: .public) left the row set — re-anchoring to tail")
+                            guard let tail = viewModel.lastRenderableItemID else {
+                                scrolledItemID = nil
+                                return
+                            }
+                            scrolledItemID = tail
+                            Task { @MainActor in
+                                proxy.scrollTo(tail, anchor: .bottom)
+                            }
+                        }
+                    }
+                }
             }
             // Warm-up state — see iOS `ChatView`: no rows yet but not
             // settled-empty, previously a fully blank message area. The
@@ -129,7 +159,12 @@ struct MacChatView: View {
                 if wasAtTail {
                     Task { @MainActor in
                         try? await Task.sleep(nanoseconds: 50_000_000)
-                        scrolledItemID = newID
+                        // Re-resolve at fire time: `newID` may have been
+                        // retired during the sleep (send echo replaced by
+                        // the delivered row) — assigning it raw plants a
+                        // dead anchor the dead-anchor guard below can't
+                        // see. See `ChatViewModel.autoFollowTarget`.
+                        scrolledItemID = viewModel.autoFollowTarget(for: newID)
                     }
                 }
             }
@@ -276,24 +311,9 @@ struct MacChatView: View {
                 viewModel.handleForeground()
             }
         }
-        // Mac mirror of iOS: fold cross-device ask-user answers into the
-        // persisted set on every snapshot so resolved inline cards stay
-        // resolved (bugbot "Cross-device answers not persisted").
-        .onChange(of: viewModel.items) { _, _ in
-            viewModel.persistVisibleAnswers()
-            // Dead-anchor guard, mirroring iOS ChatView: a scroll anchor
-            // whose row vanished from the snapshot leaves
-            // `.scrollPosition(id:)` pointing at nothing and can strand
-            // the viewport over blank space. Snap to the tail + breadcrumb.
-            // `rowAnchorIDs` is the scroll-position namespace (item ids +
-            // separator ids) — see iOS ChatView (bugbot "Scroll anchor ID
-            // mismatch": checking TimelineRow.id's msg:-prefixed form
-            // false-positived on every message anchor).
-            if let anchor = scrolledItemID, !viewModel.rowAnchorIDs.contains(anchor) {
-                paginateLogger.notice("scroll anchor \(anchor, privacy: .public) left the row set — re-anchoring to tail")
-                scrolledItemID = viewModel.lastRenderableItemID
-            }
-        }
+        // (The items observer — ask-user answer persistence + the
+        // dead-anchor guard — lives inside the ScrollViewReader above:
+        // the guard's corrective scroll needs the proxy.)
     }
 
 }

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import os
 import MatronChat
 import MatronModels
@@ -111,12 +112,74 @@ struct ChatView: View {
                 // `@Observable` tracking installed by the child's body
                 // (reading `viewModel.rows`) invalidates the child
                 // directly, bypassing the `==` check.
-                TimelineListContent(
-                    viewModel: viewModel,
-                    onPreview: { attachmentPreview = $0 },
-                    onShowSource: { sourceItem = $0 }
-                )
-                .equatable()
+                ScrollViewReader { proxy in
+                    TimelineListContent(
+                        viewModel: viewModel,
+                        onPreview: { attachmentPreview = $0 },
+                        onShowSource: { sourceItem = $0 }
+                    )
+                    .equatable()
+                    // Keyboard re-pin. Default keyboard avoidance shrinks
+                    // the viewport but never re-resolves the
+                    // `.scrollPosition(id:)` binding below (assigning the
+                    // same id is a no-op), so the tail row ends up half
+                    // behind the keyboard. If the user was at the tail
+                    // when the keyboard summons (same predicate as the
+                    // auto-follow), scroll it back into view; scrolled-up
+                    // readers keep their position. The 50ms defer lets the
+                    // safe-area resize land before the anchor resolves —
+                    // same empirically-derived lag as the auto-follow's.
+                    .onReceive(NotificationCenter.default.publisher(
+                        for: UIResponder.keyboardWillShowNotification)) { _ in
+                        guard let last = viewModel.lastRenderableItemID,
+                              scrolledItemID == last || scrolledItemID == nil else { return }
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 50_000_000)
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                proxy.scrollTo(last, anchor: .bottom)
+                            }
+                        }
+                    }
+                    // Persist cross-device ask-user answers the moment a
+                    // snapshot shows them, so a resolved inline card stays
+                    // resolved even if a later transient snapshot drops the
+                    // answer event (bugbot "Cross-device answers not
+                    // persisted").
+                    .onChange(of: viewModel.items) { _, _ in
+                        viewModel.persistVisibleAnswers()
+                        // Dead-anchor guard: if the row the scroll position
+                        // is pinned to vanished from this snapshot, the
+                        // viewport lands on blank space. Routine, not rare:
+                        // every send pins the anchor to the `echo:` row
+                        // (retired on delivery), and every bot turn pins it
+                        // to the trailing `activity` indicator row (removed
+                        // on completion). Membership checks against
+                        // `rowAnchorIDs` — the actual scroll-position
+                        // namespace, not `TimelineRow.id`'s `msg:` form
+                        // (bugbot "Scroll anchor ID mismatch").
+                        //
+                        // The binding write alone is NOT enough: it lands
+                        // inside the same transaction that removed the row,
+                        // and the ScrollView's own post-layout write-back
+                        // clobbers it — the guard fired in the 2026-07-13
+                        // device trace yet the viewport still blanked. The
+                        // proxy scroll on the next main-actor tick is the
+                        // part that actually restores the viewport; the
+                        // binding write just keeps state consistent for
+                        // anything that reads it this frame.
+                        if let anchor = scrolledItemID, !viewModel.rowAnchorIDs.contains(anchor) {
+                            chatViewLogger.notice("scroll anchor \(anchor, privacy: .public) left the row set — re-anchoring to tail")
+                            guard let tail = viewModel.lastRenderableItemID else {
+                                scrolledItemID = nil
+                                return
+                            }
+                            scrolledItemID = tail
+                            Task { @MainActor in
+                                proxy.scrollTo(tail, anchor: .bottom)
+                            }
+                        }
+                    }
+                }
             }
             // Warm-up state: no rows yet, but not settled-empty either
             // (that's the branch above). This window used to render as a
@@ -148,7 +211,12 @@ struct ChatView: View {
                 if wasAtTail {
                     Task { @MainActor in
                         try? await Task.sleep(nanoseconds: 50_000_000)
-                        scrolledItemID = newID
+                        // Re-resolve at fire time: `newID` may have been
+                        // retired during the sleep (send echo replaced by
+                        // the delivered row) — assigning it raw plants a
+                        // dead anchor the dead-anchor guard below can't
+                        // see. See `ChatViewModel.autoFollowTarget`.
+                        scrolledItemID = viewModel.autoFollowTarget(for: newID)
                     }
                 }
             }
@@ -164,7 +232,13 @@ struct ChatView: View {
             // visible bottom falls within the first 5 message ids —
             // i.e. user is within ~5 rows of the head, which is the
             // right time to fetch the next page.
-            .onChange(of: scrolledItemID) { _, newID in
+            .onChange(of: scrolledItemID) { oldID, newID in
+                // Diag-gated anchor-transition trail: with DEBUG diag on,
+                // the persisted log shows every anchor move — including a
+                // corrective write being clobbered back to nil/another row
+                // by the ScrollView's post-layout write-back, which is
+                // otherwise invisible in a trace.
+                chatViewLogger.diag("scroll anchor moved: \(oldID ?? "nil") → \(newID ?? "nil")")
                 guard let newID else { return }
                 // `topRowIDs` is memoised on the view-model (recomputed
                 // once per snapshot) because this fires on every scroll
@@ -306,30 +380,9 @@ struct ChatView: View {
                 viewModel.handleForeground()
             }
         }
-        // Persist cross-device ask-user answers the moment a snapshot
-        // shows them, so a resolved inline card stays resolved even if a
-        // later transient snapshot drops the answer event (bugbot
-        // "Cross-device answers not persisted"). The old half-sheet
-        // folded these inside `pendingAsk()`; the inline cards read
-        // answered-state directly, so the fold is driven here.
-        .onChange(of: viewModel.items) { _, _ in
-            viewModel.persistVisibleAnswers()
-            // Dead-anchor guard: if the row the scroll position is pinned
-            // to vanished from this snapshot (an echo clearing, a transient
-            // row drop), `.scrollPosition(id:)` is left pointing at nothing
-            // and the viewport can land on blank space — the leading
-            // suspect for the "chat went blank after sending" reports.
-            // Snap to the tail and leave a breadcrumb.
-            // Membership checks against `rowAnchorIDs` — the actual
-            // scroll-position namespace (item ids + separator ids), not
-            // `TimelineRow.id`'s `msg:`-prefixed form, which never matched
-            // a message anchor and snapped to the tail on every snapshot
-            // (bugbot "Scroll anchor ID mismatch").
-            if let anchor = scrolledItemID, !viewModel.rowAnchorIDs.contains(anchor) {
-                chatViewLogger.notice("scroll anchor \(anchor, privacy: .public) left the row set — re-anchoring to tail")
-                scrolledItemID = viewModel.lastRenderableItemID
-            }
-        }
+        // (The items observer — ask-user answer persistence + the
+        // dead-anchor guard — lives inside the ScrollViewReader above:
+        // the guard's corrective scroll needs the proxy.)
     }
 
     /// iOS file-share sheet body. Presents the filename + a system
