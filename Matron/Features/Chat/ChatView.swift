@@ -223,12 +223,23 @@ struct ChatView: View {
                         // survived ~7s because the healer disarmed). A
                         // user who has dragged away exits the mode via the
                         // gesture hook, so reading history is never yanked.
-                        if followsTail, viewModel.lastRenderableItemID != nil {
+                        // Corrective, not continuous: only scroll when the
+                        // anchor has actually come off the tail. Firing on
+                        // every items change while pinned meant a scrollTo
+                        // per streaming tick against a still-growing row —
+                        // each target computed from already-stale layout —
+                        // and the viewport could overshoot PAST the bottom
+                        // (2026-07-13 23:12 trace: content "jumped up out
+                        // of view", user had to pull it back down).
+                        if followsTail,
+                           let tail = viewModel.lastRenderableItemID,
+                           let anchor = scrolledItemID, anchor != tail {
                             tailReassertTask?.cancel()
                             tailReassertTask = Task { @MainActor in
                                 try? await Task.sleep(nanoseconds: 100_000_000)
                                 guard !Task.isCancelled,
-                                      let tail = viewModel.lastRenderableItemID else { return }
+                                      let tail = viewModel.lastRenderableItemID,
+                                      scrolledItemID != tail else { return }
                                 proxy.scrollTo(tail, anchor: .bottom)
                             }
                         }

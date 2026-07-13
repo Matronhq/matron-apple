@@ -158,12 +158,19 @@ struct MacChatView: View {
                         // the anchor off the tail by itself and would
                         // disarm an anchor-derived predicate). See iOS
                         // ChatView for the trace-driven rationale.
-                        if followsTail, viewModel.lastRenderableItemID != nil {
+                        // Corrective, not continuous — see iOS ChatView:
+                        // a scrollTo per streaming tick against a growing
+                        // row overshoots past the bottom; only fire when
+                        // the anchor has actually come off the tail.
+                        if followsTail,
+                           let tail = viewModel.lastRenderableItemID,
+                           let anchor = scrolledItemID, anchor != tail {
                             tailReassertTask?.cancel()
                             tailReassertTask = Task { @MainActor in
                                 try? await Task.sleep(nanoseconds: 100_000_000)
                                 guard !Task.isCancelled,
-                                      let tail = viewModel.lastRenderableItemID else { return }
+                                      let tail = viewModel.lastRenderableItemID,
+                                      scrolledItemID != tail else { return }
                                 proxy.scrollTo(tail, anchor: .bottom)
                             }
                         }
