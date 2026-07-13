@@ -79,7 +79,7 @@ struct MacChatListView: View {
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebarColumn
-                .frame(minWidth: 240, idealWidth: 280)
+                .frame(minWidth: 260, idealWidth: 340)
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) {
                         Button { showingNewChat = true } label: {
@@ -448,14 +448,14 @@ private struct MacChatRow: View {
     var body: some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(summary.title).font(.system(size: 15)).lineLimit(1)
+                Text(summary.title).font(.system(size: 14)).lineLimit(1)
                 HStack(spacing: 4) {
                     // Snippet renders unconditionally with reserved space
                     // so row height stays fixed while messages stream in
                     // (an appearing/disappearing snippet line made the
                     // whole list jiggle as chats updated).
                     Text(summary.snippet)
-                        .font(.system(size: 13))
+                        .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .lineLimit(1, reservesSpace: true)
                     if let lastActivity = summary.lastActivity {
@@ -463,7 +463,7 @@ private struct MacChatRow: View {
                             Text("·").foregroundStyle(.secondary)
                         }
                         RelativeMinuteTimeView(lastActivity)
-                            .font(.system(size: 13))
+                            .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                             .layoutPriority(1)
                     }

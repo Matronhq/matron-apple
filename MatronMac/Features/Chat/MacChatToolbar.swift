@@ -3,15 +3,20 @@ import MatronChat
 import MatronModels
 import MatronViewModels
 
-/// Mac chat detail column toolbar (per spec §5.9). Layout:
-/// - Center: chat title + `session_meta` strip (model · workdir, etc) —
-///   the metadata strip is a placeholder until Phase 5 wires session meta
-/// - Right: refresh button (⌘R), search field placeholder, ⓘ info button
+/// Mac chat detail column toolbar. Layout:
+/// - Center: chat title
+/// - Right: ⓘ info button
 ///
-/// Refresh fires the same `NotificationCenter.matronCommand(.refresh)` the
-/// menu bar uses, but also calls `viewModel.refresh()` directly so the
-/// trackpad path doesn't depend on the listener being attached. Search is
-/// a placeholder text field — full search lands in Phase 6.
+/// The refresh button was dropped after the journal rewire: it only ran
+/// `ChatViewModel.refresh()` (= `paginateBackward`, an OLDER-history
+/// fetch) while new messages ride the live socket — a Matrix-era leftover
+/// with no user-visible effect. The menu bar's ⌘R still posts
+/// `.matronCommand(.refresh)` for the listener in `MacChatView`. The
+/// decorative "Search chat…" placeholder field went with it — real search
+/// lives at the top of the sidebar, and a second dead field in the header
+/// only invited clicks that did nothing. The "session metadata" caption
+/// placeholder is gone too; if `session_meta` lands, it can return under
+/// the title with real content.
 ///
 /// Wave 6 / live-test #4: removed the leading `ToolbarItem(.navigation)`
 /// sidebar-toggle button. `NavigationSplitView` already renders its own
@@ -23,42 +28,13 @@ import MatronViewModels
 @MainActor
 struct MacChatToolbar: ToolbarContent {
     let title: String
-    let viewModel: ChatViewModel
     let onShowBotProfile: () -> Void
-    // TODO Phase 6: wire this to `SearchService`. Today the binding is
-    // intentionally non-functional — the toolbar field exists so the §5.9
-    // layout is observable end-to-end. Reviewers seeing an unused
-    // `@State` should not "clean it up" (QA finding #14).
-    @State private var searchText: String = ""
 
     var body: some ToolbarContent {
-        // Center: chat title + session_meta strip placeholder.
         ToolbarItem(placement: .principal) {
-            VStack(spacing: 2) {
-                Text(title).font(.headline)
-                Text("Session metadata appears here in Phase 5")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
+            Text(title).font(.headline)
         }
 
-        // Right: refresh + search + ⓘ.
-        ToolbarItem(placement: .primaryAction) {
-            Button {
-                Task { await viewModel.refresh() }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .help("Refresh (⌘R)")
-            .keyboardShortcut("r", modifiers: .command)
-        }
-        ToolbarItem(placement: .primaryAction) {
-            // Phase 6 wires `.matronCommand(.findInChat)` (Task 14e) to
-            // focus this field. Until then the field is decorative — but
-            // present so the toolbar layout matches §5.9.
-            TextField("Search chat…", text: $searchText)
-                .textFieldStyle(.roundedBorder)
-                .frame(minWidth: 140, idealWidth: 200)
-        }
         ToolbarItem(placement: .primaryAction) {
             Button { onShowBotProfile() } label: {
                 Image(systemName: "info.circle")

@@ -244,7 +244,6 @@ struct MacChatView: View {
         .toolbar {
             MacChatToolbar(
                 title: chatTitle,
-                viewModel: viewModel,
                 onShowBotProfile: onShowBotProfile
             )
         }

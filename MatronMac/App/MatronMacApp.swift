@@ -97,6 +97,13 @@ struct MatronMacApp: App {
             }
         }
         .windowResizability(.contentMinSize)
+        // Fresh-install window size. macOS restores the user's own frame
+        // on subsequent launches, so this only seeds the first one.
+        .defaultSize(width: 1280, height: 860)
+        // Hide the window title ("Matron", the app display name) in the
+        // header — the toolbar's chat title is the header's real content.
+        // The title still exists for Mission Control / the Window menu.
+        .windowToolbarStyle(.unified(showsTitle: false))
         // Mac menu bar — File / Edit / View / Help shortcuts that post
         // to a `NotificationCenter` command bus. See `Commands.swift`
         // for the keyboard shortcuts and notification names.
