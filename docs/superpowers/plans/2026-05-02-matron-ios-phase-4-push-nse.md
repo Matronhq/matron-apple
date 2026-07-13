@@ -29,7 +29,7 @@ These are **bridge/server-side** changes; track them in a separate `dev-boxer` /
 ## File structure (Phase 4 deliverables)
 
 ```
-matron-iOS-app/
+matron-apple/
 ├── project.yml                                MODIFIED — adds MatronNSE app-extension target (iOS-only)
 ├── MatronShared/Sources/Push/
 │   ├── PushService.swift                      NEW — protocol (cross-platform)

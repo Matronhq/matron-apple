@@ -37,7 +37,7 @@ This iOS plan ships a *graceful-degradation* implementation: if the bridge doesn
 ## File structure (Phase 5 deliverables)
 
 ```
-matron-iOS-app/
+matron-apple/
 ├── MatronShared/Sources/Events/
 │   ├── ToolCallEvent.swift                NEW
 │   ├── AskUserEvent.swift                 NEW

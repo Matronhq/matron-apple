@@ -18,7 +18,7 @@
 ## File structure (Phase 2 deliverables)
 
 ```
-matron-iOS-app/
+matron-apple/
 ├── MatronShared/Sources/
 │   ├── Chat/
 │   │   ├── TimelineService.swift             NEW — protocol
