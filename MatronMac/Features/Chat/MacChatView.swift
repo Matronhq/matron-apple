@@ -199,8 +199,11 @@ struct MacChatView: View {
             // timeline snapshot has been applied, so the chained
             // `markAsRead()` marks the actual head of the timeline as
             // read instead of racing the empty initial state.
+            // BEFORE the await — see iOS ChatView: a mid-await disappear
+            // would skip a post-await assignment and leak the observation
+            // (bugbot "Early disappear skips observation stop").
+            startedGeneration = viewModel.observationGeneration + 1
             await viewModel.start()
-            startedGeneration = viewModel.observationGeneration
             // Explicit paginate-on-open BEFORE markAsRead — see iOS
             // `ChatView`: history loads over HTTP and must not wait on
             // the live socket, which a half-dead connection can hang.
@@ -282,8 +285,11 @@ struct MacChatView: View {
             // whose row vanished from the snapshot leaves
             // `.scrollPosition(id:)` pointing at nothing and can strand
             // the viewport over blank space. Snap to the tail + breadcrumb.
-            if let anchor = scrolledItemID,
-               !viewModel.rows.contains(where: { $0.id == anchor }) {
+            // `rowAnchorIDs` is the scroll-position namespace (item ids +
+            // separator ids) — see iOS ChatView (bugbot "Scroll anchor ID
+            // mismatch": checking TimelineRow.id's msg:-prefixed form
+            // false-positived on every message anchor).
+            if let anchor = scrolledItemID, !viewModel.rowAnchorIDs.contains(anchor) {
                 paginateLogger.notice("scroll anchor \(anchor, privacy: .public) left the row set — re-anchoring to tail")
                 scrolledItemID = viewModel.lastRenderableItemID
             }

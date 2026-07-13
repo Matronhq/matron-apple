@@ -146,6 +146,15 @@ public final class ChatViewModel {
     /// and both platforms were rebuilding this Set per tick.
     public private(set) var topRowIDs: Set<String> = []
 
+    /// Every id `.scrollPosition(id:)` can legally hold for the current
+    /// snapshot: `item.id` for message rows (the views tag rows with the
+    /// ITEM id, not `TimelineRow.id`'s `msg:`-prefixed form) plus the
+    /// separator row ids. The dead-anchor guard checks membership here —
+    /// checking `rows` directly compared apples to `msg:`-oranges and
+    /// snapped the viewport to the tail on every snapshot while anchored
+    /// to any message (bugbot "Scroll anchor ID mismatch").
+    public private(set) var rowAnchorIDs: Set<String> = []
+
     /// Single mutation entry point for `items`. Updates the raw
     /// snapshot and the three derived caches atomically so a body
     /// re-eval that reads any combination of `items` / `rows` /
@@ -196,6 +205,10 @@ public final class ChatViewModel {
         self.firstRenderableItemID = first
         self.lastRenderableItemID = last
         self.topRowIDs = Set(nextRows.prefix(10).map { row in
+            if case .message(let item) = row { return item.id }
+            return row.id
+        })
+        self.rowAnchorIDs = Set(nextRows.map { row in
             if case .message(let item) = row { return item.id }
             return row.id
         })

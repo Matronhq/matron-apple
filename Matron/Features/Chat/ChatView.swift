@@ -241,8 +241,16 @@ struct ChatView: View {
             // marks the actual head of the timeline as read instead of
             // racing the empty initial state. See `ChatViewModel.start()`
             // for the underlying signal mechanism (round-3 bugbot fix #3).
+            // Record the generation BEFORE awaiting: start() bumps it
+            // synchronously at entry, but it doesn't RETURN until the
+            // first snapshot lands — if this view disappears mid-await, a
+            // post-await assignment never runs and onDisappear's guarded
+            // stop no-ops against generation 0, leaking the observation
+            // (bugbot "Observation leak on fast exit"). This .task is the
+            // only starter between here and the call, so current+1 is
+            // exactly the generation start() will use.
+            startedGeneration = viewModel.observationGeneration + 1
             await viewModel.start()
-            startedGeneration = viewModel.observationGeneration
             // Explicit paginate-on-open BEFORE markAsRead. The store seeds
             // the timeline with whatever's mirrored locally (possibly
             // nothing, e.g. right after a snapshot_required wipe), so this
@@ -312,8 +320,12 @@ struct ChatView: View {
             // and the viewport can land on blank space — the leading
             // suspect for the "chat went blank after sending" reports.
             // Snap to the tail and leave a breadcrumb.
-            if let anchor = scrolledItemID,
-               !viewModel.rows.contains(where: { $0.id == anchor }) {
+            // Membership checks against `rowAnchorIDs` — the actual
+            // scroll-position namespace (item ids + separator ids), not
+            // `TimelineRow.id`'s `msg:`-prefixed form, which never matched
+            // a message anchor and snapped to the tail on every snapshot
+            // (bugbot "Scroll anchor ID mismatch").
+            if let anchor = scrolledItemID, !viewModel.rowAnchorIDs.contains(anchor) {
                 chatViewLogger.notice("scroll anchor \(anchor, privacy: .public) left the row set — re-anchoring to tail")
                 scrolledItemID = viewModel.lastRenderableItemID
             }

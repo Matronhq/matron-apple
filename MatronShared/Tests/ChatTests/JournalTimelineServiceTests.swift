@@ -487,6 +487,24 @@ final class JournalTimelineServiceTests: XCTestCase {
         XCTAssertTrue(echoes.isEmpty, "a delivered retry resolves the failed echo")
     }
 
+    func testOldHistoryRowDoesNotClearFailedEcho() async throws {
+        // reconcile re-walks the FULL event list on every emit. An old own
+        // message with the same body (seen in a prior reconcile) must not
+        // retire a fresh failed echo — only rows ARRIVING may (bugbot
+        // "History clears failed echo").
+        let overlay = JournalTimelineService.OverlayState(staleness: 30)
+        let oldOwnRow = JournalEvent(
+            seq: 5, convoID: "c1", ts: Date(), sender: "user:dan", type: "text",
+            payloadData: Data(#"{"body":"dup"}"#.utf8))
+        await overlay.reconcile(with: [oldOwnRow], ownSender: "user:dan") // row is now history
+        await overlay.addEcho(localID: "fresh-fail", body: "dup")
+        await overlay.markEchoFailed(localID: "fresh-fail")
+        await overlay.reconcile(with: [oldOwnRow], ownSender: "user:dan") // same list re-walked
+        let echoes = await overlay.echoes
+        XCTAssertEqual(echoes.map(\.localID), ["fresh-fail"],
+                       "an already-seen row must not resolve a newer failure")
+    }
+
     // MARK: (g) a stalled overlay (no finalize, no further activity) self-
     // prunes via the periodic sweep instead of sitting in the snapshot
     // forever waiting for the next store/ephemeral/echo event.
