@@ -32,7 +32,11 @@ struct MacChatToolbar: ToolbarContent {
 
     var body: some ToolbarContent {
         ToolbarItem(placement: .principal) {
-            Text(title).font(.headline)
+            // Horizontal padding so the title doesn't butt against the
+            // rounded ends of the macOS 26 glass toolbar-item capsule.
+            Text(title)
+                .font(.headline)
+                .padding(.horizontal, 10)
         }
 
         ToolbarItem(placement: .primaryAction) {

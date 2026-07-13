@@ -121,14 +121,14 @@ public extension Theme {
     /// roomier line height.
     ///
     /// The scale differs per platform because the system body size does:
-    /// iOS body is 17pt (×1.0625 ≈ 18pt), macOS body is only 13pt — the
+    /// iOS body is 17pt (×1.12 ≈ 19pt), macOS body is only 13pt — the
     /// same multiplier read tiny on a desktop display, so the Mac scale
-    /// lands message text at ≈ 15pt to match matron-web's chat body.
+    /// lands message text at ≈ 16pt to match matron-web's chat body.
     static let matronMessage: Theme = {
         #if os(macOS)
-        let messageScale = 1.18
+        let messageScale = 1.26   // 13pt base ≈ 16.4pt messages
         #else
-        let messageScale = 1.0625
+        let messageScale = 1.12   // 17pt base ≈ 19pt messages
         #endif
         return matron
             .text {
