@@ -176,6 +176,25 @@ final class JournalStoreTests: XCTestCase {
         XCTAssertEqual(try store.conversations().count, 0)
     }
 
+    func testNonMessageFramesDoNotBumpLastActivity() throws {
+        // Opening a chat echoes a read_marker journal row with a fresh ts;
+        // that must not stamp the conversation "active now" in the chat
+        // list. Same for session_status / convo_meta bookkeeping frames.
+        let store = try makeStore()
+        try store.applyJournal(event(1))  // text at ts=1s
+        let afterMessage = try XCTUnwrap(try store.conversations().first?.lastActivityTS)
+        XCTAssertEqual(afterMessage, 1000)
+
+        try store.applyJournal(event(2, sender: "user:dan", type: "read_marker",
+                                     payload: ["convo_id": "c1", "up_to_seq": 1]))
+        try store.applyJournal(event(3, type: "session_status", payload: ["state": "waiting"]))
+        try store.applyJournal(event(4, type: "convo_meta", payload: ["title": "T"]))
+        let convo = try XCTUnwrap(try store.conversations().first)
+        XCTAssertEqual(convo.lastActivityTS, 1000,
+                       "bookkeeping frames must not fake message activity")
+        XCTAssertEqual(convo.lastSeq, 4, "lastSeq still mirrors the server's per-frame bump")
+    }
+
     func testInsertHistoryRecountsUnread() throws {
         // Paginated history can contain unread messages (e.g. the refill
         // after a snapshot_required wipe). insertHistory must recount, not
