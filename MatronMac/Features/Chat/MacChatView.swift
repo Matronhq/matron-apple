@@ -269,6 +269,15 @@ struct MacChatView: View {
         // resolved (bugbot "Cross-device answers not persisted").
         .onChange(of: viewModel.items) { _, _ in
             viewModel.persistVisibleAnswers()
+            // Dead-anchor guard, mirroring iOS ChatView: a scroll anchor
+            // whose row vanished from the snapshot leaves
+            // `.scrollPosition(id:)` pointing at nothing and can strand
+            // the viewport over blank space. Snap to the tail + breadcrumb.
+            if let anchor = scrolledItemID,
+               !viewModel.rows.contains(where: { $0.id == anchor }) {
+                paginateLogger.notice("scroll anchor \(anchor, privacy: .public) left the row set — re-anchoring to tail")
+                scrolledItemID = viewModel.lastRenderableItemID
+            }
         }
     }
 

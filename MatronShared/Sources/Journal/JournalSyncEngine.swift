@@ -395,13 +395,19 @@ public actor JournalSyncEngine {
                     }
                 }
             } catch JournalConnectionError.authRejected {
+                Self.logger.warning("server rejected auth — stopping sync (signed out by server)")
                 liveConnection = nil
                 setState(.offline(reason: "Signed out by server"))
                 failReadyWaiters(JournalSyncError.authRevoked)
                 runTask = nil
                 return
             } catch {
-                // fall through to backoff
+                // Fall through to backoff — but never silently: the
+                // 2026-07-13 phone incident sat in this loop for 90
+                // minutes (proxy refusing the ws upgrade) with nothing in
+                // the persisted log. Backoff paces this to at most ~1
+                // line/min at steady state.
+                Self.logger.warning("connect/stream failed (attempt \(self.attempt + 1, privacy: .public)): \(String(describing: error), privacy: .public)")
             }
             liveConnection?.close()
             liveConnection = nil

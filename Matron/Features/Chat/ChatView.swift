@@ -1,8 +1,13 @@
 import SwiftUI
+import os
 import MatronChat
 import MatronModels
 import MatronViewModels
 import MatronDesignSystem
+
+/// Un-gated (notice-level) breadcrumbs for rare view-layer anomalies —
+/// same forensic role as the sync layer's lifecycle warnings.
+private let chatViewLogger = Logger(subsystem: "chat.matron", category: "ios-chat-view")
 
 /// iOS chat screen. Hosts a scrollable timeline (LazyVStack rendering each
 /// `TimelineItem` via `TimelineItemView`) above a `ComposerView`. The
@@ -293,6 +298,17 @@ struct ChatView: View {
         // answered-state directly, so the fold is driven here.
         .onChange(of: viewModel.items) { _, _ in
             viewModel.persistVisibleAnswers()
+            // Dead-anchor guard: if the row the scroll position is pinned
+            // to vanished from this snapshot (an echo clearing, a transient
+            // row drop), `.scrollPosition(id:)` is left pointing at nothing
+            // and the viewport can land on blank space — the leading
+            // suspect for the "chat went blank after sending" reports.
+            // Snap to the tail and leave a breadcrumb.
+            if let anchor = scrolledItemID,
+               !viewModel.rows.contains(where: { $0.id == anchor }) {
+                chatViewLogger.notice("scroll anchor \(anchor, privacy: .public) left the row set — re-anchoring to tail")
+                scrolledItemID = viewModel.lastRenderableItemID
+            }
         }
     }
 
