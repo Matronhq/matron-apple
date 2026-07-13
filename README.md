@@ -6,7 +6,7 @@ Matron is a chat system for talking to [Claude Code](https://claude.com/claude-c
 
 | Project | Description |
 | --- | --- |
-| **matron-iOS-app** | iOS + macOS client (this repo) |
+| **matron-apple** | iOS + macOS client (this repo) |
 | [matron-journal](https://github.com/Matronhq/matron-journal) | Sync server |
 | [claude-matrix-bridge](https://github.com/Matronhq/claude-matrix-bridge) | Runs Claude Code sessions and bridges them |
 | [matron-desktop](https://github.com/Matronhq/matron-desktop) | Desktop client |

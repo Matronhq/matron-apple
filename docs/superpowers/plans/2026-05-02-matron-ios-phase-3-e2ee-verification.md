@@ -16,7 +16,7 @@
 ## File structure (Phase 3 deliverables)
 
 ```
-matron-iOS-app/
+matron-apple/
 ├── MatronShared/Sources/Verification/
 │   ├── VerificationService.swift                       NEW
 │   ├── VerificationServiceLive.swift                   NEW
