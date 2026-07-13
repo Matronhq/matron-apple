@@ -99,6 +99,58 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_autoFollowTarget_passesThroughLiveAnchor() async throws {
+        let fake = FakeTimelineService()
+        let item = TimelineItem(
+            id: "1", sender: "@a:s", timestamp: .now,
+            kind: .text(body: "hi", formattedHTML: nil), isOwn: true
+        )
+        fake.snapshotsToEmit = [[item]]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        await task.value
+
+        XCTAssertEqual(vm.autoFollowTarget(for: "1"), "1")
+    }
+
+    @MainActor
+    func test_autoFollowTarget_retiredEcho_resolvesToLiveTail() async throws {
+        // The send-path race: the view's auto-follow captures the echo
+        // row's id, sleeps 50ms, then assigns it. If the server round
+        // trip beats the timer, the echo has already been retired and
+        // replaced by the real row — assigning the captured id pins the
+        // scroll position to a row that no longer exists, and the
+        // dead-anchor guard (which only re-runs on the NEXT items
+        // change) can't save it. The viewport then lands on blank space
+        // at the next re-layout — e.g. the keyboard appearing when the
+        // user taps the entry field ("chat went blank" reports).
+        let fake = FakeTimelineService()
+        let older = TimelineItem(
+            id: "1", sender: "@me:s", timestamp: .now,
+            kind: .text(body: "hi", formattedHTML: nil), isOwn: true
+        )
+        let echo = TimelineItem(
+            id: "echo:abc", sender: "@me:s", timestamp: .now,
+            kind: .text(body: "new msg", formattedHTML: nil), isOwn: true
+        )
+        let delivered = TimelineItem(
+            id: "2", sender: "@me:s", timestamp: .now,
+            kind: .text(body: "new msg", formattedHTML: nil), isOwn: true
+        )
+        // Snapshot 1: echo appended (auto-follow schedules with "echo:abc").
+        // Snapshot 2: echo retired, real row in its place.
+        fake.snapshotsToEmit = [[older, echo], [older, delivered]]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        await task.value
+
+        XCTAssertEqual(
+            vm.autoFollowTarget(for: "echo:abc"), "2",
+            "a follow target that left the row set must resolve to the live tail, not the dead id"
+        )
+    }
+
+    @MainActor
     func test_paginate_invokesService() async throws {
         let fake = FakeTimelineService()
         let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())

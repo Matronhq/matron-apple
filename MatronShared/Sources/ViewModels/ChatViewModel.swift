@@ -214,6 +214,28 @@ public final class ChatViewModel {
         })
     }
 
+    /// Resolves the auto-follow scroll target at assignment time. The
+    /// view's tail-follow fires through a delayed task (it sleeps ~50ms
+    /// so the new row is mounted before the scroll), which means the id
+    /// it captured can be retired before it's assigned — most commonly a
+    /// send's `echo:` row replaced by the delivered server row when the
+    /// round trip beats the timer (routine on a LAN bridge). Assigning
+    /// the captured id then pins `.scrollPosition(id:)` to a row that no
+    /// longer exists, and the dead-anchor guard can't catch it: it runs
+    /// on `items` changes, and the stale assignment lands AFTER the
+    /// change that retired the id. The viewport sits silently on a dead
+    /// anchor until the next re-layout — keyboard appearance, the next
+    /// send — re-resolves it and lands on blank space ("chat went
+    /// blank" reports, round 2). Validating here closes the hole.
+    public func autoFollowTarget(for candidate: TimelineItem.ID) -> TimelineItem.ID? {
+        if rowAnchorIDs.contains(candidate) { return candidate }
+        // Un-gated (notice, not diag): fires at most once per send and is
+        // the breadcrumb that distinguishes "echo won the 50ms race" from
+        // the other blank-timeline mechanisms in the persisted log.
+        Self.logger.notice("auto-follow target \(candidate, privacy: .public) left the row set mid-flight — following live tail instead")
+        return lastRenderableItemID
+    }
+
     /// `true` while a `paginateBackward()` call is in flight. Surfaces to
     /// the view so the topmost row's `.onAppear` trigger can guard
     /// against re-entering the paginate loop on every re-layout, and so
