@@ -6,12 +6,12 @@ final class SessionMetaEventTests: XCTestCase {
         let evt = try XCTUnwrap(SessionMetaEvent.parse(content: [
             "session_id": "abc",
             "model": "claude-sonnet-4-7",
-            "workdir": "~/yearbook-app",
+            "workdir": "~/my-app",
             "started_at": 1745000000000.0,
         ]))
         XCTAssertEqual(evt.sessionID, "abc")
         XCTAssertEqual(evt.model, "claude-sonnet-4-7")
-        XCTAssertEqual(evt.workdir, "~/yearbook-app")
+        XCTAssertEqual(evt.workdir, "~/my-app")
         XCTAssertEqual(evt.startedAt.timeIntervalSince1970, 1745000000.0)
     }
 

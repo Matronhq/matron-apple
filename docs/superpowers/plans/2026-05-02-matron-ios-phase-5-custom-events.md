@@ -405,7 +405,7 @@ final class SessionMetaEventTests: XCTestCase {
         let evt = try XCTUnwrap(SessionMetaEvent.parse(content: [
             "session_id": "abc",
             "model": "claude-sonnet-4-7",
-            "workdir": "~/yearbook-app",
+            "workdir": "~/my-app",
             "started_at": 1745000000000.0,
         ]))
         XCTAssertEqual(evt.sessionID, "abc")
@@ -1505,7 +1505,7 @@ final class SessionMetaHeaderSnapshotTests: XCTestCase {
     private let evt = SessionMetaEvent(
         sessionID: "abc",
         model: "claude-sonnet-4-7",
-        workdir: "~/yearbook-app",
+        workdir: "~/my-app",
         startedAt: Date(timeIntervalSince1970: 1745000000)
     )
 

@@ -246,4 +246,4 @@ A pass requires all four. Any failure: scenario exits non-zero, dumps diagnostic
 - Verifying after a sign-out / re-sign-in cycle. Recovery-key restore handles that;
   separate concern.
 - Multiple devices (3+). Out of scope for matron-vs-matron.
-- Real homeserver (matrix-dev2.yearbooks.be). Docker harness gives us deterministic state.
+- Real homeserver (matrix.example.com). Docker harness gives us deterministic state.

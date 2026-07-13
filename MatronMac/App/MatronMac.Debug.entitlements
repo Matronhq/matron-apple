@@ -39,7 +39,7 @@
 		checked against the AppID at runtime), so they'll still hit
 		-34018 — but the view-model already handles that path via
 		`PersistenceError.keychainWriteFailedButKeyAvailable`. Properly
-		signed dev builds (Personal Team or YEARBOOK MACHINE LIMITED)
+		signed dev builds (Personal Team or the org team)
 		get a working Keychain write at runtime.
 	-->
 	<key>keychain-access-groups</key>

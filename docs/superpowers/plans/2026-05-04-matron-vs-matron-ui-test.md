@@ -310,7 +310,7 @@ touch MatronUITests/.keep
 
 Run: `xcodegen generate 2>&1 | tail -5`
 
-Expected: `Created project at /Users/danbarker/Dev/matron-iOS-app/Matron.xcodeproj` (no errors).
+Expected: `Created project at ~/Dev/matron-iOS-app/Matron.xcodeproj` (no errors).
 
 - [ ] **Step 6: Verify target was created**
 

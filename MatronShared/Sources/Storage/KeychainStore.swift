@@ -124,8 +124,8 @@ public struct KeychainStore: SessionStore {
     /// `com.apple.developer.icloud-services` capability is required.
     /// User must have iCloud Keychain enabled in System Settings for
     /// the cross-device sync to actually take effect. Session 6
-    /// (2026-04-30) confirmed end-to-end persistence + sync on the
-    /// Yearbook-team-signed Mac Debug build with this exact shape.
+    /// (2026-04-30) confirmed end-to-end persistence + sync on an
+    /// org-team-signed Mac Debug build with this exact shape.
     public static func recoveryStore() -> KeychainStore {
         return KeychainStore(
             service: "chat.matron.recovery",

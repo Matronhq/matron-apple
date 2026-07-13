@@ -1,8 +1,18 @@
 # Matron
 
-Native Matrix client for iOS and macOS, bot-first, App Store distributable on both platforms. Built on [matrix-rust-sdk](https://github.com/matrix-org/matrix-rust-sdk).
+Matron is a chat system for talking to [Claude Code](https://claude.com/claude-code) agents from your phone, desktop, or browser. This repo is the **iOS and macOS client** — a native, bot-first Matrix client, App Store distributable on both platforms, built on [matrix-rust-sdk](https://github.com/matrix-org/matrix-rust-sdk). The "bots" it chats with are Claude Code sessions: [claude-matrix-bridge](https://github.com/Matronhq/claude-matrix-bridge) runs them on your dev box and bridges them to Matrix.
 
-Part of the [Matron](https://github.com/matronhq) ecosystem.
+## Part of the Matron ecosystem
+
+| Project | Description |
+| --- | --- |
+| **matron-iOS-app** | iOS + macOS client (this repo) |
+| [matron-journal](https://github.com/Matronhq/matron-journal) | Sync server |
+| [claude-matrix-bridge](https://github.com/Matronhq/claude-matrix-bridge) | Runs Claude Code sessions and bridges them |
+| [matron-desktop](https://github.com/Matronhq/matron-desktop) | Desktop client |
+| [matron-web](https://github.com/Matronhq/matron-web) | Web client |
+| [matron-server](https://github.com/Matronhq/matron-server) | Matrix homeserver distribution |
+| [dev-boxer](https://github.com/Matronhq/dev-boxer) | One-command dev environment setup |
 
 ## Status
 
@@ -12,7 +22,7 @@ Pre-alpha. Phase 1 (foundation) in progress — see `docs/superpowers/plans/`.
 
 - macOS 14+
 - Xcode 16+
-- A Matrix homeserver — recommend [matron-server](https://github.com/matronhq/matron-server) provisioned via [dev-boxer](https://github.com/matronhq/dev-boxer).
+- A Matrix homeserver — recommend [matron-server](https://github.com/Matronhq/matron-server) provisioned via [dev-boxer](https://github.com/Matronhq/dev-boxer).
 
 ## Building
 

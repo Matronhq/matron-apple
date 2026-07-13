@@ -162,7 +162,7 @@ The `run-all-sdk.sh` wrapper handles this by re-invoking
 
 ## Why a separate test homeserver
 
-Running against `matrix-dev2.yearbooks.be` (the dev server) leaks state
+Running against `matrix.example.com` (the dev server) leaks state
 across runs and ties tests to the dev server's availability. The
 ephemeral docker-compose homeserver gives each run a fresh DB, isolated
 account namespace, and offline-capable execution.

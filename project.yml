@@ -19,11 +19,10 @@ settings:
     # recovery-key flow can persist to Keychain without surfacing
     # "Couldn't auto-save your recovery key".
     #
-    # `4LJ7WRRRFD` is YEARBOOK MACHINE LIMITED — the org team that
-    # owns the matronhq GitHub org and ships Matron to the App Store.
-    # The local Dan Barker individual cert (`MHQ4X3KS8L`) is also
-    # registered on this team, so dev-machine signing resolves to a
-    # local "Apple Development" cert under the Yearbook team.
+    # `4LJ7WRRRFD` is the org team that ships Matron to the App
+    # Store. Individual developer certs registered on this team let
+    # dev-machine signing resolve to a local "Apple Development"
+    # cert under the same team.
     #
     # The integration harness scripts override these on the
     # `xcodebuild` command line with `CODE_SIGN_STYLE=Manual
