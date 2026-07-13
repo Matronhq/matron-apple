@@ -95,6 +95,21 @@ struct MacChatListView: View {
         viewModel.groups.flatMap(\.summaries)
     }
 
+    /// Hoisted for the same type-checker-budget reason as
+    /// `allChatSummaries`: `searchModel?.query.isEmpty ?? true` inline in
+    /// an `.onChange` broke Xcode 16.4's `body` type-check on CI.
+    private var searchQueryIsEmpty: Bool {
+        searchModel?.query.isEmpty ?? true
+    }
+
+    private func logSelectionChange(_ old: ChatSummary.ID?, _ new: ChatSummary.ID?) {
+        listLogger.notice("sidebar selection: \(old ?? "nil", privacy: .public) → \(new ?? "nil", privacy: .public)")
+    }
+
+    private func logDetailSwap(_ wasEmpty: Bool, _ isEmpty: Bool) {
+        listLogger.notice("detail column swapped: \(isEmpty ? "search → chat" : "chat → search", privacy: .public)")
+    }
+
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebarColumn
@@ -158,14 +173,14 @@ struct MacChatListView: View {
         // Breadcrumb every selection flip — user click, auto-open,
         // notification tap, or (the pathological case) the List clearing
         // its own selection during a snapshot rebuild. Rare + un-gated.
-        .onChange(of: selectedSummaryID) { old, new in
-            listLogger.notice("sidebar selection: \(old ?? "nil", privacy: .public) → \(new ?? "nil", privacy: .public)")
-        }
+        // Log bodies live in helper funcs: inline interpolations here
+        // helped tip Xcode 16.4's type-checker budget for this `body`
+        // (CI "unable to type-check in reasonable time" — same class as
+        // the `allChatSummaries` hoist above).
+        .onChange(of: selectedSummaryID, logSelectionChange)
         // The search branch swap destroys/remounts the chat detail — log
         // the flips so a detail remount can be attributed to it.
-        .onChange(of: searchModel?.query.isEmpty ?? true) { _, isEmpty in
-            listLogger.notice("detail column swapped: \(isEmpty ? "search → chat" : "chat → search", privacy: .public)")
-        }
+        .onChange(of: searchQueryIsEmpty, logDetailSwap)
         // Toggle Sidebar — menu-bar item (`Commands.swift`), ⌘⇧S, and the
         // sidebar-toggle toolbar button in `MacChatToolbar` all post the
         // same notification. Listener flips between `.automatic` (shown)
