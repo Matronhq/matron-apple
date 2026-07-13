@@ -14,7 +14,7 @@
 
 ## Execution environment
 
-This is a multi-platform Apple plan (iOS + macOS). Building, running, and testing requires **Xcode 16+ on macOS 14+**. The dev box `devbox.example.com` is Linux and CANNOT execute Xcode tasks. Two practical options for the implementing engineer:
+This is a multi-platform Apple plan (iOS + macOS). Building, running, and testing requires **Xcode 16+ on macOS 14+**. A remote Linux dev box CANNOT execute Xcode tasks. Two practical options for the implementing engineer:
 
 1. **Local Mac** — clone the repo, install Xcode 16+, work locally. Push commits to GitHub.
 2. **Hosted Mac (e.g. MacStadium, GitHub-hosted macOS runner via Codespaces, Scaleway Apple Silicon)** — useful if no local Mac is available. Higher friction.

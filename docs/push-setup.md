@@ -2,7 +2,7 @@
 
 Server-side configuration required for APNs push to reach Matron on
 iOS and Mac. This is the operational counterpart to the client-side
-Phase 4 work that landed on PR #5; **none** of the app code can be
+Phase 4 push work; **none** of the app code can be
 exercised end-to-end until Sygnal is reachable + APNs auth keys are
 in place + a real device is paired (the iOS Simulator and Mac unit-
 test bundles can't receive APNs).
@@ -33,12 +33,9 @@ endpoint when a notify-action event lands; Sygnal forwards to APNs.
 
 ## Sygnal
 
-> **2026-06-12:** a live Sygnal already runs on dev-2, Chef-managed by
-> the `dev_server::sygnal` recipe in `infra-repo` (apps list comes
-> from the `dev_server.sygnal.apps` node attribute; APNs key
-> `KEYID00000` lives in the encrypted `development` data bag). It
-> currently serves Matron X (`chat.matron.x.ios.{prod,dev}`); add this
-> app's four entries there rather than standing up a second instance.
+> If your deployment already runs a Sygnal instance for other apps,
+> add this app's four entries to the existing instance's app list
+> rather than standing up a second instance.
 
 Run upstream Sygnal — Apache 2.0, no fork needed.
 
@@ -237,7 +234,7 @@ A non-200 means Sygnal itself rejected the request shape (config
 parse error, missing keyfile, etc.) — check the Sygnal container
 logs.
 
-## What's wired in the app today (PR #5)
+## What's wired in the app today
 
 - iOS NSE intercepts silent payloads, decrypts the event via
   `PushDecoder`, rewrites the notification body. Apple's
@@ -374,8 +371,8 @@ The whole-pipeline state to inspect across a walkthrough:
      `.task(id: session.userID)` calls `consumePendingRoomID()` on
      mount and appends to `chatPath`.
    - **Failure mode:** lands at chat list root with no deep-link.
-     The cold-start path was specifically the bug cursor PR #5
-     pass-1 finding "cold-start taps get dropped" caught — verify
+     The cold-start path was specifically where a past code-review
+     finding ("cold-start taps get dropped") was caught — verify
      `consumePendingRoomID` is being called by setting a breakpoint
      in `Matron/App/MatronApp.swift:177`.
 
