@@ -238,6 +238,9 @@ struct MacChatView: View {
                     delegate: ComposerDropDelegate(composer: composerVM)
                 )
         }
+        // matron-web's cream timeline gradient behind the whole chat
+        // column — bubbles and the composer material share the warm ground.
+        .background(MatronTimelineBackground())
         .toolbar {
             MacChatToolbar(
                 title: chatTitle,

@@ -409,12 +409,14 @@ private struct ChatRow: View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(summary.title).font(.body).lineLimit(1)
-                if !summary.snippet.isEmpty {
-                    Text(summary.snippet)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
+                // Rendered unconditionally with reserved space so every
+                // row has the same fixed height — snippets arriving /
+                // growing to a second line were resizing rows live as
+                // messages came in, making the whole list shift around.
+                Text(summary.snippet)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2, reservesSpace: true)
             }
             Spacer()
             if let lastActivity = summary.lastActivity {

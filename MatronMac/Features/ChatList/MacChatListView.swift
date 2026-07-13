@@ -113,16 +113,6 @@ struct MacChatListView: View {
                 detail
             }
         }
-        // Phase 6 (Search): the search field lives in the window toolbar at the
-        // split-view level so it persists when the results panel replaces the
-        // chat detail. ⌘F ("Find in Chat") focuses it via `focusSearch`.
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                if let searchModel {
-                    MacSearchView(viewModel: searchModel, focusRequest: $focusSearch)
-                }
-            }
-        }
         .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.findInChat))) { _ in
             focusSearch = true
         }
@@ -291,27 +281,29 @@ struct MacChatListView: View {
         }
     }
 
-    /// Sidebar column wrapper: when the connection-state banner is
-    /// visible, stack it above the existing sidebar content. Empty /
-    /// no-banner case (connected) falls straight through to `sidebar`.
-    @ViewBuilder
+    /// Sidebar column wrapper: connection banner (when not `.running`)
+    /// stacked over the search field stacked over the chat list. The
+    /// search field lives at the top of the conversation list — it used
+    /// to sit in the window toolbar's `.principal` slot, which floated
+    /// it over the detail column instead of with the list it filters.
     private var sidebarColumn: some View {
-        let showConnection = (connectionState != .running)
-        if showConnection {
-            VStack(spacing: 0) {
+        VStack(spacing: 0) {
+            if connectionState != .running {
                 // Connection-state banner sits at the very top so the
                 // user's first read of the sidebar is "what's the
                 // current sync status?" before anything else competes
-                // for attention. Hides on `.running` via the inner
-                // switch (returns EmptyView).
+                // for attention.
                 ConnectionStatusBanner(
                     state: connectionState,
                     hasEverConnected: hasEverConnected
                 )
                 .animation(.easeInOut(duration: 0.2), value: connectionState)
-                sidebar
             }
-        } else {
+            if let searchModel {
+                MacSearchView(viewModel: searchModel, focusRequest: $focusSearch)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+            }
             sidebar
         }
     }
@@ -456,20 +448,22 @@ private struct MacChatRow: View {
     var body: some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(summary.title).font(.body).lineLimit(1)
+                Text(summary.title).font(.system(size: 15)).lineLimit(1)
                 HStack(spacing: 4) {
-                    if !summary.snippet.isEmpty {
-                        Text(summary.snippet)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
+                    // Snippet renders unconditionally with reserved space
+                    // so row height stays fixed while messages stream in
+                    // (an appearing/disappearing snippet line made the
+                    // whole list jiggle as chats updated).
+                    Text(summary.snippet)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1, reservesSpace: true)
                     if let lastActivity = summary.lastActivity {
                         if !summary.snippet.isEmpty {
                             Text("·").foregroundStyle(.secondary)
                         }
                         RelativeMinuteTimeView(lastActivity)
-                            .font(.caption)
+                            .font(.system(size: 13))
                             .foregroundStyle(.secondary)
                             .layoutPriority(1)
                     }

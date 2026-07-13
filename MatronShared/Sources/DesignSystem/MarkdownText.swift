@@ -30,7 +30,7 @@ public struct MarkdownText: View {
     }
 
     public var body: some View {
-        Markdown(raw)
+        Markdown(Self.content(for: raw))
             .markdownTheme(theme)
             .lineSpacing(lineSpacing)
             .textSelection(.enabled)
@@ -61,6 +61,36 @@ public struct MarkdownText: View {
     }
 
     private static let log = Logger(subsystem: "chat.matron", category: "MarkdownText")
+
+    /// Parsed-markdown memo. `Markdown(String)` re-parses the source (cmark
+    /// under the hood) every time `body` evaluates — for a chat timeline
+    /// that means every message re-parses on every scroll-driven re-render.
+    /// Messages are immutable, so parse once and key on the raw source.
+    /// `NSCache` is thread-safe and evicts under memory pressure; the count
+    /// limit keeps a long streaming session (whose intermediate texts churn
+    /// through here) from pinning hundreds of stale entries.
+    private static let contentCache: NSCache<NSString, ParsedMarkdown> = {
+        let cache = NSCache<NSString, ParsedMarkdown>()
+        cache.countLimit = 400
+        return cache
+    }()
+
+    /// `internal` so unit tests can verify the memo hit path.
+    static func content(for raw: String) -> MarkdownContent {
+        let key = raw as NSString
+        if let cached = contentCache.object(forKey: key) {
+            return cached.content
+        }
+        let parsed = MarkdownContent(raw)
+        contentCache.setObject(ParsedMarkdown(parsed), forKey: key)
+        return parsed
+    }
+
+    /// Class box because `NSCache` values must be objects.
+    private final class ParsedMarkdown {
+        let content: MarkdownContent
+        init(_ content: MarkdownContent) { self.content = content }
+    }
 }
 
 public extension Theme {
@@ -85,16 +115,28 @@ public extension Theme {
             UnderlineStyle(.single)
         }
 
-    /// Chat-message variant of `.matron`: same chrome, one step larger body
-    /// text. Scoped to messages so tool-call cards / other markdown keep the
+    /// Chat-message variant of `.matron`: same chrome, larger body text.
+    /// Scoped to messages so tool-call cards / other markdown keep the
     /// base size. Pair with a small `lineSpacing` on `MarkdownText` for the
     /// roomier line height.
-    static let matronMessage: Theme = matron
-        .text {
-            FontFamily(.system(.default))
-            ForegroundColor(.primary)
-            FontSize(.em(1.0625))
-        }
+    ///
+    /// The scale differs per platform because the system body size does:
+    /// iOS body is 17pt (×1.0625 ≈ 18pt), macOS body is only 13pt — the
+    /// same multiplier read tiny on a desktop display, so the Mac scale
+    /// lands message text at ≈ 15pt to match matron-web's chat body.
+    static let matronMessage: Theme = {
+        #if os(macOS)
+        let messageScale = 1.18
+        #else
+        let messageScale = 1.0625
+        #endif
+        return matron
+            .text {
+                FontFamily(.system(.default))
+                ForegroundColor(.primary)
+                FontSize(.em(messageScale))
+            }
+    }()
 }
 
 /// Cross-platform pasteboard wrapper. Lives in DesignSystem so primitives compile

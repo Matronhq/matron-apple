@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// Visual style of a message bubble. Bots render flat (no bubble background,
-/// left-aligned); "me" renders right-aligned with a subtle filled rounded
-/// rectangle so the user can tell at a glance which messages they sent.
+/// Visual style of a message bubble. Bots render left-aligned on a white
+/// bubble; "me" renders right-aligned on a light-cyan bubble — matron-web's
+/// bubble layout (`.mx_EventTile[data-layout="bubble"]`), sitting on the
+/// cream timeline gradient (`MatronTimelineBackground`).
 public enum MessageAuthorStyle {
     case bot
     case me
@@ -61,11 +62,13 @@ public struct MessageBubble<Content: View>: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            // `Color.matronCodeBg` is the cross-platform alias defined
-            // in MarkdownText.swift — `Color(.systemGray6)` is iOS-only
-            // and would break the Mac build.
-            .background(style == .me ? Color.matronCodeBg : Color.clear)
-            .clipShape(RoundedRectangle(cornerRadius: 14))
+            // matron-web bubble chrome: white for the bot, light cyan for
+            // own messages, both with the web's soft 1px-drop shadow so
+            // they lift off the cream timeline behind them. Corner radius
+            // matches the web's `--cornerRadius: 6px` (slightly softened).
+            .background(style == .me ? Color.matronBubbleMe : Color.matronBubbleBot)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .shadow(color: .matronBubbleShadow, radius: 1, y: 1)
             if style == .bot { Spacer(minLength: 0) }
         }
         .padding(.horizontal)

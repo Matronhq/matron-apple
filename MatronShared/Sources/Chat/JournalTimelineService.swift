@@ -73,6 +73,55 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
     actor OverlayState {
         struct Echo { let localID: String; let body: String; let created: Date; var failed = false }
         private(set) var streaming: [String: (text: String, updated: Date)] = [:]
+        /// Latest event list from the store's `ValueObservation`. The
+        /// observation already fetches the full row set on every change,
+        /// so `emit()` reuses that instead of issuing its own second
+        /// full-table read — which it used to do on EVERY tick, including
+        /// each coalesced streaming-token tick that never touched the
+        /// store at all.
+        private(set) var events: [JournalEvent] = []
+        /// Mapped-item memo keyed by event seq. Journal events are
+        /// immutable once written (streaming mutations ride the ephemeral
+        /// overlay, never the row), so a mapped `TimelineItem` never goes
+        /// stale — re-mapping the whole conversation per emit was pure
+        /// waste that grew with history length.
+        private var mappedCache: [Int64: TimelineItem] = [:]
+        /// Seqs the mapper returned `nil` for — memoized separately so
+        /// hidden event types aren't re-parsed on every emit either.
+        private var unmappable: Set<Int64> = []
+
+        func setEvents(_ events: [JournalEvent]) {
+            self.events = events
+        }
+
+        /// Maps the cached events through `JournalTimelineMapper`, reusing
+        /// memoized results. Runs on this actor so a long conversation's
+        /// first full map stays off the main actor.
+        func mappedItems(ownSender: String, serverURL: URL) -> [TimelineItem] {
+            var items: [TimelineItem] = []
+            items.reserveCapacity(events.count)
+            for event in events {
+                if let cached = mappedCache[event.seq] {
+                    items.append(cached)
+                } else if unmappable.contains(event.seq) {
+                    continue
+                } else if let item = JournalTimelineMapper.timelineItem(
+                    from: event, ownSender: ownSender, serverURL: serverURL) {
+                    mappedCache[event.seq] = item
+                    items.append(item)
+                } else {
+                    unmappable.insert(event.seq)
+                }
+            }
+            // Bound the memo: after a mirror wipe (snapshot_required) the
+            // event list shrinks and old seqs may never come back.
+            if mappedCache.count + unmappable.count > events.count + 256 {
+                let live = Set(events.map(\.seq))
+                mappedCache = mappedCache.filter { live.contains($0.key) }
+                unmappable = unmappable.intersection(live)
+            }
+            return items
+        }
         /// Current activity indicator (typing / tool-use), if any. Per-convo,
         /// latest-wins; `.idle` clears it. Pruned by the same staleness sweep
         /// as streaming so a crashed agent's indicator can't stick forever.
@@ -181,11 +230,9 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         let sweepInterval = sweepInterval
         return AsyncThrowingStream { continuation in
             let emit: @Sendable () async -> Void = {
-                let events = (try? store.events(convoID: convoID)) ?? []
+                let events = await overlay.events
                 await overlay.reconcile(with: events, ownSender: ownSender)
-                var items = events.compactMap {
-                    JournalTimelineMapper.timelineItem(from: $0, ownSender: ownSender, serverURL: serverURL)
-                }
+                var items = await overlay.mappedItems(ownSender: ownSender, serverURL: serverURL)
                 let lastTS = items.last?.timestamp ?? Date()
                 for (ref, entry) in await overlay.streaming.sorted(by: { $0.key < $1.key }) {
                     items.append(JournalTimelineMapper.streamingItem(messageRef: ref, text: entry.text, convoTS: max(lastTS, entry.updated)))
@@ -236,7 +283,15 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                 await engine.setViewing(convoID: convoID)
             }
             let storeTask = Task {
-                for await _ in store.eventsStream(convoID: convoID) { signal() }
+                // The observation delivers the full ordered row set on
+                // every change; stash it on the overlay actor so `emit()`
+                // (and every non-store tick — streaming tokens, echoes,
+                // the staleness sweep) renders from memory instead of
+                // re-reading the whole table from SQLite each time.
+                for await events in store.eventsStream(convoID: convoID) {
+                    await overlay.setEvents(events)
+                    signal()
+                }
                 continuation.finish()
             }
             let ephemeralTask = Task {

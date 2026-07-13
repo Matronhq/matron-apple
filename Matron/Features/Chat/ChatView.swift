@@ -267,6 +267,10 @@ struct ChatView: View {
             }
             ComposerView(viewModel: composerVM)
         }
+        // matron-web's cream timeline gradient sits behind the whole chat
+        // column — bubbles (white / cyan) and the composer material all
+        // render over the same warm ground.
+        .background(MatronTimelineBackground())
         .navigationTitle(chatTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
