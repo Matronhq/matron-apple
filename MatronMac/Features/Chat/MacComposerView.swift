@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 import MatronChat
+import MatronDesignSystem
 import MatronModels
 import MatronViewModels
 
@@ -57,8 +58,13 @@ struct MacComposerView: View {
                     .lineLimit(1...8)
                     .textFieldStyle(.plain)
                     .padding(8)
-                    .background(.regularMaterial)
+                    // White (dark-mode: elevated warm) input surface, same
+                    // as bot bubbles — `.regularMaterial` read muddy-dark
+                    // against the cream timeline gradient. Matches
+                    // matron-web's white composer on the cream ground.
+                    .background(Color.matronBubbleBot)
                     .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .shadow(color: .matronBubbleShadow, radius: 2, y: 1)
 
                 Button {
                     Task { await viewModel.send() }

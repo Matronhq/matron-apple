@@ -226,7 +226,16 @@ public final class JournalStore: @unchecked Sendable {
                 lastActivityTS: nil, muted: false, hidden: false, readUpToSeq: 0, unreadCount: 0)
 
             convo.lastSeq = max(convo.lastSeq, event.seq)
-            convo.lastActivityTS = Int64(event.ts.timeIntervalSince1970 * 1000)
+            // Only real message traffic counts as "activity" for the chat
+            // list's timestamp. Bumping it for every frame meant merely
+            // OPENING a conversation stamped it "now": markAsRead sends a
+            // read_marker op, the server echoes it as a journal row with a
+            // fresh ts, and the list showed phantom aliveness. (lastSeq
+            // still tracks every frame — it mirrors the server's last_seq,
+            // which drives snapshot ordering.)
+            if JournalEventType.messageTypes.contains(event.type) {
+                convo.lastActivityTS = Int64(event.ts.timeIntervalSince1970 * 1000)
+            }
 
             let payload = event.payload
             if event.type == JournalEventType.convoMeta {

@@ -300,9 +300,12 @@ struct MacChatListView: View {
                 .animation(.easeInOut(duration: 0.2), value: connectionState)
             }
             if let searchModel {
+                // Top padding is tighter than bottom so the field sits a
+                // few px higher, closer to the toolbar.
                 MacSearchView(viewModel: searchModel, focusRequest: $focusSearch)
                     .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
+                    .padding(.top, 4)
+                    .padding(.bottom, 8)
             }
             sidebar
         }
