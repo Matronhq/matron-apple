@@ -99,8 +99,8 @@ if that fails (e.g. a non-interactive shell without nvm sourced).
 Verbose diagnostic logs (timeline snapshots, paginate lifecycle, scroll triggers, etc.) are gated behind `MatronDebug.enabled` so they stay in the source as living documentation of the data flow but cost nothing in shipped builds. Call sites use `Logger.diag(...)` instead of `Logger.notice(...)`. To turn them on for a session:
 
 ```bash
-defaults write chat.matron.MatronMac MatronDebug -bool YES   # Mac
-defaults write chat.matron.app MatronDebug -bool YES         # iOS sim
+defaults write chat.matron.mac MatronDebug -bool YES   # Mac (domain = bundle id)
+defaults write chat.matron.app MatronDebug -bool YES   # iOS sim
 # then relaunch the app
 ```
 
