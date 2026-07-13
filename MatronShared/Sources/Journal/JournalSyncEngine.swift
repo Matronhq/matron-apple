@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import MatronModels
 import MatronSearch
 
@@ -24,6 +25,8 @@ public actor JournalSyncEngine {
     private let backoffBaseSeconds: Double
 
     private var runTask: Task<Void, Never>?
+    private var pathMonitor: NWPathMonitor?
+    private var sawInitialPath = false
     private var liveConnection: JournalConnection?
     private var viewingConvoID: String?
     private var backoffSleeper: Task<Void, Never>?
@@ -60,11 +63,15 @@ public actor JournalSyncEngine {
         guard runTask == nil else { return }
         attempt = 0
         runTask = Task { await runLoop() }
+        startPathMonitor()
     }
 
     public func endSync() async {
         runTask?.cancel()
         runTask = nil
+        pathMonitor?.cancel()
+        pathMonitor = nil
+        sawInitialPath = false
         failReadyWaiters(JournalSyncError.offline)
         liveConnection?.close()
         liveConnection = nil
@@ -90,6 +97,36 @@ public actor JournalSyncEngine {
 
     public func nudge() {
         backoffSleeper?.cancel()
+    }
+
+    /// Reconnect promptly when the network path changes instead of waiting
+    /// on the 2×20s ping watchdog. A socket that survived sleep/wake or a
+    /// Wi-Fi↔Ethernet hop is bound to the old path and almost always dead
+    /// but doesn't error until written to — the classic "Mac wakes up,
+    /// chat list sits stale" failure. Closing it routes the run loop
+    /// through its normal close → backoff → reconnect path, and `nudge()`
+    /// skips whatever backoff sleep is in flight.
+    private func startPathMonitor() {
+        guard pathMonitor == nil else { return }
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            let satisfied = path.status == .satisfied
+            Task { await self?.handlePathUpdate(satisfied: satisfied) }
+        }
+        monitor.start(queue: DispatchQueue(label: "chat.matron.journal.path-monitor"))
+        pathMonitor = monitor
+    }
+
+    private func handlePathUpdate(satisfied: Bool) {
+        // The monitor's first callback reports the current path, not a
+        // change — reacting to it would close a healthy first connection.
+        guard sawInitialPath else {
+            sawInitialPath = true
+            return
+        }
+        guard satisfied else { return } // loss surfaces via the run loop itself
+        liveConnection?.close()
+        nudge()
     }
 
     // MARK: Public surface

@@ -21,22 +21,44 @@ public enum JournalChatError: Error, LocalizedError, Equatable {
 public final class JournalChatService: ChatService, @unchecked Sendable {
     private let store: JournalStore
     private let engine: JournalSyncEngine
+    private let coalesceInterval: Duration
 
-    public init(store: JournalStore, engine: JournalSyncEngine) {
+    public init(store: JournalStore, engine: JournalSyncEngine, coalesceInterval: Duration = .milliseconds(250)) {
         self.store = store
         self.engine = engine
+        self.coalesceInterval = coalesceInterval
     }
 
     public func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error> {
         let store = store
+        let interval = coalesceInterval
         return AsyncThrowingStream { continuation in
-            let task = Task {
+            // A reconnect replay applies each missed journal frame in its
+            // own store transaction, so a catch-up burst yields one
+            // conversations snapshot per frame — rendered raw, the chat
+            // list visibly pops row by row. Coalesce: the first snapshot
+            // goes out immediately (instant paint from the local mirror),
+            // then at most one per `interval`, always the newest —
+            // `bufferingNewest(1)` drops every intermediate snapshot that
+            // lands while the pacer sleeps.
+            let (latest, latestCont) = AsyncStream<[ConversationRecord]>.makeStream(bufferingPolicy: .bufferingNewest(1))
+            let producer = Task {
                 for await records in store.conversationsStream() {
+                    latestCont.yield(records)
+                }
+                latestCont.finish()
+            }
+            let consumer = Task {
+                for await records in latest {
                     continuation.yield(records.map(Self.summary(from:)))
+                    try? await Task.sleep(for: interval)
                 }
                 continuation.finish()
             }
-            continuation.onTermination = { _ in task.cancel() }
+            continuation.onTermination = { _ in
+                producer.cancel()
+                consumer.cancel()
+            }
         }
     }
 

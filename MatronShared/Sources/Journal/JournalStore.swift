@@ -10,14 +10,20 @@ public struct ConvoSummaryDTO: Equatable, Sendable {
     public let lastSeq: Int64
     public let snippet: String
     public let createdAt: Int64
+    /// Timestamp (ms) of the conversation's newest event, when the server
+    /// includes it (`last_ts`, added after v1). `nil` on older servers —
+    /// upserts then leave the stored `lastActivityTS` alone rather than
+    /// regress it.
+    public let lastTS: Int64?
 
-    public init(id: String, title: String, sessionState: String, lastSeq: Int64, snippet: String, createdAt: Int64) {
+    public init(id: String, title: String, sessionState: String, lastSeq: Int64, snippet: String, createdAt: Int64, lastTS: Int64? = nil) {
         self.id = id
         self.title = title
         self.sessionState = sessionState
         self.lastSeq = lastSeq
         self.snippet = snippet
         self.createdAt = createdAt
+        self.lastTS = lastTS
     }
 }
 
@@ -170,12 +176,20 @@ public final class JournalStore: @unchecked Sendable {
                 existing.lastSeq = c.lastSeq
                 existing.snippet = c.snippet
             }
+            // Without this a snapshot refresh could advance the snippet but
+            // leave the displayed "last activity" time frozen at whatever
+            // journal frame was applied last (the "20h ago" row hiding
+            // 4-minute-old messages). Monotonic max so a stale snapshot
+            // can't roll a fresher live-frame timestamp backwards.
+            if let ts = c.lastTS, ts > (existing.lastActivityTS ?? 0) {
+                existing.lastActivityTS = ts
+            }
             try existing.update(db)
         } else {
             try ConversationRecord(
                 id: c.id, title: c.title, sessionState: c.sessionState,
                 lastSeq: c.lastSeq, snippet: c.snippet, createdAt: c.createdAt,
-                lastActivityTS: nil, muted: false, hidden: false,
+                lastActivityTS: c.lastTS, muted: false, hidden: false,
                 readUpToSeq: resetLocalState ? c.lastSeq : 0,
                 unreadCount: 0
             ).insert(db)

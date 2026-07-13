@@ -172,6 +172,16 @@ struct ChatView: View {
                 .scrollTargetLayout()
                 .padding(.vertical)
             }
+            // Warm-up state: no rows yet, but not settled-empty either
+            // (that's the branch above). This window used to render as a
+            // fully blank message area while the first snapshot / history
+            // fetch was in flight; the indicator's own appearance delay
+            // keeps cache-warm opens spinner-free.
+            .overlay {
+                if viewModel.rows.isEmpty {
+                    TimelineLoadingIndicator()
+                }
+            }
             // `.scrollPosition(id:anchor: .bottom)` binds `scrolledItemID`
             // to the row at the bottom of the viewport. Setting it to
             // `items.last?.id` jumps to the live tail; reading it tells

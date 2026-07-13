@@ -163,6 +163,15 @@ struct MacChatView: View {
                 .scrollTargetLayout()
                 .padding(.vertical)
             }
+            // Warm-up state — see iOS `ChatView`: no rows yet but not
+            // settled-empty, previously a fully blank message area. The
+            // indicator delays its own appearance so cache-warm opens
+            // never flash a spinner.
+            .overlay {
+                if viewModel.rows.isEmpty {
+                    TimelineLoadingIndicator()
+                }
+            }
             // Mirror iOS — `.scrollPosition(id:)` binds the bottom-anchored
             // visible row id, which we use both for the per-room scroll
             // memory and for the jump-to-latest overlay.

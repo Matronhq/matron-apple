@@ -69,7 +69,8 @@ public actor JournalAPI {
                 sessionState: c["session_state"] as? String ?? "running",
                 lastSeq: (c["last_seq"] as? NSNumber)?.int64Value ?? 0,
                 snippet: c["snippet"] as? String ?? "",
-                createdAt: (c["created_at"] as? NSNumber)?.int64Value ?? 0
+                createdAt: (c["created_at"] as? NSNumber)?.int64Value ?? 0,
+                lastTS: (c["last_ts"] as? NSNumber)?.int64Value
             )
         }
         return SnapshotResponse(conversations: conversations,

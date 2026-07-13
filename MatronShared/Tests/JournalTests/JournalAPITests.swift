@@ -83,15 +83,26 @@ final class JournalAPITests: XCTestCase {
 
     func testSnapshotParsesConversations() async throws {
         StubURLProtocol.responses = ["/snapshot": (200, """
-            {"conversations":[{"id":"c1","title":"T","session_state":"waiting","last_seq":9,"unread_count":2,"snippet":"s","created_at":5}],"seq":9}
+            {"conversations":[{"id":"c1","title":"T","session_state":"waiting","last_seq":9,"unread_count":2,"snippet":"s","created_at":5,"last_ts":7000}],"seq":9}
             """)]
         let api = makeAPI()
         await api.setToken("t")
         let snap = try await api.snapshot()
         XCTAssertEqual(snap.seq, 9)
         XCTAssertEqual(snap.conversations, [
-            ConvoSummaryDTO(id: "c1", title: "T", sessionState: "waiting", lastSeq: 9, snippet: "s", createdAt: 5),
+            ConvoSummaryDTO(id: "c1", title: "T", sessionState: "waiting", lastSeq: 9, snippet: "s", createdAt: 5, lastTS: 7000),
         ])
+    }
+
+    func testSnapshotToleratesMissingLastTS() async throws {
+        // Older servers (and convos with no events) omit/null last_ts.
+        StubURLProtocol.responses = ["/snapshot": (200, """
+            {"conversations":[{"id":"c1","title":"T","session_state":"waiting","last_seq":9,"unread_count":2,"snippet":"s","created_at":5}],"seq":9}
+            """)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let snap = try await api.snapshot()
+        XCTAssertNil(snap.conversations.first?.lastTS)
     }
 
     func testMessagesBuildsQueryAndParsesEvents() async throws {

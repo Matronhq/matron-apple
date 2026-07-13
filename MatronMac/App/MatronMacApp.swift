@@ -68,6 +68,24 @@ struct MatronMacApp: App {
                     .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                         Task { await (dependencies.syncService(for: session) as? JournalSyncEngine)?.nudge() }
                     }
+                    // App Nap suppression: an idle/unfocused Mac app gets its
+                    // timers and runloop throttled, which freezes the journal
+                    // engine's ping watchdog and backoff sleeper — a silently
+                    // dropped socket is then neither detected nor reconnected,
+                    // and the chat list sits stale until the user clicks the
+                    // window. Holding a `.background` activity for the
+                    // lifetime of the signed-in session opts the process out
+                    // of App Nap (lowest-impact option: it doesn't block
+                    // display or system sleep).
+                    .task(id: session.userID) {
+                        let token = ProcessInfo.processInfo.beginActivity(
+                            options: .background,
+                            reason: "Matron keeps a live sync connection while signed in")
+                        defer { ProcessInfo.processInfo.endActivity(token) }
+                        while !Task.isCancelled {
+                            try? await Task.sleep(for: .seconds(3600))
+                        }
+                    }
                 } else {
                     MacSignInView(
                         viewModel: SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac"),

@@ -7,11 +7,11 @@ final class JournalChatServiceTests: XCTestCase {
         try JournalStore(databaseURL: nil, ownSender: "user:dan")
     }
 
-    private func makeService(_ store: JournalStore) -> JournalChatService {
+    private func makeService(_ store: JournalStore, coalesceInterval: Duration = .milliseconds(250)) -> JournalChatService {
         let api = JournalAPI(serverURL: URL(string: "https://x")!)
         let engine = JournalSyncEngine(api: api, store: store, connector: FakeChatConnector(),
                                        token: "t", ownSender: "user:dan", search: nil)
-        return JournalChatService(store: store, engine: engine)
+        return JournalChatService(store: store, engine: engine, coalesceInterval: coalesceInterval)
     }
 
     func testChatSummariesMapAndStream() async throws {
@@ -40,6 +40,37 @@ final class JournalChatServiceTests: XCTestCase {
         let summaries = try await iterator.next()
         XCTAssertEqual(summaries?.first?.title, "sess-42")
         XCTAssertEqual(summaries?.first?.unreadCount, 1)
+    }
+
+    func testChatSummariesCoalesceBurstsToNewestSnapshot() async throws {
+        // A reconnect replay writes one store transaction per frame; the
+        // stream must emit the first snapshot immediately, swallow the
+        // burst, and land on the newest state — not replay every
+        // intermediate snapshot row by row.
+        let store = try makeStore()
+        try store.applyJournal(JournalEvent(
+            seq: 1, convoID: "c1", ts: Date(), sender: "agent:a", type: "text",
+            payloadData: Data(#"{"body":"first"}"#.utf8)))
+        let service = makeService(store, coalesceInterval: .milliseconds(50))
+        var iterator = service.chatSummaries().makeAsyncIterator()
+        let first = try await iterator.next()
+        XCTAssertEqual(first?.first?.unreadCount, 1)
+
+        // Burst of 5 frames while the pacer sleeps.
+        for seq in Int64(2)...6 {
+            try store.applyJournal(JournalEvent(
+                seq: seq, convoID: "c1", ts: Date(), sender: "agent:a", type: "text",
+                payloadData: Data(#"{"body":"m"}"#.utf8)))
+        }
+        // The stream converges on the final state (unread 6). It may take a
+        // couple of paced emissions, but far fewer than one per frame.
+        var emissions = 0
+        while let next = try await iterator.next() {
+            emissions += 1
+            if next.first?.unreadCount == 6 { break }
+            XCTAssertLessThan(emissions, 5, "burst should coalesce, not replay per-frame")
+        }
+        XCTAssertLessThan(emissions, 5)
     }
 
     func testCreateChatThrowsGracefully() async throws {

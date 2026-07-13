@@ -225,8 +225,17 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             let emitTask = Task {
                 for await _ in ticks { await emit() }
             }
-            let storeTask = Task {
+            // `setViewing` rides the live socket (a network send). It used
+            // to gate the store subscription below, which held the first
+            // snapshot — and therefore the first paint of an already-cached
+            // conversation — hostage to a network round-trip (or its
+            // timeout, when offline). Fire it concurrently instead: the
+            // local mirror is the source of truth for what to draw, and
+            // viewing scope only affects ephemeral fan-out.
+            let viewingTask = Task {
                 await engine.setViewing(convoID: convoID)
+            }
+            let storeTask = Task {
                 for await _ in store.eventsStream(convoID: convoID) { signal() }
                 continuation.finish()
             }
@@ -262,6 +271,7 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                 }
             }
             continuation.onTermination = { _ in
+                viewingTask.cancel()
                 storeTask.cancel()
                 ephemeralTask.cancel()
                 activityTask.cancel()

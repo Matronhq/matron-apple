@@ -122,6 +122,42 @@ final class JournalStoreTests: XCTestCase {
         XCTAssertEqual(convo.lastSeq, 5, "stale snapshot must not roll back lastSeq")
     }
 
+    func testRefreshSummariesUpdatesLastActivityMonotonically() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(5)) // sets lastActivityTS from the event's ts
+        let applied = try XCTUnwrap(try store.conversations().first?.lastActivityTS)
+
+        // A fresher server last_ts advances the displayed activity time —
+        // the "20h ago row hiding 4-minute-old messages" fix.
+        try store.refreshSummaries([
+            ConvoSummaryDTO(id: "c1", title: "T", sessionState: "running",
+                            lastSeq: 9, snippet: "new", createdAt: 0, lastTS: applied + 60_000),
+        ])
+        XCTAssertEqual(try store.conversations().first?.lastActivityTS, applied + 60_000)
+
+        // A stale snapshot must not roll it back, and a missing last_ts
+        // (older server) must leave it alone.
+        try store.refreshSummaries([
+            ConvoSummaryDTO(id: "c1", title: "T", sessionState: "running",
+                            lastSeq: 9, snippet: "new", createdAt: 0, lastTS: applied - 60_000),
+        ])
+        XCTAssertEqual(try store.conversations().first?.lastActivityTS, applied + 60_000)
+        try store.refreshSummaries([
+            ConvoSummaryDTO(id: "c1", title: "T", sessionState: "running",
+                            lastSeq: 9, snippet: "new", createdAt: 0),
+        ])
+        XCTAssertEqual(try store.conversations().first?.lastActivityTS, applied + 60_000)
+    }
+
+    func testColdSnapshotSeedsLastActivityFromLastTS() throws {
+        let store = try makeStore()
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "c1", title: "T", sessionState: "running",
+                            lastSeq: 10, snippet: "s", createdAt: 0, lastTS: 123_000),
+        ], headSeq: 10)
+        XCTAssertEqual(try store.conversations().first?.lastActivityTS, 123_000)
+    }
+
     func testConversationsStreamYieldsOnChange() async throws {
         let store = try makeStore()
         var iterator = store.conversationsStream().makeAsyncIterator()
