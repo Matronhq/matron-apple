@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import os
 import MatronModels
 import MatronSearch
 
@@ -16,6 +17,7 @@ public enum JournalSyncError: Error, Equatable, Sendable {
 /// `start()` / `stop()`) so a later `SyncService` conformance shim can add
 /// protocol-named wrappers without colliding with these concrete methods.
 public actor JournalSyncEngine {
+    private static let logger = os.Logger(subsystem: "chat.matron", category: "journal-sync")
     private let api: JournalAPI
     private let store: JournalStore
     private let connector: any WebSocketConnecting
@@ -370,6 +372,7 @@ public actor JournalSyncEngine {
                         // pre-wipe data and defeat coldStartIfNeeded()'s
                         // empty-store check on the next connect. Then wipe
                         // the mirror.
+                        Self.logger.warning("snapshot_required: replay gap too large — wiping local mirror (cursor \(self.store.cursor, privacy: .public))")
                         refreshSummariesTask?.cancel()
                         storeEpoch += 1
                         // A failed wipe leaves stale rows in place; the server will

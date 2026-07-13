@@ -74,6 +74,31 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_contentToEmptySnapshot_triggersHistoryRefill() async throws {
+        // A snapshot_required wipe empties the store underneath an open
+        // timeline — the events vanish mid-view and nothing else refetches
+        // them (paginate only fires on open and scroll-up). The VM must
+        // notice the content → empty transition and refetch one page.
+        let fake = FakeTimelineService()
+        let item = TimelineItem(
+            id: "1", sender: "@a:s", timestamp: .now,
+            kind: .text(body: "hi", formattedHTML: nil), isOwn: false
+        )
+        fake.snapshotsToEmit = [[item], []]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        await task.value
+
+        // The refill runs on a detached one-shot Task; poll briefly.
+        let deadline = Date().addingTimeInterval(2)
+        while fake.paginateCalls == 0 && Date() < deadline {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        XCTAssertGreaterThanOrEqual(fake.paginateCalls, 1,
+            "content → empty must refetch the newest history page")
+    }
+
+    @MainActor
     func test_paginate_invokesService() async throws {
         let fake = FakeTimelineService()
         let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())

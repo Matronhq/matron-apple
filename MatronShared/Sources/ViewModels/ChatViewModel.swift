@@ -419,6 +419,17 @@ public final class ChatViewModel {
                         // clear (sliding-sync reset) doesn't flash the
                         // "no messages yet" placeholder.
                         self.updateSettledEmpty(isEmpty: snapshot.isEmpty)
+                        // Content → empty is the signature of the local
+                        // mirror being wiped underneath an open view
+                        // (snapshot_required: the server declined to replay
+                        // a too-large gap and the engine wiped the store).
+                        // Nothing else refetches an already-open chat —
+                        // paginate only fires on open and on scroll-up — so
+                        // without this the visible messages vanish and the
+                        // view stays blank forever.
+                        if before > 0 && snapshot.isEmpty {
+                            self.scheduleHistoryRefill()
+                        }
                     }
                     firstSignal.fireOnce()
                 }
@@ -461,6 +472,27 @@ public final class ChatViewModel {
         emptyDebounceTask = nil
         resumeTask?.cancel()
         resumeTask = nil
+        historyRefillTask?.cancel()
+        historyRefillTask = nil
+    }
+
+    private var historyRefillTask: Task<Void, Never>?
+
+    /// One-shot refetch of the newest history page after the timeline
+    /// went content → empty (see the call site in `start()`'s snapshot
+    /// loop). Resets the end-of-history verdict first: a wipe invalidates
+    /// it, and a stale `reachedHistoryStart == true` would short-circuit
+    /// the very paginate this exists to run. Single-flight so a burst of
+    /// empty snapshots (store fire + overlay sweep) queues one refill.
+    private func scheduleHistoryRefill() {
+        guard historyRefillTask == nil else { return }
+        reachedHistoryStart = false
+        consecutiveNoGrowthPaginates = 0
+        Self.logger.diag("timeline went empty under an open view — refetching newest page")
+        historyRefillTask = Task { [weak self] in
+            await self?.paginateBackward()
+            self?.historyRefillTask = nil
+        }
     }
 
     public func paginateBackward() async {

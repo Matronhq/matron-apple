@@ -304,14 +304,16 @@ struct ChatView: View {
             // racing the empty initial state. See `ChatViewModel.start()`
             // for the underlying signal mechanism (round-3 bugbot fix #3).
             await viewModel.start()
-            await viewModel.markAsRead()
-            // Explicit paginate-on-open. Sliding sync seeds the timeline
-            // with just the latest event, so without this the user sees
-            // a single message until they scroll up. The topmost-row
-            // `.onAppear` trigger handles SUBSEQUENT history loads as
-            // they scroll; this seeds the first page so there's
-            // something to scroll into.
+            // Explicit paginate-on-open BEFORE markAsRead. The store seeds
+            // the timeline with whatever's mirrored locally (possibly
+            // nothing, e.g. right after a snapshot_required wipe), so this
+            // fetches the first page over HTTP; the topmost-row `.onAppear`
+            // trigger handles SUBSEQUENT history loads as they scroll.
+            // Ordered ahead of `markAsRead()` because that rides the live
+            // socket — a half-dead socket can hang the send for its whole
+            // timeout, and history loading must not wait on it.
             await viewModel.paginateBackward()
+            await viewModel.markAsRead()
         }
         .onDisappear {
             // Capture the user's scroll position so the next open of

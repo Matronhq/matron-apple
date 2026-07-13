@@ -260,13 +260,11 @@ struct MacChatView: View {
             // `markAsRead()` marks the actual head of the timeline as
             // read instead of racing the empty initial state.
             await viewModel.start()
-            await viewModel.markAsRead()
-            // Explicit paginate-on-open. Sliding sync seeds the
-            // timeline with just the latest event; without this the
-            // user sees a single message until they scroll up. The
-            // topmost-row `.onAppear` trigger covers subsequent loads
-            // as the user scrolls — this just seeds the first page.
+            // Explicit paginate-on-open BEFORE markAsRead — see iOS
+            // `ChatView`: history loads over HTTP and must not wait on
+            // the live socket, which a half-dead connection can hang.
             await viewModel.paginateBackward()
+            await viewModel.markAsRead()
         }
         .onDisappear {
             // Persist the user's scroll position so the next open of
