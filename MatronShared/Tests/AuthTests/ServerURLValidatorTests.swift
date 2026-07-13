@@ -65,4 +65,17 @@ final class ServerURLValidatorTests: XCTestCase {
         let url = try ServerURLValidator.normalize("  matrix.example.com  ")
         XCTAssertEqual(url.absoluteString, "https://matrix.example.com")
     }
+
+    func testExplicitHTTPAllowedForLoopbackOnly() throws {
+        // http://127.0.0.1 is allowed (localhost dev)
+        XCTAssertEqual(try ServerURLValidator.normalize("http://127.0.0.1:9810").absoluteString, "http://127.0.0.1:9810")
+        // http://localhost is allowed (localhost dev)
+        XCTAssertEqual(try ServerURLValidator.normalize("http://localhost:9810").scheme, "http")
+        // http://::1 (IPv6 loopback) is allowed
+        XCTAssertEqual(try ServerURLValidator.normalize("http://[::1]:9810").scheme, "http")
+        // http to non-loopback hosts still throws
+        XCTAssertThrowsError(try ServerURLValidator.normalize("http://chat.example.com")) { error in
+            XCTAssertEqual(error as? ServerURLValidator.ValidationError, .insecureScheme)
+        }
+    }
 }

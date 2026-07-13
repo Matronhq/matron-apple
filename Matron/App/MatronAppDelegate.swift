@@ -1,6 +1,5 @@
 import UIKit
 import UserNotifications
-import MatronPush
 
 /// `UIApplicationDelegate` adaptor for the SwiftUI host. SwiftUI's
 /// `App` protocol doesn't expose
@@ -10,21 +9,28 @@ import MatronPush
 /// SwiftUI hands the system the same instance APNs invokes when the
 /// device token arrives or fails.
 ///
-/// The token flow is one-way: `didRegister...` → `PushTokenStore.shared.setToken(_)`,
-/// which `PushBootstrap.bootstrap()` (running in the host's `.task`)
-/// awaits via `waitForToken()` and forwards to
-/// `PushService.registerToken(...)`. Decoupling via the store lets
-/// the bootstrap flow start before, during, or after the token
-/// arrives — iOS doesn't guarantee an order between SwiftUI scene
-/// .task firing and APNs delivery.
+/// Task 11: the token flow is now direct rather than routed through
+/// `PushTokenStore`/`PushBootstrap` (Matrix-SDK-only machinery this task
+/// drops). `MatronApp`'s push `.task` sets `registerDeviceToken` to a
+/// closure that calls `JournalPushService.registerToken(...)` for the
+/// active session; this delegate just forwards whatever token APNs hands
+/// it. `registerDeviceToken` is `nil` until a session is signed in (or
+/// after sign-out), in which case an early token delivery is dropped —
+/// the delegate re-fires `didRegister...` any time
+/// `registerForRemoteNotifications()` is called again, which the push
+/// `.task` does on every session start.
 ///
 /// `didFinishLaunchingWithOptions` also installs
 /// `NotificationDelegate.shared` as the
 /// `UNUserNotificationCenter` delegate so notification taps surface
 /// `userNotificationCenter(_:didReceive:withCompletionHandler:)`,
 /// which translates to a `tappedRoomID.send(...)` Combine event the
-/// host observes to deep-link into the right chat (Task 6).
+/// host observes to deep-link into the right chat.
 final class MatronAppDelegate: NSObject, UIApplicationDelegate {
+    /// Set by `MatronApp`'s push `.task` once a session is signed in.
+    /// `@MainActor` isolation matches where both the setter (SwiftUI
+    /// `.task`) and this delegate callback (APNs, on main) run.
+    @MainActor var registerDeviceToken: ((Data) -> Void)?
 
     func application(
         _ application: UIApplication,
@@ -39,7 +45,7 @@ final class MatronAppDelegate: NSObject, UIApplicationDelegate {
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
     ) {
         Task { @MainActor in
-            PushTokenStore.shared.setToken(deviceToken)
+            registerDeviceToken?(deviceToken)
         }
     }
 
@@ -47,8 +53,8 @@ final class MatronAppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFailToRegisterForRemoteNotificationsWithError error: Error
     ) {
-        // Phase 4: log only. iOS Simulator without a paired Mac
-        // signing setup hits this every launch — not actionable from
-        // app code. Future Settings UI surfaces persistent failures.
+        // Log only. iOS Simulator without a paired Mac signing setup hits
+        // this every launch — not actionable from app code. Future
+        // Settings UI surfaces persistent failures.
     }
 }

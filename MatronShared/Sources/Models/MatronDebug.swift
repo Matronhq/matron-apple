@@ -9,8 +9,9 @@ import os
 ///   - setting `UserDefaults.standard.set(true, forKey: "MatronDebug")`
 ///     before the first `diag` call (e.g. early app startup), OR
 ///   - running `defaults write chat.matron.app MatronDebug -bool YES`
-///     for the iOS sim / `defaults write chat.matron.MatronMac MatronDebug -bool YES`
-///     for the Mac app, then relaunching, OR
+///     for the iOS sim / `defaults write chat.matron.mac MatronDebug -bool YES`
+///     for the Mac app (domain = bundle id, see project.yml), then
+///     relaunching, OR
 ///   - flipping `MatronDebug.enabled = true` from a test, the LLDB
 ///     console, or a one-off debug build.
 ///

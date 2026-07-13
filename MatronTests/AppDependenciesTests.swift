@@ -1,7 +1,6 @@
 import XCTest
 import MatronChat
 import MatronModels
-import MatronVerification
 import MatronViewModels
 @testable import Matron
 
@@ -26,79 +25,6 @@ final class AppDependenciesTests: XCTestCase {
         // empty caches, which is the bug we're guarding against.
         XCTAssertTrue(first as AnyObject === second as AnyObject,
                       "mediaService(for:) must return the same instance for the same session")
-    }
-
-    /// `verificationService(for:)` must return the same instance for the same
-    /// session. The instance owns the FlowStore (per-request controllers +
-    /// open `AsyncStream` continuations) AND the registered SDK delegate;
-    /// returning a fresh instance every call would mean (a) every consumer
-    /// has its own empty FlowStore and (b) only the most-recent caller's
-    /// delegate is wired to the SDK. Both produce the user-visible bug
-    /// expert-QA finding B1 surfaced (SAS sheet hangs, banner silent).
-    func test_verificationService_isCached_perSession() {
-        let deps = AppDependencies()
-        let session = UserSession(
-            userID: "@a:s", deviceID: "D",
-            homeserverURL: URL(string: "https://s")!, accessToken: "t"
-        )
-
-        let first = deps.verificationService(for: session)
-        let second = deps.verificationService(for: session)
-
-        XCTAssertTrue(first === second,
-                      "verificationService(for:) must return the same instance — shared FlowStore + delegate")
-    }
-
-    /// B2/M5 expert-QA fix coverage: a `VerificationCenter` constructed
-    /// against the cached `verificationService(for:)` shares the SAME
-    /// underlying service instance across every consumer. The host
-    /// (`MatronApp`) holds the center in `@State` so it survives body
-    /// re-evaluations; this test pins the structural half (a freshly-
-    /// constructed center wraps the cached service identity, so two
-    /// centers wrapping the same session-cached service share a
-    /// FlowStore + SDK delegate). The `@State` survival half is a
-    /// SwiftUI runtime invariant that the test infra here can't directly
-    /// observe — it's enforced by the source-level `@State private var
-    /// verificationCenter: VerificationCenter?` on the host. The full
-    /// regression coverage lives in the SPM `VerificationCenterTests`
-    /// idempotency tests; this test makes the iOS-host wiring
-    /// structurally explicit.
-    func test_verificationCenter_canBeBuilt_fromCachedService() {
-        let deps = AppDependencies()
-        let session = UserSession(
-            userID: "@a:s", deviceID: "D",
-            homeserverURL: URL(string: "https://s")!, accessToken: "t"
-        )
-        let svc = deps.verificationService(for: session)
-        let center = VerificationCenter(service: svc)
-        // The center MUST reference the cached service — not a fresh
-        // copy. This is the load-bearing identity check that prevents
-        // a regression where `MatronApp` rebuilds the service inline
-        // instead of going through `dependencies.verificationService(for:)`.
-        XCTAssertTrue((center.service as AnyObject) === (svc as AnyObject),
-                      "VerificationCenter.service must point at the cached instance")
-        // Idempotency: re-firing start() doesn't crash and isn't required
-        // to dedup observations (covered by SPM-side tests).
-        center.start()
-        center.start()
-        center.stop()
-    }
-
-    func test_verificationService_isDistinct_perUser() {
-        let deps = AppDependencies()
-        let s1 = UserSession(userID: "@a:s", deviceID: "D",
-                             homeserverURL: URL(string: "https://s")!, accessToken: "t")
-        let s2 = UserSession(userID: "@b:s", deviceID: "D",
-                             homeserverURL: URL(string: "https://s")!, accessToken: "t")
-
-        let a = deps.verificationService(for: s1)
-        let b = deps.verificationService(for: s2)
-
-        // Sharing a verification service across users would route a second
-        // user's incoming-request delegate callback through the first user's
-        // FlowStore — a privacy bug.
-        XCTAssertFalse(a === b,
-                       "different sessions must get different verification services")
     }
 
     func test_mediaService_isDistinct_perUser() {

@@ -6,38 +6,16 @@ import MatronChat
 import MatronModels
 import MatronViewModels
 
-/// Local fake mirroring `MatronShared/Tests/ViewModelTests/FakeTimelineService`.
-/// Kept in this file because the Mac test target doesn't pull the shared
-/// test fakes (those live in `MatronViewModelTests`'s sources, not the
-/// shipped library).
-private final class FakeTimelineForToolbar: TimelineService, @unchecked Sendable {
-    func items() -> AsyncThrowingStream<[TimelineItem], Error> {
-        AsyncThrowingStream { $0.finish() }
-    }
-    func sendText(_ body: String, inReplyTo: String?) async throws {}
-    func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {}
-    func sendImage(_ data: Data, filename: String, mimeType: String) async throws {}
-    func sendFile(_ data: Data, filename: String, mimeType: String) async throws {}
-    func paginateBackward(requestSize: UInt16) async throws -> Bool { false }
-    func markAsRead() async throws {}
-}
-
-private final class FakeMediaForToolbar: MediaService, @unchecked Sendable {
-    func image(for mxc: URL) async -> Data? { nil }
-}
-
 @MainActor
 final class MacChatToolbarTests: XCTestCase {
 
-    /// Constructing the toolbar exercises the @State + ToolbarContent
-    /// wiring at compile time. The body itself isn't rendered in this
-    /// unit test (no host scene).
+    /// Constructing the toolbar exercises the ToolbarContent wiring at
+    /// compile time. The body itself isn't rendered in this unit test
+    /// (no host scene).
     func test_toolbarRenders_withTitleAndInfoButton() {
-        let vm = ChatViewModel(roomID: "!a:s", timeline: FakeTimelineForToolbar(), media: FakeMediaForToolbar())
         var profileTaps = 0
         let toolbar = MacChatToolbar(
             title: "Refactoring auth",
-            viewModel: vm,
             onShowBotProfile: { profileTaps += 1 }
         )
         XCTAssertNotNil(toolbar.body)

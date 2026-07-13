@@ -12,7 +12,7 @@ public final class SignInViewModel {
         case signedIn(UserSession)
     }
 
-    public var serverURL: String = ""
+    public var serverURL: String = "https://chat.example.com"
     public var username: String = ""
     public var password: String = ""
     public private(set) var state: State = .idle

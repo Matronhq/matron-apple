@@ -12,6 +12,14 @@ import UniformTypeIdentifiers
 @Observable
 @MainActor
 public final class ComposerViewModel {
+    /// Whether the attachment (photo/file) picker is available. `false`
+    /// under the journal stack: media DISPLAY is live server-side, but the
+    /// client's send whitelist is text-only, so composing an attachment
+    /// would fail server-side. Views gate the attachment button on this
+    /// flag instead of removing it outright, so re-enabling attachments
+    /// later is a one-line flip.
+    public static let mediaAvailable = false
+
     public var input: String = ""
     public private(set) var isSending: Bool = false
     public private(set) var sendError: String?

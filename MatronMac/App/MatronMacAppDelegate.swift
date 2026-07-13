@@ -1,6 +1,5 @@
 import AppKit
 import UserNotifications
-import MatronPush
 
 /// `NSApplicationDelegate` adaptor for the Mac SwiftUI host. SwiftUI's
 /// `App` protocol doesn't expose
@@ -12,6 +11,17 @@ import MatronPush
 /// so notification taps surface from launch (not lazily on first
 /// sign-in).
 ///
+/// Task 12: the token flow is now direct rather than routed through
+/// `PushTokenStore` (Matrix-SDK-only machinery this task drops).
+/// `MatronMacApp`'s push `.task` sets `registerDeviceToken` to a
+/// closure that calls `JournalPushService.registerToken(...)` for the
+/// active session; this delegate just forwards whatever token APNs
+/// hands it. `registerDeviceToken` is `nil` until a session is signed
+/// in (or after sign-out) — an early token delivery is dropped, but
+/// `registerForRemoteNotifications()` is called again on every session
+/// start, so this doesn't strand a real device. See iOS
+/// `MatronAppDelegate` for the parallel rationale.
+///
 /// `@MainActor`-isolated because `NSApplicationDelegate` callbacks run
 /// on the main thread anyway and `MacNotificationHandler` is itself
 /// `@MainActor` — without the annotation, the synchronous default-init
@@ -20,6 +30,8 @@ import MatronPush
 /// nonisolated context" at compile time.
 @MainActor
 final class MatronMacAppDelegate: NSObject, NSApplicationDelegate {
+    /// Set by `MatronMacApp`'s push `.task` once a session is signed in.
+    var registerDeviceToken: ((Data) -> Void)?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // `MacNotificationHandler.shared` is the same instance
@@ -34,7 +46,7 @@ final class MatronMacAppDelegate: NSObject, NSApplicationDelegate {
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
     ) {
         Task { @MainActor in
-            PushTokenStore.shared.setToken(deviceToken)
+            registerDeviceToken?(deviceToken)
         }
     }
 

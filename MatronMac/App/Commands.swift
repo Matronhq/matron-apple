@@ -18,8 +18,6 @@ public enum MatronCommand: String, CaseIterable, Sendable {
     case increaseFontSize
     case decreaseFontSize
     case resetFontSize
-    case verifyDevice
-    case showRecoveryKey
     case refresh
 }
 
@@ -48,10 +46,10 @@ public extension Notification.Name {
 ///   - `.findInChat`            — Phase 6 wires SearchService; today the
 ///                                Mac toolbar's search field is decorative.
 ///   - `.increase/decrease/resetFontSize` — Phase 5+ design-system font scaling.
-///   - `.verifyDevice`, `.showRecoveryKey` — Phase 3 (E2EE + verification UX).
 ///
-/// Help-menu items ship now so the menu-bar shape is testable end-to-end;
-/// their listeners will land in Phase 3.
+/// Task 12 dropped the Help menu's `.verifyDevice` / `.showRecoveryKey`
+/// items (and their listeners) along with the rest of the verification
+/// UI — the journal stack has no verification concept yet.
 struct ChatCommands: Commands {
     var body: some Commands {
         // File menu — `.newItem` is the system "New" group; we replace
@@ -91,14 +89,6 @@ struct ChatCommands: Commands {
                 .keyboardShortcut("-", modifiers: .command)
             Button("Reset Font Size") { post(.resetFontSize) }
                 .keyboardShortcut("0", modifiers: .command)
-        }
-
-        // Help menu — Phase 3 wires the actual flows; Phase 2 just adds
-        // the items so the menu-bar shape is testable end-to-end.
-        CommandGroup(replacing: .help) {
-            // TODO Phase 3: wire to the verification + recovery-key flows.
-            Button("Verify This Device…") { post(.verifyDevice) }
-            Button("Show Recovery Key…") { post(.showRecoveryKey) }
         }
     }
 

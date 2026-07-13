@@ -36,16 +36,22 @@ struct MacComposerView: View {
             }
 
             HStack(alignment: .bottom, spacing: 4) {
-                Button {
-                    pickFiles()
-                } label: {
-                    Image(systemName: "paperclip")
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
-                        .padding(8)
+                // Journal stack: media DISPLAY is live server-side, but the
+                // client send whitelist is text-only, so composing an
+                // attachment would fail server-side. Gated on the VM flag
+                // rather than deleted outright. Mirrors iOS `ComposerView`.
+                if ComposerViewModel.mediaAvailable {
+                    Button {
+                        pickFiles()
+                    } label: {
+                        Image(systemName: "paperclip")
+                            .font(.title3)
+                            .foregroundStyle(.secondary)
+                            .padding(8)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Attach a file")
                 }
-                .buttonStyle(.plain)
-                .help("Attach a file")
 
                 TextField("Message…", text: $viewModel.input, axis: .vertical)
                     .lineLimit(1...8)

@@ -139,6 +139,13 @@ public final class ChatViewModel {
     /// in `applyDerivedRecompute()`.
     public private(set) var lastRenderableItemID: TimelineItem.ID?
 
+    /// IDs of the first 10 rows (messages AND separators — the
+    /// scroll-position binding's namespace is mixed). Drives the
+    /// scroll-up paginate trigger. Memoised here because the views'
+    /// `.onChange(of: scrolledItemID)` fires on every scroll tick,
+    /// and both platforms were rebuilding this Set per tick.
+    public private(set) var topRowIDs: Set<String> = []
+
     /// Single mutation entry point for `items`. Updates the raw
     /// snapshot and the three derived caches atomically so a body
     /// re-eval that reads any combination of `items` / `rows` /
@@ -188,6 +195,10 @@ public final class ChatViewModel {
         self.rows = nextRows
         self.firstRenderableItemID = first
         self.lastRenderableItemID = last
+        self.topRowIDs = Set(nextRows.prefix(10).map { row in
+            if case .message(let item) = row { return item.id }
+            return row.id
+        })
     }
 
     /// `true` while a `paginateBackward()` call is in flight. Surfaces to
@@ -419,13 +430,27 @@ public final class ChatViewModel {
                         // clear (sliding-sync reset) doesn't flash the
                         // "no messages yet" placeholder.
                         self.updateSettledEmpty(isEmpty: snapshot.isEmpty)
+                        // Content → empty is the signature of the local
+                        // mirror being wiped underneath an open view
+                        // (snapshot_required: the server declined to replay
+                        // a too-large gap and the engine wiped the store).
+                        // Nothing else refetches an already-open chat —
+                        // paginate only fires on open and on scroll-up — so
+                        // without this the visible messages vanish and the
+                        // view stays blank forever.
+                        if before > 0 && snapshot.isEmpty {
+                            self.scheduleHistoryRefill()
+                        }
                     }
                     firstSignal.fireOnce()
                 }
             } catch {
                 // Stream threw — surface the message so the View can
                 // render an overlay instead of an infinite spinner
-                // (QA finding #10).
+                // (QA finding #10). Logged un-gated: a dead stream under
+                // an open view is exactly the "panel went blank/stale"
+                // evidence we need persisted after the fact.
+                Self.logger.warning("timeline stream threw under an open view: \(error.localizedDescription, privacy: .public)")
                 let message = error.localizedDescription
                 if let self {
                     await MainActor.run { self.error = message }
@@ -437,6 +462,13 @@ public final class ChatViewModel {
             // up with no `snapshotsToEmit`). Flip the first-snapshot
             // flag too so the empty-state placeholder isn't stuck
             // hidden on rooms whose live timeline never warms up.
+            //
+            // Un-gated log: a non-cancelled finish means live updates are
+            // dead for this view — the signature of a "panel froze/blanked"
+            // report. Cancellation (view closed) is routine; skip it.
+            if !Task.isCancelled {
+                Self.logger.warning("timeline stream finished under an open view (items=\(self?.items.count ?? -1))")
+            }
             if let self {
                 await MainActor.run {
                     self.hasReceivedFirstSnapshot = true
@@ -461,6 +493,30 @@ public final class ChatViewModel {
         emptyDebounceTask = nil
         resumeTask?.cancel()
         resumeTask = nil
+        historyRefillTask?.cancel()
+        historyRefillTask = nil
+    }
+
+    private var historyRefillTask: Task<Void, Never>?
+
+    /// One-shot refetch of the newest history page after the timeline
+    /// went content → empty (see the call site in `start()`'s snapshot
+    /// loop). Resets the end-of-history verdict first: a wipe invalidates
+    /// it, and a stale `reachedHistoryStart == true` would short-circuit
+    /// the very paginate this exists to run. Single-flight so a burst of
+    /// empty snapshots (store fire + overlay sweep) queues one refill.
+    private func scheduleHistoryRefill() {
+        guard historyRefillTask == nil else { return }
+        reachedHistoryStart = false
+        consecutiveNoGrowthPaginates = 0
+        // Un-gated (notice, not diag): this fires at most once per mirror
+        // wipe and is the pivotal breadcrumb for any "chat went blank"
+        // report — it must be in the persisted log even with MatronDebug off.
+        Self.logger.notice("timeline went empty under an open view — refetching newest page")
+        historyRefillTask = Task { [weak self] in
+            await self?.paginateBackward()
+            self?.historyRefillTask = nil
+        }
     }
 
     public func paginateBackward() async {

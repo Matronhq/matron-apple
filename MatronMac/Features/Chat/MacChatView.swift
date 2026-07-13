@@ -2,7 +2,6 @@ import SwiftUI
 import UniformTypeIdentifiers
 import MatronChat
 import MatronModels
-import MatronVerification
 import MatronViewModels
 import MatronDesignSystem
 import os
@@ -42,20 +41,6 @@ struct MacChatView: View {
     /// `TimelineUniqueId.id`), so `.sheet(item:)` re-presents a fresh sheet
     /// when the user picks a different row.
     @State private var sourceItem: TimelineItem?
-    /// Per-bot verification state (Task 10, spec §7.3, §7.5). `nil` until
-    /// `evaluateBotVerification()` resolves; otherwise the tri-state result
-    /// from `VerificationService.isUserVerified(matrixID:)` (M2). Banner
-    /// renders ONLY on `.unverified` — `.verified` and `.unknown`
-    /// (cold-start: identity not yet in the local crypto store) both hide,
-    /// so the banner doesn't flash before sliding-sync warms up
-    /// `/keys/query`. §7.5 trust posture is preserved because the
-    /// `.unknown` arm re-evaluates on the next sync tick.
-    @State private var botVerification: UserVerificationResult? = nil
-    /// Drives the per-bot SAS sheet via `.sheet(item:)`. B2/M5 fix —
-    /// see iOS `ChatView` for full rationale. The wrapper exists so
-    /// `.sheet(item:)` gets a stable `Identifiable` to key on; identity
-    /// is the bot's matrixID itself.
-    @State private var verifyBotContext: VerifyBotSheetContext?
     /// Bottom-anchored visible item id, bound to `.scrollPosition` on
     /// the timeline ScrollView. Drives both the per-room scroll memory
     /// (so reopening a chat lands where the user left off) and the
@@ -75,28 +60,11 @@ struct MacChatView: View {
         let image: Image
     }
 
-    /// Identifiable wrapper for `.sheet(item:)`. See iOS `ChatView`.
-    fileprivate struct VerifyBotSheetContext: Identifiable, Hashable {
-        let id: String
-    }
-
     let chatTitle: String
     let onShowBotProfile: () -> Void
-    /// See iOS `ChatView` for rationale — both optional so existing
-    /// tests / previews keep compiling.
-    var verificationService: VerificationService? = nil
-    var botMatrixID: String? = nil
 
     var body: some View {
         VStack(spacing: 0) {
-            // Per-bot verification banner (spec §7.3, §7.5). Mirrors the
-            // iOS `ChatView` placement — above the error banner so a
-            // user who's both unverified and hit a sliding-sync timeout
-            // sees both signals. Only `.unverified` draws — `.unknown`
-            // and `.verified` hide (M2 cold-start posture).
-            if botVerification == .unverified {
-                botVerificationBanner
-            }
             // QA finding #10: mirror the iOS error banner. Sliding-sync
             // timeouts now surface here instead of leaving the user
             // staring at an empty scroll view.
@@ -119,81 +87,31 @@ struct MacChatView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
             ScrollView {
-                LazyVStack(spacing: 8) {
-                    // Render `rows` (messages interleaved with date
-                    // separators) instead of `items` directly. Mirrors
-                    // the iOS surface — the bucketing logic lives in
-                    // `ChatViewModel.rows` so the two platforms can't
-                    // drift.
-                    ForEach(viewModel.rows) { row in
-                        switch row {
-                        case .separator(let date):
-                            DateSeparator(date: date)
-                                .id(row.id)
-                        case .message(let item):
-                            MacTimelineItemView(
-                                item: item,
-                                resolveImage: { viewModel.image(for: $0) },
-                                onRetry: { id in viewModel.retrySend(itemID: id) },
-                                onTapImage: { img in
-                                    imagePreview = ImagePreview(image: img)
-                                },
-                                onTapFile: { mxc, filename in
-                                    Task {
-                                        if let url = await viewModel.writeTempFile(
-                                            mxcURL: mxc, filename: filename
-                                        ) {
-                                            // Hand off to the system —
-                                            // QuickLook / the user's
-                                            // chosen app handles the
-                                            // open. Stays inside the
-                                            // SwiftUI surface (no
-                                            // need for a sheet on
-                                            // Mac since the OS shell
-                                            // owns the open path).
-                                            await MainActor.run {
-                                                NSWorkspace.shared.open(url)
-                                            }
-                                        }
-                                    }
-                                },
-                                askViewModel: { viewModel.askViewModel(forPrompt: $0) },
-                                isPromptAnswered: { viewModel.isPromptAnswered($0) },
-                                answerSummary: { viewModel.answerSummary(forPrompt: $0) }
-                            )
-                                .id(item.id)
-                                .onAppear {
-                                    let match = (item.id == viewModel.firstRenderableItemID)
-                                    paginateLogger.diag("onAppear: id=\(item.id) first=\(viewModel.firstRenderableItemID ?? "nil") match=\(match)")
-                                    if match {
-                                        Task { await viewModel.paginateBackward() }
-                                    }
-                                }
-                                .contextMenu {
-                                    if case .text(let body, _) = item.kind {
-                                        Button {
-                                            Pasteboard.copy(body)
-                                        } label: {
-                                            Label("Copy", systemImage: "doc.on.doc")
-                                        }
-                                        ShareLink(item: body) {
-                                            Label("Share", systemImage: "square.and.arrow.up")
-                                        }
-                                    }
-                                    // "View source" applies to every kind —
-                                    // text, image, file, stateChange, unknown
-                                    // — so it lives outside the `.text` guard.
-                                    Button {
-                                        sourceItem = item
-                                    } label: {
-                                        Label("View source", systemImage: "curlybraces")
-                                    }
-                                }
-                        }
-                    }
+                // `.equatable()` + the reference-identity `==` on
+                // `MacTimelineListContent` is the scroll-perf fix — see
+                // the iOS `ChatView` call site for the full rationale.
+                // In short: the `.scrollPosition(id:)` binding below
+                // writes `scrolledItemID` on every row crossing, each
+                // write re-evaluates this body, and without the fence
+                // that cascaded into every mounted row (~60% of
+                // main-thread time in a scroll profile). Timeline
+                // changes still propagate via `@Observable` tracking,
+                // which invalidates the child directly.
+                MacTimelineListContent(
+                    viewModel: viewModel,
+                    onPreviewImage: { imagePreview = ImagePreview(image: $0) },
+                    onShowSource: { sourceItem = $0 }
+                )
+                .equatable()
+            }
+            // Warm-up state — see iOS `ChatView`: no rows yet but not
+            // settled-empty, previously a fully blank message area. The
+            // indicator delays its own appearance so cache-warm opens
+            // never flash a spinner.
+            .overlay {
+                if viewModel.rows.isEmpty {
+                    TimelineLoadingIndicator()
                 }
-                .scrollTargetLayout()
-                .padding(.vertical)
             }
             // Mirror iOS — `.scrollPosition(id:)` binds the bottom-anchored
             // visible row id, which we use both for the per-room scroll
@@ -220,17 +138,11 @@ struct MacChatView: View {
             // to handle both.
             .onChange(of: scrolledItemID) { _, newID in
                 guard let newID else { return }
-                let topRowIDs: Set<String> = Set(
-                    viewModel.rows.prefix(10).map { row in
-                        switch row {
-                        case .message(let item): return item.id
-                        case .separator: return row.id
-                        }
-                    }
-                )
-                let inTop = topRowIDs.contains(newID)
-                paginateLogger.diag("scrollChange: bottom=\(newID) inTop10=\(inTop) rows=\(viewModel.rows.count)")
-                if inTop {
+                // `topRowIDs` is memoised on the view-model — this fires
+                // on every scroll tick, and rebuilding the Set (plus the
+                // per-tick diag log that used to live here) was measurable
+                // scroll overhead.
+                if viewModel.topRowIDs.contains(newID) {
                     Task { await viewModel.paginateBackward() }
                 }
             }
@@ -267,10 +179,12 @@ struct MacChatView: View {
                     delegate: ComposerDropDelegate(composer: composerVM)
                 )
         }
+        // matron-web's cream timeline gradient behind the whole chat
+        // column — bubbles and the composer material share the warm ground.
+        .background(MatronTimelineBackground())
         .toolbar {
             MacChatToolbar(
                 title: chatTitle,
-                viewModel: viewModel,
                 onShowBotProfile: onShowBotProfile
             )
         }
@@ -283,26 +197,12 @@ struct MacChatView: View {
             // `markAsRead()` marks the actual head of the timeline as
             // read instead of racing the empty initial state.
             await viewModel.start()
-            await viewModel.markAsRead()
-            // Explicit paginate-on-open. Sliding sync seeds the
-            // timeline with just the latest event; without this the
-            // user sees a single message until they scroll up. The
-            // topmost-row `.onAppear` trigger covers subsequent loads
-            // as the user scrolls — this just seeds the first page.
+            // Explicit paginate-on-open BEFORE markAsRead — see iOS
+            // `ChatView`: history loads over HTTP and must not wait on
+            // the live socket, which a half-dead connection can hang.
             await viewModel.paginateBackward()
+            await viewModel.markAsRead()
         }
-        // Per-bot verification check on appear AND each time the
-        // timeline gains its first items — that's the cheapest signal
-        // for "sliding-sync delivered enough state that the local
-        // crypto store probably has the user identity now". Keying on
-        // `items.isEmpty` re-fires exactly once when the empty initial
-        // snapshot transitions to a populated one, so M2's `.unknown`
-        // cold-start result resolves to `.verified` / `.unverified`
-        // without requiring the user to re-open the chat. Separate
-        // `.task` so the (cheap) identity lookup doesn't share a
-        // cancellation lifecycle with the long-lived timeline
-        // observation.
-        .task(id: viewModel.items.isEmpty) { await evaluateBotVerification() }
         .onDisappear {
             // Persist the user's scroll position so the next open of
             // this room lands where they left off; drop the entry on
@@ -347,9 +247,6 @@ struct MacChatView: View {
         .sheet(item: $sourceItem) { item in
             MacEventSourceSheet(item: item, onDismiss: { sourceItem = nil })
         }
-        .sheet(item: $verifyBotContext) { context in
-            verifyBotSheetBody(for: context.id)
-        }
         // Mac fullscreen image preview — Mac's `NSWorkspace.shared.open`
         // already owns the file path, so the only sheet wired here is
         // for the in-app pinch-zoom-style image viewer.
@@ -375,90 +272,101 @@ struct MacChatView: View {
         }
     }
 
-    /// Per-bot verification evaluation. See iOS `ChatView` for details —
-    /// `nil` keeps the banner hidden during the async query; a thrown
-    /// error resolves to `.unknown` so the next sync tick can re-check
-    /// (was previously `false` under the Bool shape; M2 widens to
-    /// tri-state to avoid the cold-start banner flash).
-    private func evaluateBotVerification() async {
-        guard let svc = verificationService, let botMatrixID else {
-            botVerification = nil
-            return
-        }
-        do {
-            botVerification = try await svc.isUserVerified(matrixID: botMatrixID)
-        } catch {
-            botVerification = .unknown
-        }
+}
+
+/// The timeline's `LazyVStack` + `ForEach`, fenced off behind
+/// `Equatable` so the parent's scroll-position `@State` churn can't
+/// re-evaluate every mounted row (see the call site in
+/// `MacChatView.body` and the iOS twin in `ChatView.swift`). `==`
+/// compares only the view-model reference: row data is delivered
+/// through `@Observable` tracking, which invalidates this view
+/// directly when `viewModel.rows` (or anything else its body reads)
+/// changes — the equatable check only gates parent-driven invalidation.
+private struct MacTimelineListContent: View, Equatable {
+    let viewModel: ChatViewModel
+    let onPreviewImage: (Image) -> Void
+    let onShowSource: (TimelineItem) -> Void
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.viewModel === rhs.viewModel
     }
 
-    /// Inline banner above the timeline. Mirrors the iOS shape; uses
-    /// `Color(NSColor.controlBackgroundColor)` for the AppKit-native
-    /// neutral background (same precedent as `MacRecoveryKeyView` /
-    /// `MacSasView` — the `.ultraThinMaterial` we use on iOS doesn't
-    /// composite as cleanly inside the AppKit window).
-    @ViewBuilder
-    private var botVerificationBanner: some View {
-        HStack {
-            Image(systemName: "exclamationmark.shield.fill")
-                .foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 2) {
-                // PR #3 review #13 — copy reflects bot identity, not
-                // device. The banner renders when `botVerification ==
-                // .unverified`; tapping triggers user-verification SAS
-                // against the bot's matrixID.
-                Text("This bot's identity hasn't been verified")
-                    .font(.callout)
-                    .bold()
-                Text("Messages may show a warning until you verify.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            Button("Verify") {
-                if let botMatrixID {
-                    verifyBotContext = VerifyBotSheetContext(id: botMatrixID)
+    var body: some View {
+        LazyVStack(spacing: 8) {
+            // Render `rows` (messages interleaved with date
+            // separators) instead of `items` directly. Mirrors
+            // the iOS surface — the bucketing logic lives in
+            // `ChatViewModel.rows` so the two platforms can't
+            // drift.
+            ForEach(viewModel.rows) { row in
+                switch row {
+                case .separator(let date):
+                    DateSeparator(date: date)
+                        .id(row.id)
+                case .message(let item):
+                    MacTimelineItemView(
+                        item: item,
+                        resolveImage: { viewModel.image(for: $0) },
+                        onRetry: { id in viewModel.retrySend(itemID: id) },
+                        onTapImage: { img in
+                            onPreviewImage(img)
+                        },
+                        onTapFile: { mxc, filename in
+                            Task {
+                                if let url = await viewModel.writeTempFile(
+                                    mxcURL: mxc, filename: filename
+                                ) {
+                                    // Hand off to the system —
+                                    // QuickLook / the user's
+                                    // chosen app handles the
+                                    // open. Stays inside the
+                                    // SwiftUI surface (no
+                                    // need for a sheet on
+                                    // Mac since the OS shell
+                                    // owns the open path).
+                                    await MainActor.run {
+                                        NSWorkspace.shared.open(url)
+                                    }
+                                }
+                            }
+                        },
+                        askViewModel: { viewModel.askViewModel(forPrompt: $0) },
+                        isPromptAnswered: { viewModel.isPromptAnswered($0) },
+                        answerSummary: { viewModel.answerSummary(forPrompt: $0) }
+                    )
+                        .id(item.id)
+                        .onAppear {
+                            let match = (item.id == viewModel.firstRenderableItemID)
+                            paginateLogger.diag("onAppear: id=\(item.id) first=\(viewModel.firstRenderableItemID ?? "nil") match=\(match)")
+                            if match {
+                                Task { await viewModel.paginateBackward() }
+                            }
+                        }
+                        .contextMenu {
+                            if case .text(let body, _) = item.kind {
+                                Button {
+                                    Pasteboard.copy(body)
+                                } label: {
+                                    Label("Copy", systemImage: "doc.on.doc")
+                                }
+                                ShareLink(item: body) {
+                                    Label("Share", systemImage: "square.and.arrow.up")
+                                }
+                            }
+                            // "View source" applies to every kind —
+                            // text, image, file, stateChange, unknown
+                            // — so it lives outside the `.text` guard.
+                            Button {
+                                onShowSource(item)
+                            } label: {
+                                Label("View source", systemImage: "curlybraces")
+                            }
+                        }
                 }
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
         }
-        .padding(.horizontal)
-        .padding(.vertical, 10)
-        .background(Color(NSColor.controlBackgroundColor))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("This bot's identity hasn't been verified. Verify.")
-    }
-
-    /// Builds the SAS sheet for verifying the bot user. Hands construction
-    /// to the per-present `MacSasSheetWrapper` whose `@State`-stored
-    /// SasViewModel survives parent re-renders (B2/M5 fix; see iOS
-    /// `ChatView` for full rationale).
-    @ViewBuilder
-    private func verifyBotSheetBody(for botMatrixID: String) -> some View {
-        if let svc = verificationService {
-            MacSasSheetWrapper(
-                service: svc,
-                requestID: botMatrixID,
-                title: "Verify \(botMatrixID)",
-                streamFactory: { $0.startSAS(withUser: botMatrixID, deviceID: nil) },
-                onFinished: {
-                    verifyBotContext = nil
-                    Task { await evaluateBotVerification() }
-                },
-                onCancelled: {
-                    // SAS .cancelled state's "Close" button hits this.
-                    // Same dismissal as onFinished; the re-evaluate is a
-                    // no-op on cancel but keeps both call sites symmetric.
-                    verifyBotContext = nil
-                    Task { await evaluateBotVerification() }
-                }
-            )
-        } else {
-            Text("Verification unavailable")
-                .frame(width: 360, height: 120)
-                .padding()
-        }
+        .scrollTargetLayout()
+        .padding(.vertical)
     }
 }
 

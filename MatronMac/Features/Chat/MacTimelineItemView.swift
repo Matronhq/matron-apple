@@ -132,6 +132,18 @@ struct MacTimelineItemView: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Tool call: \(evt.tool)"))
 
+        case .liveOutput(_, let evt):
+            // Wider than ToolCallCard — terminal output wants columns.
+            // Session from the shared store so LazyVStack row recycling
+            // reattaches to accumulated output instead of replaying.
+            HStack {
+                LiveOutputCard(session: LiveOutputSessionStore.shared.session(for: evt),
+                               eventTimestamp: item.timestamp)
+                    .frame(maxWidth: 560, alignment: .leading)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal)
+
         case .askUser(let eventID, let evt):
             // Inline, non-blocking card (bot-aligned like .toolCall) — same as iOS.
             HStack {
@@ -149,6 +161,9 @@ struct MacTimelineItemView: View {
             // hides them too (own and others'). The user's choice is
             // visible through the answered prompt UI instead.
             EmptyView()
+
+        case .activityIndicator(let label):
+            ActivityIndicatorRow(label: label)
 
         case .unknown(let eventType):
             // `m.room.encrypted` is the SDK's `unableToDecrypt` mapped

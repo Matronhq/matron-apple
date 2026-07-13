@@ -82,20 +82,14 @@ final class SearchViewModelTests: XCTestCase {
         XCTAssertEqual(vm.chatTitle(for: "!1:s"), "Auth fix", "renamed title resolves to the new value")
     }
 
+    /// Task 11 (journal rewire): `SearchViewModel` no longer tracks backfill
+    /// progress (`applyBackfillProgress`/`observeBackfill` were dropped
+    /// along with the Matrix-SDK-only backfill machinery), so the empty
+    /// state is always the plain "No results." message.
     @MainActor
-    func test_emptyState_whenBackfillInProgress_showsIndexingMessage() async {
+    func test_emptyState_showsNoResults() async {
         let vm = SearchViewModel(search: FakeSearchService(), allChats: [])
         vm.query = "anything"
-        vm.applyBackfillProgress(AggregateBackfillProgress(roomsCompleted: 3, roomsTotal: 10))
-        await vm.search()
-        XCTAssertEqual(vm.emptyResultsMessage, "Indexing chats… (3 of 10 rooms)")
-    }
-
-    @MainActor
-    func test_emptyState_whenBackfillComplete_showsNoResults() async {
-        let vm = SearchViewModel(search: FakeSearchService(), allChats: [])
-        vm.query = "anything"
-        vm.applyBackfillProgress(AggregateBackfillProgress(roomsCompleted: 10, roomsTotal: 10))
         await vm.search()
         XCTAssertEqual(vm.emptyResultsMessage, "No results.")
     }

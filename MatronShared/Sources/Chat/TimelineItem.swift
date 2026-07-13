@@ -36,6 +36,11 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         /// Matrix event ID, kept on the case so `m.replace` updates
         /// can be correlated against an in-flight running tool call.
         case toolCall(eventID: String, ToolCallEvent)
+        /// A live command-output announcement (journal `tool_output` with a
+        /// `viewer_url`). Renders as a `LiveOutputCard` that streams the
+        /// command's output from the bridge's viewer WebSocket — the
+        /// journal-protocol port of matron-web's live-output tile.
+        case liveOutput(eventID: String, LiveOutputEvent)
         /// `chat.matron.ask_user` event (spec §4.2). Phase 5 — renders
         /// as a half-sheet on iOS / fixed-size sheet on Mac (Task 9).
         /// `eventID` is the underlying Matrix event ID, used by the
@@ -50,6 +55,11 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         /// the snapshot so `ChatViewModel.pendingAsk()` can mark the
         /// prompt answered across devices.
         case askUserAnswer(promptEventID: String, selectedValues: [String])
+        /// Transient typing / tool-use indicator (matron-journal `activity`
+        /// ephemeral). Not persisted and not part of history — appended as a
+        /// trailing overlay row while the agent is thinking or running a
+        /// tool, and dropped when it goes idle or the stream goes stale.
+        case activityIndicator(label: String)
         /// Catch-all for events we don't render specially yet (encrypted but
         /// undecryptable, polls, stickers, etc.). UI shows a placeholder so
         /// the event isn't silently dropped.

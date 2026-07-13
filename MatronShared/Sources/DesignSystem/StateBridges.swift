@@ -1,6 +1,5 @@
 import Foundation
 import MatronModels
-import MatronSync
 
 /// Single source of truth for service-layer-state → design-system-state
 /// mappings. Hoisted here so every consumer constructs through the
@@ -8,7 +7,7 @@ import MatronSync
 /// against the bridge instead of silently falling through in one of N
 /// platform-specific copies. Two bridges currently live here:
 ///
-/// - `SyncBannerState.from(_:)` — `SyncConnectionState` (MatronSync) →
+/// - `SyncBannerState.from(_:)` — `SyncConnectionState` (MatronModels) →
 ///   `SyncBannerState`. Was duplicated as `bannerState(from:)` on iOS
 ///   `ChatListView` and Mac `MacChatListView`.
 /// - `SendStateGlyph.from(_:)` — `TimelineSendState` (MatronModels) →

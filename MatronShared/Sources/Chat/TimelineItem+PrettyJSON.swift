@@ -87,6 +87,15 @@ extension TimelineItem {
                 "startedAt": ISO8601DateFormatter().string(from: evt.startedAt),
                 "endedAt": evt.endedAt.map(ISO8601DateFormatter().string(from:)) ?? NSNull(),
             ]
+        case .liveOutput(let eventID, let evt):
+            return [
+                "type": "liveOutput",
+                "eventID": eventID,
+                "toolUseID": evt.toolUseID,
+                "command": evt.command,
+                "viewerURL": evt.viewerURL.absoluteString,
+                "expiresAt": evt.expiresAt.map(ISO8601DateFormatter().string(from:)) ?? NSNull(),
+            ]
         case .askUser(let eventID, let evt):
             return [
                 "type": "askUser",
@@ -100,6 +109,11 @@ extension TimelineItem {
                 "type": "askUserAnswer",
                 "promptEventID": promptEventID,
                 "selectedValues": selectedValues,
+            ]
+        case .activityIndicator(let label):
+            return [
+                "type": "activityIndicator",
+                "label": label,
             ]
         case .unknown(let eventType):
             return [

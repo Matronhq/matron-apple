@@ -9,6 +9,12 @@ struct MacSignInView: View {
 
     var body: some View {
         VStack(spacing: 16) {
+            Image("app-logo")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 72, height: 72)
+                .accessibilityHidden(true)
+
             Text("Sign in to Matron")
                 .font(.title2.weight(.semibold))
 
@@ -57,7 +63,7 @@ struct MacSignInView: View {
             }())
         }
         .padding(32)
-        .frame(width: 480, height: 360)
+        .frame(width: 480, height: 448)
         .onChange(of: viewModel.state) { _, new in
             if case .signedIn(let session) = new {
                 onSignedIn(session)

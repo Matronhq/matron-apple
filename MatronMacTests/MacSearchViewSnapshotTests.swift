@@ -41,15 +41,5 @@ final class MacSearchViewSnapshotTests: XCTestCase {
             .frame(width: 420, height: 320)
         assertVariants(of: view, named: "MacSearchResultsView_populated")
     }
-
-    @MainActor
-    func test_macSearchResultsView_emptyDuringBackfill() {
-        let vm = SearchViewModel(search: FakeSearchService(), allChats: [])
-        vm.query = "anything"
-        vm.applyBackfillProgress(AggregateBackfillProgress(roomsCompleted: 3, roomsTotal: 10))
-        let view = MacSearchResultsView(viewModel: vm, onSelectChat: { _ in }, onSelectMessage: { _ in })
-            .frame(width: 420, height: 320)
-        assertVariants(of: view, named: "MacSearchResultsView_emptyDuringBackfill")
-    }
 }
 #endif
