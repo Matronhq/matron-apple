@@ -58,6 +58,17 @@ struct ChatView: View {
     /// the "Tail re-assert" comment at the schedule site.
     @State private var tailReassertTask: Task<Void, Never>?
 
+    /// proxy.scrollTo id of the inline activity indicator — a sibling of
+    /// the scroll-target layout, so it never enters the anchor namespace.
+    private static let activityFooterID = "activity-footer"
+
+    /// Where "scroll to the bottom" should actually land: the inline
+    /// activity indicator when the bot is working (it sits below the last
+    /// message row), otherwise the last renderable row.
+    private var bottomScrollTargetID: String? {
+        viewModel.activityLabel != nil ? Self.activityFooterID : viewModel.lastRenderableItemID
+    }
+
     /// Availability shim: the sticky mode on iOS 18+, the binding
     /// heuristic (anchor is the tail or unset) on iOS 17.
     private var followsTail: Bool {
@@ -137,35 +148,54 @@ struct ChatView: View {
                 // (reading `viewModel.rows`) invalidates the child
                 // directly, bypassing the `==` check.
                 ScrollViewReader { proxy in
-                    TimelineListContent(
-                        viewModel: viewModel,
-                        onPreview: { attachmentPreview = $0 },
-                        onShowSource: { sourceItem = $0 }
-                    )
-                    .equatable()
+                    VStack(spacing: 0) {
+                        TimelineListContent(
+                            viewModel: viewModel,
+                            onPreview: { attachmentPreview = $0 },
+                            onShowSource: { sourceItem = $0 }
+                        )
+                        .equatable()
+                        // The bot's typing / tool-use indicator, inline
+                        // under the last bubble (WhatsApp-style) — but as
+                        // a SIBLING of the scroll-target layout, not a row
+                        // inside it: it scrolls with the content yet can
+                        // never become the `.scrollPosition` anchor, which
+                        // is what made it the top dead-anchor source when
+                        // it was a timeline row (2026-07-13 traces). The
+                        // explicit `.id` is for proxy.scrollTo only.
+                        if let activityLabel = viewModel.activityLabel {
+                            ActivityIndicatorRow(label: activityLabel)
+                                .id(Self.activityFooterID)
+                        }
+                    }
                     // Keyboard re-pin. Default keyboard avoidance shrinks
                     // the viewport but never re-resolves the
                     // `.scrollPosition(id:)` binding below (assigning the
                     // same id is a no-op), so the tail row ends up half
-                    // behind the keyboard. If the user was at the tail
-                    // when the keyboard summons (same predicate as the
-                    // auto-follow), scroll it back into view; scrolled-up
-                    // readers keep their position. The 50ms defer lets the
-                    // safe-area resize land before the anchor resolves —
-                    // same empirically-derived lag as the auto-follow's.
+                    // behind the keyboard. `keyboardDidShow`, NOT willShow:
+                    // a scrollTo issued mid-keyboard-animation computes its
+                    // target from layout that's still moving and can
+                    // overshoot past the bottom (2026-07-13 23:17 trace:
+                    // typing → viewport past all rows, anchor nil). After
+                    // didShow the layout has settled — one clean correction.
                     .onReceive(NotificationCenter.default.publisher(
-                        for: UIResponder.keyboardWillShowNotification)) { _ in
-                        guard followsTail, viewModel.lastRenderableItemID != nil else { return }
+                        for: UIResponder.keyboardDidShowNotification)) { _ in
+                        guard followsTail else { return }
+                        guard let target = bottomScrollTargetID else { return }
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            proxy.scrollTo(target, anchor: .bottom)
+                        }
+                    }
+                    // Reveal the indicator when it appears while pinned:
+                    // it mounts BELOW the bottom-anchored tail row, i.e.
+                    // just off-screen, so nudge the viewport down to it.
+                    .onChange(of: viewModel.activityLabel != nil) { _, hasActivity in
+                        guard hasActivity, followsTail else { return }
                         Task { @MainActor in
-                            try? await Task.sleep(nanoseconds: 50_000_000)
-                            // Fire-time resolution (bugbot PR #18): the
-                            // tail captured at notification time can be
-                            // retired during the wait (echo swap on a
-                            // fast send) — scrollTo on a missing id is a
-                            // silent no-op and the re-pin is lost.
-                            guard let target = viewModel.lastRenderableItemID else { return }
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                proxy.scrollTo(target, anchor: .bottom)
+                            try? await Task.sleep(nanoseconds: 80_000_000)
+                            guard viewModel.activityLabel != nil else { return }
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                proxy.scrollTo(Self.activityFooterID, anchor: .bottom)
                             }
                         }
                     }
@@ -204,7 +234,12 @@ struct ChatView: View {
                             }
                             scrolledItemID = tail
                             Task { @MainActor in
-                                proxy.scrollTo(tail, anchor: .bottom)
+                                // `bottomScrollTargetID`, not `tail`: with
+                                // the bot working, the true bottom is the
+                                // inline indicator just below the tail row.
+                                if let target = bottomScrollTargetID {
+                                    proxy.scrollTo(target, anchor: .bottom)
+                                }
                             }
                         }
                         // Tail re-assert: a streaming reply grows its row
@@ -239,8 +274,9 @@ struct ChatView: View {
                                 try? await Task.sleep(nanoseconds: 100_000_000)
                                 guard !Task.isCancelled,
                                       let tail = viewModel.lastRenderableItemID,
-                                      scrolledItemID != tail else { return }
-                                proxy.scrollTo(tail, anchor: .bottom)
+                                      scrolledItemID != tail,
+                                      let target = bottomScrollTargetID else { return }
+                                proxy.scrollTo(target, anchor: .bottom)
                             }
                         }
                     }
@@ -378,16 +414,6 @@ struct ChatView: View {
                     }
                 }
             }
-            }
-            // The bot's typing / tool-use indicator, rendered as a fixed
-            // footer between the timeline and the composer — NOT a
-            // scrollable row. As a row it became the scroll anchor during
-            // every bot turn and vanished on completion, the most routine
-            // dead-anchor source in the 2026-07-13 device traces (see
-            // `ChatViewModel.activityLabel`). Same `ActivityIndicatorRow`
-            // the timeline used, so it looks identical in a full chat.
-            if let activityLabel = viewModel.activityLabel {
-                ActivityIndicatorRow(label: activityLabel)
             }
             ComposerView(viewModel: composerVM)
         }

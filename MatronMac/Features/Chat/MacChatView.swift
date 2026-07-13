@@ -58,6 +58,16 @@ struct MacChatView: View {
     /// the "Tail re-assert" comment at the schedule site.
     @State private var tailReassertTask: Task<Void, Never>?
 
+    /// proxy.scrollTo id of the inline activity indicator — a sibling of
+    /// the scroll-target layout, so it never enters the anchor namespace.
+    private static let activityFooterID = "activity-footer"
+
+    /// Where "scroll to the bottom" should actually land: the inline
+    /// activity indicator when the bot is working, else the last row.
+    private var bottomScrollTargetID: String? {
+        viewModel.activityLabel != nil ? Self.activityFooterID : viewModel.lastRenderableItemID
+    }
+
     /// Availability shim: the sticky mode on macOS 15+, the binding
     /// heuristic (anchor is the tail or unset) on macOS 14.
     private var followsTail: Bool {
@@ -118,12 +128,33 @@ struct MacChatView: View {
                 // changes still propagate via `@Observable` tracking,
                 // which invalidates the child directly.
                 ScrollViewReader { proxy in
-                    MacTimelineListContent(
-                        viewModel: viewModel,
-                        onPreviewImage: { imagePreview = ImagePreview(image: $0) },
-                        onShowSource: { sourceItem = $0 }
-                    )
-                    .equatable()
+                    VStack(spacing: 0) {
+                        MacTimelineListContent(
+                            viewModel: viewModel,
+                            onPreviewImage: { imagePreview = ImagePreview(image: $0) },
+                            onShowSource: { sourceItem = $0 }
+                        )
+                        .equatable()
+                        // Inline typing indicator under the last bubble —
+                        // sibling of the scroll-target layout so it can
+                        // never become the scroll anchor. See iOS ChatView.
+                        if let activityLabel = viewModel.activityLabel {
+                            ActivityIndicatorRow(label: activityLabel)
+                                .id(Self.activityFooterID)
+                        }
+                    }
+                    // Reveal the indicator when it appears while pinned —
+                    // it mounts just below the bottom-anchored tail row.
+                    .onChange(of: viewModel.activityLabel != nil) { _, hasActivity in
+                        guard hasActivity, followsTail else { return }
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 80_000_000)
+                            guard viewModel.activityLabel != nil else { return }
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                proxy.scrollTo(Self.activityFooterID, anchor: .bottom)
+                            }
+                        }
+                    }
                     // Mac mirror of iOS: fold cross-device ask-user answers
                     // into the persisted set on every snapshot so resolved
                     // inline cards stay resolved (bugbot "Cross-device
@@ -148,7 +179,9 @@ struct MacChatView: View {
                             }
                             scrolledItemID = tail
                             Task { @MainActor in
-                                proxy.scrollTo(tail, anchor: .bottom)
+                                if let target = bottomScrollTargetID {
+                                    proxy.scrollTo(target, anchor: .bottom)
+                                }
                             }
                         }
                         // Tail re-assert — heals streaming-growth viewport
@@ -170,8 +203,9 @@ struct MacChatView: View {
                                 try? await Task.sleep(nanoseconds: 100_000_000)
                                 guard !Task.isCancelled,
                                       let tail = viewModel.lastRenderableItemID,
-                                      scrolledItemID != tail else { return }
-                                proxy.scrollTo(tail, anchor: .bottom)
+                                      scrolledItemID != tail,
+                                      let target = bottomScrollTargetID else { return }
+                                proxy.scrollTo(target, anchor: .bottom)
                             }
                         }
                     }
@@ -270,13 +304,6 @@ struct MacChatView: View {
                     }
                 }
             }
-            }
-
-            // Fixed activity footer — mirrors iOS: as a scrollable row the
-            // indicator became the scroll anchor on every bot turn and
-            // vanished on completion (see `ChatViewModel.activityLabel`).
-            if let activityLabel = viewModel.activityLabel {
-                ActivityIndicatorRow(label: activityLabel)
             }
 
             Divider()
