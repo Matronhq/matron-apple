@@ -30,9 +30,12 @@ public enum ChatScrollPositionMemory {
         }
     }
 
-    /// Row ids that never survive to the next open of a room.
+    /// Row ids that never survive to the next open of a room: send
+    /// echoes, the activity indicator, and in-flight streaming rows
+    /// (`eph:` — replaced by the journal row on finalize; spotted as a
+    /// live anchor in the 2026-07-13 23:10 device trace).
     private static func isTransient(_ id: String) -> Bool {
-        id == "activity" || id.hasPrefix("echo:")
+        id == "activity" || id.hasPrefix("echo:") || id.hasPrefix("eph:")
     }
 
     /// Retrieves the previously-stored item id for `roomID`, or `nil` if

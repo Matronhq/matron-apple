@@ -215,6 +215,11 @@ final class ChatViewModelTests: XCTestCase {
         // entry, so the next open lands at the tail (where the user was).
         ChatScrollPositionMemory.store(roomID: "!r:s", itemID: "activity")
         XCTAssertNil(ChatScrollPositionMemory.retrieve(roomID: "!r:s"))
+
+        // Streaming rows (`eph:`) are replaced by the journal row on
+        // finalize — equally transient (2026-07-13 23:10 device trace).
+        ChatScrollPositionMemory.store(roomID: "!r:s", itemID: "eph:msg_011abc")
+        XCTAssertNil(ChatScrollPositionMemory.retrieve(roomID: "!r:s"))
     }
 
     func test_fileLog_appendsTimestampedLines_withSessionHeader() throws {
