@@ -14,7 +14,7 @@
 
 ## Execution environment
 
-This is a multi-platform Apple plan (iOS + macOS). Building, running, and testing requires **Xcode 16+ on macOS 14+**. The dev box `devbox.example.com` is Linux and CANNOT execute Xcode tasks. Two practical options for the implementing engineer:
+This is a multi-platform Apple plan (iOS + macOS). Building, running, and testing requires **Xcode 16+ on macOS 14+**. A remote Linux dev box CANNOT execute Xcode tasks. Two practical options for the implementing engineer:
 
 1. **Local Mac** — clone the repo, install Xcode 16+, work locally. Push commits to GitHub.
 2. **Hosted Mac (e.g. MacStadium, GitHub-hosted macOS runner via Codespaces, Scaleway Apple Silicon)** — useful if no local Mac is available. Higher friction.
@@ -71,7 +71,7 @@ Recap of every decision the spec encodes — so an engineer reading this plan in
 By the end of Phase 1, the repo contains:
 
 ```
-matron-iOS-app/
+matron-apple/
 ├── .github/
 │   └── workflows/
 │       ├── ci.yml                          GitHub Actions: build + test iOS + Mac on macos-15
@@ -170,7 +170,7 @@ The implementing engineer needs:
 2. SwiftLint installed (`brew install swiftlint`).
 3. A test homeserver (a `dev-boxer` instance) with a user account and at least one bot already invited. Bridge can stay default — Phase 1 doesn't exercise the bridge protocol, just sliding sync and basic room enumeration.
 4. Git configured with the `matronhq` account.
-5. Cloned `matronhq/matron-iOS-app` repo. Note: any pre-existing `LICENSE` (e.g. inherited from the dropped Element X fork) is replaced with AGPL-3.0 in Task 1.
+5. Cloned `matronhq/matron-apple` repo. Note: any pre-existing `LICENSE` (e.g. inherited from the dropped Element X fork) is replaced with AGPL-3.0 in Task 1.
 
 ---
 

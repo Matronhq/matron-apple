@@ -42,7 +42,7 @@ The `.refreshable` gesture stops being a no-op: it forces a one-shot `client.roo
 ## File structure (Phase 2.5 deliverables)
 
 ```
-matron-iOS-app/
+matron-apple/
 ├── MatronShared/Sources/Chat/
 │   ├── ChatService.swift                      MODIFIED — doc-comment now says long-lived
 │   ├── ChatServiceLive.swift                  MODIFIED — owns one RoomListSubscription + broadcaster
