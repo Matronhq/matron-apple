@@ -1,12 +1,18 @@
 # Matron
 
-Native client for iOS and macOS that turns a Claude bridge session into a chat
-app: sign in, watch an agent's conversations arrive and update live, answer
-its prompts inline. Bot-first, App Store distributable on both platforms.
-Speaks **matron-journal**, a purpose-built server protocol — no Matrix
-dependency.
+Matron is a chat system for talking to [Claude Code](https://claude.com/claude-code) agents from your phone, desktop, or browser. This repo is the **iOS and macOS client** — native, bot-first, App Store distributable on both platforms: sign in, watch an agent's conversations arrive and update live, answer its prompts inline. Speaks **matron-journal**, a purpose-built server protocol — no Matrix dependency.
 
-Part of the [Matron](https://github.com/matronhq) ecosystem.
+## Part of the Matron ecosystem
+
+| Project | Description |
+| --- | --- |
+| **matron-apple** | iOS + macOS client (this repo) |
+| [matron-journal](https://github.com/Matronhq/matron-journal) | Sync server |
+| [claude-matrix-bridge](https://github.com/Matronhq/claude-matrix-bridge) | Runs Claude Code sessions and bridges them |
+| [matron-desktop](https://github.com/Matronhq/matron-desktop) | Desktop client |
+| [matron-web](https://github.com/Matronhq/matron-web) | Web client |
+| [matron-server](https://github.com/Matronhq/matron-server) | Matrix homeserver distribution |
+| [dev-boxer](https://github.com/Matronhq/dev-boxer) | One-command dev environment setup |
 
 ## Status
 

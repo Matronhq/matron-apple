@@ -306,7 +306,7 @@ Single-pane sidebar-as-content on phone:
 │  ◉ Dependabot weekly digest       │
 │    Linear · 1h                     │
 │ Yesterday                          │
-│  ◉ Org checkout regression   │
+│  ◉ Checkout flow regression       │
 │    Claude · 18h                    │
 │ Earlier                            │
 │  …                                 │
@@ -323,7 +323,7 @@ Single-pane sidebar-as-content on phone:
 
 ```
 ┌─ ← Refactoring auth middleware ⓘ ─┐
-│ Claude · sonnet-4-7 · ~/org   │   ← session_meta header (collapsible)
+│ Claude · sonnet-4-7 · ~/my-app     │   ← session_meta header (collapsible)
 ├────────────────────────────────────┤
 │  You                               │
 │  Can you look at the auth bug?     │

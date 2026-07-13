@@ -80,7 +80,7 @@ are the `TimelinePagerLive` SDK mapping and the hook relocation above.
 ## File structure (Phase 6 deliverables)
 
 ```
-matron-iOS-app/
+matron-apple/
 ├── MatronShared/Sources/Search/
 │   ├── SearchService.swift                  NEW — protocol
 │   ├── SearchServiceLive.swift              NEW — SQLite/GRDB impl

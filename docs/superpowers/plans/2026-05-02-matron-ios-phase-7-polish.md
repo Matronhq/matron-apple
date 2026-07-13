@@ -16,7 +16,7 @@
 ## File structure (Phase 7 deliverables)
 
 ```
-matron-iOS-app/
+matron-apple/
 ├── Matron/Features/Settings/
 │   ├── SettingsView.swift                  NEW — iOS list-of-sections shape
 │   ├── SettingsViewModel.swift             NEW (lives in MatronShared/Sources/ViewModels/, shared with Mac)
@@ -611,7 +611,7 @@ struct AboutView: View {
             }
             Section {
                 Link("Privacy policy", destination: privacyPolicyURL)
-                Link("Source code", destination: URL(string: "https://github.com/matronhq/matron-iOS-app")!)
+                Link("Source code", destination: URL(string: "https://github.com/matronhq/matron-apple")!)
             }
         }
         .navigationTitle("About")
