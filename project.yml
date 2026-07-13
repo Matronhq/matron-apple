@@ -89,6 +89,9 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         SUPPORTS_MACCATALYST: NO
+        # App icon lives in Matron/Resources/Assets.xcassets (picked up
+        # automatically since `sources` recurses the target dir).
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     entitlements:
       path: Matron/App/Matron.entitlements
       properties:
@@ -180,6 +183,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: chat.matron.mac
         SUPPORTED_PLATFORMS: macosx
+        # App icon lives in MatronMac/Resources/Assets.xcassets.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       configs:
         # Debug builds use a sandbox-OFF entitlements file so XCUITest's
         # runner can establish its XPC connection to the host app for the

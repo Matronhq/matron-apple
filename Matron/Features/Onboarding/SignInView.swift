@@ -10,6 +10,15 @@ struct SignInView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    Image("app-logo")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 96, height: 96)
+                        .frame(maxWidth: .infinity)
+                        .accessibilityHidden(true)
+                }
+                .listRowBackground(Color.clear)
                 Section("Server") {
                     // Placeholder kept URL-shape-free because iOS Form's
                     // data detection styles `https://…` placeholders as
