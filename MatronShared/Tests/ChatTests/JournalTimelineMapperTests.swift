@@ -43,20 +43,33 @@ final class JournalTimelineMapperTests: XCTestCase {
         XCTAssertEqual(tool.status, .ok)
     }
 
-    func testToolOutputCommandShapeShowsCommand() throws {
-        // The bridge's real tool_output payload: {tool_use_id, command,
-        // viewer_url} — no tool_name/snippet/status. Must render the command,
-        // not a blank "tool" card.
+    func testToolOutputWithViewerURLBecomesLiveOutput() throws {
+        // The bridge's live-output payload: {tool_use_id, command,
+        // viewer_url} — renders the streaming tile, not the static card.
         let item = try XCTUnwrap(map(event(3, type: "tool_output", payload: [
             "tool_use_id": "toolu_01ABC",
             "command": "grep -rn \"needle\" src/ | head -40",
             "viewer_url": "https://viewer2.example.com/live?token=eyJhbGc",
+            "expires_at": 1_760_000_000,
         ])))
-        guard case .toolCall(let eventID, let tool) = item.kind else { return XCTFail() }
+        guard case .liveOutput(let eventID, let live) = item.kind else { return XCTFail() }
         XCTAssertEqual(eventID, "3")
+        XCTAssertEqual(live.toolUseID, "toolu_01ABC")
+        XCTAssertEqual(live.command, "grep -rn \"needle\" src/ | head -40")
+        XCTAssertEqual(live.viewerURL.host, "viewer2.example.com")
+        XCTAssertEqual(live.expiresAt, Date(timeIntervalSince1970: 1_760_000_000))
+    }
+
+    func testToolOutputCommandWithoutViewerURLStaysToolCall() throws {
+        // Command shape but no viewer_url (live output disabled at the
+        // bridge): keep the static command card, command as args.
+        let item = try XCTUnwrap(map(event(3, type: "tool_output", payload: [
+            "tool_use_id": "toolu_01ABC",
+            "command": "grep -rn \"needle\" src/ | head -40",
+        ])))
+        guard case .toolCall(_, let tool) = item.kind else { return XCTFail() }
         XCTAssertEqual(tool.tool, "grep")
         XCTAssertEqual(tool.argsJSON, "grep -rn \"needle\" src/ | head -40")
-        XCTAssertNotEqual(tool.argsJSON, "{}", "command must survive as args so the card is non-empty")
     }
 
     func testToolOutputMultilineCommandLabelIsFirstToken() throws {

@@ -27,8 +27,15 @@ public enum JournalTimelineMapper {
             kind = .text(body: payload["body"] as? String ?? "", formattedHTML: nil)
 
         case JournalEventType.toolOutput:
-            kind = .toolCall(eventID: String(event.seq),
-                             toolCallEvent(fromToolOutput: payload, ts: event.ts))
+            // A tool_output carrying a viewer_url is a live command-output
+            // announcement (the bridge's Bash live-output shape) — render
+            // the streaming tile. Everything else stays a static card.
+            if let live = LiveOutputEvent.parse(payload: payload) {
+                kind = .liveOutput(eventID: String(event.seq), live)
+            } else {
+                kind = .toolCall(eventID: String(event.seq),
+                                 toolCallEvent(fromToolOutput: payload, ts: event.ts))
+            }
 
         case JournalEventType.diff:
             let text = payload["diff"] as? String ?? payload["snippet"] as? String ?? ""

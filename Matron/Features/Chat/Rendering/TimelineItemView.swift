@@ -157,6 +157,17 @@ struct TimelineItemView: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Tool call: \(evt.tool)"))
 
+        case .liveOutput(_, let evt):
+            // Wider than ToolCallCard — terminal output wants columns.
+            // The session comes from the shared store so a row recycled
+            // by LazyVStack reattaches to its accumulated output.
+            HStack {
+                LiveOutputCard(session: LiveOutputSessionStore.shared.session(for: evt))
+                    .frame(maxWidth: 480, alignment: .leading)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal)
+
         case .askUser(let eventID, let evt):
             // Inline, non-blocking card (bot-aligned like .toolCall) — the
             // interactive surface lives in the timeline, not a sheet.
