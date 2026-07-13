@@ -26,7 +26,17 @@ public actor JournalSyncEngine {
 
     private var runTask: Task<Void, Never>?
     private var pathMonitor: NWPathMonitor?
-    private var sawInitialPath = false
+    /// Status + sorted interface names of the last observed network path.
+    /// macOS fires a burst of path callbacks at app startup (interface
+    /// enumeration, VPN utuns coming up) that all describe the same usable
+    /// path; comparing signatures lets us ignore those instead of tearing
+    /// down a healthy connection per callback.
+    private var lastPathSignature: String?
+    /// Set when the engine itself closes the socket because the network
+    /// path changed. The run loop then goes straight back to `.connecting`
+    /// (no `.offline` blip in the UI, no backoff sleep) — the network is
+    /// there, we're just rebinding to it.
+    private var pathChangeReconnect = false
     private var liveConnection: JournalConnection?
     private var viewingConvoID: String?
     private var backoffSleeper: Task<Void, Never>?
@@ -71,7 +81,8 @@ public actor JournalSyncEngine {
         runTask = nil
         pathMonitor?.cancel()
         pathMonitor = nil
-        sawInitialPath = false
+        lastPathSignature = nil
+        pathChangeReconnect = false
         failReadyWaiters(JournalSyncError.offline)
         liveConnection?.close()
         liveConnection = nil
@@ -103,30 +114,35 @@ public actor JournalSyncEngine {
     /// on the 2×20s ping watchdog. A socket that survived sleep/wake or a
     /// Wi-Fi↔Ethernet hop is bound to the old path and almost always dead
     /// but doesn't error until written to — the classic "Mac wakes up,
-    /// chat list sits stale" failure. Closing it routes the run loop
-    /// through its normal close → backoff → reconnect path, and `nudge()`
-    /// skips whatever backoff sleep is in flight.
+    /// chat list sits stale" failure. Closing it (with `pathChangeReconnect`
+    /// set) routes the run loop straight back to `.connecting`, skipping
+    /// the offline banner and the backoff sleep.
     private func startPathMonitor() {
         guard pathMonitor == nil else { return }
         let monitor = NWPathMonitor()
         monitor.pathUpdateHandler = { [weak self] path in
             let satisfied = path.status == .satisfied
-            Task { await self?.handlePathUpdate(satisfied: satisfied) }
+            let signature = "\(path.status)|\(path.availableInterfaces.map(\.name).sorted().joined(separator: ","))"
+            Task { await self?.handlePathUpdate(satisfied: satisfied, signature: signature) }
         }
         monitor.start(queue: DispatchQueue(label: "chat.matron.journal.path-monitor"))
         pathMonitor = monitor
     }
 
-    private func handlePathUpdate(satisfied: Bool) {
-        // The monitor's first callback reports the current path, not a
-        // change — reacting to it would close a healthy first connection.
-        guard sawInitialPath else {
-            sawInitialPath = true
+    private func handlePathUpdate(satisfied: Bool, signature: String) {
+        let previous = lastPathSignature
+        lastPathSignature = signature
+        // First callback reports the current path (not a change), and
+        // repeated callbacks with an identical signature are noise —
+        // reacting to either would tear down a healthy connection.
+        guard let previous, signature != previous else { return }
+        guard satisfied else { return } // loss surfaces via the run loop itself
+        guard liveConnection != nil else {
+            nudge() // mid-backoff: retry now on the fresh path
             return
         }
-        guard satisfied else { return } // loss surfaces via the run loop itself
+        pathChangeReconnect = true
         liveConnection?.close()
-        nudge()
     }
 
     // MARK: Public surface
@@ -387,6 +403,18 @@ public actor JournalSyncEngine {
             liveConnection?.close()
             liveConnection = nil
             if Task.isCancelled { return }
+            if pathChangeReconnect {
+                // Engine-initiated rebind after a network-path change: the
+                // network is usable (the monitor said so), so reconnect
+                // immediately and stay in `.connecting` — flashing the red
+                // offline banner for a deliberate sub-second reconnect
+                // reads as the app being broken. If the reconnect then
+                // genuinely fails, the next loop iteration lands in the
+                // normal offline/backoff path (the flag is already cleared).
+                pathChangeReconnect = false
+                setState(.connecting)
+                continue
+            }
             setState(.offline(reason: nil))
             await backoff()
         }
