@@ -37,3 +37,4 @@ fastlane/test_output
 # Signatures (the cla-assistant bot writes here on a separate branch; never commit locally)
 signatures/
 .claude/
+HANDOVER.md
