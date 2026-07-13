@@ -15,12 +15,24 @@ public enum ChatScrollPositionMemory {
     /// Captures the bottom-anchored item id the user was last looking at
     /// in `roomID`. Pass `nil` (or call `forget(roomID:)`) to drop the
     /// entry, which falls back to "open at tail" behaviour next time.
+    ///
+    /// Transient ids (send echoes, the activity indicator) are treated as
+    /// `nil`: they name rows that are guaranteed to be gone by the next
+    /// open, and restoring one pins the viewport to nothing — the chat
+    /// opens blank (2026-07-13 room-switch device traces). A user anchored
+    /// to a transient row was at the live tail, and dropping the entry is
+    /// exactly the "open at tail" behaviour they expect.
     public static func store(roomID: String, itemID: String?) {
-        if let itemID {
+        if let itemID, !isTransient(itemID) {
             positions[roomID] = itemID
         } else {
             positions.removeValue(forKey: roomID)
         }
+    }
+
+    /// Row ids that never survive to the next open of a room.
+    private static func isTransient(_ id: String) -> Bool {
+        id == "activity" || id.hasPrefix("echo:")
     }
 
     /// Retrieves the previously-stored item id for `roomID`, or `nil` if

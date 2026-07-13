@@ -49,6 +49,10 @@ struct MacChatView: View {
     /// (so reopening a chat lands where the user left off) and the
     /// floating jump-to-latest button.
     @State private var scrolledItemID: String?
+    /// Debounced bottom re-pin scheduled by the items observer while the
+    /// user is at the tail — heals streaming-growth viewport drift. See
+    /// the "Tail re-assert" comment at the schedule site.
+    @State private var tailReassertTask: Task<Void, Never>?
     /// Backing state for the fullscreen image preview. Files take a
     /// different path on Mac — `NSWorkspace.shared.open(_:)` hands
     /// the temp file to QuickLook / the user's preferred app, which
@@ -134,6 +138,21 @@ struct MacChatView: View {
                                 proxy.scrollTo(tail, anchor: .bottom)
                             }
                         }
+                        // Tail re-assert — heals streaming-growth viewport
+                        // drift while the user is at the tail; debounced,
+                        // and never fires for a user who has scrolled up.
+                        // See iOS ChatView for the trace-driven rationale.
+                        let atTail = scrolledItemID == nil
+                            || scrolledItemID == viewModel.lastRenderableItemID
+                        if atTail, viewModel.lastRenderableItemID != nil {
+                            tailReassertTask?.cancel()
+                            tailReassertTask = Task { @MainActor in
+                                try? await Task.sleep(nanoseconds: 100_000_000)
+                                guard !Task.isCancelled,
+                                      let tail = viewModel.lastRenderableItemID else { return }
+                                proxy.scrollTo(tail, anchor: .bottom)
+                            }
+                        }
                     }
                 }
             }
@@ -208,6 +227,13 @@ struct MacChatView: View {
             }
             }
 
+            // Fixed activity footer — mirrors iOS: as a scrollable row the
+            // indicator became the scroll anchor on every bot turn and
+            // vanished on completion (see `ChatViewModel.activityLabel`).
+            if let activityLabel = viewModel.activityLabel {
+                ActivityIndicatorRow(label: activityLabel)
+            }
+
             Divider()
 
             // Drag-and-drop attachments via ComposerDropDelegate.
@@ -229,7 +255,17 @@ struct MacChatView: View {
         .task {
             // Restore the per-room scroll position BEFORE start() —
             // see iOS `ChatView` for the auto-follow guard rationale.
-            scrolledItemID = ChatScrollPositionMemory.retrieve(roomID: viewModel.roomID)
+            // Validate against the cached VM's row set when we have one —
+            // a remembered id the room no longer contains opens blank.
+            // See iOS ChatView.
+            let restored = ChatScrollPositionMemory.retrieve(roomID: viewModel.roomID)
+            if let restored, !viewModel.rowAnchorIDs.isEmpty,
+               !viewModel.rowAnchorIDs.contains(restored) {
+                ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
+                scrolledItemID = nil
+            } else {
+                scrolledItemID = restored
+            }
             // `start()` (round-3 bugbot fix #3) returns once the first
             // timeline snapshot has been applied, so the chained
             // `markAsRead()` marks the actual head of the timeline as
@@ -246,6 +282,8 @@ struct MacChatView: View {
             await viewModel.markAsRead()
         }
         .onDisappear {
+            tailReassertTask?.cancel()
+            tailReassertTask = nil
             // Persist the user's scroll position so the next open of
             // this room lands where they left off; drop the entry on
             // tail so the default jump-to-tail behaviour applies.

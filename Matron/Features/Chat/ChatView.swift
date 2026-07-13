@@ -42,6 +42,10 @@ struct ChatView: View {
     /// the floating "jump to latest" button (visible iff this isn't
     /// `items.last?.id`).
     @State private var scrolledItemID: String?
+    /// Debounced bottom re-pin scheduled by the items observer while the
+    /// user is at the tail — heals streaming-growth viewport drift. See
+    /// the "Tail re-assert" comment at the schedule site.
+    @State private var tailReassertTask: Task<Void, Never>?
     /// Generation token from the observation THIS view instance started;
     /// `onDisappear` only stops the VM if it still matches (see there).
     @State private var startedGeneration = 0
@@ -135,8 +139,14 @@ struct ChatView: View {
                               scrolledItemID == last || scrolledItemID == nil else { return }
                         Task { @MainActor in
                             try? await Task.sleep(nanoseconds: 50_000_000)
+                            // Fire-time resolution (bugbot PR #18): the
+                            // tail captured at notification time can be
+                            // retired during the wait (echo swap on a
+                            // fast send) — scrollTo on a missing id is a
+                            // silent no-op and the re-pin is lost.
+                            guard let target = viewModel.lastRenderableItemID else { return }
                             withAnimation(.easeOut(duration: 0.2)) {
-                                proxy.scrollTo(last, anchor: .bottom)
+                                proxy.scrollTo(target, anchor: .bottom)
                             }
                         }
                     }
@@ -175,6 +185,28 @@ struct ChatView: View {
                             }
                             scrolledItemID = tail
                             Task { @MainActor in
+                                proxy.scrollTo(tail, anchor: .bottom)
+                            }
+                        }
+                        // Tail re-assert: a streaming reply grows its row
+                        // rapidly, LazyVStack's height estimates churn, and
+                        // the viewport drifts up off the live tail
+                        // (2026-07-13 trace: anchor walked 15416→15413
+                        // mid-stream, read as "chat disappeared"). While
+                        // the user is logically at the tail, each timeline
+                        // change re-asserts bottom pinning; the debounce
+                        // coalesces a token burst into one scroll, and a
+                        // user who has scrolled up never matches `atTail`,
+                        // so reading history is never yanked (worst case:
+                        // one re-pin within 100ms of leaving the tail).
+                        let atTail = scrolledItemID == nil
+                            || scrolledItemID == viewModel.lastRenderableItemID
+                        if atTail, viewModel.lastRenderableItemID != nil {
+                            tailReassertTask?.cancel()
+                            tailReassertTask = Task { @MainActor in
+                                try? await Task.sleep(nanoseconds: 100_000_000)
+                                guard !Task.isCancelled,
+                                      let tail = viewModel.lastRenderableItemID else { return }
                                 proxy.scrollTo(tail, anchor: .bottom)
                             }
                         }
@@ -285,6 +317,16 @@ struct ChatView: View {
                 }
             }
             }
+            // The bot's typing / tool-use indicator, rendered as a fixed
+            // footer between the timeline and the composer — NOT a
+            // scrollable row. As a row it became the scroll anchor during
+            // every bot turn and vanished on completion, the most routine
+            // dead-anchor source in the 2026-07-13 device traces (see
+            // `ChatViewModel.activityLabel`). Same `ActivityIndicatorRow`
+            // the timeline used, so it looks identical in a full chat.
+            if let activityLabel = viewModel.activityLabel {
+                ActivityIndicatorRow(label: activityLabel)
+            }
             ComposerView(viewModel: composerVM)
         }
         // matron-web's cream timeline gradient sits behind the whole chat
@@ -307,7 +349,19 @@ struct ChatView: View {
             // is true for the unrestored nil case but false once we've
             // set a saved id here). If no memory exists, `scrolledItemID`
             // stays nil and the chat opens at the tail as usual.
-            scrolledItemID = ChatScrollPositionMemory.retrieve(roomID: viewModel.roomID)
+            // Validate against the cached VM's row set when we have one:
+            // a remembered id the room no longer contains would pin the
+            // viewport to nothing and the chat opens blank. (A fresh VM
+            // has no rows yet — the dead-anchor guard covers that case
+            // on the first snapshot.)
+            let restored = ChatScrollPositionMemory.retrieve(roomID: viewModel.roomID)
+            if let restored, !viewModel.rowAnchorIDs.isEmpty,
+               !viewModel.rowAnchorIDs.contains(restored) {
+                ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
+                scrolledItemID = nil
+            } else {
+                scrolledItemID = restored
+            }
             // Chain `markAsRead()` *after* the timeline observation has
             // applied its first snapshot. `start()` is now `async` and
             // returns once the first snapshot has landed (or the stream
@@ -337,6 +391,8 @@ struct ChatView: View {
             await viewModel.markAsRead()
         }
         .onDisappear {
+            tailReassertTask?.cancel()
+            tailReassertTask = nil
             // Capture the user's scroll position so the next open of
             // this room lands where they left off. Drop the entry on
             // tail (no point storing "user was at the live tail" — the

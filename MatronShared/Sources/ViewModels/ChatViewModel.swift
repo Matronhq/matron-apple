@@ -155,6 +155,13 @@ public final class ChatViewModel {
     /// to any message (bugbot "Scroll anchor ID mismatch").
     public private(set) var rowAnchorIDs: Set<String> = []
 
+    /// Label of the bot's trailing activity indicator (typing / tool-use),
+    /// or `nil` when idle. Extracted from the snapshot's `activityIndicator`
+    /// item during `applyDerivedRecompute` — the views render it as a fixed
+    /// footer between the timeline and the composer (see the row-filter
+    /// comment there for why it must not be a scrollable row).
+    public private(set) var activityLabel: String?
+
     /// Single mutation entry point for `items`. Updates the raw
     /// snapshot and the three derived caches atomically so a body
     /// re-eval that reads any combination of `items` / `rows` /
@@ -179,7 +186,19 @@ public final class ChatViewModel {
         var first: TimelineItem.ID?
         var last: TimelineItem.ID?
         var previousDay: Date?
+        var nextActivityLabel: String?
         for item in items {
+            // The trailing activity indicator renders as a fixed footer
+            // (below the scrollable timeline, above the composer), NOT a
+            // row: as a row it became the scroll anchor during every bot
+            // turn and vanished on completion — the most routine
+            // dead-anchor source in the 2026-07-13 device traces. Kept
+            // out of rows / first / last / day bucketing so it can never
+            // be an anchor target or a stored scroll position.
+            if case .activityIndicator(let label) = item.kind {
+                nextActivityLabel = label
+                continue
+            }
             // `.stateChange` is the only hidden Kind today; both the
             // view-side `shouldRender` and the date-bucket logic
             // skip it. The "1 Jan 1970" separator bug came from
@@ -204,6 +223,7 @@ public final class ChatViewModel {
         self.rows = nextRows
         self.firstRenderableItemID = first
         self.lastRenderableItemID = last
+        self.activityLabel = nextActivityLabel
         self.topRowIDs = Set(nextRows.prefix(10).map { row in
             if case .message(let item) = row { return item.id }
             return row.id

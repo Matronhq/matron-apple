@@ -151,6 +151,73 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_activityIndicator_excludedFromRows_exposedAsFooterLabel() async throws {
+        // The trailing activity row is rendered as a fixed footer, not a
+        // timeline row: as a row it became the scroll anchor during every
+        // bot turn and died on completion — the single most routine
+        // dead-anchor source in the 2026-07-13 device traces.
+        let fake = FakeTimelineService()
+        let msg = TimelineItem(
+            id: "1", sender: "@a:s", timestamp: .now,
+            kind: .text(body: "hi", formattedHTML: nil), isOwn: false
+        )
+        let activity = TimelineItem(
+            id: "activity", sender: "agent", timestamp: .now,
+            kind: .activityIndicator(label: "thinking…"), isOwn: false
+        )
+        fake.snapshotsToEmit = [[msg, activity]]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        await task.value
+
+        XCTAssertEqual(vm.activityLabel, "thinking…")
+        XCTAssertEqual(vm.lastRenderableItemID, "1",
+            "the activity indicator must never be the anchorable tail")
+        XCTAssertFalse(vm.rowAnchorIDs.contains("activity"))
+        XCTAssertFalse(vm.rows.contains { row in
+            if case .message(let item) = row, case .activityIndicator = item.kind { return true }
+            return false
+        })
+    }
+
+    @MainActor
+    func test_activityLabel_clears_whenIndicatorLeavesSnapshot() async throws {
+        let fake = FakeTimelineService()
+        let msg = TimelineItem(
+            id: "1", sender: "@a:s", timestamp: .now,
+            kind: .text(body: "hi", formattedHTML: nil), isOwn: false
+        )
+        let activity = TimelineItem(
+            id: "activity", sender: "agent", timestamp: .now,
+            kind: .activityIndicator(label: "thinking…"), isOwn: false
+        )
+        fake.snapshotsToEmit = [[msg, activity], [msg]]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        await task.value
+
+        XCTAssertNil(vm.activityLabel)
+    }
+
+    @MainActor
+    func test_scrollMemory_dropsTransientIDs() {
+        ChatScrollPositionMemory._resetForTesting()
+        // Transient rows (send echoes, the old in-list activity row) must
+        // never be remembered as a scroll position: restoring one on
+        // re-entry pins the viewport to a row that no longer exists and
+        // the chat opens blank (2026-07-13 room-switch traces).
+        ChatScrollPositionMemory.store(roomID: "!r:s", itemID: "echo:ABC")
+        XCTAssertNil(ChatScrollPositionMemory.retrieve(roomID: "!r:s"))
+
+        ChatScrollPositionMemory.store(roomID: "!r:s", itemID: "42")
+        XCTAssertEqual(ChatScrollPositionMemory.retrieve(roomID: "!r:s"), "42")
+        // A transient id doesn't just fail to store — it clears the stale
+        // entry, so the next open lands at the tail (where the user was).
+        ChatScrollPositionMemory.store(roomID: "!r:s", itemID: "activity")
+        XCTAssertNil(ChatScrollPositionMemory.retrieve(roomID: "!r:s"))
+    }
+
+    @MainActor
     func test_paginate_invokesService() async throws {
         let fake = FakeTimelineService()
         let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
