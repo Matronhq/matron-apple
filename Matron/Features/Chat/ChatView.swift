@@ -42,10 +42,30 @@ struct ChatView: View {
     /// the floating "jump to latest" button (visible iff this isn't
     /// `items.last?.id`).
     @State private var scrolledItemID: String?
+    /// Sticky "following the live tail" mode. `true` from open-at-tail
+    /// until the user *deliberately drags away* (gesture phases via
+    /// `onUserScrollGesture`, iOS 18+); re-engaged when scrolling settles
+    /// back at the tail or via the jump button. Deliberately NOT derived
+    /// from `scrolledItemID == tail`: streaming-growth layout drift moves
+    /// the binding off the tail on its own, and an instantaneous
+    /// heuristic gets disabled by the very drift it exists to heal
+    /// (2026-07-13 "disappeared for a moment" trace: anchor walked
+    /// 15889→15882 during a streaming reply and the re-assert stopped
+    /// firing). On iOS 17 `followsTail` falls back to the heuristic.
+    @State private var isFollowingTail = true
     /// Debounced bottom re-pin scheduled by the items observer while the
     /// user is at the tail — heals streaming-growth viewport drift. See
     /// the "Tail re-assert" comment at the schedule site.
     @State private var tailReassertTask: Task<Void, Never>?
+
+    /// Availability shim: the sticky mode on iOS 18+, the binding
+    /// heuristic (anchor is the tail or unset) on iOS 17.
+    private var followsTail: Bool {
+        if #available(iOS 18.0, *) {
+            return isFollowingTail
+        }
+        return scrolledItemID == nil || scrolledItemID == viewModel.lastRenderableItemID
+    }
     /// Generation token from the observation THIS view instance started;
     /// `onDisappear` only stops the VM if it still matches (see there).
     @State private var startedGeneration = 0
@@ -135,8 +155,7 @@ struct ChatView: View {
                     // same empirically-derived lag as the auto-follow's.
                     .onReceive(NotificationCenter.default.publisher(
                         for: UIResponder.keyboardWillShowNotification)) { _ in
-                        guard let last = viewModel.lastRenderableItemID,
-                              scrolledItemID == last || scrolledItemID == nil else { return }
+                        guard followsTail, viewModel.lastRenderableItemID != nil else { return }
                         Task { @MainActor in
                             try? await Task.sleep(nanoseconds: 50_000_000)
                             // Fire-time resolution (bugbot PR #18): the
@@ -193,15 +212,18 @@ struct ChatView: View {
                         // the viewport drifts up off the live tail
                         // (2026-07-13 trace: anchor walked 15416→15413
                         // mid-stream, read as "chat disappeared"). While
-                        // the user is logically at the tail, each timeline
+                        // the user is following the tail, each timeline
                         // change re-asserts bottom pinning; the debounce
-                        // coalesces a token burst into one scroll, and a
-                        // user who has scrolled up never matches `atTail`,
-                        // so reading history is never yanked (worst case:
-                        // one re-pin within 100ms of leaving the tail).
-                        let atTail = scrolledItemID == nil
-                            || scrolledItemID == viewModel.lastRenderableItemID
-                        if atTail, viewModel.lastRenderableItemID != nil {
+                        // coalesces a token burst into one scroll. Keyed on
+                        // the sticky `followsTail` mode, NOT the
+                        // instantaneous anchor: drift moves the anchor off
+                        // the tail by itself, and an anchor-derived
+                        // predicate is disabled by the very drift it heals
+                        // (second 2026-07-13 trace, 22:57:36 — drift
+                        // survived ~7s because the healer disarmed). A
+                        // user who has dragged away exits the mode via the
+                        // gesture hook, so reading history is never yanked.
+                        if followsTail, viewModel.lastRenderableItemID != nil {
                             tailReassertTask?.cancel()
                             tailReassertTask = Task { @MainActor in
                                 try? await Task.sleep(nanoseconds: 100_000_000)
@@ -233,13 +255,37 @@ struct ChatView: View {
             // `LazyVStack` is required for the binding to resolve row
             // ids.
             .scrollPosition(id: $scrolledItemID, anchor: .bottom)
+            // Gesture-driven follow-mode transitions (no-op below iOS 18;
+            // `followsTail` falls back to the anchor heuristic there).
+            // Only a real drag exits the mode — programmatic scrolls and
+            // layout drift never report `.interacting`.
+            .onUserScrollGesture(
+                begin: {
+                    if isFollowingTail {
+                        isFollowingTail = false
+                        chatViewLogger.breadcrumb("follow-tail OFF (user gesture)")
+                    }
+                },
+                settle: {
+                    if !isFollowingTail,
+                       let last = viewModel.lastRenderableItemID,
+                       scrolledItemID == last || scrolledItemID == nil {
+                        isFollowingTail = true
+                        chatViewLogger.breadcrumb("follow-tail ON (settled at tail)")
+                    }
+                }
+            )
             // Auto-follow the live tail only if the user was already at
             // the previous tail. If they've scrolled up to read history,
             // a new bot message shouldn't yank them back to the bottom —
             // that's what the floating jump button is for.
             .onChange(of: viewModel.lastRenderableItemID) { oldID, newID in
                 guard let newID else { return }
-                let wasAtTail = (scrolledItemID == oldID) || (scrolledItemID == nil)
+                // Sticky mode on iOS 18+; on 17 the pre-change anchor
+                // heuristic (compare against oldID — lastRenderableItemID
+                // is already newID by the time this runs).
+                var wasAtTail = (scrolledItemID == oldID) || (scrolledItemID == nil)
+                if #available(iOS 18.0, *) { wasAtTail = isFollowingTail }
                 if wasAtTail {
                     Task { @MainActor in
                         try? await Task.sleep(nanoseconds: 50_000_000)
@@ -307,8 +353,13 @@ struct ChatView: View {
             // Floating jump-to-latest. Visible only when the user has
             // scrolled away from the tail.
             .overlay(alignment: .bottomTrailing) {
-                if let last = viewModel.lastRenderableItemID, scrolledItemID != last {
+                // `!followsTail` keeps the button from flickering in when
+                // streaming drift nudges the anchor while the user is
+                // still (stickily) following the tail.
+                if let last = viewModel.lastRenderableItemID, scrolledItemID != last, !followsTail {
                     JumpToBottomButton {
+                        isFollowingTail = true
+                        chatViewLogger.breadcrumb("follow-tail ON (jump button)")
                         withAnimation(.easeOut(duration: 0.2)) {
                             scrolledItemID = last
                         }
@@ -362,6 +413,12 @@ struct ChatView: View {
             } else {
                 scrolledItemID = restored
             }
+            // A restored mid-history position means the user left this
+            // room while reading history — don't stickily follow the tail
+            // until they come back down to it.
+            if scrolledItemID != nil {
+                isFollowingTail = false
+            }
             // Chain `markAsRead()` *after* the timeline observation has
             // applied its first snapshot. `start()` is now `async` and
             // returns once the first snapshot has landed (or the stream
@@ -397,8 +454,11 @@ struct ChatView: View {
             // Capture the user's scroll position so the next open of
             // this room lands where they left off. Drop the entry on
             // tail (no point storing "user was at the live tail" — the
-            // default behaviour already opens there).
-            if let id = scrolledItemID, id != viewModel.lastRenderableItemID {
+            // default behaviour already opens there). `followsTail`
+            // additionally covers "at the tail as far as the user is
+            // concerned but the anchor is mid-drift" — storing a drifted
+            // anchor would reopen the room a few rows up.
+            if !followsTail, let id = scrolledItemID, id != viewModel.lastRenderableItemID {
                 ChatScrollPositionMemory.store(roomID: viewModel.roomID, itemID: id)
             } else {
                 ChatScrollPositionMemory.forget(roomID: viewModel.roomID)

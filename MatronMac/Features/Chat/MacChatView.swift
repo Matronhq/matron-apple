@@ -49,10 +49,23 @@ struct MacChatView: View {
     /// (so reopening a chat lands where the user left off) and the
     /// floating jump-to-latest button.
     @State private var scrolledItemID: String?
+    /// Sticky "following the live tail" mode — see iOS `ChatView` for the
+    /// full trace-driven rationale. Exited only by a real user drag
+    /// (gesture phases, macOS 15+); layout drift can't disarm it.
+    @State private var isFollowingTail = true
     /// Debounced bottom re-pin scheduled by the items observer while the
     /// user is at the tail — heals streaming-growth viewport drift. See
     /// the "Tail re-assert" comment at the schedule site.
     @State private var tailReassertTask: Task<Void, Never>?
+
+    /// Availability shim: the sticky mode on macOS 15+, the binding
+    /// heuristic (anchor is the tail or unset) on macOS 14.
+    private var followsTail: Bool {
+        if #available(macOS 15.0, *) {
+            return isFollowingTail
+        }
+        return scrolledItemID == nil || scrolledItemID == viewModel.lastRenderableItemID
+    }
     /// Backing state for the fullscreen image preview. Files take a
     /// different path on Mac — `NSWorkspace.shared.open(_:)` hands
     /// the temp file to QuickLook / the user's preferred app, which
@@ -139,12 +152,13 @@ struct MacChatView: View {
                             }
                         }
                         // Tail re-assert — heals streaming-growth viewport
-                        // drift while the user is at the tail; debounced,
-                        // and never fires for a user who has scrolled up.
-                        // See iOS ChatView for the trace-driven rationale.
-                        let atTail = scrolledItemID == nil
-                            || scrolledItemID == viewModel.lastRenderableItemID
-                        if atTail, viewModel.lastRenderableItemID != nil {
+                        // drift while the user is following the tail;
+                        // debounced. Keyed on the sticky `followsTail`
+                        // mode, not the instantaneous anchor (drift moves
+                        // the anchor off the tail by itself and would
+                        // disarm an anchor-derived predicate). See iOS
+                        // ChatView for the trace-driven rationale.
+                        if followsTail, viewModel.lastRenderableItemID != nil {
                             tailReassertTask?.cancel()
                             tailReassertTask = Task { @MainActor in
                                 try? await Task.sleep(nanoseconds: 100_000_000)
@@ -169,12 +183,31 @@ struct MacChatView: View {
             // visible row id, which we use both for the per-room scroll
             // memory and for the jump-to-latest overlay.
             .scrollPosition(id: $scrolledItemID, anchor: .bottom)
+            // Gesture-driven follow-mode transitions (no-op below
+            // macOS 15; `followsTail` falls back to the anchor heuristic).
+            .onUserScrollGesture(
+                begin: {
+                    if isFollowingTail {
+                        isFollowingTail = false
+                        paginateLogger.breadcrumb("follow-tail OFF (user gesture)")
+                    }
+                },
+                settle: {
+                    if !isFollowingTail,
+                       let last = viewModel.lastRenderableItemID,
+                       scrolledItemID == last || scrolledItemID == nil {
+                        isFollowingTail = true
+                        paginateLogger.breadcrumb("follow-tail ON (settled at tail)")
+                    }
+                }
+            )
             .onChange(of: viewModel.lastRenderableItemID) { oldID, newID in
                 // Auto-follow the live tail only if the user was already
                 // there. Scrolled-up users keep their position; the
                 // floating button is the path back.
                 guard let newID else { return }
-                let wasAtTail = (scrolledItemID == oldID) || (scrolledItemID == nil)
+                var wasAtTail = (scrolledItemID == oldID) || (scrolledItemID == nil)
+                if #available(macOS 15.0, *) { wasAtTail = isFollowingTail }
                 if wasAtTail {
                     Task { @MainActor in
                         try? await Task.sleep(nanoseconds: 50_000_000)
@@ -216,8 +249,13 @@ struct MacChatView: View {
                 .animation(.easeInOut(duration: 0.18), value: viewModel.isPaginatingBackward)
             }
             .overlay(alignment: .bottomTrailing) {
-                if let last = viewModel.lastRenderableItemID, scrolledItemID != last {
+                // `!followsTail` keeps the button from flickering in when
+                // streaming drift nudges the anchor while the user is
+                // still (stickily) following the tail.
+                if let last = viewModel.lastRenderableItemID, scrolledItemID != last, !followsTail {
                     JumpToBottomButton {
+                        isFollowingTail = true
+                        paginateLogger.breadcrumb("follow-tail ON (jump button)")
                         withAnimation(.easeOut(duration: 0.2)) {
                             scrolledItemID = last
                         }
@@ -266,6 +304,12 @@ struct MacChatView: View {
             } else {
                 scrolledItemID = restored
             }
+            // A restored mid-history position means the user left this
+            // room while reading history — don't stickily follow the
+            // tail until they come back down to it.
+            if scrolledItemID != nil {
+                isFollowingTail = false
+            }
             // `start()` (round-3 bugbot fix #3) returns once the first
             // timeline snapshot has been applied, so the chained
             // `markAsRead()` marks the actual head of the timeline as
@@ -287,7 +331,10 @@ struct MacChatView: View {
             // Persist the user's scroll position so the next open of
             // this room lands where they left off; drop the entry on
             // tail so the default jump-to-tail behaviour applies.
-            if let id = scrolledItemID, id != viewModel.lastRenderableItemID {
+            // `followsTail` covers "at the tail as far as the user is
+            // concerned but the anchor is mid-drift" — storing a drifted
+            // anchor would reopen the room a few rows up.
+            if !followsTail, let id = scrolledItemID, id != viewModel.lastRenderableItemID {
                 ChatScrollPositionMemory.store(roomID: viewModel.roomID, itemID: id)
             } else {
                 ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
