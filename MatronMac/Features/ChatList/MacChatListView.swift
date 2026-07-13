@@ -1,11 +1,20 @@
 import SwiftUI
 import AppKit
+import os
 import MatronChat
 import MatronDesignSystem
 import MatronModels
 import MatronSearch
 import MatronSync
 import MatronViewModels
+
+/// Un-gated breadcrumbs for detail-column lifecycle anomalies. The
+/// 2026-07-13 19:12 incident showed three fresh ChatViewModel boots in
+/// 20 seconds (chat panel blanking while a 2000-item room re-mapped from
+/// scratch) with nothing recording WHY the detail column remounted —
+/// selection churn, the search-branch swap, and auto-open were all
+/// indistinguishable after the fact.
+private let listLogger = Logger(subsystem: "chat.matron", category: "mac-chat-list")
 
 /// Mac chat-list screen — the sidebar column of a `NavigationSplitView`
 /// hosting a placeholder detail column until Task 14c lands `MacChatView`.
@@ -29,6 +38,16 @@ import MatronViewModels
 /// each `MacChatRow` so it doesn't muddy the view-model.
 struct MacChatListView: View {
     @State var viewModel: ChatListViewModel
+    /// Per-room chat/composer view models, cached for the life of this
+    /// screen. `chatDetail(for:)` used to construct fresh instances on
+    /// every mount, so ANY detail-column remount (selection churn during
+    /// a sidebar rebuild, the search branch swap) rebooted the timeline
+    /// from zero — the panel sat blank for seconds while a large room
+    /// re-mapped (2026-07-13 19:12 incident: three boots in 20s, one
+    /// with 2106 items). A remount now rebinds to the live VM: `items`
+    /// survive `stop()`, so the previous content paints on the first
+    /// frame and the restarted stream just refreshes it.
+    @State private var vmCache = ChatVMCache()
     @Environment(\.appDependencies) private var deps
     @Environment(\.currentSession) private var session
     @State private var selectedSummaryID: ChatSummary.ID?
@@ -135,6 +154,17 @@ struct MacChatListView: View {
         // because `GroupedSummaries` isn't Equatable.
         .onChange(of: allChatSummaries) { _, summaries in
             searchModel?.updateChats(summaries)
+        }
+        // Breadcrumb every selection flip — user click, auto-open,
+        // notification tap, or (the pathological case) the List clearing
+        // its own selection during a snapshot rebuild. Rare + un-gated.
+        .onChange(of: selectedSummaryID) { old, new in
+            listLogger.notice("sidebar selection: \(old ?? "nil", privacy: .public) → \(new ?? "nil", privacy: .public)")
+        }
+        // The search branch swap destroys/remounts the chat detail — log
+        // the flips so a detail remount can be attributed to it.
+        .onChange(of: searchModel?.query.isEmpty ?? true) { _, isEmpty in
+            listLogger.notice("detail column swapped: \(isEmpty ? "search → chat" : "chat → search", privacy: .public)")
         }
         // Toggle Sidebar — menu-bar item (`Commands.swift`), ⌘⇧S, and the
         // sidebar-toggle toolbar button in `MacChatToolbar` all post the
@@ -414,10 +444,7 @@ struct MacChatListView: View {
     private func chatDetail(for id: ChatSummary.ID) -> some View {
         if let deps, let session {
             let summary = currentSummary(for: id)
-            let timelineSvc = deps.timelineService(for: session, roomID: id)
-            let mediaSvc = deps.mediaService(for: session)
-            let chatVM = ChatViewModel(roomID: id, timeline: timelineSvc, media: mediaSvc)
-            let composerVM = ComposerViewModel(roomID: id, timeline: timelineSvc, commands: BotCommandCatalog.claudeBridge)
+            let (chatVM, composerVM) = vmCache.viewModels(for: id, deps: deps, session: session)
             MacChatView(
                 viewModel: chatVM,
                 composerVM: composerVM,
@@ -438,6 +465,42 @@ struct MacChatListView: View {
         guard let deps, let session else { return }
         let chat = deps.chatService(for: session)
         Task { try? await action(chat) }
+    }
+}
+
+/// Bounded per-room cache of (ChatViewModel, ComposerViewModel) pairs —
+/// see the `vmCache` doc comment on `MacChatListView`. LRU so a session
+/// that visits many rooms doesn't pin every timeline's items forever;
+/// the limit mirrors `AppDependencies.timelineCacheLimit`'s intent but
+/// stays smaller because each VM holds a mapped item array.
+@MainActor
+final class ChatVMCache {
+    private var entries: [String: (chat: ChatViewModel, composer: ComposerViewModel)] = [:]
+    private var order: [String] = []
+    private let limit = 8
+
+    func viewModels(
+        for roomID: String, deps: AppDependencies, session: UserSession
+    ) -> (ChatViewModel, ComposerViewModel) {
+        if let cached = entries[roomID] {
+            order.removeAll { $0 == roomID }
+            order.append(roomID)
+            return cached
+        }
+        let timelineSvc = deps.timelineService(for: session, roomID: roomID)
+        let mediaSvc = deps.mediaService(for: session)
+        let pair = (
+            chat: ChatViewModel(roomID: roomID, timeline: timelineSvc, media: mediaSvc),
+            composer: ComposerViewModel(roomID: roomID, timeline: timelineSvc, commands: BotCommandCatalog.claudeBridge)
+        )
+        entries[roomID] = pair
+        order.append(roomID)
+        if order.count > limit, let evicted = order.first {
+            order.removeFirst()
+            entries[evicted]?.chat.stop()
+            entries.removeValue(forKey: evicted)
+        }
+        return pair
     }
 }
 

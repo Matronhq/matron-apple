@@ -36,6 +36,9 @@ struct MacChatView: View {
     /// placeholder. See iOS `ChatView`.
     @Environment(\.scenePhase) private var scenePhase
     @State private var wasBackgrounded = false
+    /// Generation token from the observation THIS view instance started;
+    /// `onDisappear` only stops the VM if it still matches (see there).
+    @State private var startedGeneration = 0
     /// Backing state for the right-click "View source" sheet (Task 16).
     /// `TimelineItem` is `Identifiable` (the SDK's stable
     /// `TimelineUniqueId.id`), so `.sheet(item:)` re-presents a fresh sheet
@@ -197,6 +200,7 @@ struct MacChatView: View {
             // `markAsRead()` marks the actual head of the timeline as
             // read instead of racing the empty initial state.
             await viewModel.start()
+            startedGeneration = viewModel.observationGeneration
             // Explicit paginate-on-open BEFORE markAsRead — see iOS
             // `ChatView`: history loads over HTTP and must not wait on
             // the live socket, which a half-dead connection can hang.
@@ -212,7 +216,12 @@ struct MacChatView: View {
             } else {
                 ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
             }
-            viewModel.stop()
+            // Generation-guarded: the VM is cached per room (ChatVMCache),
+            // and on a same-room remount SwiftUI can run the NEW view's
+            // `.task`/start() before the OLD view's onDisappear — an
+            // unconditional stop() here would kill the successor's fresh
+            // stream and freeze the timeline.
+            viewModel.stop(ifGeneration: startedGeneration)
         }
         // ⌘K opens the slash palette without typing `/`. The hidden
         // button is the SwiftUI-recommended pattern for a global keyboard
