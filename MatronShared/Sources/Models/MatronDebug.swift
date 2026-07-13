@@ -22,7 +22,20 @@ public enum MatronDebug {
     @TaskLocal public static var override: Bool? = nil
 
     private static let _initial: Bool = {
-        UserDefaults.standard.bool(forKey: "MatronDebug")
+        // An explicit defaults write always wins. Absent one, DEBUG
+        // builds default verbose: dev builds run on personal devices
+        // where the persisted diag trail is how field incidents get
+        // diagnosed (the 2026-07-13 phone blanks left no snapshot logs
+        // because the gate was off and there's no `defaults write` on
+        // a physical iPhone). Release stays off.
+        if UserDefaults.standard.object(forKey: "MatronDebug") != nil {
+            return UserDefaults.standard.bool(forKey: "MatronDebug")
+        }
+        #if DEBUG
+        return true
+        #else
+        return false
+        #endif
     }()
 
     public static var enabled: Bool {

@@ -41,6 +41,9 @@ struct ChatView: View {
     /// the floating "jump to latest" button (visible iff this isn't
     /// `items.last?.id`).
     @State private var scrolledItemID: String?
+    /// Generation token from the observation THIS view instance started;
+    /// `onDisappear` only stops the VM if it still matches (see there).
+    @State private var startedGeneration = 0
     /// Backing state for the fullscreen attachment preview. `nil`
     /// hides the sheet; setting either case presents it via
     /// `.sheet(item:)`. `.image` draws the pinch-zoom viewer; `.file`
@@ -239,6 +242,7 @@ struct ChatView: View {
             // racing the empty initial state. See `ChatViewModel.start()`
             // for the underlying signal mechanism (round-3 bugbot fix #3).
             await viewModel.start()
+            startedGeneration = viewModel.observationGeneration
             // Explicit paginate-on-open BEFORE markAsRead. The store seeds
             // the timeline with whatever's mirrored locally (possibly
             // nothing, e.g. right after a snapshot_required wipe), so this
@@ -260,7 +264,11 @@ struct ChatView: View {
             } else {
                 ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
             }
-            viewModel.stop()
+            // Generation-guarded: the VM is cached per room (ChatVMCache in
+            // ChatListView), and on a same-room remount SwiftUI can run the
+            // NEW view's `.task`/start() before the OLD view's onDisappear —
+            // an unconditional stop() would kill the successor's stream.
+            viewModel.stop(ifGeneration: startedGeneration)
         }
         .sheet(item: $sourceItem) { item in
             EventSourceSheet(item: item)

@@ -30,6 +30,13 @@ import MatronViewModels
 /// `NewChatSheet` itself lands in Task 14.
 struct ChatListView: View {
     @State var viewModel: ChatListViewModel
+    /// Per-room chat/composer view models, cached for the life of this
+    /// screen. `chatDestination(for:)` used to construct fresh instances
+    /// on every evaluation, so any remount of the pushed chat view
+    /// rebooted the timeline from zero — blank until the room's first
+    /// snapshot re-mapped (seconds for a large room). Mirrors the Mac's
+    /// `ChatVMCache` fix for the same 2026-07-13 blank-panel incident.
+    @State private var vmCache = ChatVMCache()
     @Environment(\.appDependencies) private var deps
     @Environment(\.currentSession) private var session
     @State private var showingNewChat = false
@@ -353,10 +360,7 @@ struct ChatListView: View {
     func chatDestination(for id: ChatSummary.ID) -> some View {
         if let deps, let session {
             let summary = currentSummary(for: id)
-            let timelineSvc = deps.timelineService(for: session, roomID: id)
-            let mediaSvc = deps.mediaService(for: session)
-            let chatVM = ChatViewModel(roomID: id, timeline: timelineSvc, media: mediaSvc)
-            let composerVM = ComposerViewModel(roomID: id, timeline: timelineSvc, commands: BotCommandCatalog.claudeBridge)
+            let (chatVM, composerVM) = vmCache.viewModels(for: id, deps: deps, session: session)
             ChatView(
                 viewModel: chatVM,
                 composerVM: composerVM,
@@ -445,5 +449,40 @@ private struct NewChatPlaceholder: View {
             Button("Dismiss", action: onDismiss)
         }
         .padding(40)
+    }
+}
+
+/// Bounded per-room cache of (ChatViewModel, ComposerViewModel) pairs —
+/// see the `vmCache` doc comment on `ChatListView`. LRU so a session that
+/// visits many rooms doesn't pin every timeline's items forever. Mirrors
+/// the Mac's `ChatVMCache` (MacChatListView.swift).
+@MainActor
+final class ChatVMCache {
+    private var entries: [String: (chat: ChatViewModel, composer: ComposerViewModel)] = [:]
+    private var order: [String] = []
+    private let limit = 8
+
+    func viewModels(
+        for roomID: String, deps: AppDependencies, session: UserSession
+    ) -> (ChatViewModel, ComposerViewModel) {
+        if let cached = entries[roomID] {
+            order.removeAll { $0 == roomID }
+            order.append(roomID)
+            return cached
+        }
+        let timelineSvc = deps.timelineService(for: session, roomID: roomID)
+        let mediaSvc = deps.mediaService(for: session)
+        let pair = (
+            chat: ChatViewModel(roomID: roomID, timeline: timelineSvc, media: mediaSvc),
+            composer: ComposerViewModel(roomID: roomID, timeline: timelineSvc, commands: BotCommandCatalog.claudeBridge)
+        )
+        entries[roomID] = pair
+        order.append(roomID)
+        if order.count > limit, let evicted = order.first {
+            order.removeFirst()
+            entries[evicted]?.chat.stop()
+            entries.removeValue(forKey: evicted)
+        }
+        return pair
     }
 }
