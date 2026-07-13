@@ -176,6 +176,22 @@ final class JournalStoreTests: XCTestCase {
         XCTAssertEqual(try store.conversations().count, 0)
     }
 
+    func testInsertHistoryRecountsUnread() throws {
+        // Paginated history can contain unread messages (e.g. the refill
+        // after a snapshot_required wipe). insertHistory must recount, not
+        // leave the incremental counter stale (bugbot "History insert
+        // skips unread").
+        let store = try makeStore()
+        try store.applyJournal(event(1))
+        try store.applyJournal(event(2, sender: "user:dan", type: "read_marker",
+                                     payload: ["convo_id": "c1", "up_to_seq": 1]))
+        XCTAssertEqual(try store.conversations().first?.unreadCount, 0)
+        // Backfill delivers rows 3–4 from others, above the read marker.
+        try store.insertHistory([event(3), event(4)])
+        XCTAssertEqual(try store.conversations().first?.unreadCount, 2,
+                       "history rows above readUpToSeq must count as unread")
+    }
+
     func testStreamsWorkFromBackgroundThread() async throws {
         let store = try makeStore()
         try store.applyJournal(event(1))

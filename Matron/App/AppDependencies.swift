@@ -79,7 +79,11 @@ final class AppDependencies {
         // Phase 6 (Search): the FTS index lives in the App Group container,
         // alongside the journal store, so the NSE/host share it. `try?`
         // keeps init non-throwing — a failed open just disables search.
-        search = StoragePaths.searchDBPath.flatMap { try? SearchServiceLive(databaseURL: $0) }
+        // Without the group entitlement (test runner / Previews) the index
+        // sits beside the fallback journal container instead of being
+        // silently disabled (bugbot "iOS search path mismatch").
+        let searchURL = StoragePaths.searchDBPath ?? StoragePaths.searchDB(in: container)
+        search = try? SearchServiceLive(databaseURL: searchURL)
     }
 
     /// Xcode debug builds register sandbox APNs tokens; TestFlight/App
@@ -181,24 +185,56 @@ final class AppDependencies {
     /// sync write. The `Task` closes over its own `core` reference, so it's
     /// safe to clear `cores`/`timelineCache` synchronously right after.
     func signOut() {
-        for core in cores.values {
-            Task {
+        let oldCores = Array(cores.values)
+        // One awaitable teardown task instead of fire-and-forget per core:
+        // a fast re-login used to open a new sync engine against the same
+        // per-user SQLite file while the old engine was still writing, and
+        // the late wipe could erase freshly-synced data (bugbot "Sign-out
+        // races fast re-login"). The sign-in path awaits this via
+        // `awaitPendingTeardown()` before the new session's services exist.
+        teardownTask = Task { [search] in
+            for core in oldCores {
                 // Best-effort server-side push deregistration while the API
-                // still holds a valid token (Finding 3).
-                try? await core.api.unregisterPush()
+                // still holds a valid token (Finding 3). Bounded so a dead
+                // network can't hold re-login hostage to a URLSession
+                // timeout — the engine/store teardown below is what
+                // correctness needs; this is just hygiene.
+                await Self.withTimeout(seconds: 5) { try? await core.api.unregisterPush() }
                 await core.engine.endSync()          // stop the writer first…
                 try? core.store.wipe()               // …then clear the mirror
             }
+            // Phase 6 (Search): wipe the index so the next user can't search
+            // the previous user's messages. Inside the awaited teardown so a
+            // new session's indexing can't interleave with the wipe (bugbot
+            // "Search wipe races indexing").
+            try? await search?.wipe()
         }
         cores.removeAll()
         mediaServices.removeAll()
         timelineCache = LRUCache(limit: AppDependencies.timelineCacheLimit)
-        // Phase 6 (Search): wipe the index so the next user can't search the
-        // previous user's messages. `search` is a `let` (the same DB
-        // instance persists across sign-out → sign-in); signOut is
-        // synchronous so the wipe runs in a detached Task.
-        Task { [search] in try? await search?.wipe() }
         try? auth.clearSession()
+    }
+
+    /// In-flight sign-out teardown, if any. See `signOut()`.
+    private var teardownTask: Task<Void, Never>?
+
+    /// Blocks until any pending sign-out teardown finishes. The sign-in
+    /// path calls this before publishing the new session, so no new
+    /// journal core can race the old one's endSync/wipe.
+    func awaitPendingTeardown() async {
+        await teardownTask?.value
+        teardownTask = nil
+    }
+
+    /// Runs `operation`, abandoning the wait (not the work) after `seconds`.
+    /// Used to bound best-effort network calls inside teardown.
+    private static func withTimeout(seconds: Double, _ operation: @escaping @Sendable () async -> Void) async {
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await operation() }
+            group.addTask { try? await Task.sleep(for: .seconds(seconds)) }
+            await group.next()
+            group.cancelAll()
+        }
     }
 }
 

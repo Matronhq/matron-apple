@@ -40,8 +40,19 @@ public actor JournalAPI {
     public nonisolated var wsURL: URL {
         var components = URLComponents(url: serverURL, resolvingAgainstBaseURL: false)!
         components.scheme = components.scheme == "http" ? "ws" : "wss"
-        components.path = "/ws"
+        components.percentEncodedPath = Self.basePath(of: components) + "/ws"
         return components.url!
+    }
+
+    /// The server URL's own path, normalized so endpoint paths can be
+    /// appended: "" or "/" → "", "/prefix/" → "/prefix". Assigning an
+    /// endpoint path directly used to REPLACE this prefix, so a server
+    /// hosted under a subpath got every request at the host root (bugbot
+    /// "Homeserver path prefix dropped").
+    private nonisolated static func basePath(of components: URLComponents) -> String {
+        var base = components.percentEncodedPath
+        while base.hasSuffix("/") { base.removeLast() }
+        return base
     }
 
     public func setToken(_ token: String?) {
@@ -142,7 +153,7 @@ public actor JournalAPI {
         query: [URLQueryItem] = [], authenticated: Bool = true
     ) async throws -> (Data, HTTPURLResponse) {
         var components = URLComponents(url: serverURL, resolvingAgainstBaseURL: false)!
-        components.percentEncodedPath = path
+        components.percentEncodedPath = Self.basePath(of: components) + path
         if !query.isEmpty { components.queryItems = query }
         var request = URLRequest(url: components.url!)
         request.httpMethod = method

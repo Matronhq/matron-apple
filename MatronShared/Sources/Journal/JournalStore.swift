@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import os
 
 /// Server-side conversation summary (shape of /snapshot rows). Also the
 /// input to store upserts, so it lives here rather than in JournalAPI.
@@ -92,6 +93,7 @@ enum JournalStoreTestError: Error {
 /// sync engine is the only writer. `cursor` advances inside the same
 /// transaction as the event insert — the wedge-proof property.
 public final class JournalStore: @unchecked Sendable {
+    private static let logger = os.Logger(subsystem: "chat.matron", category: "journal-store")
     private let dbQueue: DatabaseQueue
     private let ownSender: String
 
@@ -290,6 +292,17 @@ public final class JournalStore: @unchecked Sendable {
             for e in events {
                 try EventRecord(e).insert(db, onConflict: .ignore)
             }
+            // Paginated rows can include unread messages (e.g. the refill
+            // after a snapshot_required wipe re-fetches the newest page).
+            // Live `applyJournal` counts unread incrementally; without a
+            // recount here the chat list under-reports until the next
+            // read_marker frame lands (bugbot "History insert skips unread").
+            for convoID in Set(events.map(\.convoID)) {
+                guard var convo = try ConversationRecord.fetchOne(db, key: convoID) else { continue }
+                convo.unreadCount = try Self.recountUnread(db, convoID: convoID,
+                                                           after: convo.readUpToSeq, ownSender: ownSender)
+                try convo.update(db)
+            }
         }
     }
 
@@ -382,17 +395,57 @@ public final class JournalStore: @unchecked Sendable {
         in dbQueue: DatabaseQueue
     ) -> AsyncStream<T> {
         AsyncStream { continuation in
+            // Box so the restart closure below can swap the live cancellable
+            // without capturing itself recursively.
+            let holder = ObservationHolder()
             // .async(onQueue:) may be started from any thread (unlike .immediate,
             // which asserts off-main); the initial value is fetched and delivered
             // on the next main-queue hop, which is "immediate" from an
             // AsyncStream consumer's point of view. Crucially the cancellable is
             // assigned synchronously, so onTermination can never miss it.
-            let cancellable = observation.start(in: dbQueue, scheduling: .async(onQueue: .main)) { _ in
-                continuation.finish()
-            } onChange: { value in
-                continuation.yield(value)
+            //
+            // On observation error: GRDB permanently ends the observation, and
+            // finishing the stream here silently killed every UI surface fed by
+            // it — the chat list / open timeline froze on their last snapshot
+            // with no log and no recovery (bugbot "Observation errors end UI
+            // streams"). A transient SQLite error (I/O pressure, interrupt)
+            // shouldn't be terminal: log it loudly and re-subscribe after a
+            // short pause. The fresh observation re-delivers the current value
+            // on start, so consumers self-heal. Cancellation (onTermination)
+            // stops any pending restart via the holder's `cancelled` latch.
+            func subscribe() {
+                holder.cancellable = observation.start(
+                    in: dbQueue, scheduling: .async(onQueue: .main)
+                ) { error in
+                    Self.logger.error("value observation failed — restarting in 1s: \(error.localizedDescription, privacy: .public)")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                        guard !holder.cancelled else { return }
+                        subscribe()
+                    }
+                } onChange: { value in
+                    continuation.yield(value)
+                }
             }
-            continuation.onTermination = { _ in cancellable.cancel() }
+            subscribe()
+            continuation.onTermination = { _ in
+                // Hop to main so the latch write serializes with the
+                // restart closure (also main-queue) — onTermination itself
+                // can fire from any thread.
+                DispatchQueue.main.async {
+                    holder.cancelled = true
+                    holder.cancellable?.cancel()
+                }
+            }
         }
+    }
+
+    /// Mutable box for the live observation cancellable + a cancellation
+    /// latch, shared between `subscribe()` restarts and `onTermination`.
+    /// All mutation happens on the main queue (observation scheduling, the
+    /// restart dispatch, and the termination hop above), so plain vars are
+    /// safe.
+    private final class ObservationHolder: @unchecked Sendable {
+        var cancellable: (any DatabaseCancellable)?
+        var cancelled = false
     }
 }

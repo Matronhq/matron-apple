@@ -5,6 +5,7 @@ import MatronModels
 public enum JournalChatError: Error, LocalizedError, Equatable {
     case creationNotSupported
     case mediaNotSupported
+    case invalidPromptReference(String)
 
     public var errorDescription: String? {
         switch self {
@@ -12,6 +13,8 @@ public enum JournalChatError: Error, LocalizedError, Equatable {
             return "Creating conversations from the app needs server support (convo_create) — coming soon."
         case .mediaNotSupported:
             return "Attachments need the server's /media endpoint — coming soon."
+        case .invalidPromptReference(let id):
+            return "Can't answer this prompt — its reference (\"\(id)\") isn't a journal row."
         }
     }
 }

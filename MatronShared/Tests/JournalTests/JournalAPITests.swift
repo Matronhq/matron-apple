@@ -184,4 +184,36 @@ final class JournalAPITests: XCTestCase {
         let data = try await api.mediaData(blobRef: "b1")
         XCTAssertEqual(String(decoding: data, as: UTF8.self), "PNGDATA")
     }
+
+    // MARK: Path-prefix preservation (bugbot "Homeserver path prefix dropped")
+
+    func testServerPathPrefixIsPreservedOnRequests() async throws {
+        StubURLProtocol.responses = ["/matron/snapshot": (200, #"{"conversations":[],"seq":0}"#)]
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubURLProtocol.self]
+        let api = JournalAPI(serverURL: URL(string: "https://chat.example.com/matron")!,
+                             urlSession: URLSession(configuration: config))
+        await api.setToken("t")
+        _ = try await api.snapshot()
+        XCTAssertEqual(StubURLProtocol.lastRequest?.url?.path, "/matron/snapshot",
+                       "endpoint paths must append to the server URL's prefix, not replace it")
+    }
+
+    func testServerPathPrefixTrailingSlashNormalized() async throws {
+        StubURLProtocol.responses = ["/matron/snapshot": (200, #"{"conversations":[],"seq":0}"#)]
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubURLProtocol.self]
+        let api = JournalAPI(serverURL: URL(string: "https://chat.example.com/matron/")!,
+                             urlSession: URLSession(configuration: config))
+        await api.setToken("t")
+        _ = try await api.snapshot()
+        XCTAssertEqual(StubURLProtocol.lastRequest?.url?.path, "/matron/snapshot")
+    }
+
+    func testWSURLKeepsPathPrefix() {
+        let api = JournalAPI(serverURL: URL(string: "https://chat.example.com/matron")!)
+        XCTAssertEqual(api.wsURL.absoluteString, "wss://chat.example.com/matron/ws")
+        let bare = JournalAPI(serverURL: URL(string: "http://localhost:8787")!)
+        XCTAssertEqual(bare.wsURL.absoluteString, "ws://localhost:8787/ws")
+    }
 }

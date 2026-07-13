@@ -1,4 +1,5 @@
 import Foundation
+import os
 import MatronJournal
 import MatronModels
 import MatronSearch
@@ -29,6 +30,7 @@ private extension Duration {
 /// ephemeral-fan-out task and from `sendText` (called from the main actor)
 /// can never race.
 public final class JournalTimelineService: TimelineService, @unchecked Sendable {
+    private static let logger = os.Logger(subsystem: "chat.matron", category: "journal-timeline")
     private let convoID: String
     private let store: JournalStore
     private let engine: JournalSyncEngine
@@ -168,9 +170,15 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                         streaming.removeValue(forKey: ref)
                     }
                 }
+                // Body-match is the only available signal: the server folds
+                // `local_id` into the row's idem_key and strips idem_key from
+                // broadcast/pagination rows, so the echo's id never comes
+                // back. FIFO removal is order-correct for sequential sends of
+                // identical text; skip failed echoes so a *delivered* copy's
+                // ack can't retire an *undelivered* one and hide the failure.
                 if event.sender == ownSender, event.type == JournalEventType.text,
                    let body = event.payload["body"] as? String,
-                   let index = echoes.firstIndex(where: { $0.body == body }) {
+                   let index = echoes.firstIndex(where: { $0.body == body && !$0.failed }) {
                     echoes.remove(at: index)
                 }
             }
@@ -292,6 +300,13 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                     await overlay.setEvents(events)
                     signal()
                 }
+                // The store stream now self-heals observation errors, so a
+                // non-cancelled finish here should be impossible — log it
+                // un-gated if it ever happens, because it kills live
+                // updates for this timeline (blank/frozen panel evidence).
+                if !Task.isCancelled {
+                    Self.logger.warning("store events stream finished for \(convoID, privacy: .public) — timeline items stream ending")
+                }
                 continuation.finish()
             }
             let ephemeralTask = Task {
@@ -358,8 +373,15 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
     }
 
     public func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {
+        // A prompt's timeline id is its journal seq. Anything non-numeric
+        // (echo ids, streaming ids) must fail loudly — `?? 0` used to send
+        // target_seq 0 and attach the answer to the wrong row (bugbot
+        // "Invalid prompt ID sends seq zero").
+        guard let targetSeq = Int64(promptEventID) else {
+            throw JournalChatError.invalidPromptReference(promptEventID)
+        }
         try await engine.sendOp(.promptReply(convoID: convoID,
-                                             targetSeq: Int64(promptEventID) ?? 0,
+                                             targetSeq: targetSeq,
                                              choice: selectedValues.joined(separator: ", "), text: nil))
     }
 
@@ -380,7 +402,10 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             for event in newOnes {
                 let body: String? = switch event.type {
                 case JournalEventType.text: event.payload["body"] as? String
-                case JournalEventType.toolOutput, JournalEventType.diff: event.payload["snippet"] as? String
+                case JournalEventType.toolOutput: event.payload["snippet"] as? String
+                // diff → snippet precedence mirrors JournalTimelineMapper,
+                // same as the live-sync indexer in JournalSyncEngine.
+                case JournalEventType.diff: event.payload["diff"] as? String ?? event.payload["snippet"] as? String
                 default: nil
                 }
                 if let body, !body.isEmpty {

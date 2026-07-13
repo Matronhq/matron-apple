@@ -447,7 +447,10 @@ public final class ChatViewModel {
             } catch {
                 // Stream threw — surface the message so the View can
                 // render an overlay instead of an infinite spinner
-                // (QA finding #10).
+                // (QA finding #10). Logged un-gated: a dead stream under
+                // an open view is exactly the "panel went blank/stale"
+                // evidence we need persisted after the fact.
+                Self.logger.warning("timeline stream threw under an open view: \(error.localizedDescription, privacy: .public)")
                 let message = error.localizedDescription
                 if let self {
                     await MainActor.run { self.error = message }
@@ -459,6 +462,13 @@ public final class ChatViewModel {
             // up with no `snapshotsToEmit`). Flip the first-snapshot
             // flag too so the empty-state placeholder isn't stuck
             // hidden on rooms whose live timeline never warms up.
+            //
+            // Un-gated log: a non-cancelled finish means live updates are
+            // dead for this view — the signature of a "panel froze/blanked"
+            // report. Cancellation (view closed) is routine; skip it.
+            if !Task.isCancelled {
+                Self.logger.warning("timeline stream finished under an open view (items=\(self?.items.count ?? -1))")
+            }
             if let self {
                 await MainActor.run {
                     self.hasReceivedFirstSnapshot = true
@@ -499,7 +509,10 @@ public final class ChatViewModel {
         guard historyRefillTask == nil else { return }
         reachedHistoryStart = false
         consecutiveNoGrowthPaginates = 0
-        Self.logger.diag("timeline went empty under an open view — refetching newest page")
+        // Un-gated (notice, not diag): this fires at most once per mirror
+        // wipe and is the pivotal breadcrumb for any "chat went blank"
+        // report — it must be in the persisted log even with MatronDebug off.
+        Self.logger.notice("timeline went empty under an open view — refetching newest page")
         historyRefillTask = Task { [weak self] in
             await self?.paginateBackward()
             self?.historyRefillTask = nil

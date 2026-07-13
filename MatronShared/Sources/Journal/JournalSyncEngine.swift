@@ -446,8 +446,14 @@ public actor JournalSyncEngine {
         switch event.type {
         case JournalEventType.text:
             body = payload["body"] as? String
-        case JournalEventType.toolOutput, JournalEventType.diff:
+        case JournalEventType.toolOutput:
             body = payload["snippet"] as? String
+        case JournalEventType.diff:
+            // Mirror JournalTimelineMapper's precedence (diff, then
+            // snippet) so what the user can SEE is what search can FIND —
+            // diff rows carrying only a `diff` field were invisible to FTS
+            // (bugbot "Diff events omit search text").
+            body = payload["diff"] as? String ?? payload["snippet"] as? String
         default:
             body = nil
         }

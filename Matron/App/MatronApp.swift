@@ -115,7 +115,15 @@ struct MatronApp: App {
                     SignInView(
                         viewModel: SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS"),
                         onSignedIn: { session in
-                            self.session = session
+                            // Gate the new session on any in-flight sign-out
+                            // teardown: publishing it earlier would build a
+                            // second journal core against the same SQLite
+                            // file the old engine is still wiping (bugbot
+                            // "Sign-out races fast re-login").
+                            Task {
+                                await dependencies.awaitPendingTeardown()
+                                self.session = session
+                            }
                         }
                     )
                 }
@@ -139,6 +147,12 @@ struct MatronApp: App {
     private func signOut() {
         dependencies.signOut()
         session = nil
+        // Detach APNs from the dead session: the token callback captured
+        // its push service, so a late registration callback would post the
+        // device token against the signed-out account (bugbot "Push
+        // callback survives sign-out"). The next session's push .task
+        // installs a fresh one.
+        appDelegate.registerDeviceToken = nil
         // Drop any deep-linked room from the prior session so the next
         // sign-in lands at the chat list root, not stranded inside a
         // (now-inaccessible) prior-account room.

@@ -90,7 +90,14 @@ struct MatronMacApp: App {
                     MacSignInView(
                         viewModel: SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac"),
                         onSignedIn: { session in
-                            self.session = session
+                            // Gate the new session on any in-flight sign-out
+                            // teardown so a fast re-login can't open a second
+                            // writer against the old session's store (bugbot
+                            // "Sign-out races fast re-login"). Mirrors iOS.
+                            Task {
+                                await dependencies.awaitPendingTeardown()
+                                self.session = session
+                            }
                         }
                     )
                 }
@@ -140,6 +147,10 @@ struct MatronMacApp: App {
     private func signOut(activeSession: UserSession) {
         dependencies.signOut()
         session = nil
+        // Detach APNs from the dead session — a late token callback would
+        // register against the signed-out account (bugbot "Push callback
+        // survives sign-out"). The next session's push .task reinstalls it.
+        appDelegate.registerDeviceToken = nil
         // Drop any buffered cold-start tap so the next sign-in's task
         // doesn't drain a stale room ID from the prior account.
         MacNotificationHandler.shared.clearPendingRoomID()

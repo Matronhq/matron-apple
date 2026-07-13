@@ -419,6 +419,43 @@ final class JournalTimelineServiceTests: XCTestCase {
         task.cancel()
     }
 
+    // MARK: prompt replies must target a real journal row
+
+    func testSendButtonResponseRejectsNonNumericPromptID() async throws {
+        let store = try makeStore()
+        let api = JournalAPI(serverURL: URL(string: "https://x")!)
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api, session: makeSession())
+        do {
+            try await service.sendButtonResponse(selectedValues: ["Yes"], inReplyTo: "echo:abc")
+            XCTFail("expected invalidPromptReference — '?? 0' used to send target_seq 0")
+        } catch {
+            XCTAssertEqual(error as? JournalChatError, .invalidPromptReference("echo:abc"))
+        }
+    }
+
+    // MARK: echo reconciliation must not retire a failed echo
+
+    func testReconcileSkipsFailedEchoOnDuplicateBody() async throws {
+        // Two echoes with identical text: the first failed to send, the
+        // second was delivered. The delivered copy's journal row must
+        // retire the *pending* echo, leaving the failed one visible.
+        let overlay = JournalTimelineService.OverlayState(staleness: 30)
+        await overlay.addEcho(localID: "failed-one", body: "dup")
+        await overlay.markEchoFailed(localID: "failed-one")
+        await overlay.addEcho(localID: "delivered-one", body: "dup")
+
+        let ownEvent = JournalEvent(
+            seq: 1, convoID: "c1", ts: Date(), sender: "user:dan", type: "text",
+            payloadData: Data(#"{"body":"dup"}"#.utf8))
+        await overlay.reconcile(with: [ownEvent], ownSender: "user:dan")
+
+        let echoes = await overlay.echoes
+        XCTAssertEqual(echoes.map(\.localID), ["failed-one"],
+                       "the delivered echo retires; the failed one stays visible")
+        XCTAssertTrue(echoes.first?.failed ?? false)
+    }
+
     // MARK: (g) a stalled overlay (no finalize, no further activity) self-
     // prunes via the periodic sweep instead of sitting in the snapshot
     // forever waiting for the next store/ephemeral/echo event.
