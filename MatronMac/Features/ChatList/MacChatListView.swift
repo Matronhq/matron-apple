@@ -455,16 +455,23 @@ private struct MacChatRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Circle().fill(.secondary.opacity(0.2)).frame(width: 28, height: 28)
             VStack(alignment: .leading, spacing: 2) {
                 Text(summary.title).font(.body).lineLimit(1)
                 HStack(spacing: 4) {
-                    Text(summary.bot.displayName).font(.caption).foregroundStyle(.secondary)
+                    if !summary.snippet.isEmpty {
+                        Text(summary.snippet)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                     if let lastActivity = summary.lastActivity {
-                        Text("·").foregroundStyle(.secondary)
+                        if !summary.snippet.isEmpty {
+                            Text("·").foregroundStyle(.secondary)
+                        }
                         RelativeMinuteTimeView(lastActivity)
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .layoutPriority(1)
                     }
                 }
             }

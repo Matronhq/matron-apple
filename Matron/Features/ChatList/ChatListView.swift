@@ -406,11 +406,15 @@ private struct ChatRow: View {
     let summary: ChatSummary
 
     var body: some View {
-        HStack {
-            Circle().fill(.secondary.opacity(0.2)).frame(width: 36, height: 36)
+        HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(summary.title).font(.body)
-                Text(summary.bot.displayName).font(.caption).foregroundStyle(.secondary)
+                Text(summary.title).font(.body).lineLimit(1)
+                if !summary.snippet.isEmpty {
+                    Text(summary.snippet)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
             }
             Spacer()
             if let lastActivity = summary.lastActivity {

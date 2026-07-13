@@ -69,7 +69,8 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
             title: record.title.isEmpty ? record.id : record.title,
             bot: BotIdentity(matrixID: "agent:claude", displayName: "Claude", avatarURL: nil),
             lastActivity: activityMS.map { Date(timeIntervalSince1970: Double($0) / 1000) },
-            unreadCount: record.unreadCount
+            unreadCount: record.unreadCount,
+            snippet: record.snippet
         )
     }
 

@@ -10,19 +10,25 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
     /// UI should hide the relative-time label and grouping when nil.
     public let lastActivity: Date?
     public let unreadCount: Int
+    /// One-line preview of the newest message (the server/store `snippet`).
+    /// Empty when the conversation has no messages yet — rows hide the
+    /// preview line rather than showing a blank.
+    public let snippet: String
 
     public init(
         id: String,
         title: String,
         bot: BotIdentity,
         lastActivity: Date?,
-        unreadCount: Int
+        unreadCount: Int,
+        snippet: String = ""
     ) {
         self.id = id
         self.title = title
         self.bot = bot
         self.lastActivity = lastActivity
         self.unreadCount = unreadCount
+        self.snippet = snippet
     }
 }
 
