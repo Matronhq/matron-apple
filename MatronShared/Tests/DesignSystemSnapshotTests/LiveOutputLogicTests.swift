@@ -146,6 +146,27 @@ final class LiveOutputSessionTests: XCTestCase {
         XCTAssertFalse(session.hasOutput)
     }
 
+    func testHugeOutputIsTrimmedToRollingTail() async {
+        // The tee allows logs up to 50MB; the pane keeps a bounded rolling
+        // tail so a giant replay can't balloon memory or hang rendering.
+        let big = String(repeating: "x", count: 150_000) + String(repeating: "y", count: 100_000)
+        let session = LiveOutputSession(event: event()) { _ in
+            AsyncThrowingStream { continuation in
+                continuation.yield(.data(chunk: big))
+                continuation.yield(.complete(exitCode: 0, denied: false, truncated: true))
+                continuation.finish()
+            }
+        }
+        session.startIfNeeded()
+        await waitUntil(8) {
+            if case .complete = session.phase { return true }
+            return false
+        }
+        let text = String(session.output.characters)
+        XCTAssertLessThanOrEqual(text.count, 200_000)
+        XCTAssertTrue(text.hasSuffix("y"), "trim must drop the HEAD, keeping the newest output")
+    }
+
     func testStoreReusesAndEvicts() {
         let store = LiveOutputSessionStore(limit: 2)
         let a = store.session(for: event())

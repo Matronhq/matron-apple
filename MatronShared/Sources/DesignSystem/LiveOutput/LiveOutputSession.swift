@@ -107,11 +107,7 @@ public final class LiveOutputSession {
                         }
                         replayOffset += size
                         consumedBytes = max(consumedBytes, replayOffset)
-                        let rendered = parser.append(fresh)
-                        if !rendered.characters.isEmpty {
-                            output += rendered
-                            hasOutput = true
-                        }
+                        await appendRendering(fresh)
                     case .complete(let exitCode, let denied, let truncated):
                         phase = .complete(exitCode: exitCode, denied: denied, truncated: truncated)
                         expiryTask?.cancel()
@@ -134,6 +130,50 @@ public final class LiveOutputSession {
                     try? await Task.sleep(for: .seconds(Double(attempts) * 2))
                 }
             }
+        }
+    }
+
+    /// Rendered-output ceiling. The tee caps logs at 50MB — parsing and
+    /// holding that as one AttributedString would hang the UI and bloat
+    /// memory. Keep a rolling tail: past `maxOutputChars`, trim the head
+    /// down to `trimTargetChars` (hysteresis so we don't re-trim on every
+    /// chunk at the boundary).
+    private static let maxOutputChars = 200_000
+    private static let trimTargetChars = 150_000
+    /// Live chunks are tiny (fs.watch ticks), but the connect-time replay
+    /// can deliver the whole log in one frame. Parse it in slices, yielding
+    /// the main actor between slices, so a big replay doesn't freeze
+    /// scrolling for its whole parse.
+    private static let parseSliceUTF8 = 64 * 1024
+
+    private func appendRendering(_ chunk: String) async {
+        var remaining = Substring(chunk)
+        while !remaining.isEmpty {
+            let slice: Substring
+            if remaining.utf8.count > Self.parseSliceUTF8 {
+                // Cheap character-count proxy for the byte budget — exact
+                // byte slicing would need index math that doesn't pay here.
+                let cut = remaining.index(remaining.startIndex,
+                                          offsetBy: Self.parseSliceUTF8,
+                                          limitedBy: remaining.endIndex) ?? remaining.endIndex
+                slice = remaining[..<cut]
+                remaining = remaining[cut...]
+            } else {
+                slice = remaining
+                remaining = Substring()
+            }
+            let rendered = parser.append(String(slice))
+            if !rendered.characters.isEmpty {
+                output += rendered
+                hasOutput = true
+            }
+            if !remaining.isEmpty { await Task.yield() }
+        }
+        let count = output.characters.count
+        if count > Self.maxOutputChars {
+            let start = output.index(output.startIndex,
+                                     offsetByCharacters: count - Self.trimTargetChars)
+            output = AttributedString(output[start...])
         }
     }
 

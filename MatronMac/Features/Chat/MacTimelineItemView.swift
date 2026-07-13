@@ -137,7 +137,8 @@ struct MacTimelineItemView: View {
             // Session from the shared store so LazyVStack row recycling
             // reattaches to accumulated output instead of replaying.
             HStack {
-                LiveOutputCard(session: LiveOutputSessionStore.shared.session(for: evt))
+                LiveOutputCard(session: LiveOutputSessionStore.shared.session(for: evt),
+                               eventTimestamp: item.timestamp)
                     .frame(maxWidth: 560, alignment: .leading)
                 Spacer(minLength: 0)
             }

@@ -162,7 +162,8 @@ struct TimelineItemView: View {
             // The session comes from the shared store so a row recycled
             // by LazyVStack reattaches to its accumulated output.
             HStack {
-                LiveOutputCard(session: LiveOutputSessionStore.shared.session(for: evt))
+                LiveOutputCard(session: LiveOutputSessionStore.shared.session(for: evt),
+                               eventTimestamp: item.timestamp)
                     .frame(maxWidth: 480, alignment: .leading)
                 Spacer(minLength: 0)
             }

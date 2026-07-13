@@ -139,6 +139,13 @@ public final class ChatViewModel {
     /// in `applyDerivedRecompute()`.
     public private(set) var lastRenderableItemID: TimelineItem.ID?
 
+    /// IDs of the first 10 rows (messages AND separators — the
+    /// scroll-position binding's namespace is mixed). Drives the
+    /// scroll-up paginate trigger. Memoised here because the views'
+    /// `.onChange(of: scrolledItemID)` fires on every scroll tick,
+    /// and both platforms were rebuilding this Set per tick.
+    public private(set) var topRowIDs: Set<String> = []
+
     /// Single mutation entry point for `items`. Updates the raw
     /// snapshot and the three derived caches atomically so a body
     /// re-eval that reads any combination of `items` / `rows` /
@@ -188,6 +195,10 @@ public final class ChatViewModel {
         self.rows = nextRows
         self.firstRenderableItemID = first
         self.lastRenderableItemID = last
+        self.topRowIDs = Set(nextRows.prefix(10).map { row in
+            if case .message(let item) = row { return item.id }
+            return row.id
+        })
     }
 
     /// `true` while a `paginateBackward()` call is in flight. Surfaces to

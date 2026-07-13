@@ -220,24 +220,12 @@ struct ChatView: View {
             // right time to fetch the next page.
             .onChange(of: scrolledItemID) { _, newID in
                 guard let newID else { return }
-                // The scroll-position binding uses whatever string was
-                // attached via `.id(...)` on the matching row. Messages
-                // use `item.id` directly; date-separator rows use the
-                // `TimelineRow.id` ("sep:<epoch>") — mixed namespace.
-                // Build a unified set of the first 10 row ids in
-                // either form so the prefix check works for both.
-                // Bumped from 5 → 10 so the trigger fires a few rows
-                // BEFORE the user reaches the head, reducing perceived
-                // jank as the next page arrives.
-                let topRowIDs: Set<String> = Set(
-                    viewModel.rows.prefix(10).map { row in
-                        switch row {
-                        case .message(let item): return item.id
-                        case .separator: return row.id
-                        }
-                    }
-                )
-                if topRowIDs.contains(newID) {
+                // `topRowIDs` is memoised on the view-model (recomputed
+                // once per snapshot) because this fires on every scroll
+                // tick — rebuilding the Set per tick was measurable
+                // scroll overhead. Mixed namespace (message ids +
+                // "sep:<epoch>" separators) is handled there.
+                if viewModel.topRowIDs.contains(newID) {
                     Task { await viewModel.paginateBackward() }
                 }
             }

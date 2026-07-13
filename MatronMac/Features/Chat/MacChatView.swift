@@ -197,17 +197,11 @@ struct MacChatView: View {
             // to handle both.
             .onChange(of: scrolledItemID) { _, newID in
                 guard let newID else { return }
-                let topRowIDs: Set<String> = Set(
-                    viewModel.rows.prefix(10).map { row in
-                        switch row {
-                        case .message(let item): return item.id
-                        case .separator: return row.id
-                        }
-                    }
-                )
-                let inTop = topRowIDs.contains(newID)
-                paginateLogger.diag("scrollChange: bottom=\(newID) inTop10=\(inTop) rows=\(viewModel.rows.count)")
-                if inTop {
+                // `topRowIDs` is memoised on the view-model — this fires
+                // on every scroll tick, and rebuilding the Set (plus the
+                // per-tick diag log that used to live here) was measurable
+                // scroll overhead.
+                if viewModel.topRowIDs.contains(newID) {
                     Task { await viewModel.paginateBackward() }
                 }
             }
