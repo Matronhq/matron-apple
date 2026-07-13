@@ -15,6 +15,9 @@ struct MacSearchView: View {
     var body: some View {
         TextField("Search", text: $viewModel.query)
             .textFieldStyle(.roundedBorder)
+            // Taller hit target than the default control height — the
+            // stock field read cramped at the top of the sidebar.
+            .controlSize(.large)
             .frame(minWidth: 200)
             .focused($isFieldFocused)
             .onChange(of: viewModel.query) { _, _ in
