@@ -77,8 +77,14 @@ public struct AskUserCard: View {
                 )
             }
         }
+        // Bot-bubble surface (matches `MessageBubble`'s bot chrome): a warm
+        // white fill lifted off the cream timeline by the web's soft drop
+        // shadow. The shadow is applied to the shape itself (not the card's
+        // content) so the prompt text and buttons don't cast their own.
         .background(
-            RoundedRectangle(cornerRadius: 12).fill(Color.secondary.opacity(0.12))
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.matronBubbleBot)
+                .shadow(color: .matronBubbleShadow, radius: 2, y: 1)
         )
     }
 }

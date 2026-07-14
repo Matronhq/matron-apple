@@ -54,21 +54,22 @@ public struct AskUserSheetBody: View {
                     .disabled(isExpired)
 
             case .choice(let options, let allowOther):
-                // One tap answers — a bordered button per option, no radio +
-                // Send round-trip (parity with the web/desktop clients and
-                // the bridge's Matrix buttons). The binding write lands
+                // One tap answers — a light accent-tinted chip per option, no
+                // radio + Send round-trip (parity with the web/desktop clients
+                // and the bridge's Matrix buttons). The binding write lands
                 // synchronously before `onSend()`, so the ViewModel's send
-                // reads the fresh selection.
+                // reads the fresh selection. When any option's label leads with
+                // a glyph (e.g. "⚡ Send now") every row reserves the fixed
+                // glyph slot so the text after it lines up across the stack.
+                let choiceReservesGlyph = optionsHaveGlyph(options)
                 ForEach(options, id: \.id) { opt in
                     Button {
                         selectedChoiceIDs = [opt.id]
                         onSend()
                     } label: {
-                        Text(opt.label)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
+                        choiceButtonLabel(opt.label, reserveGlyphSlot: choiceReservesGlyph)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.plain)
                     .disabled(isSending || isExpired)
                 }
                 if allowOther {
@@ -78,7 +79,12 @@ public struct AskUserSheetBody: View {
                 }
 
             case .multiChoice(let options, let allowOther):
+                // The checkbox already provides a fixed leading slot; when any
+                // label leads with a glyph, reserve a second fixed slot between
+                // the checkbox and the text so mixed lists still align.
+                let multiReservesGlyph = optionsHaveGlyph(options)
                 ForEach(options, id: \.id) { opt in
+                    let split = splitLeadingGlyph(opt.label)
                     Button {
                         if selectedChoiceIDs.contains(opt.id) {
                             selectedChoiceIDs.remove(opt.id)
@@ -86,9 +92,10 @@ public struct AskUserSheetBody: View {
                             selectedChoiceIDs.insert(opt.id)
                         }
                     } label: {
-                        HStack {
+                        HStack(spacing: 8) {
                             Image(systemName: selectedChoiceIDs.contains(opt.id) ? "checkmark.square.fill" : "square")
-                            Text(opt.label)
+                            glyphSlot(split.glyph, reserve: multiReservesGlyph)
+                            Text(split.text)
                             Spacer()
                         }
                         .contentShape(Rectangle())
@@ -156,11 +163,76 @@ public struct AskUserSheetBody: View {
 
     @ViewBuilder
     private func booleanButton(_ title: String, selectedWhen value: Bool) -> some View {
-        Button(title) {
+        Button {
             booleanAnswer = value
             onSend()
+        } label: {
+            Text(title)
+                .modifier(AccentChip(dimmed: isSending || isExpired))
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(.plain)
         .disabled(isSending || isExpired)
+    }
+
+    /// A full-width, leading-aligned accent-tinted answer chip for a `.choice`
+    /// option. Splits any leading glyph into a fixed 18pt slot so the text
+    /// after it aligns across the stack; `reserveGlyphSlot` keeps the slot on
+    /// glyphless rows when *other* rows in the same list carry a glyph.
+    @ViewBuilder
+    private func choiceButtonLabel(_ label: String, reserveGlyphSlot: Bool) -> some View {
+        let split = splitLeadingGlyph(label)
+        HStack(spacing: 8) {
+            glyphSlot(split.glyph, reserve: reserveGlyphSlot)
+            Text(split.text)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .modifier(AccentChip(dimmed: isSending || isExpired))
+    }
+
+    /// The fixed 18pt leading slot: the glyph centred when present, an empty
+    /// reservation when a sibling row has one, nothing otherwise.
+    @ViewBuilder
+    private func glyphSlot(_ glyph: String?, reserve: Bool) -> some View {
+        if let glyph {
+            Text(glyph).frame(width: 18, alignment: .center)
+        } else if reserve {
+            // Reserve the 18pt width only — a fixed height:0 keeps `Color.clear`
+            // from staying vertically greedy and stretching the row (the sibling
+            // `Text` defines the row height).
+            Color.clear.frame(width: 18, height: 0)
+        }
+    }
+
+    /// Whether any option's label leads with a glyph — drives the per-list
+    /// decision to reserve the glyph slot on every row.
+    private func optionsHaveGlyph(_ options: [AskUserEvent.Option]) -> Bool {
+        options.contains { splitLeadingGlyph($0.label).glyph != nil }
+    }
+}
+
+/// The light, airy answer-chip chrome shared by `.choice` and `.boolean`
+/// buttons: an accent-tinted fill + hairline border with accent-coloured
+/// text that reads clearly on the white card in both colour schemes. `.plain`
+/// button style drops the system's automatic disabled dimming, so callers
+/// pass `dimmed` to restore it.
+private struct AccentChip: ViewModifier {
+    let dimmed: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.vertical, 8)
+            .padding(.horizontal, 12)
+            .foregroundStyle(Color.accentColor)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.accentColor.opacity(0.10))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.accentColor.opacity(0.35), lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+            .opacity(dimmed ? 0.5 : 1)
     }
 }

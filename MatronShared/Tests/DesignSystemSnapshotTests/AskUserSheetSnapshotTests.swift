@@ -57,6 +57,24 @@ final class AskUserSheetSnapshotTests: XCTestCase {
         )
     }
 
+    func test_choice_withMixedGlyphs() {
+        let opts = [
+            AskUserEvent.Option(id: "s", label: "⚡ Send now"),
+            AskUserEvent.Option(id: "c", label: "✕ Cancel"),
+            AskUserEvent.Option(id: "o", label: "Other action"),
+        ]
+        assertVariants(
+            of: body(
+                event: AskUserEvent(
+                    prompt: "Message queued. What now?",
+                    kind: .choice(options: opts, allowOther: false),
+                    expiresAt: nil
+                )
+            ),
+            named: "choice_mixedGlyphs"
+        )
+    }
+
     func test_multiChoice() {
         let opts = [
             AskUserEvent.Option(id: "a", label: "Build"),
