@@ -56,16 +56,15 @@ export function parseResetsAt(resetsText, now = new Date())
 
 ## Apps (matron-apple)
 
-### 2. Wire model + decode
+### 2. Value types + decode
 
-`WireModels.swift` gains:
+The value types live in **MatronModels** (`Sources/Models/SessionStatus.swift`),
+not MatronJournal — the design system and view models consume them and
+neither depends on the journal module:
 
 ```swift
-/// Per-convo session status (model, context gauge, account limits).
-/// Ephemeral; the journal replays the last one on `viewing`, so a missed
-/// frame is harmless. Parts are optional — absent parts mean "unchanged",
-/// clients keep what they last rendered.
-public struct SessionStatusUpdate: Equatable, Sendable {
+/// Held per-convo status; parts merge (absent = unchanged).
+public struct SessionStatus: Equatable, Sendable {
     public struct Context: Equatable, Sendable {
         public let tokens: Int
         public let window: Int
@@ -77,10 +76,19 @@ public struct SessionStatusUpdate: Equatable, Sendable {
         public let resets: String?    // raw text fallback
         public let resetsAt: Date?    // parsed from resets_at (ISO 8601)
     }
+    public var model: String?
+    public var context: Context?
+    public var limits: [Limit]?
+    public mutating func apply(_ update: SessionStatusUpdate)
+}
+
+/// One decoded `status` ephemeral frame. Ephemeral; the journal replays
+/// the last one on `viewing`, so a missed frame is harmless.
+public struct SessionStatusUpdate: Equatable, Sendable {
     public let convoID: String
     public let model: String?
-    public let context: Context?
-    public let limits: [Limit]?
+    public let context: SessionStatus.Context?
+    public let limits: [SessionStatus.Limit]?
 }
 ```
 
@@ -103,24 +111,17 @@ convo open.
 
 ### 4. View-model state + merge
 
-The chat view models (iOS `ChatViewModel`, Mac equivalent) hold
-`@Published private(set) var sessionStatus: SessionStatusMerged?` and
-subscribe to the stream while the convo is open. Merge semantics per the
-protocol's "absent means unchanged": each of `model` / `context` / `limits`
-replaces the held value only when present in the incoming frame. A small
-`SessionStatusMerged` value type (in MatronShared, next to the wire model)
-owns that merge so both platforms share it and it unit-tests in isolation:
+The shared `ChatViewModel` (used by both platforms) holds
+`public private(set) var sessionStatus: SessionStatus?` and subscribes to
+the stream while the convo is open (via a `TimelineService.sessionStatus()`
+passthrough, defaulted to an empty stream so fakes need no changes). Merge
+semantics per the protocol's "absent means unchanged": each of `model` /
+`context` / `limits` replaces the held value only when present in the
+incoming frame — `SessionStatus.apply(_:)` (§2) owns that merge and
+unit-tests in isolation.
 
-```swift
-public struct SessionStatusMerged: Equatable, Sendable {
-    public var model: String?
-    public var context: SessionStatusUpdate.Context?
-    public var limits: [SessionStatusUpdate.Limit]?
-    public mutating func apply(_ update: SessionStatusUpdate)
-}
-```
-
-State resets when switching convos (status is per-convo).
+Status can't bleed across convos: the view model is per-room and cached by
+room ID, so held status always belongs to its own conversation.
 
 ### 5. `UsageMetersView` (DesignSystem)
 
@@ -131,11 +132,12 @@ public pieces so Mac can split them across the header:
   foreground, caption font). Token counts compact-formatted: `< 1000` →
   raw, `< 1m` → `265k` (rounded), else `1m` / `1.5m`. Window `1_000_000` →
   `1m`, `200_000` → `200k`.
-- **`UsageBarsView(limits:)`** — one row per limit (max three shown, in
-  server order): trailing-aligned label, a capsule track (fixed width
-  ~90pt Mac header scale, fuller width in the iOS sheet via an `axis`/size
-  parameter — one view, environment-driven sizing), fill proportional to
-  `percent`, and the reset text on the right. Caption2 text throughout.
+- **`UsageBarsView(limits:scale:fixedNow:)`** — one row per limit (max
+  three shown, in server order): trailing-aligned label, a capsule track,
+  fill proportional to `percent`, and the reset text on the right. A
+  `Scale` parameter picks the form: `.compact` (Mac header — 9pt text,
+  90pt/3pt bars) or `.regular` (iOS sheet — caption text, 160pt/6pt bars).
+  `fixedNow` freezes the clock for deterministic snapshots.
 - **Bar colors** match the bridge's thresholds: green `< 50`, orange
   `< 80`, red `>= 80` (system `.green`/`.orange`/`.red` — no new palette
   entries).
