@@ -430,6 +430,12 @@ public final class ChatViewModel {
         settledEmpty = false
         emptyDebounceTask?.cancel()
         emptyDebounceTask = nil
+        // Held meters are only as fresh as the engine's status replay
+        // cache: on re-subscribe the engine yields the cached value back
+        // immediately when it's still valid, and after a mirror wipe (which
+        // clears that cache) the meters correctly start blank instead of
+        // presenting pre-wipe usage as current.
+        sessionStatus = nil
         let timeline = self.timeline
         // Box wrapping a single-shot CheckedContinuation. The observation
         // Task resumes it on the first snapshot processed (or on stream

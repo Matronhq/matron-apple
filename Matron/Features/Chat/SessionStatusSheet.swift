@@ -1,12 +1,18 @@
 import SwiftUI
 import MatronModels
+import MatronViewModels
 import MatronDesignSystem
 
 /// iOS session-status sheet — surfaced from `ChatView`'s ⓘ toolbar button.
 /// Shows the context-window gauge and the stacked usage bars from the
 /// last journal `status` frame; replaces the old bot-profile sheet.
+/// Reads `viewModel.sessionStatus` in its own body — a value snapshot
+/// passed through the `.sheet` closure isn't observation-tracked, so an
+/// open sheet would never refresh when the first status frame lands.
 struct SessionStatusSheet: View {
-    let status: SessionStatus?
+    let viewModel: ChatViewModel
+
+    private var status: SessionStatus? { viewModel.sessionStatus }
 
     private var hasContent: Bool {
         status?.context != nil || !(status?.limits ?? []).isEmpty

@@ -229,7 +229,7 @@ struct ChatView: View {
             }
         }
         .sheet(isPresented: $showSessionStatus) {
-            SessionStatusSheet(status: viewModel.sessionStatus)
+            SessionStatusSheet(viewModel: viewModel)
         }
         .task {
             // Restore the per-room scroll position BEFORE start() so

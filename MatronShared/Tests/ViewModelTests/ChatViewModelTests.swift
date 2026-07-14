@@ -983,4 +983,36 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.sessionStatus?.model, "claude-fable-5")
         XCTAssertEqual(vm.sessionStatus?.context?.pct, 10)
     }
+
+    /// `start()` must drop held meters: they're only as fresh as the
+    /// engine's status replay cache, which yields valid data back
+    /// immediately on re-subscribe — but after a mirror wipe cleared that
+    /// cache, carrying the old merge across stop()/start() would present
+    /// pre-wipe usage as current.
+    @MainActor
+    func testSessionStatusClearedOnRestart() async throws {
+        let fake = FakeTimelineService()
+        fake.snapshotsToEmit = [[]]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        defer { vm.stop() }
+        await task.value
+
+        fake.statusContinuation.yield(SessionStatusUpdate(
+            convoID: "!r:s", model: nil,
+            context: SessionStatus.Context(tokens: 100_000, window: 1_000_000, pct: 10),
+            limits: nil))
+        for _ in 0..<200 {
+            if vm.sessionStatus?.context != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(vm.sessionStatus?.context?.pct, 10)
+
+        vm.stop()
+        fake.snapshotsToEmit = [[]]
+        let task2 = await vm.start()
+        await task2.value
+        XCTAssertNil(vm.sessionStatus,
+                     "restart must drop held meters; no frame has arrived on the new subscription yet")
+    }
 }
