@@ -97,6 +97,10 @@ public actor JournalSyncEngine {
         lastPathSignature = nil
         pathChangeReconnect = false
         failReadyWaiters(JournalSyncError.offline)
+        // Drop the status replay cache with the connection: values cached
+        // here are only as fresh as the live stream, and a future
+        // beginSync()'s `viewing` replay repopulates it.
+        lastSessionStatus.removeAll()
         liveConnection?.close()
         liveConnection = nil
         backoffSleeper?.cancel()
@@ -435,6 +439,10 @@ public actor JournalSyncEngine {
                         Self.logger.warning("snapshot_required: replay gap too large — wiping local mirror (cursor \(self.store.cursor, privacy: .public))")
                         refreshSummariesTask?.cancel()
                         storeEpoch += 1
+                        // The status replay cache mirrors journal state; a
+                        // wiped mirror must not replay pre-wipe meters to
+                        // post-wipe subscribers.
+                        lastSessionStatus.removeAll()
                         // A failed wipe leaves stale rows in place; the server will
                         // simply re-issue snapshot_required on the next connect
                         // (bounded by the reconnect backoff), so this isn't silently lost.

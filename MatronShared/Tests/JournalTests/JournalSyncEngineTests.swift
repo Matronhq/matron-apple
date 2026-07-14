@@ -204,6 +204,53 @@ final class JournalSyncEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    /// A `snapshot_required` wipe must also drop the status replay cache:
+    /// the cache mirrors journal state, so a subscriber attaching after a
+    /// mirror reset must not receive pre-wipe usage/context values. The
+    /// first value the post-wipe subscriber sees has to be the live frame
+    /// served after it registered — a surviving cache would replay pct 10
+    /// at registration, ahead of the live pct 77.
+    func testSessionStatusCacheClearedOnSnapshotWipe() async throws {
+        SnapshotRequiredStubURLProtocol.snapshotBody = #"""
+            {"conversations":[{"id":"c1","title":"t","session_state":"running","last_seq":400,"unread_count":0,"snippet":"s","created_at":0}],"seq":400}
+            """#
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SnapshotRequiredStubURLProtocol.self]
+        let api = JournalAPI(serverURL: URL(string: "https://x")!,
+                             urlSession: URLSession(configuration: config))
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:dan")
+        try store.applyColdSnapshot([ConvoSummaryDTO(id: "c1", title: "", sessionState: "running",
+                                                     lastSeq: 0, snippet: "", createdAt: 0)], headSeq: 0)
+
+        let socket1 = FakeWebSocketConnection()
+        socket1.serve(helloOK(500))
+        socket1.serve(#"{"kind":"ephemeral","convo_id":"c1","status":{"context":{"tokens":100,"window":1000,"pct":10}}}"#)
+        socket1.serve(#"{"kind":"control","op":"snapshot_required"}"#)
+        Task {
+            try? await Task.sleep(for: .milliseconds(50))
+            socket1.closeFromServer()
+        }
+        let socket2 = FakeWebSocketConnection()
+        socket2.serve(helloOK(400))
+        let connector = FakeConnector([socket1, socket2])
+
+        let engine = JournalSyncEngine(api: api, store: store, connector: connector,
+                                       token: "t", ownSender: "user:dan", search: nil,
+                                       backoffBaseSeconds: 0.001)
+        await engine.beginSync()
+        for _ in 0..<500 where store.cursor != 400 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(store.cursor, 400, "wipe + cold start must complete before subscribing")
+
+        var iterator = engine.sessionStatus(convoID: "c1").makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(50)) // let registration land; a stale cache would have yielded by now
+        socket2.serve(#"{"kind":"ephemeral","convo_id":"c1","status":{"context":{"tokens":770,"window":1000,"pct":77}}}"#)
+        let first = await iterator.next()
+        XCTAssertEqual(first?.context?.pct, 77, "pre-wipe cached status must not replay after a mirror wipe")
+        await engine.endSync()
+    }
+
     /// Frames use absent-means-unchanged semantics, so the replay cache must
     /// merge each frame over the held one, not store the last frame verbatim:
     /// a partial frame (limits only) after a fuller one (model + context)
