@@ -101,6 +101,20 @@ struct MacChatView: View {
         viewModel.activityLabel != nil ? Self.activityFooterID : viewModel.lastRenderableItemID
     }
 
+    /// Widen-then-scroll for a remembered scroll position — see iOS
+    /// `ChatView.restoreScroll`: a widen mounts on the NEXT layout pass
+    /// and a same-tick `scrollTo` resolves only already-rendered ids,
+    /// so scroll immediately, then re-assert once after mount.
+    private func restoreScroll(to restored: String, via proxy: ScrollViewProxy) {
+        viewModel.ensureWindowContains(restored)
+        proxy.scrollTo(restored, anchor: .bottom)
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            guard !isFollowingTail else { return }
+            proxy.scrollTo(restored, anchor: .bottom)
+        }
+    }
+
     /// The `.sizeChanges` anchor role — the whole follow-tail mechanism;
     /// see iOS `ChatView.sizeChangeAnchor` for the full rationale.
     /// `.bottom` while following (engine-level bottom pinning through
@@ -299,10 +313,7 @@ struct MacChatView: View {
                         pendingRestoreID = restored
                     } else if viewModel.rowAnchorIDs.contains(restored) {
                         isFollowingTail = false
-                        // Widen the window first — the remembered row may
-                        // sit above the default tail window.
-                        viewModel.ensureWindowContains(restored)
-                        proxy.scrollTo(restored, anchor: .bottom)
+                        restoreScroll(to: restored, via: proxy)
                     } else {
                         ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
                     }
@@ -322,8 +333,7 @@ struct MacChatView: View {
                 guard !isEmpty, let restored = pendingRestoreID else { return }
                 pendingRestoreID = nil
                 if viewModel.rowAnchorIDs.contains(restored) {
-                    viewModel.ensureWindowContains(restored)
-                    proxy.scrollTo(restored, anchor: .bottom)
+                    restoreScroll(to: restored, via: proxy)
                 } else {
                     // The remembered row didn't survive to this open —
                     // fall back to the open-at-tail default.

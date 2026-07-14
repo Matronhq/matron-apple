@@ -112,6 +112,25 @@ struct ChatView: View {
         viewModel.activityLabel != nil ? Self.activityFooterID : viewModel.lastRenderableItemID
     }
 
+    /// Widen-then-scroll for a remembered scroll position. The widen
+    /// mounts rows on the NEXT layout pass, and `proxy.scrollTo` only
+    /// resolves ids already in the rendered tree — a same-tick scroll
+    /// after a widen silently no-ops and the chat opens at the tail
+    /// (Bugbot, PR #18). Scroll immediately (covers the common case of
+    /// a target inside the default window, no visible hop), then
+    /// re-assert once, non-animated, after the widened rows have
+    /// mounted. The re-assert yields if follow-tail re-armed meanwhile
+    /// (an own send in that window wins).
+    private func restoreScroll(to restored: String, via proxy: ScrollViewProxy) {
+        viewModel.ensureWindowContains(restored)
+        proxy.scrollTo(restored, anchor: .bottom)
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            guard !isFollowingTail else { return }
+            proxy.scrollTo(restored, anchor: .bottom)
+        }
+    }
+
     /// The `.sizeChanges` anchor role — this is the whole follow-tail
     /// mechanism. `.bottom` while following makes the scroll ENGINE keep
     /// the bottom edge pinned through streaming growth, echo→server row
@@ -400,11 +419,7 @@ struct ChatView: View {
                         pendingRestoreID = restored
                     } else if viewModel.rowAnchorIDs.contains(restored) {
                         isFollowingTail = false
-                        // The remembered row may sit above the default
-                        // tail window — widen it first or the scroll
-                        // has no mounted target.
-                        viewModel.ensureWindowContains(restored)
-                        proxy.scrollTo(restored, anchor: .bottom)
+                        restoreScroll(to: restored, via: proxy)
                     } else {
                         ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
                     }
@@ -428,8 +443,7 @@ struct ChatView: View {
                 guard !isEmpty, let restored = pendingRestoreID else { return }
                 pendingRestoreID = nil
                 if viewModel.rowAnchorIDs.contains(restored) {
-                    viewModel.ensureWindowContains(restored)
-                    proxy.scrollTo(restored, anchor: .bottom)
+                    restoreScroll(to: restored, via: proxy)
                 } else {
                     // The remembered row didn't survive to this open —
                     // fall back to the open-at-tail default.
