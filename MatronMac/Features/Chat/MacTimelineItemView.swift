@@ -123,9 +123,12 @@ struct MacTimelineItemView: View {
             .padding(.vertical, 4)
 
         case .toolCall(_, let evt):
+            // Same cap as the live-output tiles — a card narrower than the
+            // surrounding message bubbles reads as cramped. Hugs content,
+            // so small tool calls stay small.
             HStack {
                 ToolCallCard(event: evt)
-                    .frame(maxWidth: 420, alignment: .leading)  // wider on Mac
+                    .frame(maxWidth: 560, alignment: .leading)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal)
