@@ -72,6 +72,17 @@ struct ChatView: View {
     /// in the geometry action.
     @State private var followHealTask: Task<Void, Never>?
 
+    /// One-frame scroll freeze used by the jump button to kill fling
+    /// momentum. A `proxy.scrollTo` issued while a deceleration is in
+    /// flight is overridden by the deceleration's animator for its whole
+    /// 1–2s life — the 08:09 device trace shows every jump + re-assert
+    /// swallowed while the viewport kept drifting the other way, and
+    /// only the retries that happened to outlive the fling landed.
+    /// Toggling `scrollDisabled` stops the underlying scroll view dead
+    /// (UIKit semantics: disabling scrolling cancels the current
+    /// scroll), so the follow-up scrollTo acts on a still view.
+    @State private var jumpMomentumFreeze = false
+
     final class VisibleRowsBox {
         var bottomID: String?
         /// Latest raw scroll geometry, refreshed by the
@@ -245,6 +256,9 @@ struct ChatView: View {
             // positioned those opens NOWHERE: the binding started nil
             // and no items change fired, so the chat sat at the top —
             // 2026-07-14 device trace.)
+            // Momentum kill switch for the jump button — see
+            // `jumpMomentumFreeze`.
+            .scrollDisabled(jumpMomentumFreeze)
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             // A conversation shorter than the viewport hugs the
             // composer, chat-standard.
@@ -483,28 +497,39 @@ struct ChatView: View {
                         // "I tap it and nothing happens") while the
                         // non-animated keyboard re-pin moved the same
                         // distance instantly.
-                        if let target = bottomScrollTargetID {
-                            proxy.scrollTo(target, anchor: .bottom)
-                        }
                         ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
-                        // A jump issued while the scroll view is still
-                        // decelerating (or in the top rubber-band) is
-                        // swallowed by the in-flight scroll — four
-                        // consecutive dead presses in the 07:23 device
-                        // trace, each mid-bounce, while the settled
-                        // press landed instantly. Re-assert after the
-                        // deceleration has had time to die; geometry
-                        // (`isNearBottom`) tells us whether the first
-                        // attempt actually landed. Reuses the heal task
+                        // Kill any in-flight fling BEFORE scrolling: a
+                        // scrollTo issued during deceleration is
+                        // overridden by the deceleration's animator for
+                        // its whole 1–2s life (08:09 device trace —
+                        // presses + timed re-asserts all swallowed while
+                        // the viewport kept drifting away; only retries
+                        // that outlived the fling landed, hence
+                        // "sometimes works"). Freeze for one frame, then
+                        // scroll the still view, then verify against
+                        // geometry until it sticks. Reuses the heal task
                         // slot so jump and heal never fight.
                         // (Window reset deliberately does NOT happen
                         // here — swapping `windowedRows` mid-scroll
                         // rebuilt the layout under the jump's feet;
                         // `onDisappear` owns the trim.)
+                        jumpMomentumFreeze = true
+                        // Unfreeze runs in its own fire-and-forget task:
+                        // `followHealTask` can be cancelled/replaced by
+                        // the geometry heal at any moment, and a
+                        // cancelled unfreeze would leave the scroll view
+                        // disabled permanently.
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 30_000_000)
+                            jumpMomentumFreeze = false
+                            guard isFollowingTail,
+                                  let target = bottomScrollTargetID else { return }
+                            proxy.scrollTo(target, anchor: .bottom)
+                        }
                         followHealTask?.cancel()
                         followHealTask = Task { @MainActor in
-                            for delayMs: UInt64 in [150, 500] {
-                                try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
+                            for _ in 0..<10 {
+                                try? await Task.sleep(nanoseconds: 200_000_000)
                                 guard !Task.isCancelled, isFollowingTail, !isNearBottom,
                                       let target = bottomScrollTargetID else { return }
                                 chatViewLogger.breadcrumb("jump re-assert → \(target) (\(visibleRows.geoDescription))")

@@ -71,6 +71,13 @@ struct MacChatView: View {
     /// geometry action and iOS `ChatView` for the trace rationale.
     @State private var followHealTask: Task<Void, Never>?
 
+    /// One-frame scroll freeze used by the jump button to kill trackpad
+    /// momentum before scrolling — a scrollTo issued mid-deceleration is
+    /// overridden by the in-flight scroll for its whole life. See the
+    /// iOS twin (`ChatView.jumpMomentumFreeze`) and the 08:09 device
+    /// trace.
+    @State private var jumpMomentumFreeze = false
+
     final class VisibleRowsBox {
         var bottomID: String?
         /// Latest raw scroll geometry, refreshed by the
@@ -202,6 +209,9 @@ struct MacChatView: View {
             // a cached view model whose rows are already populated at
             // first layout. See iOS ChatView for the trace-driven
             // rationale behind each anchor role.
+            // Momentum kill switch for the jump button — see
+            // `jumpMomentumFreeze`.
+            .scrollDisabled(jumpMomentumFreeze)
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             .defaultScrollAnchor(.bottom, for: .alignment)
             // THE follow-tail mechanism — see `sizeChangeAnchor`.
@@ -357,23 +367,30 @@ struct MacChatView: View {
                     JumpToBottomButton {
                         isFollowingTail = true
                         paginateLogger.breadcrumb("follow-tail ON (jump button, \(visibleRows.geoDescription))")
-                        // NOT animated — animated scrollTo against
-                        // estimated lazy layout silently no-ops; see the
-                        // iOS jump button comment.
-                        if let target = bottomScrollTargetID {
+                        ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
+                        // Kill in-flight momentum BEFORE scrolling — a
+                        // scrollTo issued mid-deceleration is overridden
+                        // by the in-flight scroll for its whole life
+                        // (08:09 iOS trace). Freeze one frame, scroll
+                        // the still view, verify until geometry
+                        // confirms. No window reset here: swapping
+                        // `windowedRows` mid-scroll rebuilds the layout
+                        // under the jump's feet; `onDisappear` owns the
+                        // trim. Unfreeze is fire-and-forget so a heal
+                        // replacing `followHealTask` can't cancel it and
+                        // wedge the scroll view disabled.
+                        jumpMomentumFreeze = true
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 30_000_000)
+                            jumpMomentumFreeze = false
+                            guard isFollowingTail,
+                                  let target = bottomScrollTargetID else { return }
                             proxy.scrollTo(target, anchor: .bottom)
                         }
-                        ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
-                        // Re-assert after momentum dies — a jump issued
-                        // mid-deceleration is swallowed by the in-flight
-                        // scroll (07:23 iOS trace, four dead presses).
-                        // No window reset here: swapping `windowedRows`
-                        // mid-scroll rebuilds the layout under the
-                        // jump's feet; `onDisappear` owns the trim.
                         followHealTask?.cancel()
                         followHealTask = Task { @MainActor in
-                            for delayMs: UInt64 in [150, 500] {
-                                try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
+                            for _ in 0..<10 {
+                                try? await Task.sleep(nanoseconds: 200_000_000)
                                 guard !Task.isCancelled, isFollowingTail, !isNearBottom,
                                       let target = bottomScrollTargetID else { return }
                                 paginateLogger.breadcrumb("jump re-assert → \(target) (\(visibleRows.geoDescription))")
