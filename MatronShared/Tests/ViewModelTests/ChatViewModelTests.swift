@@ -133,6 +133,71 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_windowedRows_capTheRenderedTail_andExtendReveals() async throws {
+        // The views render `windowedRows`, not `rows` — a full timeline
+        // in one LazyVStack is what destabilized the scroll layer
+        // (content-height estimate churn; see `ChatViewModel.windowedRows`).
+        let fake = FakeTimelineService()
+        let items = (0..<200).map { i in
+            TimelineItem(
+                id: "m\(i)", sender: "@a:s", timestamp: .now,
+                kind: .text(body: "msg \(i)", formattedHTML: nil), isOwn: false
+            )
+        }
+        fake.snapshotsToEmit = [items]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        await task.value
+
+        XCTAssertEqual(vm.rows.count, 201, "200 same-day messages + 1 separator")
+        // Window: 120-row tail + the re-synthesized leading separator.
+        XCTAssertEqual(vm.windowedRows.count, 121)
+        if case .message(let lastItem)? = vm.windowedRows.last {
+            XCTAssertEqual(lastItem.id, "m199", "window must be the TAIL slice")
+        } else {
+            XCTFail("window must end on the newest message")
+        }
+        if case .separator? = vm.windowedRows.first {} else {
+            XCTFail("a window cut mid-day must re-synthesize its leading date separator")
+        }
+        XCTAssertEqual(
+            vm.firstWindowedItemID, "m80",
+            "the visual-top trigger id must be the window's first message, not the timeline's"
+        )
+
+        await vm.extendHistoryWindow()
+        XCTAssertEqual(
+            vm.windowedRows.count, 201,
+            "extending must reveal older local rows without a network fetch"
+        )
+    }
+
+    @MainActor
+    func test_ensureWindowContains_widensToCoverARestoreTarget() async throws {
+        let fake = FakeTimelineService()
+        let items = (0..<200).map { i in
+            TimelineItem(
+                id: "m\(i)", sender: "@a:s", timestamp: .now,
+                kind: .text(body: "msg \(i)", formattedHTML: nil), isOwn: false
+            )
+        }
+        fake.snapshotsToEmit = [items]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        await task.value
+
+        XCTAssertNil(
+            vm.windowedRows.first { if case .message(let i) = $0 { return i.id == "m5" } ; return false },
+            "precondition: the restore target starts outside the tail window"
+        )
+        vm.ensureWindowContains("m5")
+        XCTAssertNotNil(
+            vm.windowedRows.first { if case .message(let i) = $0 { return i.id == "m5" } ; return false },
+            "restoring a remembered position must widen the window to cover it"
+        )
+    }
+
+    @MainActor
     func test_activityIndicator_excludedFromRows_exposedAsFooterLabel() async throws {
         // The trailing activity row is rendered as a fixed footer, not a
         // timeline row: as a row it became the scroll anchor during every

@@ -105,7 +105,7 @@ struct MacChatView: View {
     /// backward paginate (prepends keep the same rows on screen).
     private var sizeChangeAnchor: UnitPoint? {
         if isFollowingTail { return .bottom }
-        return viewModel.isPaginatingBackward ? .bottom : nil
+        return (viewModel.isPaginatingBackward || viewModel.isExtendingWindow) ? .bottom : nil
     }
 
     /// Edge proximity snapshot derived from scroll geometry — Equatable
@@ -244,7 +244,7 @@ struct MacChatView: View {
                 // away. The topmost row's `.onAppear` remains as a
                 // backstop; `paginateBackward` dedups re-entry.
                 if edges.nearTop {
-                    Task { await viewModel.paginateBackward() }
+                    Task { await viewModel.extendHistoryWindow() }
                 }
             }
             // Per-room scroll memory feed — non-invalidating box; see
@@ -280,6 +280,9 @@ struct MacChatView: View {
                         pendingRestoreID = restored
                     } else if viewModel.rowAnchorIDs.contains(restored) {
                         isFollowingTail = false
+                        // Widen the window first — the remembered row may
+                        // sit above the default tail window.
+                        viewModel.ensureWindowContains(restored)
                         proxy.scrollTo(restored, anchor: .bottom)
                     } else {
                         ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
@@ -300,6 +303,7 @@ struct MacChatView: View {
                 guard !isEmpty, let restored = pendingRestoreID else { return }
                 pendingRestoreID = nil
                 if viewModel.rowAnchorIDs.contains(restored) {
+                    viewModel.ensureWindowContains(restored)
                     proxy.scrollTo(restored, anchor: .bottom)
                 } else {
                     // The remembered row didn't survive to this open —
@@ -491,7 +495,8 @@ private struct MacTimelineListContent: View, Equatable {
             // the iOS surface — the bucketing logic lives in
             // `ChatViewModel.rows` so the two platforms can't
             // drift.
-            ForEach(viewModel.rows) { row in
+            // `windowedRows`, NOT `rows` — see `ChatViewModel.windowedRows`.
+            ForEach(viewModel.windowedRows) { row in
                 switch row {
                 case .separator(let date):
                     DateSeparator(date: date)
@@ -529,10 +534,10 @@ private struct MacTimelineListContent: View, Equatable {
                     )
                         .id(item.id)
                         .onAppear {
-                            let match = (item.id == viewModel.firstRenderableItemID)
-                            paginateLogger.diag("onAppear: id=\(item.id) first=\(viewModel.firstRenderableItemID ?? "nil") match=\(match)")
+                            let match = (item.id == viewModel.firstWindowedItemID)
+                            paginateLogger.diag("onAppear: id=\(item.id) firstWindowed=\(viewModel.firstWindowedItemID ?? "nil") match=\(match)")
                             if match {
-                                Task { await viewModel.paginateBackward() }
+                                Task { await viewModel.extendHistoryWindow() }
                             }
                         }
                         .contextMenu {

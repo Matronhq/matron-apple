@@ -119,7 +119,7 @@ struct ChatView: View {
     /// the prepend's layout pass.
     private var sizeChangeAnchor: UnitPoint? {
         if isFollowingTail { return .bottom }
-        return viewModel.isPaginatingBackward ? .bottom : nil
+        return (viewModel.isPaginatingBackward || viewModel.isExtendingWindow) ? .bottom : nil
     }
 
     /// Edge proximity snapshot derived from scroll geometry. Equatable so
@@ -308,7 +308,7 @@ struct ChatView: View {
                 // `TimelineListContent` remains as a backstop, and
                 // `paginateBackward` itself dedups re-entry.
                 if edges.nearTop {
-                    Task { await viewModel.paginateBackward() }
+                    Task { await viewModel.extendHistoryWindow() }
                 }
             }
             // Per-room scroll memory feed: the bottommost visible row
@@ -371,6 +371,10 @@ struct ChatView: View {
                         pendingRestoreID = restored
                     } else if viewModel.rowAnchorIDs.contains(restored) {
                         isFollowingTail = false
+                        // The remembered row may sit above the default
+                        // tail window — widen it first or the scroll
+                        // has no mounted target.
+                        viewModel.ensureWindowContains(restored)
                         proxy.scrollTo(restored, anchor: .bottom)
                     } else {
                         ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
@@ -395,6 +399,7 @@ struct ChatView: View {
                 guard !isEmpty, let restored = pendingRestoreID else { return }
                 pendingRestoreID = nil
                 if viewModel.rowAnchorIDs.contains(restored) {
+                    viewModel.ensureWindowContains(restored)
                     proxy.scrollTo(restored, anchor: .bottom)
                 } else {
                     // The remembered row didn't survive to this open —
@@ -642,7 +647,10 @@ private struct TimelineListContent: View, Equatable {
             // separator stream is computed on the view-model
             // so iOS and Mac don't have to duplicate the
             // calendar-day bucketing.
-            ForEach(viewModel.rows) { row in
+            // `windowedRows`, NOT `rows`: rendering the full timeline is
+            // what destabilized the scroll layer (content-height
+            // estimate churn — see `ChatViewModel.windowedRows`).
+            ForEach(viewModel.windowedRows) { row in
                 switch row {
                 case .separator(let date):
                     DateSeparator(date: date)
@@ -685,8 +693,8 @@ private struct TimelineListContent: View, Equatable {
                         // `ChatViewModel.firstRenderableItemID`
                         // for the full rationale.
                         .onAppear {
-                            if item.id == viewModel.firstRenderableItemID {
-                                Task { await viewModel.paginateBackward() }
+                            if item.id == viewModel.firstWindowedItemID {
+                                Task { await viewModel.extendHistoryWindow() }
                             }
                         }
                         .contextMenu {

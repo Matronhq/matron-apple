@@ -121,6 +121,37 @@ public final class ChatViewModel {
     /// listener, and it routes through `applySnapshot(_:)`.
     public private(set) var rows: [TimelineRow] = []
 
+    /// The tail slice of `rows` the views actually render. Rendering the
+    /// full timeline is what made the scroll layer unstable: LazyVStack
+    /// derives its content-height ESTIMATE from whichever rows happen to
+    /// be mounted, and with hundreds of wildly heterogeneous rows the
+    /// estimate swung 5x on every container resize (2026-07-14 06:51
+    /// device trace: keyboard up → contentH 115K→497K→90K, viewport
+    /// stranded 2,000pt off the tail). A ~120-row window keeps the
+    /// estimation error small and bounded — the standard chat-app
+    /// approach. Older rows reveal via `extendHistoryWindow()`.
+    public private(set) var windowedRows: [TimelineRow] = []
+
+    /// First message id inside the render window — the views' "user
+    /// reached the visual top" trigger compares against this (NOT
+    /// `firstRenderableItemID`, which is the first row of the full local
+    /// timeline and usually far outside the window).
+    public private(set) var firstWindowedItemID: TimelineItem.ID?
+
+    /// Current render-window size in rows. Grows via
+    /// `extendHistoryWindow()` / `ensureWindowContains(_:)`; never
+    /// shrinks within a session (shrinking under a scrolled-up user
+    /// would yank content out from beneath them).
+    public private(set) var visibleWindowSize = 120
+
+    /// How many rows each `extendHistoryWindow()` reveals.
+    private static let windowGrowthStep = 120
+
+    /// `true` while a window extension's prepend is being laid out —
+    /// the views anchor `.sizeChanges` to `.bottom` while this is up,
+    /// same contract as `isPaginatingBackward`.
+    public private(set) var isExtendingWindow = false
+
     /// ID of the first item the timeline view actually renders — i.e.
     /// the first non-`.stateChange` item in `items`. Used by the
     /// scroll-up `.onAppear` paginate trigger. Memoised alongside
@@ -230,6 +261,71 @@ public final class ChatViewModel {
             if case .message(let item) = row { return item.id }
             return row.id
         })
+        recomputeWindow()
+    }
+
+    /// Rebuilds `windowedRows` (+ `firstWindowedItemID`) from `rows` and
+    /// the current window size. If the window cut lands mid-day, a
+    /// leading date separator for the first visible message is
+    /// re-synthesized so the window never opens on a context-free bubble
+    /// (separator ids are deterministic per-day, so this is stable
+    /// across recomputes).
+    private func recomputeWindow() {
+        var window = Array(rows.suffix(visibleWindowSize))
+        if case .message(let firstItem)? = window.first {
+            window.insert(.separator(date: firstItem.timestamp), at: 0)
+        }
+        self.windowedRows = window
+        self.firstWindowedItemID = window.lazy.compactMap { row -> TimelineItem.ID? in
+            if case .message(let item) = row { return item.id }
+            return nil
+        }.first
+    }
+
+    /// Reveals older content when the user nears the visual top: grows
+    /// the render window over already-loaded rows first (local,
+    /// instant); only when the window already shows everything local
+    /// does it fetch another page from the server. `isExtendingWindow`
+    /// is held through the reveal's layout pass (the views anchor
+    /// `.sizeChanges` to `.bottom` while it's up, which is what keeps
+    /// the same rows on screen as content prepends above the viewport).
+    public func extendHistoryWindow() async {
+        if isExtendingWindow || isPaginatingBackward { return }
+        if visibleWindowSize < rows.count {
+            isExtendingWindow = true
+            visibleWindowSize = min(rows.count, visibleWindowSize + Self.windowGrowthStep)
+            Self.logger.diag("window extend → \(visibleWindowSize) rows (of \(rows.count) local)")
+            recomputeWindow()
+            // Hold the flag past the layout pass that applies the
+            // grown window, so the bottom anchor covers the prepend.
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            isExtendingWindow = false
+            return
+        }
+        await paginateBackward()
+        if visibleWindowSize < rows.count {
+            isExtendingWindow = true
+            visibleWindowSize = min(rows.count, visibleWindowSize + Self.windowGrowthStep)
+            recomputeWindow()
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            isExtendingWindow = false
+        }
+    }
+
+    /// Grows the window (without animation concerns — called before the
+    /// view scrolls) so a remembered scroll position outside the default
+    /// tail window can actually be scrolled to on restore.
+    public func ensureWindowContains(_ id: String) {
+        let index = rows.lastIndex { row in
+            if case .message(let item) = row { return item.id == id }
+            return row.id == id
+        }
+        guard let index else { return }
+        let needed = rows.count - index + 20
+        if needed > visibleWindowSize {
+            visibleWindowSize = needed
+            recomputeWindow()
+        }
     }
 
     /// `true` while a `paginateBackward()` call is in flight — and,
