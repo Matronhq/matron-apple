@@ -54,7 +54,9 @@ public final class VoiceRecorder {
     /// progress, `.permissionDenied` if the user declines, `.recordFailed`
     /// if `AVAudioRecorder` won't start.
     public func start() async throws {
-        guard case .idle = state else { throw RecorderError.alreadyRecording }
+        // Reject only an in-flight recording; a fresh start from `.idle` or
+        // from a prior `.finished` (a second voice note) is allowed.
+        if case .recording = state { throw RecorderError.alreadyRecording }
         guard await requestPermission() else { throw RecorderError.permissionDenied }
         #if os(iOS)
         // macOS has no AVAudioSession; on iOS the session must be put into a

@@ -89,4 +89,16 @@ final class VoiceRecorderTests: XCTestCase {
         let rec = makeRecorder()
         XCTAssertNil(rec.stop())
     }
+
+    @MainActor
+    func test_start_afterFinish_beginsAnotherRecording() async throws {
+        // A second voice note: stop() leaves the recorder .finished, and
+        // start() must accept that (only an in-flight recording is rejected).
+        let rec = makeRecorder()
+        try await rec.start()
+        _ = rec.stop()
+        XCTAssertEqual(rec.state, .finished)
+        try await rec.start()
+        guard case .recording = rec.state else { return XCTFail("expected a second .recording") }
+    }
 }
