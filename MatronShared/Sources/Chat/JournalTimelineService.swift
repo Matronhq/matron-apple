@@ -196,9 +196,28 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                                               headTruncated: headTruncated, updated: Date())
                 return false
             case .end:
+                // The server told us the buffer was freed (idle sweep, dead
+                // bridge) — "drop the tile" per the protocol doc above. That
+                // must be permanent like a durable-row retirement: without
+                // recording the ref here, a reordered/late `append` or
+                // `sync` for the same ref sailed past the `retiredToolRefs`
+                // guard at the top of this method and re-created a live
+                // tile the server had already disowned (bugbot: "tool_stream
+                // end leaves ref unretired").
                 toolStreams.removeValue(forKey: ref)
+                retire(ref)
                 return false
             }
+        }
+
+        /// Marks `ref` as retired (FIFO-capped) so any further frame for it
+        /// is dropped by the guard at the top of `applyToolStream`. Shared
+        /// by `.end` and by `reconcile`'s durable-row retirement so both
+        /// paths stay in lockstep.
+        private func retire(_ ref: String) {
+            guard !retiredToolRefs.contains(ref) else { return }
+            retiredToolRefs.append(ref)
+            if retiredToolRefs.count > 64 { retiredToolRefs.removeFirst() }
         }
 
         private func resyncDue(_ ref: String) -> Bool {
@@ -244,10 +263,7 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                     // completion frame, protocol.md) must not re-open one.
                     toolStreams.removeValue(forKey: ref)
                     resyncRequested.removeValue(forKey: ref)
-                    if !retiredToolRefs.contains(ref) {
-                        retiredToolRefs.append(ref)
-                        if retiredToolRefs.count > 64 { retiredToolRefs.removeFirst() }
-                    }
+                    retire(ref)
                 }
                 // Finalize de-dup fallback: the bridge may omit `message_ref`
                 // from the finalized row's payload (it's only guaranteed in
