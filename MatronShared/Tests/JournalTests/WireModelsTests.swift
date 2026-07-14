@@ -65,6 +65,53 @@ final class WireModelsTests: XCTestCase {
         XCTAssertNil(ServerFrame.decode(#"{"kind":"ephemeral","convo_id":"c1","activity":{"state":"dancing"}}"#))
     }
 
+    func testDecodeToolStreamAppendFrame() throws {
+        let frame = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","message_ref":"tu1","tool_stream":{"event":"append","offset":7,"chunk":"hello\n"}}"#)
+        XCTAssertEqual(frame, .toolStream(ToolStreamUpdate(
+            convoID: "c1", messageRef: "tu1", event: .append(offset: 7, chunk: "hello\n"))))
+    }
+
+    func testDecodeToolStreamSyncFrame() throws {
+        let frame = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","message_ref":"tu1","tool_stream":{"event":"sync","meta":{"tool":"Bash","command":"make"},"offset":0,"content":"$ make\n","head_truncated":false}}"#)
+        XCTAssertEqual(frame, .toolStream(ToolStreamUpdate(
+            convoID: "c1", messageRef: "tu1",
+            event: .sync(tool: "Bash", command: "make", offset: 0, content: "$ make\n", headTruncated: false))))
+    }
+
+    func testDecodeToolStreamSyncWithoutMetaAndTruncatedHead() throws {
+        let frame = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","message_ref":"tu1","tool_stream":{"event":"sync","offset":512,"content":"tail","head_truncated":true}}"#)
+        XCTAssertEqual(frame, .toolStream(ToolStreamUpdate(
+            convoID: "c1", messageRef: "tu1",
+            event: .sync(tool: nil, command: nil, offset: 512, content: "tail", headTruncated: true))))
+    }
+
+    func testDecodeToolStreamEndFrame() throws {
+        let frame = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","message_ref":"tu1","tool_stream":{"event":"end","reason":"stale"}}"#)
+        XCTAssertEqual(frame, .toolStream(ToolStreamUpdate(
+            convoID: "c1", messageRef: "tu1", event: .end(reason: "stale"))))
+    }
+
+    func testDecodeToolStreamUnknownEventSkipsFrame() {
+        XCTAssertNil(ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","message_ref":"tu1","tool_stream":{"event":"wat"}}"#))
+    }
+
+    /// Regression: tool_stream frames used to fall through to the
+    /// text-streaming fallback (they carry message_ref, no text keys) and
+    /// painted an EMPTY streaming bubble whenever a command streamed while
+    /// the chat was open. They must never decode as `.ephemeral` again.
+    func testToolStreamFrameDoesNotDecodeAsEmptyTextEphemeral() throws {
+        let frame = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","message_ref":"tu1","tool_stream":{"event":"append","offset":0,"chunk":"x"}}"#)
+        if case .ephemeral = frame {
+            XCTFail("tool_stream frame decoded as text-streaming EphemeralUpdate")
+        }
+    }
+
     func testStreamEphemeralStillRequiresMessageRef() {
         // Relaxing the ephemeral guard for activity frames must not let a
         // streaming frame through without its `message_ref`.

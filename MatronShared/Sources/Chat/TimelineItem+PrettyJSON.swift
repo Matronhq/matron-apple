@@ -115,6 +115,14 @@ extension TimelineItem {
                 "type": "activityIndicator",
                 "label": label,
             ]
+        case .toolStreamLive(let messageRef, let command, let text, let headTruncated):
+            return [
+                "type": "toolStreamLive",
+                "messageRef": messageRef,
+                "command": command ?? NSNull(),
+                "text": text,
+                "headTruncated": headTruncated,
+            ]
         case .unknown(let eventType):
             return [
                 "type": "unknown",
