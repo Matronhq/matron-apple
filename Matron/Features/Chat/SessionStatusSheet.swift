@@ -19,6 +19,7 @@ struct SessionStatusSheet: View {
     /// footnote rather than claiming "no usage data yet".
     private var hasContent: Bool {
         status?.model != nil || status?.context != nil || !(status?.limits ?? []).isEmpty
+            || status?.email != nil
     }
 
     var body: some View {
@@ -32,10 +33,19 @@ struct SessionStatusSheet: View {
                         if let limits = status.limits, !limits.isEmpty {
                             UsageBarsView(limits: limits, scale: .regular)
                         }
-                        if let model = status.model {
-                            Text(model)
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
+                        if status.email != nil || status.model != nil {
+                            // Account footer: the bridge machine's logged-in
+                            // email above the model name, both quiet.
+                            VStack(alignment: .leading, spacing: 2) {
+                                if let email = status.email {
+                                    Text(email)
+                                }
+                                if let model = status.model {
+                                    Text(model)
+                                }
+                            }
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                         }
                         Spacer()
                     }

@@ -240,7 +240,8 @@ public enum ServerFrame: Equatable, Sendable {
                 }
                 return .sessionStatus(SessionStatusUpdate(
                     convoID: convoID, model: status["model"] as? String,
-                    context: context, limits: limits))
+                    context: context, limits: limits,
+                    email: status["email"] as? String))
             }
             guard let ref = obj["message_ref"] as? String else { return nil }
             return .ephemeral(EphemeralUpdate(

@@ -155,12 +155,13 @@ final class WireModelsTests: XCTestCase {
     }
 
     func testDecodeSessionStatusEphemeralFrame() throws {
-        let text = #"{"kind":"ephemeral","convo_id":"c1","status":{"model":"claude-fable-5","context":{"tokens":265000,"window":1000000,"pct":27},"limits":[{"label":"Week (Fable)","percent":80,"resets":"Jul 12, 6:59pm (UTC)","resets_at":"2026-07-12T18:59:00.000Z"}]}}"#
+        let text = #"{"kind":"ephemeral","convo_id":"c1","status":{"model":"claude-fable-5","email":"dan@example.com","context":{"tokens":265000,"window":1000000,"pct":27},"limits":[{"label":"Week (Fable)","percent":80,"resets":"Jul 12, 6:59pm (UTC)","resets_at":"2026-07-12T18:59:00.000Z"}]}}"#
         guard case let .sessionStatus(update)? = ServerFrame.decode(text) else {
             return XCTFail("expected sessionStatus frame")
         }
         XCTAssertEqual(update.convoID, "c1")
         XCTAssertEqual(update.model, "claude-fable-5")
+        XCTAssertEqual(update.email, "dan@example.com")
         XCTAssertEqual(update.context, SessionStatus.Context(tokens: 265_000, window: 1_000_000, pct: 27))
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -178,6 +179,7 @@ final class WireModelsTests: XCTestCase {
         }
         XCTAssertNil(partial.model)
         XCTAssertNil(partial.limits)
+        XCTAssertNil(partial.email)
         XCTAssertEqual(partial.context?.tokens, 5000)
 
         // Malformed resets_at degrades to nil; the raw string survives.
