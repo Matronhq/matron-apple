@@ -125,6 +125,24 @@ final class JournalSyncEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    func testSessionStatusFanOutToMatchingConvoOnly() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        var iterC1 = engine.sessionStatus(convoID: "c1").makeAsyncIterator()
+        // A frame for another convo first: if fan-out ignored convoID,
+        // c1's iterator would yield it.
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c2","status":{"model":"other"}}"#)
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","status":{"context":{"tokens":265000,"window":1000000,"pct":27}}}"#)
+        let update = await iterC1.next()
+        XCTAssertEqual(update?.convoID, "c1")
+        XCTAssertEqual(update?.context?.pct, 27)
+        await engine.endSync()
+    }
+
     /// A conversation whose first-ever frame arrives while the engine is
     /// live (`.running`) — the /start case — must be published on
     /// `newConversations()`. Frames on already-known convos, and repeat

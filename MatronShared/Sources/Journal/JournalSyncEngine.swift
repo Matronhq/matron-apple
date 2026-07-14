@@ -53,6 +53,7 @@ public actor JournalSyncEngine {
     private var ephemeralContinuations: [UUID: (convoID: String, continuation: AsyncStream<EphemeralUpdate>.Continuation)] = [:]
     private var activityContinuations: [UUID: (convoID: String, continuation: AsyncStream<ActivityUpdate>.Continuation)] = [:]
     private var toolStreamContinuations: [UUID: (convoID: String, continuation: AsyncStream<ToolStreamUpdate>.Continuation)] = [:]
+    private var sessionStatusContinuations: [UUID: (convoID: String, continuation: AsyncStream<SessionStatusUpdate>.Continuation)] = [:]
     private var newConvoContinuations: [UUID: AsyncStream<String>.Continuation] = [:]
     private var readyWaiters: [CheckedContinuation<Void, Error>] = []
 
@@ -231,6 +232,21 @@ public actor JournalSyncEngine {
         }
     }
 
+    /// Per-conversation stream of session-status updates (journal `status`
+    /// ephemerals). Mirrors `activities(convoID:)`. The journal replays the
+    /// last cached status when the client sends `viewing`, so a subscriber
+    /// that attaches on convo-open gets a populated header immediately —
+    /// no client-side caching needed.
+    public nonisolated func sessionStatus(convoID: String) -> AsyncStream<SessionStatusUpdate> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerSessionStatus(id: id, convoID: convoID, continuation: continuation) }
+            continuation.onTermination = { _ in
+                Task { await self.unregisterSessionStatus(id: id) }
+            }
+        }
+    }
+
     // MARK: Registry plumbing
 
     private func registerState(id: UUID, continuation: AsyncStream<SyncConnectionState>.Continuation) {
@@ -264,6 +280,14 @@ public actor JournalSyncEngine {
 
     private func unregisterToolStream(id: UUID) {
         toolStreamContinuations.removeValue(forKey: id)
+    }
+
+    private func registerSessionStatus(id: UUID, convoID: String, continuation: AsyncStream<SessionStatusUpdate>.Continuation) {
+        sessionStatusContinuations[id] = (convoID, continuation)
+    }
+
+    private func unregisterSessionStatus(id: UUID) {
+        sessionStatusContinuations.removeValue(forKey: id)
     }
 
     private func registerNewConvo(id: UUID, continuation: AsyncStream<String>.Continuation) {
@@ -414,6 +438,10 @@ public actor JournalSyncEngine {
                         break frameLoop
                     case .toolStream(let update):
                         for (_, entry) in toolStreamContinuations where entry.convoID == update.convoID {
+                            entry.continuation.yield(update)
+                        }
+                    case .sessionStatus(let update):
+                        for (_, entry) in sessionStatusContinuations where entry.convoID == update.convoID {
                             entry.continuation.yield(update)
                         }
                     case .error, .helloOK, .unknownControl:
