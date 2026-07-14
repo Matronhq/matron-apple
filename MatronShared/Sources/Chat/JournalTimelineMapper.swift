@@ -95,24 +95,46 @@ public enum JournalTimelineMapper {
         )
     }
 
-    public static func toolCallEvent(fromToolOutput payload: [String: Any], ts: Date) -> ToolCallEvent {
+    /// The journal server's tool-log TTL (docs/protocol.md Retention):
+    /// live-streamed output is purged server-side 24h after the event, and
+    /// the client rules make the same TTL binding on local caches.
+    public static let toolLogTTL: TimeInterval = 24 * 3600
+
+    public static func toolCallEvent(fromToolOutput payload: [String: Any], ts: Date,
+                                     now: Date = Date()) -> ToolCallEvent {
         // Rich payloads (bridge keeps chat.matron.tool_call keys) parse directly.
         if let parsed = ToolCallEvent.parse(content: payload) { return parsed }
-        // Bridge command-tool shape: {tool_use_id, command, viewer_url}. The
-        // command is the only human-meaningful content in the journal — the
-        // actual output streams to viewer_url and is never persisted here — so
-        // surface the command as the tool's args. Without this the fallback
-        // below produced tool "tool" with empty args and no result, which
-        // rendered as a blank, un-expandable card.
+        // Command-completion shape ({message_ref, command, exit_code, denied,
+        // truncated, snippet, blob_ref, live_log} — and its server tombstone,
+        // same minus snippet plus expired: true): command as the tool's args,
+        // snippet as the result, exit_code/denied driving the status icon.
+        // Also covers the older command-only payloads (no exit_code, no
+        // snippet), which fall out as a plain .ok command card exactly as
+        // before.
         if let command = payload["command"] as? String, !command.isEmpty {
+            let exitCode = (payload["exit_code"] as? NSNumber)?.intValue
+            let denied = payload["denied"] as? Bool ?? false
+            var expired = payload["expired"] as? Bool ?? false
+            // Binding client TTL rule: a cached live_log snippet must stop
+            // rendering once ts + 24h passes locally, without waiting for
+            // the server's tombstone to re-sync (JournalStore's purge sweep
+            // rewrites the stored payload; this guard covers rows the sweep
+            // hasn't reached yet).
+            if !expired, payload["live_log"] as? Bool == true,
+               ts.addingTimeInterval(toolLogTTL) <= now {
+                expired = true
+            }
             return ToolCallEvent(
                 tool: commandLabel(command),
                 argsJSON: command,
-                status: .ok,
-                resultText: nil,
-                resultTruncated: false,
+                status: denied || (exitCode ?? 0) != 0 ? .error : .ok,
+                resultText: expired ? nil : payload["snippet"] as? String,
+                resultTruncated: payload["truncated"] as? Bool ?? false,
                 startedAt: ts,
-                endedAt: nil
+                endedAt: nil,
+                exitCode: exitCode,
+                denied: denied,
+                expired: expired
             )
         }
         return ToolCallEvent(

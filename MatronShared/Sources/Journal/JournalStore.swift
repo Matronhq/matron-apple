@@ -135,6 +135,64 @@ public final class JournalStore: @unchecked Sendable {
             }
         }
         try migrator.migrate(dbQueue)
+        // Boot-time TTL sweep, mirroring the server's expire-logs job
+        // (matron-journal docs/protocol.md Retention): a cached live_log
+        // snippet must not outlive the 24h TTL just because this device
+        // never re-synced the row. Best-effort — a failed sweep must not
+        // block opening the store (the mapper's render-time TTL guard keeps
+        // the DISPLAY correct either way; the sweep is what cleans the disk).
+        do {
+            try purgeExpiredToolOutputSnippets()
+        } catch {
+            Self.logger.error("tool-output TTL sweep failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    // MARK: Tool-output TTL
+
+    /// Rewrites every `tool_output` event payload with `live_log: true`
+    /// older than 24h to the server's tombstone shape — snippet removed,
+    /// `expired: true`, `blob_ref: null` — and, when the purged event is
+    /// still the newest message-type event in its conversation, rewrites the
+    /// conversation-list preview to `$ <command>` exactly as the server
+    /// does. Idempotent: already-expired payloads are skipped. `now` is
+    /// injectable for tests only.
+    public func purgeExpiredToolOutputSnippets(now: Date = Date()) throws {
+        let cutoff = Int64(now.timeIntervalSince1970 * 1000) - Int64(24 * 3600 * 1000)
+        try dbQueue.write { db in
+            let rows = try EventRecord
+                .filter(Column("type") == JournalEventType.toolOutput && Column("ts") <= cutoff)
+                .fetchAll(db)
+            for var row in rows {
+                guard var payload = (try? JSONSerialization.jsonObject(with: row.payload)) as? [String: Any],
+                      payload["live_log"] as? Bool == true,
+                      payload["expired"] as? Bool != true
+                else { continue }
+                payload.removeValue(forKey: "snippet")
+                payload["expired"] = true
+                payload["blob_ref"] = NSNull()
+                row.payload = try JSONSerialization.data(withJSONObject: payload)
+                try row.update(db)
+
+                guard let command = payload["command"] as? String, !command.isEmpty,
+                      var convo = try ConversationRecord.fetchOne(db, key: row.convoID)
+                else { continue }
+                let newestMessageSeq = try Self.newestMessageSeq(db, convoID: row.convoID)
+                if newestMessageSeq == row.seq {
+                    convo.snippet = String("$ \(command)".prefix(120))
+                    try convo.update(db)
+                }
+            }
+        }
+    }
+
+    private static func newestMessageSeq(_ db: Database, convoID: String) throws -> Int64? {
+        let placeholders = JournalEventType.messageTypes.map { _ in "?" }.joined(separator: ",")
+        var arguments: [DatabaseValueConvertible] = [convoID]
+        arguments.append(contentsOf: Array(JournalEventType.messageTypes))
+        return try Int64.fetchOne(db, sql: """
+            SELECT MAX(seq) FROM event WHERE convo_id = ? AND type IN (\(placeholders))
+            """, arguments: StatementArguments(arguments))
     }
 
     // MARK: Cursor
