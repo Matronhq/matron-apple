@@ -62,6 +62,10 @@ final class FakeTimelineService: TimelineService, @unchecked Sendable {
     }
     func paginateBackward(requestSize: UInt16) async throws -> Bool { paginateCalls += 1; return false }
     func markAsRead() async throws { markReadCalls += 1 }
+
+    private let statusPair = AsyncStream<SessionStatusUpdate>.makeStream()
+    var statusContinuation: AsyncStream<SessionStatusUpdate>.Continuation { statusPair.continuation }
+    func sessionStatus() -> AsyncStream<SessionStatusUpdate> { statusPair.stream }
 }
 
 final class ComposerViewModelTests: XCTestCase {
