@@ -390,6 +390,8 @@ public actor JournalSyncEngine {
                         // up from /snapshot regardless of what the server does with
                         // the socket.
                         break frameLoop
+                    case .toolStream:
+                        break // fan-out lands with toolStreams(convoID:)
                     case .error, .helloOK, .unknownControl:
                         break // post-hello control frames are advisory
                     }
