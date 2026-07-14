@@ -67,6 +67,10 @@ struct ChatView: View {
     /// view model — consumed by the rows-populated observer, which
     /// resolves it via `proxy.scrollTo`.
     @State private var pendingRestoreID: String?
+    /// Debounced follow-tail self-heal scheduled when the bottom edge
+    /// leaves the screen with no user gesture — see the schedule site
+    /// in the geometry action.
+    @State private var followHealTask: Task<Void, Never>?
 
     final class VisibleRowsBox {
         var bottomID: String?
@@ -260,6 +264,36 @@ struct ChatView: View {
                 if isNearBottom != edges.nearBottom {
                     isNearBottom = edges.nearBottom
                     chatViewLogger.diag("near-bottom → \(edges.nearBottom) (\(visibleRows.geoDescription))")
+                    // Follow-tail self-heal. While following, the bottom
+                    // edge leaving the screen with NO user gesture is by
+                    // definition a layout artifact: LazyVStack's content-
+                    // height ESTIMATE swings wildly when the container
+                    // resizes (2026-07-14 06:51 trace: keyboard up →
+                    // contentH 115K→497K→286K→90K within seconds,
+                    // viewport stranded 2,000pt above the tail — read as
+                    // "everything disappeared"). No anchor role can hold
+                    // a viewport through a collapsing coordinate space,
+                    // so re-pin after the churn settles. Geometry-keyed
+                    // (unlike the retired round-6 anchor-id re-assert,
+                    // estimate churn can't disarm it), non-animated
+                    // (nothing to race), debounced 300ms (the trace
+                    // shows millisecond flicker pairs during
+                    // re-estimation that must not each fire a scroll).
+                    // A real user drag exits follow mode first, so
+                    // reading history is never yanked.
+                    if !edges.nearBottom, isFollowingTail {
+                        followHealTask?.cancel()
+                        followHealTask = Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 300_000_000)
+                            guard !Task.isCancelled, isFollowingTail, !isNearBottom,
+                                  let target = bottomScrollTargetID else { return }
+                            chatViewLogger.breadcrumb("follow-tail heal → \(target) (\(visibleRows.geoDescription))")
+                            proxy.scrollTo(target, anchor: .bottom)
+                        }
+                    } else {
+                        followHealTask?.cancel()
+                        followHealTask = nil
+                    }
                 }
                 // Backward-pagination trigger. Viewport geometry, not
                 // row ids: the retired design keyed this off the
@@ -459,6 +493,8 @@ struct ChatView: View {
         }
         .onDisappear {
             chatViewLogger.breadcrumb("chat view disappear room=\(viewModel.roomID) lastVisible=\(visibleRows.bottomID ?? "nil") following=\(isFollowingTail)")
+            followHealTask?.cancel()
+            followHealTask = nil
             // Capture the user's scroll position so the next open of
             // this room lands where they left off. A user in follow-tail
             // mode gets no entry — the default behaviour already opens

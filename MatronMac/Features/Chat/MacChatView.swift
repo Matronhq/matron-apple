@@ -67,6 +67,9 @@ struct MacChatView: View {
     /// Scroll-memory id waiting for the first row snapshot of a fresh
     /// view model — consumed by the rows-populated observer.
     @State private var pendingRestoreID: String?
+    /// Debounced follow-tail self-heal — see the schedule site in the
+    /// geometry action and iOS `ChatView` for the trace rationale.
+    @State private var followHealTask: Task<Void, Never>?
 
     final class VisibleRowsBox {
         var bottomID: String?
@@ -214,6 +217,24 @@ struct MacChatView: View {
                 if isNearBottom != edges.nearBottom {
                     isNearBottom = edges.nearBottom
                     paginateLogger.diag("near-bottom → \(edges.nearBottom) (\(visibleRows.geoDescription))")
+                    // Follow-tail self-heal: while following, losing the
+                    // bottom edge with no user gesture is a layout
+                    // artifact (LazyVStack content-height estimate churn
+                    // — see iOS ChatView, 2026-07-14 06:51 trace).
+                    // Geometry-keyed, non-animated, debounced 300ms.
+                    if !edges.nearBottom, isFollowingTail {
+                        followHealTask?.cancel()
+                        followHealTask = Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 300_000_000)
+                            guard !Task.isCancelled, isFollowingTail, !isNearBottom,
+                                  let target = bottomScrollTargetID else { return }
+                            paginateLogger.breadcrumb("follow-tail heal → \(target) (\(visibleRows.geoDescription))")
+                            proxy.scrollTo(target, anchor: .bottom)
+                        }
+                    } else {
+                        followHealTask?.cancel()
+                        followHealTask = nil
+                    }
                 }
                 // Backward-pagination trigger — viewport geometry; fires
                 // once per approach to the top edge (Equatable state),
@@ -357,6 +378,8 @@ struct MacChatView: View {
         }
         .onDisappear {
             paginateLogger.breadcrumb("chat view disappear room=\(viewModel.roomID) lastVisible=\(visibleRows.bottomID ?? "nil") following=\(isFollowingTail)")
+            followHealTask?.cancel()
+            followHealTask = nil
             // Persist the user's scroll position so the next open of
             // this room lands where they left off. A user in follow-tail
             // mode gets no entry — the default already opens at the
