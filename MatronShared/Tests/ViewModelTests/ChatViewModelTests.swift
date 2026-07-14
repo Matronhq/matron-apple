@@ -201,6 +201,21 @@ final class ChatViewModelTests: XCTestCase {
             vm.windowedRows.first { if case .message(let i) = $0 { return i.id == "m5" } ; return false },
             "restoring a remembered position must widen the window to cover it"
         )
+        XCTAssertTrue(
+            vm.isExtendingWindow,
+            """
+            the restore widening must hold isExtendingWindow through its \
+            layout pass — restore runs with follow-tail off, and without \
+            the flag the views' .sizeChanges anchor is nil while the \
+            prepend lands, letting the viewport jump before the restore \
+            scrollTo positions it
+            """
+        )
+        try await Task.sleep(nanoseconds: 400_000_000)
+        XCTAssertFalse(
+            vm.isExtendingWindow,
+            "the flag must release once the widening's layout pass is covered"
+        )
     }
 
     @MainActor

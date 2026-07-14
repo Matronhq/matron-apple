@@ -322,7 +322,12 @@ public final class ChatViewModel {
 
     /// Grows the window (without animation concerns — called before the
     /// view scrolls) so a remembered scroll position outside the default
-    /// tail window can actually be scrolled to on restore.
+    /// tail window can actually be scrolled to on restore. Holds
+    /// `isExtendingWindow` through the widening's layout pass exactly
+    /// like `extendHistoryWindow` above: restore runs with follow-tail
+    /// off, so without the flag the views' `.sizeChanges` anchor is
+    /// `nil` while the prepend lands and the viewport can jump before
+    /// the caller's `scrollTo` positions it (Bugbot, PR #18).
     public func ensureWindowContains(_ id: String) {
         let index = rows.lastIndex { row in
             if case .message(let item) = row { return item.id == id }
@@ -331,8 +336,13 @@ public final class ChatViewModel {
         guard let index else { return }
         let needed = rows.count - index + 20
         if needed > visibleWindowSize {
+            isExtendingWindow = true
             visibleWindowSize = needed
             recomputeWindow()
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                isExtendingWindow = false
+            }
         }
     }
 
