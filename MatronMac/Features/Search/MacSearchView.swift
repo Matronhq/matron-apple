@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import MatronDesignSystem
 import MatronViewModels
 
 /// Mac toolbar search field. Lives in the chat-window toolbar; a non-empty
@@ -14,10 +16,23 @@ struct MacSearchView: View {
 
     var body: some View {
         TextField("Search", text: $viewModel.query)
-            .textFieldStyle(.roundedBorder)
-            // Taller hit target than the default control height — the
-            // stock field read cramped at the top of the sidebar.
-            .controlSize(.large)
+            // Hand-rolled field so we control the height: a plain style with
+            // generous vertical padding on a warm rounded surface reads
+            // taller and less cramped than `.roundedBorder`/`.large` did at
+            // the top of the sidebar. The `matronBubbleBot` fill matches the
+            // bot-bubble / composer surface; a hairline separator stroke
+            // keeps it reading as a field.
+            .textFieldStyle(.plain)
+            .padding(.vertical, 7)
+            .padding(.horizontal, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.matronBubbleBot)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
+            )
             .frame(minWidth: 200)
             .focused($isFieldFocused)
             .onChange(of: viewModel.query) { _, _ in

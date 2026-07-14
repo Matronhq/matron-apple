@@ -20,6 +20,34 @@ import MatronViewModels
 struct MacComposerView: View {
     @State var viewModel: ComposerViewModel
 
+    /// Placeholder shown in the empty composer. Extracted to a single
+    /// constant because the Shift+Return key monitor scopes itself to *this*
+    /// field by matching the field editor's delegate `placeholderString`
+    /// against it — the TextField initializer and the monitor must read the
+    /// same value or the scope check silently breaks.
+    private static let placeholder = "Message…"
+
+    /// The input's vertical padding (top and bottom). Named so the
+    /// single-line height below stays tied to it: if the padding changes,
+    /// the accessory-button height follows.
+    private static let inputVerticalPadding: CGFloat = 8
+
+    /// Rendered height of a one-line input: the body font's line height plus
+    /// the input's vertical padding top and bottom. The paperclip and send
+    /// buttons pin their icon container to this so both accessories sit
+    /// centred against a single-line field (the HStack stays `.bottom`
+    /// aligned, so on a grown multi-line field they drop to the bottom edge).
+    private static var singleLineInputHeight: CGFloat {
+        let body = NSFont.preferredFont(forTextStyle: .body)
+        let lineHeight = ceil(body.ascender - body.descender + body.leading)
+        return lineHeight + inputVerticalPadding * 2
+    }
+
+    /// Token for the Shift+Return local key monitor, installed in
+    /// `.onAppear` and removed in `.onDisappear`. `Any?` because
+    /// `NSEvent.addLocalMonitorForEvents` returns an opaque object.
+    @State private var keyMonitor: Any?
+
     /// Internal so `MacComposerViewBindingTests` can pin the predicate
     /// without scraping SwiftUI internals (mirrors the iOS surface).
     var isSendable: Bool {
@@ -48,23 +76,51 @@ struct MacComposerView: View {
                         Image(systemName: "paperclip")
                             .font(.title3)
                             .foregroundStyle(.secondary)
-                            .padding(8)
+                            // Centre the icon in a one-line-tall container so
+                            // it lines up with the send button and the
+                            // single-line input; horizontal padding keeps the
+                            // hit target. See `singleLineInputHeight`.
+                            .frame(height: Self.singleLineInputHeight)
+                            .padding(.horizontal, 8)
                     }
                     .buttonStyle(.plain)
                     .help("Attach a file")
                 }
 
-                TextField("Message…", text: $viewModel.input, axis: .vertical)
+                TextField(Self.placeholder, text: $viewModel.input, axis: .vertical)
                     .lineLimit(1...8)
                     .textFieldStyle(.plain)
-                    .padding(8)
+                    .padding(Self.inputVerticalPadding)
                     // White (dark-mode: elevated warm) input surface, same
                     // as bot bubbles — `.regularMaterial` read muddy-dark
                     // against the cream timeline gradient. Matches
                     // matron-web's white composer on the cream ground.
                     .background(Color.matronBubbleBot)
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
                     .shadow(color: .matronBubbleShadow, radius: 2, y: 1)
+                    // Up recalls older sent messages (terminal-style), but
+                    // only from an empty field or once a walk is already
+                    // active — otherwise the caret moves through a multi-line
+                    // draft. Down walks forward, and only while navigating.
+                    .onKeyPress(.upArrow) {
+                        if viewModel.input.isEmpty || viewModel.isNavigatingHistory {
+                            viewModel.recallOlder()
+                            return .handled
+                        }
+                        return .ignored
+                    }
+                    .onKeyPress(.downArrow) {
+                        if viewModel.isNavigatingHistory {
+                            viewModel.recallNewer()
+                            return .handled
+                        }
+                        return .ignored
+                    }
+                    // Any user edit exits history navigation. The VM guards
+                    // its own recall writes so this doesn't fire falsely.
+                    .onChange(of: viewModel.input) { _, _ in
+                        viewModel.handleInputChange()
+                    }
 
                 Button {
                     Task { await viewModel.send() }
@@ -72,14 +128,18 @@ struct MacComposerView: View {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.title)
                         .foregroundStyle(isSendable ? Color.accentColor : Color.secondary)
+                        // Same one-line-tall container as the paperclip so
+                        // the arrow centres against a single-line input.
+                        .frame(height: Self.singleLineInputHeight)
                 }
                 .buttonStyle(.plain)
                 .disabled(!isSendable || viewModel.isSending)
                 .padding(.trailing, 4)
-                // Enter sends; Shift+Enter / Option+Enter inserts a
-                // newline (the TextField handles the modifier path
-                // natively — only plain Return is intercepted by this
-                // shortcut, matching Slack / Discord conventions).
+                // Enter sends; Shift+Enter inserts a newline. Plain Return is
+                // intercepted by this shortcut; the Shift+Return newline is
+                // handled by the local key monitor installed in `.onAppear`
+                // (the `axis: .vertical` TextField doesn't insert a newline
+                // for Shift+Return on its own), matching Slack / Discord.
                 .keyboardShortcut(.return, modifiers: [])
             }
             .padding()
@@ -101,7 +161,36 @@ struct MacComposerView: View {
         // clears the entry inside `store(roomID:text:)` so a sent
         // composer doesn't ghost text into the next visit.
         .onDisappear {
+            // Mid-walk, `input` shows a recalled sent line, not the user's
+            // draft — restore the stashed draft first so the store below
+            // persists the real one.
+            viewModel.exitHistoryNavigation()
             ComposerDraftMemory.store(roomID: viewModel.roomID, text: viewModel.input)
+            if let keyMonitor {
+                NSEvent.removeMonitor(keyMonitor)
+                self.keyMonitor = nil
+            }
+        }
+        // Shift+Return inserts a newline at the caret. A local key monitor
+        // (rather than a `.keyboardShortcut`) is needed because SwiftUI's
+        // `axis: .vertical` TextField doesn't newline on Shift+Return on its
+        // own, and a shortcut can't insert at the caret position. The
+        // monitor is scoped to THIS composer by matching the field editor's
+        // delegate placeholder against `placeholder`, so the sidebar search
+        // field (a different NSTextField) keeps plain Return behaviour.
+        .onAppear {
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                guard event.keyCode == 36,  // 36 = Return
+                      event.modifierFlags.contains(.shift),
+                      let textView = NSApp.keyWindow?.firstResponder as? NSTextView,
+                      textView.isFieldEditor,
+                      let field = textView.delegate as? NSTextField,
+                      field.placeholderString == Self.placeholder else {
+                    return event
+                }
+                textView.insertText("\n", replacementRange: textView.selectedRange())
+                return nil
+            }
         }
     }
 

@@ -109,6 +109,11 @@ struct MacChatListView: View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebarColumn
                 .frame(minWidth: 260, idealWidth: 340)
+                // Drop the system sidebar-collapse toolbar button. The
+                // ⌘⇧S menu item / `.toggleSidebar` notification handler
+                // still collapses the sidebar; only the redundant toolbar
+                // chevron is removed.
+                .toolbar(removing: .sidebarToggle)
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) {
                         Button { showingNewChat = true } label: {
