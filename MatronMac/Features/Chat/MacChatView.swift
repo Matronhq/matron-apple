@@ -252,6 +252,17 @@ struct MacChatView: View {
             // `VisibleRowsBox`.
             .onScrollTargetVisibilityChange(idType: String.self) { visibleIDs in
                 visibleRows.bottomID = visibleIDs.last
+                // History-reveal trigger #2 — the window's first row is
+                // actually on screen. Keeps firing while the user sits
+                // at the top, which the near-top edge transition can't
+                // (fast flicks park in the bounce before the extend
+                // applies and the edge never re-fires — 07:23 iOS
+                // trace). See iOS ChatView.
+                if !isFollowingTail,
+                   let firstID = viewModel.windowedRows.first?.id,
+                   visibleIDs.contains(firstID) {
+                    Task { await viewModel.extendHistoryWindow() }
+                }
             }
             // Gesture-driven follow-mode transitions. Only a real drag
             // exits the mode; re-armed by settling near the bottom
@@ -346,9 +357,6 @@ struct MacChatView: View {
                     JumpToBottomButton {
                         isFollowingTail = true
                         paginateLogger.breadcrumb("follow-tail ON (jump button, \(visibleRows.geoDescription))")
-                        // Returning to the tail — snap the history window
-                        // back so the eager stack stays small.
-                        viewModel.resetHistoryWindow()
                         // NOT animated — animated scrollTo against
                         // estimated lazy layout silently no-ops; see the
                         // iOS jump button comment.
@@ -356,6 +364,22 @@ struct MacChatView: View {
                             proxy.scrollTo(target, anchor: .bottom)
                         }
                         ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
+                        // Re-assert after momentum dies — a jump issued
+                        // mid-deceleration is swallowed by the in-flight
+                        // scroll (07:23 iOS trace, four dead presses).
+                        // No window reset here: swapping `windowedRows`
+                        // mid-scroll rebuilds the layout under the
+                        // jump's feet; `onDisappear` owns the trim.
+                        followHealTask?.cancel()
+                        followHealTask = Task { @MainActor in
+                            for delayMs: UInt64 in [150, 500] {
+                                try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
+                                guard !Task.isCancelled, isFollowingTail, !isNearBottom,
+                                      let target = bottomScrollTargetID else { return }
+                                paginateLogger.breadcrumb("jump re-assert → \(target) (\(visibleRows.geoDescription))")
+                                proxy.scrollTo(target, anchor: .bottom)
+                            }
+                        }
                     }
                 }
             }

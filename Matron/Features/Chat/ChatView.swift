@@ -319,6 +319,21 @@ struct ChatView: View {
             // state here would re-evaluate the body per scroll tick).
             .onScrollTargetVisibilityChange(idType: String.self) { visibleIDs in
                 visibleRows.bottomID = visibleIDs.last
+                // History-reveal trigger #2: the window's FIRST row is
+                // actually on screen. Visibility keeps firing while the
+                // user sits at the top, which the near-top edge
+                // transition can't do — a fast flick parks in the top
+                // bounce before the extend applies, the edge state never
+                // re-transitions, and extension stalls after one step
+                // (07:23 device trace: window stuck at 240 of 628, chat
+                // looked like it "ended"). Row visibility is ground
+                // truth under eager layout; `extendHistoryWindow`
+                // self-dedups.
+                if !isFollowingTail,
+                   let firstID = viewModel.windowedRows.first?.id,
+                   visibleIDs.contains(firstID) {
+                    Task { await viewModel.extendHistoryWindow() }
+                }
             }
             // Gesture-driven follow-mode transitions. Only a real drag
             // exits the mode — programmatic scrolls and layout drift
@@ -468,16 +483,34 @@ struct ChatView: View {
                         // "I tap it and nothing happens") while the
                         // non-animated keyboard re-pin moved the same
                         // distance instantly.
-                        // Jumping to the tail is also the moment to snap
-                        // the history window back to its default size —
-                        // rows revealed while reading up would otherwise
-                        // keep the eager stack large for the rest of the
-                        // session.
-                        viewModel.resetHistoryWindow()
                         if let target = bottomScrollTargetID {
                             proxy.scrollTo(target, anchor: .bottom)
                         }
                         ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
+                        // A jump issued while the scroll view is still
+                        // decelerating (or in the top rubber-band) is
+                        // swallowed by the in-flight scroll — four
+                        // consecutive dead presses in the 07:23 device
+                        // trace, each mid-bounce, while the settled
+                        // press landed instantly. Re-assert after the
+                        // deceleration has had time to die; geometry
+                        // (`isNearBottom`) tells us whether the first
+                        // attempt actually landed. Reuses the heal task
+                        // slot so jump and heal never fight.
+                        // (Window reset deliberately does NOT happen
+                        // here — swapping `windowedRows` mid-scroll
+                        // rebuilt the layout under the jump's feet;
+                        // `onDisappear` owns the trim.)
+                        followHealTask?.cancel()
+                        followHealTask = Task { @MainActor in
+                            for delayMs: UInt64 in [150, 500] {
+                                try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
+                                guard !Task.isCancelled, isFollowingTail, !isNearBottom,
+                                      let target = bottomScrollTargetID else { return }
+                                chatViewLogger.breadcrumb("jump re-assert → \(target) (\(visibleRows.geoDescription))")
+                                proxy.scrollTo(target, anchor: .bottom)
+                            }
+                        }
                     }
                 }
             }
