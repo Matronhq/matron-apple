@@ -238,12 +238,13 @@ struct MacChatView: View {
                         followHealTask = nil
                     }
                 }
-                // Backward-pagination trigger — viewport geometry; fires
-                // once per approach to the top edge (Equatable state),
-                // re-armed when the prepended page pushes the threshold
-                // away. The topmost row's `.onAppear` remains as a
-                // backstop; `paginateBackward` dedups re-entry.
-                if edges.nearTop {
+                // History-reveal trigger — viewport geometry; fires once
+                // per approach to the top edge (Equatable state),
+                // re-armed when the revealed rows push the threshold
+                // away. `!isFollowingTail` gates out layout churn: only
+                // a user who has actually dragged away from the tail can
+                // be reading toward the top (see iOS ChatView).
+                if edges.nearTop, !isFollowingTail {
                     Task { await viewModel.extendHistoryWindow() }
                 }
             }
@@ -345,6 +346,9 @@ struct MacChatView: View {
                     JumpToBottomButton {
                         isFollowingTail = true
                         paginateLogger.breadcrumb("follow-tail ON (jump button, \(visibleRows.geoDescription))")
+                        // Returning to the tail — snap the history window
+                        // back so the eager stack stays small.
+                        viewModel.resetHistoryWindow()
                         // NOT animated — animated scrollTo against
                         // estimated lazy layout silently no-ops; see the
                         // iOS jump button comment.
@@ -408,6 +412,10 @@ struct MacChatView: View {
                 ChatScrollPositionMemory.store(roomID: viewModel.roomID, itemID: id)
             } else {
                 ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
+                // Off-screen and at the tail — shrink the cached VM's
+                // window back to the default for the next open (a reader
+                // mid-history keeps theirs; see iOS ChatView).
+                viewModel.resetHistoryWindow()
             }
             // Generation-guarded: the VM is cached per room (ChatVMCache),
             // and on a same-room remount SwiftUI can run the NEW view's
@@ -470,7 +478,7 @@ struct MacChatView: View {
 
 }
 
-/// The timeline's `LazyVStack` + `ForEach`, fenced off behind
+/// The timeline's eager `VStack` + `ForEach`, fenced off behind
 /// `Equatable` so the parent's scroll-state churn (follow-mode /
 /// edge-proximity flips) can't
 /// re-evaluate every mounted row (see the call site in
@@ -489,7 +497,12 @@ private struct MacTimelineListContent: View, Equatable {
     }
 
     var body: some View {
-        LazyVStack(spacing: 8) {
+        // Eager `VStack`, NOT `LazyVStack` — the window bounds the row
+        // count, and eager layout makes content height exact instead of
+        // estimated (the estimate churn is what kept teleporting the
+        // viewport; see the iOS twin in `ChatView.swift` for the full
+        // rationale and device-trace evidence).
+        VStack(spacing: 8) {
             // Render `rows` (messages interleaved with date
             // separators) instead of `items` directly. Mirrors
             // the iOS surface — the bucketing logic lives in
@@ -533,13 +546,9 @@ private struct MacTimelineListContent: View, Equatable {
                         answerSummary: { viewModel.answerSummary(forPrompt: $0) }
                     )
                         .id(item.id)
-                        .onAppear {
-                            let match = (item.id == viewModel.firstWindowedItemID)
-                            paginateLogger.diag("onAppear: id=\(item.id) firstWindowed=\(viewModel.firstWindowedItemID ?? "nil") match=\(match)")
-                            if match {
-                                Task { await viewModel.extendHistoryWindow() }
-                            }
-                        }
+                        // No `.onAppear` history trigger — an eager stack
+                        // mounts every row immediately; the near-top
+                        // geometry check in `MacChatView` owns extension.
                         .contextMenu {
                             if case .text(let body, _) = item.kind {
                                 Button {

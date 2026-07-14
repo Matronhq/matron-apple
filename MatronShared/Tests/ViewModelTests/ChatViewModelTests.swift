@@ -160,16 +160,22 @@ final class ChatViewModelTests: XCTestCase {
         if case .separator? = vm.windowedRows.first {} else {
             XCTFail("a window cut mid-day must re-synthesize its leading date separator")
         }
-        XCTAssertEqual(
-            vm.firstWindowedItemID, "m80",
-            "the visual-top trigger id must be the window's first message, not the timeline's"
-        )
-
         await vm.extendHistoryWindow()
         XCTAssertEqual(
             vm.windowedRows.count, 201,
             "extending must reveal older local rows without a network fetch"
         )
+
+        vm.resetHistoryWindow()
+        XCTAssertEqual(
+            vm.windowedRows.count, 121,
+            "returning to the tail must snap the window back to its steady-state size"
+        )
+        if case .message(let lastItem)? = vm.windowedRows.last {
+            XCTAssertEqual(lastItem.id, "m199", "a reset window is still the TAIL slice")
+        } else {
+            XCTFail("a reset window must end on the newest message")
+        }
     }
 
     @MainActor

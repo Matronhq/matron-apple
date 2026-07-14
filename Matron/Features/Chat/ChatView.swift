@@ -298,16 +298,18 @@ struct ChatView: View {
                         followHealTask = nil
                     }
                 }
-                // Backward-pagination trigger. Viewport geometry, not
-                // row ids: the retired design keyed this off the
+                // History-reveal trigger. Viewport geometry, not row
+                // ids: the retired design keyed this off the
                 // scroll-position binding's per-tick anchor value.
                 // Edge-transition semantics (Equatable state) fire this
-                // once per approach; the prepended page pushes
+                // once per approach; the revealed rows push
                 // `visibleRect.minY` back past the threshold, re-arming
-                // it. The topmost row's `.onAppear` in
-                // `TimelineListContent` remains as a backstop, and
-                // `paginateBackward` itself dedups re-entry.
-                if edges.nearTop {
+                // it. `!isFollowingTail` gates out layout churn: while
+                // pinned to the tail the top edge can only "approach"
+                // through transient geometry (short chats, mid-collapse
+                // estimates) — only a user who has actually dragged away
+                // from the tail can be reading toward the top.
+                if edges.nearTop, !isFollowingTail {
                     Task { await viewModel.extendHistoryWindow() }
                 }
             }
@@ -466,6 +468,12 @@ struct ChatView: View {
                         // "I tap it and nothing happens") while the
                         // non-animated keyboard re-pin moved the same
                         // distance instantly.
+                        // Jumping to the tail is also the moment to snap
+                        // the history window back to its default size —
+                        // rows revealed while reading up would otherwise
+                        // keep the eager stack large for the rest of the
+                        // session.
+                        viewModel.resetHistoryWindow()
                         if let target = bottomScrollTargetID {
                             proxy.scrollTo(target, anchor: .bottom)
                         }
@@ -514,8 +522,8 @@ struct ChatView: View {
             // Explicit paginate-on-open BEFORE markAsRead. The store seeds
             // the timeline with whatever's mirrored locally (possibly
             // nothing, e.g. right after a snapshot_required wipe), so this
-            // fetches the first page over HTTP; the topmost-row `.onAppear`
-            // trigger handles SUBSEQUENT history loads as they scroll.
+            // fetches the first page over HTTP; the near-top geometry
+            // trigger handles SUBSEQUENT history reveals as they scroll.
             // Ordered ahead of `markAsRead()` because that rides the live
             // socket — a half-dead socket can hang the send for its whole
             // timeout, and history loading must not wait on it.
@@ -535,6 +543,12 @@ struct ChatView: View {
                 ChatScrollPositionMemory.store(roomID: viewModel.roomID, itemID: id)
             } else {
                 ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
+                // Off-screen and back at the tail: shrink the cached VM's
+                // history window so the next open renders the small
+                // default, not everything revealed last visit. (A reader
+                // mid-history keeps theirs — the restore path needs those
+                // rows via `ensureWindowContains`.)
+                viewModel.resetHistoryWindow()
             }
             // Generation-guarded: the VM is cached per room (ChatVMCache in
             // ChatListView), and on a same-room remount SwiftUI can run the
@@ -623,7 +637,7 @@ struct ChatView: View {
 
 }
 
-/// The timeline's `LazyVStack` + `ForEach`, fenced off behind
+/// The timeline's eager `VStack` + `ForEach`, fenced off behind
 /// `Equatable` so the parent's scroll-state churn (follow-mode /
 /// edge-proximity flips) can't re-evaluate every mounted row (see the
 /// call site in `ChatView.body`).
@@ -641,15 +655,23 @@ private struct TimelineListContent: View, Equatable {
     }
 
     var body: some View {
-        LazyVStack(spacing: 8) {
+        // Eager `VStack`, NOT `LazyVStack`: with the timeline windowed to
+        // ~120 rows, laziness buys nothing and costs exactness — a lazy
+        // stack only measures materialized rows and *guesses* the rest
+        // from their average, and with rows spanning 40pt one-liners to
+        // multi-thousand-point bot replies that guess swung the content
+        // height 41K↔494K pt on every keyboard resize even inside the
+        // window (device trace 2026-07-14 07:08), teleporting the
+        // viewport. Eager layout makes content height exact, so every
+        // scroll-anchor role holds precisely.
+        VStack(spacing: 8) {
             // Render `rows` (messages interleaved with date
             // separators) instead of `items` directly. The
             // separator stream is computed on the view-model
             // so iOS and Mac don't have to duplicate the
             // calendar-day bucketing.
-            // `windowedRows`, NOT `rows`: rendering the full timeline is
-            // what destabilized the scroll layer (content-height
-            // estimate churn — see `ChatViewModel.windowedRows`).
+            // `windowedRows`, NOT `rows`: the window bounds how many rows
+            // this eager stack lays out (see `ChatViewModel.windowedRows`).
             ForEach(viewModel.windowedRows) { row in
                 switch row {
                 case .separator(let date):
@@ -677,26 +699,12 @@ private struct TimelineListContent: View, Equatable {
                         answerSummary: { viewModel.answerSummary(forPrompt: $0) }
                     )
                         .id(item.id)
-                        // Infinite-scroll backward pagination
-                        // trigger. Compares against
-                        // `firstRenderableItemID` (the first
-                        // non-`.stateChange` item) rather than
-                        // `items.first?.id` — Matrix room
-                        // timelines virtually always start
-                        // with `.stateChange` rows (room
-                        // create / encryption setup) that the
-                        // view filters out, so the raw
-                        // `items.first` comparison never
-                        // matched any rendered row and
-                        // scroll-up paginate silently never
-                        // fired. See
-                        // `ChatViewModel.firstRenderableItemID`
-                        // for the full rationale.
-                        .onAppear {
-                            if item.id == viewModel.firstWindowedItemID {
-                                Task { await viewModel.extendHistoryWindow() }
-                            }
-                        }
+                        // No `.onAppear` history trigger here: row
+                        // materialization is not evidence the user
+                        // scrolled anywhere (an eager stack mounts every
+                        // row immediately), so window extension is driven
+                        // solely by the scroll-geometry near-top check in
+                        // `ChatView`.
                         .contextMenu {
                             if case .text(let body, _) = item.kind {
                                 Button {

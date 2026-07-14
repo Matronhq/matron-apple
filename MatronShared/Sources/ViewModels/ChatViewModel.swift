@@ -122,27 +122,28 @@ public final class ChatViewModel {
     public private(set) var rows: [TimelineRow] = []
 
     /// The tail slice of `rows` the views actually render. Rendering the
-    /// full timeline is what made the scroll layer unstable: LazyVStack
-    /// derives its content-height ESTIMATE from whichever rows happen to
-    /// be mounted, and with hundreds of wildly heterogeneous rows the
-    /// estimate swung 5x on every container resize (2026-07-14 06:51
-    /// device trace: keyboard up → contentH 115K→497K→90K, viewport
-    /// stranded 2,000pt off the tail). A ~120-row window keeps the
-    /// estimation error small and bounded — the standard chat-app
-    /// approach. Older rows reveal via `extendHistoryWindow()`.
+    /// full timeline is what made the scroll layer unstable: hundreds of
+    /// wildly heterogeneous rows in a lazy stack swung the content-height
+    /// estimate 5x on every container resize (2026-07-14 06:51 device
+    /// trace: keyboard up → contentH 115K→497K→90K, viewport stranded
+    /// 2,000pt off the tail). The window bounds the row count so the
+    /// views can afford to lay every row out EAGERLY (plain `VStack`) —
+    /// exact heights, no estimates, nothing to churn — the standard
+    /// chat-app approach. Older rows reveal via `extendHistoryWindow()`.
     public private(set) var windowedRows: [TimelineRow] = []
 
-    /// First message id inside the render window — the views' "user
-    /// reached the visual top" trigger compares against this (NOT
-    /// `firstRenderableItemID`, which is the first row of the full local
-    /// timeline and usually far outside the window).
-    public private(set) var firstWindowedItemID: TimelineItem.ID?
-
     /// Current render-window size in rows. Grows via
-    /// `extendHistoryWindow()` / `ensureWindowContains(_:)`; never
-    /// shrinks within a session (shrinking under a scrolled-up user
-    /// would yank content out from beneath them).
-    public private(set) var visibleWindowSize = 120
+    /// `extendHistoryWindow()` / `ensureWindowContains(_:)` while the
+    /// user reads history; never shrinks while they're up there
+    /// (yanking rows from beneath a reader). It snaps back to
+    /// `defaultWindowSize` via `resetHistoryWindow()` when the user
+    /// returns to the tail (jump button) or leaves the room while
+    /// following it, so the eager stack stays small in steady state.
+    public private(set) var visibleWindowSize = ChatViewModel.defaultWindowSize
+
+    /// Steady-state render-window size, sized so the eager stack's
+    /// layout cost stays negligible.
+    private static let defaultWindowSize = 120
 
     /// How many rows each `extendHistoryWindow()` reveals.
     private static let windowGrowthStep = 120
@@ -264,22 +265,17 @@ public final class ChatViewModel {
         recomputeWindow()
     }
 
-    /// Rebuilds `windowedRows` (+ `firstWindowedItemID`) from `rows` and
-    /// the current window size. If the window cut lands mid-day, a
-    /// leading date separator for the first visible message is
-    /// re-synthesized so the window never opens on a context-free bubble
-    /// (separator ids are deterministic per-day, so this is stable
-    /// across recomputes).
+    /// Rebuilds `windowedRows` from `rows` and the current window size.
+    /// If the window cut lands mid-day, a leading date separator for the
+    /// first visible message is re-synthesized so the window never opens
+    /// on a context-free bubble (separator ids are deterministic
+    /// per-day, so this is stable across recomputes).
     private func recomputeWindow() {
         var window = Array(rows.suffix(visibleWindowSize))
         if case .message(let firstItem)? = window.first {
             window.insert(.separator(date: firstItem.timestamp), at: 0)
         }
         self.windowedRows = window
-        self.firstWindowedItemID = window.lazy.compactMap { row -> TimelineItem.ID? in
-            if case .message(let item) = row { return item.id }
-            return nil
-        }.first
     }
 
     /// Reveals older content when the user nears the visual top: grows
@@ -306,10 +302,22 @@ public final class ChatViewModel {
         if visibleWindowSize < rows.count {
             isExtendingWindow = true
             visibleWindowSize = min(rows.count, visibleWindowSize + Self.windowGrowthStep)
+            Self.logger.diag("window extend (post-paginate) → \(visibleWindowSize) rows (of \(rows.count) local)")
             recomputeWindow()
             try? await Task.sleep(nanoseconds: 150_000_000)
             isExtendingWindow = false
         }
+    }
+
+    /// Snaps the render window back to its steady-state size. Called by
+    /// the views only at moments when no reader can be up in history —
+    /// the jump-to-bottom tap and leaving the room while following the
+    /// tail — so shrinking never removes rows anyone is looking at.
+    public func resetHistoryWindow() {
+        guard visibleWindowSize != Self.defaultWindowSize else { return }
+        Self.logger.diag("window reset \(visibleWindowSize) → \(Self.defaultWindowSize) rows")
+        visibleWindowSize = Self.defaultWindowSize
+        recomputeWindow()
     }
 
     /// Grows the window (without animation concerns — called before the
