@@ -352,4 +352,40 @@ final class ComposerViewModelTests: XCTestCase {
         vm.selectFolder("/srv/app")
         XCTAssertEqual(vm.input, "/workdir /srv/app")
     }
+
+    @MainActor
+    func test_selectFolder_dismissesPalette() {
+        let store = emptyRecentFolders()
+        store.record("~/yearbook-app")
+        store.record("~/yearbook-api")
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: store)
+        vm.input = "/start ~/y"
+        XCTAssertFalse(vm.folderSuggestions.isEmpty)
+
+        // Picking a folder must close the palette even though the completed
+        // path still prefix-matches sibling recents (~/yearbook-api).
+        vm.selectFolder("~/yearbook-app")
+        XCTAssertTrue(vm.folderSuggestions.isEmpty)
+        XCTAssertFalse(vm.showPalette)
+
+        // ...and editing again re-enables suggestions.
+        vm.input = "/start ~/year"
+        XCTAssertFalse(vm.folderSuggestions.isEmpty)
+    }
+
+    @MainActor
+    func test_folderSuggestions_omitFullyTypedPath() {
+        let store = emptyRecentFolders()
+        store.record("~/yearbook-app")
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: store)
+        // A hand-typed complete path offers nothing to complete — the
+        // palette must not linger over the composer.
+        vm.input = "/start ~/YEARBOOK-APP"
+        XCTAssertTrue(vm.folderSuggestions.isEmpty)
+        XCTAssertFalse(vm.showPalette)
+    }
 }

@@ -123,9 +123,21 @@ public final class ComposerViewModel {
     /// a `/start` or `/workdir` command followed by a single (possibly
     /// empty) partial path token. Empty otherwise.
     public var folderSuggestions: [String] {
-        guard let partial = folderCompletionPartial else { return [] }
-        return Array(recentFolders.matches(prefix: partial).prefix(8))
+        guard input != folderSuggestionsSuppressedFor,
+              let partial = folderCompletionPartial else { return [] }
+        // A suggestion identical to what's already typed offers nothing —
+        // filtering it also keeps the palette from lingering over the
+        // composer once a path is complete (picked or fully typed).
+        let matches = recentFolders.matches(prefix: partial)
+            .filter { $0.caseInsensitiveCompare(partial) != .orderedSame }
+        return Array(matches.prefix(8))
     }
+
+    /// Input string for which folder suggestions are suppressed — set by
+    /// `selectFolder` so the palette closes on pick instead of re-matching
+    /// the completed path. Self-clearing: any edit changes `input` and the
+    /// equality gate stops applying.
+    private var folderSuggestionsSuppressedFor: String?
 
     /// Rewrites the input so the trailing partial path token is replaced by
     /// the chosen folder, keeping everything typed before it (the command
@@ -137,6 +149,7 @@ public final class ComposerViewModel {
         } else {
             input = path
         }
+        folderSuggestionsSuppressedFor = input
         palettePinnedOpen = false
     }
 
