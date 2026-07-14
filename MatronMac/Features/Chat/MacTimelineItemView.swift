@@ -135,6 +135,9 @@ struct MacTimelineItemView: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Tool call: \(evt.tool)"))
 
+        case .diff:
+            EmptyView() // Task 7 renders DiffCard here
+
         case .liveOutput(_, let evt):
             // Wider than ToolCallCard — terminal output wants columns.
             // Session from the shared store so LazyVStack row recycling

@@ -38,11 +38,7 @@ public enum JournalTimelineMapper {
             }
 
         case JournalEventType.diff:
-            let text = payload["diff"] as? String ?? payload["snippet"] as? String ?? ""
-            kind = .toolCall(eventID: String(event.seq), ToolCallEvent(
-                tool: "diff", argsJSON: "{}", status: .ok,
-                resultText: text, resultTruncated: payload["truncated"] as? Bool ?? false,
-                startedAt: event.ts, endedAt: event.ts))
+            kind = .diff(eventID: String(event.seq), DiffEvent.parse(payload: payload))
 
         case JournalEventType.prompt:
             kind = .askUser(eventID: String(event.seq), askUserEvent(fromPrompt: payload))

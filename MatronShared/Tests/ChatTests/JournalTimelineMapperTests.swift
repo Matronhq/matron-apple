@@ -173,6 +173,34 @@ final class JournalTimelineMapperTests: XCTestCase {
         XCTAssertEqual(tool.tool, "cd")
     }
 
+    func testDiffEventMapsToRichDiffKind() throws {
+        let item = try XCTUnwrap(map(event(42, type: "diff", payload: [
+            "file_path": "/w/Sources/A.swift",
+            "display_path": "Sources/A.swift",
+            "viewer_url": "https://v.example/view?token=t",
+            "tool": "Edit",
+            "diff": "@@ -1,1 +1,1 @@\n-a\n+b",
+            "added": 1, "removed": 1,
+            "truncated": false, "new_file": false,
+        ])))
+        guard case .diff(let eventID, let evt) = item.kind else {
+            return XCTFail("expected .diff, got \(item.kind)")
+        }
+        XCTAssertEqual(eventID, "42")
+        XCTAssertEqual(evt.filename, "A.swift")
+        XCTAssertEqual(evt.added, 1)
+        XCTAssertFalse(item.isOwn)
+    }
+
+    func testBareDiffPayloadStillRenders() throws {
+        let item = try XCTUnwrap(map(event(43, type: "diff", payload: ["diff": "+only"])))
+        guard case .diff(_, let evt) = item.kind else {
+            return XCTFail("expected .diff, got \(item.kind)")
+        }
+        XCTAssertEqual(evt.diff, "+only")
+        XCTAssertNil(evt.filename)
+    }
+
     func testConvoMetaIsSkippedInTimeline() throws {
         XCTAssertNil(map(event(5, type: "convo_meta", payload: ["title": "New title"])),
                      "convo_meta updates the conversation row, not the timeline")
