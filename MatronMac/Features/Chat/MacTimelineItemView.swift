@@ -123,12 +123,11 @@ struct MacTimelineItemView: View {
             .padding(.vertical, 4)
 
         case .toolCall(_, let evt):
-            // Same cap as the live-output tiles — a card narrower than the
-            // surrounding message bubbles reads as cramped. Hugs content,
-            // so small tool calls stay small.
+            // Fills the width like a normal message bubble (Dan, 2026-07-14)
+            // — the terminal-style result block wants the room.
             HStack {
                 ToolCallCard(event: evt)
-                    .frame(maxWidth: 560, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal)
@@ -136,12 +135,11 @@ struct MacTimelineItemView: View {
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Tool call: \(evt.tool)"))
 
         case .diff(_, let evt):
-            // File-edit diff snippet — bot-aligned, same width cap as the
-            // tool cards (Dan, 2026-07-14). DiffCard hugs its content, so
-            // a three-line fix stays small.
+            // File-edit diff snippet — bot-aligned, fills the width like a
+            // normal message bubble (Dan, 2026-07-14).
             HStack {
                 DiffCard(event: evt)
-                    .frame(maxWidth: 560, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal)
@@ -150,23 +148,23 @@ struct MacTimelineItemView: View {
                 for: item, body: DiffCard.accessibilitySummary(for: evt)))
 
         case .liveOutput(_, let evt):
-            // Wider than ToolCallCard — terminal output wants columns.
-            // Session from the shared store so LazyVStack row recycling
-            // reattaches to accumulated output instead of replaying.
+            // Fills the width like a normal message bubble — terminal output
+            // wants columns. Session from the shared store so LazyVStack row
+            // recycling reattaches to accumulated output instead of replaying.
             HStack {
                 LiveOutputCard(session: LiveOutputSessionStore.shared.session(for: evt),
                                eventTimestamp: item.timestamp)
-                    .frame(maxWidth: 560, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal)
 
         case .toolStreamLive(_, let command, let text, let headTruncated):
-            // Ephemeral live tile (journal tool_stream) — same width as the
-            // legacy liveOutput tile.
+            // Ephemeral live tile (journal tool_stream) — fills the width
+            // like the liveOutput tile.
             HStack {
                 ToolStreamCard(command: command, text: text, headTruncated: headTruncated)
-                    .frame(maxWidth: 560, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal)
