@@ -46,11 +46,22 @@ struct MacChatToolbar: ToolbarContent {
                 }
                 // Horizontal padding so the title doesn't butt against the
                 // rounded ends of the macOS 26 glass toolbar-item capsule.
-                Text(title)
-                    .font(.headline)
-                    .padding(.horizontal, 10)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                // The bridge machine's logged-in account email rides under
+                // the title when the status frame carries it.
+                VStack(spacing: 0) {
+                    Text(title)
+                        .font(.headline)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if let email = status?.email {
+                        Text(email)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+                .padding(.horizontal, 10)
                 if let limits = status?.limits, !limits.isEmpty {
                     UsageBarsView(limits: limits, scale: .compact)
                         .layoutPriority(1)

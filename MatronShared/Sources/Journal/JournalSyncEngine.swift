@@ -468,7 +468,8 @@ public actor JournalSyncEngine {
                                 convoID: update.convoID,
                                 model: update.model ?? held.model,
                                 context: update.context ?? held.context,
-                                limits: update.limits ?? held.limits
+                                limits: update.limits ?? held.limits,
+                                email: update.email ?? held.email
                             )
                         } else {
                             lastSessionStatus[update.convoID] = update

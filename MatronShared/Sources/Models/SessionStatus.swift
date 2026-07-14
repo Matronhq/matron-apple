@@ -41,11 +41,16 @@ public struct SessionStatus: Equatable, Sendable {
     public var model: String?
     public var context: Context?
     public var limits: [Limit]?
+    /// Logged-in account email on the bridge's machine (read from
+    /// ~/.claude.json's oauthAccount). Absent when the bridge can't read
+    /// it — e.g. API-key accounts.
+    public var email: String?
 
-    public init(model: String? = nil, context: Context? = nil, limits: [Limit]? = nil) {
+    public init(model: String? = nil, context: Context? = nil, limits: [Limit]? = nil, email: String? = nil) {
         self.model = model
         self.context = context
         self.limits = limits
+        self.email = email
     }
 
     /// Merge an update: each part replaces the held value only when the
@@ -54,6 +59,7 @@ public struct SessionStatus: Equatable, Sendable {
         if let model = update.model { self.model = model }
         if let context = update.context { self.context = context }
         if let limits = update.limits { self.limits = limits }
+        if let email = update.email { self.email = email }
     }
 }
 
@@ -65,11 +71,16 @@ public struct SessionStatusUpdate: Equatable, Sendable {
     public let model: String?
     public let context: SessionStatus.Context?
     public let limits: [SessionStatus.Limit]?
+    public let email: String?
 
-    public init(convoID: String, model: String?, context: SessionStatus.Context?, limits: [SessionStatus.Limit]?) {
+    /// No parameter defaults, deliberately: every constructor names every
+    /// field, so merge sites (SessionStatus.apply, the sync engine's
+    /// replay cache) can't silently drop a newly added one.
+    public init(convoID: String, model: String?, context: SessionStatus.Context?, limits: [SessionStatus.Limit]?, email: String?) {
         self.convoID = convoID
         self.model = model
         self.context = context
         self.limits = limits
+        self.email = email
     }
 }
