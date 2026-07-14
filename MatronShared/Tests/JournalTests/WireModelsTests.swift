@@ -138,6 +138,18 @@ final class WireModelsTests: XCTestCase {
         XCTAssertEqual((send["payload"] as? [String: Any])?["body"] as? String, "hi")
         XCTAssertEqual(send["local_id"] as? String, "L1")
 
+        let media = try obj(.sendMedia(convoID: "c1", type: "image", blobRef: "b9",
+                                       name: "cat.png", contentType: "image/png", size: 42, localID: "L2"))
+        XCTAssertEqual(media["op"] as? String, "send")
+        XCTAssertEqual(media["type"] as? String, "image")
+        XCTAssertEqual(media["blob_ref"] as? String, "b9")
+        XCTAssertEqual(media["local_id"] as? String, "L2")
+        let mediaPayload = media["payload"] as? [String: Any]
+        XCTAssertEqual(mediaPayload?["blob_ref"] as? String, "b9")
+        XCTAssertEqual(mediaPayload?["name"] as? String, "cat.png")
+        XCTAssertEqual(mediaPayload?["content_type"] as? String, "image/png")
+        XCTAssertEqual(mediaPayload?["size"] as? Int, 42)
+
         let reply = try obj(.promptReply(convoID: "c1", targetSeq: 40, choice: "yes", text: nil))
         XCTAssertEqual(reply["target_seq"] as? Int64, 40)
         XCTAssertEqual(reply["choice"] as? String, "yes")

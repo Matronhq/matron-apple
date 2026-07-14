@@ -531,11 +531,23 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
     }
 
     public func sendImage(_ data: Data, filename: String, mimeType: String) async throws {
-        throw JournalChatError.mediaNotSupported
+        try await sendMedia(data, filename: filename, mimeType: mimeType, type: "image")
     }
 
     public func sendFile(_ data: Data, filename: String, mimeType: String) async throws {
-        throw JournalChatError.mediaNotSupported
+        try await sendMedia(data, filename: filename, mimeType: mimeType, type: "file")
+    }
+
+    /// Uploads the bytes to `POST /media` and sends the returned `blob_ref`
+    /// as a media `send` op. `type` is the wire kind (`"image"` for
+    /// `image/*`, `"file"` otherwise) — the caller (`sendImage`/`sendFile`)
+    /// has already made that split. The op's `payload` carries the
+    /// filename, content type and byte size alongside the blob ref.
+    private func sendMedia(_ data: Data, filename: String, mimeType: String, type: String) async throws {
+        let blobRef = try await api.uploadMedia(data, contentType: mimeType)
+        try await engine.sendOp(.sendMedia(convoID: convoID, type: type, blobRef: blobRef,
+                                           name: filename, contentType: mimeType,
+                                           size: data.count, localID: UUID().uuidString))
     }
 
     public func paginateBackward(requestSize: UInt16) async throws -> Bool {

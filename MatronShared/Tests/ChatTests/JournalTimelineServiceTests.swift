@@ -308,27 +308,63 @@ final class JournalTimelineServiceTests: XCTestCase {
         await engine.endSync()
     }
 
-    // MARK: sendImage / sendFile throw mediaNotSupported
+    // MARK: sendFile / sendImage upload the bytes then send a media op
 
-    func testSendImageAndSendFileThrowMediaNotSupported() async throws {
+    /// Builds a service whose `api` uploads to a stubbed `POST /media`
+    /// returning `mediaID`, with a live socket to capture the emitted op.
+    private func makeMediaService(mediaID: String, socket: FakeJournalSocket)
+        throws -> (JournalTimelineService, JournalSyncEngine) {
         let store = try makeStore()
-        let api = JournalAPI(serverURL: URL(string: "https://x")!)
-        let engine = makeEngine(store: store, connector: FakeJournalConnector([]), api: api)
+        socket.serve(helloOK(0))
+        PaginateStubURLProtocol.responses = ["/media": (200, #"{"media_id":"\#(mediaID)"}"#)]
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [PaginateStubURLProtocol.self]
+        let api = JournalAPI(serverURL: URL(string: "https://x")!, urlSession: URLSession(configuration: config))
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([socket]), api: api)
         let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api, session: makeSession())
+        return (service, engine)
+    }
 
-        do {
-            try await service.sendImage(Data(), filename: "x.png", mimeType: "image/png")
-            XCTFail("expected throw")
-        } catch {
-            XCTAssertEqual(error as? JournalChatError, .mediaNotSupported)
-        }
+    func testSendFileUploadsMediaAndSendsFileOp() async throws {
+        let socket = FakeJournalSocket()
+        let (service, engine) = try makeMediaService(mediaID: "blob-9", socket: socket)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
 
-        do {
-            try await service.sendFile(Data(), filename: "x.bin", mimeType: "application/octet-stream")
-            XCTFail("expected throw")
-        } catch {
-            XCTAssertEqual(error as? JournalChatError, .mediaNotSupported)
-        }
+        try await service.sendFile(Data("hello".utf8), filename: "notes.txt", mimeType: "text/plain")
+
+        try await waitUntil { socket.lastSentObject?["op"] as? String == "send" }
+        let sent = socket.lastSentObject
+        XCTAssertEqual(sent?["type"] as? String, "file")
+        XCTAssertEqual(sent?["blob_ref"] as? String, "blob-9")
+        XCTAssertEqual(sent?["convo_id"] as? String, "c1")
+        XCTAssertNotNil(sent?["local_id"] as? String)
+        let payload = sent?["payload"] as? [String: Any]
+        XCTAssertEqual(payload?["blob_ref"] as? String, "blob-9")
+        XCTAssertEqual(payload?["name"] as? String, "notes.txt")
+        XCTAssertEqual(payload?["content_type"] as? String, "text/plain")
+        XCTAssertEqual(payload?["size"] as? Int, 5)
+
+        await engine.endSync()
+    }
+
+    func testSendImageUploadsMediaAndSendsImageOp() async throws {
+        let socket = FakeJournalSocket()
+        let (service, engine) = try makeMediaService(mediaID: "blob-img", socket: socket)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        try await service.sendImage(Data("PNGBYTES".utf8), filename: "cat.png", mimeType: "image/png")
+
+        try await waitUntil { socket.lastSentObject?["op"] as? String == "send" }
+        let sent = socket.lastSentObject
+        XCTAssertEqual(sent?["type"] as? String, "image")
+        XCTAssertEqual(sent?["blob_ref"] as? String, "blob-img")
+        let payload = sent?["payload"] as? [String: Any]
+        XCTAssertEqual(payload?["content_type"] as? String, "image/png")
+        XCTAssertEqual(payload?["size"] as? Int, 8)
+
+        await engine.endSync()
     }
 
     // MARK: paginateBackward inserts history + feeds search, returns false on an empty page

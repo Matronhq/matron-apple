@@ -271,6 +271,12 @@ public enum ServerFrame: Equatable, Sendable {
 public enum ClientOp: Equatable, Sendable {
     case hello(token: String, cursor: Int64?)
     case send(convoID: String, body: String, localID: String)
+    /// A media `send`: `type` is the wire kind (`"file"` or `"image"`),
+    /// `blobRef` the id from a prior `POST /media` upload. Emitted both at
+    /// the top level and inside `payload` (alongside name / content type /
+    /// size) per the server's media-send contract.
+    case sendMedia(convoID: String, type: String, blobRef: String,
+                   name: String, contentType: String, size: Int, localID: String)
     case promptReply(convoID: String, targetSeq: Int64, choice: String?, text: String?)
     case readMarker(convoID: String, upToSeq: Int64)
     case ack(cursor: Int64)
@@ -284,6 +290,11 @@ public enum ClientOp: Equatable, Sendable {
         case let .send(convoID, body, localID):
             obj = ["op": "send", "convo_id": convoID, "type": "text",
                    "payload": ["body": body], "local_id": localID]
+        case let .sendMedia(convoID, type, blobRef, name, contentType, size, localID):
+            obj = ["op": "send", "convo_id": convoID, "type": type, "blob_ref": blobRef,
+                   "payload": ["blob_ref": blobRef, "name": name,
+                               "content_type": contentType, "size": NSNumber(value: size)],
+                   "local_id": localID]
         case let .promptReply(convoID, targetSeq, choice, text):
             obj = ["op": "prompt_reply", "convo_id": convoID,
                    "target_seq": NSNumber(value: targetSeq),

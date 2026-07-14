@@ -185,6 +185,32 @@ final class JournalAPITests: XCTestCase {
         XCTAssertEqual(String(decoding: data, as: UTF8.self), "PNGDATA")
     }
 
+    func testUploadMediaPostsRawBytesAndReturnsMediaID() async throws {
+        StubURLProtocol.responses = ["/media": (200, #"{"media_id":"m-123","size":3,"content_type":"image/png","sha256":"ab"}"#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let mediaID = try await api.uploadMedia(Data("PNG".utf8), contentType: "image/png")
+        XCTAssertEqual(mediaID, "m-123")
+        XCTAssertEqual(StubURLProtocol.lastRequest?.url?.path, "/media")
+        XCTAssertEqual(StubURLProtocol.lastRequest?.httpMethod, "POST")
+        XCTAssertEqual(StubURLProtocol.lastRequest?.value(forHTTPHeaderField: "Content-Type"), "image/png")
+        XCTAssertEqual(StubURLProtocol.lastRequest?.value(forHTTPHeaderField: "Authorization"), "Bearer t")
+        // The bytes ride verbatim as the raw request body (not JSON-wrapped).
+        XCTAssertEqual(StubURLProtocol.lastRequestBody, Data("PNG".utf8))
+    }
+
+    func testUploadMediaMapsErrorStatus() async throws {
+        StubURLProtocol.responses = ["/media": (401, #"{"error":"unauthenticated"}"#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        do {
+            _ = try await api.uploadMedia(Data("x".utf8), contentType: "application/octet-stream")
+            XCTFail("expected throw")
+        } catch let error as JournalAPIError {
+            XCTAssertEqual(error, .unauthenticated)
+        }
+    }
+
     // MARK: Path-prefix preservation (bugbot "Homeserver path prefix dropped")
 
     func testServerPathPrefixIsPreservedOnRequests() async throws {
