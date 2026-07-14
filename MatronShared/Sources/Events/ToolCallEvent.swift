@@ -119,3 +119,56 @@ public struct ToolCallEvent: Equatable, Sendable {
         )
     }
 }
+
+public extension ToolCallEvent {
+    /// The Bash-tool command string: present when `argsJSON` is a JSON
+    /// object carrying a string value under `"command"`, `nil` for every
+    /// other shape (already-flattened journal `tool_output` commands, other
+    /// tools, malformed JSON). The expanded card shows this raw command in
+    /// its "Command" block instead of the `{"command": …}` JSON wrapper.
+    var commandString: String? {
+        Self.argsObject(from: argsJSON)?["command"] as? String
+    }
+
+    /// One-line argument summary for the collapsed card header. Reads
+    /// `argsJSON` as a JSON object and prefers the human-readable form:
+    /// - a string under `"command"` (the Bash shape) is shown verbatim;
+    /// - an object with exactly one entry whose value is a string is shown
+    ///   compactly as `key: value` (e.g. `{"file_path": …}`);
+    /// - anything else falls back to the raw JSON.
+    /// The chosen string is then collapsed to a single line and truncated to
+    /// 80 characters. Nullary tools (`argsJSON == "{}"`) summarise to "".
+    var argSummary: String {
+        // Nullary tools normalise to exactly "{}" at parse time — show
+        // nothing rather than a meaningless brace pair next to the name.
+        guard argsJSON != "{}" else { return "" }
+        let oneLine = Self.summaryCandidate(from: argsJSON)
+            .replacingOccurrences(of: "\n", with: " ")
+        return oneLine.count > 80 ? String(oneLine.prefix(77)) + "…" : oneLine
+    }
+
+    /// Parse `argsJSON` back into a `[String: Any]`, or `nil` when it isn't a
+    /// JSON object (already-flattened command strings like `"make test"`
+    /// parse to `nil`).
+    private static func argsObject(from argsJSON: String) -> [String: Any]? {
+        guard let data = argsJSON.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return obj
+    }
+
+    /// The un-truncated, still-multiline summary string — see `argSummary`
+    /// for the shape rules. One-lining and truncation are the caller's job.
+    private static func summaryCandidate(from argsJSON: String) -> String {
+        if let obj = argsObject(from: argsJSON) {
+            if let command = obj["command"] as? String {
+                return command
+            }
+            if obj.count == 1, let key = obj.keys.first,
+               let value = obj[key] as? String {
+                return "\(key): \(value)"
+            }
+        }
+        return argsJSON
+    }
+}

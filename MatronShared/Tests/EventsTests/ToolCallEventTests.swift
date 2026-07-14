@@ -151,6 +151,67 @@ final class ToolCallEventTests: XCTestCase {
         XCTAssertNil(ToolCallEvent.parse(content: content))
     }
 
+    // MARK: argSummary / commandString shapes (collapsed header + Command block)
+
+    func test_argSummary_bashCommandShape_showsCommandVerbatim() {
+        // JSON object with a string "command" (the Bash tool shape) →
+        // the command string alone, no JSON braces or quoting.
+        let evt = makeEvent(argsJSON: #"{ "command": "ls -la /tmp" }"#)
+        XCTAssertEqual(evt.argSummary, "ls -la /tmp")
+        XCTAssertEqual(evt.commandString, "ls -la /tmp")
+    }
+
+    func test_argSummary_singleStringValue_showsKeyColonValue() {
+        // Object with exactly one entry whose value is a string →
+        // compact `key: value`. No "command" key, so commandString is nil.
+        let evt = makeEvent(argsJSON: #"{ "file_path": "/etc/hosts" }"#)
+        XCTAssertEqual(evt.argSummary, "file_path: /etc/hosts")
+        XCTAssertNil(evt.commandString)
+    }
+
+    func test_argSummary_multiKeyObject_fallsBackToTrimmedJSON() {
+        // Multiple keys and no "command" → the raw JSON, newlines collapsed
+        // to spaces (the pre-existing fallback behaviour).
+        let json = """
+        {
+          "new_string" : "Y",
+          "old_string" : "X"
+        }
+        """
+        let evt = makeEvent(argsJSON: json)
+        XCTAssertEqual(evt.argSummary, "{   \"new_string\" : \"Y\",   \"old_string\" : \"X\" }")
+        XCTAssertNil(evt.commandString)
+    }
+
+    func test_argSummary_truncatesTo80Chars() {
+        // Long command strings still one-line and truncate at 80 (77 + "…").
+        let long = String(repeating: "x", count: 200)
+        let evt = makeEvent(argsJSON: "{ \"command\": \"\(long)\" }")
+        XCTAssertEqual(evt.argSummary, String(repeating: "x", count: 77) + "…")
+    }
+
+    func test_argSummary_emptyArgs_isBlank() {
+        // Nullary tools normalise to "{}" — no summary next to the name.
+        XCTAssertEqual(makeEvent(argsJSON: "{}").argSummary, "")
+    }
+
+    func test_argSummary_flattenedCommand_isNotAnObject() {
+        // Journal tool_output shapes arrive already-flattened (not JSON);
+        // they aren't a JSON object, so they pass through verbatim and
+        // commandString stays nil.
+        let evt = makeEvent(argsJSON: "make test")
+        XCTAssertEqual(evt.argSummary, "make test")
+        XCTAssertNil(evt.commandString)
+    }
+
+    private func makeEvent(argsJSON: String) -> ToolCallEvent {
+        ToolCallEvent(
+            tool: "Bash", argsJSON: argsJSON, status: .ok,
+            resultText: nil, resultTruncated: false,
+            startedAt: Date(timeIntervalSince1970: 1), endedAt: nil
+        )
+    }
+
     func test_equatable_pinsAllFields() {
         // Sanity-check the auto-synthesised Equatable — a future
         // refactor that adds a stored property without updating the
