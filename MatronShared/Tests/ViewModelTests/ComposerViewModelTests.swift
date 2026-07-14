@@ -143,7 +143,13 @@ final class ComposerViewModelTests: XCTestCase {
         // to "/start " (trailing space). The palette's old check trimmed
         // whitespace, collapsing the input back to a single token starting
         // with `/`, which re-opened the palette immediately.
-        let vm = ComposerViewModel(roomID: "!test:s", timeline: FakeTimelineService(), commands: BotCommandCatalog.claudeBridge)
+        //
+        // With recent-folder completion, "/start " enters folder-suggestion
+        // mode, so an *empty* store is injected to pin the "no suggestions →
+        // palette stays closed" outcome deterministically.
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: emptyRecentFolders())
         let cmd = BotCommand(trigger: "/start", summary: "x", argHint: "[workdir]")
         vm.selectCommand(cmd)
         XCTAssertEqual(vm.input, "/start ")
@@ -156,7 +162,11 @@ final class ComposerViewModelTests: XCTestCase {
         // Tightened version of the regression above: typing the command
         // followed by a space (without the user even hitting an argument)
         // should hide the palette so it doesn't cover the next character.
-        let vm = ComposerViewModel(roomID: "!test:s", timeline: FakeTimelineService(), commands: BotCommandCatalog.claudeBridge)
+        // An empty recent-folder store keeps folder-suggestion mode from
+        // opening the palette here (folder completion has its own tests).
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: emptyRecentFolders())
         vm.input = "/start "
         XCTAssertFalse(vm.showPalette)
     }
@@ -233,5 +243,176 @@ final class ComposerViewModelTests: XCTestCase {
         XCTAssertEqual(fake.sentFiles.count, 1, "attachFiles should dispatch one file")
         XCTAssertEqual(fake.sentFiles.first?.sizeBytes, 2, "the 2-byte payload should reach the timeline intact")
         XCTAssertNil(vm.sendError, "non-scoped tmp URL should round-trip cleanly")
+    }
+
+    // MARK: - Recent-folder completion
+
+    /// A recent-folder store backed by a throwaway UserDefaults suite so
+    /// tests never touch `.standard`. Empty unless the test records into it.
+    @MainActor
+    private func emptyRecentFolders() -> RecentStartFolders {
+        let suite = UserDefaults(suiteName: "test.composer.folders.\(UUID().uuidString)")!
+        return RecentStartFolders(defaults: suite)
+    }
+
+    @MainActor
+    func test_recentFolderArgument_extractsPath() {
+        XCTAssertEqual(ComposerViewModel.recentFolderArgument(from: "/start ~/x"), "~/x")
+    }
+
+    @MainActor
+    func test_recentFolderArgument_skipsLeadingFlags() {
+        XCTAssertEqual(ComposerViewModel.recentFolderArgument(from: "/start --browser ~/x"), "~/x")
+    }
+
+    @MainActor
+    func test_recentFolderArgument_workdirAbsolutePath() {
+        XCTAssertEqual(ComposerViewModel.recentFolderArgument(from: "/workdir /abs/path"), "/abs/path")
+    }
+
+    @MainActor
+    func test_recentFolderArgument_flagOnly_isNil() {
+        XCTAssertNil(ComposerViewModel.recentFolderArgument(from: "/start --claude"))
+    }
+
+    @MainActor
+    func test_recentFolderArgument_acceptsBangPrefix() {
+        XCTAssertEqual(ComposerViewModel.recentFolderArgument(from: "!start ~/x"), "~/x")
+    }
+
+    @MainActor
+    func test_recentFolderArgument_plainText_isNil() {
+        XCTAssertNil(ComposerViewModel.recentFolderArgument(from: "just a message"))
+    }
+
+    @MainActor
+    func test_recentFolderArgument_commandWithoutArg_isNil() {
+        XCTAssertNil(ComposerViewModel.recentFolderArgument(from: "/start"))
+    }
+
+    @MainActor
+    func test_send_recordsStartFolder_thenSuggested() async {
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: emptyRecentFolders())
+        vm.input = "/start ~/yearbook-app"
+        await vm.send()
+
+        // Typing the command + a matching partial surfaces the recorded folder.
+        vm.input = "/start ~/y"
+        XCTAssertTrue(vm.showPalette)
+        XCTAssertEqual(vm.folderSuggestions, ["~/yearbook-app"])
+    }
+
+    @MainActor
+    func test_folderSuggestions_emptyPartial_returnsAllRecents() {
+        let store = emptyRecentFolders()
+        store.record("~/one")
+        store.record("~/two")
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: store)
+        vm.input = "/workdir "
+        XCTAssertTrue(vm.showPalette)
+        // Most-recent-first: "~/two" was recorded last.
+        XCTAssertEqual(vm.folderSuggestions, ["~/two", "~/one"])
+    }
+
+    @MainActor
+    func test_folderSuggestions_gatedToStartAndWorkdir() {
+        let store = emptyRecentFolders()
+        store.record("~/proj")
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: store)
+        // Not a folder command: no suggestions even though a folder is stored.
+        vm.input = "/status ~/p"
+        XCTAssertTrue(vm.folderSuggestions.isEmpty)
+        // A second token before the partial (flag) doesn't qualify either.
+        vm.input = "/start --browser ~/p"
+        XCTAssertTrue(vm.folderSuggestions.isEmpty)
+    }
+
+    @MainActor
+    func test_selectFolder_replacesTrailingPartial_noTrailingSpace() {
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: emptyRecentFolders())
+        vm.input = "/start ~/y"
+        vm.selectFolder("~/yearbook-app")
+        XCTAssertEqual(vm.input, "/start ~/yearbook-app")
+    }
+
+    @MainActor
+    func test_selectFolder_emptyPartial_appendsPath() {
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: emptyRecentFolders())
+        vm.input = "/workdir "
+        vm.selectFolder("/srv/app")
+        XCTAssertEqual(vm.input, "/workdir /srv/app")
+    }
+
+    @MainActor
+    func test_selectFolder_dismissesPalette() {
+        let store = emptyRecentFolders()
+        store.record("~/yearbook-app")
+        store.record("~/yearbook-api")
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: store)
+        vm.input = "/start ~/y"
+        XCTAssertFalse(vm.folderSuggestions.isEmpty)
+
+        // Picking a folder must close the palette even though the completed
+        // path still prefix-matches sibling recents (~/yearbook-api).
+        vm.selectFolder("~/yearbook-app")
+        XCTAssertTrue(vm.folderSuggestions.isEmpty)
+        XCTAssertFalse(vm.showPalette)
+
+        // ...and editing again re-enables suggestions.
+        vm.input = "/start ~/year"
+        XCTAssertFalse(vm.folderSuggestions.isEmpty)
+    }
+
+    @MainActor
+    func test_folderSuppression_clearsOnSendAndOnEdit() async {
+        let store = emptyRecentFolders()
+        store.record("~/yearbook-app")
+        store.record("~/yearbook-app-v2")
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: store)
+        vm.input = "/start ~/year"
+        vm.selectFolder("~/yearbook-app")
+        XCTAssertTrue(vm.folderSuggestions.isEmpty, "post-pick suppression hides the longer sibling")
+        await vm.send()
+
+        // Re-typing the identical line after a send must complete again —
+        // the suppression must not outlive the send.
+        vm.input = "/start ~/yearbook-app"
+        vm.handleInputChange()
+        XCTAssertEqual(vm.folderSuggestions, ["~/yearbook-app-v2"])
+
+        // And a differing edit lifts suppression too.
+        vm.selectFolder("~/yearbook-app-v2")
+        XCTAssertTrue(vm.folderSuggestions.isEmpty)
+        vm.input = "/start ~/yearbook-app"
+        vm.handleInputChange()
+        XCTAssertFalse(vm.folderSuggestions.isEmpty)
+    }
+
+    @MainActor
+    func test_folderSuggestions_omitFullyTypedPath() {
+        let store = emptyRecentFolders()
+        store.record("~/yearbook-app")
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: store)
+        // A hand-typed complete path offers nothing to complete — the
+        // palette must not linger over the composer.
+        vm.input = "/start ~/YEARBOOK-APP"
+        XCTAssertTrue(vm.folderSuggestions.isEmpty)
+        XCTAssertFalse(vm.showPalette)
     }
 }

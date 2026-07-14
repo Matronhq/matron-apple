@@ -27,19 +27,27 @@ public enum BotCommandCatalog {
     /// Static catalog for the Claude bridge. In Phase 5+ this becomes
     /// config-driven (per-bot, served by the bridge or its provisioner).
     public static let claudeBridge: [BotCommand] = [
-        BotCommand(trigger: "/start", summary: "Start a Claude Code session", argHint: "[workdir]"),
+        // Sessions
+        BotCommand(trigger: "/start", summary: "Start a new session", argHint: "[workdir]"),
         BotCommand(trigger: "/stop", summary: "Stop the current session"),
-        BotCommand(trigger: "/restart", summary: "Restart and resume the session"),
+        BotCommand(trigger: "/restart", summary: "Stop and immediately resume the session"),
         BotCommand(trigger: "/resume", summary: "Resume a previous session", argHint: "[n|id]"),
         BotCommand(trigger: "/sessions", summary: "List past sessions"),
-        BotCommand(trigger: "/workdir", summary: "Change working directory", argHint: "<path>"),
-        BotCommand(trigger: "/status", summary: "Show session info"),
-        BotCommand(trigger: "/working", summary: "Toggle tool-call visibility"),
+        BotCommand(trigger: "/workdir", summary: "Start a session in a different directory", argHint: "<path>"),
+        // Info
+        BotCommand(trigger: "/status", summary: "Show current session info"),
+        BotCommand(trigger: "/agent", summary: "Show the current agent"),
+        BotCommand(trigger: "/working", summary: "Toggle tool call visibility"),
         BotCommand(trigger: "/mcp", summary: "Show MCP server status"),
         BotCommand(trigger: "/model", summary: "Show current model"),
+        BotCommand(trigger: "/effort", summary: "Show or set effort level", argHint: "[level]"),
+        BotCommand(trigger: "/mode", summary: "Show or switch interactive vs print", argHint: "[interactive|print]"),
         BotCommand(trigger: "/cost", summary: "Show session cost"),
         BotCommand(trigger: "/usage", summary: "Show token usage"),
+        BotCommand(trigger: "/limits", summary: "Show subscription usage limits"),
         BotCommand(trigger: "/tools", summary: "List available tools"),
+        // Misc
+        BotCommand(trigger: "/esc", summary: "Cancel the current turn"),
         BotCommand(trigger: "/help", summary: "Show command help"),
     ]
 

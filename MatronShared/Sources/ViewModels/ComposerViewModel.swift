@@ -41,6 +41,13 @@ public final class ComposerViewModel {
     /// for the view.
     private let history = SentMessageHistory()
 
+    /// Persistent recent-folder store powering `/start` / `/workdir`
+    /// completion. Injected (defaulting to the `.standard`-backed store)
+    /// so tests can point it at a throwaway UserDefaults suite. Unlike
+    /// `history`, this survives app relaunches — folders are worth
+    /// remembering across sessions.
+    private let recentFolders: RecentStartFolders
+
     /// The last value `recallOlder`/`recallNewer` wrote into `input`. The
     /// view's `onChange(of: input)` can't tell a programmatic recall write
     /// from a user keystroke by timing (SwiftUI defers `onChange` past the
@@ -60,10 +67,16 @@ public final class ComposerViewModel {
     private let timeline: TimelineService
     private let commands: [BotCommand]
 
-    public init(roomID: String, timeline: TimelineService, commands: [BotCommand]) {
+    public init(
+        roomID: String,
+        timeline: TimelineService,
+        commands: [BotCommand],
+        recentFolders: RecentStartFolders = RecentStartFolders()
+    ) {
         self.roomID = roomID
         self.timeline = timeline
         self.commands = commands
+        self.recentFolders = recentFolders
     }
 
     /// Whether the slash palette should be visible. True when the input is
@@ -78,6 +91,11 @@ public final class ComposerViewModel {
     /// arguments" → palette closed.
     public var showPalette: Bool {
         if palettePinnedOpen { return true }
+        // Folder-completion mode: `/start`/`/workdir` followed by a partial
+        // path with at least one matching recent folder. Takes priority
+        // over the command list (which only shows for single-token input,
+        // so the two never both qualify).
+        if !folderSuggestions.isEmpty { return true }
         let leading = input.drop(while: { $0 == " " || $0 == "\t" })
         guard leading.hasPrefix("/") || leading.hasPrefix("!") else { return false }
         return leading.split(separator: " ", omittingEmptySubsequences: false).count == 1
@@ -100,6 +118,82 @@ public final class ComposerViewModel {
         palettePinnedOpen = false
     }
 
+    /// Recent-folder suggestions for the current input, limited to a
+    /// palette-friendly count. Non-empty only in folder-completion mode:
+    /// a `/start` or `/workdir` command followed by a single (possibly
+    /// empty) partial path token. Empty otherwise.
+    public var folderSuggestions: [String] {
+        guard input != folderSuggestionsSuppressedFor,
+              let partial = folderCompletionPartial else { return [] }
+        // A suggestion identical to what's already typed offers nothing —
+        // filtering it also keeps the palette from lingering over the
+        // composer once a path is complete (picked or fully typed).
+        let matches = recentFolders.matches(prefix: partial)
+            .filter { $0.caseInsensitiveCompare(partial) != .orderedSame }
+        return Array(matches.prefix(8))
+    }
+
+    /// Input string for which folder suggestions are suppressed — set by
+    /// `selectFolder` so the palette closes on pick instead of re-matching
+    /// the completed path. Cleared on any differing edit
+    /// (`handleInputChange`) and on a successful `send()`, so a later
+    /// re-type of the identical command line completes normally.
+    private var folderSuggestionsSuppressedFor: String?
+
+    /// Rewrites the input so the trailing partial path token is replaced by
+    /// the chosen folder, keeping everything typed before it (the command
+    /// and any flags). No trailing space is appended — the caret sits at
+    /// the end of the path so the user can send or keep editing.
+    public func selectFolder(_ path: String) {
+        if let range = input.range(of: "\\S*$", options: .regularExpression) {
+            input.replaceSubrange(range, with: path)
+        } else {
+            input = path
+        }
+        folderSuggestionsSuppressedFor = input
+        palettePinnedOpen = false
+    }
+
+    /// The partial path token when the input is in folder-completion mode:
+    /// a `/start`/`/workdir` command (either `/` or `!` prefix) followed by
+    /// whitespace and at most one more token with no trailing whitespace.
+    /// Returns the (possibly empty) partial token, or `nil` when the input
+    /// isn't such a command line. Flag-laden inputs (a second token before
+    /// the partial) don't qualify — the `\S*` tail must be the only
+    /// argument token so far.
+    private var folderCompletionPartial: String? {
+        let leading = Substring(input.drop(while: { $0 == " " || $0 == "\t" }))
+        guard let first = leading.first, first == "/" || first == "!" else { return nil }
+        let body = leading.dropFirst()
+        // The command name runs up to the first whitespace; there must be
+        // whitespace after it for the command to be complete.
+        guard let commandEnd = body.firstIndex(where: { $0.isWhitespace }) else { return nil }
+        let command = body[body.startIndex..<commandEnd]
+        guard command == "start" || command == "workdir" else { return nil }
+        // Everything after the separating whitespace is the partial arg; it
+        // must be a single token (no further whitespace).
+        let partial = body[commandEnd...].drop(while: { $0.isWhitespace })
+        guard !partial.contains(where: { $0.isWhitespace }) else { return nil }
+        return String(partial)
+    }
+
+    /// Extracts the folder-path argument to record from a sent `/start` or
+    /// `/workdir` command line (either `/` or `!` prefix), or `nil` when the
+    /// line isn't such a command or carries no path. Leading `--flag`
+    /// tokens (e.g. `--claude`, `--codex`, `--browser`) are skipped; the
+    /// first non-flag token is the path. Returns `nil` when only flags
+    /// follow the command. A pure function so it unit-tests directly.
+    static func recentFolderArgument(from text: String) -> String? {
+        let trimmed = Substring(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard let first = trimmed.first, first == "/" || first == "!" else { return nil }
+        let tokens = trimmed.dropFirst().split(whereSeparator: { $0.isWhitespace })
+        guard let command = tokens.first, command == "start" || command == "workdir" else { return nil }
+        for token in tokens.dropFirst() where !token.hasPrefix("--") {
+            return String(token)
+        }
+        return nil
+    }
+
     /// Sends the trimmed input as a text message. No-op for empty input.
     /// On failure, records `sendError` and preserves the input so the user
     /// can retry. On success, also drops the per-room draft entry so a
@@ -115,9 +209,15 @@ public final class ComposerViewModel {
             // Record the sent line for Up/Down recall before clearing the
             // field. `record` also ends any in-progress walk.
             history.record(trimmed, room: roomID)
+            // If this was a `/start`/`/workdir` with a folder argument,
+            // remember the folder for future completion.
+            if let folder = Self.recentFolderArgument(from: trimmed) {
+                recentFolders.record(folder)
+            }
             input = ""
             lastRecalledValue = nil
             isNavigatingHistory = false
+            folderSuggestionsSuppressedFor = nil
             sendError = nil
             ComposerDraftMemory.forget(roomID: roomID)
         } catch {
@@ -150,6 +250,12 @@ public final class ComposerViewModel {
     /// exits history navigation, matching terminals where typing abandons
     /// the recalled line.
     public func handleInputChange() {
+        // Any differing edit lifts the post-pick folder suppression so the
+        // suppressed string doesn't linger and block a later identical
+        // command line (e.g. re-typed after a send).
+        if let suppressed = folderSuggestionsSuppressedFor, input != suppressed {
+            folderSuggestionsSuppressedFor = nil
+        }
         if input == lastRecalledValue { return }
         lastRecalledValue = nil
         if isNavigatingHistory {

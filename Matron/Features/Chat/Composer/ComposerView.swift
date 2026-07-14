@@ -28,9 +28,12 @@ struct ComposerView: View {
     var body: some View {
         VStack(spacing: 0) {
             if viewModel.showPalette {
-                SlashCommandPalette(commands: viewModel.filteredCommands) { cmd in
-                    viewModel.selectCommand(cmd)
-                }
+                SlashCommandPalette(
+                    commands: viewModel.filteredCommands,
+                    folders: viewModel.folderSuggestions,
+                    onSelect: { cmd in viewModel.selectCommand(cmd) },
+                    onSelectFolder: { folder in viewModel.selectFolder(folder) }
+                )
                 .padding(.horizontal)
                 .padding(.bottom, 4)
             }
