@@ -211,6 +211,89 @@ final class JournalStoreTests: XCTestCase {
                        "history rows above readUpToSeq must count as unread")
     }
 
+    // MARK: Tool-output TTL sweep (protocol.md binding client rules)
+
+    private func toolOutputPayload(snippet: String? = "output text",
+                                   command: String = "make test",
+                                   liveLog: Bool = true) -> [String: Any] {
+        var p: [String: Any] = [
+            "message_ref": "toolu_1", "command": command,
+            "exit_code": 1, "denied": false, "truncated": false,
+            "blob_ref": "blob-1",
+        ]
+        if liveLog { p["live_log"] = true }
+        if let snippet { p["snippet"] = snippet }
+        return p
+    }
+
+    private func storedPayload(_ store: JournalStore, seq: Int64) throws -> [String: Any] {
+        let e = try XCTUnwrap(try store.events(convoID: "c1").first { $0.seq == seq })
+        return e.payload
+    }
+
+    func testPurgeRewritesStaleLiveLogToTombstone() throws {
+        let store = try makeStore()
+        // The event helper stamps ts = seq seconds after epoch, so seq 1 is
+        // ancient relative to any injected `now` past 1970-01-02.
+        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()))
+        try store.purgeExpiredToolOutputSnippets(
+            now: Date(timeIntervalSince1970: 1).addingTimeInterval(25 * 3600))
+
+        let payload = try storedPayload(store, seq: 1)
+        XCTAssertNil(payload["snippet"])
+        XCTAssertEqual(payload["expired"] as? Bool, true)
+        XCTAssertTrue(payload["blob_ref"] is NSNull, "tombstone nulls the blob ref")
+        XCTAssertEqual(payload["command"] as? String, "make test",
+                       "what ran and how it exited survive the purge")
+        XCTAssertEqual((payload["exit_code"] as? NSNumber)?.intValue, 1)
+    }
+
+    func testPurgeLeavesYoungAndNonLiveLogRows() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload(liveLog: false)))
+        try store.applyJournal(event(2, type: "tool_output", payload: toolOutputPayload()))
+        try store.purgeExpiredToolOutputSnippets(
+            now: Date(timeIntervalSince1970: 2).addingTimeInterval(23 * 3600))
+        XCTAssertNotNil(try storedPayload(store, seq: 2)["snippet"], "still inside the TTL")
+
+        try store.purgeExpiredToolOutputSnippets(
+            now: Date(timeIntervalSince1970: 2).addingTimeInterval(48 * 3600))
+        XCTAssertNotNil(try storedPayload(store, seq: 1)["snippet"],
+                        "offloaded/legacy payloads without live_log keep their snippet")
+        XCTAssertNil(try storedPayload(store, seq: 2)["snippet"])
+    }
+
+    func testPurgeRewritesConvoPreviewWhenPurgedEventIsNewest() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()))
+        XCTAssertEqual(try store.conversations().first?.snippet, "output text",
+                       "precondition: the preview leaks the output before the sweep")
+        try store.purgeExpiredToolOutputSnippets(
+            now: Date(timeIntervalSince1970: 1).addingTimeInterval(25 * 3600))
+        XCTAssertEqual(try store.conversations().first?.snippet, "$ make test")
+    }
+
+    func testPurgeKeepsConvoPreviewWhenNewerMessageExists() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()))
+        try store.applyJournal(event(2, payload: ["body": "later text"]))
+        try store.purgeExpiredToolOutputSnippets(
+            now: Date(timeIntervalSince1970: 2).addingTimeInterval(48 * 3600))
+        XCTAssertEqual(try store.conversations().first?.snippet, "later text")
+    }
+
+    func testPurgeIsIdempotent() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()))
+        let now = Date(timeIntervalSince1970: 1).addingTimeInterval(25 * 3600)
+        try store.purgeExpiredToolOutputSnippets(now: now)
+        let first = try storedPayload(store, seq: 1)
+        try store.purgeExpiredToolOutputSnippets(now: now)
+        let second = try storedPayload(store, seq: 1)
+        XCTAssertEqual(first.keys.sorted(), second.keys.sorted())
+        XCTAssertEqual(second["expired"] as? Bool, true)
+    }
+
     func testStreamsWorkFromBackgroundThread() async throws {
         let store = try makeStore()
         try store.applyJournal(event(1))

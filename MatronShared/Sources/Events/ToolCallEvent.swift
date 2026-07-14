@@ -22,6 +22,17 @@ public struct ToolCallEvent: Equatable, Sendable {
     public let resultTruncated: Bool
     public let startedAt: Date
     public let endedAt: Date?
+    /// Command-completion fields from the journal's `tool_output` payload
+    /// (`{message_ref, command, exit_code, denied, truncated, snippet,
+    /// blob_ref, live_log}`, matron-journal docs/protocol.md). Absent on
+    /// `chat.matron.tool_call` payloads and on the diff/fallback shapes,
+    /// which is why they default to "nothing to show".
+    public let exitCode: Int?
+    public let denied: Bool
+    /// Output purged (server tombstone, or the client-side 24h TTL) —
+    /// render an "output expired" affordance: command and exit code stay,
+    /// no snippet area, no fetch button.
+    public let expired: Bool
 
     public init(
         tool: String,
@@ -30,7 +41,10 @@ public struct ToolCallEvent: Equatable, Sendable {
         resultText: String?,
         resultTruncated: Bool,
         startedAt: Date,
-        endedAt: Date?
+        endedAt: Date?,
+        exitCode: Int? = nil,
+        denied: Bool = false,
+        expired: Bool = false
     ) {
         self.tool = tool
         self.argsJSON = argsJSON
@@ -39,6 +53,9 @@ public struct ToolCallEvent: Equatable, Sendable {
         self.resultTruncated = resultTruncated
         self.startedAt = startedAt
         self.endedAt = endedAt
+        self.exitCode = exitCode
+        self.denied = denied
+        self.expired = expired
     }
 
     /// Parse a JSON `content` dictionary from a `chat.matron.tool_call`

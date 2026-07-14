@@ -7,8 +7,9 @@ final class JournalTimelineMapperTests: XCTestCase {
     private let server = URL(string: "https://chat.example.com")!
 
     private func event(_ seq: Int64, type: String, sender: String = "agent:dev-2",
+                       ts: Date = Date(timeIntervalSince1970: 1000),
                        payload: [String: Any]) -> JournalEvent {
-        JournalEvent(seq: seq, convoID: "c1", ts: Date(timeIntervalSince1970: 1000),
+        JournalEvent(seq: seq, convoID: "c1", ts: ts,
                      sender: sender, type: type,
                      payloadData: try! JSONSerialization.data(withJSONObject: payload))
     }
@@ -70,6 +71,98 @@ final class JournalTimelineMapperTests: XCTestCase {
         guard case .toolCall(_, let tool) = item.kind else { return XCTFail() }
         XCTAssertEqual(tool.tool, "grep")
         XCTAssertEqual(tool.argsJSON, "grep -rn \"needle\" src/ | head -40")
+    }
+
+    // MARK: tool_output command-completion shapes (protocol.md Retention)
+
+    func testToolOutputFreshShapeRendersSnippetAndExit() throws {
+        // A live_log payload with the helper's 1970 timestamp would trip the
+        // 24h render-time TTL against the real clock — fresh `ts` keeps this
+        // test about shape parsing (TTL behavior is pinned separately below).
+        let item = try XCTUnwrap(map(event(6, type: "tool_output", ts: Date(), payload: [
+            "message_ref": "toolu_01A", "command": "make test",
+            "exit_code": 0, "denied": false, "truncated": true,
+            "snippet": "$ make test\nAll 12 tests passed",
+            "blob_ref": "blob-1", "live_log": true,
+        ])))
+        guard case .toolCall(_, let tool) = item.kind else { return XCTFail() }
+        XCTAssertEqual(tool.tool, "make")
+        XCTAssertEqual(tool.argsJSON, "make test")
+        XCTAssertEqual(tool.status, .ok)
+        XCTAssertEqual(tool.resultText, "$ make test\nAll 12 tests passed")
+        XCTAssertTrue(tool.resultTruncated)
+        XCTAssertEqual(tool.exitCode, 0)
+        XCTAssertFalse(tool.denied)
+        XCTAssertFalse(tool.expired)
+    }
+
+    func testToolOutputNonzeroExitIsError() throws {
+        let item = try XCTUnwrap(map(event(7, type: "tool_output", ts: Date(), payload: [
+            "message_ref": "toolu_01B", "command": "make test",
+            "exit_code": 2, "denied": false, "truncated": false,
+            "snippet": "error: no rule", "blob_ref": NSNull(), "live_log": true,
+        ])))
+        guard case .toolCall(_, let tool) = item.kind else { return XCTFail() }
+        XCTAssertEqual(tool.status, .error)
+        XCTAssertEqual(tool.exitCode, 2)
+        XCTAssertEqual(tool.resultText, "error: no rule")
+    }
+
+    func testToolOutputDeniedIsError() throws {
+        let item = try XCTUnwrap(map(event(8, type: "tool_output", payload: [
+            "message_ref": "toolu_01C", "command": "rm -rf /",
+            "denied": true, "truncated": false, "live_log": true,
+        ])))
+        guard case .toolCall(_, let tool) = item.kind else { return XCTFail() }
+        XCTAssertEqual(tool.status, .error)
+        XCTAssertTrue(tool.denied)
+    }
+
+    func testToolOutputTombstoneRendersExpired() throws {
+        // Server tombstone after the 24h purge: same fields minus snippet.
+        let item = try XCTUnwrap(map(event(9, type: "tool_output", payload: [
+            "message_ref": "toolu_01D", "command": "make", "exit_code": 0,
+            "denied": false, "truncated": false, "live_log": true,
+            "expired": true, "blob_ref": NSNull(),
+        ])))
+        guard case .toolCall(_, let tool) = item.kind else { return XCTFail() }
+        XCTAssertTrue(tool.expired)
+        XCTAssertNil(tool.resultText)
+        XCTAssertEqual(tool.exitCode, 0)
+        XCTAssertEqual(tool.status, .ok, "expiry hides output; it isn't a failure")
+    }
+
+    func testToolOutputLocalTTLExpiresStaleCachedSnippet() {
+        // Binding client rule: drop a cached live_log snippet once ts + 24h
+        // passes locally, even though the stored payload still carries it.
+        let payload: [String: Any] = [
+            "message_ref": "toolu_01E", "command": "ls",
+            "exit_code": 0, "snippet": "file.txt", "live_log": true,
+        ]
+        let ts = Date(timeIntervalSince1970: 1000)
+        let fresh = JournalTimelineMapper.toolCallEvent(
+            fromToolOutput: payload, ts: ts,
+            now: ts.addingTimeInterval(23 * 3600))
+        XCTAssertFalse(fresh.expired)
+        XCTAssertEqual(fresh.resultText, "file.txt")
+
+        let stale = JournalTimelineMapper.toolCallEvent(
+            fromToolOutput: payload, ts: ts,
+            now: ts.addingTimeInterval(25 * 3600))
+        XCTAssertTrue(stale.expired)
+        XCTAssertNil(stale.resultText)
+    }
+
+    func testToolOutputTTLDoesNotTouchNonLiveLogPayloads() {
+        // The retention OFFLOAD shape ({snippet, blob_ref}, 30-day job) keeps
+        // its snippet server-side forever — the 24h TTL is live_log-only.
+        let payload: [String: Any] = ["command": "ls", "snippet": "file.txt"]
+        let ts = Date(timeIntervalSince1970: 1000)
+        let old = JournalTimelineMapper.toolCallEvent(
+            fromToolOutput: payload, ts: ts,
+            now: ts.addingTimeInterval(48 * 3600))
+        XCTAssertFalse(old.expired)
+        XCTAssertEqual(old.resultText, "file.txt")
     }
 
     func testToolOutputMultilineCommandLabelIsFirstToken() throws {
