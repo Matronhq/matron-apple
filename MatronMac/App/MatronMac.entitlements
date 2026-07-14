@@ -4,6 +4,14 @@
 <dict>
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
+	<!--
+		Microphone access for voice-note recording. Required only by the
+		sandboxed Release build; the Debug / Debug.AdHoc variants run with
+		the sandbox OFF (see the header of those files), so they don't need
+		it. Pairs with NSMicrophoneUsageDescription (set via project.yml).
+	-->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
 	<key>com.apple.security.files.user-selected.read-only</key>
 	<true/>
 	<key>com.apple.security.network.client</key>
