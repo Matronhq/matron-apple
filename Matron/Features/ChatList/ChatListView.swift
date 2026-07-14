@@ -293,8 +293,16 @@ struct ChatListView: View {
                         ForEach(group.summaries) { summary in
                             // Navigate by id (stable `String`), not the
                             // full struct — see file header for the
-                            // stale-capture rationale.
-                            NavigationLink(value: summary.id) {
+                            // stale-capture rationale. The link is an
+                            // opacity-0 `EmptyView`-label sibling behind the
+                            // visible `ChatRow` so `List` still makes the
+                            // whole row tappable but draws no trailing
+                            // disclosure chevron (which stole width from the
+                            // snippet). Standard SwiftUI chevron-suppression
+                            // pattern.
+                            ZStack {
+                                NavigationLink(value: summary.id) { EmptyView() }
+                                    .opacity(0)
                                 ChatRow(summary: summary)
                             }
                             .contextMenu {
@@ -409,12 +417,19 @@ private struct ChatRow: View {
                     .lineLimit(2, reservesSpace: true)
             }
             Spacer()
-            if let lastActivity = summary.lastActivity {
-                RelativeMinuteTimeView(lastActivity)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+            // Trailing accessory: time on top, unread badge below it, both
+            // right-aligned. `fixedSize(horizontal:)` hugs the widest of the
+            // two so the leading title/snippet block keeps the freed width
+            // (the disclosure chevron is suppressed at the call site).
+            VStack(alignment: .trailing, spacing: 4) {
+                if let lastActivity = summary.lastActivity {
+                    RelativeMinuteTimeView(lastActivity)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                UnreadBadge(count: summary.unreadCount)
             }
-            UnreadBadge(count: summary.unreadCount)
+            .fixedSize(horizontal: true, vertical: false)
         }
     }
 }
