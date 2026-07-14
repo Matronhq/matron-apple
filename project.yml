@@ -1,9 +1,15 @@
 name: Matron
 options:
   bundleIdPrefix: chat.matron
+  # iOS 18 / macOS 15 floor: the chat timeline is built on the role-based
+  # scroll APIs (`defaultScrollAnchor(_:for:)`, `onScrollGeometryChange`,
+  # `onScrollPhaseChange`) that shipped in the 2024 OS wave. The previous
+  # 17/14 floor forced a parallel `.scrollPosition(id:)`-binding code path
+  # whose write-back races were the root cause of the 2026-07 blank-chat
+  # bug family.
   deploymentTarget:
-    iOS: "17.0"
-    macOS: "14.0"
+    iOS: "18.0"
+    macOS: "15.0"
   developmentLanguage: en
   createIntermediateGroups: true
 

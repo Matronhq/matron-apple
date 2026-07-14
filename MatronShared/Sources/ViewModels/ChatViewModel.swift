@@ -139,20 +139,13 @@ public final class ChatViewModel {
     /// in `applyDerivedRecompute()`.
     public private(set) var lastRenderableItemID: TimelineItem.ID?
 
-    /// IDs of the first 10 rows (messages AND separators — the
-    /// scroll-position binding's namespace is mixed). Drives the
-    /// scroll-up paginate trigger. Memoised here because the views'
-    /// `.onChange(of: scrolledItemID)` fires on every scroll tick,
-    /// and both platforms were rebuilding this Set per tick.
-    public private(set) var topRowIDs: Set<String> = []
-
-    /// Every id `.scrollPosition(id:)` can legally hold for the current
-    /// snapshot: `item.id` for message rows (the views tag rows with the
-    /// ITEM id, not `TimelineRow.id`'s `msg:`-prefixed form) plus the
-    /// separator row ids. The dead-anchor guard checks membership here —
-    /// checking `rows` directly compared apples to `msg:`-oranges and
-    /// snapped the viewport to the tail on every snapshot while anchored
-    /// to any message (bugbot "Scroll anchor ID mismatch").
+    /// Every scroll-target id in the current snapshot: `item.id` for
+    /// message rows (the views tag rows with the ITEM id, not
+    /// `TimelineRow.id`'s `msg:`-prefixed form) plus the separator row
+    /// ids. The views validate remembered scroll positions against this
+    /// before restoring — a remembered id the room no longer contains
+    /// would scroll to nothing (bugbot "Scroll anchor ID mismatch" for
+    /// the namespace subtlety).
     public private(set) var rowAnchorIDs: Set<String> = []
 
     /// Label of the bot's trailing activity indicator (typing / tool-use),
@@ -224,49 +217,27 @@ public final class ChatViewModel {
         self.firstRenderableItemID = first
         self.lastRenderableItemID = last
         self.activityLabel = nextActivityLabel
-        self.topRowIDs = Set(nextRows.prefix(10).map { row in
-            if case .message(let item) = row { return item.id }
-            return row.id
-        })
         self.rowAnchorIDs = Set(nextRows.map { row in
             if case .message(let item) = row { return item.id }
             return row.id
         })
     }
 
-    /// Resolves the auto-follow scroll target at assignment time. The
-    /// view's tail-follow fires through a delayed task (it sleeps ~50ms
-    /// so the new row is mounted before the scroll), which means the id
-    /// it captured can be retired before it's assigned — most commonly a
-    /// send's `echo:` row replaced by the delivered server row when the
-    /// round trip beats the timer (routine on a LAN bridge). Assigning
-    /// the captured id then pins `.scrollPosition(id:)` to a row that no
-    /// longer exists, and the dead-anchor guard can't catch it: it runs
-    /// on `items` changes, and the stale assignment lands AFTER the
-    /// change that retired the id. The viewport sits silently on a dead
-    /// anchor until the next re-layout — keyboard appearance, the next
-    /// send — re-resolves it and lands on blank space ("chat went
-    /// blank" reports, round 2). Validating here closes the hole.
-    public func autoFollowTarget(for candidate: TimelineItem.ID) -> TimelineItem.ID? {
-        if rowAnchorIDs.contains(candidate) { return candidate }
-        // Un-gated (notice, not diag): fires at most once per send and is
-        // the breadcrumb that distinguishes "echo won the 50ms race" from
-        // the other blank-timeline mechanisms in the persisted log.
-        Self.logger.breadcrumb("auto-follow target \(candidate) left the row set mid-flight — following live tail instead")
-        return lastRenderableItemID
-    }
-
-    /// `true` while a `paginateBackward()` call is in flight. Surfaces to
-    /// the view so the topmost row's `.onAppear` trigger can guard
-    /// against re-entering the paginate loop on every re-layout, and so
-    /// the view can show a tiny "loading earlier…" spinner if it wants.
+    /// `true` while a `paginateBackward()` call is in flight — and,
+    /// crucially, until the paginated snapshot has been APPLIED (the call
+    /// awaits the items stream delivery before returning). The views
+    /// lean on that guarantee: while reading history they switch the
+    /// scroll engine's `.sizeChanges` anchor to `.bottom` for the
+    /// duration of a paginate, which is what keeps the same rows on
+    /// screen when the fetched page prepends above the viewport. Also
+    /// guards re-entry and drives the "loading earlier…" pill.
     public private(set) var isPaginatingBackward: Bool = false
     /// Flips to `true` once we've observed enough consecutive
     /// zero-growth paginate calls to be confident the SDK genuinely has
     /// no more history to surface. Setting this stops further paginate
-    /// triggers from the scroll-position listener — without it the
-    /// `.onChange(of: scrolledItemID)` trigger fires paginate on every
-    /// row change at the head, hammering the SDK for no result.
+    /// triggers from the views' near-top scroll listener — without it,
+    /// hovering near the head fires paginate on every geometry change,
+    /// hammering the SDK for no result.
     /// Empirical: matrix-rust-sdk's `paginateBackwards` returns `false`
     /// (more events might exist) even when /messages has no more events
     /// for this user, so we can't trust the SDK signal alone — needed
@@ -377,22 +348,6 @@ public final class ChatViewModel {
         self.answeredPromptIDs = Set(stored)
     }
 
-    /// Starts observing the timeline. Returns *after* the first snapshot has
-    /// been applied (or the stream has finished without yielding), so callers
-    /// that chain `markAsRead()` after `start()` mark the actual head of the
-    /// timeline as read instead of marking an empty room as read. Returns
-    /// the long-lived observation `Task` so tests can still
-    /// `await task.value` to know when the stream has fully drained — the
-    /// fake stream finishes after yielding queued snapshots, the live
-    /// stream stays open until `stop()` cancels it.
-    ///
-    /// Round 3 bugbot finding #3: previously `start()` returned the task
-    /// synchronously and the View's `.task { viewModel.start(); await
-    /// viewModel.markAsRead() }` raced — `markAsRead()` fired before the
-    /// observation Task had a chance to apply the first snapshot, so on
-    /// first open the SDK marked "no events" as read and unread counts
-    /// were never cleared.
-    @discardableResult
     /// Debounces the empty → `settledEmpty` transition (see `settledEmpty`).
     /// A non-empty snapshot clears it immediately (and ends any resume
     /// window — content is back); an empty one schedules the flip after the
@@ -450,6 +405,22 @@ public final class ChatViewModel {
     /// freshly-started stream (Mac same-room remount hazard).
     public private(set) var observationGeneration: Int = 0
 
+    /// Starts observing the timeline. Returns *after* the first snapshot has
+    /// been applied (or the stream has finished without yielding), so callers
+    /// that chain `markAsRead()` after `start()` mark the actual head of the
+    /// timeline as read instead of marking an empty room as read. Returns
+    /// the long-lived observation `Task` so tests can still
+    /// `await task.value` to know when the stream has fully drained — the
+    /// fake stream finishes after yielding queued snapshots, the live
+    /// stream stays open until `stop()` cancels it.
+    ///
+    /// Round 3 bugbot finding #3: previously `start()` returned the task
+    /// synchronously and the View's `.task { viewModel.start(); await
+    /// viewModel.markAsRead() }` raced — `markAsRead()` fired before the
+    /// observation Task had a chance to apply the first snapshot, so on
+    /// first open the SDK marked "no events" as read and unread counts
+    /// were never cleared.
+    @discardableResult
     public func start() async -> Task<Void, Never> {
         observationGeneration += 1
         observationTask?.cancel()
