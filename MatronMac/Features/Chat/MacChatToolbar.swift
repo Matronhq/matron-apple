@@ -42,14 +42,18 @@ struct MacChatToolbar: ToolbarContent {
             HStack(spacing: 14) {
                 if let context = status?.context {
                     ContextGaugeLabel(context: context)
+                        .layoutPriority(1)
                 }
                 // Horizontal padding so the title doesn't butt against the
                 // rounded ends of the macOS 26 glass toolbar-item capsule.
                 Text(title)
                     .font(.headline)
                     .padding(.horizontal, 10)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                 if let limits = status?.limits, !limits.isEmpty {
                     UsageBarsView(limits: limits, scale: .compact)
+                        .layoutPriority(1)
                 }
             }
         }
