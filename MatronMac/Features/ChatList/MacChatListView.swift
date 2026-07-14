@@ -58,11 +58,6 @@ struct MacChatListView: View {
     /// `MacSearchResultsView`. `focusSearch` is flipped by ⌘F ("Find in Chat").
     @State private var searchModel: SearchViewModel?
     @State private var focusSearch = false
-    /// The chat whose ⓘ button was tapped. Drives the
-    /// `.sheet(item: $botProfileSummary)` presentation of
-    /// `MacBotProfileSheet`. Cleared by the sheet's onDismiss / row tap /
-    /// "Start new chat" callbacks.
-    @State private var botProfileSummary: ChatSummary?
     /// Sidebar visibility toggle — wired to `.matronCommand(.toggleSidebar)`
     /// so the menu-bar item / toolbar button / ⌘⇧S keyboard shortcut all
     /// flip the same state. `.automatic` is the system default (sidebar
@@ -261,28 +256,6 @@ struct MacChatListView: View {
                 MacNewChatPlaceholder(onDismiss: { showingNewChat = false })
             }
         }
-        .sheet(item: $botProfileSummary) { summary in
-            // Snapshot the sidebar's grouped summaries flat-list at
-            // presentation time. The shared `BotProfileViewModel` filters
-            // by `bot.matrixID`. Re-opening picks up a fresh snapshot.
-            let allSummaries = viewModel.groups.flatMap(\.summaries)
-            let bpVM = BotProfileViewModel(bot: summary.bot, allSummaries: allSummaries)
-            MacBotProfileSheet(
-                viewModel: bpVM,
-                onSelectChat: { selected in
-                    // Move selection to the tapped chat (Mac uses a
-                    // sidebar-driven id selection rather than a pushed
-                    // NavigationStack), then dismiss.
-                    selectedSummaryID = selected.id
-                    botProfileSummary = nil
-                },
-                onStartNewChat: {
-                    botProfileSummary = nil
-                    showingNewChat = true
-                },
-                onDismiss: { botProfileSummary = nil }
-            )
-        }
         .task { viewModel.start() }
         .onDisappear { viewModel.cancel() }
         // Sync connection-state banner. Subscribes to the host's
@@ -463,8 +436,7 @@ struct MacChatListView: View {
             MacChatView(
                 viewModel: chatVM,
                 composerVM: composerVM,
-                chatTitle: summary?.title ?? "",
-                onShowBotProfile: { if let summary { botProfileSummary = summary } }
+                chatTitle: summary?.title ?? ""
             )
             .id(id)
         } else {
