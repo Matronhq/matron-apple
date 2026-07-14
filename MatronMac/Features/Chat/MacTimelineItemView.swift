@@ -135,6 +135,20 @@ struct MacTimelineItemView: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Tool call: \(evt.tool)"))
 
+        case .diff(_, let evt):
+            // File-edit diff snippet — bot-aligned, same width cap as the
+            // tool cards (Dan, 2026-07-14). DiffCard hugs its content, so
+            // a three-line fix stays small.
+            HStack {
+                DiffCard(event: evt)
+                    .frame(maxWidth: 560, alignment: .leading)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Self.accessibilityLabel(
+                for: item, body: "Edited \(evt.filename ?? "file")"))
+
         case .liveOutput(_, let evt):
             // Wider than ToolCallCard — terminal output wants columns.
             // Session from the shared store so LazyVStack row recycling
