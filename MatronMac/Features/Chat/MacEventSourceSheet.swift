@@ -47,8 +47,7 @@ struct MacEventSourceSheet: View {
                 Spacer()
                 Button("Done") { onDismiss() }
                     .keyboardShortcut(.defaultAction)
-                // Hidden button so Esc also dismisses, mirroring
-                // `MacBotProfileSheet`'s pattern.
+                // Hidden button so Esc also dismisses the sheet.
                 Button("") { onDismiss() }
                     .keyboardShortcut(.cancelAction)
                     .opacity(0)

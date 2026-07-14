@@ -9,21 +9,18 @@ import MatronViewModels
 @MainActor
 final class MacChatToolbarTests: XCTestCase {
 
-    /// Constructing the toolbar exercises the ToolbarContent wiring at
-    /// compile time. The body itself isn't rendered in this unit test
-    /// (no host scene).
-    func test_toolbarRenders_withTitleAndInfoButton() {
-        var profileTaps = 0
-        let toolbar = MacChatToolbar(
-            title: "Refactoring auth",
-            onShowBotProfile: { profileTaps += 1 }
-        )
-        XCTAssertNotNil(toolbar.body)
+    func testToolbarCarriesTitleAndStatus() {
+        let status = SessionStatus(
+            model: "claude-fable-5",
+            context: SessionStatus.Context(tokens: 265_000, window: 1_000_000, pct: 27),
+            limits: [SessionStatus.Limit(label: "Session", percent: 39, resets: nil, resetsAt: nil)])
+        let toolbar = MacChatToolbar(title: "Chat", status: status)
+        XCTAssertEqual(toolbar.title, "Chat")
+        XCTAssertEqual(toolbar.status?.context?.pct, 27)
+        XCTAssertEqual(toolbar.status?.limits?.count, 1)
 
-        // Verify the closure plumbs through — the toolbar's ⓘ button
-        // calls onShowBotProfile.
-        toolbar.onShowBotProfile()
-        XCTAssertEqual(profileTaps, 1)
+        // Nil status is valid — header renders the title alone.
+        XCTAssertNil(MacChatToolbar(title: "Chat", status: nil).status)
     }
 
     /// The sidebar-toggle button posts `.toggleSidebar` on the command

@@ -694,6 +694,46 @@ final class JournalTimelineServiceTests: XCTestCase {
         await engine.endSync()
     }
 
+    func testToolStreamEndRetiresRefAndLateAppendIsIgnored() async throws {
+        // Companion to `testDurableToolOutputRetiresTileAndLateAppendIsIgnored`:
+        // an `end` frame (server idle sweep freed the buffer) must retire the
+        // ref exactly like a durable row does, so a reordered/late append
+        // for the same ref can't recreate a tile the server already
+        // disowned (bugbot: "tool_stream end leaves ref unretired").
+        let store = try makeStore()
+        let socket = FakeJournalSocket()
+        socket.serve(helloOK(0))
+        let api = JournalAPI(serverURL: URL(string: "https://x")!)
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([socket]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api, session: makeSession())
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        let (collector, task) = collectItems(service.items())
+        try await waitUntil { await collector.values.last != nil }
+
+        socket.serve(toolStreamFrame("tu1", #"{"event":"append","offset":0,"chunk":"x"}"#))
+        try await waitUntil { self.toolStreamItem(in: await collector.values.last, ref: "tu1") != nil }
+
+        socket.serve(toolStreamFrame("tu1", #"{"event":"end","reason":"stale"}"#))
+        try await waitUntil { self.toolStreamItem(in: await collector.values.last, ref: "tu1") == nil }
+        let viewingsBeforeLate = viewingCount(socket)
+
+        // Late/reordered append for the now-ended ref must not reopen the
+        // tile, and must not trigger a resync viewing re-send.
+        socket.serve(toolStreamFrame("tu1", #"{"event":"append","offset":1,"chunk":"late"}"#))
+        socket.serve(journalFrame(seq: 1, payload: ["body": "marker"]))
+        try await waitUntil { await collector.values.last?.contains { $0.id == "1" } == true }
+
+        let afterLate = await collector.values.last
+        XCTAssertNil(toolStreamItem(in: afterLate, ref: "tu1"),
+                     "late append after `end` re-opened a retired tile")
+        XCTAssertEqual(viewingCount(socket), viewingsBeforeLate,
+                       "retired refs must not request resyncs")
+
+        task.cancel()
+        await engine.endSync()
+    }
+
     func testDurableToolOutputRetiresTileAndLateAppendIsIgnored() async throws {
         let store = try makeStore()
         let socket = FakeJournalSocket()

@@ -266,7 +266,11 @@ final class JournalStoreTests: XCTestCase {
     func testPurgeRewritesConvoPreviewWhenPurgedEventIsNewest() throws {
         let store = try makeStore()
         try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()))
-        XCTAssertEqual(try store.conversations().first?.snippet, "output text",
+        // Read-time TTL is wall-clock relative to `now`; pin it inside the
+        // window so this precondition reflects "before the sweep AND before
+        // the TTL", not the real current date (the event helper stamps
+        // seq 1 near the Unix epoch).
+        XCTAssertEqual(try store.conversations(now: Date(timeIntervalSince1970: 1)).first?.snippet, "output text",
                        "precondition: the preview leaks the output before the sweep")
         try store.purgeExpiredToolOutputSnippets(
             now: Date(timeIntervalSince1970: 1).addingTimeInterval(25 * 3600))
@@ -292,6 +296,47 @@ final class JournalStoreTests: XCTestCase {
         let second = try storedPayload(store, seq: 1)
         XCTAssertEqual(first.keys.sorted(), second.keys.sorted())
         XCTAssertEqual(second["expired"] as? Bool, true)
+    }
+
+    // MARK: Read-time snippet TTL (bugbot: stale list preview beyond 24h)
+
+    func testConversationsAppliesTTLAtReadTimeWithoutPurge() throws {
+        // No purge call in this test — the boot-time sweep only runs once,
+        // at `JournalStore.init`. An app that stays open past the 24h
+        // tool-output TTL must still stop surfacing the expired snippet
+        // the next time the conversation list is *read*, not just the
+        // next time the store happens to reopen.
+        let store = try makeStore()
+        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()))
+        let fresh = try store.conversations(now: Date(timeIntervalSince1970: 1).addingTimeInterval(1))
+        XCTAssertEqual(fresh.first?.snippet, "output text", "precondition: still fresh")
+
+        let stale = try store.conversations(
+            now: Date(timeIntervalSince1970: 1).addingTimeInterval(25 * 3600))
+        XCTAssertEqual(stale.first?.snippet, "$ make test",
+                       "read-time TTL must rewrite the preview to the tombstone form, matching the purge sweep")
+
+        // The disk payload itself is untouched — only the sweep persists.
+        XCTAssertNotNil(try storedPayload(store, seq: 1)["snippet"],
+                        "read-time enforcement must not silently write the tombstone to disk")
+    }
+
+    func testConversationsReadTimeTTLLeavesNonLiveLogSnippetsAlone() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload(liveLog: false)))
+        let stale = try store.conversations(
+            now: Date(timeIntervalSince1970: 1).addingTimeInterval(48 * 3600))
+        XCTAssertEqual(stale.first?.snippet, "output text",
+                       "offloaded/legacy payloads without live_log must not be rewritten")
+    }
+
+    func testConversationsReadTimeTTLLeavesTextSnippetsAlone() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, payload: ["body": "hello world"]))
+        let stale = try store.conversations(
+            now: Date(timeIntervalSince1970: 1).addingTimeInterval(48 * 3600))
+        XCTAssertEqual(stale.first?.snippet, "hello world",
+                       "plain text snippets have no TTL and must render unchanged")
     }
 
     func testStreamsWorkFromBackgroundThread() async throws {

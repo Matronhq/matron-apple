@@ -148,13 +148,27 @@ public struct DiffCard: View {
         return out
     }
 
-    private var accessibilitySummary: String {
+    /// Full VoiceOver summary — write/create wording plus add/remove
+    /// counts. Public (and static, over `event`) so callers that wrap this
+    /// card in their own `.accessibilityElement(children: .combine)` +
+    /// `.accessibilityLabel` — the chat timeline rows, on both iOS and
+    /// Mac — can reuse the exact same string instead of duplicating a
+    /// shorter one. A row-level label silently REPLACES this card's own
+    /// combined accessibility value rather than appending to it, so any
+    /// duplicate string there was the timeline's only chance to say
+    /// anything beyond "Edited <file>" (bugbot: "VoiceOver drops the rich
+    /// diff summary").
+    public static func accessibilitySummary(for event: DiffEvent) -> String {
         let verb = event.tool == "Write" ? (event.newFile ? "Created" : "Wrote") : "Edited"
         let name = event.filename ?? "file"
         var parts = ["\(verb) \(name)"]
         if let a = event.added { parts.append("\(a) addition\(a == 1 ? "" : "s")") }
         if let r = event.removed { parts.append("\(r) removal\(r == 1 ? "" : "s")") }
         return parts.joined(separator: ", ")
+    }
+
+    private var accessibilitySummary: String {
+        Self.accessibilitySummary(for: event)
     }
 }
 

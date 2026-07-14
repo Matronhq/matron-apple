@@ -53,6 +53,16 @@ public actor JournalSyncEngine {
     private var ephemeralContinuations: [UUID: (convoID: String, continuation: AsyncStream<EphemeralUpdate>.Continuation)] = [:]
     private var activityContinuations: [UUID: (convoID: String, continuation: AsyncStream<ActivityUpdate>.Continuation)] = [:]
     private var toolStreamContinuations: [UUID: (convoID: String, continuation: AsyncStream<ToolStreamUpdate>.Continuation)] = [:]
+    private var sessionStatusContinuations: [UUID: (convoID: String, continuation: AsyncStream<SessionStatusUpdate>.Continuation)] = [:]
+    /// Merged session-status per convo, so a subscriber that registers
+    /// after a frame already arrived (e.g. `viewing` replay landed in the
+    /// gap before `sessionStatus(convoID:)`'s registration task ran) still
+    /// gets a populated header immediately instead of waiting for the next
+    /// turn-end frame. Frames use absent-means-unchanged semantics, so the
+    /// cache merges each incoming frame over the held one (a part replaces
+    /// only when present) rather than storing the last frame verbatim —
+    /// a partial frame must not erase parts an earlier frame carried.
+    private var lastSessionStatus: [String: SessionStatusUpdate] = [:]
     private var newConvoContinuations: [UUID: AsyncStream<String>.Continuation] = [:]
     private var readyWaiters: [CheckedContinuation<Void, Error>] = []
 
@@ -87,6 +97,10 @@ public actor JournalSyncEngine {
         lastPathSignature = nil
         pathChangeReconnect = false
         failReadyWaiters(JournalSyncError.offline)
+        // Drop the status replay cache with the connection: values cached
+        // here are only as fresh as the live stream, and a future
+        // beginSync()'s `viewing` replay repopulates it.
+        lastSessionStatus.removeAll()
         liveConnection?.close()
         liveConnection = nil
         backoffSleeper?.cancel()
@@ -231,6 +245,23 @@ public actor JournalSyncEngine {
         }
     }
 
+    /// Per-conversation stream of session-status updates (journal `status`
+    /// ephemerals). Mirrors `activities(convoID:)`. The journal replays the
+    /// last cached status when the client sends `viewing`, and the engine
+    /// itself also caches the latest frame per convo and replays it on
+    /// subscribe (`registerSessionStatus`), so a subscriber that attaches on
+    /// convo-open gets a populated header immediately regardless of whether
+    /// the `viewing` replay lands before or after registration.
+    public nonisolated func sessionStatus(convoID: String) -> AsyncStream<SessionStatusUpdate> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerSessionStatus(id: id, convoID: convoID, continuation: continuation) }
+            continuation.onTermination = { _ in
+                Task { await self.unregisterSessionStatus(id: id) }
+            }
+        }
+    }
+
     // MARK: Registry plumbing
 
     private func registerState(id: UUID, continuation: AsyncStream<SyncConnectionState>.Continuation) {
@@ -264,6 +295,17 @@ public actor JournalSyncEngine {
 
     private func unregisterToolStream(id: UUID) {
         toolStreamContinuations.removeValue(forKey: id)
+    }
+
+    private func registerSessionStatus(id: UUID, convoID: String, continuation: AsyncStream<SessionStatusUpdate>.Continuation) {
+        sessionStatusContinuations[id] = (convoID, continuation)
+        if let cached = lastSessionStatus[convoID] {
+            continuation.yield(cached)
+        }
+    }
+
+    private func unregisterSessionStatus(id: UUID) {
+        sessionStatusContinuations.removeValue(forKey: id)
     }
 
     private func registerNewConvo(id: UUID, continuation: AsyncStream<String>.Continuation) {
@@ -397,6 +439,10 @@ public actor JournalSyncEngine {
                         Self.logger.warning("snapshot_required: replay gap too large — wiping local mirror (cursor \(self.store.cursor, privacy: .public))")
                         refreshSummariesTask?.cancel()
                         storeEpoch += 1
+                        // The status replay cache mirrors journal state; a
+                        // wiped mirror must not replay pre-wipe meters to
+                        // post-wipe subscribers.
+                        lastSessionStatus.removeAll()
                         // A failed wipe leaves stale rows in place; the server will
                         // simply re-issue snapshot_required on the next connect
                         // (bounded by the reconnect backoff), so this isn't silently lost.
@@ -414,6 +460,20 @@ public actor JournalSyncEngine {
                         break frameLoop
                     case .toolStream(let update):
                         for (_, entry) in toolStreamContinuations where entry.convoID == update.convoID {
+                            entry.continuation.yield(update)
+                        }
+                    case .sessionStatus(let update):
+                        if let held = lastSessionStatus[update.convoID] {
+                            lastSessionStatus[update.convoID] = SessionStatusUpdate(
+                                convoID: update.convoID,
+                                model: update.model ?? held.model,
+                                context: update.context ?? held.context,
+                                limits: update.limits ?? held.limits
+                            )
+                        } else {
+                            lastSessionStatus[update.convoID] = update
+                        }
+                        for (_, entry) in sessionStatusContinuations where entry.convoID == update.convoID {
                             entry.continuation.yield(update)
                         }
                     case .error, .helloOK, .unknownControl:

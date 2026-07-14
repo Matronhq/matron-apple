@@ -375,13 +375,44 @@ public final class JournalStore: @unchecked Sendable {
 
     // MARK: Reads
 
-    public func conversations() throws -> [ConversationRecord] {
+    /// `now` is injectable for tests only; production callers take the
+    /// default so every read reflects the wall clock at call time.
+    public func conversations(now: Date = Date()) throws -> [ConversationRecord] {
         try dbQueue.read { db in
-            try ConversationRecord
+            let records = try ConversationRecord
                 .filter(Column("hidden") == false)
                 .order(Column("last_seq").desc)
                 .fetchAll(db)
+            return try records.map { try Self.applyReadTimeSnippetTTL($0, db: db, now: now) }
         }
+    }
+
+    /// Read-time mirror of `purgeExpiredToolOutputSnippets`'s tombstone
+    /// rewrite, applied WITHOUT a write. The boot-time sweep only runs when
+    /// the store opens — an app left running past the 24h tool-output TTL
+    /// (docs/protocol.md Retention) must still stop surfacing an expired
+    /// `live_log` snippet in the conversation list the next time it's read,
+    /// exactly as `JournalTimelineMapper` already hides it in the open
+    /// thread (bugbot: "stale list preview after tool-snippet TTL"). Only
+    /// touches the in-memory record; the disk sweep is still what cleans
+    /// the payload.
+    private static func applyReadTimeSnippetTTL(
+        _ record: ConversationRecord, db: Database, now: Date
+    ) throws -> ConversationRecord {
+        guard let activityTS = record.lastActivityTS else { return record }
+        let cutoff = Int64(now.timeIntervalSince1970 * 1000) - Int64(24 * 3600 * 1000)
+        guard activityTS <= cutoff else { return record }
+        guard let seq = try newestMessageSeq(db, convoID: record.id),
+              let event = try EventRecord.fetchOne(db, key: seq),
+              event.type == JournalEventType.toolOutput,
+              let payload = (try? JSONSerialization.jsonObject(with: event.payload)) as? [String: Any],
+              payload["live_log"] as? Bool == true,
+              payload["expired"] as? Bool != true,
+              let command = payload["command"] as? String, !command.isEmpty
+        else { return record }
+        var expired = record
+        expired.snippet = String("$ \(command)".prefix(120))
+        return expired
     }
 
     public func events(convoID: String) throws -> [JournalEvent] {
@@ -438,10 +469,16 @@ public final class JournalStore: @unchecked Sendable {
 
     public func conversationsStream() -> AsyncStream<[ConversationRecord]> {
         let observation = ValueObservation.tracking { db in
-            try ConversationRecord
+            let records = try ConversationRecord
                 .filter(Column("hidden") == false)
                 .order(Column("last_seq").desc)
                 .fetchAll(db)
+            // Fresh `Date()` per re-run: the tracking closure re-executes on
+            // every DB change the store observes, so a subscriber that's
+            // been open a while still gets the TTL re-evaluated against
+            // current wall time rather than whatever "now" was at
+            // subscribe time. See `applyReadTimeSnippetTTL`.
+            return try records.map { try Self.applyReadTimeSnippetTTL($0, db: db, now: Date()) }
         }
         return Self.stream(observation, in: dbQueue)
     }

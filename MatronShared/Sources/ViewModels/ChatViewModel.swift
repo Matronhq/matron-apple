@@ -91,6 +91,13 @@ public final class ChatViewModel {
     public private(set) var items: [TimelineItem] = []
     public private(set) var error: String?
 
+    /// Last-known session status for this conversation (context gauge +
+    /// usage limits), merged across partial frames — absent parts keep
+    /// their previous value. Rendered by the Mac chat header and the iOS
+    /// session-status sheet. Nil until the first status frame (the journal
+    /// replays the cached one on convo-open, so this populates promptly).
+    public private(set) var sessionStatus: SessionStatus?
+
     /// Calendar used for date-separator bucketing. Injectable so tests
     /// can pin a deterministic timezone without poking the host
     /// runtime. Default is `Calendar.current` so production callers
@@ -311,6 +318,7 @@ public final class ChatViewModel {
     private let timeline: TimelineService
     private let media: MediaService
     private var observationTask: Task<Void, Never>?
+    private var statusTask: Task<Void, Never>?
     /// Tracks `mxc://` URLs with a request already in flight so we don't
     /// fire duplicate fetches on every SwiftUI re-render.
     private var inFlightRequests: Set<URL> = []
@@ -422,6 +430,12 @@ public final class ChatViewModel {
         settledEmpty = false
         emptyDebounceTask?.cancel()
         emptyDebounceTask = nil
+        // Held meters are only as fresh as the engine's status replay
+        // cache: on re-subscribe the engine yields the cached value back
+        // immediately when it's still valid, and after a mirror wipe (which
+        // clears that cache) the meters correctly start blank instead of
+        // presenting pre-wipe usage as current.
+        sessionStatus = nil
         let timeline = self.timeline
         // Box wrapping a single-shot CheckedContinuation. The observation
         // Task resumes it on the first snapshot processed (or on stream
@@ -501,6 +515,19 @@ public final class ChatViewModel {
             firstSignal.fireOnce()
         }
         observationTask = task
+
+        statusTask?.cancel()
+        statusTask = Task { [weak self] in
+            for await update in timeline.sessionStatus() {
+                guard let self else { return }
+                await MainActor.run {
+                    var merged = self.sessionStatus ?? SessionStatus()
+                    merged.apply(update)
+                    self.sessionStatus = merged
+                }
+            }
+        }
+
         await firstSignal.wait()
         return task
     }
@@ -519,6 +546,8 @@ public final class ChatViewModel {
     public func stop() {
         observationTask?.cancel()
         observationTask = nil
+        statusTask?.cancel()
+        statusTask = nil
         emptyDebounceTask?.cancel()
         emptyDebounceTask = nil
         resumeTask?.cancel()

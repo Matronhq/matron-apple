@@ -1,4 +1,5 @@
 import Foundation
+import MatronModels
 
 /// String constants for journal event `type`s (spec §7). Use these, not
 /// literals, so renames are compile-checked.
@@ -144,10 +145,25 @@ public enum ServerFrame: Equatable, Sendable {
     case ephemeral(EphemeralUpdate)
     case activity(ActivityUpdate)
     case toolStream(ToolStreamUpdate)
+    case sessionStatus(SessionStatusUpdate)
     case helloOK(headSeq: Int64)
     case error(code: String, ref: String?)
     case snapshotRequired
     case unknownControl(op: String)
+
+    /// Bridge timestamps are `Date.toISOString()` output (always fractional),
+    /// but accept plain ISO too for robustness. ISO8601DateFormatter is
+    /// thread-safe, so shared statics are fine.
+    private static let isoFractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    private static let isoPlain = ISO8601DateFormatter()
+
+    private static func parseISODate(_ raw: String) -> Date? {
+        isoFractional.date(from: raw) ?? isoPlain.date(from: raw)
+    }
 
     public static func decode(_ text: String) -> ServerFrame? {
         guard let obj = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any],
@@ -197,6 +213,34 @@ public enum ServerFrame: Equatable, Sendable {
                     return nil // unknown tool_stream event — skip so the protocol can grow
                 }
                 return .toolStream(ToolStreamUpdate(convoID: convoID, messageRef: ref, event: event))
+            }
+            // Session-status frames carry a `status` object and no
+            // `message_ref`. Parts are independently optional; malformed
+            // sub-objects degrade to nil rather than dropping the frame.
+            if let status = obj["status"] as? [String: Any] {
+                var context: SessionStatus.Context?
+                if let ctx = status["context"] as? [String: Any],
+                   let tokens = (ctx["tokens"] as? NSNumber)?.intValue,
+                   let window = (ctx["window"] as? NSNumber)?.intValue,
+                   let pct = (ctx["pct"] as? NSNumber)?.intValue {
+                    context = SessionStatus.Context(tokens: tokens, window: window, pct: pct)
+                }
+                var limits: [SessionStatus.Limit]?
+                if let rawLimits = status["limits"] as? [[String: Any]] {
+                    let parsed = rawLimits.compactMap { entry -> SessionStatus.Limit? in
+                        guard let label = entry["label"] as? String,
+                              let percent = (entry["percent"] as? NSNumber)?.intValue
+                        else { return nil }
+                        return SessionStatus.Limit(
+                            label: label, percent: percent,
+                            resets: entry["resets"] as? String,
+                            resetsAt: (entry["resets_at"] as? String).flatMap(parseISODate))
+                    }
+                    if !parsed.isEmpty { limits = parsed }
+                }
+                return .sessionStatus(SessionStatusUpdate(
+                    convoID: convoID, model: status["model"] as? String,
+                    context: context, limits: limits))
             }
             guard let ref = obj["message_ref"] as? String else { return nil }
             return .ephemeral(EphemeralUpdate(

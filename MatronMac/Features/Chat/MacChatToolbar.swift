@@ -2,10 +2,10 @@ import SwiftUI
 import MatronChat
 import MatronModels
 import MatronViewModels
+import MatronDesignSystem
 
 /// Mac chat detail column toolbar. Layout:
-/// - Center: chat title
-/// - Right: ⓘ info button
+/// - Center: context gauge (left of title) — title — usage bars (right of title)
 ///
 /// The refresh button was dropped after the journal rewire: it only ran
 /// `ChatViewModel.refresh()` (= `paginateBackward`, an OLDER-history
@@ -25,25 +25,37 @@ import MatronViewModels
 /// buttons in the window header. The menu-bar entry (`Commands.swift`)
 /// + the ⌘⇧S shortcut still reach the same `.toggleSidebar` listener on
 /// `MacChatListView`.
+///
+/// The ⓘ button and the bot-profile sheet it presented are gone: the
+/// header now carries the live context gauge and usage bars inline
+/// instead of a tap-through sheet.
 @MainActor
 struct MacChatToolbar: ToolbarContent {
     let title: String
-    let onShowBotProfile: () -> Void
+    /// Last-known session status for the open convo — context gauge
+    /// renders left of the title, usage bars right of it. Nil (no status
+    /// frame yet) renders the title alone.
+    let status: SessionStatus?
 
     var body: some ToolbarContent {
         ToolbarItem(placement: .principal) {
-            // Horizontal padding so the title doesn't butt against the
-            // rounded ends of the macOS 26 glass toolbar-item capsule.
-            Text(title)
-                .font(.headline)
-                .padding(.horizontal, 10)
-        }
-
-        ToolbarItem(placement: .primaryAction) {
-            Button { onShowBotProfile() } label: {
-                Image(systemName: "info.circle")
+            HStack(spacing: 14) {
+                if let context = status?.context {
+                    ContextGaugeLabel(context: context)
+                        .layoutPriority(1)
+                }
+                // Horizontal padding so the title doesn't butt against the
+                // rounded ends of the macOS 26 glass toolbar-item capsule.
+                Text(title)
+                    .font(.headline)
+                    .padding(.horizontal, 10)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                if let limits = status?.limits, !limits.isEmpty {
+                    UsageBarsView(limits: limits, scale: .compact)
+                        .layoutPriority(1)
+                }
             }
-            .help("Bot profile")
         }
     }
 }

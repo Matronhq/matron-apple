@@ -42,11 +42,6 @@ struct ChatListView: View {
     @State private var showingNewChat = false
     /// Phase 6 (Search): drives the `.sheet` presenting `SearchView`.
     @State private var showingSearch = false
-    /// The chat whose ⓘ button was tapped. Setting this drives the
-    /// `.sheet(item:)` presentation of `BotProfileView`. Cleared back to
-    /// `nil` either by the sheet's onDismiss or when the user picks a chat
-    /// from inside the sheet.
-    @State private var botProfileSummary: ChatSummary?
     /// Settings → Device sheet visibility.
     @State private var showingDeviceSettings = false
     /// Sign-out callback owned by `MatronApp` (drops the in-memory session
@@ -137,28 +132,6 @@ struct ChatListView: View {
             } else {
                 NewChatPlaceholder(onDismiss: { showingNewChat = false })
             }
-        }
-        .sheet(item: $botProfileSummary) { summary in
-            // Snapshot the current grouped summaries flat-list — the
-            // BotProfileViewModel filters by bot.matrixID at construction.
-            // Re-opening the sheet picks up a fresh snapshot from the
-            // groups state at that moment.
-            let allSummaries = viewModel.groups.flatMap(\.summaries)
-            let bpVM = BotProfileViewModel(bot: summary.bot, allSummaries: allSummaries)
-            BotProfileView(
-                viewModel: bpVM,
-                onSelectChat: { _ in
-                    // Phase-2 simply closes the sheet; in-sheet navigation
-                    // to a different chat with the same bot is a Phase-3
-                    // task. The user's already inside *some* chat with the
-                    // bot, so dismissing returns them there.
-                    botProfileSummary = nil
-                },
-                onStartNewChat: {
-                    botProfileSummary = nil
-                    showingNewChat = true
-                }
-            )
         }
         .sheet(isPresented: $showingDeviceSettings) {
             // Settings → Device. Wraps `DeviceSettingsView` in a
@@ -364,8 +337,7 @@ struct ChatListView: View {
             ChatView(
                 viewModel: chatVM,
                 composerVM: composerVM,
-                chatTitle: summary?.title ?? "",
-                onShowBotProfile: { if let summary { botProfileSummary = summary } }
+                chatTitle: summary?.title ?? ""
             )
         } else {
             ContentUnavailableView(
