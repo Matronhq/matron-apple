@@ -87,6 +87,19 @@ extension TimelineItem {
                 "startedAt": ISO8601DateFormatter().string(from: evt.startedAt),
                 "endedAt": evt.endedAt.map(ISO8601DateFormatter().string(from:)) ?? NSNull(),
             ]
+        case .diff(let eventID, let evt):
+            return [
+                "type": "diff",
+                "eventID": eventID,
+                "file": (evt.displayPath ?? evt.filePath).map { $0 as Any } ?? NSNull(),
+                "tool": evt.tool ?? NSNull(),
+                "label": evt.label ?? NSNull(),
+                "added": evt.added.map { NSNumber(value: $0) } ?? NSNull(),
+                "removed": evt.removed.map { NSNumber(value: $0) } ?? NSNull(),
+                "truncated": evt.truncated,
+                "newFile": evt.newFile,
+                "diff": evt.diff,
+            ]
         case .liveOutput(let eventID, let evt):
             return [
                 "type": "liveOutput",
@@ -114,6 +127,14 @@ extension TimelineItem {
             return [
                 "type": "activityIndicator",
                 "label": label,
+            ]
+        case .toolStreamLive(let messageRef, let command, let text, let headTruncated):
+            return [
+                "type": "toolStreamLive",
+                "messageRef": messageRef,
+                "command": command ?? NSNull(),
+                "text": text,
+                "headTruncated": headTruncated,
             ]
         case .unknown(let eventType):
             return [

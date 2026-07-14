@@ -43,7 +43,8 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
     public init(
         convoID: String, store: JournalStore, engine: JournalSyncEngine,
         api: JournalAPI, session: UserSession, search: (any SearchService)? = nil,
-        overlayStaleness: Duration = .seconds(30), sweepInterval: Duration = .seconds(10)
+        overlayStaleness: Duration = .seconds(30), sweepInterval: Duration = .seconds(10),
+        toolStreamStaleness: Duration = .seconds(600)
     ) {
         self.convoID = convoID
         self.store = store
@@ -51,7 +52,8 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         self.api = api
         self.ownSender = "user:\(session.userID)"
         self.search = search
-        self.overlay = OverlayState(staleness: overlayStaleness.timeInterval)
+        self.overlay = OverlayState(staleness: overlayStaleness.timeInterval,
+                                    toolStaleness: toolStreamStaleness.timeInterval)
         self.sweepInterval = sweepInterval
     }
 
@@ -131,9 +133,78 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         private(set) var echoes: [Echo] = []
         private var changeContinuations: [UUID: AsyncStream<Void>.Continuation] = [:]
         private let staleness: TimeInterval
+        private let toolStaleness: TimeInterval
 
-        init(staleness: TimeInterval) {
+        /// One live tool-output stream, keyed by message_ref. All positions
+        /// are UTF-8 BYTE offsets into the command's full output; `bytes[0]`
+        /// sits at absolute offset `startOffset` (nonzero after a
+        /// head-truncated sync).
+        struct ToolStream {
+            var tool: String?
+            var command: String?      // nil until a sync supplies meta
+            var bytes: [UInt8]
+            var startOffset: Int
+            var headTruncated: Bool
+            var updated: Date
+        }
+        private(set) var toolStreams: [String: ToolStream] = [:]
+        /// Refs already retired by a durable row (FIFO, capped). Ephemerals
+        /// can flush up to 200ms after the completion frame (protocol.md) —
+        /// anything for a retired ref is ignored, never re-opened.
+        private var retiredToolRefs: [String] = []
+        /// Debounce ledger for viewing re-sends (the client's only resync
+        /// mechanism). Per-ref so one broken stream can't spam the socket.
+        private var resyncRequested: [String: Date] = [:]
+
+        init(staleness: TimeInterval, toolStaleness: TimeInterval = 600) {
             self.staleness = staleness
+            self.toolStaleness = toolStaleness
+        }
+
+        /// Applies one tool_stream frame. Returns true when the caller
+        /// should re-send `viewing` — the protocol's client-side resync
+        /// path — because we're missing bytes (gap / mid-join) or meta
+        /// (an offset-0 start carries no command string; only a sync does).
+        func applyToolStream(_ update: ToolStreamUpdate) -> Bool {
+            let ref = update.messageRef
+            guard !retiredToolRefs.contains(ref) else { return false }
+            switch update.event {
+            case let .append(offset, chunk):
+                let chunkBytes = Array(chunk.utf8)
+                guard var stream = toolStreams[ref] else {
+                    guard offset == 0 else { return resyncDue(ref) } // mid-join: need full scrollback
+                    toolStreams[ref] = ToolStream(tool: nil, command: nil, bytes: chunkBytes,
+                                                  startOffset: 0, headTruncated: false, updated: Date())
+                    return resyncDue(ref) // appends carry no meta — fetch the command via sync
+                }
+                let end = stream.startOffset + stream.bytes.count
+                if offset == end {
+                    stream.bytes.append(contentsOf: chunkBytes)
+                } else if offset < end {
+                    let overlap = end - offset
+                    guard overlap < chunkBytes.count else { return false } // fully-duplicate retry
+                    stream.bytes.append(contentsOf: chunkBytes.dropFirst(overlap))
+                } else {
+                    return resyncDue(ref) // gap: drop the chunk, ask for scrollback
+                }
+                stream.updated = Date()
+                toolStreams[ref] = stream
+                return false
+            case let .sync(tool, command, offset, content, headTruncated):
+                toolStreams[ref] = ToolStream(tool: tool, command: command,
+                                              bytes: Array(content.utf8), startOffset: offset,
+                                              headTruncated: headTruncated, updated: Date())
+                return false
+            case .end:
+                toolStreams.removeValue(forKey: ref)
+                return false
+            }
+        }
+
+        private func resyncDue(_ ref: String) -> Bool {
+            if let last = resyncRequested[ref], Date().timeIntervalSince(last) < 2 { return false }
+            resyncRequested[ref] = Date()
+            return true
         }
 
         func applyEphemeral(_ update: EphemeralUpdate) {
@@ -167,6 +238,16 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             for event in events {
                 if let ref = event.payload["message_ref"] as? String {
                     streaming.removeValue(forKey: ref)
+                    // Retire the live tool tile: the durable row IS the
+                    // command's completed form. Recorded even when no tile
+                    // is open — a late ephemeral flush (≤200ms after the
+                    // completion frame, protocol.md) must not re-open one.
+                    toolStreams.removeValue(forKey: ref)
+                    resyncRequested.removeValue(forKey: ref)
+                    if !retiredToolRefs.contains(ref) {
+                        retiredToolRefs.append(ref)
+                        if retiredToolRefs.count > 64 { retiredToolRefs.removeFirst() }
+                    }
                 }
                 // Finalize de-dup fallback: the bridge may omit `message_ref`
                 // from the finalized row's payload (it's only guaranteed in
@@ -208,6 +289,13 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             // or when the per-room service is dropped.
             echoes = echoes.filter { $0.failed || $0.created > cutoff }
             if let current = activity, current.updated <= cutoff { activity = nil }
+            // Tool streams are exempt from the short text-overlay cutoff —
+            // a quiet build step legitimately produces nothing for minutes.
+            // Their own (long) staleness is only a backstop: the server's
+            // idle sweep emits `end` when a bridge dies while we're viewing.
+            let toolCutoff = Date().addingTimeInterval(-toolStaleness)
+            toolStreams = toolStreams.filter { $0.value.updated > toolCutoff }
+            resyncRequested = resyncRequested.filter { $0.value > toolCutoff }
         }
 
         func addEcho(localID: String, body: String) {
@@ -266,6 +354,13 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                 let lastTS = items.last?.timestamp ?? Date()
                 for (ref, entry) in await overlay.streaming.sorted(by: { $0.key < $1.key }) {
                     items.append(JournalTimelineMapper.streamingItem(messageRef: ref, text: entry.text, convoTS: max(lastTS, entry.updated)))
+                }
+                for (ref, stream) in await overlay.toolStreams.sorted(by: { $0.key < $1.key }) {
+                    items.append(JournalTimelineMapper.toolStreamItem(
+                        messageRef: ref, command: stream.command,
+                        text: JournalTimelineMapper.toolStreamText(bytes: stream.bytes),
+                        headTruncated: stream.headTruncated,
+                        convoTS: max(lastTS, stream.updated)))
                 }
                 for echo in await overlay.echoes {
                     items.append(TimelineItem(id: "echo:\(echo.localID)", sender: ownSender,
@@ -343,6 +438,17 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                     signal()
                 }
             }
+            let toolStreamTask = Task {
+                for await update in engine.toolStreams(convoID: convoID) {
+                    if await overlay.applyToolStream(update) {
+                        // Client-side resync: re-sending `viewing` makes the
+                        // server re-emit a full-scrollback sync per active
+                        // stream (clients cannot send stream_append).
+                        await engine.setViewing(convoID: convoID)
+                    }
+                    signal()
+                }
+            }
             let echoTask = Task {
                 for await _ in overlay.changes() { signal() }
             }
@@ -367,6 +473,7 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                 storeTask.cancel()
                 ephemeralTask.cancel()
                 activityTask.cancel()
+                toolStreamTask.cancel()
                 echoTask.cancel()
                 sweepTask.cancel()
                 emitTask.cancel()
@@ -437,6 +544,10 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             }
         }
         return !newOnes.isEmpty
+    }
+
+    public func sessionStatus() -> AsyncStream<SessionStatusUpdate> {
+        engine.sessionStatus(convoID: convoID)
     }
 
     public func markAsRead() async throws {

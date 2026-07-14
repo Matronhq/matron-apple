@@ -148,14 +148,32 @@ struct TimelineItemView: View {
             .padding(.vertical, 4)
 
         case .toolCall(_, let evt):
+            // Same cap as the live-output tiles: command output wants
+            // columns, and a narrower card than the message bubbles around
+            // it read as cramped (Dan, 2026-07-14). The card hugs its
+            // content, so small tool calls stay small.
             HStack {
                 ToolCallCard(event: evt)
-                    .frame(maxWidth: 320, alignment: .leading)
+                    .frame(maxWidth: 480, alignment: .leading)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Tool call: \(evt.tool)"))
+
+        case .diff(_, let evt):
+            // File-edit diff snippet — bot-aligned, same width cap as the
+            // tool cards (Dan, 2026-07-14). DiffCard hugs its content, so
+            // a three-line fix stays small.
+            HStack {
+                DiffCard(event: evt)
+                    .frame(maxWidth: 480, alignment: .leading)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Self.accessibilityLabel(
+                for: item, body: "Edited \(evt.filename ?? "file")"))
 
         case .liveOutput(_, let evt):
             // Wider than ToolCallCard — terminal output wants columns.
@@ -164,6 +182,16 @@ struct TimelineItemView: View {
             HStack {
                 LiveOutputCard(session: LiveOutputSessionStore.shared.session(for: evt),
                                eventTimestamp: item.timestamp)
+                    .frame(maxWidth: 480, alignment: .leading)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal)
+
+        case .toolStreamLive(_, let command, let text, let headTruncated):
+            // Ephemeral live tile (journal tool_stream) — same width as the
+            // legacy liveOutput tile; terminal output wants columns.
+            HStack {
+                ToolStreamCard(command: command, text: text, headTruncated: headTruncated)
                     .frame(maxWidth: 480, alignment: .leading)
                 Spacer(minLength: 0)
             }

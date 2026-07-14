@@ -538,6 +538,238 @@ final class JournalTimelineServiceTests: XCTestCase {
         task.cancel()
         await engine.endSync()
     }
+
+    // MARK: (h) tool_stream overlay — live command-output tiles
+
+    /// Count of non-nil `viewing` ops the service has sent. The `items()`
+    /// subscription itself sends one (baseline); every accepted resync
+    /// request adds another. The teardown `viewing: null` is excluded.
+    private func viewingCount(_ socket: FakeJournalSocket) -> Int {
+        socket.sent.compactMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+        }.filter { $0["op"] as? String == "viewing" && $0["convo_id"] is String }.count
+    }
+
+    private func toolStreamFrame(_ ref: String, _ event: String) -> String {
+        #"{"kind":"ephemeral","convo_id":"c1","message_ref":"\#(ref)","tool_stream":\#(event)}"#
+    }
+
+    private func toolStreamItem(in items: [TimelineItem]?, ref: String) -> TimelineItem? {
+        items?.first { $0.id == "toolstream:\(ref)" }
+    }
+
+    func testToolStreamAppendsCoalesceAndOverlapTrims() async throws {
+        let store = try makeStore()
+        let socket = FakeJournalSocket()
+        socket.serve(helloOK(0))
+        let api = JournalAPI(serverURL: URL(string: "https://x")!)
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([socket]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api, session: makeSession())
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        let (collector, task) = collectItems(service.items())
+        try await waitUntil { await collector.values.last != nil }
+
+        socket.serve(toolStreamFrame("tu1", #"{"event":"append","offset":0,"chunk":"one"}"#))
+        socket.serve(toolStreamFrame("tu1", #"{"event":"append","offset":3,"chunk":"two"}"#))
+        // Idempotent retry: bytes 3..<6 resent with 3 extra on the end.
+        socket.serve(toolStreamFrame("tu1", #"{"event":"append","offset":3,"chunk":"twoXYZ"}"#))
+
+        try await waitUntil {
+            guard case let .toolStreamLive(_, _, text, _)? =
+                self.toolStreamItem(in: await collector.values.last, ref: "tu1")?.kind else { return false }
+            return text == "onetwoXYZ"
+        }
+
+        task.cancel()
+        await engine.endSync()
+    }
+
+    func testToolStreamSyncReplacesContentAndSuppliesMeta() async throws {
+        let store = try makeStore()
+        let socket = FakeJournalSocket()
+        socket.serve(helloOK(0))
+        let api = JournalAPI(serverURL: URL(string: "https://x")!)
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([socket]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api, session: makeSession())
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        let (collector, task) = collectItems(service.items())
+        try await waitUntil { await collector.values.last != nil }
+
+        socket.serve(toolStreamFrame("tu1", #"{"event":"append","offset":0,"chunk":"junk"}"#))
+        socket.serve(toolStreamFrame("tu1", #"{"event":"sync","meta":{"tool":"Bash","command":"make"},"offset":0,"content":"$ make\n","head_truncated":false}"#))
+
+        try await waitUntil {
+            guard case let .toolStreamLive(_, command, text, headTruncated)? =
+                self.toolStreamItem(in: await collector.values.last, ref: "tu1")?.kind else { return false }
+            return command == "make" && text == "$ make\n" && !headTruncated
+        }
+
+        task.cancel()
+        await engine.endSync()
+    }
+
+    func testToolStreamGapDropsChunkAndResendsViewing() async throws {
+        let store = try makeStore()
+        let socket = FakeJournalSocket()
+        socket.serve(helloOK(0))
+        let api = JournalAPI(serverURL: URL(string: "https://x")!)
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([socket]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api, session: makeSession())
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        let (collector, task) = collectItems(service.items())
+        try await waitUntil { await collector.values.last != nil }
+        try await waitUntil { self.viewingCount(socket) == 1 } // items() baseline
+
+        // Buffer established via sync (no resync-debounce entry for tu1).
+        socket.serve(toolStreamFrame("tu1", #"{"event":"sync","meta":{"tool":"Bash","command":"make"},"offset":0,"content":"ab","head_truncated":false}"#))
+        try await waitUntil { self.toolStreamItem(in: await collector.values.last, ref: "tu1") != nil }
+        XCTAssertEqual(viewingCount(socket), 1)
+
+        // Gap: end is 2, offset 999 — chunk dropped, viewing re-sent.
+        socket.serve(toolStreamFrame("tu1", #"{"event":"append","offset":999,"chunk":"lost"}"#))
+        try await waitUntil { self.viewingCount(socket) == 2 }
+        // A second gapped append inside the 2s debounce window adds nothing.
+        socket.serve(toolStreamFrame("tu1", #"{"event":"append","offset":999,"chunk":"lost"}"#))
+        // Deterministic emit boundary: land a journal row and wait for it.
+        socket.serve(journalFrame(seq: 1, payload: ["body": "marker"]))
+        try await waitUntil { await collector.values.last?.contains { $0.id == "1" } == true }
+
+        XCTAssertEqual(viewingCount(socket), 2, "debounce must swallow the second gap resync")
+        guard case let .toolStreamLive(_, _, text, _)? =
+            toolStreamItem(in: await collector.values.last, ref: "tu1")?.kind else {
+            return XCTFail("tile missing")
+        }
+        XCTAssertEqual(text, "ab", "gapped chunk must be dropped, not spliced")
+
+        task.cancel()
+        await engine.endSync()
+    }
+
+    func testToolStreamMidJoinWithoutSyncRequestsViewing() async throws {
+        let store = try makeStore()
+        let socket = FakeJournalSocket()
+        socket.serve(helloOK(0))
+        let api = JournalAPI(serverURL: URL(string: "https://x")!)
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([socket]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api, session: makeSession())
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        let (collector, task) = collectItems(service.items())
+        try await waitUntil { await collector.values.last != nil }
+        try await waitUntil { self.viewingCount(socket) == 1 }
+
+        // No offset-0 frame ever seen: nothing to render yet, but the
+        // service must ask for scrollback (a sync) by re-sending viewing.
+        socket.serve(toolStreamFrame("tu1", #"{"event":"append","offset":512,"chunk":"tail"}"#))
+        try await waitUntil { self.viewingCount(socket) == 2 }
+        let snapshot = await collector.values.last
+        XCTAssertNil(toolStreamItem(in: snapshot, ref: "tu1"))
+
+        task.cancel()
+        await engine.endSync()
+    }
+
+    func testToolStreamEndRemovesTile() async throws {
+        let store = try makeStore()
+        let socket = FakeJournalSocket()
+        socket.serve(helloOK(0))
+        let api = JournalAPI(serverURL: URL(string: "https://x")!)
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([socket]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api, session: makeSession())
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        let (collector, task) = collectItems(service.items())
+        try await waitUntil { await collector.values.last != nil }
+
+        socket.serve(toolStreamFrame("tu1", #"{"event":"append","offset":0,"chunk":"x"}"#))
+        try await waitUntil { self.toolStreamItem(in: await collector.values.last, ref: "tu1") != nil }
+
+        socket.serve(toolStreamFrame("tu1", #"{"event":"end","reason":"stale"}"#))
+        try await waitUntil { self.toolStreamItem(in: await collector.values.last, ref: "tu1") == nil }
+
+        task.cancel()
+        await engine.endSync()
+    }
+
+    func testDurableToolOutputRetiresTileAndLateAppendIsIgnored() async throws {
+        let store = try makeStore()
+        let socket = FakeJournalSocket()
+        socket.serve(helloOK(0))
+        let api = JournalAPI(serverURL: URL(string: "https://x")!)
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([socket]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api, session: makeSession())
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        let (collector, task) = collectItems(service.items())
+        try await waitUntil { await collector.values.last != nil }
+
+        socket.serve(toolStreamFrame("tu1", #"{"event":"append","offset":0,"chunk":"$ make\n"}"#))
+        try await waitUntil { self.toolStreamItem(in: await collector.values.last, ref: "tu1") != nil }
+        let viewingsBeforeRetire = viewingCount(socket)
+
+        // Durable completion row — the same payload shape finalize produces.
+        socket.serve(journalFrame(seq: 1, type: "tool_output", payload: [
+            "message_ref": "tu1", "command": "make", "exit_code": 0, "denied": false,
+            "truncated": false, "snippet": "$ make", "blob_ref": "b1", "live_log": true,
+        ]))
+        try await waitUntil {
+            guard let last = await collector.values.last else { return false }
+            return last.contains { $0.id == "1" } && !last.contains { $0.id == "toolstream:tu1" }
+        }
+
+        // Late flush (protocol allows ≤200ms after the completion frame):
+        // must not re-open the tile, and must not request a resync.
+        socket.serve(toolStreamFrame("tu1", #"{"event":"append","offset":7,"chunk":"late"}"#))
+        socket.serve(journalFrame(seq: 2, payload: ["body": "marker"]))
+        try await waitUntil { await collector.values.last?.contains { $0.id == "2" } == true }
+
+        let afterLate = await collector.values.last
+        XCTAssertNil(toolStreamItem(in: afterLate, ref: "tu1"),
+                     "late append re-opened a retired tile")
+        XCTAssertEqual(viewingCount(socket), viewingsBeforeRetire,
+                       "retired refs must not request resyncs")
+
+        task.cancel()
+        await engine.endSync()
+    }
+
+    func testToolStreamSurvivesTextStalenessSweepButNotToolStaleness() async throws {
+        let store = try makeStore()
+        let socket = FakeJournalSocket()
+        socket.serve(helloOK(0))
+        let api = JournalAPI(serverURL: URL(string: "https://x")!)
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([socket]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api,
+                                             session: makeSession(),
+                                             overlayStaleness: .milliseconds(80),
+                                             sweepInterval: .milliseconds(40),
+                                             toolStreamStaleness: .milliseconds(400))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        let (collector, task) = collectItems(service.items())
+        try await waitUntil { await collector.values.last != nil }
+
+        socket.serve(toolStreamFrame("tu1", #"{"event":"append","offset":0,"chunk":"quiet build"}"#))
+        try await waitUntil { self.toolStreamItem(in: await collector.values.last, ref: "tu1") != nil }
+
+        // Past the text-overlay staleness (80ms) with several sweeps ticked:
+        // a quiet-but-running command's tile must survive.
+        try await Task.sleep(for: .milliseconds(160))
+        let midway = await collector.values.last
+        XCTAssertNotNil(toolStreamItem(in: midway, ref: "tu1"),
+                        "tool tile swept by the text staleness cutoff")
+
+        // Past its own staleness it self-prunes via the sweep.
+        try await waitUntil(timeout: 1) {
+            self.toolStreamItem(in: await collector.values.last, ref: "tu1") == nil
+        }
+
+        task.cancel()
+        await engine.endSync()
+    }
 }
 
 // MARK: - Local test fakes

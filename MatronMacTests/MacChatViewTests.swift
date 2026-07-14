@@ -112,16 +112,12 @@ final class MacChatViewTests: XCTestCase {
         let timeline = FakeTimelineForChat()
         let chatVM = ChatViewModel(roomID: "!r:s", timeline: timeline, media: FakeMediaForChat())
         let composerVM = ComposerViewModel(roomID: "!test:s", timeline: timeline, commands: [])
-        var profileTaps = 0
         let view = MacChatView(
             viewModel: chatVM,
             composerVM: composerVM,
-            chatTitle: "Hello",
-            onShowBotProfile: { profileTaps += 1 }
+            chatTitle: "Hello"
         )
         XCTAssertEqual(view.chatTitle, "Hello")
-        view.onShowBotProfile()
-        XCTAssertEqual(profileTaps, 1)
     }
 
 }

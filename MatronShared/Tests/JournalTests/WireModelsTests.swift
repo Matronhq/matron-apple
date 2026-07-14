@@ -1,4 +1,5 @@
 import XCTest
+import MatronModels
 @testable import MatronJournal
 
 final class WireModelsTests: XCTestCase {
@@ -65,6 +66,53 @@ final class WireModelsTests: XCTestCase {
         XCTAssertNil(ServerFrame.decode(#"{"kind":"ephemeral","convo_id":"c1","activity":{"state":"dancing"}}"#))
     }
 
+    func testDecodeToolStreamAppendFrame() throws {
+        let frame = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","message_ref":"tu1","tool_stream":{"event":"append","offset":7,"chunk":"hello\n"}}"#)
+        XCTAssertEqual(frame, .toolStream(ToolStreamUpdate(
+            convoID: "c1", messageRef: "tu1", event: .append(offset: 7, chunk: "hello\n"))))
+    }
+
+    func testDecodeToolStreamSyncFrame() throws {
+        let frame = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","message_ref":"tu1","tool_stream":{"event":"sync","meta":{"tool":"Bash","command":"make"},"offset":0,"content":"$ make\n","head_truncated":false}}"#)
+        XCTAssertEqual(frame, .toolStream(ToolStreamUpdate(
+            convoID: "c1", messageRef: "tu1",
+            event: .sync(tool: "Bash", command: "make", offset: 0, content: "$ make\n", headTruncated: false))))
+    }
+
+    func testDecodeToolStreamSyncWithoutMetaAndTruncatedHead() throws {
+        let frame = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","message_ref":"tu1","tool_stream":{"event":"sync","offset":512,"content":"tail","head_truncated":true}}"#)
+        XCTAssertEqual(frame, .toolStream(ToolStreamUpdate(
+            convoID: "c1", messageRef: "tu1",
+            event: .sync(tool: nil, command: nil, offset: 512, content: "tail", headTruncated: true))))
+    }
+
+    func testDecodeToolStreamEndFrame() throws {
+        let frame = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","message_ref":"tu1","tool_stream":{"event":"end","reason":"stale"}}"#)
+        XCTAssertEqual(frame, .toolStream(ToolStreamUpdate(
+            convoID: "c1", messageRef: "tu1", event: .end(reason: "stale"))))
+    }
+
+    func testDecodeToolStreamUnknownEventSkipsFrame() {
+        XCTAssertNil(ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","message_ref":"tu1","tool_stream":{"event":"wat"}}"#))
+    }
+
+    /// Regression: tool_stream frames used to fall through to the
+    /// text-streaming fallback (they carry message_ref, no text keys) and
+    /// painted an EMPTY streaming bubble whenever a command streamed while
+    /// the chat was open. They must never decode as `.ephemeral` again.
+    func testToolStreamFrameDoesNotDecodeAsEmptyTextEphemeral() throws {
+        let frame = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","message_ref":"tu1","tool_stream":{"event":"append","offset":0,"chunk":"x"}}"#)
+        if case .ephemeral = frame {
+            XCTFail("tool_stream frame decoded as text-streaming EphemeralUpdate")
+        }
+    }
+
     func testStreamEphemeralStillRequiresMessageRef() {
         // Relaxing the ephemeral guard for activity frames must not let a
         // streaming frame through without its `message_ref`.
@@ -104,5 +152,61 @@ final class WireModelsTests: XCTestCase {
         let marker = try obj(.readMarker(convoID: "c1", upToSeq: 40))
         XCTAssertEqual(marker["op"] as? String, "read_marker")
         XCTAssertEqual(marker["up_to_seq"] as? Int64, 40)
+    }
+
+    func testDecodeSessionStatusEphemeralFrame() throws {
+        let text = #"{"kind":"ephemeral","convo_id":"c1","status":{"model":"claude-fable-5","context":{"tokens":265000,"window":1000000,"pct":27},"limits":[{"label":"Week (Fable)","percent":80,"resets":"Jul 12, 6:59pm (UTC)","resets_at":"2026-07-12T18:59:00.000Z"}]}}"#
+        guard case let .sessionStatus(update)? = ServerFrame.decode(text) else {
+            return XCTFail("expected sessionStatus frame")
+        }
+        XCTAssertEqual(update.convoID, "c1")
+        XCTAssertEqual(update.model, "claude-fable-5")
+        XCTAssertEqual(update.context, SessionStatus.Context(tokens: 265_000, window: 1_000_000, pct: 27))
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        XCTAssertEqual(update.limits, [SessionStatus.Limit(
+            label: "Week (Fable)", percent: 80,
+            resets: "Jul 12, 6:59pm (UTC)",
+            resetsAt: iso.date(from: "2026-07-12T18:59:00.000Z"))])
+    }
+
+    func testDecodeSessionStatusPartialAndMalformed() throws {
+        // Context-only frame: model / limits stay nil.
+        guard case let .sessionStatus(partial)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"context":{"tokens":5000,"window":200000,"pct":3}}}"#) else {
+            return XCTFail("expected context-only sessionStatus frame")
+        }
+        XCTAssertNil(partial.model)
+        XCTAssertNil(partial.limits)
+        XCTAssertEqual(partial.context?.tokens, 5000)
+
+        // Malformed resets_at degrades to nil; the raw string survives.
+        guard case let .sessionStatus(badDate)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"limits":[{"label":"Session","percent":39,"resets":"soon","resets_at":"not-a-date"}]}}"#) else {
+            return XCTFail("expected sessionStatus frame with unparseable resets_at")
+        }
+        XCTAssertEqual(badDate.limits?.first?.resets, "soon")
+        XCTAssertNil(badDate.limits?.first?.resetsAt)
+
+        // A context object missing a required key decodes as nil context.
+        guard case let .sessionStatus(noPct)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"model":"m","context":{"tokens":5000}}}"#) else {
+            return XCTFail("expected sessionStatus frame with malformed context")
+        }
+        XCTAssertNil(noPct.context)
+        XCTAssertEqual(noPct.model, "m")
+
+        // A limits entry missing label/percent is skipped; the good one survives.
+        guard case let .sessionStatus(mixed)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"limits":[{"percent":5},{"label":"Session","percent":39}]}}"#) else {
+            return XCTFail("expected sessionStatus frame with mixed limits")
+        }
+        XCTAssertEqual(mixed.limits?.map(\.label), ["Session"])
+
+        // Plain text-streaming ephemerals must still decode as before.
+        guard case .ephemeral? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","message_ref":"m7","text":"hi"}"#) else {
+            return XCTFail("text streaming ephemeral regressed")
+        }
     }
 }

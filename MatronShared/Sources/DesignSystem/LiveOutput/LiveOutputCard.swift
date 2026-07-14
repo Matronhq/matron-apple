@@ -81,23 +81,10 @@ public struct LiveOutputCard: View {
         .padding(.vertical, 6)
     }
 
-    /// Terminal-style pane: fixed dark palette in both app themes so
-    /// ANSI colors read the same everywhere. `defaultScrollAnchor(.bottom)`
-    /// gives sticky-tail behavior: pinned to the newest output unless the
-    /// user scrolls up, matching the web tile.
+    /// Terminal-style pane — see `TerminalPane` (shared with
+    /// `ToolStreamCard`, extracted verbatim from here).
     private var pane: some View {
-        ScrollView {
-            Text(session.output)
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(Color(red: 0.86, green: 0.86, blue: 0.86))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
-        }
-        .defaultScrollAnchor(.bottom)
-        .frame(maxHeight: expanded ? 600 : 76)
-        .background(Color(red: 0.12, green: 0.12, blue: 0.12))
-        .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 7, bottomTrailingRadius: 7))
+        TerminalPane(output: session.output, expanded: expanded)
     }
 
     private var showsPane: Bool {

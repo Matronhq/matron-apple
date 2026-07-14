@@ -133,7 +133,6 @@ struct MacChatView: View {
     }
 
     let chatTitle: String
-    let onShowBotProfile: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -407,7 +406,7 @@ struct MacChatView: View {
         .toolbar {
             MacChatToolbar(
                 title: chatTitle,
-                onShowBotProfile: onShowBotProfile
+                status: viewModel.sessionStatus
             )
         }
         .task {

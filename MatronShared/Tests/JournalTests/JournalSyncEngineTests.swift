@@ -103,6 +103,46 @@ final class JournalSyncEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    func testToolStreamFanOutToMatchingConvoOnly() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        var iterC1 = engine.toolStreams(convoID: "c1").makeAsyncIterator()
+        var iterC2 = engine.toolStreams(convoID: "c2").makeAsyncIterator()
+        // c2's frame first: if fan-out ignored convoID, c1's iterator would
+        // yield this one instead of its own.
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c2","message_ref":"tu9","tool_stream":{"event":"end","reason":"stale"}}"#)
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","message_ref":"tu1","tool_stream":{"event":"append","offset":0,"chunk":"hi"}}"#)
+        let c1Update = await iterC1.next()
+        XCTAssertEqual(c1Update, ToolStreamUpdate(
+            convoID: "c1", messageRef: "tu1", event: .append(offset: 0, chunk: "hi")))
+        let c2Update = await iterC2.next()
+        XCTAssertEqual(c2Update, ToolStreamUpdate(
+            convoID: "c2", messageRef: "tu9", event: .end(reason: "stale")))
+        await engine.endSync()
+    }
+
+    func testSessionStatusFanOutToMatchingConvoOnly() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        var iterC1 = engine.sessionStatus(convoID: "c1").makeAsyncIterator()
+        // A frame for another convo first: if fan-out ignored convoID,
+        // c1's iterator would yield it.
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c2","status":{"model":"other"}}"#)
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","status":{"context":{"tokens":265000,"window":1000000,"pct":27}}}"#)
+        let update = await iterC1.next()
+        XCTAssertEqual(update?.convoID, "c1")
+        XCTAssertEqual(update?.context?.pct, 27)
+        await engine.endSync()
+    }
+
     /// A conversation whose first-ever frame arrives while the engine is
     /// live (`.running`) — the /start case — must be published on
     /// `newConversations()`. Frames on already-known convos, and repeat

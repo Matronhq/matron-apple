@@ -1148,4 +1148,34 @@ final class ChatViewModelTests: XCTestCase {
         let vm = await makeAskVM(items: [prompt, reply])
         XCTAssertEqual(vm.answerSummary(forPrompt: "p2"), "src/")
     }
+
+    @MainActor
+    func testSessionStatusSubscriptionMergesPartialFrames() async throws {
+        let fake = FakeTimelineService()
+        fake.snapshotsToEmit = [[]]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        defer { vm.stop() }
+        await task.value
+
+        fake.statusContinuation.yield(SessionStatusUpdate(
+            convoID: "!r:s", model: nil,
+            context: SessionStatus.Context(tokens: 100_000, window: 1_000_000, pct: 10),
+            limits: nil))
+        for _ in 0..<200 {
+            if vm.sessionStatus?.context != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(vm.sessionStatus?.context?.pct, 10)
+
+        // A model-only frame must not clear the held context.
+        fake.statusContinuation.yield(SessionStatusUpdate(
+            convoID: "!r:s", model: "claude-fable-5", context: nil, limits: nil))
+        for _ in 0..<200 {
+            if vm.sessionStatus?.model != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(vm.sessionStatus?.model, "claude-fable-5")
+        XCTAssertEqual(vm.sessionStatus?.context?.pct, 10)
+    }
 }

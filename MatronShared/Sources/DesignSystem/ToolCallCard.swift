@@ -36,6 +36,14 @@ public struct ToolCallCard: View {
                         .font(.caption2).foregroundStyle(.secondary)
                     statusIcon
                     Text(event.tool).font(.system(.callout, design: .monospaced)).bold()
+                    if let badge = outcomeBadge {
+                        Text(badge)
+                            .font(.caption2).bold()
+                            .foregroundStyle(.red)
+                            .padding(.horizontal, 4).padding(.vertical, 1)
+                            .background(Color.red.opacity(0.12))
+                            .clipShape(Capsule())
+                    }
                     Text(argSummary).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     Spacer()
                     #if os(macOS)
@@ -83,7 +91,14 @@ public struct ToolCallCard: View {
                     sectionHeader("Arguments")
                     codeView(event.argsJSON)
                 }
-                if let result = event.resultText {
+                if event.expired {
+                    // Binding client rule (matron-journal protocol.md): the
+                    // output was purged after the 24h tool-log TTL — command
+                    // and exit code stay, no snippet area, no fetch button.
+                    Label("Output expired", systemImage: "clock.badge.exclamationmark")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                } else if let result = event.resultText {
                     sectionHeader("Result\(event.resultTruncated ? " (truncated)" : "")")
                     codeView(result)
                 }
@@ -101,6 +116,14 @@ public struct ToolCallCard: View {
         case .ok:      Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).font(.caption)
         case .error:   Image(systemName: "xmark.octagon.fill").foregroundStyle(.red).font(.caption)
         }
+    }
+
+    /// "denied" / "exit N" pill next to the tool name for failed commands.
+    /// A zero exit code shows nothing — the green check already says it.
+    private var outcomeBadge: String? {
+        if event.denied { return "denied" }
+        if let code = event.exitCode, code != 0 { return "exit \(code)" }
+        return nil
     }
 
     private var argSummary: String {

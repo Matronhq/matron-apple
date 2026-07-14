@@ -1,4 +1,5 @@
 import Foundation
+import MatronModels
 
 /// String constants for journal event `type`s (spec §7). Use these, not
 /// literals, so renames are compile-checked.
@@ -107,16 +108,62 @@ public struct ActivityUpdate: Equatable, Sendable {
     }
 }
 
+/// One live tool-output stream frame (journal `tool_stream` ephemeral,
+/// protocol.md stream_append section). `offset`s are UTF-8 BYTE positions in
+/// the command's output. Never persisted; delivered only while `viewing`.
+/// Normal completion sends no ephemeral — the durable `tool_output` row with
+/// the same `message_ref` retires the stream.
+public struct ToolStreamUpdate: Equatable, Sendable {
+    public enum Event: Equatable, Sendable {
+        /// Consecutive appends coalesce by concatenation. No meta — the
+        /// command string only arrives via `sync`.
+        case append(offset: Int, chunk: String)
+        /// Full scrollback so far, sent per active stream when the client
+        /// (re-)sends `viewing`. `offset` is the byte position of
+        /// `content`'s first byte; `headTruncated` means the server's ring
+        /// buffer dropped the beginning.
+        case sync(tool: String?, command: String?, offset: Int, content: String, headTruncated: Bool)
+        /// Server idle sweep freed the buffer (bridge died) — drop the tile.
+        case end(reason: String?)
+    }
+
+    public let convoID: String
+    public let messageRef: String
+    public let event: Event
+
+    public init(convoID: String, messageRef: String, event: Event) {
+        self.convoID = convoID
+        self.messageRef = messageRef
+        self.event = event
+    }
+}
+
 /// Server → client frames. Unknown `kind`s decode to nil (skip); unknown
 /// control ops decode to `.unknownControl` so the protocol can grow.
 public enum ServerFrame: Equatable, Sendable {
     case journal(JournalEvent)
     case ephemeral(EphemeralUpdate)
     case activity(ActivityUpdate)
+    case toolStream(ToolStreamUpdate)
+    case sessionStatus(SessionStatusUpdate)
     case helloOK(headSeq: Int64)
     case error(code: String, ref: String?)
     case snapshotRequired
     case unknownControl(op: String)
+
+    /// Bridge timestamps are `Date.toISOString()` output (always fractional),
+    /// but accept plain ISO too for robustness. ISO8601DateFormatter is
+    /// thread-safe, so shared statics are fine.
+    private static let isoFractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    private static let isoPlain = ISO8601DateFormatter()
+
+    private static func parseISODate(_ raw: String) -> Date? {
+        isoFractional.date(from: raw) ?? isoPlain.date(from: raw)
+    }
 
     public static func decode(_ text: String) -> ServerFrame? {
         guard let obj = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any],
@@ -139,6 +186,61 @@ public enum ServerFrame: Equatable, Sendable {
                     convoID: convoID, state: state,
                     detail: activity["detail"] as? String
                 ))
+            }
+            // tool_stream frames also carry `message_ref`; matched before
+            // the text-streaming fallback below or they'd decode as an
+            // empty EphemeralUpdate and paint an empty streaming bubble.
+            if let toolStream = obj["tool_stream"] as? [String: Any] {
+                guard let ref = obj["message_ref"] as? String,
+                      let eventName = toolStream["event"] as? String else { return nil }
+                let event: ToolStreamUpdate.Event
+                switch eventName {
+                case "append":
+                    guard let offset = (toolStream["offset"] as? NSNumber)?.intValue,
+                          let chunk = toolStream["chunk"] as? String else { return nil }
+                    event = .append(offset: offset, chunk: chunk)
+                case "sync":
+                    guard let offset = (toolStream["offset"] as? NSNumber)?.intValue,
+                          let content = toolStream["content"] as? String else { return nil }
+                    let meta = toolStream["meta"] as? [String: Any]
+                    event = .sync(tool: meta?["tool"] as? String,
+                                  command: meta?["command"] as? String,
+                                  offset: offset, content: content,
+                                  headTruncated: toolStream["head_truncated"] as? Bool ?? false)
+                case "end":
+                    event = .end(reason: toolStream["reason"] as? String)
+                default:
+                    return nil // unknown tool_stream event — skip so the protocol can grow
+                }
+                return .toolStream(ToolStreamUpdate(convoID: convoID, messageRef: ref, event: event))
+            }
+            // Session-status frames carry a `status` object and no
+            // `message_ref`. Parts are independently optional; malformed
+            // sub-objects degrade to nil rather than dropping the frame.
+            if let status = obj["status"] as? [String: Any] {
+                var context: SessionStatus.Context?
+                if let ctx = status["context"] as? [String: Any],
+                   let tokens = (ctx["tokens"] as? NSNumber)?.intValue,
+                   let window = (ctx["window"] as? NSNumber)?.intValue,
+                   let pct = (ctx["pct"] as? NSNumber)?.intValue {
+                    context = SessionStatus.Context(tokens: tokens, window: window, pct: pct)
+                }
+                var limits: [SessionStatus.Limit]?
+                if let rawLimits = status["limits"] as? [[String: Any]] {
+                    let parsed = rawLimits.compactMap { entry -> SessionStatus.Limit? in
+                        guard let label = entry["label"] as? String,
+                              let percent = (entry["percent"] as? NSNumber)?.intValue
+                        else { return nil }
+                        return SessionStatus.Limit(
+                            label: label, percent: percent,
+                            resets: entry["resets"] as? String,
+                            resetsAt: (entry["resets_at"] as? String).flatMap(parseISODate))
+                    }
+                    if !parsed.isEmpty { limits = parsed }
+                }
+                return .sessionStatus(SessionStatusUpdate(
+                    convoID: convoID, model: status["model"] as? String,
+                    context: context, limits: limits))
             }
             guard let ref = obj["message_ref"] as? String else { return nil }
             return .ephemeral(EphemeralUpdate(

@@ -1,4 +1,5 @@
 import Foundation
+import MatronModels
 
 /// Per-room timeline access. One `TimelineService` per open room.
 ///
@@ -55,6 +56,12 @@ public protocol TimelineService: Sendable {
 
     /// Marks the most recent visible event as read.
     func markAsRead() async throws
+
+    /// Per-convo stream of session-status updates (model, context gauge,
+    /// account limits) — journal `status` ephemerals. The journal replays
+    /// the last cached status on `viewing`, so subscribing at convo-open
+    /// is enough to populate a header immediately.
+    func sessionStatus() -> AsyncStream<SessionStatusUpdate>
 }
 
 public extension TimelineService {
@@ -62,5 +69,11 @@ public extension TimelineService {
     /// call site (composer, slash commands) uses.
     func sendText(_ body: String) async throws {
         try await sendText(body, inReplyTo: nil)
+    }
+
+    /// Default: no status source — an immediately-finished stream, so
+    /// implementations and test fakes without one need no changes.
+    func sessionStatus() -> AsyncStream<SessionStatusUpdate> {
+        AsyncStream { $0.finish() }
     }
 }

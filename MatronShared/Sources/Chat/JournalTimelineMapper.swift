@@ -38,11 +38,7 @@ public enum JournalTimelineMapper {
             }
 
         case JournalEventType.diff:
-            let text = payload["diff"] as? String ?? payload["snippet"] as? String ?? ""
-            kind = .toolCall(eventID: String(event.seq), ToolCallEvent(
-                tool: "diff", argsJSON: "{}", status: .ok,
-                resultText: text, resultTruncated: payload["truncated"] as? Bool ?? false,
-                startedAt: event.ts, endedAt: event.ts))
+            kind = .diff(eventID: String(event.seq), DiffEvent.parse(payload: payload))
 
         case JournalEventType.prompt:
             kind = .askUser(eventID: String(event.seq), askUserEvent(fromPrompt: payload))
@@ -95,24 +91,46 @@ public enum JournalTimelineMapper {
         )
     }
 
-    public static func toolCallEvent(fromToolOutput payload: [String: Any], ts: Date) -> ToolCallEvent {
+    /// The journal server's tool-log TTL (docs/protocol.md Retention):
+    /// live-streamed output is purged server-side 24h after the event, and
+    /// the client rules make the same TTL binding on local caches.
+    public static let toolLogTTL: TimeInterval = 24 * 3600
+
+    public static func toolCallEvent(fromToolOutput payload: [String: Any], ts: Date,
+                                     now: Date = Date()) -> ToolCallEvent {
         // Rich payloads (bridge keeps chat.matron.tool_call keys) parse directly.
         if let parsed = ToolCallEvent.parse(content: payload) { return parsed }
-        // Bridge command-tool shape: {tool_use_id, command, viewer_url}. The
-        // command is the only human-meaningful content in the journal — the
-        // actual output streams to viewer_url and is never persisted here — so
-        // surface the command as the tool's args. Without this the fallback
-        // below produced tool "tool" with empty args and no result, which
-        // rendered as a blank, un-expandable card.
+        // Command-completion shape ({message_ref, command, exit_code, denied,
+        // truncated, snippet, blob_ref, live_log} — and its server tombstone,
+        // same minus snippet plus expired: true): command as the tool's args,
+        // snippet as the result, exit_code/denied driving the status icon.
+        // Also covers the older command-only payloads (no exit_code, no
+        // snippet), which fall out as a plain .ok command card exactly as
+        // before.
         if let command = payload["command"] as? String, !command.isEmpty {
+            let exitCode = (payload["exit_code"] as? NSNumber)?.intValue
+            let denied = payload["denied"] as? Bool ?? false
+            var expired = payload["expired"] as? Bool ?? false
+            // Binding client TTL rule: a cached live_log snippet must stop
+            // rendering once ts + 24h passes locally, without waiting for
+            // the server's tombstone to re-sync (JournalStore's purge sweep
+            // rewrites the stored payload; this guard covers rows the sweep
+            // hasn't reached yet).
+            if !expired, payload["live_log"] as? Bool == true,
+               ts.addingTimeInterval(toolLogTTL) <= now {
+                expired = true
+            }
             return ToolCallEvent(
                 tool: commandLabel(command),
                 argsJSON: command,
-                status: .ok,
-                resultText: nil,
-                resultTruncated: false,
+                status: denied || (exitCode ?? 0) != 0 ? .error : .ok,
+                resultText: expired ? nil : payload["snippet"] as? String,
+                resultTruncated: payload["truncated"] as? Bool ?? false,
                 startedAt: ts,
-                endedAt: nil
+                endedAt: nil,
+                exitCode: exitCode,
+                denied: denied,
+                expired: expired
             )
         }
         return ToolCallEvent(
@@ -191,5 +209,50 @@ public enum JournalTimelineMapper {
         TimelineItem(
             id: "activity", sender: "agent", timestamp: convoTS,
             kind: .activityIndicator(label: label), isOwn: false, sendState: .sent)
+    }
+
+    /// Renders a tool-stream byte buffer for display. Keeps only the last
+    /// `displayCapBytes` (the server buffer is 1 MiB; SwiftUI Text does not
+    /// enjoy megabyte strings), then drops any orphaned continuation bytes
+    /// at the front of the cut and any incomplete multibyte sequence at the
+    /// tail (a chunk boundary can split a character — rendering the partial
+    /// bytes would flicker a U+FFFD until the next append completes it).
+    public static func toolStreamText(bytes: [UInt8], displayCapBytes: Int = 65536) -> String {
+        var slice = bytes[...]
+        if slice.count > displayCapBytes {
+            slice = slice.suffix(displayCapBytes)
+            while let first = slice.first, first & 0xC0 == 0x80 {
+                slice = slice.dropFirst()
+            }
+        }
+        // Walk back over trailing continuation bytes to the lead byte; if
+        // the sequence it starts is longer than what we have, trim it off.
+        var index = slice.endIndex
+        var walked = 0
+        while walked < 4, index > slice.startIndex {
+            let previous = slice.index(before: index)
+            let byte = slice[previous]
+            if byte & 0x80 == 0 { break } // ASCII tail — complete
+            walked += 1
+            if byte & 0xC0 == 0xC0 { // lead byte of a multibyte sequence
+                let needed = byte >= 0xF0 ? 4 : byte >= 0xE0 ? 3 : 2
+                if walked < needed { slice = slice[..<previous] }
+                break
+            }
+            index = previous
+        }
+        return String(decoding: slice, as: UTF8.self)
+    }
+
+    /// A live tool-output tile row. Stable id ("toolstream:<ref>") so
+    /// appends redraw one row in place; `convoTS` follows the same
+    /// day-bucket rule as `streamingItem`/`activityItem`.
+    public static func toolStreamItem(messageRef: String, command: String?, text: String,
+                                      headTruncated: Bool, convoTS: Date) -> TimelineItem {
+        TimelineItem(
+            id: "toolstream:\(messageRef)", sender: "agent", timestamp: convoTS,
+            kind: .toolStreamLive(messageRef: messageRef, command: command,
+                                  text: text, headTruncated: headTruncated),
+            isOwn: false, sendState: .sent)
     }
 }

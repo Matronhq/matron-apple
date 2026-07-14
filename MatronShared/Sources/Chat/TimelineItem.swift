@@ -36,6 +36,11 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         /// Matrix event ID, kept on the case so `m.replace` updates
         /// can be correlated against an in-flight running tool call.
         case toolCall(eventID: String, ToolCallEvent)
+        /// Journal `diff` event — a file-edit snippet the bridge publishes
+        /// when the agent edits/writes a file (replaces the old
+        /// "✏️ Editing …" text message). Renders as a `DiffCard` with the
+        /// filename header linking to the signed viewer URL.
+        case diff(eventID: String, DiffEvent)
         /// A live command-output announcement (journal `tool_output` with a
         /// `viewer_url`). Renders as a `LiveOutputCard` that streams the
         /// command's output from the bridge's viewer WebSocket — the
@@ -60,6 +65,13 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         /// trailing overlay row while the agent is thinking or running a
         /// tool, and dropped when it goes idle or the stream goes stale.
         case activityIndicator(label: String)
+        /// Live tool-output overlay (journal `tool_stream` ephemerals) — a
+        /// terminal tile streaming a running command's output at the bottom
+        /// of the timeline. Not persisted; retired when the durable
+        /// `tool_output` row with the same `messageRef` lands (which renders
+        /// as `.toolCall`). `command` is nil until a `sync` frame supplies
+        /// meta — appends never carry it.
+        case toolStreamLive(messageRef: String, command: String?, text: String, headTruncated: Bool)
         /// Catch-all for events we don't render specially yet (encrypted but
         /// undecryptable, polls, stickers, etc.). UI shows a placeholder so
         /// the event isn't silently dropped.
