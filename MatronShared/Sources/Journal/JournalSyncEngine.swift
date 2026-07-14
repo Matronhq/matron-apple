@@ -54,12 +54,14 @@ public actor JournalSyncEngine {
     private var activityContinuations: [UUID: (convoID: String, continuation: AsyncStream<ActivityUpdate>.Continuation)] = [:]
     private var toolStreamContinuations: [UUID: (convoID: String, continuation: AsyncStream<ToolStreamUpdate>.Continuation)] = [:]
     private var sessionStatusContinuations: [UUID: (convoID: String, continuation: AsyncStream<SessionStatusUpdate>.Continuation)] = [:]
-    /// Last session-status frame per convo, so a subscriber that registers
-    /// after the frame already arrived (e.g. `viewing` replay landed in the
+    /// Merged session-status per convo, so a subscriber that registers
+    /// after a frame already arrived (e.g. `viewing` replay landed in the
     /// gap before `sessionStatus(convoID:)`'s registration task ran) still
     /// gets a populated header immediately instead of waiting for the next
-    /// turn-end frame. Status frames are cumulative (rebuilt from full
-    /// session state each time), so replaying only the latest is lossless.
+    /// turn-end frame. Frames use absent-means-unchanged semantics, so the
+    /// cache merges each incoming frame over the held one (a part replaces
+    /// only when present) rather than storing the last frame verbatim —
+    /// a partial frame must not erase parts an earlier frame carried.
     private var lastSessionStatus: [String: SessionStatusUpdate] = [:]
     private var newConvoContinuations: [UUID: AsyncStream<String>.Continuation] = [:]
     private var readyWaiters: [CheckedContinuation<Void, Error>] = []
@@ -453,7 +455,16 @@ public actor JournalSyncEngine {
                             entry.continuation.yield(update)
                         }
                     case .sessionStatus(let update):
-                        lastSessionStatus[update.convoID] = update
+                        if let held = lastSessionStatus[update.convoID] {
+                            lastSessionStatus[update.convoID] = SessionStatusUpdate(
+                                convoID: update.convoID,
+                                model: update.model ?? held.model,
+                                context: update.context ?? held.context,
+                                limits: update.limits ?? held.limits
+                            )
+                        } else {
+                            lastSessionStatus[update.convoID] = update
+                        }
                         for (_, entry) in sessionStatusContinuations where entry.convoID == update.convoID {
                             entry.continuation.yield(update)
                         }

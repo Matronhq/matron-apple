@@ -204,6 +204,29 @@ final class JournalSyncEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    /// Frames use absent-means-unchanged semantics, so the replay cache must
+    /// merge each frame over the held one, not store the last frame verbatim:
+    /// a partial frame (limits only) after a fuller one (model + context)
+    /// must replay with all three parts, or a late subscriber loses the
+    /// context gauge that an earlier frame carried.
+    func testSessionStatusReplayMergesPartialFrames() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","status":{"model":"fable","context":{"tokens":100,"window":1000,"pct":10}}}"#)
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","status":{"limits":[{"label":"Session","percent":42}]}}"#)
+        try await Task.sleep(for: .milliseconds(50))
+        var iterator = engine.sessionStatus(convoID: "c1").makeAsyncIterator()
+        let replayed = await iterator.next()
+        XCTAssertEqual(replayed?.model, "fable", "merged replay must keep the model from the earlier frame")
+        XCTAssertEqual(replayed?.context?.pct, 10, "merged replay must keep the context from the earlier frame")
+        XCTAssertEqual(replayed?.limits?.first?.percent, 42, "merged replay must carry the later frame's limits")
+        await engine.endSync()
+    }
+
     /// A conversation whose first-ever frame arrives while the engine is
     /// live (`.running`) — the /start case — must be published on
     /// `newConversations()`. Frames on already-known convos, and repeat
