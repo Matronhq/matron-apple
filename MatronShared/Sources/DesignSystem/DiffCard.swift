@@ -86,6 +86,10 @@ public struct DiffCard: View {
                     .clipShape(Capsule())
             }
             counts
+            if event.truncated {
+                Text("…")
+                    .font(.caption2).bold().foregroundStyle(.secondary)
+            }
             Spacer(minLength: 0)
         }
     }
