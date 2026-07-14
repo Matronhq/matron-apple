@@ -57,9 +57,12 @@ struct MacComposerView: View {
     var body: some View {
         VStack(spacing: 0) {
             if viewModel.showPalette {
-                MacSlashCommandPalette(commands: viewModel.filteredCommands) { cmd in
-                    viewModel.selectCommand(cmd)
-                }
+                MacSlashCommandPalette(
+                    commands: viewModel.filteredCommands,
+                    folders: viewModel.folderSuggestions,
+                    onSelect: { cmd in viewModel.selectCommand(cmd) },
+                    onSelectFolder: { folder in viewModel.selectFolder(folder) }
+                )
                 .padding(.horizontal)
                 .padding(.bottom, 4)
             }
