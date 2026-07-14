@@ -57,13 +57,13 @@ struct ChatListView: View {
     /// without the full nav stack still construct the view.
     var onOpenChat: ((String) -> Void)? = nil
     /// Latest user-facing connection state, fed by the host's
-    /// `SyncService.stateStream()`. `.running` hides the banner;
-    /// `.connecting` / `.offline` render it. Drives
-    /// `ConnectionStatusBanner` directly — no async glue inside the
-    /// View, just a `@State` mirror of the upstream stream.
+    /// `SyncService.stateStream()`. `.running` hides the indicator;
+    /// `.connecting` / `.offline` render the inline nav-bar
+    /// `connectionStatusLabel` — no async glue inside the View, just a
+    /// `@State` mirror of the upstream stream.
     @State private var connectionState: SyncBannerState = .connecting
     /// Tracks whether sliding sync has ever been observed `.running` in
-    /// this session, so the banner can pick "Connecting…" vs
+    /// this session, so the inline status can pick "Connecting…" vs
     /// "Reconnecting…" for the connecting state. Sticky once true —
     /// resets only when the View itself remounts (e.g. sign-out + back-in).
     @State private var hasEverConnected: Bool = false
@@ -77,9 +77,16 @@ struct ChatListView: View {
     }
 
     var body: some View {
-        chatListColumn
-        .navigationTitle("Matron")
+        chatListContent
+        .navigationTitle("Chats")
         .toolbar {
+            // Connection state rides inline in the nav bar's leading edge so
+            // it never reflows the list (the prior full-width banner pushed
+            // every row down on each connecting/offline transition). Renders
+            // nothing when `.running`.
+            ToolbarItem(placement: .topBarLeading) {
+                connectionStatusLabel
+            }
             // Phase 6 (Search): leading search button → SearchView sheet. Only
             // shown when the index is available (deps.search non-nil).
             if deps?.search != nil {
@@ -217,39 +224,46 @@ struct ChatListView: View {
         }
     }
 
-    /// Column wrapper: when the connection-state banner is visible, stack
-    /// it above the existing chat-list content. Empty / no-banner case
-    /// falls straight through to `chatListContent` so the loading
-    /// `ProgressView` keeps its full-screen vertical centering — wrapping
-    /// the content in a top-down `VStack` unconditionally (the prior
-    /// shape) collapsed the progress view to the top of the column.
-    /// Mirrors `MacChatListView.sidebarColumn`.
+    /// Inline connection-state indicator hosted by a leading nav-bar
+    /// `ToolbarItem`. Deliberately does not sit in the content column: the
+    /// old full-width `ConnectionStatusBanner` above the `List` reflowed
+    /// every row down on each connecting/offline transition. Sizing to the
+    /// nav bar's fixed toolbar row keeps the list steady. Renders nothing
+    /// on `.running`. The `hasEverConnected` copy split (Connecting vs
+    /// Reconnecting) matches the banner it replaces. Accessibility
+    /// identifiers stay `sync.banner.connecting` / `sync.banner.offline`
+    /// so existing UI tests keep matching.
     @ViewBuilder
-    private var chatListColumn: some View {
-        let showConnection = (connectionState != .running)
-        if showConnection {
-            VStack(spacing: 0) {
-                // Connection-state banner sits at the very top so the
-                // user's first read of the list is "what's the current
-                // sync status?" before anything else competes for
-                // attention. Hides on `.running` via the inner switch
-                // (returns EmptyView). Animates in/out so the banner
-                // doesn't snap.
-                ConnectionStatusBanner(
-                    state: connectionState,
-                    hasEverConnected: hasEverConnected
-                )
-                .animation(.easeInOut(duration: 0.2), value: connectionState)
-                chatListContent
+    private var connectionStatusLabel: some View {
+        switch connectionState {
+        case .running:
+            EmptyView()
+        case .connecting:
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                Text(hasEverConnected ? "Reconnecting…" : "Connecting…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-        } else {
-            chatListContent
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(hasEverConnected ? "Reconnecting" : "Connecting")
+            .accessibilityIdentifier("sync.banner.connecting")
+        case .offline:
+            HStack(spacing: 6) {
+                Image(systemName: "wifi.slash")
+                Text("Offline")
+            }
+            .font(.caption)
+            .foregroundStyle(.red)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Offline")
+            .accessibilityIdentifier("sync.banner.offline")
         }
     }
 
-    /// Extracted to keep `body` readable now that the connection-state
-    /// banner sits above this list. Same render branches as before —
-    /// loading / error / empty / populated — just lifted out.
+    /// Extracted to keep `body` readable. Same render branches as before —
+    /// loading / error / empty / populated.
     @ViewBuilder
     private var chatListContent: some View {
         if viewModel.isLoading {
@@ -258,9 +272,9 @@ struct ChatListView: View {
             // QA finding #10: surface upstream stream failures
             // (e.g. `SyncReadyError.timeout`) instead of leaving
             // the user staring at an empty list. If we have a prior
-            // good snapshot we keep showing it (the banner above
-            // would render too) — this branch only handles the
-            // first-load failure case.
+            // good snapshot we keep showing it (the inline nav-bar
+            // status reports the connection separately) — this branch
+            // only handles the first-load failure case.
             ContentUnavailableView(
                 "Couldn't load chats",
                 systemImage: "exclamationmark.triangle",
