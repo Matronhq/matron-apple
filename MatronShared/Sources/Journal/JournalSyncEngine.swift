@@ -54,6 +54,13 @@ public actor JournalSyncEngine {
     private var activityContinuations: [UUID: (convoID: String, continuation: AsyncStream<ActivityUpdate>.Continuation)] = [:]
     private var toolStreamContinuations: [UUID: (convoID: String, continuation: AsyncStream<ToolStreamUpdate>.Continuation)] = [:]
     private var sessionStatusContinuations: [UUID: (convoID: String, continuation: AsyncStream<SessionStatusUpdate>.Continuation)] = [:]
+    /// Last session-status frame per convo, so a subscriber that registers
+    /// after the frame already arrived (e.g. `viewing` replay landed in the
+    /// gap before `sessionStatus(convoID:)`'s registration task ran) still
+    /// gets a populated header immediately instead of waiting for the next
+    /// turn-end frame. Status frames are cumulative (rebuilt from full
+    /// session state each time), so replaying only the latest is lossless.
+    private var lastSessionStatus: [String: SessionStatusUpdate] = [:]
     private var newConvoContinuations: [UUID: AsyncStream<String>.Continuation] = [:]
     private var readyWaiters: [CheckedContinuation<Void, Error>] = []
 
@@ -234,9 +241,11 @@ public actor JournalSyncEngine {
 
     /// Per-conversation stream of session-status updates (journal `status`
     /// ephemerals). Mirrors `activities(convoID:)`. The journal replays the
-    /// last cached status when the client sends `viewing`, so a subscriber
-    /// that attaches on convo-open gets a populated header immediately —
-    /// no client-side caching needed.
+    /// last cached status when the client sends `viewing`, and the engine
+    /// itself also caches the latest frame per convo and replays it on
+    /// subscribe (`registerSessionStatus`), so a subscriber that attaches on
+    /// convo-open gets a populated header immediately regardless of whether
+    /// the `viewing` replay lands before or after registration.
     public nonisolated func sessionStatus(convoID: String) -> AsyncStream<SessionStatusUpdate> {
         AsyncStream { continuation in
             let id = UUID()
@@ -284,6 +293,9 @@ public actor JournalSyncEngine {
 
     private func registerSessionStatus(id: UUID, convoID: String, continuation: AsyncStream<SessionStatusUpdate>.Continuation) {
         sessionStatusContinuations[id] = (convoID, continuation)
+        if let cached = lastSessionStatus[convoID] {
+            continuation.yield(cached)
+        }
     }
 
     private func unregisterSessionStatus(id: UUID) {
@@ -441,6 +453,7 @@ public actor JournalSyncEngine {
                             entry.continuation.yield(update)
                         }
                     case .sessionStatus(let update):
+                        lastSessionStatus[update.convoID] = update
                         for (_, entry) in sessionStatusContinuations where entry.convoID == update.convoID {
                             entry.continuation.yield(update)
                         }

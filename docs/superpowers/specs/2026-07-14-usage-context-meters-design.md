@@ -105,9 +105,16 @@ malformed limit entries are skipped individually.
 
 `JournalSyncEngine` gains `sessionStatus(convoID:) -> AsyncStream<SessionStatusUpdate>`
 mirroring `activities(convoID:)` — same continuation bookkeeping, same
-per-convo filtering. No app-side caching: the journal replays the cached
-status when the client sends `viewing`, which the engine already does on
-convo open.
+per-convo filtering. The journal replays the cached status when the client
+sends `viewing`, which the engine already does on convo open — but that
+replay and the stream's continuation registration run in separate tasks, so
+a replay frame arriving in the registration gap would otherwise be dropped.
+The engine closes that race itself: it caches the last `SessionStatusUpdate`
+per convo (stored before fan-out, since status frames are cumulative and
+replaying only the latest is lossless) and yields the cached value to a new
+subscriber immediately upon registration, before it can observe live
+frames. Registration and the frame loop are both actor-isolated, so the
+cache-read + yield happens atomically with respect to incoming frames.
 
 ### 4. View-model state + merge
 

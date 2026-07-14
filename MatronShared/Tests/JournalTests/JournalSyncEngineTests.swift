@@ -143,6 +143,67 @@ final class JournalSyncEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    /// Closes the viewing-vs-subscribe race: `sessionStatus(convoID:)`'s
+    /// continuation registration runs in a separate task from the frame
+    /// loop, so a status frame that arrives before registration lands would
+    /// otherwise be dropped. The engine must cache the last frame per convo
+    /// and replay it to a new subscriber immediately.
+    func testSessionStatusReplaysCachedFrameOnSubscribe() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        // No subscriber registered yet — this is the drop window.
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","status":{"context":{"tokens":100,"window":1000,"pct":10}}}"#)
+        try await Task.sleep(for: .milliseconds(50)) // let the frame loop cache it before subscribing
+        var iterator = engine.sessionStatus(convoID: "c1").makeAsyncIterator()
+        let first = await iterator.next()
+        XCTAssertEqual(first?.context?.pct, 10, "replay-on-subscribe must deliver the cached frame as the first value")
+        await engine.endSync()
+    }
+
+    /// The replayed cached frame must not be the only thing a subscriber
+    /// ever sees — live frames served after subscribing still have to flow.
+    func testSessionStatusLiveFramesFollowReplay() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","status":{"context":{"tokens":100,"window":1000,"pct":10}}}"#)
+        try await Task.sleep(for: .milliseconds(50))
+        var iterator = engine.sessionStatus(convoID: "c1").makeAsyncIterator()
+        let first = await iterator.next()
+        XCTAssertEqual(first?.context?.pct, 10)
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","status":{"context":{"tokens":200,"window":1000,"pct":20}}}"#)
+        let second = await iterator.next()
+        XCTAssertEqual(second?.context?.pct, 20, "live frames after the replay must still reach the subscriber")
+        await engine.endSync()
+    }
+
+    /// A cached frame for one convo must never leak to a subscriber for a
+    /// different convo — the replay path reuses per-convo filtering, not a
+    /// single global "last frame".
+    func testSessionStatusReplayDoesNotCrossConvos() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","status":{"context":{"tokens":100,"window":1000,"pct":10}}}"#)
+        try await Task.sleep(for: .milliseconds(50))
+        var iterC2 = engine.sessionStatus(convoID: "c2").makeAsyncIterator()
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c2","status":{"context":{"tokens":50,"window":500,"pct":99}}}"#)
+        let update = await iterC2.next()
+        XCTAssertEqual(update?.convoID, "c2", "c1's cached frame must not be replayed to a c2 subscriber")
+        XCTAssertEqual(update?.context?.pct, 99, "must be c2's own live frame, not c1's leaked cache")
+        await engine.endSync()
+    }
+
     /// A conversation whose first-ever frame arrives while the engine is
     /// live (`.running`) — the /start case — must be published on
     /// `newConversations()`. Frames on already-known convos, and repeat
