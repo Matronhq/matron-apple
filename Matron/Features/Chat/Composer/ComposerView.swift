@@ -110,6 +110,10 @@ struct ComposerView: View {
         // composer doesn't ghost text into the next visit.
         .onDisappear {
             ComposerDraftMemory.store(roomID: viewModel.roomID, text: viewModel.input)
+            // An in-flight recording has no UI once this composer is gone —
+            // abort it (discarding the temp file) rather than letting the
+            // mic keep capturing with nothing to stop or send it.
+            recorder.cancel()
         }
     }
 

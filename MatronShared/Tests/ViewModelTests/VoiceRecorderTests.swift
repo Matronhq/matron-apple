@@ -101,4 +101,29 @@ final class VoiceRecorderTests: XCTestCase {
         try await rec.start()
         guard case .recording = rec.state else { return XCTFail("expected a second .recording") }
     }
+
+    @MainActor
+    func test_start_recordFailure_staysIdleAndRecoverable() async {
+        // AVAudioRecorder.record() returning false must surface
+        // `.recordFailed`, leave the state machine .idle, and not poison a
+        // retry (session/temp-file cleanup is exercised on-device; here we
+        // pin the observable state contract).
+        let fake = FakeAudioRecorder()
+        fake.recordReturn = false
+        let rec = makeRecorder(fake: fake)
+        do {
+            try await rec.start()
+            XCTFail("expected .recordFailed")
+        } catch let error as VoiceRecorder.RecorderError {
+            XCTAssertEqual(error, .recordFailed)
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+        XCTAssertEqual(rec.state, .idle)
+
+        // A subsequent start succeeds once record() cooperates.
+        fake.recordReturn = true
+        try? await rec.start()
+        guard case .recording = rec.state else { return XCTFail("expected recovery to .recording") }
+    }
 }

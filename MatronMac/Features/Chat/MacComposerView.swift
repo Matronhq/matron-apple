@@ -93,6 +93,10 @@ struct MacComposerView: View {
             // persists the real one.
             viewModel.exitHistoryNavigation()
             ComposerDraftMemory.store(roomID: viewModel.roomID, text: viewModel.input)
+            // An in-flight recording has no UI once this composer is gone —
+            // abort it (discarding the temp file) rather than letting the
+            // mic keep capturing with nothing to stop or send it.
+            recorder.cancel()
             if let keyMonitor {
                 NSEvent.removeMonitor(keyMonitor)
                 self.keyMonitor = nil

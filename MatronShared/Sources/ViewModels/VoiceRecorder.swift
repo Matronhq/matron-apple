@@ -67,13 +67,22 @@ public final class VoiceRecorder {
         #endif
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("voice-note-\(UUID().uuidString).m4a")
-        let recorder = try makeRecorder(url)
-        guard recorder.record() else { throw RecorderError.recordFailed }
-        self.recorder = recorder
-        self.fileURL = url
-        let started = Date()
-        self.startedAt = started
-        state = .recording(start: started)
+        do {
+            let recorder = try makeRecorder(url)
+            guard recorder.record() else { throw RecorderError.recordFailed }
+            self.recorder = recorder
+            self.fileURL = url
+            let started = Date()
+            self.startedAt = started
+            state = .recording(start: started)
+        } catch {
+            // The session was already activated above — a failed recorder
+            // construction or start must not leave it captured, nor leave an
+            // orphan temp file behind.
+            deactivateSession()
+            try? FileManager.default.removeItem(at: url)
+            throw error
+        }
     }
 
     /// Stops recording and hands back the finished file plus its elapsed
