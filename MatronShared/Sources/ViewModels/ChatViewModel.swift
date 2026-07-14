@@ -128,6 +128,38 @@ public final class ChatViewModel {
     /// listener, and it routes through `applySnapshot(_:)`.
     public private(set) var rows: [TimelineRow] = []
 
+    /// The tail slice of `rows` the views actually render. Rendering the
+    /// full timeline is what made the scroll layer unstable: hundreds of
+    /// wildly heterogeneous rows in a lazy stack swung the content-height
+    /// estimate 5x on every container resize (2026-07-14 06:51 device
+    /// trace: keyboard up → contentH 115K→497K→90K, viewport stranded
+    /// 2,000pt off the tail). The window bounds the row count so the
+    /// views can afford to lay every row out EAGERLY (plain `VStack`) —
+    /// exact heights, no estimates, nothing to churn — the standard
+    /// chat-app approach. Older rows reveal via `extendHistoryWindow()`.
+    public private(set) var windowedRows: [TimelineRow] = []
+
+    /// Current render-window size in rows. Grows via
+    /// `extendHistoryWindow()` / `ensureWindowContains(_:)` while the
+    /// user reads history; never shrinks while they're up there
+    /// (yanking rows from beneath a reader). It snaps back to
+    /// `defaultWindowSize` via `resetHistoryWindow()` when the user
+    /// returns to the tail (jump button) or leaves the room while
+    /// following it, so the eager stack stays small in steady state.
+    public private(set) var visibleWindowSize = ChatViewModel.defaultWindowSize
+
+    /// Steady-state render-window size, sized so the eager stack's
+    /// layout cost stays negligible.
+    private static let defaultWindowSize = 120
+
+    /// How many rows each `extendHistoryWindow()` reveals.
+    private static let windowGrowthStep = 120
+
+    /// `true` while a window extension's prepend is being laid out —
+    /// the views anchor `.sizeChanges` to `.bottom` while this is up,
+    /// same contract as `isPaginatingBackward`.
+    public private(set) var isExtendingWindow = false
+
     /// ID of the first item the timeline view actually renders — i.e.
     /// the first non-`.stateChange` item in `items`. Used by the
     /// scroll-up `.onAppear` paginate trigger. Memoised alongside
@@ -146,21 +178,27 @@ public final class ChatViewModel {
     /// in `applyDerivedRecompute()`.
     public private(set) var lastRenderableItemID: TimelineItem.ID?
 
-    /// IDs of the first 10 rows (messages AND separators — the
-    /// scroll-position binding's namespace is mixed). Drives the
-    /// scroll-up paginate trigger. Memoised here because the views'
-    /// `.onChange(of: scrolledItemID)` fires on every scroll tick,
-    /// and both platforms were rebuilding this Set per tick.
-    public private(set) var topRowIDs: Set<String> = []
+    /// Whether the current tail row is the user's own message. The views
+    /// use this on tail changes: your own outgoing message always returns
+    /// you to the bottom (standard chat behaviour), even if follow-tail
+    /// mode was disarmed at the moment you sent.
+    public private(set) var lastRenderableItemIsOwn = false
 
-    /// Every id `.scrollPosition(id:)` can legally hold for the current
-    /// snapshot: `item.id` for message rows (the views tag rows with the
-    /// ITEM id, not `TimelineRow.id`'s `msg:`-prefixed form) plus the
-    /// separator row ids. The dead-anchor guard checks membership here —
-    /// checking `rows` directly compared apples to `msg:`-oranges and
-    /// snapped the viewport to the tail on every snapshot while anchored
-    /// to any message (bugbot "Scroll anchor ID mismatch").
+    /// Every scroll-target id in the current snapshot: `item.id` for
+    /// message rows (the views tag rows with the ITEM id, not
+    /// `TimelineRow.id`'s `msg:`-prefixed form) plus the separator row
+    /// ids. The views validate remembered scroll positions against this
+    /// before restoring — a remembered id the room no longer contains
+    /// would scroll to nothing (bugbot "Scroll anchor ID mismatch" for
+    /// the namespace subtlety).
     public private(set) var rowAnchorIDs: Set<String> = []
+
+    /// Label of the bot's trailing activity indicator (typing / tool-use),
+    /// or `nil` when idle. Extracted from the snapshot's `activityIndicator`
+    /// item during `applyDerivedRecompute` — the views render it as a fixed
+    /// footer between the timeline and the composer (see the row-filter
+    /// comment there for why it must not be a scrollable row).
+    public private(set) var activityLabel: String?
 
     /// Single mutation entry point for `items`. Updates the raw
     /// snapshot and the three derived caches atomically so a body
@@ -185,8 +223,21 @@ public final class ChatViewModel {
         nextRows.reserveCapacity(items.count + 4)
         var first: TimelineItem.ID?
         var last: TimelineItem.ID?
+        var lastIsOwn = false
         var previousDay: Date?
+        var nextActivityLabel: String?
         for item in items {
+            // The trailing activity indicator renders as a fixed footer
+            // (below the scrollable timeline, above the composer), NOT a
+            // row: as a row it became the scroll anchor during every bot
+            // turn and vanished on completion — the most routine
+            // dead-anchor source in the 2026-07-13 device traces. Kept
+            // out of rows / first / last / day bucketing so it can never
+            // be an anchor target or a stored scroll position.
+            if case .activityIndicator(let label) = item.kind {
+                nextActivityLabel = label
+                continue
+            }
             // `.stateChange` is the only hidden Kind today; both the
             // view-side `shouldRender` and the date-bucket logic
             // skip it. The "1 Jan 1970" separator bug came from
@@ -201,6 +252,7 @@ public final class ChatViewModel {
             if case .askUserAnswer = item.kind { continue }
             if first == nil { first = item.id }
             last = item.id
+            lastIsOwn = item.isOwn
             let day = calendar.startOfDay(for: item.timestamp)
             if previousDay == nil || day != previousDay {
                 nextRows.append(.separator(date: item.timestamp))
@@ -211,27 +263,111 @@ public final class ChatViewModel {
         self.rows = nextRows
         self.firstRenderableItemID = first
         self.lastRenderableItemID = last
-        self.topRowIDs = Set(nextRows.prefix(10).map { row in
-            if case .message(let item) = row { return item.id }
-            return row.id
-        })
+        self.lastRenderableItemIsOwn = lastIsOwn
+        self.activityLabel = nextActivityLabel
         self.rowAnchorIDs = Set(nextRows.map { row in
             if case .message(let item) = row { return item.id }
             return row.id
         })
+        recomputeWindow()
     }
 
-    /// `true` while a `paginateBackward()` call is in flight. Surfaces to
-    /// the view so the topmost row's `.onAppear` trigger can guard
-    /// against re-entering the paginate loop on every re-layout, and so
-    /// the view can show a tiny "loading earlier…" spinner if it wants.
+    /// Rebuilds `windowedRows` from `rows` and the current window size.
+    /// If the window cut lands mid-day, a leading date separator for the
+    /// first visible message is re-synthesized so the window never opens
+    /// on a context-free bubble (separator ids are deterministic
+    /// per-day, so this is stable across recomputes).
+    private func recomputeWindow() {
+        var window = Array(rows.suffix(visibleWindowSize))
+        if case .message(let firstItem)? = window.first {
+            window.insert(.separator(date: firstItem.timestamp), at: 0)
+        }
+        self.windowedRows = window
+    }
+
+    /// Reveals older content when the user nears the visual top: grows
+    /// the render window over already-loaded rows first (local,
+    /// instant); only when the window already shows everything local
+    /// does it fetch another page from the server. `isExtendingWindow`
+    /// is held through the reveal's layout pass (the views anchor
+    /// `.sizeChanges` to `.bottom` while it's up, which is what keeps
+    /// the same rows on screen as content prepends above the viewport).
+    public func extendHistoryWindow() async {
+        if isExtendingWindow || isPaginatingBackward { return }
+        if visibleWindowSize < rows.count {
+            isExtendingWindow = true
+            visibleWindowSize = min(rows.count, visibleWindowSize + Self.windowGrowthStep)
+            Self.logger.diag("window extend → \(visibleWindowSize) rows (of \(rows.count) local)")
+            recomputeWindow()
+            // Hold the flag past the layout pass that applies the
+            // grown window, so the bottom anchor covers the prepend.
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            isExtendingWindow = false
+            return
+        }
+        await paginateBackward()
+        if visibleWindowSize < rows.count {
+            isExtendingWindow = true
+            visibleWindowSize = min(rows.count, visibleWindowSize + Self.windowGrowthStep)
+            Self.logger.diag("window extend (post-paginate) → \(visibleWindowSize) rows (of \(rows.count) local)")
+            recomputeWindow()
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            isExtendingWindow = false
+        }
+    }
+
+    /// Snaps the render window back to its steady-state size. Called by
+    /// the views only at moments when no reader can be up in history —
+    /// the jump-to-bottom tap and leaving the room while following the
+    /// tail — so shrinking never removes rows anyone is looking at.
+    public func resetHistoryWindow() {
+        guard visibleWindowSize != Self.defaultWindowSize else { return }
+        Self.logger.diag("window reset \(visibleWindowSize) → \(Self.defaultWindowSize) rows")
+        visibleWindowSize = Self.defaultWindowSize
+        recomputeWindow()
+    }
+
+    /// Grows the window (without animation concerns — called before the
+    /// view scrolls) so a remembered scroll position outside the default
+    /// tail window can actually be scrolled to on restore. Holds
+    /// `isExtendingWindow` through the widening's layout pass exactly
+    /// like `extendHistoryWindow` above: restore runs with follow-tail
+    /// off, so without the flag the views' `.sizeChanges` anchor is
+    /// `nil` while the prepend lands and the viewport can jump before
+    /// the caller's `scrollTo` positions it (Bugbot, PR #18).
+    public func ensureWindowContains(_ id: String) {
+        let index = rows.lastIndex { row in
+            if case .message(let item) = row { return item.id == id }
+            return row.id == id
+        }
+        guard let index else { return }
+        let needed = rows.count - index + 20
+        if needed > visibleWindowSize {
+            isExtendingWindow = true
+            visibleWindowSize = needed
+            recomputeWindow()
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                isExtendingWindow = false
+            }
+        }
+    }
+
+    /// `true` while a `paginateBackward()` call is in flight — and,
+    /// crucially, until the paginated snapshot has been APPLIED (the call
+    /// awaits the items stream delivery before returning). The views
+    /// lean on that guarantee: while reading history they switch the
+    /// scroll engine's `.sizeChanges` anchor to `.bottom` for the
+    /// duration of a paginate, which is what keeps the same rows on
+    /// screen when the fetched page prepends above the viewport. Also
+    /// guards re-entry and drives the "loading earlier…" pill.
     public private(set) var isPaginatingBackward: Bool = false
     /// Flips to `true` once we've observed enough consecutive
     /// zero-growth paginate calls to be confident the SDK genuinely has
     /// no more history to surface. Setting this stops further paginate
-    /// triggers from the scroll-position listener — without it the
-    /// `.onChange(of: scrolledItemID)` trigger fires paginate on every
-    /// row change at the head, hammering the SDK for no result.
+    /// triggers from the views' near-top scroll listener — without it,
+    /// hovering near the head fires paginate on every geometry change,
+    /// hammering the SDK for no result.
     /// Empirical: matrix-rust-sdk's `paginateBackwards` returns `false`
     /// (more events might exist) even when /messages has no more events
     /// for this user, so we can't trust the SDK signal alone — needed
@@ -343,22 +479,6 @@ public final class ChatViewModel {
         self.answeredPromptIDs = Set(stored)
     }
 
-    /// Starts observing the timeline. Returns *after* the first snapshot has
-    /// been applied (or the stream has finished without yielding), so callers
-    /// that chain `markAsRead()` after `start()` mark the actual head of the
-    /// timeline as read instead of marking an empty room as read. Returns
-    /// the long-lived observation `Task` so tests can still
-    /// `await task.value` to know when the stream has fully drained — the
-    /// fake stream finishes after yielding queued snapshots, the live
-    /// stream stays open until `stop()` cancels it.
-    ///
-    /// Round 3 bugbot finding #3: previously `start()` returned the task
-    /// synchronously and the View's `.task { viewModel.start(); await
-    /// viewModel.markAsRead() }` raced — `markAsRead()` fired before the
-    /// observation Task had a chance to apply the first snapshot, so on
-    /// first open the SDK marked "no events" as read and unread counts
-    /// were never cleared.
-    @discardableResult
     /// Debounces the empty → `settledEmpty` transition (see `settledEmpty`).
     /// A non-empty snapshot clears it immediately (and ends any resume
     /// window — content is back); an empty one schedules the flip after the
@@ -416,6 +536,22 @@ public final class ChatViewModel {
     /// freshly-started stream (Mac same-room remount hazard).
     public private(set) var observationGeneration: Int = 0
 
+    /// Starts observing the timeline. Returns *after* the first snapshot has
+    /// been applied (or the stream has finished without yielding), so callers
+    /// that chain `markAsRead()` after `start()` mark the actual head of the
+    /// timeline as read instead of marking an empty room as read. Returns
+    /// the long-lived observation `Task` so tests can still
+    /// `await task.value` to know when the stream has fully drained — the
+    /// fake stream finishes after yielding queued snapshots, the live
+    /// stream stays open until `stop()` cancels it.
+    ///
+    /// Round 3 bugbot finding #3: previously `start()` returned the task
+    /// synchronously and the View's `.task { viewModel.start(); await
+    /// viewModel.markAsRead() }` raced — `markAsRead()` fired before the
+    /// observation Task had a chance to apply the first snapshot, so on
+    /// first open the SDK marked "no events" as read and unread counts
+    /// were never cleared.
+    @discardableResult
     public func start() async -> Task<Void, Never> {
         observationGeneration += 1
         observationTask?.cancel()
@@ -486,6 +622,7 @@ public final class ChatViewModel {
                 // an open view is exactly the "panel went blank/stale"
                 // evidence we need persisted after the fact.
                 Self.logger.warning("timeline stream threw under an open view: \(error.localizedDescription, privacy: .public)")
+                MatronFileLog.append("timeline stream threw under an open view: \(error.localizedDescription)")
                 let message = error.localizedDescription
                 if let self {
                     await MainActor.run { self.error = message }
@@ -503,6 +640,7 @@ public final class ChatViewModel {
             // report. Cancellation (view closed) is routine; skip it.
             if !Task.isCancelled {
                 Self.logger.warning("timeline stream finished under an open view (items=\(self?.items.count ?? -1))")
+                MatronFileLog.append("timeline stream finished under an open view (items=\(self?.items.count ?? -1))")
             }
             if let self {
                 await MainActor.run {
@@ -571,7 +709,7 @@ public final class ChatViewModel {
         // Un-gated (notice, not diag): this fires at most once per mirror
         // wipe and is the pivotal breadcrumb for any "chat went blank"
         // report — it must be in the persisted log even with MatronDebug off.
-        Self.logger.notice("timeline went empty under an open view — refetching newest page")
+        Self.logger.breadcrumb("timeline went empty under an open view — refetching newest page")
         historyRefillTask = Task { [weak self] in
             await self?.paginateBackward()
             self?.historyRefillTask = nil
