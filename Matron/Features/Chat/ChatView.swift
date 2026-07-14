@@ -11,8 +11,8 @@ private let chatViewLogger = Logger(subsystem: "chat.matron", category: "ios-cha
 
 /// iOS chat screen. Hosts a scrollable timeline (LazyVStack rendering each
 /// `TimelineItem` via `TimelineItemView`) above a `ComposerView`. The
-/// navigation toolbar shows the chat title and an info button that calls
-/// `onShowBotProfile`.
+/// navigation toolbar shows the chat title and an info button that
+/// presents a `SessionStatusSheet` (context gauge + usage bars).
 ///
 /// `viewModel.start()` runs in `.task`; `viewModel.stop()` runs in
 /// `.onDisappear` to release the AsyncStream's continuation. This mirrors
@@ -51,6 +51,8 @@ struct ChatView: View {
     /// user can save / forward the attachment without leaving the
     /// chat.
     @State private var attachmentPreview: AttachmentPreview?
+    /// ⓘ toolbar button → session-status sheet (context gauge + usage bars).
+    @State private var showSessionStatus = false
     /// Sheet payload for fullscreen attachment previews. Identifiable
     /// via a per-present UUID so two consecutive taps re-mount the
     /// sheet (and so `.sheet(item:)` doesn't conflate two separate
@@ -68,7 +70,6 @@ struct ChatView: View {
     }
 
     let chatTitle: String
-    let onShowBotProfile: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -221,10 +222,14 @@ struct ChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { onShowBotProfile() } label: {
+                Button { showSessionStatus = true } label: {
                     Image(systemName: "info.circle")
                 }
+                .accessibilityLabel("Session status")
             }
+        }
+        .sheet(isPresented: $showSessionStatus) {
+            SessionStatusSheet(status: viewModel.sessionStatus)
         }
         .task {
             // Restore the per-room scroll position BEFORE start() so

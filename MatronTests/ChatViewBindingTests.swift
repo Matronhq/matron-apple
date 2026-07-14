@@ -53,8 +53,7 @@ final class ChatViewBindingTests: XCTestCase {
         let _ = ChatView(
             viewModel: chatVM,
             composerVM: composerVM,
-            chatTitle: "Test Room",
-            onShowBotProfile: {}
+            chatTitle: "Test Room"
         )
 
         // Drive the same start() the view's `.task` would. This proves the
@@ -67,23 +66,18 @@ final class ChatViewBindingTests: XCTestCase {
     }
 
     @MainActor
-    func test_view_initialises_withProvidedTitle_andCallback() {
+    func test_view_initialises_withProvidedTitle() {
         let fake = FakeTimelineForChat()
         let chatVM = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaForChat())
         let composerVM = ComposerViewModel(roomID: "!r:s", timeline: fake, commands: [])
 
-        var profileTaps = 0
         let view = ChatView(
             viewModel: chatVM,
             composerVM: composerVM,
-            chatTitle: "Demo",
-            onShowBotProfile: { profileTaps += 1 }
+            chatTitle: "Demo"
         )
 
         XCTAssertEqual(view.chatTitle, "Demo")
-        // Invoke the closure directly to verify the binding is plumbed through.
-        view.onShowBotProfile()
-        XCTAssertEqual(profileTaps, 1)
     }
 
     @MainActor
