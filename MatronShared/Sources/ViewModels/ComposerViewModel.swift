@@ -12,13 +12,16 @@ import UniformTypeIdentifiers
 @Observable
 @MainActor
 public final class ComposerViewModel {
-    /// Whether the attachment (photo/file) picker is available. `false`
-    /// under the journal stack: media DISPLAY is live server-side, but the
-    /// client's send whitelist is text-only, so composing an attachment
-    /// would fail server-side. Views gate the attachment button on this
-    /// flag instead of removing it outright, so re-enabling attachments
-    /// later is a one-line flip.
-    public static let mediaAvailable = false
+    /// Whether the attachment (photo/file) and voice-note controls are
+    /// available. `true` now that the server's send whitelist accepts
+    /// `file`/`image` sends backed by a `POST /media` upload (media DISPLAY
+    /// was already live). Views gate the attach/mic buttons on this flag,
+    /// so the surfaces are one flip away from being hidden again.
+    ///
+    /// Deployed-server dependency: this requires the matron-journal server
+    /// that whitelists `file`/`image` client sends and serves `POST /media`;
+    /// against an older server the send round-trips to a whitelist rejection.
+    public static let mediaAvailable = true
 
     public var input: String = ""
     public private(set) var isSending: Bool = false
@@ -220,6 +223,23 @@ public final class ComposerViewModel {
                 sendError = error.localizedDescription
             }
         }
+    }
+
+    /// Sends a recorded voice note (a temp `.m4a` file produced by
+    /// `VoiceRecorder`) as a `file` attachment with an `audio/*` content
+    /// type — the bridge transcribes audio sends. The temp file is deleted
+    /// afterwards whether or not the send succeeds; send failures surface
+    /// via `sendError` (the same channel as `attachFiles`). `duration` is
+    /// currently informational (the wire payload carries only the bytes and
+    /// metadata), kept in the signature for the recording UI's benefit.
+    public func sendVoiceNote(url: URL, duration: TimeInterval) async {
+        do {
+            let data = try Data(contentsOf: url)
+            try await timeline.sendFile(data, filename: "voice-note.m4a", mimeType: "audio/mp4")
+        } catch {
+            sendError = error.localizedDescription
+        }
+        try? FileManager.default.removeItem(at: url)
     }
 
     /// Allows views to surface attachment-staging errors that occur
