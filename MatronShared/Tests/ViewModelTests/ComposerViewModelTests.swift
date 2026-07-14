@@ -376,6 +376,33 @@ final class ComposerViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_folderSuppression_clearsOnSendAndOnEdit() async {
+        let store = emptyRecentFolders()
+        store.record("~/yearbook-app")
+        store.record("~/yearbook-app-v2")
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: store)
+        vm.input = "/start ~/year"
+        vm.selectFolder("~/yearbook-app")
+        XCTAssertTrue(vm.folderSuggestions.isEmpty, "post-pick suppression hides the longer sibling")
+        await vm.send()
+
+        // Re-typing the identical line after a send must complete again —
+        // the suppression must not outlive the send.
+        vm.input = "/start ~/yearbook-app"
+        vm.handleInputChange()
+        XCTAssertEqual(vm.folderSuggestions, ["~/yearbook-app-v2"])
+
+        // And a differing edit lifts suppression too.
+        vm.selectFolder("~/yearbook-app-v2")
+        XCTAssertTrue(vm.folderSuggestions.isEmpty)
+        vm.input = "/start ~/yearbook-app"
+        vm.handleInputChange()
+        XCTAssertFalse(vm.folderSuggestions.isEmpty)
+    }
+
+    @MainActor
     func test_folderSuggestions_omitFullyTypedPath() {
         let store = emptyRecentFolders()
         store.record("~/yearbook-app")

@@ -135,8 +135,9 @@ public final class ComposerViewModel {
 
     /// Input string for which folder suggestions are suppressed — set by
     /// `selectFolder` so the palette closes on pick instead of re-matching
-    /// the completed path. Self-clearing: any edit changes `input` and the
-    /// equality gate stops applying.
+    /// the completed path. Cleared on any differing edit
+    /// (`handleInputChange`) and on a successful `send()`, so a later
+    /// re-type of the identical command line completes normally.
     private var folderSuggestionsSuppressedFor: String?
 
     /// Rewrites the input so the trailing partial path token is replaced by
@@ -216,6 +217,7 @@ public final class ComposerViewModel {
             input = ""
             lastRecalledValue = nil
             isNavigatingHistory = false
+            folderSuggestionsSuppressedFor = nil
             sendError = nil
             ComposerDraftMemory.forget(roomID: roomID)
         } catch {
@@ -248,6 +250,12 @@ public final class ComposerViewModel {
     /// exits history navigation, matching terminals where typing abandons
     /// the recalled line.
     public func handleInputChange() {
+        // Any differing edit lifts the post-pick folder suppression so the
+        // suppressed string doesn't linger and block a later identical
+        // command line (e.g. re-typed after a send).
+        if let suppressed = folderSuggestionsSuppressedFor, input != suppressed {
+            folderSuggestionsSuppressedFor = nil
+        }
         if input == lastRecalledValue { return }
         lastRecalledValue = nil
         if isNavigatingHistory {
