@@ -70,6 +70,10 @@ struct MacChatView: View {
 
     final class VisibleRowsBox {
         var bottomID: String?
+        /// Latest raw scroll geometry, refreshed by the
+        /// `onScrollGeometryChange` transform — forensic context for
+        /// breadcrumbs. See iOS ChatView.
+        var geoDescription = ""
     }
 
     /// Bottom-edge proximity threshold (pt) for `isNearBottom`.
@@ -198,7 +202,10 @@ struct MacChatView: View {
             // THE follow-tail mechanism — see `sizeChangeAnchor`.
             .defaultScrollAnchor(sizeChangeAnchor, for: .sizeChanges)
             .onScrollGeometryChange(for: ScrollEdgeState.self) { geo in
-                ScrollEdgeState(
+                // Side write into the box (cheap, non-invalidating) —
+                // forensic numbers for breadcrumbs; see iOS ChatView.
+                visibleRows.geoDescription = "visY=\(Int(geo.visibleRect.minY))–\(Int(geo.visibleRect.maxY)) contentH=\(Int(geo.contentSize.height)) containerH=\(Int(geo.containerSize.height))"
+                return ScrollEdgeState(
                     nearTop: geo.visibleRect.minY < Self.nearTopThresholdPt,
                     nearBottom: geo.visibleRect.maxY
                         >= geo.contentSize.height - Self.nearBottomThresholdPt
@@ -206,7 +213,7 @@ struct MacChatView: View {
             } action: { _, edges in
                 if isNearBottom != edges.nearBottom {
                     isNearBottom = edges.nearBottom
-                    paginateLogger.diag("near-bottom → \(edges.nearBottom)")
+                    paginateLogger.diag("near-bottom → \(edges.nearBottom) (\(visibleRows.geoDescription))")
                 }
                 // Backward-pagination trigger — viewport geometry; fires
                 // once per approach to the top edge (Equatable state),
@@ -244,15 +251,26 @@ struct MacChatView: View {
             // parks the id for the rows-populated observer below; ids
             // the room no longer contains are dropped.
             .task {
-                guard let restored = ChatScrollPositionMemory.retrieve(roomID: viewModel.roomID) else { return }
-                if viewModel.rowAnchorIDs.isEmpty {
-                    isFollowingTail = false
-                    pendingRestoreID = restored
-                } else if viewModel.rowAnchorIDs.contains(restored) {
-                    isFollowingTail = false
-                    proxy.scrollTo(restored, anchor: .bottom)
-                } else {
-                    ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
+                if let restored = ChatScrollPositionMemory.retrieve(roomID: viewModel.roomID) {
+                    if viewModel.rowAnchorIDs.isEmpty {
+                        isFollowingTail = false
+                        pendingRestoreID = restored
+                    } else if viewModel.rowAnchorIDs.contains(restored) {
+                        isFollowingTail = false
+                        proxy.scrollTo(restored, anchor: .bottom)
+                    } else {
+                        ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
+                    }
+                    return
+                }
+                // Open-at-bottom verification — `initialOffset: .bottom`
+                // can land short of the true bottom once lazy row
+                // heights settle; one non-animated correction. See iOS
+                // ChatView for the trace rationale.
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                if isFollowingTail, !isNearBottom, let target = bottomScrollTargetID {
+                    paginateLogger.breadcrumb("open re-pin → \(target) (\(visibleRows.geoDescription))")
+                    proxy.scrollTo(target, anchor: .bottom)
                 }
             }
             .onChange(of: viewModel.rows.isEmpty) { _, isEmpty in
@@ -287,7 +305,7 @@ struct MacChatView: View {
                 if !isFollowingTail {
                     JumpToBottomButton {
                         isFollowingTail = true
-                        paginateLogger.breadcrumb("follow-tail ON (jump button)")
+                        paginateLogger.breadcrumb("follow-tail ON (jump button, \(visibleRows.geoDescription))")
                         if let target = bottomScrollTargetID {
                             withAnimation(.easeOut(duration: 0.2)) {
                                 proxy.scrollTo(target, anchor: .bottom)

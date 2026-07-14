@@ -70,6 +70,11 @@ struct ChatView: View {
 
     final class VisibleRowsBox {
         var bottomID: String?
+        /// Latest raw scroll geometry, refreshed by the
+        /// `onScrollGeometryChange` transform — forensic context for
+        /// breadcrumbs (a bare "near-bottom → false" says the viewport
+        /// moved; the numbers say where it went and how far).
+        var geoDescription = ""
     }
 
     /// Bottom-edge proximity threshold (pt) for `isNearBottom` — roughly
@@ -242,7 +247,11 @@ struct ChatView: View {
             // pinned through every layout change.
             .defaultScrollAnchor(sizeChangeAnchor, for: .sizeChanges)
             .onScrollGeometryChange(for: ScrollEdgeState.self) { geo in
-                ScrollEdgeState(
+                // Side write into the box (cheap, non-invalidating):
+                // keeps the latest raw numbers available to every
+                // breadcrumb site without waking the render loop.
+                visibleRows.geoDescription = "visY=\(Int(geo.visibleRect.minY))–\(Int(geo.visibleRect.maxY)) contentH=\(Int(geo.contentSize.height)) containerH=\(Int(geo.containerSize.height))"
+                return ScrollEdgeState(
                     nearTop: geo.visibleRect.minY < Self.nearTopThresholdPt,
                     nearBottom: geo.visibleRect.maxY
                         >= geo.contentSize.height - Self.nearBottomThresholdPt
@@ -250,7 +259,7 @@ struct ChatView: View {
             } action: { _, edges in
                 if isNearBottom != edges.nearBottom {
                     isNearBottom = edges.nearBottom
-                    chatViewLogger.diag("near-bottom → \(edges.nearBottom)")
+                    chatViewLogger.diag("near-bottom → \(edges.nearBottom) (\(visibleRows.geoDescription))")
                 }
                 // Backward-pagination trigger. Viewport geometry, not
                 // row ids: the retired design keyed this off the
@@ -293,20 +302,23 @@ struct ChatView: View {
                 }
             )
             // Keyboard re-pin backstop. The `.sizeChanges` bottom anchor
-            // is expected to ride the keyboard resize on its own; this
-            // single post-settle correction covers keyboard-avoidance
-            // paths that adjust insets without a container size change.
-            // `keyboardDidShow`, NOT willShow: a scrollTo issued
-            // mid-animation computes its target from layout that's still
-            // moving and can overshoot past the bottom (2026-07-13 23:17
-            // trace).
+            // is expected to ride the keyboard resize on its own, so
+            // this fires ONLY when geometry says the engine actually
+            // lost the bottom (`!isNearBottom`) — unconditional firing
+            // made every keyboard-open a scroll even when nothing was
+            // wrong. Non-animated: opening the keyboard mid-bot-turn
+            // means the streaming reply is growing the layout under the
+            // correction, and an animated scrollTo aimed at moving
+            // layout is the round-7 overshoot mechanism (re-observed
+            // 2026-07-14 06:41 trace: viewport left the bottom with no
+            // user gesture while a tool-heavy turn streamed). An
+            // instant scroll computes and lands atomically.
             .onReceive(NotificationCenter.default.publisher(
                 for: UIResponder.keyboardDidShowNotification)) { _ in
-                guard isFollowingTail else { return }
+                guard isFollowingTail, !isNearBottom else { return }
                 guard let target = bottomScrollTargetID else { return }
-                withAnimation(.easeOut(duration: 0.15)) {
-                    proxy.scrollTo(target, anchor: .bottom)
-                }
+                chatViewLogger.breadcrumb("keyboard re-pin → \(target) (\(visibleRows.geoDescription))")
+                proxy.scrollTo(target, anchor: .bottom)
             }
             // Restore the per-room scroll position. Cached view model:
             // rows are live, resolve immediately (imperative scroll —
@@ -316,15 +328,30 @@ struct ChatView: View {
             // dropped — restoring it would pin the viewport to nothing
             // (the old blank-on-open).
             .task {
-                guard let restored = ChatScrollPositionMemory.retrieve(roomID: viewModel.roomID) else { return }
-                if viewModel.rowAnchorIDs.isEmpty {
-                    isFollowingTail = false
-                    pendingRestoreID = restored
-                } else if viewModel.rowAnchorIDs.contains(restored) {
-                    isFollowingTail = false
-                    proxy.scrollTo(restored, anchor: .bottom)
-                } else {
-                    ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
+                if let restored = ChatScrollPositionMemory.retrieve(roomID: viewModel.roomID) {
+                    if viewModel.rowAnchorIDs.isEmpty {
+                        isFollowingTail = false
+                        pendingRestoreID = restored
+                    } else if viewModel.rowAnchorIDs.contains(restored) {
+                        isFollowingTail = false
+                        proxy.scrollTo(restored, anchor: .bottom)
+                    } else {
+                        ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
+                    }
+                    return
+                }
+                // Open-at-bottom verification. `initialOffset: .bottom`
+                // computes against estimated lazy row heights and can
+                // land a bubble or two short once real heights settle —
+                // warm reopens showed near-bottom → false 16ms after
+                // appear, persisting until a manual flick (2026-07-14
+                // 06:38:46 / 06:40:09 traces). One non-animated
+                // correction after first layout settles; skipped if the
+                // user has already taken over.
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                if isFollowingTail, !isNearBottom, let target = bottomScrollTargetID {
+                    chatViewLogger.breadcrumb("open re-pin → \(target) (\(visibleRows.geoDescription))")
+                    proxy.scrollTo(target, anchor: .bottom)
                 }
             }
             .onChange(of: viewModel.rows.isEmpty) { _, isEmpty in
@@ -371,7 +398,7 @@ struct ChatView: View {
                 if !isFollowingTail {
                     JumpToBottomButton {
                         isFollowingTail = true
-                        chatViewLogger.breadcrumb("follow-tail ON (jump button)")
+                        chatViewLogger.breadcrumb("follow-tail ON (jump button, \(visibleRows.geoDescription))")
                         if let target = bottomScrollTargetID {
                             withAnimation(.easeOut(duration: 0.2)) {
                                 proxy.scrollTo(target, anchor: .bottom)
