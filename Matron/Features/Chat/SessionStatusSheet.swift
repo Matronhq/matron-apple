@@ -14,8 +14,11 @@ struct SessionStatusSheet: View {
 
     private var status: SessionStatus? { viewModel.sessionStatus }
 
+    /// Any known part counts — a model-only status (first turn after a
+    /// bridge boot whose turn errored before usage arrived) shows the model
+    /// footnote rather than claiming "no usage data yet".
     private var hasContent: Bool {
-        status?.context != nil || !(status?.limits ?? []).isEmpty
+        status?.model != nil || status?.context != nil || !(status?.limits ?? []).isEmpty
     }
 
     var body: some View {
