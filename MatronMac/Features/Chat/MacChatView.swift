@@ -79,8 +79,10 @@ struct MacChatView: View {
         var geoDescription = ""
     }
 
-    /// Bottom-edge proximity threshold (pt) for `isNearBottom`.
-    private static let nearBottomThresholdPt: CGFloat = 60
+    /// Bottom-edge proximity threshold (pt) for `isNearBottom` — see iOS
+    /// ChatView: 60 left engine append-shortfalls (61–63pt) in the
+    /// heal's blind side.
+    private static let nearBottomThresholdPt: CGFloat = 100
     /// Top-edge proximity threshold (pt) that triggers backward
     /// pagination.
     private static let nearTopThresholdPt: CGFloat = 600
@@ -306,6 +308,18 @@ struct MacChatView: View {
                     isFollowingTail = true
                 }
             }
+            // Discrete tail changes: own sends always return to the
+            // bottom; while following, instant re-pin per new row. See
+            // iOS ChatView for the trace rationale.
+            .onChange(of: viewModel.lastRenderableItemID) { _, newID in
+                guard newID != nil else { return }
+                if viewModel.lastRenderableItemIsOwn, !isFollowingTail {
+                    isFollowingTail = true
+                    paginateLogger.breadcrumb("follow-tail ON (own send)")
+                }
+                guard isFollowingTail, let target = bottomScrollTargetID else { return }
+                proxy.scrollTo(target, anchor: .bottom)
+            }
             // "Loading earlier messages…" pill — see iOS `ChatView`
             // for the overlay rationale + `MinDisplayDuration`'s
             // role keeping fast-paginate flashes perceptible.
@@ -327,10 +341,11 @@ struct MacChatView: View {
                     JumpToBottomButton {
                         isFollowingTail = true
                         paginateLogger.breadcrumb("follow-tail ON (jump button, \(visibleRows.geoDescription))")
+                        // NOT animated — animated scrollTo against
+                        // estimated lazy layout silently no-ops; see the
+                        // iOS jump button comment.
                         if let target = bottomScrollTargetID {
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                proxy.scrollTo(target, anchor: .bottom)
-                            }
+                            proxy.scrollTo(target, anchor: .bottom)
                         }
                         ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
                     }

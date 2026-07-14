@@ -139,6 +139,12 @@ public final class ChatViewModel {
     /// in `applyDerivedRecompute()`.
     public private(set) var lastRenderableItemID: TimelineItem.ID?
 
+    /// Whether the current tail row is the user's own message. The views
+    /// use this on tail changes: your own outgoing message always returns
+    /// you to the bottom (standard chat behaviour), even if follow-tail
+    /// mode was disarmed at the moment you sent.
+    public private(set) var lastRenderableItemIsOwn = false
+
     /// Every scroll-target id in the current snapshot: `item.id` for
     /// message rows (the views tag rows with the ITEM id, not
     /// `TimelineRow.id`'s `msg:`-prefixed form) plus the separator row
@@ -178,6 +184,7 @@ public final class ChatViewModel {
         nextRows.reserveCapacity(items.count + 4)
         var first: TimelineItem.ID?
         var last: TimelineItem.ID?
+        var lastIsOwn = false
         var previousDay: Date?
         var nextActivityLabel: String?
         for item in items {
@@ -206,6 +213,7 @@ public final class ChatViewModel {
             if case .askUserAnswer = item.kind { continue }
             if first == nil { first = item.id }
             last = item.id
+            lastIsOwn = item.isOwn
             let day = calendar.startOfDay(for: item.timestamp)
             if previousDay == nil || day != previousDay {
                 nextRows.append(.separator(date: item.timestamp))
@@ -216,6 +224,7 @@ public final class ChatViewModel {
         self.rows = nextRows
         self.firstRenderableItemID = first
         self.lastRenderableItemID = last
+        self.lastRenderableItemIsOwn = lastIsOwn
         self.activityLabel = nextActivityLabel
         self.rowAnchorIDs = Set(nextRows.map { row in
             if case .message(let item) = row { return item.id }

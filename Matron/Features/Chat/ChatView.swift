@@ -81,9 +81,12 @@ struct ChatView: View {
         var geoDescription = ""
     }
 
-    /// Bottom-edge proximity threshold (pt) for `isNearBottom` — roughly
-    /// one bubble; near enough that the user reads it as "at the bottom".
-    private static let nearBottomThresholdPt: CGFloat = 60
+    /// Bottom-edge proximity threshold (pt) for `isNearBottom` — a
+    /// generous bubble-and-a-half; near enough that the user reads it as
+    /// "at the bottom". 60 proved too tight: engine appends repeatedly
+    /// stranded the viewport 61–63pt short (2026-07-14 06:54 trace), one
+    /// point past the heal's blind side.
+    private static let nearBottomThresholdPt: CGFloat = 100
     /// Top-edge proximity threshold (pt) that triggers backward
     /// pagination — a couple of screens before the user actually hits
     /// the head, so history is usually there by the time they arrive.
@@ -400,6 +403,25 @@ struct ChatView: View {
                     isFollowingTail = true
                 }
             }
+            // Discrete tail changes (a send's echo, a finalized reply, a
+            // tool-output row — NOT streaming growth, which keeps the
+            // row id). Two jobs: (1) your own outgoing message always
+            // returns you to the bottom, even if follow-tail was
+            // disarmed at the moment you sent (2026-07-14 06:54 trace:
+            // a spurious gesture-OFF at send left the sent bubble 63pt
+            // behind the composer); (2) while following, an instant
+            // re-pin per new row covers the engine's habit of landing
+            // appends a bubble short. Non-animated — animated scrolls
+            // against estimated lazy layout are the ones that fail.
+            .onChange(of: viewModel.lastRenderableItemID) { _, newID in
+                guard newID != nil else { return }
+                if viewModel.lastRenderableItemIsOwn, !isFollowingTail {
+                    isFollowingTail = true
+                    chatViewLogger.breadcrumb("follow-tail ON (own send)")
+                }
+                guard isFollowingTail, let target = bottomScrollTargetID else { return }
+                proxy.scrollTo(target, anchor: .bottom)
+            }
             // "Loading earlier messages…" pill while a backward
             // paginate is in flight. Floats over the topmost content
             // (overlay rather than LazyVStack header) so its
@@ -433,10 +455,14 @@ struct ChatView: View {
                     JumpToBottomButton {
                         isFollowingTail = true
                         chatViewLogger.breadcrumb("follow-tail ON (jump button, \(visibleRows.geoDescription))")
+                        // Deliberately NOT animated: an animated scrollTo
+                        // against estimated lazy layout silently no-oped
+                        // twice on device (06:40:13 / 06:54:32 traces —
+                        // "I tap it and nothing happens") while the
+                        // non-animated keyboard re-pin moved the same
+                        // distance instantly.
                         if let target = bottomScrollTargetID {
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                proxy.scrollTo(target, anchor: .bottom)
-                            }
+                            proxy.scrollTo(target, anchor: .bottom)
                         }
                         ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
                     }
