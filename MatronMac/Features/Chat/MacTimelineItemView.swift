@@ -64,7 +64,14 @@ struct MacTimelineItemView: View {
                 style: item.isOwn ? .me : .bot,
                 timestamp: item.timestamp
             ) {
-                MarkdownText(body, theme: .matronMessage, lineSpacing: 4)
+                // Mac renders message bodies through a single selectable
+                // NSTextView so a mouse drag can select across the whole
+                // message — MarkdownUI's per-block Texts can't span a drag.
+                // No streaming flag reaches this call site (a growing message
+                // re-emits `.text` with a longer body), so we rely on
+                // `MarkdownAttributed`'s source-keyed cache for cheap
+                // re-conversion during streaming.
+                SelectableMessageText(body)
             }
             // Mac VoiceOver mirror of the iOS accessibility wiring — see
             // `TimelineItemView.accessibilityLabel(for:body:)` (QA finding #13).
