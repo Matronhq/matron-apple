@@ -72,16 +72,14 @@ struct ChatView: View {
     /// in the geometry action.
     @State private var followHealTask: Task<Void, Never>?
 
-    /// One-frame scroll freeze used by the jump button to kill fling
-    /// momentum. A `proxy.scrollTo` issued while a deceleration is in
-    /// flight is overridden by the deceleration's animator for its whole
-    /// 1–2s life — the 08:09 device trace shows every jump + re-assert
-    /// swallowed while the viewport kept drifting the other way, and
-    /// only the retries that happened to outlive the fling landed.
-    /// Toggling `scrollDisabled` stops the underlying scroll view dead
-    /// (UIKit semantics: disabling scrolling cancels the current
-    /// scroll), so the follow-up scrollTo acts on a still view.
-    @State private var jumpMomentumFreeze = false
+    /// UIKit reach-through for the jump button's fling kill — see
+    /// `NativeScrollViewBox`. Nothing on the SwiftUI surface can stop an
+    /// in-flight deceleration: `proxy.scrollTo` is overridden by the
+    /// deceleration's animator for its whole 1–2s life (08:09 trace) and
+    /// `.scrollDisabled` only blocks touches while the animation runs to
+    /// completion (08:2x on-device: jump "waited for the scroll to
+    /// finish").
+    @State private var nativeScroll = NativeScrollViewBox()
 
     final class VisibleRowsBox {
         var bottomID: String?
@@ -239,6 +237,9 @@ struct ChatView: View {
                 .onChange(of: viewModel.items) { _, _ in
                     viewModel.persistVisibleAnswers()
                 }
+                // Grabs the backing UIScrollView (must sit INSIDE the
+                // ScrollView content — the capture walks up from here).
+                .captureNativeScrollView(into: nativeScroll)
             }
             // Warm-up state: no rows yet, but not settled-empty either
             // (that's the branch above). This window used to render as a
@@ -256,9 +257,6 @@ struct ChatView: View {
             // positioned those opens NOWHERE: the binding started nil
             // and no items change fired, so the chat sat at the top —
             // 2026-07-14 device trace.)
-            // Momentum kill switch for the jump button — see
-            // `jumpMomentumFreeze`.
-            .scrollDisabled(jumpMomentumFreeze)
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             // A conversation shorter than the viewport hugs the
             // composer, chat-standard.
@@ -498,32 +496,19 @@ struct ChatView: View {
                         // non-animated keyboard re-pin moved the same
                         // distance instantly.
                         ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
-                        // Kill any in-flight fling BEFORE scrolling: a
-                        // scrollTo issued during deceleration is
-                        // overridden by the deceleration's animator for
-                        // its whole 1–2s life (08:09 device trace —
-                        // presses + timed re-asserts all swallowed while
-                        // the viewport kept drifting away; only retries
-                        // that outlived the fling landed, hence
-                        // "sometimes works"). Freeze for one frame, then
-                        // scroll the still view, then verify against
-                        // geometry until it sticks. Reuses the heal task
-                        // slot so jump and heal never fight.
-                        // (Window reset deliberately does NOT happen
-                        // here — swapping `windowedRows` mid-scroll
-                        // rebuilt the layout under the jump's feet;
-                        // `onDisappear` owns the trim.)
-                        jumpMomentumFreeze = true
-                        // Unfreeze runs in its own fire-and-forget task:
-                        // `followHealTask` can be cancelled/replaced by
-                        // the geometry heal at any moment, and a
-                        // cancelled unfreeze would leave the scroll view
-                        // disabled permanently.
-                        Task { @MainActor in
-                            try? await Task.sleep(nanoseconds: 30_000_000)
-                            jumpMomentumFreeze = false
-                            guard isFollowingTail,
-                                  let target = bottomScrollTargetID else { return }
+                        // Kill any in-flight fling, snap to the bottom
+                        // offset in the same frame (UIKit reach-through
+                        // — nothing on the SwiftUI surface can stop a
+                        // live deceleration; see `NativeScrollViewBox`),
+                        // then let scrollTo settle row-exact position on
+                        // the now-still view. Verify loop below catches
+                        // anything that still slips. (Window reset
+                        // deliberately does NOT happen here — swapping
+                        // `windowedRows` mid-scroll rebuilt the layout
+                        // under the jump's feet; `onDisappear` owns the
+                        // trim.)
+                        nativeScroll.killMomentumAndSnapToBottom()
+                        if let target = bottomScrollTargetID {
                             proxy.scrollTo(target, anchor: .bottom)
                         }
                         followHealTask?.cancel()

@@ -71,12 +71,9 @@ struct MacChatView: View {
     /// geometry action and iOS `ChatView` for the trace rationale.
     @State private var followHealTask: Task<Void, Never>?
 
-    /// One-frame scroll freeze used by the jump button to kill trackpad
-    /// momentum before scrolling — a scrollTo issued mid-deceleration is
-    /// overridden by the in-flight scroll for its whole life. See the
-    /// iOS twin (`ChatView.jumpMomentumFreeze`) and the 08:09 device
-    /// trace.
-    @State private var jumpMomentumFreeze = false
+    /// AppKit reach-through for the jump button's momentum kill — see
+    /// `NativeScrollViewBox` and the iOS twin in `ChatView`.
+    @State private var nativeScroll = NativeScrollViewBox()
 
     final class VisibleRowsBox {
         var bottomID: String?
@@ -195,6 +192,9 @@ struct MacChatView: View {
                 .onChange(of: viewModel.items) { _, _ in
                     viewModel.persistVisibleAnswers()
                 }
+                // Grabs the backing NSScrollView (must sit INSIDE the
+                // ScrollView content — the capture walks up from here).
+                .captureNativeScrollView(into: nativeScroll)
             }
             // Warm-up state — see iOS `ChatView`: no rows yet but not
             // settled-empty, previously a fully blank message area. The
@@ -209,9 +209,6 @@ struct MacChatView: View {
             // a cached view model whose rows are already populated at
             // first layout. See iOS ChatView for the trace-driven
             // rationale behind each anchor role.
-            // Momentum kill switch for the jump button — see
-            // `jumpMomentumFreeze`.
-            .scrollDisabled(jumpMomentumFreeze)
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             .defaultScrollAnchor(.bottom, for: .alignment)
             // THE follow-tail mechanism — see `sizeChangeAnchor`.
@@ -368,23 +365,15 @@ struct MacChatView: View {
                         isFollowingTail = true
                         paginateLogger.breadcrumb("follow-tail ON (jump button, \(visibleRows.geoDescription))")
                         ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
-                        // Kill in-flight momentum BEFORE scrolling — a
-                        // scrollTo issued mid-deceleration is overridden
-                        // by the in-flight scroll for its whole life
-                        // (08:09 iOS trace). Freeze one frame, scroll
-                        // the still view, verify until geometry
-                        // confirms. No window reset here: swapping
-                        // `windowedRows` mid-scroll rebuilds the layout
-                        // under the jump's feet; `onDisappear` owns the
-                        // trim. Unfreeze is fire-and-forget so a heal
-                        // replacing `followHealTask` can't cancel it and
-                        // wedge the scroll view disabled.
-                        jumpMomentumFreeze = true
-                        Task { @MainActor in
-                            try? await Task.sleep(nanoseconds: 30_000_000)
-                            jumpMomentumFreeze = false
-                            guard isFollowingTail,
-                                  let target = bottomScrollTargetID else { return }
+                        // Kill in-flight momentum and snap to the bottom
+                        // in the same frame (AppKit reach-through — see
+                        // `NativeScrollViewBox`), then scrollTo settles
+                        // row-exact position on the still view. No
+                        // window reset here: swapping `windowedRows`
+                        // mid-scroll rebuilds the layout under the
+                        // jump's feet; `onDisappear` owns the trim.
+                        nativeScroll.killMomentumAndSnapToBottom()
+                        if let target = bottomScrollTargetID {
                             proxy.scrollTo(target, anchor: .bottom)
                         }
                         followHealTask?.cancel()
