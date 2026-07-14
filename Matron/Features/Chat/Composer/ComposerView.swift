@@ -15,6 +15,7 @@ struct ComposerView: View {
     @State var viewModel: ComposerViewModel
     @State private var photoItem: PhotosPickerItem?
     @State private var showFileImporter = false
+    @State private var recorder = VoiceRecorder()
 
     /// Mirrors `ComposerViewModel.send()`'s own trim so the send button is
     /// disabled for whitespace-only input. Without this, the button looks
@@ -35,32 +36,11 @@ struct ComposerView: View {
                 .padding(.bottom, 4)
             }
 
-            HStack(alignment: .bottom, spacing: 4) {
-                // Journal stack: media DISPLAY is live server-side, but the
-                // client send whitelist is text-only, so composing an
-                // attachment would fail server-side. Gated on the VM flag
-                // rather than deleted outright.
-                if ComposerViewModel.mediaAvailable {
-                    AttachmentPicker(photoItem: $photoItem, showFileImporter: $showFileImporter)
-                }
-
-                TextField("Message…", text: $viewModel.input, axis: .vertical)
-                    .lineLimit(1...8)
-                    .padding(8)
-                    .background(.regularMaterial)
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-
-                Button {
-                    Task { await viewModel.send() }
-                } label: {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.title)
-                        .foregroundStyle(isSendable ? Color.accentColor : Color.secondary)
-                }
-                .disabled(!isSendable || viewModel.isSending)
-                .padding(.trailing, 4)
+            if case let .recording(start) = recorder.state {
+                recordingBar(start: start)
+            } else {
+                composerBar
             }
-            .padding()
         }
         .onChange(of: photoItem) { _, newItem in
             guard let newItem else { return }
@@ -131,6 +111,93 @@ struct ComposerView: View {
         .onDisappear {
             ComposerDraftMemory.store(roomID: viewModel.roomID, text: viewModel.input)
         }
+    }
+
+    /// The normal composer row: plus (attach) on the left, growing text
+    /// field, then either a mic (empty input) or the send button. The
+    /// plus + mic are gated on `mediaAvailable` — the same one-flag gate the
+    /// attach button already used — so both media surfaces disappear together
+    /// if the server-side whitelist is ever turned back off.
+    private var composerBar: some View {
+        HStack(alignment: .bottom, spacing: 4) {
+            if ComposerViewModel.mediaAvailable {
+                AttachmentPicker(photoItem: $photoItem, showFileImporter: $showFileImporter)
+            }
+
+            TextField("Message…", text: $viewModel.input, axis: .vertical)
+                .lineLimit(1...8)
+                .padding(8)
+                .background(.regularMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+
+            // Mic when the field is empty (WhatsApp-style), send once the
+            // user has typed. Falls back to the send button when media is
+            // gated off so there's always a trailing action.
+            if !isSendable && ComposerViewModel.mediaAvailable {
+                Button {
+                    Task { await startRecording() }
+                } label: {
+                    Image(systemName: "mic")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.trailing, 4)
+            } else {
+                Button {
+                    Task { await viewModel.send() }
+                } label: {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.title)
+                        .foregroundStyle(isSendable ? Color.accentColor : Color.secondary)
+                }
+                .disabled(!isSendable || viewModel.isSending)
+                .padding(.trailing, 4)
+            }
+        }
+        .padding()
+    }
+
+    /// The recording pill shown in place of the composer while a voice note
+    /// is being captured: a pulsing red dot, live elapsed time, a Cancel
+    /// affordance, and a prominent stop-and-send button.
+    private func recordingBar(start: Date) -> some View {
+        HStack(spacing: 12) {
+            Circle()
+                .fill(Color.red)
+                .frame(width: 10, height: 10)
+            Text(start, style: .timer)
+                .monospacedDigit()
+                .foregroundStyle(.primary)
+            Spacer()
+            Button("Cancel") { recorder.cancel() }
+                .foregroundStyle(.secondary)
+            Button {
+                stopRecordingAndSend()
+            } label: {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.title)
+                    .foregroundStyle(Color.accentColor)
+            }
+        }
+        .padding()
+    }
+
+    /// Starts a recording, surfacing permission / hardware failures through
+    /// the same `sendError` channel the composer already uses for send and
+    /// attachment errors.
+    private func startRecording() async {
+        do {
+            try await recorder.start()
+        } catch {
+            viewModel.reportAttachmentError(error.localizedDescription)
+        }
+    }
+
+    /// Stops the recording and hands the resulting file to the view model,
+    /// which uploads it as an audio attachment and deletes the temp file.
+    private func stopRecordingAndSend() {
+        guard let result = recorder.stop() else { return }
+        Task { await viewModel.sendVoiceNote(url: result.url, duration: result.duration) }
     }
 
     /// Picks the best filename extension for a `PhotosPickerItem` using
