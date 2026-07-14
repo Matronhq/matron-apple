@@ -161,6 +161,10 @@ struct MacComposerView: View {
         // clears the entry inside `store(roomID:text:)` so a sent
         // composer doesn't ghost text into the next visit.
         .onDisappear {
+            // Mid-walk, `input` shows a recalled sent line, not the user's
+            // draft — restore the stashed draft first so the store below
+            // persists the real one.
+            viewModel.exitHistoryNavigation()
             ComposerDraftMemory.store(roomID: viewModel.roomID, text: viewModel.input)
             if let keyMonitor {
                 NSEvent.removeMonitor(keyMonitor)

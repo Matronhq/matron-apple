@@ -158,6 +158,18 @@ public final class ComposerViewModel {
         }
     }
 
+    /// Exits an active history walk, restoring the stashed in-progress
+    /// draft into `input`. The composer view calls this on disappear BEFORE
+    /// persisting the draft — mid-walk, `input` holds a recalled sent line,
+    /// and persisting that would overwrite the user's real draft. No-op
+    /// outside navigation.
+    public func exitHistoryNavigation() {
+        guard isNavigatingHistory else { return }
+        isNavigatingHistory = false
+        guard let draft = history.cancelRecall() else { return }
+        applyRecalled(draft)
+    }
+
     /// Writes a recalled value into `input` and remembers it so the view's
     /// deferred `onChange` doesn't mistake the programmatic write for a user
     /// edit (see `lastRecalledValue`).

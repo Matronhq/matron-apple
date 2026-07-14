@@ -91,6 +91,18 @@ public final class SentMessageHistory {
         return draft
     }
 
+    /// Abandons the current walk, handing back the stashed draft so the
+    /// caller can restore it — the composer disappearing mid-walk must
+    /// persist the user's real in-progress draft, not the recalled sent
+    /// line the walk happened to be showing. Returns `nil` when no walk is
+    /// active (the caller leaves the field alone).
+    public func cancelRecall() -> String? {
+        guard recallIndex != nil else { return nil }
+        let draft = stashedDraft ?? ""
+        endRecall()
+        return draft
+    }
+
     /// Ends the current recall walk (e.g. the user edited the field or sent
     /// a message). Idempotent.
     public func endRecall() {

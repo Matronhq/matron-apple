@@ -188,4 +188,38 @@ final class SentMessageHistoryTests: XCTestCase {
         vm.recallOlder()               // still navigating -> "a"
         XCTAssertEqual(vm.input, "a")
     }
+
+    @MainActor
+    func test_cancelRecall_returnsStashedDraft_andEndsWalk() {
+        let history = SentMessageHistory()
+        history.record("sent", room: "!a")
+        XCTAssertEqual(history.recallOlder(room: "!a", currentDraft: "half-typed"), "sent")
+
+        XCTAssertEqual(history.cancelRecall(), "half-typed")
+        XCTAssertFalse(history.isNavigating)
+        // No walk active any more: a second cancel is a no-op nil.
+        XCTAssertNil(history.cancelRecall())
+    }
+
+    @MainActor
+    func test_exitHistoryNavigation_restoresDraft_forPersistence() async {
+        // The composer view calls this on disappear before persisting the
+        // draft — mid-walk, `input` shows a recalled sent line, and storing
+        // that would clobber the user's real in-progress draft.
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(), commands: [])
+        vm.input = "sent"; await vm.send()
+
+        vm.input = "half-typed draft"
+        vm.handleInputChange()
+        vm.recallOlder()
+        XCTAssertEqual(vm.input, "sent")
+
+        vm.exitHistoryNavigation()
+        XCTAssertEqual(vm.input, "half-typed draft", "disappear mid-walk must persist the draft, not the recalled line")
+        XCTAssertFalse(vm.isNavigatingHistory)
+
+        // Outside navigation it's a no-op.
+        vm.exitHistoryNavigation()
+        XCTAssertEqual(vm.input, "half-typed draft")
+    }
 }
