@@ -13,14 +13,14 @@ struct TerminalPane: View {
         ScrollView {
             Text(output)
                 .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(Color(red: 0.86, green: 0.86, blue: 0.86))
+                .foregroundStyle(TerminalStyle.foreground)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(8)
         }
         .defaultScrollAnchor(.bottom)
         .frame(maxHeight: expanded ? 600 : 76)
-        .background(Color(red: 0.12, green: 0.12, blue: 0.12))
+        .background(TerminalStyle.background)
         .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 7, bottomTrailingRadius: 7))
     }
 }

@@ -44,7 +44,7 @@ public struct ToolCallCard: View {
                             .background(Color.red.opacity(0.12))
                             .clipShape(Capsule())
                     }
-                    Text(argSummary).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text(event.argSummary).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     Spacer()
                     #if os(macOS)
                     if !expanded && isHovering {
@@ -88,8 +88,12 @@ public struct ToolCallCard: View {
 
             if expanded {
                 if !event.argsJSON.isEmpty && event.argsJSON != "{}" {
-                    sectionHeader("Arguments")
-                    codeView(event.argsJSON)
+                    // Bash shape shows the raw command; other tools keep the
+                    // pretty-printed JSON under the same "Command" heading.
+                    VStack(alignment: .leading, spacing: 2) {
+                        sectionHeader("Command")
+                        codeView(event.commandString ?? event.argsJSON)
+                    }
                 }
                 if event.expired {
                     // Binding client rule (matron-journal protocol.md): the
@@ -99,8 +103,10 @@ public struct ToolCallCard: View {
                         .font(.caption).foregroundStyle(.secondary)
                         .padding(.top, 4)
                 } else if let result = event.resultText {
-                    sectionHeader("Result\(event.resultTruncated ? " (truncated)" : "")")
-                    codeView(result)
+                    VStack(alignment: .leading, spacing: 2) {
+                        sectionHeader("Result\(event.resultTruncated ? " (truncated)" : "")")
+                        terminalView(result)
+                    }
                 }
             }
         }
@@ -126,24 +132,32 @@ public struct ToolCallCard: View {
         return nil
     }
 
-    private var argSummary: String {
-        // Nullary tools normalise to exactly "{}" at parse time — show
-        // nothing rather than a meaningless brace pair next to the name.
-        guard event.argsJSON != "{}" else { return "" }
-        let trimmed = event.argsJSON.replacingOccurrences(of: "\n", with: " ")
-        return trimmed.count > 80 ? String(trimmed.prefix(77)) + "…" : trimmed
-    }
-
+    /// Section heading. No `.padding(.top, …)` — the heading and its block
+    /// are grouped in a tight `spacing: 2` VStack by the caller, and the
+    /// outer VStack's `spacing: 8` supplies the gap between sections.
     private func sectionHeader(_ s: String) -> some View {
-        Text(s).font(.caption2).foregroundStyle(.secondary).padding(.top, 4)
+        Text(s).font(.caption2).foregroundStyle(.secondary)
     }
 
+    /// Light-surfaced code block — the "Command" block's home.
     private func codeView(_ s: String) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             Text(s).font(.system(.caption, design: .monospaced))
                 .padding(8)
         }
         .background(Color.matronCardInnerBg)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    /// Terminal-style result block: light monospace on the shared dark
+    /// `TerminalStyle` palette, matching the legacy live-output pane.
+    private func terminalView(_ s: String) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            Text(s).font(.system(.caption, design: .monospaced))
+                .foregroundStyle(TerminalStyle.foreground)
+                .padding(8)
+        }
+        .background(TerminalStyle.background)
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 }
