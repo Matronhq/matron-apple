@@ -147,7 +147,7 @@ struct MacTimelineItemView: View {
             .padding(.horizontal)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(
-                for: item, body: "Edited \(evt.filename ?? "file")"))
+                for: item, body: DiffCard.accessibilitySummary(for: evt)))
 
         case .liveOutput(_, let evt):
             // Wider than ToolCallCard — terminal output wants columns.

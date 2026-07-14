@@ -27,6 +27,15 @@ final class DiffCardSnapshotTests: XCTestCase {
                        named: "collapsed_more_lines")
     }
 
+    func test_collapsed_truncated_smallDiff_showsHeaderMarker() {
+        // A byte-cap-truncated diff that FITS the 12 collapsed lines must
+        // still show a truncation cue while collapsed — the dimmed "…" in
+        // the header (5a7efc0; bugbot "truncation invisible when collapsed
+        // and diff fits").
+        assertVariants(of: DiffCard(event: sampleEvent(truncated: true)).frame(width: 420),
+                       named: "collapsed_truncated_small")
+    }
+
     func test_expanded_truncated_showsTruncationRow() {
         let long = (0..<20).map { "+added line \($0)" }.joined(separator: "\n")
         assertVariants(of: DiffCard(event: sampleEvent(diff: long, truncated: true),
