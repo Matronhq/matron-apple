@@ -60,6 +60,13 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         /// trailing overlay row while the agent is thinking or running a
         /// tool, and dropped when it goes idle or the stream goes stale.
         case activityIndicator(label: String)
+        /// Live tool-output overlay (journal `tool_stream` ephemerals) — a
+        /// terminal tile streaming a running command's output at the bottom
+        /// of the timeline. Not persisted; retired when the durable
+        /// `tool_output` row with the same `messageRef` lands (which renders
+        /// as `.toolCall`). `command` is nil until a `sync` frame supplies
+        /// meta — appends never carry it.
+        case toolStreamLive(messageRef: String, command: String?, text: String, headTruncated: Bool)
         /// Catch-all for events we don't render specially yet (encrypted but
         /// undecryptable, polls, stickers, etc.). UI shows a placeholder so
         /// the event isn't silently dropped.

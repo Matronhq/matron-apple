@@ -214,4 +214,49 @@ public enum JournalTimelineMapper {
             id: "activity", sender: "agent", timestamp: convoTS,
             kind: .activityIndicator(label: label), isOwn: false, sendState: .sent)
     }
+
+    /// Renders a tool-stream byte buffer for display. Keeps only the last
+    /// `displayCapBytes` (the server buffer is 1 MiB; SwiftUI Text does not
+    /// enjoy megabyte strings), then drops any orphaned continuation bytes
+    /// at the front of the cut and any incomplete multibyte sequence at the
+    /// tail (a chunk boundary can split a character — rendering the partial
+    /// bytes would flicker a U+FFFD until the next append completes it).
+    public static func toolStreamText(bytes: [UInt8], displayCapBytes: Int = 65536) -> String {
+        var slice = bytes[...]
+        if slice.count > displayCapBytes {
+            slice = slice.suffix(displayCapBytes)
+            while let first = slice.first, first & 0xC0 == 0x80 {
+                slice = slice.dropFirst()
+            }
+        }
+        // Walk back over trailing continuation bytes to the lead byte; if
+        // the sequence it starts is longer than what we have, trim it off.
+        var index = slice.endIndex
+        var walked = 0
+        while walked < 4, index > slice.startIndex {
+            let previous = slice.index(before: index)
+            let byte = slice[previous]
+            if byte & 0x80 == 0 { break } // ASCII tail — complete
+            walked += 1
+            if byte & 0xC0 == 0xC0 { // lead byte of a multibyte sequence
+                let needed = byte >= 0xF0 ? 4 : byte >= 0xE0 ? 3 : 2
+                if walked < needed { slice = slice[..<previous] }
+                break
+            }
+            index = previous
+        }
+        return String(decoding: slice, as: UTF8.self)
+    }
+
+    /// A live tool-output tile row. Stable id ("toolstream:<ref>") so
+    /// appends redraw one row in place; `convoTS` follows the same
+    /// day-bucket rule as `streamingItem`/`activityItem`.
+    public static func toolStreamItem(messageRef: String, command: String?, text: String,
+                                      headTruncated: Bool, convoTS: Date) -> TimelineItem {
+        TimelineItem(
+            id: "toolstream:\(messageRef)", sender: "agent", timestamp: convoTS,
+            kind: .toolStreamLive(messageRef: messageRef, command: command,
+                                  text: text, headTruncated: headTruncated),
+            isOwn: false, sendState: .sent)
+    }
 }

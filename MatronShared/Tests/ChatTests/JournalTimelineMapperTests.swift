@@ -266,4 +266,39 @@ final class JournalTimelineMapperTests: XCTestCase {
         guard case .activityIndicator(let label) = item.kind else { return XCTFail() }
         XCTAssertEqual(label, "Thinking…")
     }
+
+    // MARK: tool_stream overlay items
+
+    func testToolStreamItemShape() {
+        let item = JournalTimelineMapper.toolStreamItem(
+            messageRef: "tu1", command: "make test", text: "$ make test\nok\n",
+            headTruncated: false, convoTS: Date(timeIntervalSince1970: 5000))
+        XCTAssertEqual(item.id, "toolstream:tu1")
+        XCTAssertEqual(item.sender, "agent")
+        XCTAssertFalse(item.isOwn)
+        XCTAssertEqual(item.timestamp, Date(timeIntervalSince1970: 5000))
+        XCTAssertEqual(item.kind, .toolStreamLive(
+            messageRef: "tu1", command: "make test", text: "$ make test\nok\n", headTruncated: false))
+    }
+
+    func testToolStreamTextDropsIncompleteTrailingMultibyte() {
+        // "é" is 0xC3 0xA9; feed only the lead byte after "ok" — a chunk
+        // boundary mid-character must not render a replacement glyph.
+        XCTAssertEqual(JournalTimelineMapper.toolStreamText(bytes: [0x6F, 0x6B, 0xC3]), "ok")
+        // Complete sequence renders fully.
+        XCTAssertEqual(JournalTimelineMapper.toolStreamText(bytes: [0x6F, 0x6B, 0xC3, 0xA9]), "oké")
+        // Four-byte emoji missing its last byte is trimmed too.
+        XCTAssertEqual(JournalTimelineMapper.toolStreamText(bytes: [0x6F] + Array("😀".utf8).dropLast()), "o")
+        // Pure ASCII untouched.
+        XCTAssertEqual(JournalTimelineMapper.toolStreamText(bytes: Array("done\n".utf8)), "done\n")
+    }
+
+    func testToolStreamTextCapsDisplayToTail() {
+        let bytes = Array(String(repeating: "a", count: 100).utf8)
+        XCTAssertEqual(JournalTimelineMapper.toolStreamText(bytes: bytes, displayCapBytes: 10),
+                       String(repeating: "a", count: 10))
+        // Cap cut landing mid-multibyte drops the orphaned continuation bytes.
+        let multi = Array("xx😀".utf8) // 2 + 4 bytes
+        XCTAssertEqual(JournalTimelineMapper.toolStreamText(bytes: multi, displayCapBytes: 3), "")
+    }
 }
