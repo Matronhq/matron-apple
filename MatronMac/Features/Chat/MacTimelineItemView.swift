@@ -144,6 +144,16 @@ struct MacTimelineItemView: View {
             }
             .padding(.horizontal)
 
+        case .toolStreamLive(_, let command, let text, let headTruncated):
+            // Ephemeral live tile (journal tool_stream) — same width as the
+            // legacy liveOutput tile.
+            HStack {
+                ToolStreamCard(command: command, text: text, headTruncated: headTruncated)
+                    .frame(maxWidth: 560, alignment: .leading)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal)
+
         case .askUser(let eventID, let evt):
             // Inline, non-blocking card (bot-aligned like .toolCall) — same as iOS.
             HStack {

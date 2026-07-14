@@ -169,6 +169,16 @@ struct TimelineItemView: View {
             }
             .padding(.horizontal)
 
+        case .toolStreamLive(_, let command, let text, let headTruncated):
+            // Ephemeral live tile (journal tool_stream) — same width as the
+            // legacy liveOutput tile; terminal output wants columns.
+            HStack {
+                ToolStreamCard(command: command, text: text, headTruncated: headTruncated)
+                    .frame(maxWidth: 480, alignment: .leading)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal)
+
         case .askUser(let eventID, let evt):
             // Inline, non-blocking card (bot-aligned like .toolCall) — the
             // interactive surface lives in the timeline, not a sheet.
