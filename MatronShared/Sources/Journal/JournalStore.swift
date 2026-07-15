@@ -16,8 +16,12 @@ public struct ConvoSummaryDTO: Equatable, Sendable {
     /// upserts then leave the stored `lastActivityTS` alone rather than
     /// regress it.
     public let lastTS: Int64?
+    /// Parent conversation id for a subagent child, else `nil` (a normal
+    /// conversation). Immutable server-side — a snapshot row that omits it
+    /// (older server) must not clear a linkage learned live via convo_meta.
+    public let parentConvoID: String?
 
-    public init(id: String, title: String, sessionState: String, lastSeq: Int64, snippet: String, createdAt: Int64, lastTS: Int64? = nil) {
+    public init(id: String, title: String, sessionState: String, lastSeq: Int64, snippet: String, createdAt: Int64, lastTS: Int64? = nil, parentConvoID: String? = nil) {
         self.id = id
         self.title = title
         self.sessionState = sessionState
@@ -25,6 +29,7 @@ public struct ConvoSummaryDTO: Equatable, Sendable {
         self.snippet = snippet
         self.createdAt = createdAt
         self.lastTS = lastTS
+        self.parentConvoID = parentConvoID
     }
 }
 
@@ -42,6 +47,11 @@ public struct ConversationRecord: Codable, FetchableRecord, PersistableRecord, E
     public var hidden: Bool
     public var readUpToSeq: Int64
     public var unreadCount: Int
+    /// Parent conversation id for a subagent child, else `nil`. Set at row
+    /// creation from convo_meta / snapshot and never repointed (server-side
+    /// immutable). Drives the chat-list filter (`parent_convo_id IS NULL`)
+    /// and `children(of:)`.
+    public var parentConvoID: String?
 
     enum CodingKeys: String, CodingKey {
         case id, title, snippet, muted, hidden
@@ -51,6 +61,7 @@ public struct ConversationRecord: Codable, FetchableRecord, PersistableRecord, E
         case lastActivityTS = "last_activity_ts"
         case readUpToSeq = "read_up_to_seq"
         case unreadCount = "unread_count"
+        case parentConvoID = "parent_convo_id"
     }
 }
 
@@ -133,6 +144,18 @@ public final class JournalStore: @unchecked Sendable {
                 t.column("key", .text).primaryKey()
                 t.column("value", .text).notNull()
             }
+        }
+        // v2: subagent sub-chats. A conversation gains a nullable, indexed
+        // `parent_convo_id` — null for normal conversations, the parent's
+        // convo id for a subagent child. Additive column: existing rows
+        // survive with a NULL default, so a device that already synced its
+        // journal keeps every conversation and simply treats them all as
+        // top-level until the bridge starts publishing children.
+        migrator.registerMigration("v2") { db in
+            try db.alter(table: "conversation") { t in
+                t.add(column: "parent_convo_id", .text)
+            }
+            try db.create(indexOn: "conversation", columns: ["parent_convo_id"])
         }
         try migrator.migrate(dbQueue)
         // Boot-time TTL sweep, mirroring the server's expire-logs job
@@ -232,6 +255,13 @@ public final class JournalStore: @unchecked Sendable {
         if var existing = try ConversationRecord.fetchOne(db, key: c.id) {
             existing.title = c.title
             existing.sessionState = c.sessionState
+            // parent_convo_id is immutable once known: set it only when this
+            // row doesn't have one yet (a live convo_meta may have taught us
+            // the linkage before /snapshot; an older server omitting the
+            // field must not clear it). Never repointed.
+            if existing.parentConvoID == nil, let parent = c.parentConvoID {
+                existing.parentConvoID = parent
+            }
             if c.lastSeq > existing.lastSeq {
                 existing.lastSeq = c.lastSeq
                 existing.snippet = c.snippet
@@ -251,7 +281,7 @@ public final class JournalStore: @unchecked Sendable {
                 lastSeq: c.lastSeq, snippet: c.snippet, createdAt: c.createdAt,
                 lastActivityTS: c.lastTS, muted: false, hidden: false,
                 readUpToSeq: resetLocalState ? c.lastSeq : 0,
-                unreadCount: 0
+                unreadCount: 0, parentConvoID: c.parentConvoID
             ).insert(db)
         }
     }
@@ -281,7 +311,8 @@ public final class JournalStore: @unchecked Sendable {
             var convo = try ConversationRecord.fetchOne(db, key: event.convoID) ?? ConversationRecord(
                 id: event.convoID, title: "", sessionState: "running", lastSeq: 0,
                 snippet: "", createdAt: Int64(event.ts.timeIntervalSince1970 * 1000),
-                lastActivityTS: nil, muted: false, hidden: false, readUpToSeq: 0, unreadCount: 0)
+                lastActivityTS: nil, muted: false, hidden: false, readUpToSeq: 0,
+                unreadCount: 0, parentConvoID: nil)
 
             convo.lastSeq = max(convo.lastSeq, event.seq)
             // Only real message traffic counts as "activity" for the chat
@@ -305,6 +336,16 @@ public final class JournalStore: @unchecked Sendable {
                 // can't wipe a good title.
                 if let title = payload["title"] as? String, !title.isEmpty {
                     convo.title = title
+                }
+                // Learn the parent linkage the moment a child is created —
+                // the bridge always fans out a convo_meta (even titleless)
+                // carrying parent_convo_id, so live clients link the child
+                // to its parent without waiting for /snapshot. Immutable:
+                // set once, never repointed, never cleared by a later meta
+                // that omits the field.
+                if convo.parentConvoID == nil,
+                   let parent = payload["parent_convo_id"] as? String, !parent.isEmpty {
+                    convo.parentConvoID = parent
                 }
             } else if event.type == JournalEventType.sessionStatus {
                 if let state = payload["state"] as? String { convo.sessionState = state }
@@ -381,9 +422,42 @@ public final class JournalStore: @unchecked Sendable {
         try dbQueue.read { db in
             let records = try ConversationRecord
                 .filter(Column("hidden") == false)
+                // Subagent children never appear in the main chat list — they
+                // are reachable only through their parent's running-subagent
+                // strip (spec §2). `IS NULL` also matches a device that hasn't
+                // yet learned the linkage (parent_convo_id still NULL), which
+                // is correct: an unlinked row is treated as top-level.
+                .filter(Column("parent_convo_id") == nil)
                 .order(Column("last_seq").desc)
                 .fetchAll(db)
             return try records.map { try Self.applyReadTimeSnippetTTL($0, db: db, now: now) }
+        }
+    }
+
+    /// A parent's subagent children, in creation order. Includes both
+    /// running and finished children (`sessionState`) so callers filter —
+    /// the running-subagent strip shows only `running`, the switcher menu
+    /// lists all active ones. Nesting recurses naturally: a child's own
+    /// children are just rows whose `parent_convo_id` is that child's id,
+    /// so this works at any depth with no special casing.
+    public func children(of parentConvoID: String) throws -> [ConversationRecord] {
+        try dbQueue.read { db in
+            try ConversationRecord
+                .filter(Column("parent_convo_id") == parentConvoID)
+                .order(Column("created_at").asc, Column("id").asc)
+                .fetchAll(db)
+        }
+    }
+
+    /// The parent conversation id of `convoID`, or `nil` for a top-level
+    /// conversation (or one whose linkage isn't known yet). Lets the sync
+    /// engine keep subagent children out of live auto-navigation and any
+    /// unread/notification surface without the caller reaching into the
+    /// record shape.
+    public func parentConvoID(of convoID: String) throws -> String? {
+        try dbQueue.read { db in
+            try String.fetchOne(db, sql: "SELECT parent_convo_id FROM conversation WHERE id = ?",
+                                arguments: [convoID])
         }
     }
 
@@ -442,7 +516,7 @@ public final class JournalStore: @unchecked Sendable {
                 id: id, title: title, sessionState: "running",
                 lastSeq: 0, snippet: "", createdAt: ms,
                 lastActivityTS: ms, muted: false, hidden: false,
-                readUpToSeq: 0, unreadCount: 0
+                readUpToSeq: 0, unreadCount: 0, parentConvoID: nil
             ).insert(db)
         }
     }
@@ -490,6 +564,7 @@ public final class JournalStore: @unchecked Sendable {
         let observation = ValueObservation.tracking { db in
             let records = try ConversationRecord
                 .filter(Column("hidden") == false)
+                .filter(Column("parent_convo_id") == nil)  // children live in the parent strip, not the list
                 .order(Column("last_seq").desc)
                 .fetchAll(db)
             // Fresh `Date()` per re-run: the tracking closure re-executes on
@@ -498,6 +573,20 @@ public final class JournalStore: @unchecked Sendable {
             // current wall time rather than whatever "now" was at
             // subscribe time. See `applyReadTimeSnippetTTL`.
             return try records.map { try Self.applyReadTimeSnippetTTL($0, db: db, now: Date()) }
+        }
+        return Self.stream(observation, in: dbQueue)
+    }
+
+    /// Live stream of a parent's subagent children (in creation order,
+    /// running + finished). Re-fires whenever a child is created, renamed,
+    /// or transitions running→done, so the running-subagent strip and the
+    /// switcher menu stay current without polling.
+    public func childrenStream(of parentConvoID: String) -> AsyncStream<[ConversationRecord]> {
+        let observation = ValueObservation.tracking { db in
+            try ConversationRecord
+                .filter(Column("parent_convo_id") == parentConvoID)
+                .order(Column("created_at").asc, Column("id").asc)
+                .fetchAll(db)
         }
         return Self.stream(observation, in: dbQueue)
     }

@@ -14,6 +14,9 @@ final class FakeChatService: ChatService, @unchecked Sendable {
     var forceSnapshotCalls: Int = 0
     var mutedRooms: [String] = []
     var leftRooms: [String] = []
+    /// Children snapshots keyed by parent id, emitted in order by
+    /// `children(of:)`. Absent parent → an empty stream.
+    var childrenByParent: [String: [[SubChatSummary]]] = [:]
 
     func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error> {
         AsyncThrowingStream { continuation in
@@ -37,6 +40,14 @@ final class FakeChatService: ChatService, @unchecked Sendable {
     func forceSnapshot() async throws { forceSnapshotCalls += 1 }
     func mute(roomID: String) async throws { mutedRooms.append(roomID) }
     func leave(roomID: String) async throws { leftRooms.append(roomID) }
+
+    func children(of parentConvoID: String) -> AsyncStream<[SubChatSummary]> {
+        let snapshots = childrenByParent[parentConvoID] ?? []
+        return AsyncStream { continuation in
+            for snapshot in snapshots { continuation.yield(snapshot) }
+            continuation.finish()
+        }
+    }
 }
 
 final class ChatServiceFakeTests: XCTestCase {
@@ -129,4 +140,7 @@ private final class HangingEmptyChatService: ChatService, @unchecked Sendable {
     func forceSnapshot() async throws {}
     func mute(roomID: String) async throws {}
     func leave(roomID: String) async throws {}
+    func children(of parentConvoID: String) -> AsyncStream<[SubChatSummary]> {
+        AsyncStream { $0.finish() }
+    }
 }

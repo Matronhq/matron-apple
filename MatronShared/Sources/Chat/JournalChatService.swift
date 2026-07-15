@@ -73,8 +73,30 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
             bot: BotIdentity(matrixID: "agent:claude", displayName: "Claude", avatarURL: nil),
             lastActivity: activityMS.map { Date(timeIntervalSince1970: Double($0) / 1000) },
             unreadCount: record.unreadCount,
-            snippet: record.snippet
+            snippet: record.snippet,
+            parentConvoID: record.parentConvoID
         )
+    }
+
+    static func childSummary(from record: ConversationRecord) -> SubChatSummary {
+        SubChatSummary(
+            id: record.id,
+            title: record.title.isEmpty ? record.id : record.title,
+            isRunning: record.sessionState == "running"
+        )
+    }
+
+    public func children(of parentConvoID: String) -> AsyncStream<[SubChatSummary]> {
+        let store = store
+        return AsyncStream { continuation in
+            let producer = Task {
+                for await records in store.childrenStream(of: parentConvoID) {
+                    continuation.yield(records.map(Self.childSummary(from:)))
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in producer.cancel() }
+        }
     }
 
     public func createChat(with botID: String) async throws -> String {

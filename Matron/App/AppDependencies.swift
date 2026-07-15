@@ -179,6 +179,20 @@ final class AppDependencies {
         return service
     }
 
+    /// The parent conversation id of `convoID`, or `nil` for a top-level
+    /// conversation. Backs the navigation router's decision to render a
+    /// read-only sub-chat viewer vs. the full chat screen without the view
+    /// layer having to parse the (opaque) child id. Synchronous store read.
+    func parentConvoID(of convoID: String, for session: UserSession) -> String? {
+        try? core(for: session).store.parentConvoID(of: convoID)
+    }
+
+    /// Whether `convoID` is a subagent child (has a parent). See
+    /// `parentConvoID(of:for:)`.
+    func isSubChat(_ convoID: String, for session: UserSession) -> Bool {
+        parentConvoID(of: convoID, for: session) != nil
+    }
+
     /// Test seam: how many distinct rooms the timeline cache holds before
     /// LRU eviction begins. Visible to `AppDependenciesTests` so the
     /// eviction invariant is asserted against a stable bound.
@@ -276,6 +290,17 @@ struct CurrentSessionKey: EnvironmentKey {
     static let defaultValue: UserSession? = nil
 }
 
+/// Carries a binding to the chat `NavigationStack` path so descendants (the
+/// running-subagent strip, the sub-chat switcher) can push a child chat or
+/// switch siblings without threading a closure through every level. `nil`
+/// outside the authenticated stack (previews / sign-in). The strip pushes
+/// via a plain `NavigationLink`; the switcher uses this binding to REPLACE
+/// the current sub-chat with a sibling (pop-then-push) so switching between
+/// subagents doesn't grow the back stack.
+struct ChatNavigationPathKey: EnvironmentKey {
+    static let defaultValue: Binding<[String]>? = nil
+}
+
 extension EnvironmentValues {
     var appDependencies: AppDependencies? {
         get { self[AppDependenciesKey.self] }
@@ -284,5 +309,9 @@ extension EnvironmentValues {
     var currentSession: UserSession? {
         get { self[CurrentSessionKey.self] }
         set { self[CurrentSessionKey.self] = newValue }
+    }
+    var chatNavigationPath: Binding<[String]>? {
+        get { self[ChatNavigationPathKey.self] }
+        set { self[ChatNavigationPathKey.self] = newValue }
     }
 }

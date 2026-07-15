@@ -131,7 +131,10 @@ public actor JournalAPI {
                 lastSeq: (c["last_seq"] as? NSNumber)?.int64Value ?? 0,
                 snippet: c["snippet"] as? String ?? "",
                 createdAt: (c["created_at"] as? NSNumber)?.int64Value ?? 0,
-                lastTS: (c["last_ts"] as? NSNumber)?.int64Value
+                lastTS: (c["last_ts"] as? NSNumber)?.int64Value,
+                // null for a normal conversation, the parent's id for a
+                // subagent child. Absent on servers predating sub-chats.
+                parentConvoID: c["parent_convo_id"] as? String
             )
         }
         return SnapshotResponse(conversations: conversations,

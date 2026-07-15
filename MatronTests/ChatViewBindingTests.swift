@@ -35,6 +35,24 @@ private final class FakeMediaForChat: MediaService, @unchecked Sendable {
     func image(for mxc: URL) async -> Data? { nil }
 }
 
+/// Minimal ChatService so the view-binding tests can construct the
+/// `SubChatStripViewModel` that `ChatView` now requires. The strip's
+/// behavior is covered in `SubChatStripViewModelTests`; here the stream
+/// just finishes immediately.
+private final class FakeChatForStrip: ChatService, @unchecked Sendable {
+    func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
+    func children(of parentConvoID: String) -> AsyncStream<[SubChatSummary]> {
+        AsyncStream { $0.finish() }
+    }
+    func createChat(with botID: String) async throws -> String { "!stub:server" }
+    func refresh() async throws {}
+    func forceSnapshot() async throws {}
+    func mute(roomID: String) async throws {}
+    func leave(roomID: String) async throws {}
+}
+
 final class ChatViewBindingTests: XCTestCase {
 
     @MainActor
@@ -53,6 +71,7 @@ final class ChatViewBindingTests: XCTestCase {
         let _ = ChatView(
             viewModel: chatVM,
             composerVM: composerVM,
+            stripViewModel: SubChatStripViewModel(chat: FakeChatForStrip(), parentConvoID: "!r:s"),
             chatTitle: "Test Room"
         )
 
@@ -74,6 +93,7 @@ final class ChatViewBindingTests: XCTestCase {
         let view = ChatView(
             viewModel: chatVM,
             composerVM: composerVM,
+            stripViewModel: SubChatStripViewModel(chat: FakeChatForStrip(), parentConvoID: "!r:s"),
             chatTitle: "Demo"
         )
 

@@ -22,6 +22,16 @@ public protocol ChatService: Sendable {
     /// overlay (QA finding #10).
     func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error>
 
+    /// Long-lived stream of a parent conversation's subagent children, in
+    /// creation order (running + finished). Drives the parent chat's
+    /// running-subagent strip and the sub-chat switcher menu. The stream
+    /// yields the current children immediately on subscribe, then a fresh
+    /// list whenever a child is created, renamed, or transitions
+    /// running→done. Nesting recurses: passing a child's id returns *its*
+    /// children, so the strip and switcher work at any depth. Cancelling
+    /// one consumer doesn't disturb the chat list or other subscribers.
+    func children(of parentConvoID: String) -> AsyncStream<[SubChatSummary]>
+
     /// Creates a new 1:1 encrypted room with `botID` and returns the new
     /// room ID. The bot is invited via the SDK's `CreateRoomParameters`;
     /// the server (tuwunel) is responsible for marking the room as a DM.

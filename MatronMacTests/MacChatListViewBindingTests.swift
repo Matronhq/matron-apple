@@ -48,6 +48,9 @@ private final class LocalFakeChatService: ChatService, @unchecked Sendable {
             continuation.finish()
         }
     }
+    func children(of parentConvoID: String) -> AsyncStream<[SubChatSummary]> {
+        AsyncStream { $0.finish() }
+    }
     func createChat(with botID: String) async throws -> String { "!stub:server" }
     func refresh() async throws {}
     func forceSnapshot() async throws {}

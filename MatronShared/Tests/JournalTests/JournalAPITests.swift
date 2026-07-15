@@ -94,6 +94,31 @@ final class JournalAPITests: XCTestCase {
         ])
     }
 
+    func testSnapshotParsesParentConvoID() async throws {
+        StubURLProtocol.responses = ["/snapshot": (200, """
+            {"conversations":[\
+            {"id":"p1","title":"Parent","session_state":"running","last_seq":5,"snippet":"","created_at":1,"parent_convo_id":null},\
+            {"id":"p1:sub:a1","title":"child","session_state":"done","last_seq":6,"snippet":"","created_at":2,"parent_convo_id":"p1"}\
+            ],"seq":6}
+            """)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let snap = try await api.snapshot()
+        XCTAssertNil(snap.conversations.first(where: { $0.id == "p1" })?.parentConvoID)
+        XCTAssertEqual(snap.conversations.first(where: { $0.id == "p1:sub:a1" })?.parentConvoID, "p1")
+    }
+
+    func testSnapshotToleratesMissingParentConvoID() async throws {
+        // Older server: no parent_convo_id field at all → nil, treated top-level.
+        StubURLProtocol.responses = ["/snapshot": (200, """
+            {"conversations":[{"id":"c1","title":"T","session_state":"running","last_seq":1,"snippet":"","created_at":0}],"seq":1}
+            """)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let snap = try await api.snapshot()
+        XCTAssertNil(snap.conversations.first?.parentConvoID)
+    }
+
     func testSnapshotToleratesMissingLastTS() async throws {
         // Older servers (and convos with no events) omit/null last_ts.
         StubURLProtocol.responses = ["/snapshot": (200, """

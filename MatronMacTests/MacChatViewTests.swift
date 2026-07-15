@@ -34,6 +34,23 @@ private final class FakeMediaForChat: MediaService, @unchecked Sendable {
     func image(for mxc: URL) async -> Data? { nil }
 }
 
+/// Minimal `ChatService` fake for building a `SubChatStripViewModel` in the
+/// view-construction test. Only `children(of:)` is exercised; the rest are
+/// inert stubs.
+private final class FakeChatForSubStrip: ChatService, @unchecked Sendable {
+    func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
+    func children(of parentConvoID: String) -> AsyncStream<[SubChatSummary]> {
+        AsyncStream { $0.finish() }
+    }
+    func createChat(with botID: String) async throws -> String { "!x:s" }
+    func refresh() async throws {}
+    func forceSnapshot() async throws {}
+    func mute(roomID: String) async throws {}
+    func leave(roomID: String) async throws {}
+}
+
 @MainActor
 final class MacChatViewTests: XCTestCase {
 
@@ -112,9 +129,12 @@ final class MacChatViewTests: XCTestCase {
         let timeline = FakeTimelineForChat()
         let chatVM = ChatViewModel(roomID: "!r:s", timeline: timeline, media: FakeMediaForChat())
         let composerVM = ComposerViewModel(roomID: "!test:s", timeline: timeline, commands: [])
+        let stripVM = SubChatStripViewModel(chat: FakeChatForSubStrip(), parentConvoID: "!r:s")
         let view = MacChatView(
             viewModel: chatVM,
             composerVM: composerVM,
+            stripViewModel: stripVM,
+            subChatProvider: { _ in (chatVM, stripVM) },
             chatTitle: "Hello"
         )
         XCTAssertEqual(view.chatTitle, "Hello")

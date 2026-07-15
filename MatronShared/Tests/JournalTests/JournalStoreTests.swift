@@ -357,6 +357,140 @@ final class JournalStoreTests: XCTestCase {
                        "plain text snippets have no TTL and must render unchanged")
     }
 
+    // MARK: Subagent sub-chats (parent_convo_id)
+
+    func testChildConvoMetaSetsParentAndHidesFromList() throws {
+        let store = try makeStore()
+        // Parent conversation, plus a child created live via convo_meta
+        // carrying parent_convo_id (even titleless, per the bridge contract).
+        try store.applyJournal(event(1, convo: "p1", type: "convo_meta", payload: ["title": "Parent"]))
+        try store.applyJournal(event(2, convo: "p1:sub:a1", type: "convo_meta",
+                                     payload: ["title": "explore repo", "parent_convo_id": "p1"]))
+        // The child never appears in the main chat list.
+        let listed = try store.conversations()
+        XCTAssertEqual(listed.map(\.id), ["p1"], "children are excluded from the chat list")
+
+        // …but it's reachable as a child of its parent.
+        let children = try store.children(of: "p1")
+        XCTAssertEqual(children.map(\.id), ["p1:sub:a1"])
+        XCTAssertEqual(children.first?.title, "explore repo")
+        XCTAssertEqual(children.first?.parentConvoID, "p1")
+        XCTAssertEqual(try store.parentConvoID(of: "p1:sub:a1"), "p1")
+        XCTAssertNil(try store.parentConvoID(of: "p1"))
+    }
+
+    func testChildTitallessMetaStillLinksParent() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, convo: "p1:sub:a1", type: "convo_meta",
+                                     payload: ["parent_convo_id": "p1"]))
+        XCTAssertEqual(try store.parentConvoID(of: "p1:sub:a1"), "p1",
+                       "a titleless convo_meta must still record the linkage")
+        XCTAssertTrue(try store.conversations().isEmpty, "an unlinked-to-list child stays out of the list")
+    }
+
+    func testParentConvoIDIsImmutable() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, convo: "p1:sub:a1", type: "convo_meta",
+                                     payload: ["title": "child", "parent_convo_id": "p1"]))
+        // A later convo_meta WITHOUT parent_convo_id must not clear it.
+        try store.applyJournal(event(2, convo: "p1:sub:a1", type: "convo_meta",
+                                     payload: ["title": "child renamed"]))
+        XCTAssertEqual(try store.parentConvoID(of: "p1:sub:a1"), "p1")
+        // And a snapshot refresh that omits it (older server) must not clear it.
+        try store.refreshSummaries([
+            ConvoSummaryDTO(id: "p1:sub:a1", title: "child", sessionState: "running",
+                            lastSeq: 2, snippet: "", createdAt: 0),
+        ])
+        XCTAssertEqual(try store.parentConvoID(of: "p1:sub:a1"), "p1",
+                       "a snapshot without parent_convo_id must not repoint/clear a known child")
+    }
+
+    func testSnapshotCarriesParentConvoID() throws {
+        let store = try makeStore()
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "p1", title: "Parent", sessionState: "running",
+                            lastSeq: 5, snippet: "", createdAt: 0, parentConvoID: nil),
+            ConvoSummaryDTO(id: "p1:sub:a1", title: "child", sessionState: "done",
+                            lastSeq: 6, snippet: "", createdAt: 1, parentConvoID: "p1"),
+        ], headSeq: 6)
+        XCTAssertEqual(try store.conversations().map(\.id), ["p1"], "child filtered from cold snapshot list")
+        let children = try store.children(of: "p1")
+        XCTAssertEqual(children.map(\.id), ["p1:sub:a1"])
+        XCTAssertEqual(children.first?.sessionState, "done")
+    }
+
+    func testChildrenIncludeRunningAndFinishedOrderedByCreation() throws {
+        let store = try makeStore()
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "p1:sub:b", title: "second", sessionState: "done",
+                            lastSeq: 2, snippet: "", createdAt: 200, parentConvoID: "p1"),
+            ConvoSummaryDTO(id: "p1:sub:a", title: "first", sessionState: "running",
+                            lastSeq: 1, snippet: "", createdAt: 100, parentConvoID: "p1"),
+        ], headSeq: 2)
+        let children = try store.children(of: "p1")
+        XCTAssertEqual(children.map(\.id), ["p1:sub:a", "p1:sub:b"], "ordered by created_at ascending")
+        XCTAssertEqual(children.map(\.sessionState), ["running", "done"], "both states returned so callers can filter")
+    }
+
+    func testChildSessionStateTransitionsRunningToDone() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, convo: "p1:sub:a1", type: "convo_meta",
+                                     payload: ["title": "child", "parent_convo_id": "p1"]))
+        XCTAssertEqual(try store.children(of: "p1").first?.sessionState, "running")
+        try store.applyJournal(event(2, convo: "p1:sub:a1", type: "session_status",
+                                     payload: ["state": "done"]))
+        XCTAssertEqual(try store.children(of: "p1").first?.sessionState, "done")
+    }
+
+    func testNestedChildrenRecurse() throws {
+        let store = try makeStore()
+        // A child that itself has a child — parent_convo_id is the child's id.
+        try store.applyJournal(event(1, convo: "p1:sub:a", type: "convo_meta",
+                                     payload: ["parent_convo_id": "p1"]))
+        try store.applyJournal(event(2, convo: "p1:sub:a:sub:b", type: "convo_meta",
+                                     payload: ["parent_convo_id": "p1:sub:a"]))
+        XCTAssertEqual(try store.children(of: "p1").map(\.id), ["p1:sub:a"])
+        XCTAssertEqual(try store.children(of: "p1:sub:a").map(\.id), ["p1:sub:a:sub:b"],
+                       "a child's own children come back with no special casing")
+        XCTAssertTrue(try store.conversations().isEmpty, "no nested child leaks into the list")
+    }
+
+    func testExistingRowsSurviveV2Migration() throws {
+        // Migration test: a store opened, populated, closed, then reopened
+        // on the same file keeps its rows and defaults parent_convo_id null.
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let url = dir.appendingPathComponent("journal.sqlite")
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let first = try JournalStore(databaseURL: url, ownSender: "user:dan")
+        try first.applyJournal(event(1, convo: "c1", payload: ["body": "survivor"]))
+
+        // Reopen the same file — the migrator runs v2 additively.
+        let second = try JournalStore(databaseURL: url, ownSender: "user:dan")
+        let convo = try XCTUnwrap(try second.conversations().first)
+        XCTAssertEqual(convo.id, "c1")
+        XCTAssertEqual(convo.snippet, "survivor", "existing row survives the additive column")
+        XCTAssertNil(convo.parentConvoID, "the new column defaults NULL for pre-existing rows")
+    }
+
+    func testChildrenStreamYieldsOnChildCreationAndFinish() async throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, convo: "p1", type: "convo_meta", payload: ["title": "Parent"]))
+        var iterator = store.childrenStream(of: "p1").makeAsyncIterator()
+        let initial = await iterator.next()
+        XCTAssertEqual(initial?.count, 0)
+        try store.applyJournal(event(2, convo: "p1:sub:a1", type: "convo_meta",
+                                     payload: ["title": "child", "parent_convo_id": "p1"]))
+        let afterCreate = await iterator.next()
+        XCTAssertEqual(afterCreate?.map(\.id), ["p1:sub:a1"])
+        XCTAssertEqual(afterCreate?.first?.sessionState, "running")
+        try store.applyJournal(event(3, convo: "p1:sub:a1", type: "session_status",
+                                     payload: ["state": "done"]))
+        let afterFinish = await iterator.next()
+        XCTAssertEqual(afterFinish?.first?.sessionState, "done")
+    }
+
     func testStreamsWorkFromBackgroundThread() async throws {
         let store = try makeStore()
         try store.applyJournal(event(1))

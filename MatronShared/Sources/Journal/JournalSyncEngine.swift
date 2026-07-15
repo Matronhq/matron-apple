@@ -547,7 +547,15 @@ public actor JournalSyncEngine {
                             // a reconnect that replays new-since-offline convos
                             // won't auto-navigate — only ones born while the
                             // user is actively connected do.
-                            if isNewConvo, case .running = state {
+                            // Subagent children are silent (spec §6): they
+                            // must never yank the user into a sub-chat via
+                            // auto-open. The server already omits them from
+                            // push/unread; this is the app's defense in
+                            // depth — a child's first frame is a convo_meta
+                            // carrying parent_convo_id, so by the time we're
+                            // here the store row already knows it's a child.
+                            if isNewConvo, case .running = state,
+                               (try? store.parentConvoID(of: event.convoID)) == nil {
                                 publishNewConversation(event.convoID)
                             }
                         }
@@ -601,7 +609,8 @@ public actor JournalSyncEngine {
                                 model: update.model ?? held.model,
                                 context: update.context ?? held.context,
                                 limits: update.limits ?? held.limits,
-                                email: update.email ?? held.email
+                                email: update.email ?? held.email,
+                                taskRef: update.taskRef ?? held.taskRef
                             )
                         } else {
                             lastSessionStatus[update.convoID] = update

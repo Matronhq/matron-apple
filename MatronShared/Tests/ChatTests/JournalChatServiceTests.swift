@@ -30,6 +30,30 @@ final class JournalChatServiceTests: XCTestCase {
         XCTAssertNotNil(summaries?.first?.lastActivity)
     }
 
+    func testChatSummariesExcludeChildrenButChildrenStreamIncludesThem() async throws {
+        let store = try makeStore()
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "p1", title: "Parent", sessionState: "running",
+                            lastSeq: 1, snippet: "", createdAt: 1, parentConvoID: nil),
+            ConvoSummaryDTO(id: "p1:sub:a1", title: "explore", sessionState: "running",
+                            lastSeq: 2, snippet: "", createdAt: 2, parentConvoID: "p1"),
+            ConvoSummaryDTO(id: "p1:sub:b2", title: "test", sessionState: "done",
+                            lastSeq: 3, snippet: "", createdAt: 3, parentConvoID: "p1"),
+        ], headSeq: 3)
+        let service = makeService(store)
+
+        var listIterator = service.chatSummaries().makeAsyncIterator()
+        let summaries = try await listIterator.next()
+        XCTAssertEqual(summaries?.map(\.id), ["p1"], "children excluded from chat list")
+
+        var childIterator = service.children(of: "p1").makeAsyncIterator()
+        let children = await childIterator.next()
+        XCTAssertEqual(children, [
+            SubChatSummary(id: "p1:sub:a1", title: "explore", isRunning: true),
+            SubChatSummary(id: "p1:sub:b2", title: "test", isRunning: false),
+        ])
+    }
+
     func testUntitledConvoFallsBackToID() async throws {
         let store = try makeStore()
         try store.applyJournal(JournalEvent(

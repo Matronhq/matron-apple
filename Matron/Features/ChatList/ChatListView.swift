@@ -365,13 +365,27 @@ struct ChatListView: View {
     @ViewBuilder
     func chatDestination(for id: ChatSummary.ID) -> some View {
         if let deps, let session {
-            let summary = currentSummary(for: id)
-            let (chatVM, composerVM) = vmCache.viewModels(for: id, deps: deps, session: session)
-            ChatView(
-                viewModel: chatVM,
-                composerVM: composerVM,
-                chatTitle: summary?.title ?? ""
-            )
+            // A subagent child (learned from the store — the id stays
+            // opaque) opens the read-only sub-chat viewer; every other id is
+            // a normal top-level chat. Children reach this destination only
+            // via the running-subagent strip / switcher (they're filtered
+            // from the list and excluded from auto-open), so this branch is
+            // the sub-chat entry point.
+            if let parentConvoID = deps.parentConvoID(of: id, for: session) {
+                let (chatVM, stripVM) = vmCache.subChatViewModels(
+                    for: id, parentConvoID: parentConvoID, deps: deps, session: session)
+                SubChatView(viewModel: chatVM, stripViewModel: stripVM,
+                            childID: id, fallbackTitle: "Subagent")
+            } else {
+                let summary = currentSummary(for: id)
+                let (chatVM, composerVM) = vmCache.viewModels(for: id, deps: deps, session: session)
+                ChatView(
+                    viewModel: chatVM,
+                    composerVM: composerVM,
+                    stripViewModel: vmCache.stripViewModel(forParent: id, deps: deps, session: session),
+                    chatTitle: summary?.title ?? ""
+                )
+            }
         } else {
             ContentUnavailableView(
                 "Session unavailable",
@@ -473,6 +487,12 @@ final class ChatVMCache {
     private var entries: [String: (chat: ChatViewModel, composer: ComposerViewModel)] = [:]
     private var order: [String] = []
     private let limit = 8
+    /// Running-subagent strip view models, keyed by PARENT convo id. Shared
+    /// between a parent chat's strip and its children's switchers, so all
+    /// surfaces observing the same parent's children stay in lockstep off
+    /// one subscription. Not LRU-bounded — one lightweight VM per parent
+    /// visited, which tracks the (small) `entries` working set.
+    private var stripEntries: [String: SubChatStripViewModel] = [:]
 
     func viewModels(
         for roomID: String, deps: AppDependencies, session: UserSession
@@ -496,5 +516,29 @@ final class ChatVMCache {
             entries.removeValue(forKey: evicted)
         }
         return pair
+    }
+
+    /// The running-subagent strip VM for a parent conversation. Shared, so
+    /// the parent chat's strip and every child's switcher read one stream.
+    func stripViewModel(
+        forParent parentConvoID: String, deps: AppDependencies, session: UserSession
+    ) -> SubChatStripViewModel {
+        if let cached = stripEntries[parentConvoID] { return cached }
+        let vm = SubChatStripViewModel(chat: deps.chatService(for: session), parentConvoID: parentConvoID)
+        stripEntries[parentConvoID] = vm
+        return vm
+    }
+
+    /// The (read-only timeline VM, switcher strip VM) pair for a subagent
+    /// child. The timeline VM is keyed by the child id (reusing the pair
+    /// cache; its composer is unused — the viewer has no composer), and the
+    /// switcher strip is the SHARED VM for the child's parent so it lists
+    /// siblings.
+    func subChatViewModels(
+        for childID: String, parentConvoID: String, deps: AppDependencies, session: UserSession
+    ) -> (ChatViewModel, SubChatStripViewModel) {
+        let chat = viewModels(for: childID, deps: deps, session: session).0
+        let strip = stripViewModel(forParent: parentConvoID, deps: deps, session: session)
+        return (chat, strip)
     }
 }

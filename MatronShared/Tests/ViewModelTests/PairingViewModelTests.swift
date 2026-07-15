@@ -130,17 +130,26 @@ final class PairingViewModelTests: XCTestCase {
         await waitUntil(vm.phase == .preview(requesterIP: "1.2.3.4"))
         vm.agentName = "dev-7"
         // Approve suspends mid-flight; the user keeps typing in the still-
-        // visible code field, queueing a fresh (slow) preview.
-        fake.approveDelay = .milliseconds(100)
-        fake.previewDelay = .milliseconds(300)
+        // visible code field, queueing a fresh preview. Both requests are
+        // GATED at the fake (not real-time delayed) so the interleaving is
+        // guaranteed: the old 20/100/300ms choreography flaked on loaded CI
+        // runners when the edit landed before approve() passed its phase
+        // guard, legitimately no-op'ing the approve.
+        fake.holdApprove = true
+        fake.holdPreview = true
         let approving = Task { await vm.approve() }
-        try? await Task.sleep(for: .milliseconds(20))
+        await waitUntil(fake.approvals.count == 1)
+        XCTAssertEqual(fake.approvals.count, 1, "approve must be suspended in flight before the edit")
         vm.codeInput = "BCDF-GHJK"
+        await waitUntil(fake.previewedCodes.count == 2)
+        XCTAssertEqual(fake.previewedCodes.count, 2, "the stale edit's preview must be in flight")
+        fake.releaseApprove()
         await approving.value
         XCTAssertEqual(vm.phase, .waitingForClaim)
         // Let the stale preview response land — it must not pull the flow
         // back to .preview or surface an error.
-        try? await Task.sleep(for: .milliseconds(400))
+        fake.releasePreview()
+        try? await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(vm.phase, .waitingForClaim, "a late preview response must not leave the wait state")
         XCTAssertNil(vm.errorMessage)
     }

@@ -266,7 +266,12 @@ public enum ServerFrame: Equatable, Sendable {
                 return .sessionStatus(SessionStatusUpdate(
                     convoID: convoID, model: status["model"] as? String,
                     context: context, limits: limits,
-                    email: status["email"] as? String))
+                    email: status["email"] as? String,
+                    // For a subagent child, the parent's spawning Task
+                    // tool_use_id — replayed on `viewing` so a client that
+                    // opens the child learns its task_ref without waiting
+                    // for the next turn-end frame. Absent for normal convos.
+                    taskRef: status["task_ref"] as? String))
             }
             guard let ref = obj["message_ref"] as? String else { return nil }
             return .ephemeral(EphemeralUpdate(
