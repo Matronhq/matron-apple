@@ -177,7 +177,60 @@ answers, and it's your call, not mine.
 
 ---
 
-## 5. Upload runbook (once §2.1 and §2.2 are done)
+## 5. Listing copy — draft
+
+Required fields, drafted so you're not starting from an empty box. This is your
+product's voice, not mine; treat it as a starting point. The 30-character
+subtitle and 100-character keyword limits are hard.
+
+**Name (30):** `Matron`
+**Subtitle (30):** `Your coding agent, anywhere` (27)
+
+**Promotional text (170):**
+> Start a session on your Mac, keep it going from your phone. Watch tool calls
+> and diffs stream in live, answer prompts, and send photos or files straight
+> to your agent.
+
+**Description:**
+> Matron is a remote control for the coding agent running on your own computer.
+>
+> Start a session at your desk and pick it up from your phone. Matron shows the
+> conversation as it happens — tool calls, terminal output, and diffs stream in
+> live, so you can see what your agent is doing rather than waiting for it to
+> finish.
+>
+> • Follow sessions in real time, on iPhone and Mac
+> • Read diffs and command output in a proper terminal-style view
+> • Answer your agent's questions without going back to your desk
+> • Send photos, files, and voice notes into the conversation
+> • Jump into subagent sub-chats to see the detail
+> • Search your history
+> • Push notifications when your agent needs you
+>
+> Matron connects to a Matron journal server and an agent running on your own
+> machine. You'll need both set up before signing in.
+
+That last paragraph is deliberate: setting expectations up front is worth more
+than the install it costs, and it's the same fact App Review will hit (§3).
+
+**Keywords (100, comma-separated, no spaces):**
+> `coding,agent,claude,developer,terminal,remote,ssh,devtools,programming,ai,assistant,code`
+
+**Category:** Developer Tools (primary). The Mac Info.plist currently declares
+`public.app-category.social-networking` — that predates this doc and is
+probably wrong for a dev tool; the ASC category and the plist key should agree.
+Worth changing to `public.app-category.developer-tools` unless you specifically
+want the social framing.
+
+**Support URL / Marketing URL:** required — needs a real page.
+
+**Age rating:** likely 4+, but the questionnaire asks about
+"Unrestricted Web Access". Matron renders agent output, not arbitrary web
+content, so 4+ should hold.
+
+---
+
+## 6. Upload runbook (once §2.1 and §2.2 are done)
 
 ```bash
 export ASC_KEY_ID=...        # from the secure form, not from chat
