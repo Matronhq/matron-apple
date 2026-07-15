@@ -100,8 +100,15 @@ public struct MarkdownText: View {
 /// selectable NSTextView) via `baseFontSize` — so the two paths cannot
 /// drift apart in size.
 enum MessageTextScale {
-    /// ×1.18 ⇒ ≈20pt on iOS (17pt body), ≈15.3pt on macOS (13pt body).
+    #if os(macOS)
+    /// ×1.10 ⇒ ≈14.3pt on macOS (13pt body). Walked down ~1pt from the
+    /// cross-platform ×1.18 — the Mac read slightly oversized in daily
+    /// use (Dan, 2026-07-15).
+    static let scale: CGFloat = 1.10
+    #else
+    /// ×1.18 ⇒ ≈20pt on iOS (17pt body).
     static let scale: CGFloat = 1.18
+    #endif
 }
 
 public extension Theme {

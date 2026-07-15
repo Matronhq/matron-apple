@@ -43,6 +43,16 @@ enum MarkdownAttributed {
     private static let quoteIndent: CGFloat = 12
     private static let codeBlockIndent: CGFloat = 8
 
+    /// Extra space ABOVE a heading (on top of the previous block's
+    /// `paragraphSpacing`), and the reduced space below it. Headings need
+    /// clear air from the section they close and should sit close to the
+    /// section they open (Dan, 2026-07-15: "not enough space between the
+    /// bottom of one paragraph and the heading after it"). Suppressed for
+    /// a message that STARTS with a heading — no dead band at the bubble
+    /// top.
+    private static let headerSpacingBefore: CGFloat = 10
+    private static let headerSpacingAfter: CGFloat = 6
+
     // MARK: - Public API
 
     /// Converts markdown `source` to a display-ready `NSAttributedString`.
@@ -168,6 +178,13 @@ enum MarkdownAttributed {
 
         let output = NSMutableAttributedString()
         var previousIntent: PresentationIntent?
+        // Tracks whether the current run still belongs to the FIRST block —
+        // flips at the first block boundary, never back. Headers suppress
+        // their `paragraphSpacingBefore` on the first block; the flag is
+        // per-BLOCK (not `output.length == 0`) so a first header whose text
+        // spans several runs (e.g. inline code inside it) keeps one
+        // consistent paragraph style across all of them.
+        var isFirstBlock = true
 
         for run in attributed.runs {
             let intent = run.presentationIntent
@@ -179,11 +196,12 @@ enum MarkdownAttributed {
             // list items, prepend the marker.
             if previousIntent != nil, intent != previousIntent {
                 output.append(NSAttributedString(string: "\n"))
+                isFirstBlock = false
             }
             if intent != previousIntent, let marker = block.marker {
                 output.append(NSAttributedString(
                     string: marker,
-                    attributes: runAttributes(block: block, inline: [], link: nil)
+                    attributes: runAttributes(block: block, inline: [], link: nil, isFirstBlock: isFirstBlock)
                 ))
             }
             previousIntent = intent
@@ -195,7 +213,8 @@ enum MarkdownAttributed {
                 attributes: runAttributes(
                     block: block,
                     inline: run.inlinePresentationIntent ?? [],
-                    link: run.link
+                    link: run.link,
+                    isFirstBlock: isFirstBlock
                 )
             ))
         }
@@ -210,10 +229,11 @@ enum MarkdownAttributed {
     private static func runAttributes(
         block: BlockKind,
         inline: InlinePresentationIntent,
-        link: URL?
+        link: URL?,
+        isFirstBlock: Bool = false
     ) -> [NSAttributedString.Key: Any] {
         var attrs: [NSAttributedString.Key: Any] = [
-            .paragraphStyle: paragraphStyle(for: block),
+            .paragraphStyle: paragraphStyle(for: block, isFirstBlock: isFirstBlock),
         ]
 
         let isCode = block.isCodeBlock || inline.contains(.code)
@@ -266,7 +286,7 @@ enum MarkdownAttributed {
 
     /// Paragraph style for a block: shared body spacing plus block-specific
     /// indents. A fresh instance per run keeps the styles value-safe.
-    private static func paragraphStyle(for block: BlockKind) -> NSMutableParagraphStyle {
+    private static func paragraphStyle(for block: BlockKind, isFirstBlock: Bool = false) -> NSMutableParagraphStyle {
         let style = NSMutableParagraphStyle()
         switch block {
         case .listItem:
@@ -281,7 +301,12 @@ enum MarkdownAttributed {
             style.headIndent = codeBlockIndent
             style.firstLineHeadIndent = codeBlockIndent
             style.paragraphSpacing = paragraphSpacing
-        case .header, .paragraph:
+        case .header:
+            // Air above (unless the message opens with the heading — no
+            // dead band at the bubble top), tighter attachment below.
+            style.paragraphSpacingBefore = isFirstBlock ? 0 : headerSpacingBefore
+            style.paragraphSpacing = headerSpacingAfter
+        case .paragraph:
             style.paragraphSpacing = paragraphSpacing
         }
         return style
@@ -366,14 +391,16 @@ private enum BlockKind {
     }
 
     /// Base font size for the block. Headers step up over the body size;
-    /// keep it simple — h1 1.4×, h2 1.25×, h3 1.1×, h4–h6 fall back to body.
+    /// keep it simple — h1 1.3×, h2 1.15×, h3 1.05×, h4–h6 fall back to
+    /// body. (Walked down from 1.4/1.25/1.1 — headings read oversized
+    /// inside chat bubbles; Dan, 2026-07-15.)
     var fontSize: CGFloat {
         switch self {
         case .header(let level):
             switch level {
-            case 1: return MarkdownAttributed.baseFontSize * 1.4
-            case 2: return MarkdownAttributed.baseFontSize * 1.25
-            case 3: return MarkdownAttributed.baseFontSize * 1.1
+            case 1: return MarkdownAttributed.baseFontSize * 1.3
+            case 2: return MarkdownAttributed.baseFontSize * 1.15
+            case 3: return MarkdownAttributed.baseFontSize * 1.05
             default: return MarkdownAttributed.baseFontSize
             }
         default:

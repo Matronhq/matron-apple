@@ -39,10 +39,23 @@ struct MacComposerView: View {
     /// centred against a single-line field (the HStack stays `.bottom`
     /// aligned, so on a grown multi-line field they drop to the bottom edge).
     private static var singleLineInputHeight: CGFloat {
-        let body = NSFont.preferredFont(forTextStyle: .body)
-        let lineHeight = ceil(body.ascender - body.descender + body.leading)
-        return lineHeight + inputVerticalPadding * 2
+        lineHeight + inputVerticalPadding * 2
     }
+
+    /// The input stops growing at 8 lines (the old `lineLimit` upper bound)
+    /// and scrolls internally beyond that — see `composerBar`'s ScrollView.
+    private static var maxInputHeight: CGFloat {
+        lineHeight * 8 + inputVerticalPadding * 2
+    }
+
+    private static var lineHeight: CGFloat {
+        let body = NSFont.preferredFont(forTextStyle: .body)
+        return ceil(body.ascender - body.descender + body.leading)
+    }
+
+    /// Measured height of the input's content (text + padding), driving the
+    /// grow-then-scroll frame below.
+    @State private var inputContentHeight: CGFloat = 0
 
     /// Token for the Shift+Return local key monitor, installed in
     /// `.onAppear` and removed in `.onDisappear`. `Any?` because
@@ -164,10 +177,30 @@ struct MacComposerView: View {
                 .help("Attach a file")
             }
 
-            TextField(Self.placeholder, text: $viewModel.input, axis: .vertical)
-                .lineLimit(1...8)
-                .textFieldStyle(.plain)
-                .padding(Self.inputVerticalPadding)
+            // Grow-then-scroll input: the field grows with its content
+            // (unbounded lineLimit) inside a ScrollView whose frame tracks
+            // the measured content height up to `maxInputHeight` — past 8
+            // lines the frame stops growing and the content scrolls. The
+            // field editor's caret-tracking (`scrollRangeToVisible`) walks
+            // up to the nearest NSClipView, which is this ScrollView's, so
+            // typing at the end keeps the caret in view. A bare
+            // `lineLimit(1...8)` couldn't do this: on macOS the overflow
+            // was simply unreachable by scrolling (Dan, 2026-07-15).
+            ScrollView(.vertical) {
+                TextField(Self.placeholder, text: $viewModel.input, axis: .vertical)
+                    .lineLimit(1...)
+                    .textFieldStyle(.plain)
+                    .padding(Self.inputVerticalPadding)
+                    .onGeometryChange(for: CGFloat.self) { proxy in
+                        proxy.size.height
+                    } action: { height in
+                        inputContentHeight = height
+                    }
+            }
+                .frame(height: min(
+                    max(inputContentHeight, Self.singleLineInputHeight),
+                    Self.maxInputHeight
+                ))
                 // White (dark-mode: elevated warm) input surface, same
                 // as bot bubbles — `.regularMaterial` read muddy-dark
                 // against the cream timeline gradient. Matches
