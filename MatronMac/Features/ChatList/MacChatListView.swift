@@ -456,6 +456,17 @@ struct MacChatListView: View {
             MacChatView(
                 viewModel: chatVM,
                 composerVM: composerVM,
+                stripViewModel: vmCache.stripViewModel(forParent: id, deps: deps, session: session),
+                // Given a child id, vend its cached (read-only timeline VM,
+                // switcher strip VM). Used when the user opens a subagent
+                // from the strip — the detail area splits to show the child
+                // pane beside this parent timeline. `parentConvoID` from the
+                // store keeps the id opaque.
+                subChatProvider: { childID in
+                    let parent = deps.parentConvoID(of: childID, for: session) ?? id
+                    return vmCache.subChatViewModels(
+                        for: childID, parentConvoID: parent, deps: deps, session: session)
+                },
                 chatTitle: summary?.title ?? ""
             )
             .id(id)
@@ -508,6 +519,32 @@ final class ChatVMCache {
             entries.removeValue(forKey: evicted)
         }
         return pair
+    }
+
+    /// Running-subagent strip view models, keyed by PARENT convo id and
+    /// shared between a parent's strip and every child pane's switcher so
+    /// all surfaces read one child-list subscription. See the iOS twin.
+    private var stripEntries: [String: SubChatStripViewModel] = [:]
+
+    func stripViewModel(
+        forParent parentConvoID: String, deps: AppDependencies, session: UserSession
+    ) -> SubChatStripViewModel {
+        if let cached = stripEntries[parentConvoID] { return cached }
+        let vm = SubChatStripViewModel(chat: deps.chatService(for: session), parentConvoID: parentConvoID)
+        stripEntries[parentConvoID] = vm
+        return vm
+    }
+
+    /// (read-only timeline VM, switcher strip VM) for a subagent child. The
+    /// timeline VM reuses the pair cache (its composer is unused — the pane
+    /// has no composer); the switcher strip is the SHARED parent VM so it
+    /// lists siblings.
+    func subChatViewModels(
+        for childID: String, parentConvoID: String, deps: AppDependencies, session: UserSession
+    ) -> (ChatViewModel, SubChatStripViewModel) {
+        let chat = viewModels(for: childID, deps: deps, session: session).0
+        let strip = stripViewModel(forParent: parentConvoID, deps: deps, session: session)
+        return (chat, strip)
     }
 }
 

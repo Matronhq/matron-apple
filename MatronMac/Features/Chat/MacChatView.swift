@@ -31,6 +31,16 @@ private let paginateLogger = Logger(subsystem: "chat.matron", category: "mac-cha
 struct MacChatView: View {
     @State var viewModel: ChatViewModel
     @State var composerVM: ComposerViewModel
+    /// Running-subagent strip source for THIS chat's own children.
+    let stripViewModel: SubChatStripViewModel
+    /// Vends a subagent child's (read-only timeline VM, switcher strip VM)
+    /// when the user opens one from the strip. See `MacChatListView.chatDetail`.
+    let subChatProvider: (String) -> (ChatViewModel, SubChatStripViewModel)
+    /// The subagent child currently open in the split detail pane, or `nil`
+    /// when only the parent timeline shows. Set by the running-subagent
+    /// strip / switcher; cleared by the pane's close button. Reset per
+    /// parent chat because `MacChatView` is rebuilt with `.id(id)`.
+    @State private var openSubChatID: String?
     /// App lifecycle — drives `viewModel.handleForeground()` so a
     /// background→foreground timeline re-sync doesn't flash the empty
     /// placeholder. See iOS `ChatView`.
@@ -148,7 +158,46 @@ struct MacChatView: View {
 
     let chatTitle: String
 
+    /// Minimum detail width to show the child sub-chat pane BESIDE the
+    /// parent timeline. Below this the child pane takes over the whole
+    /// detail area with a back chevron (spec §5).
+    private static let sideBySideMinWidth: CGFloat = 900
+
     var body: some View {
+        GeometryReader { geo in
+            if let childID = openSubChatID {
+                let (childVM, parentStrip) = subChatProvider(childID)
+                if geo.size.width >= Self.sideBySideMinWidth {
+                    // Wide: parent timeline + resizable child pane side by
+                    // side (HSplitView gives the draggable divider).
+                    HSplitView {
+                        chatColumn
+                            .frame(minWidth: 420)
+                        MacSubChatPane(
+                            viewModel: childVM, stripViewModel: parentStrip,
+                            childID: childID, showsBackChevron: false,
+                            onClose: { openSubChatID = nil },
+                            onOpenSibling: { openSubChatID = $0 }
+                        )
+                        .frame(minWidth: 380)
+                    }
+                } else {
+                    // Narrow: child takes over the detail area; a back
+                    // chevron returns to the parent timeline.
+                    MacSubChatPane(
+                        viewModel: childVM, stripViewModel: parentStrip,
+                        childID: childID, showsBackChevron: true,
+                        onClose: { openSubChatID = nil },
+                        onOpenSibling: { openSubChatID = $0 }
+                    )
+                }
+            } else {
+                chatColumn
+            }
+        }
+    }
+
+    private var chatColumn: some View {
         VStack(spacing: 0) {
             // QA finding #10: mirror the iOS error banner. Sliding-sync
             // timeouts now surface here instead of leaving the user
@@ -162,6 +211,12 @@ struct MacChatView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.red.opacity(0.9))
                     .accessibilityLabel("Chat error: \(errorMessage)")
+            }
+            // Sticky strip of running subagents above the timeline. Clicking
+            // a pill opens that subagent in the split detail pane (or a
+            // take-over on a narrow window). Hidden when none are running.
+            MacRunningSubagentStrip(viewModel: stripViewModel, highlightedID: openSubChatID) { childID in
+                openSubChatID = childID
             }
             if viewModel.settledEmpty && viewModel.error == nil {
                 // Settled-empty branch — see iOS `ChatView` and
@@ -437,6 +492,7 @@ struct MacChatView: View {
             // would skip a post-await assignment and leak the observation
             // (bugbot "Early disappear skips observation stop").
             startedGeneration = viewModel.observationGeneration + 1
+            stripViewModel.start()
             await viewModel.start()
             // Explicit paginate-on-open BEFORE markAsRead — see iOS
             // `ChatView`: history loads over HTTP and must not wait on
@@ -468,6 +524,7 @@ struct MacChatView: View {
             // unconditional stop() here would kill the successor's fresh
             // stream and freeze the timeline.
             viewModel.stop(ifGeneration: startedGeneration)
+            stripViewModel.stop()
         }
         // ⌘K opens the slash palette without typing `/`. The hidden
         // button is the SwiftUI-recommended pattern for a global keyboard
@@ -622,3 +679,196 @@ private struct MacTimelineListContent: View, Equatable {
     }
 }
 
+
+// MARK: - Subagent sub-chats
+
+/// Sticky horizontal strip of a parent chat's RUNNING subagents (Mac). Each
+/// pill shows the child's title + a live spinner; clicking opens that
+/// subagent in the split detail pane via `onOpen`. Renders nothing when no
+/// subagent is running (spec §3). `highlightedID` tints the pill whose
+/// sub-chat pane is currently open.
+struct MacRunningSubagentStrip: View {
+    let viewModel: SubChatStripViewModel
+    let highlightedID: String?
+    let onOpen: (String) -> Void
+
+    var body: some View {
+        if !viewModel.runningChildren.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(viewModel.runningChildren) { child in
+                        Button {
+                            onOpen(child.id)
+                        } label: {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.mini)
+                                Text(child.title).font(.caption).lineLimit(1)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Capsule().fill(Color.accentColor.opacity(child.id == highlightedID ? 0.25 : 0.12)))
+                            .overlay(Capsule().stroke(Color.accentColor.opacity(0.25), lineWidth: 0.5))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Open subagent \(child.title)")
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
+            .background(.bar)
+        }
+    }
+}
+
+/// Read-only viewer for a subagent child conversation (Mac). Reuses the
+/// full timeline (`MacTimelineListContent`) with NO composer, under a
+/// mini-header carrying the child's title, model, its own context gauge,
+/// running/finished state, a close/back control, and a switcher among the
+/// parent's active children (spec §4/§5). Nesting recurses — a child's own
+/// running subagents surface through its own strip once it becomes a parent.
+struct MacSubChatPane: View {
+    let viewModel: ChatViewModel
+    /// Shared strip VM for this child's PARENT — its `children` are this
+    /// child's siblings (switcher source + this child's title/state).
+    let stripViewModel: SubChatStripViewModel
+    let childID: String
+    /// `true` on a narrow window (take-over layout): show a back chevron
+    /// instead of a close ✕.
+    let showsBackChevron: Bool
+    let onClose: () -> Void
+    let onOpenSibling: (String) -> Void
+
+    @State private var sourceItem: TimelineItem?
+    @State private var imagePreview: MacSubChatImagePreview?
+    @State private var startedGeneration = 0
+
+    private var currentChild: SubChatSummary? {
+        stripViewModel.children.first { $0.id == childID }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MacSubChatMiniHeader(
+                title: currentChild?.title ?? "Subagent",
+                model: viewModel.sessionStatus?.model,
+                context: viewModel.sessionStatus?.context,
+                isRunning: currentChild?.isRunning ?? true,
+                siblings: stripViewModel.children,
+                currentID: childID,
+                showsBackChevron: showsBackChevron,
+                onClose: onClose,
+                onSwitch: onOpenSibling
+            )
+            Divider()
+            ScrollView {
+                VStack(spacing: 0) {
+                    MacTimelineListContent(
+                        viewModel: viewModel,
+                        onPreviewImage: { imagePreview = MacSubChatImagePreview(image: $0) },
+                        onShowSource: { sourceItem = $0 }
+                    )
+                }
+            }
+            .overlay {
+                if viewModel.rows.isEmpty { TimelineLoadingIndicator() }
+            }
+            .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .defaultScrollAnchor(.bottom, for: .alignment)
+        }
+        .background(MatronTimelineBackground())
+        .task {
+            startedGeneration = viewModel.observationGeneration + 1
+            stripViewModel.start()
+            await viewModel.start()
+            // Seed history over HTTP; no markAsRead — children carry no
+            // unread state (they're silent).
+            await viewModel.paginateBackward()
+        }
+        .onDisappear {
+            viewModel.stop(ifGeneration: startedGeneration)
+            stripViewModel.stop()
+        }
+        .sheet(item: $sourceItem) { item in
+            MacEventSourceSheet(item: item, onDismiss: { sourceItem = nil })
+        }
+        .sheet(item: $imagePreview) { preview in
+            AttachmentFullscreenViewer(image: preview.image, onDismiss: { imagePreview = nil })
+        }
+    }
+}
+
+/// Identifiable wrapper so the sub-chat pane's image preview can key a
+/// `.sheet(item:)` — mirrors `MacChatView.ImagePreview`.
+private struct MacSubChatImagePreview: Identifiable {
+    let id = UUID()
+    let image: Image
+}
+
+/// The Mac sub-chat pane's mini-header: a close/back control, title +
+/// running spinner, model + state line, own context gauge, and (when the
+/// parent has more than one child) a switcher menu among the siblings.
+private struct MacSubChatMiniHeader: View {
+    let title: String
+    let model: String?
+    let context: SessionStatus.Context?
+    let isRunning: Bool
+    let siblings: [SubChatSummary]
+    let currentID: String
+    let showsBackChevron: Bool
+    let onClose: () -> Void
+    let onSwitch: (String) -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button(action: onClose) {
+                Image(systemName: showsBackChevron ? "chevron.backward" : "xmark")
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(showsBackChevron ? "Back to chat" : "Close subagent")
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    if isRunning { ProgressView().controlSize(.mini) }
+                    Text(title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                }
+                HStack(spacing: 8) {
+                    if let model, !model.isEmpty {
+                        Text(model).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Text(isRunning ? "Running" : "Finished")
+                        .font(.caption2)
+                        .foregroundStyle(isRunning ? Color.accentColor : .secondary)
+                }
+            }
+            Spacer(minLength: 8)
+            if let context {
+                ContextGaugeLabel(context: context)
+            }
+            if siblings.count > 1 {
+                Menu {
+                    ForEach(siblings) { sibling in
+                        Button {
+                            if sibling.id != currentID { onSwitch(sibling.id) }
+                        } label: {
+                            Label(
+                                sibling.title,
+                                systemImage: sibling.id == currentID ? "checkmark"
+                                    : (sibling.isRunning ? "circle.fill" : "circle")
+                            )
+                        }
+                        .disabled(sibling.id == currentID)
+                    }
+                } label: {
+                    Image(systemName: "rectangle.stack")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .accessibilityLabel("Switch subagent")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.bar)
+    }
+}

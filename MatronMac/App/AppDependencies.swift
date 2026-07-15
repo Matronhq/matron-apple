@@ -134,6 +134,19 @@ final class AppDependencies {
         return JournalChatService(store: core.store, engine: core.engine)
     }
 
+    /// The parent conversation id of `convoID`, or `nil` for a top-level
+    /// conversation. Lets the detail column decide whether to open a
+    /// subagent child in the split pane without parsing the (opaque) child
+    /// id. Synchronous store read.
+    func parentConvoID(of convoID: String, for session: UserSession) -> String? {
+        try? core(for: session).store.parentConvoID(of: convoID)
+    }
+
+    /// Whether `convoID` is a subagent child (has a parent).
+    func isSubChat(_ convoID: String, for session: UserSession) -> Bool {
+        parentConvoID(of: convoID, for: session) != nil
+    }
+
     func mediaService(for session: UserSession) -> any MediaService {
         if let existing = mediaServices[session.userID] { return existing }
         let service = JournalMediaService(api: core(for: session).api)
