@@ -428,6 +428,25 @@ public final class JournalStore: @unchecked Sendable {
     /// Whether a conversation row already exists. Used by the sync engine to
     /// tell a brand-new conversation (its first-ever frame) apart from a
     /// later frame on an existing one, so it can surface only the former.
+    /// Creates a placeholder conversation row if none exists. The New Chat
+    /// flow navigates by the convo_id a `start` RPC returned, which can
+    /// land before the conversation's first journal frame — the target row
+    /// must exist for list selection to hold. The real convo_meta /
+    /// snapshot refresh overwrites the placeholder; an existing row is
+    /// never touched.
+    public func ensureConversation(id: String, title: String, now: Date = Date()) throws {
+        try dbQueue.write { db in
+            guard try ConversationRecord.fetchOne(db, key: id) == nil else { return }
+            let ms = Int64(now.timeIntervalSince1970 * 1000)
+            try ConversationRecord(
+                id: id, title: title, sessionState: "running",
+                lastSeq: 0, snippet: "", createdAt: ms,
+                lastActivityTS: ms, muted: false, hidden: false,
+                readUpToSeq: 0, unreadCount: 0
+            ).insert(db)
+        }
+    }
+
     public func conversationExists(_ convoID: String) throws -> Bool {
         try dbQueue.read { db in
             try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM conversation WHERE id = ?)",
