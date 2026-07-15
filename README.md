@@ -1,6 +1,6 @@
 # Matron
 
-Matron is a chat system for talking to [Claude Code](https://claude.com/claude-code) agents from your phone, desktop, or browser. This repo is the **iOS and macOS client** — native, bot-first, App Store distributable on both platforms: sign in, watch an agent's conversations arrive and update live, answer its prompts inline. Speaks **matron-journal**, a purpose-built server protocol — no Matrix dependency.
+Matron is a chat system for talking to [Claude Code](https://claude.com/claude-code) agents from your phone, desktop, or browser. This repo is the **iOS and macOS client** — native SwiftUI, bot-first, App Store distributable on both platforms. Sign in and watch an agent's conversations arrive and update live: streaming replies, tool-call and diff cards, live terminal output, inline answer prompts. Talk back with messages, slash commands (with autocomplete), file and photo attachments, and voice notes. Speaks **matron-journal**, a purpose-built server protocol — no Matrix dependency.
 
 ## Part of the Matron ecosystem
 
@@ -12,6 +12,7 @@ Matron is a chat system for talking to [Claude Code](https://claude.com/claude-c
 | [matron-desktop](https://github.com/Matronhq/matron-desktop) | Desktop client |
 | [matron-web](https://github.com/Matronhq/matron-web) | Web client |
 | [matron-server](https://github.com/Matronhq/matron-server) | Matrix homeserver distribution |
+| [matron-x-ios](https://github.com/Matronhq/matron-x-ios) | Matron X — iOS Matrix client (Element X fork) |
 | [dev-boxer](https://github.com/Matronhq/dev-boxer) | One-command dev environment setup |
 
 ## Status
@@ -25,8 +26,9 @@ history.
 
 ## Requirements
 
-- macOS 14+
+- macOS 15+ (the Mac app's deployment floor; also the build host)
 - Xcode 16+
+- iOS 18+ device or simulator for the iPhone/iPad app
 - A matron-journal server — the hosted one at `https://chat.example.com`, or
   a local checkout for development (see below).
 
@@ -46,8 +48,8 @@ xcodegen generate
 open Matron.xcodeproj
 ```
 
-- For iPhone/iPad: select the `Matron` scheme, choose an iOS 17+ simulator or device, build & run.
-- For macOS: select the `MatronMac` scheme, build & run on the host (macOS 14+).
+- For iPhone/iPad: select the `Matron` scheme, choose an iOS 18+ simulator or device, build & run.
+- For macOS: select the `MatronMac` scheme, build & run on the host (macOS 15+).
 
 ## Local dev server
 
