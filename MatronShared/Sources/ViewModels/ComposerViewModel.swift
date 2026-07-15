@@ -261,24 +261,45 @@ public final class ComposerViewModel {
         guard !trimmed.isEmpty else { return }
         isSending = true
         defer { isSending = false }
+
+        // Clear in the SAME tick as the tap, before the round-trip — not
+        // after it. Clearing post-await left a window the length of the
+        // network call in which the focused TextField still held the text
+        // and could write its cached value back over the late clear: the
+        // message sent, but the text stayed sitting in the composer (Dan,
+        // 2026-07-15, iOS — rare, because it needs a slow enough send).
+        let pending = input
+        input = ""
+        lastRecalledValue = nil
+        isNavigatingHistory = false
+        folderSuggestionsSuppressedFor = nil
+        ComposerDraftMemory.forget(roomID: roomID)
+
         do {
             try await timeline.sendText(trimmed)
-            // Record the sent line for Up/Down recall before clearing the
-            // field. `record` also ends any in-progress walk.
+            // Record the sent line for Up/Down recall. `record` also ends
+            // any in-progress walk.
             history.record(trimmed, room: roomID)
             // If this was a `/start`/`/workdir` with a folder argument,
             // remember the folder for future completion.
             if let folder = Self.recentFolderArgument(from: trimmed) {
                 recentFolders.record(folder)
             }
-            input = ""
-            lastRecalledValue = nil
-            isNavigatingHistory = false
-            folderSuggestionsSuppressedFor = nil
             sendError = nil
-            ComposerDraftMemory.forget(roomID: roomID)
         } catch {
             sendError = error.localizedDescription
+            // Put the user's text back — the optimistic clear must never
+            // eat a message that didn't actually go out.
+            //
+            // Unless they've moved on: a send is slow enough to type through
+            // (that's why the clear is optimistic in the first place), so a
+            // late failure must not overwrite the next message mid-keystroke.
+            // Restoring then would just trade one lost message for another,
+            // and the error banner still reports the failure either way
+            // (bugbot, PR #55).
+            guard input.isEmpty else { return }
+            input = pending
+            ComposerDraftMemory.store(roomID: roomID, text: pending)
         }
     }
 

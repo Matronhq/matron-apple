@@ -17,8 +17,14 @@ import os
 @MainActor
 public final class HorizontalOverflowLock {
     private static let logger = Logger(subsystem: "chat.matron", category: "scroll-overflow")
-    /// Sub-point layout jitter is not overflow.
-    private static let tolerance: CGFloat = 0.5
+    /// UIKit enables a horizontal pan when `contentSize.width` exceeds the
+    /// viewport by ANY amount — a third of a point is plenty. The device
+    /// probe (2026-07-15) caught exactly that: bounds 402.33 vs content
+    /// 402.66, a sub-pixel rounding artifact at 3x scale, panning the whole
+    /// timeline. The old 0.5pt tolerance dismissed it as "jitter", so the
+    /// clamp never fired and the offender log stayed silent. Only exact
+    /// float equality noise is excused now.
+    private static let tolerance: CGFloat = 0.01
 
     private var observation: NSKeyValueObservation?
 

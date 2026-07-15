@@ -14,6 +14,7 @@ import MatronViewModels
 struct ComposerView: View {
     @State var viewModel: ComposerViewModel
     @State private var photoItem: PhotosPickerItem?
+    @State private var showPhotosPicker = false
     @State private var showFileImporter = false
     @State private var recorder = VoiceRecorder()
 
@@ -93,6 +94,18 @@ struct ComposerView: View {
                 photoItem = nil
             }
         }
+        // Presented HERE, not from the plus menu's row: a PhotosPicker
+        // inside a Menu never appears (the menu's dismissal takes its
+        // presentation context with it). `photoLibrary: .shared()` is
+        // required for `PhotosPickerItem.supportedContentTypes` to be
+        // populated — without it every selection falls back to jpg and
+        // HEIC/PNG are mislabelled `image/jpeg`.
+        .photosPicker(
+            isPresented: $showPhotosPicker,
+            selection: $photoItem,
+            matching: .images,
+            photoLibrary: .shared()
+        )
         .fileImporter(
             isPresented: $showFileImporter,
             allowedContentTypes: [.data],
@@ -144,7 +157,8 @@ struct ComposerView: View {
     private var composerBar: some View {
         HStack(alignment: .bottom, spacing: 4) {
             if ComposerViewModel.mediaAvailable {
-                AttachmentPicker(photoItem: $photoItem, showFileImporter: $showFileImporter)
+                AttachmentPicker(showPhotosPicker: $showPhotosPicker,
+                                 showFileImporter: $showFileImporter)
                     .frame(height: Self.singleLineInputHeight)
             }
 
@@ -153,6 +167,11 @@ struct ComposerView: View {
                 .padding(Self.inputPadding)
                 .background(.regularMaterial)
                 .clipShape(RoundedRectangle(cornerRadius: 16))
+                // Lets the field accept pasted photos and files (it only
+                // offers Paste for text on its own). Sits in a background so
+                // it lands as a sibling of the field's backing text view,
+                // which is what it goes looking for.
+                .background(ComposerPasteSupport(viewModel: viewModel))
 
             // Mic when the field is empty (WhatsApp-style), send once the
             // user has typed. Falls back to the send button when media is
@@ -258,10 +277,11 @@ struct ComposerView: View {
     /// first before `attachFiles(_:)` had finished reading it. Embedding a
     /// `UUID` per selection guarantees distinct paths. `static internal`
     /// so `ComposerViewBindingTests` can assert the uniqueness directly.
-    /// Mirrors `photoTempURL(ext:)` (round-2 fix #4).
+    /// Mirrors `photoTempURL(ext:)` (round-2 fix #4). Forwards to
+    /// `PastedAttachment.stagingURL(forName:)` so a staged pick and a staged
+    /// paste can't drift apart on naming.
     static func stagedTempURL(for source: URL) -> URL {
-        let filename = "\(UUID().uuidString)-\(source.lastPathComponent)"
-        return FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+        PastedAttachment.stagingURL(forName: source.lastPathComponent)
     }
 
     /// Writes `data` to `tmp` and hands the resulting URL to

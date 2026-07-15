@@ -265,6 +265,13 @@ struct MacComposerView: View {
                 .onChange(of: viewModel.input) { _, _ in
                     viewModel.handleInputChange()
                 }
+                // ⌘V of a photo or a file attaches it, the same as a drop
+                // (`ComposerDropDelegate`) or a paperclip pick. Only image and
+                // file-URL content is claimed here, so a text paste still
+                // falls through to the field editor untouched.
+                .onPasteCommand(of: [.image, .fileURL]) { providers in
+                    Task { await attachPasted(providers) }
+                }
 
             // Mic when the field is empty (WhatsApp-style), send once the
             // user has typed. Falls back to the send button when media is
@@ -354,6 +361,28 @@ struct MacComposerView: View {
     private func stopRecordingAndSend() {
         guard let result = recorder.stop() else { return }
         Task { await viewModel.sendVoiceNote(url: result.url, duration: result.duration) }
+    }
+
+    /// Stages each pasted item to a temporary file and hands the lot to
+    /// `ComposerViewModel.attachFiles(_:)`. Mirrors `ComposerDropDelegate`:
+    /// a mixed paste attaches the items that read cleanly and reports the
+    /// first failure, rather than dropping everything on one bad item.
+    private func attachPasted(_ providers: [NSItemProvider]) async {
+        var staged: [URL] = []
+        var firstError: Error?
+        for provider in providers {
+            do {
+                staged.append(try await PastedAttachment.stage(provider))
+            } catch {
+                if firstError == nil { firstError = error }
+            }
+        }
+        if !staged.isEmpty {
+            await viewModel.attachFiles(staged)
+        }
+        if let firstError {
+            viewModel.reportAttachmentError(firstError.localizedDescription)
+        }
     }
 
     /// Opens an `NSOpenPanel` and forwards the selection to
