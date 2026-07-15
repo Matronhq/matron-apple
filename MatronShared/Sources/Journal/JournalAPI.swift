@@ -18,8 +18,52 @@ public enum JournalAPIError: Error, Equatable, Sendable {
     case unauthenticated
     case forbidden
     case notFound
+    /// 409 — currently only `POST /pair/approve`: the code was already
+    /// approved (exactly-once semantics).
+    case conflict
     case http(status: Int, message: String)
     case transport(String)
+}
+
+/// One row of `GET /devices` — a client (app) or agent (headless box)
+/// enrolled on the signed-in user's account. Timestamps are epoch ms;
+/// `lastSeenAt` is nil for a device that has never connected.
+public struct DeviceDTO: Equatable, Sendable, Identifiable {
+    public let id: Int64
+    public let kind: String   // "client" | "agent"
+    public let name: String
+    public let createdAt: Int64
+    public let cursor: Int64
+    /// User's head seq minus this device's cursor — how far behind its
+    /// journal sync is. 0 = up to date.
+    public let lag: Int64
+    public let lastSeenAt: Int64?
+    public let isSelf: Bool
+
+    public init(id: Int64, kind: String, name: String, createdAt: Int64,
+                cursor: Int64, lag: Int64, lastSeenAt: Int64?, isSelf: Bool) {
+        self.id = id
+        self.kind = kind
+        self.name = name
+        self.createdAt = createdAt
+        self.cursor = cursor
+        self.lag = lag
+        self.lastSeenAt = lastSeenAt
+        self.isSelf = isSelf
+    }
+}
+
+/// `POST /pair/preview` — who is asking to join, shown to the user before
+/// approve is offered (anti-phish requirement of the pairing design).
+public struct PairPreview: Equatable, Sendable {
+    public let requesterIP: String
+    /// Seconds of TTL remaining on the pair code (codes live 10 minutes).
+    public let expiresIn: Int
+
+    public init(requesterIP: String, expiresIn: Int) {
+        self.requesterIP = requesterIP
+        self.expiresIn = expiresIn
+    }
 }
 
 /// Thin HTTP surface of the journal server: login, snapshot, pagination,
@@ -121,6 +165,55 @@ public actor JournalAPI {
         return mediaID
     }
 
+    // MARK: Devices + pairing (journal PR #19 spec)
+
+    /// The signed-in user's device roster. Order is not guaranteed by the
+    /// server — callers sort. Pull-based: refresh on screen enter and after
+    /// mutations; roster changes are not journal events.
+    public func devices() async throws -> [DeviceDTO] {
+        let obj = try await request(path: "/devices")
+        return (obj["devices"] as? [[String: Any]] ?? []).compactMap { d -> DeviceDTO? in
+            guard let id = (d["device_id"] as? NSNumber)?.int64Value else { return nil }
+            return DeviceDTO(
+                id: id,
+                kind: d["kind"] as? String ?? "client",
+                name: d["name"] as? String ?? "",
+                createdAt: (d["created_at"] as? NSNumber)?.int64Value ?? 0,
+                cursor: (d["cursor"] as? NSNumber)?.int64Value ?? 0,
+                lag: (d["lag"] as? NSNumber)?.int64Value ?? 0,
+                lastSeenAt: (d["last_seen_at"] as? NSNumber)?.int64Value,
+                isSelf: d["is_self"] as? Bool ?? false
+            )
+        }
+    }
+
+    /// Immediate, permanent revocation — no undo; re-enrollment is the
+    /// recovery path. Self-revocation is legal and means "sign out this
+    /// device". 404 (`.notFound`) means already revoked elsewhere — callers
+    /// treat it as success.
+    public func revokeDevice(id: Int64) async throws {
+        _ = try await request(path: "/devices/\(id)/revoke", method: "POST", body: [:])
+    }
+
+    /// Previews a pairing code before approval. 404 = unknown, expired, or
+    /// already approved (deliberately indistinguishable server-side).
+    public func pairPreview(code: String) async throws -> PairPreview {
+        let obj = try await request(path: "/pair/preview", method: "POST", body: ["pair_code": code])
+        guard let ip = obj["requester_ip"] as? String,
+              let expiresIn = (obj["expires_in"] as? NSNumber)?.intValue
+        else { throw JournalAPIError.transport("malformed pair preview response") }
+        return PairPreview(requesterIP: ip, expiresIn: expiresIn)
+    }
+
+    /// Approves a pairing code, binding the (future) agent to this user
+    /// under `agentName`. Exactly-once: `.conflict` = already approved.
+    /// Approval does NOT create the device — it appears in the roster only
+    /// once the box claims its token.
+    public func pairApprove(code: String, agentName: String) async throws {
+        _ = try await request(path: "/pair/approve", method: "POST",
+                              body: ["pair_code": code, "agent_name": agentName])
+    }
+
     public enum PushEnvironment: String, Sendable {
         case sandbox
         case prod
@@ -209,6 +302,7 @@ public actor JournalAPI {
         case (401, _): return .unauthenticated
         case (403, _): return .forbidden
         case (404, _): return .notFound
+        case (409, _): return .conflict
         default: return .http(status: status, message: obj?["message"] as? String ?? code ?? "")
         }
     }
