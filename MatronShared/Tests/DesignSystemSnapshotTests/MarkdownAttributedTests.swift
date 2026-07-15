@@ -156,8 +156,13 @@ final class MarkdownAttributedTests: XCTestCase {
 
     // MARK: - Size measurement
 
+    /// `size(for:source:width:)` through the same conversion path the view uses.
+    private func measure(_ source: String, width: CGFloat) -> CGSize {
+        MarkdownAttributed.size(for: convert(source), source: source, width: width)
+    }
+
     func test_size_shortMessage_hugsContentWidth() {
-        let size = MarkdownAttributed.size(for: convert("hi"), width: 600)
+        let size = measure("hi", width: 600)
         XCTAssertLessThan(size.width, 60, "a two-character message must not claim the pane width")
         XCTAssertGreaterThan(size.width, 0)
         XCTAssertGreaterThan(size.height, 0)
@@ -165,20 +170,27 @@ final class MarkdownAttributedTests: XCTestCase {
 
     func test_size_longMessage_wrapsAtProposalWidth() {
         let paragraph = Array(repeating: "wrap me across many lines", count: 20).joined(separator: " ")
-        let size = MarkdownAttributed.size(for: convert(paragraph), width: 300)
+        let size = measure(paragraph, width: 300)
         XCTAssertLessThanOrEqual(size.width, 300)
         XCTAssertGreaterThan(size.width, 250, "a wrapping paragraph should use (nearly) the full proposal")
-        let narrower = MarkdownAttributed.size(for: convert(paragraph), width: 200)
+        let narrower = measure(paragraph, width: 200)
         XCTAssertGreaterThan(narrower.height, size.height, "less width must mean more height")
     }
 
     func test_size_isDeterministic_acrossRepeatedCalls() {
         // The memo must not change the answer: heights that move for a fixed
         // input are the timeline's historical failure mode (blank-chat saga).
-        let attributed = convert("Some **body** with `code`\n\nand a second paragraph.")
-        let first = MarkdownAttributed.size(for: attributed, width: 420)
-        let second = MarkdownAttributed.size(for: attributed, width: 420)
-        XCTAssertEqual(first, second)
+        let source = "Some **body** with `code`\n\nand a second paragraph."
+        XCTAssertEqual(measure(source, width: 420), measure(source, width: 420))
+    }
+
+    func test_size_cacheKeyedOnSource_notRenderedText() {
+        // `**hi**` and `hi` render the same plain characters with different
+        // fonts — a rendered-text cache key would let one reuse the other's
+        // size (bugbot, PR #37). Bold must measure wider than regular.
+        let bold = measure("**hi**", width: 600)
+        let plain = measure("hi", width: 600)
+        XCTAssertGreaterThan(bold.width, plain.width)
     }
 }
 #endif

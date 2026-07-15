@@ -20,20 +20,26 @@ import SwiftUI
 /// observation-driven resize — this repo has scar tissue from text-height churn
 /// destabilising the timeline, so heights must never move for a fixed input.
 public struct SelectableMessageText: View {
+    private let source: String
     private let attributed: NSAttributedString
 
-    /// - Parameter source: raw markdown message body.
+    /// - Parameter source: raw markdown message body. Kept alongside the
+    ///   converted string because the size memo is keyed on the SOURCE —
+    ///   `**hi**` and `hi` render identical plain text with different fonts,
+    ///   so the rendered text can't identify a size (bugbot, PR #37).
     public init(_ source: String) {
+        self.source = source
         self.attributed = MarkdownAttributed.attributedString(for: source)
     }
 
     public var body: some View {
-        SelectableTextViewRepresentable(attributed: attributed)
+        SelectableTextViewRepresentable(source: source, attributed: attributed)
     }
 }
 
 /// `NSViewRepresentable` wrapping the non-editable, selectable `NSTextView`.
 private struct SelectableTextViewRepresentable: NSViewRepresentable {
+    let source: String
     let attributed: NSAttributedString
 
     func makeCoordinator() -> Coordinator {
@@ -83,7 +89,7 @@ private struct SelectableTextViewRepresentable: NSViewRepresentable {
         guard let width = proposal.width, width > 0, width.isFinite else {
             return nil
         }
-        return MarkdownAttributed.size(for: attributed, width: width)
+        return MarkdownAttributed.size(for: attributed, source: source, width: width)
     }
 
     /// Handles link clicks with the same scheme policy as `MarkdownText`

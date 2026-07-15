@@ -90,9 +90,9 @@ enum MarkdownAttributed {
     /// layout pass, and the timeline is deliberately non-lazy (blank-chat
     /// cure), so an uncached TextKit layout here ran ~120 full measurements
     /// per scroll tick — the 2026-07 Mac scroll lag.
-    static func size(for attributed: NSAttributedString, width proposedWidth: CGFloat) -> CGSize {
+    static func size(for attributed: NSAttributedString, source: String, width proposedWidth: CGFloat) -> CGSize {
         guard proposedWidth > 0, proposedWidth.isFinite else { return .zero }
-        let key = "\(proposedWidth)|\(attributed.string)" as NSString
+        let key = "\(proposedWidth)|\(source)" as NSString
         if let hit = sizeCache.object(forKey: key) { return hit.sizeValue }
 
         let first = layoutSize(for: attributed, width: proposedWidth)
@@ -124,11 +124,14 @@ enum MarkdownAttributed {
         return CGSize(width: min(ceil(used.width), width), height: ceil(used.height))
     }
 
-    /// Memo for `size(for:width:)`, keyed on (proposed width, source text).
-    /// The attributed strings themselves come from the source-keyed `cache`
-    /// above, and the conversion is pure, so the text alone identifies the
-    /// attributes. Generous bound — entries are one NSValue each; the key
-    /// dominates, and 2000 keys of chat-message length is still small.
+    /// Memo for `size(for:source:width:)`, keyed on (proposed width, markdown
+    /// SOURCE). The source — not the attributed string's rendered text —
+    /// identifies the attributes: `**hi**` and `hi` render the same plain
+    /// characters with different fonts, so a rendered-text key would let one
+    /// message reuse the other's size (bugbot, PR #37). Conversion is a pure
+    /// function of source, so (source, width) → size is collision-free.
+    /// Generous bound — entries are one NSValue each; the key dominates, and
+    /// 2000 keys of chat-message length is still small.
     private static let sizeCache: NSCache<NSString, NSValue> = {
         let cache = NSCache<NSString, NSValue>()
         cache.countLimit = 2000
