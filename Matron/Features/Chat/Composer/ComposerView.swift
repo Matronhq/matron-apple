@@ -17,6 +17,22 @@ struct ComposerView: View {
     @State private var showFileImporter = false
     @State private var recorder = VoiceRecorder()
 
+    /// The text field's padding (all edges). Named so the single-line
+    /// height below stays tied to it: if the padding changes, the
+    /// accessory-button height follows.
+    private static let inputPadding: CGFloat = 8
+
+    /// Rendered height of a one-line input: the body font's line height
+    /// plus the field's vertical padding top and bottom. The plus, mic,
+    /// and send buttons pin their icon containers to this so they sit
+    /// centred against a single-line field (the HStack stays `.bottom`
+    /// aligned, so on a grown multi-line field they drop to the bottom
+    /// edge). Mirrors `MacComposerView.singleLineInputHeight`.
+    private static var singleLineInputHeight: CGFloat {
+        let body = UIFont.preferredFont(forTextStyle: .body)
+        return ceil(body.lineHeight) + inputPadding * 2
+    }
+
     /// Mirrors `ComposerViewModel.send()`'s own trim so the send button is
     /// disabled for whitespace-only input. Without this, the button looks
     /// active but `send()` no-ops on the trimmed empty string.
@@ -129,11 +145,12 @@ struct ComposerView: View {
         HStack(alignment: .bottom, spacing: 4) {
             if ComposerViewModel.mediaAvailable {
                 AttachmentPicker(photoItem: $photoItem, showFileImporter: $showFileImporter)
+                    .frame(height: Self.singleLineInputHeight)
             }
 
             TextField("Message…", text: $viewModel.input, axis: .vertical)
                 .lineLimit(1...8)
-                .padding(8)
+                .padding(Self.inputPadding)
                 .background(.regularMaterial)
                 .clipShape(RoundedRectangle(cornerRadius: 16))
 
@@ -147,6 +164,7 @@ struct ComposerView: View {
                     Image(systemName: "mic")
                         .font(.title2)
                         .foregroundStyle(.secondary)
+                        .frame(height: Self.singleLineInputHeight)
                 }
                 .padding(.trailing, 4)
             } else {
@@ -156,6 +174,7 @@ struct ComposerView: View {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.title)
                         .foregroundStyle(isSendable ? Color.accentColor : Color.secondary)
+                        .frame(height: Self.singleLineInputHeight)
                 }
                 .disabled(!isSendable || viewModel.isSending)
                 .padding(.trailing, 4)
