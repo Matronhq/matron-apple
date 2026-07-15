@@ -2,6 +2,7 @@ import SwiftUI
 import MatronJournal
 import MatronModels
 import MatronViewModels
+import MatronDesignSystem
 
 @main
 struct MatronMacApp: App {
@@ -18,6 +19,12 @@ struct MatronMacApp: App {
     @State private var dependencies = AppDependencies()
     @State private var session: UserSession?
     @State private var bootstrapDone = false
+    /// In-app appearance override (System/Light/Dark). Written by the
+    /// AppearancePicker in Settings → Device; applied to `NSApp.appearance`
+    /// (below) rather than per-window so the Settings scene, alerts, and
+    /// menus all switch together.
+    @AppStorage(MatronAppearance.storageKey) private var appearanceRaw =
+        MatronAppearance.system.rawValue
 
     var body: some Scene {
         WindowGroup {
@@ -101,6 +108,11 @@ struct MatronMacApp: App {
                         }
                     )
                 }
+            }
+            // Applies the override at launch (`initial: true`) and live
+            // whenever the Settings picker rewrites the stored value.
+            .onChange(of: appearanceRaw, initial: true) { _, raw in
+                NSApp.appearance = MatronAppearance(storedValue: raw).nsAppearance
             }
         }
         .windowResizability(.contentMinSize)

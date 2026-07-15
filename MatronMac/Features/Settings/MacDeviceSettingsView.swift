@@ -2,6 +2,7 @@
 import SwiftUI
 import AppKit
 import MatronModels
+import MatronDesignSystem
 
 /// Mac analogue of `DeviceSettingsView` (iOS Task 11 / Mac Task 12). Same
 /// reduction as the iOS view — the Encryption + Recovery-key sections are
@@ -30,6 +31,12 @@ struct MacDeviceSettingsView: View {
                     value: session.homeserverURL.host ?? session.homeserverURL.absoluteString
                 )
             }
+            Section("Appearance") {
+                // Writes MatronAppearance.storageKey; MatronMacApp's root
+                // @AppStorage observes the same key and applies it via
+                // NSApp.appearance, so the switch is live app-wide.
+                AppearancePicker()
+            }
             if let onSignOut {
                 Section {
                     Button("Sign Out", role: .destructive, action: onSignOut)
@@ -37,7 +44,7 @@ struct MacDeviceSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 420, height: 260)
+        .frame(width: 420, height: 320)
         .navigationTitle("Device")
     }
 }

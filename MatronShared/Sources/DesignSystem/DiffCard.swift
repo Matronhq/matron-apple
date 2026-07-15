@@ -3,7 +3,9 @@ import MatronEvents
 
 /// Card for a journal `diff` event — a file-edit snippet with the filename
 /// in the header (tappable link to the bridge's signed viewer URL when one
-/// was supplied) and prefix-colored unified-diff lines in the body.
+/// was supplied) and prefix-colored unified-diff lines in the body, on the
+/// fixed dark `TerminalStyle` surface so diffs read like the tool-output
+/// result panel in both app themes.
 /// Collapsed shows the first `collapsedLineCount` lines with a "+N more
 /// lines" row; the chevron expands to the full diff (the bridge caps it at
 /// 400 lines, so no client-side windowing is needed).
@@ -36,9 +38,10 @@ public struct DiffCard: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     Text(rendered(visible))
                         .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(TerminalStyle.foreground)
                         .padding(8)
                 }
-                .background(Color.matronDiffInnerBg)
+                .background(TerminalStyle.background)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
             }
             if hidden > 0 {
@@ -136,11 +139,11 @@ public struct DiffCard: View {
         for (i, line) in lines.enumerated() {
             var run = AttributedString(String(line))
             if line.hasPrefix("+") {
-                run.foregroundColor = .green
+                run.foregroundColor = TerminalStyle.diffAdded
             } else if line.hasPrefix("-") {
-                run.foregroundColor = .red
+                run.foregroundColor = TerminalStyle.diffRemoved
             } else if line.hasPrefix("@@") {
-                run.foregroundColor = .secondary
+                run.foregroundColor = TerminalStyle.dimForeground
             }
             out += run
             if i < lines.count - 1 { out += AttributedString("\n") }
@@ -170,14 +173,4 @@ public struct DiffCard: View {
     private var accessibilitySummary: String {
         Self.accessibilitySummary(for: event)
     }
-}
-
-private extension Color {
-    /// Inner diff-block background — same cross-platform split as
-    /// ToolCallCard's `matronCardInnerBg` (which is fileprivate there).
-    #if canImport(UIKit) && !os(macOS)
-    static let matronDiffInnerBg = Color(.systemBackground)
-    #elseif os(macOS)
-    static let matronDiffInnerBg = Color(nsColor: .textBackgroundColor)
-    #endif
 }

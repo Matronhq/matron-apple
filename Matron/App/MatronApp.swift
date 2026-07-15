@@ -3,6 +3,7 @@ import UIKit
 import MatronJournal
 import MatronModels
 import MatronViewModels
+import MatronDesignSystem
 
 @main
 struct MatronApp: App {
@@ -27,6 +28,11 @@ struct MatronApp: App {
     @State private var chatPath: [String] = []
     /// Drives the scenePhase reconnect nudge below.
     @Environment(\.scenePhase) private var scenePhase
+    /// In-app appearance override (System/Light/Dark). Written by the
+    /// AppearancePicker in Settings → Device; applied here at the root so
+    /// it covers the sign-in view and every sheet, not just the chat UI.
+    @AppStorage(MatronAppearance.storageKey) private var appearanceRaw =
+        MatronAppearance.system.rawValue
 
     var body: some Scene {
         WindowGroup {
@@ -128,6 +134,7 @@ struct MatronApp: App {
                     )
                 }
             }
+            .preferredColorScheme(MatronAppearance(storedValue: appearanceRaw).colorScheme)
         }
     }
 
