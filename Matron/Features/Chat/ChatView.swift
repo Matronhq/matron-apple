@@ -286,6 +286,7 @@ struct ChatView: View {
                     TimelineListContent(
                         viewModel: viewModel,
                         stripViewModel: stripViewModel,
+                        onOpenSubChat: nil,
                         onPreview: { attachmentPreview = $0 },
                         onShowSource: { sourceItem = $0 }
                     )
@@ -799,6 +800,12 @@ private struct TimelineListContent: View, Equatable {
     /// entries"). Reading `children` in `body` installs `@Observable`
     /// tracking, so indicator rows re-render as children appear/finish.
     let stripViewModel: SubChatStripViewModel
+    /// How a tapped subtask card opens its child. `nil` (the parent chat)
+    /// pushes via `NavigationLink`; `SubChatView` passes its `switchTo`
+    /// instead so a sibling's card REPLACES the open child on the stack —
+    /// a plain push there would make back walk through prior siblings
+    /// rather than return to the parent.
+    let onOpenSubChat: ((String) -> Void)?
     let onPreview: (ChatView.AttachmentPreview) -> Void
     let onShowSource: (TimelineItem) -> Void
 
@@ -846,8 +853,18 @@ private struct TimelineListContent: View, Equatable {
                         // the child sub-chat (`chatDestination` routes the
                         // child id to `SubChatView`). Keeps the row's
                         // `.id(item.id)` so scroll anchors are unaffected.
-                        NavigationLink(value: child.id) {
-                            SubtaskLinkCard(title: child.title, isRunning: child.isRunning)
+                        Group {
+                            if let onOpenSubChat {
+                                Button {
+                                    onOpenSubChat(child.id)
+                                } label: {
+                                    SubtaskLinkCard(title: child.title, isRunning: child.isRunning)
+                                }
+                            } else {
+                                NavigationLink(value: child.id) {
+                                    SubtaskLinkCard(title: child.title, isRunning: child.isRunning)
+                                }
+                            }
                         }
                         .buttonStyle(.plain)
                         .padding(.horizontal)
@@ -1008,6 +1025,7 @@ struct SubChatView: View {
                     TimelineListContent(
                         viewModel: viewModel,
                         stripViewModel: stripViewModel,
+                        onOpenSubChat: switchTo,
                         onPreview: { attachmentPreview = $0 },
                         onShowSource: { sourceItem = $0 }
                     )
@@ -1063,16 +1081,16 @@ struct SubChatView: View {
         }
     }
 
-    /// Switch the viewer to a sibling subagent: replace the current child on
-    /// the nav stack (pop-then-push) so switching between subagents doesn't
-    /// grow the back stack. Falls back to a plain push if the tail isn't the
-    /// current child (defensive — shouldn't happen).
+    /// Switch the viewer to a sibling subagent: replace the current child
+    /// on the nav stack (pop-then-push, `pathReplacingCurrentChild`) so
+    /// switching between subagents — via the mini-header menu or a subtask
+    /// card in this timeline — doesn't grow the back stack.
     private func switchTo(_ siblingID: String) {
-        guard siblingID != childID, let navigationPath else { return }
-        var path = navigationPath.wrappedValue
-        if path.last == childID { path.removeLast() }
-        path.append(siblingID)
-        navigationPath.wrappedValue = path
+        guard let navigationPath,
+              let newPath = SubChatStripViewModel.pathReplacingCurrentChild(
+                  in: navigationPath.wrappedValue, current: childID, with: siblingID)
+        else { return }
+        navigationPath.wrappedValue = newPath
     }
 }
 

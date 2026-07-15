@@ -153,6 +153,27 @@ final class SubChatStripViewModelTests: XCTestCase {
             "p:sub:new", "with no running match, the newest (last-created) wins")
     }
 
+    func test_pathReplacingCurrentChild_swapsStackTail() {
+        XCTAssertEqual(
+            SubChatStripViewModel.pathReplacingCurrentChild(
+                in: ["p:sub:a"], current: "p:sub:a", with: "p:sub:b"),
+            ["p:sub:b"], "switching siblings replaces the tail, not pushes")
+    }
+
+    func test_pathReplacingCurrentChild_sameChildIsNoOp() {
+        XCTAssertNil(
+            SubChatStripViewModel.pathReplacingCurrentChild(
+                in: ["p:sub:a"], current: "p:sub:a", with: "p:sub:a"),
+            "tapping the currently-open child changes nothing")
+    }
+
+    func test_pathReplacingCurrentChild_unexpectedTailFallsBackToPush() {
+        XCTAssertEqual(
+            SubChatStripViewModel.pathReplacingCurrentChild(
+                in: ["other"], current: "p:sub:a", with: "p:sub:b"),
+            ["other", "p:sub:b"], "defensive: tail mismatch appends instead")
+    }
+
     @MainActor
     func test_stripEmptiesWhenAllChildrenFinish() async {
         let fake = FakeChildrenChatService()

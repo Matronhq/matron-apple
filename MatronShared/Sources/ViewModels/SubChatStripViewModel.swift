@@ -127,4 +127,22 @@ public final class SubChatStripViewModel {
         }
         return matches.last(where: \.isRunning) ?? matches.last
     }
+
+    /// The navigation path after switching the OPEN sub-chat viewer from
+    /// `current` to `sibling`: replace the stack tail (pop-then-push) so
+    /// hopping between siblings doesn't grow the back stack — back always
+    /// returns to the parent chat. `nil` means no navigation is needed
+    /// (tapping the already-open child). Falls back to a plain push when
+    /// the tail isn't `current` (defensive — shouldn't happen).
+    nonisolated public static func pathReplacingCurrentChild(
+        in path: [String],
+        current: String,
+        with sibling: String
+    ) -> [String]? {
+        guard sibling != current else { return nil }
+        var newPath = path
+        if newPath.last == current { newPath.removeLast() }
+        newPath.append(sibling)
+        return newPath
+    }
 }
