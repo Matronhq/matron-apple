@@ -121,6 +121,60 @@ public final class ComposerViewModel {
         palettePinnedOpen = false
     }
 
+    /// Index of the keyboard-highlighted palette row, or `nil` when no row
+    /// is highlighted. Arrow keys drive it (Mac composer); `nil` means
+    /// Return falls through to `send()` instead of picking a row. Any user
+    /// edit clears it (`handleInputChange`) — the row list just changed
+    /// under the highlight, so a stale index would pick the wrong row.
+    public private(set) var paletteSelection: Int?
+
+    /// Number of rows the palette is showing: folder suggestions when in
+    /// folder-completion mode, filtered commands otherwise. Must mirror
+    /// the palette view's "folders win" display rule so the keyboard
+    /// highlight and the rendered rows agree.
+    public var paletteItemCount: Int {
+        folderSuggestions.isEmpty ? filteredCommands.count : folderSuggestions.count
+    }
+
+    /// Down-arrow while the palette shows: highlight the first row, or
+    /// step the highlight down, stopping at the last row. No-op during a
+    /// history walk — a recalled single-token slash line (e.g. "/start")
+    /// pops the palette open, and the arrows must keep walking history,
+    /// not get captured by the palette (bugbot, PR #41). The view routes
+    /// the keys the same way; this guard pins the policy model-side.
+    public func paletteMoveDown() {
+        let count = paletteItemCount
+        guard showPalette, !isNavigatingHistory, count > 0 else { return }
+        paletteSelection = min(paletteSelection.map { $0 + 1 } ?? 0, count - 1)
+    }
+
+    /// Up-arrow while the palette shows: step the highlight up, stopping
+    /// at the first row; with no highlight yet, start from the last row.
+    /// No-op during a history walk — see `paletteMoveDown()`.
+    public func paletteMoveUp() {
+        let count = paletteItemCount
+        guard showPalette, !isNavigatingHistory, count > 0 else { return }
+        paletteSelection = max(paletteSelection.map { $0 - 1 } ?? (count - 1), 0)
+    }
+
+    /// Return-key handler: picks the highlighted palette row. Returns
+    /// `true` when a row was picked (the caller must not send), `false`
+    /// when nothing is highlighted — Return then means "send the input".
+    public func confirmPaletteSelection() -> Bool {
+        guard showPalette, let index = paletteSelection else { return false }
+        paletteSelection = nil
+        let folders = folderSuggestions
+        if !folders.isEmpty {
+            guard folders.indices.contains(index) else { return false }
+            selectFolder(folders[index])
+            return true
+        }
+        let commands = filteredCommands
+        guard commands.indices.contains(index) else { return false }
+        selectCommand(commands[index])
+        return true
+    }
+
     /// Recent-folder suggestions for the current input, limited to a
     /// palette-friendly count. Non-empty only in folder-completion mode:
     /// a `/start` or `/workdir` command followed by a single (possibly
@@ -253,6 +307,9 @@ public final class ComposerViewModel {
     /// exits history navigation, matching terminals where typing abandons
     /// the recalled line.
     public func handleInputChange() {
+        // Any input mutation invalidates the keyboard highlight — the row
+        // list it indexed into has changed shape.
+        paletteSelection = nil
         // Any differing edit lifts the post-pick folder suppression so the
         // suppressed string doesn't linger and block a later identical
         // command line (e.g. re-typed after a send).

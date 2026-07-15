@@ -57,21 +57,29 @@ struct MacComposerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if viewModel.showPalette {
-                MacSlashCommandPalette(
-                    commands: viewModel.filteredCommands,
-                    folders: viewModel.folderSuggestions,
-                    onSelect: { cmd in viewModel.selectCommand(cmd) },
-                    onSelectFolder: { folder in viewModel.selectFolder(folder) }
-                )
-                .padding(.horizontal)
-                .padding(.bottom, 4)
-            }
-
             if case let .recording(start) = recorder.state {
                 recordingBar(start: start)
             } else {
                 composerBar
+            }
+        }
+        // The slash palette FLOATS above the composer instead of stacking
+        // into layout: stacked, it pushed the bottom of the conversation
+        // up every time it appeared. The alignment guide pins the panel's
+        // bottom 4pt above the composer's top edge; SwiftUI doesn't clip
+        // overlays, and the composer renders after the timeline in
+        // `MacChatView`'s VStack, so the panel draws over the messages.
+        .overlay(alignment: .top) {
+            if viewModel.showPalette {
+                MacSlashCommandPalette(
+                    commands: viewModel.filteredCommands,
+                    folders: viewModel.folderSuggestions,
+                    selection: viewModel.paletteSelection,
+                    onSelect: { cmd in viewModel.selectCommand(cmd) },
+                    onSelectFolder: { folder in viewModel.selectFolder(folder) }
+                )
+                .padding(.horizontal)
+                .alignmentGuide(.top) { $0[.bottom] + 4 }
             }
         }
         // Restore any draft the user typed in this room earlier in the
@@ -167,12 +175,25 @@ struct MacComposerView: View {
                 .background(Color.matronBubbleBot)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .shadow(color: .matronBubbleShadow, radius: 2, y: 1)
-                // Up recalls older sent messages (terminal-style), but
-                // only from an empty field or once a walk is already
-                // active — otherwise the caret moves through a multi-line
-                // draft. Down walks forward, and only while navigating.
+                // An ACTIVE history walk owns Up/Down outright — a
+                // recalled single-token slash line (e.g. "/start") pops
+                // the palette open, and letting the palette grab the
+                // arrows there would trap the walk on that entry (bugbot,
+                // PR #41). Otherwise, while the palette shows, Up/Down
+                // move its keyboard highlight; and failing both, Up
+                // recalls older sent messages (terminal-style), but only
+                // from an empty field — else the caret moves through a
+                // multi-line draft.
                 .onKeyPress(.upArrow) {
-                    if viewModel.input.isEmpty || viewModel.isNavigatingHistory {
+                    if viewModel.isNavigatingHistory {
+                        viewModel.recallOlder()
+                        return .handled
+                    }
+                    if viewModel.showPalette, viewModel.paletteItemCount > 0 {
+                        viewModel.paletteMoveUp()
+                        return .handled
+                    }
+                    if viewModel.input.isEmpty {
                         viewModel.recallOlder()
                         return .handled
                     }
@@ -183,7 +204,20 @@ struct MacComposerView: View {
                         viewModel.recallNewer()
                         return .handled
                     }
+                    if viewModel.showPalette, viewModel.paletteItemCount > 0 {
+                        viewModel.paletteMoveDown()
+                        return .handled
+                    }
                     return .ignored
+                }
+                // Return picks the highlighted palette row. Normally the
+                // send button's `.keyboardShortcut(.return)` claims Return
+                // before this key press fires (and its action runs the
+                // same confirm-first check); this handler covers the
+                // mic-button state, where no send shortcut exists — e.g.
+                // the palette pinned open via ⌘K over an empty field.
+                .onKeyPress(.return) {
+                    viewModel.confirmPaletteSelection() ? .handled : .ignored
                 }
                 // Any user edit exits history navigation. The VM guards
                 // its own recall writes so this doesn't fire falsely.
@@ -208,6 +242,11 @@ struct MacComposerView: View {
                 .padding(.trailing, 4)
             } else {
                 Button {
+                    // Return with a palette row highlighted picks the row
+                    // (this shortcut claims Return before the TextField's
+                    // key-press handler sees it); only an un-highlighted
+                    // Return sends.
+                    if viewModel.confirmPaletteSelection() { return }
                     Task { await viewModel.send() }
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
