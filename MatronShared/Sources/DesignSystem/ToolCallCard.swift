@@ -145,6 +145,9 @@ public struct ToolCallCard: View {
             Text(s).font(.system(.caption, design: .monospaced))
                 .padding(8)
         }
+        // Fitting content must not rubber-band sideways — it reads as the
+        // whole timeline wiggling (see CodeBlock).
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
         .background(Color.matronCardInnerBg)
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
@@ -157,6 +160,8 @@ public struct ToolCallCard: View {
                 .foregroundStyle(TerminalStyle.foreground)
                 .padding(8)
         }
+        // Fitting content must not rubber-band sideways (see CodeBlock).
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
         .background(TerminalStyle.background)
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }

@@ -41,6 +41,9 @@ public struct DiffCard: View {
                         .foregroundStyle(TerminalStyle.foreground)
                         .padding(8)
                 }
+                // Fitting content must not rubber-band sideways — it reads
+                // as the whole timeline wiggling (see CodeBlock).
+                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
                 .background(TerminalStyle.background)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
             }

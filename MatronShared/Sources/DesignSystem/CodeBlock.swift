@@ -33,6 +33,13 @@ public struct CodeBlock: View {
                     .font(.system(.callout, design: .monospaced))
                     .padding(8)
             }
+            // SwiftUI's horizontal ScrollView rubber-bands even when the
+            // content FITS — a full-width block then springs sideways under
+            // a stray drag, which reads as the whole timeline wiggling
+            // (observed on iPhone, 2026-07-15). `basedOnSize` restricts the
+            // bounce to blocks that actually scroll. The `axes` argument is
+            // load-bearing: it defaults to `.vertical`.
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
             .background(Color.matronCodeBg)
             .clipShape(RoundedRectangle(cornerRadius: 6))
         }
