@@ -146,7 +146,14 @@ struct ChatListView: View {
             // sheet has a Done button.
             if let session {
                 NavigationStack {
-                    DeviceSettingsView(session: session)
+                    DeviceSettingsView(
+                        session: session,
+                        devicesAPI: deps?.devicesService(for: session),
+                        onSignOut: {
+                            showingDeviceSettings = false
+                            onSignOut?()
+                        }
+                    )
                         .toolbar {
                             ToolbarItem(placement: .topBarTrailing) {
                                 Button("Done") { showingDeviceSettings = false }
