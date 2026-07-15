@@ -48,6 +48,41 @@ grepping the shipping code:
   API. Add one the moment that changes.
 - Not used, so not declared: disk space, system boot time, active keyboards.
 
+### Archive dry-run (2026-07-16)
+
+Both archives were actually attempted, so the signing story below is observed
+rather than assumed.
+
+**iOS: `** ARCHIVE SUCCEEDED **`.** The Release build archives, signs, and
+embeds the NSE — nothing in the code or project config blocks an upload. One
+caveat, and it's the important one: it signed with **`Apple Development: Dan
+Barker`**, and Xcode rewrote the entitlement to `aps-environment: development`
+to match the profile it chose. It fell back to a development identity because
+there is **no Apple Distribution certificate / App Store profile for
+`chat.matron.app` on this machine**. So:
+
+- The archive proves the pipeline works.
+- It is *not* the artifact you'd ship. The distribution-signed export
+  (`method: app-store-connect`) needs §2.1/§2.2 first, and that export is what
+  restores `aps-environment: production`.
+- A TestFlight build that ships with the *development* APNs environment gets
+  silent push failure, not an error. Check the exported artifact's entitlement
+  the first time through — not just the archive's.
+
+**Mac: `** ARCHIVE FAILED **`** — exactly the documented gotcha, verbatim:
+
+```
+error: No Accounts: Add a new account in Accounts settings.
+error: Provisioning profile "Mac Team Provisioning Profile: *" doesn't include
+       the Push Notifications capability.
+error: Provisioning profile "Mac Team Provisioning Profile: *" doesn't include
+       the com.apple.developer.aps-environment entitlement.
+```
+
+The Mac app cannot archive at all until an Apple ID is added to Xcode and a
+`chat.matron.app` + macOS **push-capable** profile exists. Both fall out of
+§2.1/§2.2. No build-setting work moves this gate.
+
 ---
 
 ## 2. Blockers only Dan can clear
