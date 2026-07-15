@@ -106,6 +106,21 @@ public actor JournalAPI {
         return data
     }
 
+    /// Uploads raw media bytes (POST /media, Bearer, `data` as the raw
+    /// request body under `contentType`) and returns the server's
+    /// `media_id`, which callers pass back as the `blob_ref` on a
+    /// subsequent media `send`. Mirrors `mediaData(blobRef:)`'s request
+    /// style and `error(status:data:)` mapping.
+    public func uploadMedia(_ data: Data, contentType: String) async throws -> String {
+        let (respData, response) = try await rawRequest(path: "/media", method: "POST", body: nil,
+                                                        rawBody: data, rawContentType: contentType)
+        guard response.statusCode == 200 else { throw Self.error(status: response.statusCode, data: respData) }
+        guard let obj = (try? JSONSerialization.jsonObject(with: respData)) as? [String: Any],
+              let mediaID = obj["media_id"] as? String
+        else { throw JournalAPIError.transport("malformed media upload response") }
+        return mediaID
+    }
+
     public enum PushEnvironment: String, Sendable {
         case sandbox
         case prod
@@ -150,7 +165,8 @@ public actor JournalAPI {
 
     private func rawRequest(
         path: String, method: String, body: [String: Any]?,
-        query: [URLQueryItem] = [], authenticated: Bool = true
+        query: [URLQueryItem] = [], authenticated: Bool = true,
+        rawBody: Data? = nil, rawContentType: String? = nil
     ) async throws -> (Data, HTTPURLResponse) {
         var components = URLComponents(url: serverURL, resolvingAgainstBaseURL: false)!
         components.percentEncodedPath = Self.basePath(of: components) + path
@@ -160,7 +176,12 @@ public actor JournalAPI {
         if authenticated, let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        if let body {
+        // A raw body (media upload) sends `data` verbatim under its own
+        // content type; the JSON `body` path is mutually exclusive with it.
+        if let rawBody {
+            request.setValue(rawContentType ?? "application/octet-stream", forHTTPHeaderField: "Content-Type")
+            request.httpBody = rawBody
+        } else if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
         }

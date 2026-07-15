@@ -19,6 +19,7 @@ import MatronViewModels
 /// reflects what `send()` will actually do.
 struct MacComposerView: View {
     @State var viewModel: ComposerViewModel
+    @State private var recorder = VoiceRecorder()
 
     /// Placeholder shown in the empty composer. Extracted to a single
     /// constant because the Shift+Return key monitor scopes itself to *this*
@@ -67,85 +68,11 @@ struct MacComposerView: View {
                 .padding(.bottom, 4)
             }
 
-            HStack(alignment: .bottom, spacing: 4) {
-                // Journal stack: media DISPLAY is live server-side, but the
-                // client send whitelist is text-only, so composing an
-                // attachment would fail server-side. Gated on the VM flag
-                // rather than deleted outright. Mirrors iOS `ComposerView`.
-                if ComposerViewModel.mediaAvailable {
-                    Button {
-                        pickFiles()
-                    } label: {
-                        Image(systemName: "paperclip")
-                            .font(.title3)
-                            .foregroundStyle(.secondary)
-                            // Centre the icon in a one-line-tall container so
-                            // it lines up with the send button and the
-                            // single-line input; horizontal padding keeps the
-                            // hit target. See `singleLineInputHeight`.
-                            .frame(height: Self.singleLineInputHeight)
-                            .padding(.horizontal, 8)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Attach a file")
-                }
-
-                TextField(Self.placeholder, text: $viewModel.input, axis: .vertical)
-                    .lineLimit(1...8)
-                    .textFieldStyle(.plain)
-                    .padding(Self.inputVerticalPadding)
-                    // White (dark-mode: elevated warm) input surface, same
-                    // as bot bubbles — `.regularMaterial` read muddy-dark
-                    // against the cream timeline gradient. Matches
-                    // matron-web's white composer on the cream ground.
-                    .background(Color.matronBubbleBot)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .shadow(color: .matronBubbleShadow, radius: 2, y: 1)
-                    // Up recalls older sent messages (terminal-style), but
-                    // only from an empty field or once a walk is already
-                    // active — otherwise the caret moves through a multi-line
-                    // draft. Down walks forward, and only while navigating.
-                    .onKeyPress(.upArrow) {
-                        if viewModel.input.isEmpty || viewModel.isNavigatingHistory {
-                            viewModel.recallOlder()
-                            return .handled
-                        }
-                        return .ignored
-                    }
-                    .onKeyPress(.downArrow) {
-                        if viewModel.isNavigatingHistory {
-                            viewModel.recallNewer()
-                            return .handled
-                        }
-                        return .ignored
-                    }
-                    // Any user edit exits history navigation. The VM guards
-                    // its own recall writes so this doesn't fire falsely.
-                    .onChange(of: viewModel.input) { _, _ in
-                        viewModel.handleInputChange()
-                    }
-
-                Button {
-                    Task { await viewModel.send() }
-                } label: {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.title)
-                        .foregroundStyle(isSendable ? Color.accentColor : Color.secondary)
-                        // Same one-line-tall container as the paperclip so
-                        // the arrow centres against a single-line input.
-                        .frame(height: Self.singleLineInputHeight)
-                }
-                .buttonStyle(.plain)
-                .disabled(!isSendable || viewModel.isSending)
-                .padding(.trailing, 4)
-                // Enter sends; Shift+Enter inserts a newline. Plain Return is
-                // intercepted by this shortcut; the Shift+Return newline is
-                // handled by the local key monitor installed in `.onAppear`
-                // (the `axis: .vertical` TextField doesn't insert a newline
-                // for Shift+Return on its own), matching Slack / Discord.
-                .keyboardShortcut(.return, modifiers: [])
+            if case let .recording(start) = recorder.state {
+                recordingBar(start: start)
+            } else {
+                composerBar
             }
-            .padding()
         }
         // Restore any draft the user typed in this room earlier in the
         // session. `.task` runs on view appear; the per-room cache
@@ -169,6 +96,10 @@ struct MacComposerView: View {
             // persists the real one.
             viewModel.exitHistoryNavigation()
             ComposerDraftMemory.store(roomID: viewModel.roomID, text: viewModel.input)
+            // An in-flight recording has no UI once this composer is gone —
+            // abort it (discarding the temp file) rather than letting the
+            // mic keep capturing with nothing to stop or send it.
+            recorder.cancel()
             if let keyMonitor {
                 NSEvent.removeMonitor(keyMonitor)
                 self.keyMonitor = nil
@@ -195,6 +126,154 @@ struct MacComposerView: View {
                 return nil
             }
         }
+    }
+
+    /// The normal composer row: plus (attach) on the left, growing text
+    /// field with the Up/Down history + edit key handling, then a mic
+    /// (empty input) or the send button. Plus + mic are gated on
+    /// `mediaAvailable`, mirroring iOS `ComposerView`.
+    private var composerBar: some View {
+        HStack(alignment: .bottom, spacing: 4) {
+            // Journal stack: media DISPLAY is live server-side, but the
+            // client send whitelist is text-only, so composing an
+            // attachment would fail server-side. Gated on the VM flag
+            // rather than deleted outright. Mirrors iOS `ComposerView`.
+            if ComposerViewModel.mediaAvailable {
+                Button {
+                    pickFiles()
+                } label: {
+                    Image(systemName: "plus.circle")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                        // Centre the icon in a one-line-tall container so
+                        // it lines up with the send button and the
+                        // single-line input; horizontal padding keeps the
+                        // hit target. See `singleLineInputHeight`.
+                        .frame(height: Self.singleLineInputHeight)
+                        .padding(.horizontal, 8)
+                }
+                .buttonStyle(.plain)
+                .help("Attach a file")
+            }
+
+            TextField(Self.placeholder, text: $viewModel.input, axis: .vertical)
+                .lineLimit(1...8)
+                .textFieldStyle(.plain)
+                .padding(Self.inputVerticalPadding)
+                // White (dark-mode: elevated warm) input surface, same
+                // as bot bubbles — `.regularMaterial` read muddy-dark
+                // against the cream timeline gradient. Matches
+                // matron-web's white composer on the cream ground.
+                .background(Color.matronBubbleBot)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .shadow(color: .matronBubbleShadow, radius: 2, y: 1)
+                // Up recalls older sent messages (terminal-style), but
+                // only from an empty field or once a walk is already
+                // active — otherwise the caret moves through a multi-line
+                // draft. Down walks forward, and only while navigating.
+                .onKeyPress(.upArrow) {
+                    if viewModel.input.isEmpty || viewModel.isNavigatingHistory {
+                        viewModel.recallOlder()
+                        return .handled
+                    }
+                    return .ignored
+                }
+                .onKeyPress(.downArrow) {
+                    if viewModel.isNavigatingHistory {
+                        viewModel.recallNewer()
+                        return .handled
+                    }
+                    return .ignored
+                }
+                // Any user edit exits history navigation. The VM guards
+                // its own recall writes so this doesn't fire falsely.
+                .onChange(of: viewModel.input) { _, _ in
+                    viewModel.handleInputChange()
+                }
+
+            // Mic when the field is empty (WhatsApp-style), send once the
+            // user has typed. Falls back to the send button when media is
+            // gated off so there's always a trailing action.
+            if !isSendable && ComposerViewModel.mediaAvailable {
+                Button {
+                    Task { await startRecording() }
+                } label: {
+                    Image(systemName: "mic")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                        .frame(height: Self.singleLineInputHeight)
+                }
+                .buttonStyle(.plain)
+                .help("Record a voice note")
+                .padding(.trailing, 4)
+            } else {
+                Button {
+                    Task { await viewModel.send() }
+                } label: {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.title)
+                        .foregroundStyle(isSendable ? Color.accentColor : Color.secondary)
+                        // Same one-line-tall container as the plus so
+                        // the arrow centres against a single-line input.
+                        .frame(height: Self.singleLineInputHeight)
+                }
+                .buttonStyle(.plain)
+                .disabled(!isSendable || viewModel.isSending)
+                .padding(.trailing, 4)
+                // Enter sends; Shift+Enter inserts a newline. Plain Return is
+                // intercepted by this shortcut; the Shift+Return newline is
+                // handled by the local key monitor installed in `.onAppear`
+                // (the `axis: .vertical` TextField doesn't insert a newline
+                // for Shift+Return on its own), matching Slack / Discord.
+                .keyboardShortcut(.return, modifiers: [])
+            }
+        }
+        .padding()
+    }
+
+    /// The recording pill shown in place of the composer while a voice note
+    /// is being captured: a red dot, live elapsed time, a Cancel affordance,
+    /// and a prominent stop-and-send button. Mirrors iOS `ComposerView`.
+    private func recordingBar(start: Date) -> some View {
+        HStack(spacing: 12) {
+            Circle()
+                .fill(Color.red)
+                .frame(width: 10, height: 10)
+            Text(start, style: .timer)
+                .monospacedDigit()
+                .foregroundStyle(.primary)
+            Spacer()
+            Button("Cancel") { recorder.cancel() }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            Button {
+                stopRecordingAndSend()
+            } label: {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.title)
+                    .foregroundStyle(Color.accentColor)
+                    .frame(height: Self.singleLineInputHeight)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding()
+    }
+
+    /// Starts a recording, surfacing permission / hardware failures through
+    /// the same `sendError` channel the composer already uses.
+    private func startRecording() async {
+        do {
+            try await recorder.start()
+        } catch {
+            viewModel.reportAttachmentError(error.localizedDescription)
+        }
+    }
+
+    /// Stops the recording and hands the resulting file to the view model,
+    /// which uploads it as an audio attachment and deletes the temp file.
+    private func stopRecordingAndSend() {
+        guard let result = recorder.stop() else { return }
+        Task { await viewModel.sendVoiceNote(url: result.url, duration: result.duration) }
     }
 
     /// Opens an `NSOpenPanel` and forwards the selection to
