@@ -55,6 +55,9 @@ struct MatronApp: App {
                     }
                     .environment(\.appDependencies, dependencies)
                     .environment(\.currentSession, session)
+                    // Lets the running-subagent strip / sub-chat switcher
+                    // push a child chat or switch siblings on the same stack.
+                    .environment(\.chatNavigationPath, $chatPath)
                     // Notification-tap deep link. The NSE-rewritten
                     // userInfo carries `room_id`; NotificationDelegate
                     // publishes that ID and we append it onto the
