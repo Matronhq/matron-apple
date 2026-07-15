@@ -22,7 +22,7 @@ final class WireModelsTests: XCTestCase {
         }
         XCTAssertEqual(head, 42)
 
-        guard case let .error(code, ref)? = ServerFrame.decode(#"{"kind":"control","op":"error","code":"forbidden","ref":"send"}"#) else {
+        guard case let .error(code, ref, _, _)? = ServerFrame.decode(#"{"kind":"control","op":"error","code":"forbidden","ref":"send"}"#) else {
             return XCTFail("expected error")
         }
         XCTAssertEqual(code, "forbidden")
@@ -222,5 +222,83 @@ final class WireModelsTests: XCTestCase {
             #"{"kind":"ephemeral","convo_id":"c1","message_ref":"m7","text":"hi"}"#) else {
             return XCTFail("text streaming ephemeral regressed")
         }
+    }
+
+    // MARK: Agent RPC (protocol.md §Agent RPC)
+
+    func testDecodeRPCResponseFrames() throws {
+        guard case let .rpcResponse(ok)? = ServerFrame.decode(
+            #"{"kind":"rpc","response":{"request_id":"r1","agent_device_id":9,"ok":true,"result":{"convo_id":"c-new"}}}"#) else {
+            return XCTFail("expected rpcResponse frame")
+        }
+        XCTAssertEqual(ok.requestID, "r1")
+        XCTAssertEqual(ok.agentDeviceID, 9)
+        XCTAssertTrue(ok.ok)
+        let result = try XCTUnwrap(ok.resultData.flatMap {
+            try? JSONSerialization.jsonObject(with: $0) as? [String: Any]
+        })
+        XCTAssertEqual(result["convo_id"] as? String, "c-new")
+        XCTAssertNil(ok.errorCode)
+
+        guard case let .rpcResponse(fail)? = ServerFrame.decode(
+            #"{"kind":"rpc","response":{"request_id":"r2","agent_device_id":9,"ok":false,"error":{"code":"bad_workdir","detail":"/nope"}}}"#) else {
+            return XCTFail("expected failing rpcResponse frame")
+        }
+        XCTAssertFalse(fail.ok)
+        XCTAssertEqual(fail.errorCode, "bad_workdir")
+        XCTAssertEqual(fail.errorDetail, "/nope")
+        XCTAssertNil(fail.resultData)
+
+        // ok:false without an error object still decodes (server enforces
+        // error.code, but the client must not crash on a violation).
+        guard case let .rpcResponse(bare)? = ServerFrame.decode(
+            #"{"kind":"rpc","response":{"request_id":"r3","agent_device_id":9,"ok":false}}"#) else {
+            return XCTFail("expected bare failing rpcResponse frame")
+        }
+        XCTAssertNil(bare.errorCode)
+
+        // An rpc REQUEST frame (agent-side shape) is not for a client — skip.
+        XCTAssertNil(ServerFrame.decode(
+            #"{"kind":"rpc","request":{"request_id":"r1","from_device_id":7,"method":"start","params":null}}"#))
+        // Malformed: missing request_id / ok.
+        XCTAssertNil(ServerFrame.decode(#"{"kind":"rpc","response":{"agent_device_id":9,"ok":true}}"#))
+        XCTAssertNil(ServerFrame.decode(#"{"kind":"rpc","response":{"request_id":"r1","agent_device_id":9}}"#))
+    }
+
+    func testDecodeControlErrorCarriesRequestIDAndDetail() {
+        guard case let .error(code, ref, requestID, detail)? = ServerFrame.decode(
+            #"{"kind":"control","op":"error","code":"not_ready","ref":"agent_request","request_id":"r9","detail":"mid-replay"}"#) else {
+            return XCTFail("expected error frame")
+        }
+        XCTAssertEqual(code, "not_ready")
+        XCTAssertEqual(ref, "agent_request")
+        XCTAssertEqual(requestID, "r9")
+        XCTAssertEqual(detail, "mid-replay")
+
+        guard case let .error(_, _, noRid, _)? = ServerFrame.decode(
+            #"{"kind":"control","op":"error","code":"forbidden","ref":"send"}"#) else {
+            return XCTFail("expected plain error frame")
+        }
+        XCTAssertNil(noRid)
+    }
+
+    func testEncodeAgentRequestOp() throws {
+        let params = try JSONSerialization.data(withJSONObject: ["workdir": "~/dev", "browser": true])
+        let op = ClientOp.agentRequest(requestID: "r1", agentDeviceID: 9,
+                                       method: "start", paramsData: params)
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(op.encoded().utf8)) as? [String: Any])
+        XCTAssertEqual(obj["op"] as? String, "agent_request")
+        XCTAssertEqual(obj["request_id"] as? String, "r1")
+        XCTAssertEqual(obj["agent_device_id"] as? Int64, 9)
+        XCTAssertEqual(obj["method"] as? String, "start")
+        let sent = obj["params"] as? [String: Any]
+        XCTAssertEqual(sent?["workdir"] as? String, "~/dev")
+        XCTAssertEqual(sent?["browser"] as? Bool, true)
+
+        // Unparseable params degrade to {} rather than dropping the frame.
+        let broken = ClientOp.agentRequest(requestID: "r2", agentDeviceID: 9,
+                                           method: "recent_folders", paramsData: Data("junk".utf8))
+        let brokenObj = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(broken.encoded().utf8)) as? [String: Any])
+        XCTAssertEqual((brokenObj["params"] as? [String: Any])?.isEmpty, true)
     }
 }

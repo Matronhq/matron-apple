@@ -9,6 +9,22 @@ public enum JournalSyncError: Error, Equatable, Sendable {
     case authRevoked
 }
 
+/// An agent's answer to `agentRequest` — either the method's result (raw
+/// JSON bytes, caller decodes) or the bridge/server error code.
+public enum RPCReply: Equatable, Sendable {
+    case ok(resultData: Data)
+    case failure(code: String, detail: String?)
+}
+
+public enum RPCRequestError: Error, Equatable, Sendable {
+    /// No answer within the deadline. The relay is at-most-once and keeps no
+    /// state, so the caller re-asks (for non-idempotent methods, only after
+    /// the user acts again).
+    case timeout
+    /// No live journal connection to send on (or it died mid-request).
+    case offline
+}
+
 /// The single writer of the JournalStore and owner of the reconnect loop.
 /// Any failure converges to "reconnect and resume from the store cursor" —
 /// there is no other recovery path, so there is nothing to wedge.
@@ -66,6 +82,16 @@ public actor JournalSyncEngine {
     private var newConvoContinuations: [UUID: AsyncStream<String>.Continuation] = [:]
     private var readyWaiters: [CheckedContinuation<Void, Error>] = []
 
+    /// One in-flight agent RPC. The verbatim op is kept because `not_ready`
+    /// means "nothing was forwarded — re-send the identical frame".
+    private struct PendingRPC {
+        let op: ClientOp
+        let notReadyBackoff: Duration
+        var resendsRemaining: Int
+        let continuation: CheckedContinuation<RPCReply, Error>
+    }
+    private var rpcPending: [String: PendingRPC] = [:]
+
     public init(
         api: JournalAPI, store: JournalStore, connector: any WebSocketConnecting,
         token: String, ownSender: String, search: (any SearchService)?,
@@ -97,6 +123,7 @@ public actor JournalSyncEngine {
         lastPathSignature = nil
         pathChangeReconnect = false
         failReadyWaiters(JournalSyncError.offline)
+        failAllRPC(RPCRequestError.offline)
         // Drop the status replay cache with the connection: values cached
         // here are only as fresh as the live stream, and a future
         // beginSync()'s `viewing` replay repopulates it.
@@ -172,6 +199,103 @@ public actor JournalSyncEngine {
     public func setViewing(convoID: String?) async {
         viewingConvoID = convoID
         try? await liveConnection?.send(.viewing(convoID: convoID))
+    }
+
+    /// Sends a structured request to one of the user's agent devices and
+    /// awaits the correlated answer (protocol.md §Agent RPC). At-most-once:
+    /// on `.timeout` nothing is retried here — re-asking is the caller's
+    /// decision. `not_ready` (we raced our own hello replay) is retried
+    /// internally with the identical frame, which the server documents as
+    /// always safe.
+    public func agentRequest(
+        agentDeviceID: Int64, method: String, paramsData: Data,
+        timeout: Duration = .seconds(15),
+        notReadyBackoff: Duration = .seconds(1)
+    ) async throws -> RPCReply {
+        guard let connection = liveConnection else { throw RPCRequestError.offline }
+        let requestID = UUID().uuidString
+        let op = ClientOp.agentRequest(requestID: requestID, agentDeviceID: agentDeviceID,
+                                       method: method, paramsData: paramsData)
+        let deadline = Task { [weak self] in
+            try? await Task.sleep(for: timeout)
+            guard !Task.isCancelled else { return }
+            await self?.expireRPC(requestID: requestID)
+        }
+        defer { deadline.cancel() }
+        return try await withCheckedThrowingContinuation { continuation in
+            rpcPending[requestID] = PendingRPC(op: op, notReadyBackoff: notReadyBackoff,
+                                               resendsRemaining: 2, continuation: continuation)
+            Task { [weak self] in
+                do { try await connection.send(op) }
+                catch { await self?.dropRPC(requestID: requestID, error: RPCRequestError.offline) }
+            }
+        }
+    }
+
+    // MARK: RPC correlator internals
+
+    /// Every resume path funnels through a removal-first take, so a
+    /// duplicate response (multicast), a response racing the timeout, or a
+    /// timeout racing teardown can never double-resume a continuation.
+    private func takeRPC(_ requestID: String) -> PendingRPC? {
+        rpcPending.removeValue(forKey: requestID)
+    }
+
+    private func resumeRPC(_ response: RPCResponse) {
+        guard let pending = takeRPC(response.requestID) else { return } // duplicate or expired
+        if response.ok {
+            pending.continuation.resume(returning: .ok(resultData: response.resultData ?? Data("null".utf8)))
+        } else {
+            pending.continuation.resume(returning: .failure(
+                code: response.errorCode ?? "unknown", detail: response.errorDetail))
+        }
+    }
+
+    private func failRPC(requestID: String, code: String, detail: String?) {
+        // not_ready = our own hello replay hasn't finished; nothing was
+        // forwarded, so the identical frame re-sends safely after a beat.
+        if code == "not_ready", var pending = rpcPending[requestID], pending.resendsRemaining > 0 {
+            pending.resendsRemaining -= 1
+            let op = pending.op
+            let backoff = pending.notReadyBackoff
+            rpcPending[requestID] = pending
+            Task { [weak self] in
+                try? await Task.sleep(for: backoff)
+                await self?.resendRPC(requestID: requestID, op: op)
+            }
+            return
+        }
+        guard let pending = takeRPC(requestID) else { return }
+        pending.continuation.resume(returning: .failure(code: code, detail: detail))
+    }
+
+    private func resendRPC(requestID: String, op: ClientOp) {
+        guard rpcPending[requestID] != nil else { return } // timed out meanwhile
+        guard let connection = liveConnection else {
+            dropRPC(requestID: requestID, error: RPCRequestError.offline)
+            return
+        }
+        Task { [weak self] in
+            do { try await connection.send(op) }
+            catch { await self?.dropRPC(requestID: requestID, error: RPCRequestError.offline) }
+        }
+    }
+
+    private func expireRPC(requestID: String) {
+        dropRPC(requestID: requestID, error: RPCRequestError.timeout)
+    }
+
+    private func dropRPC(requestID: String, error: Error) {
+        guard let pending = takeRPC(requestID) else { return }
+        pending.continuation.resume(throwing: error)
+    }
+
+    /// Connection teardown: every in-flight RPC fails now — the relay keeps
+    /// no state, so an answer can never arrive on the next socket.
+    private func failAllRPC(_ error: Error) {
+        let pending = rpcPending
+        rpcPending.removeAll()
+        for (_, entry) in pending { entry.continuation.resume(throwing: error) }
     }
 
     public func refreshSummaries() async {
@@ -477,7 +601,15 @@ public actor JournalSyncEngine {
                         for (_, entry) in sessionStatusContinuations where entry.convoID == update.convoID {
                             entry.continuation.yield(update)
                         }
-                    case .error, .helloOK, .unknownControl:
+                    case .rpcResponse(let response):
+                        resumeRPC(response)
+                    case .error(let code, _, let requestID, let detail):
+                        // Correlated RPC errors resume their waiter; other
+                        // post-hello control frames are advisory.
+                        if let requestID {
+                            failRPC(requestID: requestID, code: code, detail: detail)
+                        }
+                    case .helloOK, .unknownControl:
                         break // post-hello control frames are advisory
                     }
                 }
@@ -486,6 +618,7 @@ public actor JournalSyncEngine {
                 liveConnection = nil
                 setState(.offline(reason: "Signed out by server"))
                 failReadyWaiters(JournalSyncError.authRevoked)
+                failAllRPC(RPCRequestError.offline)
                 runTask = nil
                 return
             } catch {
@@ -498,6 +631,10 @@ public actor JournalSyncEngine {
             }
             liveConnection?.close()
             liveConnection = nil
+            // The relay is stateless — an in-flight request's answer cannot
+            // arrive on the next socket, so fail the waiters now rather
+            // than leaving them to their timeouts.
+            failAllRPC(RPCRequestError.offline)
             if Task.isCancelled { return }
             if pathChangeReconnect {
                 // Engine-initiated rebind after a network-path change: the
