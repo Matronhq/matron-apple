@@ -110,6 +110,18 @@ final class DevicesViewModelTests: XCTestCase {
         XCTAssertEqual(vm.devices.map(\.id), [9])
     }
 
+    func test_displayHelpers_lastSeenNeverAndLag() {
+        let never = device(1, kind: "agent", lastSeenAt: nil)
+        XCTAssertEqual(never.lastSeenText(), "Never")
+        XCTAssertEqual(never.symbolName, "terminal")
+        XCTAssertEqual(never.lagText, "Up to date")
+        let behind = device(2, kind: "client", lag: 123, lastSeenAt: 1_784_500_000_000)
+        XCTAssertEqual(behind.lagText, "123 events behind")
+        XCTAssertEqual(behind.symbolName, "laptopcomputer")
+        XCTAssertNotEqual(behind.lastSeenText(), "Never")
+        XCTAssertEqual(device(3, lag: 1).lagText, "1 event behind")
+    }
+
     func test_refresh_errorSurfacesMessage() async {
         struct Failing: DevicesProviding {
             func devices() async throws -> [DeviceDTO] { throw JournalAPIError.transport("offline") }

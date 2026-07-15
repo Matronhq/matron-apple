@@ -79,3 +79,26 @@ public final class DevicesViewModel {
         return "the server said no (\(error))."
     }
 }
+
+/// Display helpers shared by the Mac and iOS device rows.
+extension DeviceDTO {
+    public var isClient: Bool { kind == "client" }
+
+    /// SF Symbol for the row icon: apps are laptops, agents are terminals.
+    public var symbolName: String { isClient ? "laptopcomputer" : "terminal" }
+
+    /// `lag` is the user's head seq minus this device's cursor.
+    public var lagText: String {
+        lag <= 0 ? "Up to date" : "\(lag) event\(lag == 1 ? "" : "s") behind"
+    }
+
+    /// Relative last-seen. `nil` = never connected (e.g. an agent enrolled
+    /// but whose box hasn't come online) → "Never", per the spec.
+    public func lastSeenText(now: Date = Date()) -> String {
+        guard let lastSeenAt else { return "Never" }
+        let date = Date(timeIntervalSince1970: TimeInterval(lastSeenAt) / 1000)
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: date, relativeTo: now)
+    }
+}

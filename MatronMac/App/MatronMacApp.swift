@@ -144,13 +144,23 @@ struct MatronMacApp: App {
         // for the keyboard shortcuts and notification names.
         .commands { ChatCommands() }
 
-        // Settings → Device. Read-only account summary + Sign Out — see
-        // `MacDeviceSettingsView` for the Task 12 rationale (this is the
-        // view's new home now that the Help → Show Recovery Key… route
-        // that used to present it is gone).
+        // Settings (⌘,), two tabs:
+        // - General: read-only account summary + appearance + Sign Out —
+        //   see `MacDeviceSettingsView` for the Task 12 rationale.
+        // - Devices: the journal device roster + agent pairing (journal
+        //   PR #19 spec). Self-revocation routes through the same
+        //   `signOut` as the button on the General tab.
         Settings {
             if let session {
-                MacDeviceSettingsView(session: session, onSignOut: { signOut(activeSession: session) })
+                TabView {
+                    MacDeviceSettingsView(session: session, onSignOut: { signOut(activeSession: session) })
+                        .tabItem { Label("General", systemImage: "gearshape") }
+                    MacDevicesView(
+                        api: dependencies.devicesService(for: session),
+                        onSelfRevoked: { signOut(activeSession: session) }
+                    )
+                    .tabItem { Label("Devices", systemImage: "laptopcomputer.and.iphone") }
+                }
             } else {
                 Text("Sign in to view settings.")
                     .padding()
