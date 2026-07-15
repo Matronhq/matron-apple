@@ -25,6 +25,16 @@ final class BotCommandCatalogTests: XCTestCase {
         XCTAssertTrue(filtered.isEmpty)
     }
 
+    /// Pins the claude-native passthrough commands the palette must surface
+    /// (Dan, 2026-07-15): context/compaction plus account login/logout —
+    /// the bridge forwards these into the session rather than intercepting.
+    func test_claudeBridge_includesContextAndAccountCommands() {
+        let triggers = Set(BotCommandCatalog.claudeBridge.map(\.trigger))
+        for expected in ["/context", "/compact", "/login", "/logout"] {
+            XCTAssertTrue(triggers.contains(expected), "catalog must include \(expected)")
+        }
+    }
+
     func test_claudeBridge_isNonEmpty_andHasUniqueTriggers() {
         let all = BotCommandCatalog.claudeBridge
         XCTAssertFalse(all.isEmpty)
