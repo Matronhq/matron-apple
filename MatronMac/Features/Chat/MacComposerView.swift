@@ -82,18 +82,26 @@ struct MacComposerView: View {
         // bottom 4pt above the composer's top edge; SwiftUI doesn't clip
         // overlays, and the composer renders after the timeline in
         // `MacChatView`'s VStack, so the panel draws over the messages.
+        //
+        // The guide lives on a `ZStack` wrapper, OUTSIDE the `if`: a custom
+        // alignment guide set inside conditional content is dropped by
+        // SwiftUI's `ConditionalContent`, which left the panel top-aligned
+        // INTO the composer, covering the input and clipped by the window
+        // bottom (Dan, 2026-07-15).
         .overlay(alignment: .top) {
-            if viewModel.showPalette {
-                MacSlashCommandPalette(
-                    commands: viewModel.filteredCommands,
-                    folders: viewModel.folderSuggestions,
-                    selection: viewModel.paletteSelection,
-                    onSelect: { cmd in viewModel.selectCommand(cmd) },
-                    onSelectFolder: { folder in viewModel.selectFolder(folder) }
-                )
-                .padding(.horizontal)
-                .alignmentGuide(.top) { $0[.bottom] + 4 }
+            ZStack {
+                if viewModel.showPalette {
+                    MacSlashCommandPalette(
+                        commands: viewModel.filteredCommands,
+                        folders: viewModel.folderSuggestions,
+                        selection: viewModel.paletteSelection,
+                        onSelect: { cmd in viewModel.selectCommand(cmd) },
+                        onSelectFolder: { folder in viewModel.selectFolder(folder) }
+                    )
+                    .padding(.horizontal)
+                }
             }
+            .alignmentGuide(.top) { $0[.bottom] + 4 }
         }
         // Restore any draft the user typed in this room earlier in the
         // session. `.task` runs on view appear; the per-room cache
