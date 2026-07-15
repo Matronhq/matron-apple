@@ -137,18 +137,23 @@ public final class ComposerViewModel {
     }
 
     /// Down-arrow while the palette shows: highlight the first row, or
-    /// step the highlight down, stopping at the last row.
+    /// step the highlight down, stopping at the last row. No-op during a
+    /// history walk — a recalled single-token slash line (e.g. "/start")
+    /// pops the palette open, and the arrows must keep walking history,
+    /// not get captured by the palette (bugbot, PR #41). The view routes
+    /// the keys the same way; this guard pins the policy model-side.
     public func paletteMoveDown() {
         let count = paletteItemCount
-        guard showPalette, count > 0 else { return }
+        guard showPalette, !isNavigatingHistory, count > 0 else { return }
         paletteSelection = min(paletteSelection.map { $0 + 1 } ?? 0, count - 1)
     }
 
     /// Up-arrow while the palette shows: step the highlight up, stopping
     /// at the first row; with no highlight yet, start from the last row.
+    /// No-op during a history walk — see `paletteMoveDown()`.
     public func paletteMoveUp() {
         let count = paletteItemCount
-        guard showPalette, count > 0 else { return }
+        guard showPalette, !isNavigatingHistory, count > 0 else { return }
         paletteSelection = max(paletteSelection.map { $0 - 1 } ?? (count - 1), 0)
     }
 

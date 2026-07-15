@@ -547,6 +547,27 @@ final class ComposerViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_paletteMove_noOpDuringHistoryWalk() async {
+        // Bugbot (PR #41): a recalled single-token slash line ("/start")
+        // pops the palette open; the arrows must keep walking history,
+        // not get captured by the palette highlight.
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: emptyRecentFolders())
+        vm.input = "/start"
+        await vm.send()
+        vm.recallOlder()
+        XCTAssertTrue(vm.isNavigatingHistory)
+        XCTAssertEqual(vm.input, "/start")
+        XCTAssertTrue(vm.showPalette, "the recalled slash token re-opens the palette")
+
+        vm.paletteMoveDown()
+        vm.paletteMoveUp()
+        XCTAssertNil(vm.paletteSelection,
+                     "palette highlight must not move while a history walk is active")
+    }
+
+    @MainActor
     func test_paletteMove_noOpWhenPaletteHidden() {
         let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
                                    commands: BotCommandCatalog.claudeBridge,

@@ -175,33 +175,37 @@ struct MacComposerView: View {
                 .background(Color.matronBubbleBot)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .shadow(color: .matronBubbleShadow, radius: 2, y: 1)
-                // While the palette shows, Up/Down move its keyboard
-                // highlight — palette navigation outranks history recall
-                // (the two rarely collide: the palette needs a `/` token
-                // or the ⌘K pin, recall needs an empty field or an active
-                // walk). Otherwise Up recalls older sent messages
-                // (terminal-style), but only from an empty field or once
-                // a walk is already active — else the caret moves through
-                // a multi-line draft. Down walks forward, and only while
-                // navigating.
+                // An ACTIVE history walk owns Up/Down outright — a
+                // recalled single-token slash line (e.g. "/start") pops
+                // the palette open, and letting the palette grab the
+                // arrows there would trap the walk on that entry (bugbot,
+                // PR #41). Otherwise, while the palette shows, Up/Down
+                // move its keyboard highlight; and failing both, Up
+                // recalls older sent messages (terminal-style), but only
+                // from an empty field — else the caret moves through a
+                // multi-line draft.
                 .onKeyPress(.upArrow) {
+                    if viewModel.isNavigatingHistory {
+                        viewModel.recallOlder()
+                        return .handled
+                    }
                     if viewModel.showPalette, viewModel.paletteItemCount > 0 {
                         viewModel.paletteMoveUp()
                         return .handled
                     }
-                    if viewModel.input.isEmpty || viewModel.isNavigatingHistory {
+                    if viewModel.input.isEmpty {
                         viewModel.recallOlder()
                         return .handled
                     }
                     return .ignored
                 }
                 .onKeyPress(.downArrow) {
-                    if viewModel.showPalette, viewModel.paletteItemCount > 0 {
-                        viewModel.paletteMoveDown()
-                        return .handled
-                    }
                     if viewModel.isNavigatingHistory {
                         viewModel.recallNewer()
+                        return .handled
+                    }
+                    if viewModel.showPalette, viewModel.paletteItemCount > 0 {
+                        viewModel.paletteMoveDown()
                         return .handled
                     }
                     return .ignored
