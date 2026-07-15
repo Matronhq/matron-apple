@@ -114,7 +114,12 @@ private struct NativeScrollViewCapture: UIViewRepresentable {
             }
             let scrollView = candidate as? UIScrollView
             box?.scrollView = scrollView
-            if lockHorizontalOverflow, overflowLock == nil, let scrollView {
+            // Identity check, not a once-only guard: this can run again
+            // with a DIFFERENT backing scroll view (SwiftUI reusing the
+            // capture helper), and a lock left on the old one clamps
+            // nothing while the new one wiggles freely.
+            if lockHorizontalOverflow, let scrollView,
+               overflowLock?.scrollView !== scrollView {
                 overflowLock = HorizontalOverflowLock(scrollView: scrollView)
             }
         }

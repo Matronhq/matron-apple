@@ -78,6 +78,31 @@ final class HorizontalOverflowLockTests: XCTestCase {
         XCTAssertEqual(scrollView.contentSize.width, 400)
     }
 
+    func test_exposesLockedScrollViewIdentity() {
+        // `captureNativeScrollView` must reinstall the lock when SwiftUI
+        // swaps the backing scroll view under a reused capture helper —
+        // otherwise KVO keeps clamping the dead scroll view while the new
+        // one wiggles freely. That reinstall check compares identity via
+        // this property, so pin it: the lock knows exactly which scroll
+        // view it observes.
+        let first = makeScrollView()
+        let second = makeScrollView()
+
+        let lock = HorizontalOverflowLock(scrollView: first)
+
+        XCTAssertTrue(lock.scrollView === first,
+                      "the lock reports the scroll view it observes")
+        XCTAssertFalse(lock.scrollView === second,
+                       "a different scroll view instance must not match — that mismatch is the reinstall trigger")
+
+        // And a fresh lock for the replacement clamps the replacement.
+        second.contentSize = CGSize(width: 480, height: 700)
+        let relock = HorizontalOverflowLock(scrollView: second)
+        defer { _ = relock }
+        XCTAssertEqual(second.contentSize.width, 320,
+                       "reinstalled lock clamps the replacement scroll view")
+    }
+
     func test_overflowingDescendants_reportsWideViewsButNotNestedScrollerContent() {
         let scrollView = makeScrollView()
         let container = UIView(frame: CGRect(x: 0, y: 0, width: 320, height: 900))

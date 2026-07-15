@@ -22,7 +22,14 @@ public final class HorizontalOverflowLock {
 
     private var observation: NSKeyValueObservation?
 
+    /// The scroll view this lock observes. SwiftUI can swap the backing
+    /// scroll view under a reused capture helper — installers compare this
+    /// identity to know when the lock is watching a dead scroll view and
+    /// must be reinstalled on the replacement.
+    public private(set) weak var scrollView: UIScrollView?
+
     public init(scrollView: UIScrollView) {
+        self.scrollView = scrollView
         scrollView.alwaysBounceHorizontal = false
         // KVO fires synchronously inside the setter, which UIKit only
         // drives from the main thread — `assumeIsolated` documents that.
