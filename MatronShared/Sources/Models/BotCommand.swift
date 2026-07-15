@@ -46,6 +46,12 @@ public enum BotCommandCatalog {
         BotCommand(trigger: "/usage", summary: "Show token usage"),
         BotCommand(trigger: "/limits", summary: "Show subscription usage limits"),
         BotCommand(trigger: "/tools", summary: "List available tools"),
+        // Context
+        BotCommand(trigger: "/context", summary: "Show what's using the context window"),
+        BotCommand(trigger: "/compact", summary: "Compact the conversation to free context", argHint: "[instructions]"),
+        // Account
+        BotCommand(trigger: "/login", summary: "Log in to your Anthropic account"),
+        BotCommand(trigger: "/logout", summary: "Log out of your Anthropic account"),
         // Misc
         BotCommand(trigger: "/esc", summary: "Cancel the current turn"),
         BotCommand(trigger: "/help", summary: "Show command help"),
