@@ -219,8 +219,17 @@ public struct AskUserSheetBody: View {
 /// read foreign against the warm cream palette (Dan, 2026-07-15). `.plain`
 /// button style drops the system's automatic disabled dimming, so callers
 /// pass `dimmed` to restore it.
+///
+/// Chips deepen under the pointer (Dan, 2026-07-15: buttons read "very
+/// dead" without a hover state). `onHover` never fires on touch-only
+/// iPhones, so the shared modifier costs iOS nothing; iPad pointer users
+/// get it for free.
 private struct AccentChip: ViewModifier {
     let dimmed: Bool
+
+    @State private var hovering = false
+
+    private var highlighted: Bool { hovering && !dimmed }
 
     func body(content: Content) -> some View {
         content
@@ -229,13 +238,15 @@ private struct AccentChip: ViewModifier {
             .foregroundStyle(Color.matronAccent)
             .background(
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.matronAccent.opacity(0.10))
+                    .fill(Color.matronAccent.opacity(highlighted ? 0.22 : 0.10))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(Color.matronAccent.opacity(0.35), lineWidth: 1)
+                    .strokeBorder(Color.matronAccent.opacity(highlighted ? 0.6 : 0.35), lineWidth: 1)
             )
             .contentShape(Rectangle())
             .opacity(dimmed ? 0.5 : 1)
+            .onHover { hovering = $0 }
+            .animation(.easeOut(duration: 0.12), value: hovering)
     }
 }

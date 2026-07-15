@@ -454,4 +454,106 @@ final class ComposerViewModelTests: XCTestCase {
         XCTAssertTrue(vm.folderSuggestions.isEmpty)
         XCTAssertFalse(vm.showPalette)
     }
+
+    // MARK: - Palette keyboard navigation
+
+    @MainActor
+    func test_paletteSelection_startsNilAndMovesWithinBounds() {
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: emptyRecentFolders())
+        vm.input = "/"
+        XCTAssertNil(vm.paletteSelection, "no row is highlighted until an arrow key moves")
+        let count = vm.paletteItemCount
+        XCTAssertGreaterThan(count, 1)
+
+        // First Down highlights the first row; further Downs clamp at the end.
+        vm.paletteMoveDown()
+        XCTAssertEqual(vm.paletteSelection, 0)
+        for _ in 0..<(count + 3) { vm.paletteMoveDown() }
+        XCTAssertEqual(vm.paletteSelection, count - 1, "Down clamps at the last row")
+
+        // Up steps back and clamps at the first row.
+        for _ in 0..<(count + 3) { vm.paletteMoveUp() }
+        XCTAssertEqual(vm.paletteSelection, 0, "Up clamps at the first row")
+    }
+
+    @MainActor
+    func test_paletteMoveUp_fromNoSelection_startsAtLastRow() {
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: emptyRecentFolders())
+        vm.input = "/"
+        vm.paletteMoveUp()
+        XCTAssertEqual(vm.paletteSelection, vm.paletteItemCount - 1)
+    }
+
+    @MainActor
+    func test_confirmPaletteSelection_picksHighlightedCommand() {
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: emptyRecentFolders())
+        vm.input = "/sta"
+        let expected = vm.filteredCommands[0].trigger
+        vm.paletteMoveDown()
+        XCTAssertTrue(vm.confirmPaletteSelection(), "Return picks the highlighted row")
+        XCTAssertEqual(vm.input, expected + " ")
+        XCTAssertNil(vm.paletteSelection, "the highlight is consumed by the pick")
+    }
+
+    @MainActor
+    func test_confirmPaletteSelection_withoutHighlight_fallsThroughToSend() {
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: emptyRecentFolders())
+        vm.input = "/start"
+        XCTAssertFalse(vm.confirmPaletteSelection(),
+                       "no highlight means Return should send the typed input")
+        XCTAssertEqual(vm.input, "/start", "input is untouched")
+    }
+
+    @MainActor
+    func test_confirmPaletteSelection_picksHighlightedFolder() {
+        let store = emptyRecentFolders()
+        store.record("~/one")
+        store.record("~/two")
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: store)
+        vm.input = "/start "
+        // Most-recent-first: row 0 is "~/two", row 1 is "~/one".
+        vm.paletteMoveDown()
+        vm.paletteMoveDown()
+        XCTAssertTrue(vm.confirmPaletteSelection())
+        XCTAssertEqual(vm.input, "/start ~/one")
+        XCTAssertNil(vm.paletteSelection)
+    }
+
+    @MainActor
+    func test_paletteSelection_resetsOnUserEdit() {
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: emptyRecentFolders())
+        vm.input = "/"
+        vm.paletteMoveDown()
+        vm.paletteMoveDown()
+        XCTAssertEqual(vm.paletteSelection, 1)
+
+        // Typing narrows the row list — a stale index would point at the
+        // wrong row, so any edit clears the highlight.
+        vm.input = "/sta"
+        vm.handleInputChange()
+        XCTAssertNil(vm.paletteSelection)
+    }
+
+    @MainActor
+    func test_paletteMove_noOpWhenPaletteHidden() {
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: emptyRecentFolders())
+        vm.input = "plain message"
+        vm.paletteMoveDown()
+        XCTAssertNil(vm.paletteSelection)
+        XCTAssertFalse(vm.confirmPaletteSelection())
+    }
 }
