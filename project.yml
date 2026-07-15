@@ -96,6 +96,14 @@ targets:
         # (not by hand in Info.plist) so `xcodegen generate` keeps it in the
         # generated plist — the same channel as NSAppTransportSecurity below.
         NSMicrophoneUsageDescription: Records voice notes to send to your agent.
+        # Photo-library usage string for the attachment picker. PHPicker
+        # normally needs no authorization (it runs out-of-process), but the
+        # composer passes `photoLibrary: .shared()` — required for
+        # `PhotosPickerItem.supportedContentTypes` to be populated, without
+        # which HEIC/PNG selections are mislabelled `image/jpeg`. That touches
+        # PHPhotoLibrary, so ship the string: absent, a prompt on that path is
+        # a guaranteed crash; present-but-unused costs nothing.
+        NSPhotoLibraryUsageDescription: Attaches photos from your library to send to your agent.
         # Production talks to https://chat.example.com, so ATS stays on.
         # The one carve-out is cleartext to loopback, so a locally-run
         # matron-journal dev server (http://127.0.0.1:9810, per the README
@@ -177,6 +185,13 @@ targets:
         CFBundleDisplayName: Matron
         LSApplicationCategoryType: public.app-category.social-networking
         ITSAppUsesNonExemptEncryption: false
+        # Shown in the About panel and on the Mac App Store listing. Set
+        # here rather than as INFOPLIST_KEY_NSHumanReadableCopyright: this
+        # target has an explicit `info.path` plist, and the INFOPLIST_KEY_*
+        # build settings only apply when GENERATE_INFOPLIST_FILE is YES —
+        # set as a build setting it silently never reaches the bundle
+        # (verified against a Release build).
+        NSHumanReadableCopyright: Copyright © 2026 Matron. All rights reserved.
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         # Microphone usage string for voice-note recording. Managed here
@@ -213,6 +228,16 @@ targets:
           CODE_SIGN_ENTITLEMENTS: MatronMac/App/MatronMac.Debug.entitlements
         Release:
           CODE_SIGN_ENTITLEMENTS: MatronMac/App/MatronMac.entitlements
+          # Hardened runtime, Release only. Not strictly required for the
+          # Mac App Store (it's the notarization gate for distribution
+          # OUTSIDE the store), but it's the default for new macOS targets
+          # and a prerequisite if Matron ever ships direct. Debug must stay
+          # off: XCUITest's runner injects into the host app, which the
+          # hardened runtime blocks — and the Debug/Debug.AdHoc configs are
+          # what the integration harness builds. Verified on an ad-hoc
+          # signed Release build: `codesign -d --verbose` reports
+          # `flags=0x10002(adhoc,runtime)`.
+          ENABLE_HARDENED_RUNTIME: YES
     # Note: the target-level `entitlements:` block (xcodegen) is intentionally
     # NOT set — it overrides per-config CODE_SIGN_ENTITLEMENTS. We manage
     # the two entitlements files (MatronMac.entitlements +
