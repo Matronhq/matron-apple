@@ -34,6 +34,17 @@ public final class VoiceRecorder {
     private var recorder: AudioRecording?
     private var fileURL: URL?
     private var startedAt: Date?
+    /// True from `start()`'s entry until it settles — rejects a second tap
+    /// racing the permission `await` (state is still `.idle` in that gap, so
+    /// the state check alone can't).
+    private var isStarting = false
+    /// Bumped by `cancel()`. `start()` snapshots it before the permission
+    /// `await` and aborts quietly if it moved — a cancel that lands while
+    /// the permission dialog is up (composer disappeared, second view
+    /// teardown) must win over the in-flight start, or capture would begin
+    /// with no recording UI. Everything after the single `await` is
+    /// synchronous on the main actor, so one check suffices.
+    private var cancelGeneration = 0
 
     /// Injectable seam used by `VoiceRecorderTests` to drive the state
     /// machine with a fake recorder and a granted-permission stub. The
@@ -54,10 +65,18 @@ public final class VoiceRecorder {
     /// progress, `.permissionDenied` if the user declines, `.recordFailed`
     /// if `AVAudioRecorder` won't start.
     public func start() async throws {
-        // Reject only an in-flight recording; a fresh start from `.idle` or
-        // from a prior `.finished` (a second voice note) is allowed.
+        // Reject only an in-flight recording or start; a fresh start from
+        // `.idle` or a prior `.finished` (a second voice note) is allowed.
         if case .recording = state { throw RecorderError.alreadyRecording }
+        guard !isStarting else { throw RecorderError.alreadyRecording }
+        isStarting = true
+        defer { isStarting = false }
+        let generation = cancelGeneration
         guard await requestPermission() else { throw RecorderError.permissionDenied }
+        // A cancel() landed while the permission prompt was up — the start
+        // is abandoned before any session/recorder work. Quiet no-op: the
+        // user asked for silence, not an error.
+        guard generation == cancelGeneration else { return }
         #if os(iOS)
         // macOS has no AVAudioSession; on iOS the session must be put into a
         // record category and activated before AVAudioRecorder will capture.
@@ -100,7 +119,9 @@ public final class VoiceRecorder {
     }
 
     /// Aborts recording, discards the temp file, and returns to `.idle`.
+    /// Also invalidates any start() suspended at its permission prompt.
     public func cancel() {
+        cancelGeneration &+= 1
         recorder?.stop()
         if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
         recorder = nil

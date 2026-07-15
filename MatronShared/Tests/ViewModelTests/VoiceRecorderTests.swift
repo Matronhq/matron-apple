@@ -103,6 +103,53 @@ final class VoiceRecorderTests: XCTestCase {
     }
 
     @MainActor
+    func test_cancel_duringPermissionAwait_abortsTheStart() async throws {
+        // cancel() landing while start() is suspended at the permission
+        // prompt must win: no capture may begin after the user backed out.
+        let fake = FakeAudioRecorder()
+        var releasePermission: CheckedContinuation<Bool, Never>?
+        let rec = VoiceRecorder(
+            requestPermission: {
+                await withCheckedContinuation { releasePermission = $0 }
+            },
+            makeRecorder: { _ in fake })
+
+        async let starting: Void = rec.start()
+        // Let start() reach and suspend on the permission await.
+        while releasePermission == nil { await Task.yield() }
+        rec.cancel()
+        releasePermission?.resume(returning: true)
+        try await starting
+
+        XCTAssertEqual(rec.state, .idle, "a cancelled start must not begin capturing")
+        XCTAssertEqual(fake.recordCalls, 0)
+    }
+
+    @MainActor
+    func test_secondStart_duringPermissionAwait_throwsAlreadyRecording() async throws {
+        var releasePermission: CheckedContinuation<Bool, Never>?
+        let rec = VoiceRecorder(
+            requestPermission: {
+                await withCheckedContinuation { releasePermission = $0 }
+            },
+            makeRecorder: { _ in FakeAudioRecorder() })
+
+        async let first: Void = rec.start()
+        while releasePermission == nil { await Task.yield() }
+        // State is still .idle here — the isStarting flag must reject the
+        // overlapping second tap anyway.
+        do {
+            try await rec.start()
+            XCTFail("expected .alreadyRecording for an overlapping start")
+        } catch let error as VoiceRecorder.RecorderError {
+            XCTAssertEqual(error, .alreadyRecording)
+        }
+        releasePermission?.resume(returning: true)
+        try await first
+        guard case .recording = rec.state else { return XCTFail("first start should have completed") }
+    }
+
+    @MainActor
     func test_start_recordFailure_staysIdleAndRecoverable() async {
         // AVAudioRecorder.record() returning false must surface
         // `.recordFailed`, leave the state machine .idle, and not poison a
