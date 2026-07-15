@@ -4,8 +4,12 @@ import MatronModels
 import MatronViewModels
 import MatronDesignSystem
 
-/// Mac chat detail column toolbar. Layout:
-/// - Center: context gauge (left of title) — title — usage bars (right of title)
+/// Mac chat detail column toolbar. Layout — three separate toolbar items,
+/// each with its own macOS 26 glass capsule (Dan, 2026-07-15: "separate
+/// bubbles"):
+/// - Leading: model name above the context gauge
+/// - Center: title (+ account email underneath when known)
+/// - Trailing: usage bars
 ///
 /// The refresh button was dropped after the journal rewire: it only ran
 /// `ChatViewModel.refresh()` (= `paginateBackward`, an OLDER-history
@@ -32,40 +36,54 @@ import MatronDesignSystem
 @MainActor
 struct MacChatToolbar: ToolbarContent {
     let title: String
-    /// Last-known session status for the open convo — context gauge
-    /// renders left of the title, usage bars right of it. Nil (no status
-    /// frame yet) renders the title alone.
+    /// Last-known session status for the open convo — model + context
+    /// gauge render in the leading capsule, usage bars in the trailing
+    /// one. Nil (no status frame yet) renders the title alone.
     let status: SessionStatus?
 
     var body: some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            HStack(spacing: 14) {
-                if let context = status?.context {
-                    ContextGaugeLabel(context: context)
-                        .layoutPriority(1)
-                }
-                // Horizontal padding so the title doesn't butt against the
-                // rounded ends of the macOS 26 glass toolbar-item capsule.
-                // The bridge machine's logged-in account email rides under
-                // the title when the status frame carries it.
-                VStack(spacing: 0) {
-                    Text(title)
-                        .font(.headline)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    if let email = status?.email {
-                        Text(email)
+        // Each cluster gets horizontal padding so its text doesn't butt
+        // against the rounded ends of its glass capsule.
+        if status?.model != nil || status?.context != nil {
+            ToolbarItem(placement: .navigation) {
+                VStack(alignment: .leading, spacing: 1) {
+                    if let model = status?.model {
+                        Text(model)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
-                            .truncationMode(.middle)
+                    }
+                    if let context = status?.context {
+                        ContextGaugeLabel(context: context)
                     }
                 }
                 .padding(.horizontal, 10)
-                if let limits = status?.limits, !limits.isEmpty {
-                    UsageBarsView(limits: limits, scale: .compact)
-                        .layoutPriority(1)
+                .padding(.vertical, 2)
+            }
+        }
+        ToolbarItem(placement: .principal) {
+            // The bridge machine's logged-in account email rides under
+            // the title when the status frame carries it.
+            VStack(spacing: 0) {
+                Text(title)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                if let email = status?.email {
+                    Text(email)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
+            }
+            .padding(.horizontal, 12)
+        }
+        if let limits = status?.limits, !limits.isEmpty {
+            ToolbarItem(placement: .primaryAction) {
+                UsageBarsView(limits: limits, scale: .compact)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 2)
             }
         }
     }
