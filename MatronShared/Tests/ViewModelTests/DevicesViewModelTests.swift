@@ -10,6 +10,10 @@ final class FakeDevicesProvider: DevicesProviding, @unchecked Sendable {
     var revokeError: JournalAPIError?
     var previewResult: Result<PairPreview, JournalAPIError> = .failure(.notFound)
     var approveError: JournalAPIError?
+    /// Per-call latency, for tests that need a request suspended while the
+    /// view model does something else (races between preview and approve).
+    var previewDelay: Duration = .zero
+    var approveDelay: Duration = .zero
 
     private(set) var devicesCalls = 0
     private(set) var revokedIDs: [Int64] = []
@@ -28,11 +32,13 @@ final class FakeDevicesProvider: DevicesProviding, @unchecked Sendable {
 
     func pairPreview(code: String) async throws -> PairPreview {
         previewedCodes.append(code)
+        if previewDelay > .zero { try? await Task.sleep(for: previewDelay) }
         return try previewResult.get()
     }
 
     func pairApprove(code: String, agentName: String) async throws {
         approvals.append((code, agentName))
+        if approveDelay > .zero { try? await Task.sleep(for: approveDelay) }
         if let approveError { throw approveError }
     }
 }

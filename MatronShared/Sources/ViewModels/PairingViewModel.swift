@@ -87,17 +87,27 @@ public final class PairingViewModel {
         }
     }
 
+    /// Preview responses belong to the code-entry stage; once approval has
+    /// gone through, a late response must not pull the flow back out of
+    /// waiting/success.
+    private var inCodeEntryStage: Bool {
+        switch phase {
+        case .enterCode, .preview: return true
+        case .waitingForClaim, .success: return false
+        }
+    }
+
     private func preview(code: String) async {
         do {
             let preview = try await api.pairPreview(code: code)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, inCodeEntryStage else { return }
             phase = .preview(requesterIP: preview.requesterIP)
             expiresAt = now().addingTimeInterval(TimeInterval(preview.expiresIn))
         } catch JournalAPIError.notFound {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, inCodeEntryStage else { return }
             errorMessage = "Code not recognized or expired. Get a fresh code from the box and try again."
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, inCodeEntryStage else { return }
             errorMessage = "Couldn't check that code — try again."
         }
     }
@@ -136,6 +146,10 @@ public final class PairingViewModel {
             errorMessage = "Couldn't approve — try again."
             return
         }
+        // A code edit made while the approve round-trip was in flight queues
+        // a fresh debounced preview; kill it before entering the wait state.
+        previewTask?.cancel()
+        previewTask = nil
         phase = .waitingForClaim
         let deadline = expiresAt ?? now().addingTimeInterval(600)
         claimTask = Task { [weak self] in

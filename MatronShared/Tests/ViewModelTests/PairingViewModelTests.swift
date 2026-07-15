@@ -121,6 +121,30 @@ final class PairingViewModelTests: XCTestCase {
         XCTAssertEqual(vm.phase, .enterCode, "expired pair returns to code entry")
     }
 
+    func test_staleEditDuringApprove_cannotStompWaitState() async {
+        let fake = FakeDevicesProvider()
+        fake.previewResult = .success(PairPreview(requesterIP: "1.2.3.4", expiresIn: 600))
+        fake.rosters = [[]]
+        let vm = makeVM(fake)
+        vm.codeInput = "ktnm-3vq8"
+        await waitUntil(vm.phase == .preview(requesterIP: "1.2.3.4"))
+        vm.agentName = "dev-7"
+        // Approve suspends mid-flight; the user keeps typing in the still-
+        // visible code field, queueing a fresh (slow) preview.
+        fake.approveDelay = .milliseconds(100)
+        fake.previewDelay = .milliseconds(300)
+        let approving = Task { await vm.approve() }
+        try? await Task.sleep(for: .milliseconds(20))
+        vm.codeInput = "BCDF-GHJK"
+        await approving.value
+        XCTAssertEqual(vm.phase, .waitingForClaim)
+        // Let the stale preview response land — it must not pull the flow
+        // back to .preview or surface an error.
+        try? await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(vm.phase, .waitingForClaim, "a late preview response must not leave the wait state")
+        XCTAssertNil(vm.errorMessage)
+    }
+
     func test_cancelWaiting_stopsPolling() async {
         let fake = FakeDevicesProvider()
         fake.previewResult = .success(PairPreview(requesterIP: "1.2.3.4", expiresIn: 600))
