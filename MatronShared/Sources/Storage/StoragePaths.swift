@@ -28,7 +28,12 @@ public enum StoragePaths {
     #elseif os(macOS)
     public static let appSupport: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let dir = base.appendingPathComponent("chat.matron.mac")
+        // Named after the (unified) bundle ID. Renamed from
+        // `chat.matron.mac` with the bundle-ID unification — existing
+        // installs start a fresh store and re-sign-in rather than
+        // migrating, an accepted one-time cost while the tester pool is
+        // the developer.
+        let dir = base.appendingPathComponent("chat.matron.app")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }()

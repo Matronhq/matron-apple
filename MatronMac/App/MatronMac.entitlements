@@ -16,16 +16,23 @@
 	<true/>
 	<key>com.apple.security.network.client</key>
 	<true/>
+	<!--
+		Same access-group suffix as iOS (`chat.matron`, not the bundle
+		ID) since the bundle-ID unification to `chat.matron.app` — one
+		shared group string across both platforms, mirrored in
+		`KeychainAccessGroups.recoverySuffix`.
+	-->
 	<key>keychain-access-groups</key>
 	<array>
-		<string>$(AppIdentifierPrefix)chat.matron.mac</string>
+		<string>$(AppIdentifierPrefix)chat.matron</string>
 	</array>
 	<!--
 		Phase 4 Task 12: APNs environment for Release / App Store
-		builds. Pairs with `use_sandbox: false` on the matching Sygnal
-		`app_id` (`chat.matron.mac`). Notarized + Mac App Store builds
-		hit production APNs; Debug builds use `MatronMac.Debug.entitlements`
-		with `com.apple.developer.aps-environment=development` instead.
+		builds. Pairs with the journal server sending through production
+		APNs for tokens registered with `environment: prod` (Release
+		builds send `.prod` — see AppDependencies.pushEnvironment).
+		Debug builds use `MatronMac.Debug.entitlements` with
+		`com.apple.developer.aps-environment=development` instead.
 
 		**macOS-specific key**: macOS uses
 		`com.apple.developer.aps-environment` (NOT the iOS-only bare

@@ -43,6 +43,16 @@ settings:
     # automatically on Run / Archive.
     DEVELOPMENT_TEAM: 4LJ7WRRRFD
     CODE_SIGN_STYLE: Automatic
+    # App Store versioning. MARKETING_VERSION is the user-visible version
+    # (CFBundleShortVersionString); CURRENT_PROJECT_VERSION is the build
+    # number (CFBundleVersion) and must strictly increase per App Store
+    # Connect upload — scripts/testflight-upload.sh overrides it on the
+    # command line with `git rev-list --count HEAD` so every commit gets a
+    # unique, monotonic build number. Set at the project level (not per
+    # target) because App Store validation requires the NSE's version keys
+    # to exactly match its host app's.
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: 1
   configs:
     Debug:
       SWIFT_OPTIMIZATION_LEVEL: -Onone
@@ -75,6 +85,8 @@ targets:
         UILaunchScreen:
           UIColorName: ""
         UIApplicationSupportsMultipleScenes: false
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
@@ -94,42 +106,25 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: chat.matron.app
-        CODE_SIGN_ENTITLEMENTS: Matron/App/Matron.entitlements
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         SUPPORTS_MACCATALYST: NO
         # App icon lives in Matron/Resources/Assets.xcassets (picked up
         # automatically since `sources` recurses the target dir).
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-    entitlements:
-      path: Matron/App/Matron.entitlements
-      properties:
-        com.apple.security.application-groups:
-          - group.chat.matron
-        # Phase 3 / Wave 3 / M1: explicit keychain-access-group for the
-        # recovery-key store. Mirrors the Mac entitlement's group entry.
-        # `chat.matron` (NOT `chat.matron.app`) so Phase 4's NSE share +
-        # any future MatronShared extension can be granted the same group
-        # without invalidating recovery keys written today (B3 rationale).
-        # iOS Simulator without a signing team cannot resolve
-        # `$(AppIdentifierPrefix)` and surfaces `errSecMissingEntitlement
-        # (-34018)` on every keychain op — `MatronApp.bootstrap()`'s probe
-        # is gated `#if !targetEnvironment(simulator)` so dev runs stay
-        # green. Real-device + signed-CI builds get the probe.
-        keychain-access-groups:
-          - $(AppIdentifierPrefix)chat.matron
-        # Phase 4 Task 5 follow-up: APNs entitlement. Without this,
-        # `UIApplication.registerForRemoteNotifications()` fails before
-        # `PushTokenStore` ever sees a token, so the pusher record is
-        # never written and APNs delivery never starts. iOS uses
-        # `aps-environment` (NOT the macOS `com.apple.developer.aps-environment`
-        # — that's the macOS-specific variant). Single value `development`
-        # for now; Phase 7's App Store split adds a Release entitlements
-        # file with `production` to pair with the App Store provisioning
-        # profile. Mismatch (Debug build with `production` provisioning
-        # or vice versa) silently rejects tokens at Sygnal — see
-        # `MatronMac.entitlements` for the parallel Mac comment.
-        aps-environment: development
+      configs:
+        # Per-config entitlements split, mirroring the MatronMac target
+        # below: Debug carries `aps-environment: development` (Xcode-Run
+        # dev builds get sandbox APNs tokens), Release carries
+        # `production` for TestFlight / App Store builds. The two files
+        # are hand-managed — the xcodegen `entitlements:` block is
+        # intentionally NOT used because it (a) would overwrite the
+        # on-disk plists on every `xcodegen generate` and (b) can only
+        # emit one file, defeating the per-config split.
+        Debug:
+          CODE_SIGN_ENTITLEMENTS: Matron/App/Matron.Debug.entitlements
+        Release:
+          CODE_SIGN_ENTITLEMENTS: Matron/App/Matron.entitlements
     # `scheme.testTargets` populates `<Testables>` on the auto-generated
     # `Matron.xcscheme`. Without this, `xcodebuild test -scheme Matron`
     # fails with "Scheme is not currently configured for the test action"
@@ -182,6 +177,8 @@ targets:
         CFBundleDisplayName: Matron
         LSApplicationCategoryType: public.app-category.social-networking
         ITSAppUsesNonExemptEncryption: false
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         # Microphone usage string for voice-note recording. Managed here
         # (not by hand in Info.plist) so `xcodegen generate` keeps it in the
         # generated plist — the same channel as NSAppTransportSecurity below.
@@ -194,7 +191,14 @@ targets:
           NSAllowsLocalNetworking: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: chat.matron.mac
+        # Same bundle ID as the iOS app (was `chat.matron.mac`): Apple's
+        # universal purchase groups the two binaries under ONE App Store
+        # Connect record — one name, one listing, one TestFlight page —
+        # keyed on a shared bundle ID. It also makes the Mac reachable by
+        # push: the journal server sends every APNs push with the single
+        # `MATRON_APNS_TOPIC` (the topic must equal the app's bundle ID),
+        # so split IDs meant only one platform could ever receive pushes.
+        PRODUCT_BUNDLE_IDENTIFIER: chat.matron.app
         SUPPORTED_PLATFORMS: macosx
         # App icon lives in MatronMac/Resources/Assets.xcassets.
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -360,6 +364,11 @@ targets:
     info:
       path: MatronNSE/Info.plist
       properties:
+        # App Store validation requires the extension's version keys to
+        # exactly match the host app's — both resolve the project-level
+        # MARKETING_VERSION / CURRENT_PROJECT_VERSION, so they can't drift.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.usernotifications.service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService

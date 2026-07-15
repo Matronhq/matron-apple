@@ -1,16 +1,48 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+	Release entitlements for the iOS target (TestFlight / App Store
+	builds). Hand-managed — see the project.yml comment at the Matron
+	target's settings.configs for why the xcodegen `entitlements:` block
+	is not used. Debug builds use Matron.Debug.entitlements, identical
+	except `aps-environment: development`.
+-->
 <plist version="1.0">
 <dict>
-	<key>aps-environment</key>
-	<string>development</string>
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>group.chat.matron</string>
 	</array>
+	<!--
+		Phase 3 / Wave 3 / M1: explicit keychain-access-group for the
+		recovery-key store. Mirrors the Mac entitlement's group entry.
+		`chat.matron` (NOT `chat.matron.app`) so the NSE + any future
+		MatronShared extension can be granted the same group without
+		invalidating recovery keys written today (B3 rationale).
+		iOS Simulator without a signing team cannot resolve
+		`$(AppIdentifierPrefix)` and surfaces `errSecMissingEntitlement
+		(-34018)` on every keychain op — `MatronApp.bootstrap()`'s probe
+		is gated `#if !targetEnvironment(simulator)` so dev runs stay
+		green. Real-device + signed-CI builds get the probe.
+	-->
 	<key>keychain-access-groups</key>
 	<array>
 		<string>$(AppIdentifierPrefix)chat.matron</string>
 	</array>
+	<!--
+		APNs entitlement. Without this,
+		`UIApplication.registerForRemoteNotifications()` fails before
+		`PushTokenStore` ever sees a token, so the journal server never
+		learns the token and APNs delivery never starts. iOS uses the
+		bare `aps-environment` key (NOT the macOS
+		`com.apple.developer.aps-environment` variant). `production`
+		here pairs with App Store provisioning and the journal server
+		registering the token with `environment: prod` (Release builds
+		send `.prod` — see AppDependencies.pushEnvironment). A mismatch
+		is rejected by APNs at send time, not at registration — hard to
+		diagnose live.
+	-->
+	<key>aps-environment</key>
+	<string>production</string>
 </dict>
 </plist>
