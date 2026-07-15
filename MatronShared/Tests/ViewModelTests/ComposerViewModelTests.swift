@@ -197,6 +197,33 @@ final class ComposerViewModelTests: XCTestCase {
                        "and the draft survives, so leaving the room doesn't drop it")
     }
 
+    /// The restore must never outrank live keystrokes. Sends are slow enough
+    /// to type through — that's the whole reason the optimistic clear exists —
+    /// so a failure arriving after the user has started their next message
+    /// must not overwrite it (bugbot, PR #55).
+    @MainActor
+    func test_send_doesNotClobberNewTyping_whenTheRoundTripFails() async {
+        let fake = FakeTimelineService()
+        struct Boom: Error, LocalizedError { var errorDescription: String? { "boom" } }
+        fake.nextSendError = Boom()
+        let gate = SendGate()
+        fake.sendGate = gate
+        ComposerDraftMemory._resetForTesting()
+        let vm = ComposerViewModel(roomID: "!room:s", timeline: fake, commands: [])
+        vm.input = "first message"
+
+        let send = Task { await vm.send() }
+        while await !gate.isStarted() { await Task.yield() }
+        // The user starts typing while the doomed send is still in flight.
+        vm.input = "second message"
+        await gate.open()
+        await send.value
+
+        XCTAssertEqual(vm.input, "second message",
+                       "a failed send must not overwrite what the user typed after it")
+        XCTAssertEqual(vm.sendError, "boom", "the failure is still surfaced")
+    }
+
     @MainActor
     func test_send_doesNothing_forEmptyInput() async {
         let fake = FakeTimelineService()

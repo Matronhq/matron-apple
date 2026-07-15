@@ -290,6 +290,14 @@ public final class ComposerViewModel {
             sendError = error.localizedDescription
             // Put the user's text back — the optimistic clear must never
             // eat a message that didn't actually go out.
+            //
+            // Unless they've moved on: a send is slow enough to type through
+            // (that's why the clear is optimistic in the first place), so a
+            // late failure must not overwrite the next message mid-keystroke.
+            // Restoring then would just trade one lost message for another,
+            // and the error banner still reports the failure either way
+            // (bugbot, PR #55).
+            guard input.isEmpty else { return }
             input = pending
             ComposerDraftMemory.store(roomID: roomID, text: pending)
         }
