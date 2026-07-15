@@ -73,16 +73,17 @@ private struct SelectableTextViewRepresentable: NSViewRepresentable {
         }
     }
 
-    /// Exact height for the proposed width. Measured via `MarkdownAttributed`'s
+    /// Exact size for the proposed width. Measured via `MarkdownAttributed`'s
     /// standalone TextKit stack (a pure function of attributed string + width)
     /// rather than the live text view — the live view's `widthTracksTextView`
     /// container fights a manually-set width and yields clipped heights.
+    /// Reports the content's natural width (never the full proposal) so a
+    /// short message's bubble hugs its text instead of spanning the pane.
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextView, context: Context) -> CGSize? {
         guard let width = proposal.width, width > 0, width.isFinite else {
             return nil
         }
-        let height = MarkdownAttributed.height(for: attributed, width: width)
-        return CGSize(width: width, height: height)
+        return MarkdownAttributed.size(for: attributed, width: width)
     }
 
     /// Handles link clicks with the same scheme policy as `MarkdownText`

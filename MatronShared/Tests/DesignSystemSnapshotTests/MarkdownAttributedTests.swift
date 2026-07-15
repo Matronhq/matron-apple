@@ -153,5 +153,32 @@ final class MarkdownAttributedTests: XCTestCase {
         let second = convert(source)
         XCTAssertTrue(first === second, "same source should hit the NSCache")
     }
+
+    // MARK: - Size measurement
+
+    func test_size_shortMessage_hugsContentWidth() {
+        let size = MarkdownAttributed.size(for: convert("hi"), width: 600)
+        XCTAssertLessThan(size.width, 60, "a two-character message must not claim the pane width")
+        XCTAssertGreaterThan(size.width, 0)
+        XCTAssertGreaterThan(size.height, 0)
+    }
+
+    func test_size_longMessage_wrapsAtProposalWidth() {
+        let paragraph = Array(repeating: "wrap me across many lines", count: 20).joined(separator: " ")
+        let size = MarkdownAttributed.size(for: convert(paragraph), width: 300)
+        XCTAssertLessThanOrEqual(size.width, 300)
+        XCTAssertGreaterThan(size.width, 250, "a wrapping paragraph should use (nearly) the full proposal")
+        let narrower = MarkdownAttributed.size(for: convert(paragraph), width: 200)
+        XCTAssertGreaterThan(narrower.height, size.height, "less width must mean more height")
+    }
+
+    func test_size_isDeterministic_acrossRepeatedCalls() {
+        // The memo must not change the answer: heights that move for a fixed
+        // input are the timeline's historical failure mode (blank-chat saga).
+        let attributed = convert("Some **body** with `code`\n\nand a second paragraph.")
+        let first = MarkdownAttributed.size(for: attributed, width: 420)
+        let second = MarkdownAttributed.size(for: attributed, width: 420)
+        XCTAssertEqual(first, second)
+    }
 }
 #endif
