@@ -119,14 +119,32 @@ final class MarkdownAttributedTests: XCTestCase {
         let base = MarkdownAttributed.baseFontSize
 
         let h1 = font(attributes(of: convert("# Big"), atFirst: "Big"))
-        XCTAssertEqual(h1.pointSize, base * 1.4, accuracy: 0.01)
+        XCTAssertEqual(h1.pointSize, base * 1.3, accuracy: 0.01)
         XCTAssertTrue(h1.fontDescriptor.symbolicTraits.contains(.bold))
 
         let h2 = font(attributes(of: convert("## Medium"), atFirst: "Medium"))
-        XCTAssertEqual(h2.pointSize, base * 1.25, accuracy: 0.01)
+        XCTAssertEqual(h2.pointSize, base * 1.15, accuracy: 0.01)
 
         let h3 = font(attributes(of: convert("### Small"), atFirst: "Small"))
-        XCTAssertEqual(h3.pointSize, base * 1.1, accuracy: 0.01)
+        XCTAssertEqual(h3.pointSize, base * 1.05, accuracy: 0.01)
+    }
+
+    /// A heading after a paragraph gets extra space above (on top of the
+    /// previous paragraph's spacing) and a tighter gap below, so it visually
+    /// closes the previous section and opens its own.
+    func test_headerAfterParagraph_getsSpacingBefore() {
+        let attributed = convert("Intro paragraph.\n\n## Section\n\nBody text.")
+        let style = attributes(of: attributed, atFirst: "Section")[.paragraphStyle] as? NSParagraphStyle
+        XCTAssertEqual(style?.paragraphSpacingBefore, 10)
+        XCTAssertEqual(style?.paragraphSpacing, 6)
+    }
+
+    /// A message that STARTS with a heading must not carry the extra
+    /// space-above — it would render as a dead band at the bubble top.
+    func test_leadingHeader_suppressesSpacingBefore() {
+        let attributed = convert("# Title\n\nBody text.")
+        let style = attributes(of: attributed, atFirst: "Title")[.paragraphStyle] as? NSParagraphStyle
+        XCTAssertEqual(style?.paragraphSpacingBefore, 0)
     }
 
     // MARK: - Code blocks
