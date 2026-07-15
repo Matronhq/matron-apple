@@ -69,29 +69,74 @@ enum MarkdownAttributed {
 
     private static let log = Logger(subsystem: "chat.matron", category: "MarkdownAttributed")
 
-    // MARK: - Height measurement
+    // MARK: - Size measurement
 
-    /// Exact laid-out height of `attributed` wrapped to `width`, rounded up.
+    /// Exact laid-out size of `attributed` wrapped to `proposedWidth`.
     ///
-    /// Measured against a standalone TextKit stack (storage + layout manager +
-    /// container) rather than a live `NSTextView`, so the result is a pure
-    /// function of (attributed string, width) — no dependence on a view's frame,
-    /// `widthTracksTextView`, or layout timing. This is the height
-    /// `SelectableMessageText` reports to SwiftUI; keeping it deterministic is
-    /// what protects the timeline from height churn.
-    static func height(for attributed: NSAttributedString, width: CGFloat) -> CGFloat {
-        guard width > 0, width.isFinite else { return 0 }
+    /// Width is the CONTENT's natural width (longest line fragment, rounded
+    /// up), never the proposal — that's what lets a short message's bubble hug
+    /// its text instead of spanning the pane. Height is re-measured at that
+    /// hugged width so the reported (width, height) pair is exactly what the
+    /// live text view will render.
+    ///
+    /// Measured against a standalone TextKit stack rather than a live
+    /// `NSTextView`, so the result is a pure function of (attributed string,
+    /// width) — no dependence on a view's frame, `widthTracksTextView`, or
+    /// layout timing. This is the size `SelectableMessageText` reports to
+    /// SwiftUI; keeping it deterministic is what protects the timeline from
+    /// height churn.
+    ///
+    /// Memoised: SwiftUI calls `sizeThatFits` for every visible row on every
+    /// layout pass, and the timeline is deliberately non-lazy (blank-chat
+    /// cure), so an uncached TextKit layout here ran ~120 full measurements
+    /// per scroll tick — the 2026-07 Mac scroll lag.
+    static func size(for attributed: NSAttributedString, source: String, width proposedWidth: CGFloat) -> CGSize {
+        guard proposedWidth > 0, proposedWidth.isFinite else { return .zero }
+        let key = "\(proposedWidth)|\(source)" as NSString
+        if let hit = sizeCache.object(forKey: key) { return hit.sizeValue }
+
+        let first = layoutSize(for: attributed, width: proposedWidth)
+        var result = first
+        // Hug: if the content is narrower than the proposal, re-wrap at the
+        // hugged width so the height matches what the view renders at that
+        // width (the ceil can shift a wrap boundary; measuring twice removes
+        // the guess).
+        if first.width < proposedWidth.rounded(.down) {
+            let rewrapped = layoutSize(for: attributed, width: first.width)
+            result = CGSize(width: first.width, height: rewrapped.height)
+        }
+        sizeCache.setObject(NSValue(size: result), forKey: key)
+        return result
+    }
+
+    /// One uncached TextKit layout pass: natural width (≤ `width`) and height.
+    private static func layoutSize(for attributed: NSAttributedString, width: CGFloat) -> CGSize {
         let textStorage = NSTextStorage(attributedString: attributed)
         let textContainer = NSTextContainer(size: NSSize(width: width, height: .greatestFiniteMagnitude))
         // Match the live text view's geometry (see SelectableMessageText) so the
-        // measured height equals the rendered height.
+        // measured size equals the rendered size.
         textContainer.lineFragmentPadding = 0
         let layoutManager = NSLayoutManager()
         layoutManager.addTextContainer(textContainer)
         textStorage.addLayoutManager(layoutManager)
         layoutManager.ensureLayout(for: textContainer)
-        return ceil(layoutManager.usedRect(for: textContainer).height)
+        let used = layoutManager.usedRect(for: textContainer)
+        return CGSize(width: min(ceil(used.width), width), height: ceil(used.height))
     }
+
+    /// Memo for `size(for:source:width:)`, keyed on (proposed width, markdown
+    /// SOURCE). The source — not the attributed string's rendered text —
+    /// identifies the attributes: `**hi**` and `hi` render the same plain
+    /// characters with different fonts, so a rendered-text key would let one
+    /// message reuse the other's size (bugbot, PR #37). Conversion is a pure
+    /// function of source, so (source, width) → size is collision-free.
+    /// Generous bound — entries are one NSValue each; the key dominates, and
+    /// 2000 keys of chat-message length is still small.
+    private static let sizeCache: NSCache<NSString, NSValue> = {
+        let cache = NSCache<NSString, NSValue>()
+        cache.countLimit = 2000
+        return cache
+    }()
 
     // MARK: - Conversion
 

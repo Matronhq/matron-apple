@@ -131,25 +131,24 @@ struct MacTimelineItemView: View {
 
         case .toolCall(_, let evt):
             // Fills the width like a normal message bubble (Dan, 2026-07-14)
-            // — the terminal-style result block wants the room.
-            HStack {
-                ToolCallCard(event: evt)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal)
+            // — the terminal-style result block wants the room. No wrapping
+            // HStack + Spacer: a Spacer beside a maxWidth-.infinity frame
+            // makes SwiftUI split the row 50/50 between the two flexible
+            // children, which is exactly the "card stops at half the pane"
+            // bug — the frame alone fills the row.
+            ToolCallCard(event: evt)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Tool call: \(evt.tool)"))
 
         case .diff(_, let evt):
             // File-edit diff snippet — bot-aligned, fills the width like a
-            // normal message bubble (Dan, 2026-07-14).
-            HStack {
-                DiffCard(event: evt)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal)
+            // normal message bubble (Dan, 2026-07-14). No HStack + Spacer —
+            // see the .toolCall comment (50/50 split bug).
+            DiffCard(event: evt)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(
                 for: item, body: DiffCard.accessibilitySummary(for: evt)))
@@ -158,23 +157,17 @@ struct MacTimelineItemView: View {
             // Fills the width like a normal message bubble — terminal output
             // wants columns. Session from the shared store so LazyVStack row
             // recycling reattaches to accumulated output instead of replaying.
-            HStack {
-                LiveOutputCard(session: LiveOutputSessionStore.shared.session(for: evt),
-                               eventTimestamp: item.timestamp)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal)
+            LiveOutputCard(session: LiveOutputSessionStore.shared.session(for: evt),
+                           eventTimestamp: item.timestamp)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal)
 
         case .toolStreamLive(_, let command, let text, let headTruncated):
             // Ephemeral live tile (journal tool_stream) — fills the width
             // like the liveOutput tile.
-            HStack {
-                ToolStreamCard(command: command, text: text, headTruncated: headTruncated)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal)
+            ToolStreamCard(command: command, text: text, headTruncated: headTruncated)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal)
 
         case .askUser(let eventID, let evt):
             // Inline, non-blocking card (bot-aligned like .toolCall) — same as iOS.

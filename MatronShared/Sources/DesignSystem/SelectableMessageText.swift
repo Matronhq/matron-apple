@@ -20,20 +20,26 @@ import SwiftUI
 /// observation-driven resize — this repo has scar tissue from text-height churn
 /// destabilising the timeline, so heights must never move for a fixed input.
 public struct SelectableMessageText: View {
+    private let source: String
     private let attributed: NSAttributedString
 
-    /// - Parameter source: raw markdown message body.
+    /// - Parameter source: raw markdown message body. Kept alongside the
+    ///   converted string because the size memo is keyed on the SOURCE —
+    ///   `**hi**` and `hi` render identical plain text with different fonts,
+    ///   so the rendered text can't identify a size (bugbot, PR #37).
     public init(_ source: String) {
+        self.source = source
         self.attributed = MarkdownAttributed.attributedString(for: source)
     }
 
     public var body: some View {
-        SelectableTextViewRepresentable(attributed: attributed)
+        SelectableTextViewRepresentable(source: source, attributed: attributed)
     }
 }
 
 /// `NSViewRepresentable` wrapping the non-editable, selectable `NSTextView`.
 private struct SelectableTextViewRepresentable: NSViewRepresentable {
+    let source: String
     let attributed: NSAttributedString
 
     func makeCoordinator() -> Coordinator {
@@ -73,16 +79,17 @@ private struct SelectableTextViewRepresentable: NSViewRepresentable {
         }
     }
 
-    /// Exact height for the proposed width. Measured via `MarkdownAttributed`'s
+    /// Exact size for the proposed width. Measured via `MarkdownAttributed`'s
     /// standalone TextKit stack (a pure function of attributed string + width)
     /// rather than the live text view — the live view's `widthTracksTextView`
     /// container fights a manually-set width and yields clipped heights.
+    /// Reports the content's natural width (never the full proposal) so a
+    /// short message's bubble hugs its text instead of spanning the pane.
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextView, context: Context) -> CGSize? {
         guard let width = proposal.width, width > 0, width.isFinite else {
             return nil
         }
-        let height = MarkdownAttributed.height(for: attributed, width: width)
-        return CGSize(width: width, height: height)
+        return MarkdownAttributed.size(for: attributed, source: source, width: width)
     }
 
     /// Handles link clicks with the same scheme policy as `MarkdownText`
