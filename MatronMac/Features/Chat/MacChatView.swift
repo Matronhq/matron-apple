@@ -211,6 +211,43 @@ struct MacChatView: View {
                 chatColumn
             }
         }
+        // Observation lifecycle lives HERE, on the stable outer view — NOT
+        // on `chatColumn`. The pane branches move `chatColumn` between
+        // structural identities, and both instances share this view's
+        // `@State` generation slots: on a branch switch the new instance's
+        // `.task` can run before the old one's `onDisappear`, overwrite the
+        // recorded generation, and the old teardown's guarded stop would
+        // then kill the FRESH stream. Hoisting means the parent timeline +
+        // strip start once per room (MacChatView is `.id(id)`-keyed per
+        // room) and survive pane open/close without a restart.
+        .task {
+            // `start()` (round-3 bugbot fix #3) returns once the first
+            // timeline snapshot has been applied, so the chained
+            // `markAsRead()` marks the actual head of the timeline as
+            // read instead of racing the empty initial state.
+            // Generations are recorded BEFORE the await — see iOS
+            // ChatView: a mid-await disappear would skip a post-await
+            // assignment and leak the observation (bugbot "Early
+            // disappear skips observation stop").
+            startedGeneration = viewModel.observationGeneration + 1
+            stripViewModel.start()
+            stripStartedGeneration = stripViewModel.observationGeneration
+            await viewModel.start()
+            // Explicit paginate-on-open BEFORE markAsRead — see iOS
+            // `ChatView`: history loads over HTTP and must not wait on
+            // the live socket, which a half-dead connection can hang.
+            await viewModel.paginateBackward()
+            await viewModel.markAsRead()
+        }
+        .onDisappear {
+            // Generation-guarded: the VM is cached per room (ChatVMCache),
+            // and on a same-room remount SwiftUI can run the NEW view's
+            // `.task`/start() before the OLD view's onDisappear — an
+            // unconditional stop() here would kill the successor's fresh
+            // stream and freeze the timeline.
+            viewModel.stop(ifGeneration: startedGeneration)
+            stripViewModel.stop(ifGeneration: stripStartedGeneration)
+        }
     }
 
     private var chatColumn: some View {
@@ -496,27 +533,14 @@ struct MacChatView: View {
                 status: viewModel.sessionStatus
             )
         }
-        .task {
-            // (Scroll-memory restore lives on the ScrollView inside the
-            // ScrollViewReader above — it needs the proxy.)
-            //
-            // `start()` (round-3 bugbot fix #3) returns once the first
-            // timeline snapshot has been applied, so the chained
-            // `markAsRead()` marks the actual head of the timeline as
-            // read instead of racing the empty initial state.
-            // BEFORE the await — see iOS ChatView: a mid-await disappear
-            // would skip a post-await assignment and leak the observation
-            // (bugbot "Early disappear skips observation stop").
-            startedGeneration = viewModel.observationGeneration + 1
-            stripViewModel.start()
-            stripStartedGeneration = stripViewModel.observationGeneration
-            await viewModel.start()
-            // Explicit paginate-on-open BEFORE markAsRead — see iOS
-            // `ChatView`: history loads over HTTP and must not wait on
-            // the live socket, which a half-dead connection can hang.
-            await viewModel.paginateBackward()
-            await viewModel.markAsRead()
-        }
+        // Observation start/stop is hoisted to the outer view in `body` —
+        // this column moves between structural branches when the sub-chat
+        // pane opens/closes, and per-branch lifecycle over shared @State
+        // generation slots would let a stale teardown kill a fresh stream.
+        // What remains here is genuinely column-scoped: scroll-position
+        // memory for the timeline that is actually leaving the screen.
+        // (Scroll-memory RESTORE lives on the ScrollView inside the
+        // ScrollViewReader above — it needs the proxy.)
         .onDisappear {
             paginateLogger.breadcrumb("chat view disappear room=\(viewModel.roomID) lastVisible=\(visibleRows.bottomID ?? "nil") following=\(isFollowingTail)")
             followHealTask?.cancel()
@@ -535,13 +559,6 @@ struct MacChatView: View {
                 // mid-history keeps theirs; see iOS ChatView).
                 viewModel.resetHistoryWindow()
             }
-            // Generation-guarded: the VM is cached per room (ChatVMCache),
-            // and on a same-room remount SwiftUI can run the NEW view's
-            // `.task`/start() before the OLD view's onDisappear — an
-            // unconditional stop() here would kill the successor's fresh
-            // stream and freeze the timeline.
-            viewModel.stop(ifGeneration: startedGeneration)
-            stripViewModel.stop(ifGeneration: stripStartedGeneration)
         }
         // ⌘K opens the slash palette without typing `/`. The hidden
         // button is the SwiftUI-recommended pattern for a global keyboard
