@@ -87,4 +87,66 @@ public final class SubChatStripViewModel {
     public var soleRunningChild: SubChatSummary? {
         runningChildren.count == 1 ? runningChildren.first : nil
     }
+
+    // MARK: - Subtask-message linking
+
+    /// The bridge announces every Task/Agent tool call in the parent
+    /// timeline as a plain text message `🔀 Subtask: <description>` — with
+    /// no machine-readable link to the child conversation it spawns (the
+    /// linking `task_ref` only rides the CHILD's status frames). Until the
+    /// bridge publishes a structured event, these two helpers make those
+    /// messages tappable: parse the indicator, then match it to a child by
+    /// title (the child's title is the same watcher label the indicator's
+    /// description came from).
+    nonisolated private static let subtaskIndicatorPrefix = "🔀 Subtask: "
+
+    /// The description carried by a bridge subtask-indicator message, or
+    /// `nil` when `body` isn't one. The indicator is always the whole
+    /// message (modulo surrounding whitespace), never an infix.
+    nonisolated public static func subtaskDescription(fromMessageBody body: String) -> String? {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix(subtaskIndicatorPrefix) else { return nil }
+        let description = trimmed.dropFirst(subtaskIndicatorPrefix.count)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return description.isEmpty ? nil : description
+    }
+
+    /// The child conversation a subtask indicator most plausibly refers to.
+    /// Exact title matches are considered first; only when there is none
+    /// does prefix matching apply — the bridge truncates the indicator's
+    /// description to 80 chars while the child title is the full label, so
+    /// a prefix match covers truncation without letting a longer title
+    /// ("linting tool") steal an exact referent ("lint"). Duplicate titles
+    /// (the same agent re-run) tie-break by preferring a still-running
+    /// child, then the newest — `children` arrives in creation order, so
+    /// `last` is the most recent spawn, which is the likeliest referent
+    /// when the user taps a fresh indicator.
+    nonisolated public static func resolveSubtaskTarget(
+        description: String,
+        among children: [SubChatSummary]
+    ) -> SubChatSummary? {
+        let exact = children.filter { $0.title == description }
+        let matches = exact.isEmpty
+            ? children.filter { $0.title.hasPrefix(description) }
+            : exact
+        return matches.last(where: \.isRunning) ?? matches.last
+    }
+
+    /// The navigation path after switching the OPEN sub-chat viewer from
+    /// `current` to `sibling`: replace the stack tail (pop-then-push) so
+    /// hopping between siblings doesn't grow the back stack — back always
+    /// returns to the parent chat. `nil` means no navigation is needed
+    /// (tapping the already-open child). Falls back to a plain push when
+    /// the tail isn't `current` (defensive — shouldn't happen).
+    nonisolated public static func pathReplacingCurrentChild(
+        in path: [String],
+        current: String,
+        with sibling: String
+    ) -> [String]? {
+        guard sibling != current else { return nil }
+        var newPath = path
+        if newPath.last == current { newPath.removeLast() }
+        newPath.append(sibling)
+        return newPath
+    }
 }

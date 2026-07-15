@@ -333,6 +333,8 @@ struct MacChatView: View {
                 VStack(spacing: 0) {
                     MacTimelineListContent(
                         viewModel: viewModel,
+                        stripViewModel: stripViewModel,
+                        onOpenSubChat: { openSubChatID = $0 },
                         onPreviewImage: { imagePreview = ImagePreview(image: $0) },
                         onShowSource: { sourceItem = $0 }
                     )
@@ -574,7 +576,9 @@ struct MacChatView: View {
         .toolbar {
             MacChatToolbar(
                 title: chatTitle,
-                status: viewModel.sessionStatus
+                status: viewModel.sessionStatus,
+                stripViewModel: stripViewModel,
+                onOpenSubChat: { openSubChatID = $0 }
             )
         }
         // Observation start/stop is hoisted to the outer view in `body` —
@@ -669,11 +673,28 @@ struct MacChatView: View {
 /// changes — the equatable check only gates parent-driven invalidation.
 private struct MacTimelineListContent: View, Equatable {
     let viewModel: ChatViewModel
+    /// The chat's sub-chat list — turns the bridge's plain "🔀 Subtask: …"
+    /// indicator messages into tappable entries opening the child sub-chat
+    /// pane (see the iOS twin in `ChatView.TimelineListContent`). Reading
+    /// `children` in `body` installs `@Observable` tracking, so indicator
+    /// rows re-render as children appear/finish.
+    let stripViewModel: SubChatStripViewModel
+    let onOpenSubChat: (String) -> Void
     let onPreviewImage: (Image) -> Void
     let onShowSource: (TimelineItem) -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.viewModel === rhs.viewModel
+        lhs.viewModel === rhs.viewModel && lhs.stripViewModel === rhs.stripViewModel
+    }
+
+    /// See the iOS twin — nil when `item` isn't a subtask indicator or no
+    /// child matches (the row then renders as the plain text it always was).
+    private func subtaskChild(for item: TimelineItem) -> SubChatSummary? {
+        guard case .text(let body, _) = item.kind, !item.isOwn,
+              let description = SubChatStripViewModel.subtaskDescription(fromMessageBody: body)
+        else { return nil }
+        return SubChatStripViewModel.resolveSubtaskTarget(
+            description: description, among: stripViewModel.children)
     }
 
     var body: some View {
@@ -695,6 +716,19 @@ private struct MacTimelineListContent: View, Equatable {
                     DateSeparator(date: date)
                         .id(row.id)
                 case .message(let item):
+                    if let child = subtaskChild(for: item) {
+                        // Bridge subtask indicator → tappable card opening
+                        // the child sub-chat pane. Keeps the row's
+                        // `.id(item.id)` so scroll anchors are unaffected.
+                        Button {
+                            onOpenSubChat(child.id)
+                        } label: {
+                            SubtaskLinkCard(title: child.title, isRunning: child.isRunning)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal)
+                        .id(item.id)
+                    } else {
                     MacTimelineItemView(
                         item: item,
                         resolveImage: { viewModel.image(for: $0) },
@@ -749,6 +783,7 @@ private struct MacTimelineListContent: View, Equatable {
                                 Label("View source", systemImage: "curlybraces")
                             }
                         }
+                    }
                 }
             }
         }
@@ -847,8 +882,14 @@ struct MacSubChatPane: View {
             Divider()
             ScrollView {
                 VStack(spacing: 0) {
+                    // `stripViewModel` is the PARENT's strip (siblings) —
+                    // the bridge flattens nested agents into siblings, so a
+                    // nested "🔀 Subtask:" indicator here resolves to the
+                    // flattened sibling and switches the pane to it.
                     MacTimelineListContent(
                         viewModel: viewModel,
+                        stripViewModel: stripViewModel,
+                        onOpenSubChat: onOpenSibling,
                         onPreviewImage: { imagePreview = MacSubChatImagePreview(image: $0) },
                         onShowSource: { sourceItem = $0 }
                     )
