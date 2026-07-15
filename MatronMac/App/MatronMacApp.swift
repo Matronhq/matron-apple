@@ -26,6 +26,22 @@ struct MatronMacApp: App {
     @AppStorage(MatronAppearance.storageKey) private var appearanceRaw =
         MatronAppearance.system.rawValue
 
+    init() {
+        // Opt out of macOS 26's floating glass sidebar and keep the
+        // classic attached style (Dan, 2026-07-15: the floating pane's
+        // big drop shadow leaks into the conversation, and there is no
+        // public per-item API to tune it — NSSplitViewItem gained only
+        // `automaticallyAdjustsSafeAreaInsets` in the 26 SDK). AppKit
+        // reads this key through the app's standard defaults, so
+        // registering it here scopes the override to Matron alone; it
+        // must land before the first NSSplitViewItem is created, hence
+        // App.init rather than applicationDidFinishLaunching. Unknown
+        // (harmless) on macOS 15.
+        UserDefaults.standard.register(defaults: [
+            "NSSplitViewItemSidebarDefaultsToFloatingAppearance": false
+        ])
+    }
+
     var body: some Scene {
         WindowGroup {
             Group {
