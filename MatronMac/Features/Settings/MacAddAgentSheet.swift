@@ -77,7 +77,8 @@ struct MacAddAgentSheet: View {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     Button("Approve") { Task { await viewModel.approve() } }
                         .keyboardShortcut(.defaultAction)
-                        .disabled(viewModel.agentName.trimmingCharacters(in: .whitespaces).isEmpty
+                        .disabled(viewModel.isApproving
+                                  || viewModel.agentName.trimmingCharacters(in: .whitespaces).isEmpty
                                   || (viewModel.expiresAt.map { $0 <= context.date } ?? false))
                 }
             }

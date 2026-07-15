@@ -25,7 +25,10 @@ struct MacDevicesView: View {
                 DeviceRow(device: device) { confirming = device }
             }
             .overlay {
-                if viewModel.devices.isEmpty && !viewModel.isLoading {
+                // Only claim "no devices" when the load actually succeeded —
+                // a failed fetch keeps the roster empty too, and its error
+                // is already shown in the footer bar.
+                if viewModel.devices.isEmpty && !viewModel.isLoading && viewModel.errorMessage == nil {
                     Text("No devices — that's odd, this Mac should be here. Try Refresh.")
                         .foregroundStyle(.secondary)
                         .font(.callout)

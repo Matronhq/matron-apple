@@ -145,6 +145,24 @@ final class PairingViewModelTests: XCTestCase {
         XCTAssertNil(vm.errorMessage)
     }
 
+    func test_approve_secondTapWhileInFlight_isIgnored() async {
+        let fake = FakeDevicesProvider()
+        fake.previewResult = .success(PairPreview(requesterIP: "1.2.3.4", expiresIn: 600))
+        fake.rosters = [[]]
+        fake.approveDelay = .milliseconds(100)
+        let vm = makeVM(fake)
+        vm.codeInput = "ktnm-3vq8"
+        await waitUntil(vm.phase == .preview(requesterIP: "1.2.3.4"))
+        vm.agentName = "dev-7"
+        let first = Task { await vm.approve() }
+        try? await Task.sleep(for: .milliseconds(20))
+        await vm.approve() // impatient second tap while the first is in flight
+        await first.value
+        XCTAssertEqual(fake.approvals.count, 1, "reentrant approve must not fire a second server call")
+        XCTAssertEqual(vm.phase, .waitingForClaim)
+        XCTAssertNil(vm.errorMessage, "the duplicate tap must not surface a conflict error")
+    }
+
     func test_cancelWaiting_stopsPolling() async {
         let fake = FakeDevicesProvider()
         fake.previewResult = .success(PairPreview(requesterIP: "1.2.3.4", expiresIn: 600))

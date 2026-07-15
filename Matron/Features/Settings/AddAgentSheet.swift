@@ -77,7 +77,8 @@ struct AddAgentSheet: View {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     Button("Approve") { Task { await viewModel.approve() } }
                         .bold()
-                        .disabled(viewModel.agentName.trimmingCharacters(in: .whitespaces).isEmpty
+                        .disabled(viewModel.isApproving
+                                  || viewModel.agentName.trimmingCharacters(in: .whitespaces).isEmpty
                                   || (viewModel.expiresAt.map { $0 <= context.date } ?? false))
                 }
             } footer: {

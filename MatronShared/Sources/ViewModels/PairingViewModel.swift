@@ -46,6 +46,10 @@ public final class PairingViewModel {
 
     public private(set) var phase: Phase = .enterCode
     public private(set) var errorMessage: String?
+    /// True while an approve round-trip is in flight — reentrant taps are
+    /// ignored so a duplicate request can't fire (the duplicate would 409
+    /// and surface "already approved" over the wait state).
+    public private(set) var isApproving = false
     /// Pair-code TTL deadline (from the preview). The approve button
     /// disables past this; the claim loop stops at it.
     public private(set) var expiresAt: Date?
@@ -116,7 +120,9 @@ public final class PairingViewModel {
     /// for the box's claim. Returns once the claim loop is RUNNING (it
     /// finishes in the background so the sheet stays dismissible).
     public func approve() async {
-        guard case .preview = phase else { return }
+        guard case .preview = phase, !isApproving else { return }
+        isApproving = true
+        defer { isApproving = false }
         errorMessage = nil
         let code = PairingCode.normalize(codeInput)
         let name = agentName.trimmingCharacters(in: .whitespacesAndNewlines)
