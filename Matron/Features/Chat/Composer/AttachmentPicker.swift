@@ -33,8 +33,13 @@ struct AttachmentPicker: View {
         } label: {
             Image(systemName: "plus.circle")
                 .font(.title2)
+                .fontWeight(.semibold)
                 .foregroundStyle(.secondary)
-                .padding(8)
+                .padding(.horizontal, 2)
+                // Fill the height ComposerView pins on this picker so the
+                // whole accessory column stays tappable, not just the glyph.
+                .frame(maxHeight: .infinity)
+                .contentShape(Rectangle())
         }
     }
 }
