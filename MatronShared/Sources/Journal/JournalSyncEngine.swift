@@ -232,6 +232,14 @@ public actor JournalSyncEngine {
         }
     }
 
+    /// Inserts a placeholder conversation row for a convo id learned
+    /// out-of-band (a `start` RPC answer that beat the convo's first journal
+    /// frame). Routed through the engine so the store keeps a single
+    /// writer; an existing row is never touched.
+    public func ensurePlaceholderConversation(id: String, title: String) {
+        try? store.ensureConversation(id: id, title: title)
+    }
+
     // MARK: RPC correlator internals
 
     /// Every resume path funnels through a removal-first take, so a

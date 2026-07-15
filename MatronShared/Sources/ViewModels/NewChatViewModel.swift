@@ -9,6 +9,26 @@ public protocol AgentRPCProviding: Sendable {
     func agentRequest(agentDeviceID: Int64, method: String, paramsData: Data) async throws -> RPCReply
 }
 
+/// Production adapter: the session's `JournalAPI` (roster) + sync engine
+/// (RPC send/correlate, engine-default timeout).
+public struct JournalAgentRPCService: AgentRPCProviding {
+    private let api: JournalAPI
+    private let engine: JournalSyncEngine
+
+    public init(api: JournalAPI, engine: JournalSyncEngine) {
+        self.api = api
+        self.engine = engine
+    }
+
+    public func devices() async throws -> [DeviceDTO] {
+        try await api.devices()
+    }
+
+    public func agentRequest(agentDeviceID: Int64, method: String, paramsData: Data) async throws -> RPCReply {
+        try await engine.agentRequest(agentDeviceID: agentDeviceID, method: method, paramsData: paramsData)
+    }
+}
+
 /// One entry of a bridge's `recent_folders` answer. `lastUsed` (epoch ms)
 /// is nil for "available but never used here" (the bridge's default
 /// workdir on a fresh box) — sorts last, reads "never used".
@@ -20,6 +40,18 @@ public struct RecentFolder: Equatable, Sendable, Identifiable {
     public init(path: String, lastUsed: Int64?) {
         self.path = path
         self.lastUsed = lastUsed
+    }
+}
+
+extension RecentFolder {
+    /// Row caption: relative last-used, or the never-used convention
+    /// (`last_used: null` = the bridge's default workdir on a fresh box).
+    public func lastUsedText(now: Date = Date()) -> String {
+        guard let lastUsed else { return "Never used" }
+        let date = Date(timeIntervalSince1970: TimeInterval(lastUsed) / 1000)
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: date, relativeTo: now)
     }
 }
 

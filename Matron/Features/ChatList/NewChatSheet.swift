@@ -1,126 +1,169 @@
 import SwiftUI
-import MatronChat
+import MatronJournal
 import MatronModels
+import MatronViewModels
 
-/// `+` toolbar sheet on the iOS chat list (and reused by the Mac variant).
-/// Phase 2 doesn't fetch a separate bot directory — instead we collapse the
-/// existing room list into a `Set<BotIdentity>` so any bot you've already
-/// chatted with shows up as an option. Discovery of brand-new bots is the
-/// onboarding/admin path and lands later.
-///
-/// Selecting a bot calls `ChatService.createChat(with:)` and then `onCreated`
-/// with the new room id so the parent view can dismiss + navigate. The
-/// sheet purposely owns its own state (`bots`, `creatingFor`, `errorMessage`)
-/// instead of leaning on the parent — that keeps the iOS and Mac sheets a
-/// drop-in swap for their respective placeholders.
+/// The `+` toolbar sheet: pick a connected agent → pick a folder → the
+/// agent starts a session there (agent RPC — spec
+/// 2026-07-15-new-chat-flow-design.md). `onCreated` fires with the new
+/// conversation id once a placeholder row exists, so the parent can
+/// dismiss and navigate immediately even if the convo's first journal
+/// frame hasn't landed yet.
 struct NewChatSheet: View {
     let deps: AppDependencies
     let session: UserSession
     let onCreated: (String) -> Void
 
-    @State private var bots: [BotIdentity] = []
-    @State private var creatingFor: BotIdentity?
-    /// Renamed from the plan's `error` to avoid shadowing the catch-binding
-    /// in `create(with:)` — Swift's local `let error = error` form is
-    /// readable but the shadow is easy to miss when scanning. The state
-    /// holds the localized description; nil means no error is shown.
-    @State private var errorMessage: String?
-    /// Tracks whether the first snapshot has been processed. We can't
-    /// use `bots.isEmpty` alone to gate the empty state, because a
-    /// brand-new user with no rooms still gets an empty `bots` once
-    /// `loadBots()` returns — but during the in-flight window the list
-    /// would also flash the empty state. `false` until `loadBots()`
-    /// completes; then `true` so the empty state can render if `bots`
-    /// is still empty (QA finding #5).
-    @State private var didLoad = false
+    @Environment(\.dismiss) private var dismiss
+    @State private var viewModel: NewChatViewModel
+    /// Guards double-fire when the `.done` onChange races a re-render.
+    @State private var navigated = false
+
+    init(deps: AppDependencies, session: UserSession, onCreated: @escaping (String) -> Void) {
+        self.deps = deps
+        self.session = session
+        self.onCreated = onCreated
+        _viewModel = State(initialValue: NewChatViewModel(api: deps.agentRPCService(for: session)))
+    }
 
     var body: some View {
         NavigationStack {
-            // Mirror the chat list's no-rooms state — a first-time user
-            // with no rooms (and therefore no bots derivable from the
-            // room list) sees a `ContentUnavailableView` instead of a
-            // silent empty list (QA finding #5).
             Group {
-                if didLoad && bots.isEmpty {
-                    ContentUnavailableView(
-                        "No bots yet",
-                        systemImage: "bubble.left.and.bubble.right",
-                        description: Text("Provision one via dev-boxer to get started.")
-                    )
-                } else {
-                    List {
-                        if let errorMessage {
-                            Section { Text(errorMessage).foregroundStyle(.red) }
-                        }
-                        Section("Pick a bot") {
-                            ForEach(bots, id: \.matrixID) { bot in
-                                Button {
-                                    Task { await create(with: bot) }
-                                } label: {
-                                    HStack {
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(bot.displayName).font(.body)
-                                            Text(bot.matrixID).font(.caption2).foregroundStyle(.secondary)
-                                        }
-                                        Spacer()
-                                        if creatingFor == bot { ProgressView() }
-                                    }
-                                }
-                                .disabled(creatingFor != nil)
+                switch viewModel.phase {
+                case .loadingAgents:
+                    ProgressView("Looking for your agents…")
+                case .agents(let agents):
+                    agentPicker(agents)
+                case .folders(let agent):
+                    folderPicker(agent)
+                case .done:
+                    ProgressView() // parent dismisses momentarily
+                }
+            }
+            .navigationTitle("New Chat")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+        .task { await viewModel.load() }
+        .onChange(of: viewModel.phase) { _, phase in
+            guard case .done(let convoID) = phase, !navigated else { return }
+            navigated = true
+            Task {
+                await deps.prepareConversation(for: session, id: convoID)
+                onCreated(convoID)
+            }
+        }
+    }
+
+    @ViewBuilder private func agentPicker(_ agents: [DeviceDTO]) -> some View {
+        List {
+            if let error = viewModel.errorMessage {
+                Section { Text(error).foregroundStyle(.red) }
+            }
+            Section {
+                if agents.isEmpty {
+                    Text("No agents yet — pair one in Settings → Manage Devices.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(agents) { agent in
+                    Button {
+                        Task { await viewModel.select(agent: agent) }
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: agent.symbolName)
+                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(agent.name.isEmpty ? "Unnamed agent" : agent.name)
+                                    .foregroundStyle(agent.connected ? .primary : .secondary)
+                                Text(agent.connected
+                                     ? "Connected"
+                                     : "Offline · Last seen \(agent.lastSeenText())")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if agent.connected {
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
                             }
                         }
                     }
+                    .disabled(!agent.connected)
+                }
+            } header: {
+                Text("Start a chat on")
+            } footer: {
+                if !agents.isEmpty && !agents.contains(where: \.connected) {
+                    Text("No agents connected — is the box awake?")
                 }
             }
-            .navigationTitle("New chat")
-            .task { await loadBots() }
         }
     }
 
-    /// Reads room-list snapshots from the long-lived Phase 2.5 broadcaster
-    /// to derive the unique-bot set. The stream stays open for the
-    /// lifetime of this `.task`; an empty first yield (sliding sync
-    /// still warming up) just means the next yield will arrive once
-    /// rooms land. `didLoad` flips on the first yield regardless of
-    /// emptiness so a user with genuinely zero bots sees the empty
-    /// state immediately rather than staring at a ProgressView. If a
-    /// non-empty snapshot arrives, we refresh `bots` and return.
-    /// Errors propagate through the stream and surface in
-    /// `errorMessage`.
-    private func loadBots() async {
-        let chat = deps.chatService(for: session)
-        do {
-            for try await snapshot in chat.chatSummaries() {
-                if Task.isCancelled { return }
-                if !snapshot.isEmpty {
-                    let unique = Set(snapshot.map(\.bot))
-                    bots = Array(unique).sorted { $0.displayName < $1.displayName }
-                    didLoad = true
-                    return
+    @ViewBuilder private func folderPicker(_ agent: DeviceDTO) -> some View {
+        List {
+            Section {
+                if let foldersError = viewModel.foldersError {
+                    Text(foldersError)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else if viewModel.folders.isEmpty {
+                    Text("No recent folders on \(agent.name).")
+                        .foregroundStyle(.secondary)
                 }
-                // Empty snapshot — show the empty state so the user
-                // isn't staring at a ProgressView, but keep iterating
-                // in case bots arrive later.
-                didLoad = true
+                ForEach(viewModel.folders) { folder in
+                    Button {
+                        Task { await viewModel.start(workdir: folder.path) }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(folder.path)
+                                .font(.callout.monospaced())
+                                .lineLimit(1)
+                                .truncationMode(.head)
+                            Text(folder.lastUsedText())
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .disabled(viewModel.isStarting)
+                }
+            } header: {
+                Text("Folder on \(agent.name)")
+            } footer: {
+                if let error = viewModel.errorMessage {
+                    Text(error).foregroundStyle(.red)
+                }
             }
-        } catch {
-            errorMessage = error.localizedDescription
-            didLoad = true
-        }
-    }
-
-    /// Invokes `ChatService.createChat(with:)` and surfaces the new room id
-    /// via `onCreated`. Failures land in `errorMessage`; the input list is
-    /// not cleared so the user can retry without losing the bot list.
-    private func create(with bot: BotIdentity) async {
-        creatingFor = bot
-        defer { creatingFor = nil }
-        do {
-            let chat = deps.chatService(for: session)
-            let roomID = try await chat.createChat(with: bot.matrixID)
-            onCreated(roomID)
-        } catch {
-            errorMessage = error.localizedDescription
+            Section {
+                TextField("~/path/to/project", text: $viewModel.customPath)
+                    .font(.callout.monospaced())
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                Toggle("Browser tools", isOn: $viewModel.browserEnabled)
+                Button {
+                    Task { await viewModel.start(workdir: viewModel.customPath) }
+                } label: {
+                    if viewModel.isStarting {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text("Starting…")
+                        }
+                    } else {
+                        Text("Start Here").bold()
+                    }
+                }
+                .disabled(viewModel.isStarting
+                          || viewModel.customPath.trimmingCharacters(in: .whitespaces).isEmpty)
+            } header: {
+                Text("Other folder")
+            } footer: {
+                Text("Blank starts in the agent's default folder — pick a recent one above, or type a path.")
+            }
         }
     }
 }

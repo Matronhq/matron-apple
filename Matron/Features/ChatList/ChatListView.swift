@@ -133,8 +133,12 @@ struct ChatListView: View {
             // placeholder so the toolbar button is still observable in
             // tests / previews where the environment isn't injected.
             if let deps, let session {
-                NewChatSheet(deps: deps, session: session) { _ in
+                NewChatSheet(deps: deps, session: session) { convoID in
                     showingNewChat = false
+                    // Navigate into the new chat; MatronApp's auto-open
+                    // (newConversations) may race this with the same id —
+                    // both paths guard on "already showing".
+                    onOpenChat?(convoID)
                 }
             } else {
                 NewChatPlaceholder(onDismiss: { showingNewChat = false })
