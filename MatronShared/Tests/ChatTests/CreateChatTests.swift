@@ -19,6 +19,10 @@ actor FakeChatServiceForCreate: ChatService {
         AsyncThrowingStream { $0.finish() }
     }
 
+    nonisolated func children(of parentConvoID: String) -> AsyncStream<[SubChatSummary]> {
+        AsyncStream { $0.finish() }
+    }
+
     func createChat(with botID: String) async throws -> String {
         createdWith.append(botID)
         return nextRoomID

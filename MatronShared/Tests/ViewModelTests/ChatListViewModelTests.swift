@@ -69,6 +69,9 @@ final class FakeStreamingChatService: ChatService, @unchecked Sendable {
     func refresh() async throws {}
     func mute(roomID: String) async throws {}
     func leave(roomID: String) async throws {}
+    func children(of parentConvoID: String) -> AsyncStream<[SubChatSummary]> {
+        AsyncStream { $0.finish() }
+    }
 }
 
 /// Minimal error type for routing through `chatSummaries()` in the

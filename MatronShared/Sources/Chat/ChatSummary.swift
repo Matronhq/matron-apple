@@ -14,6 +14,14 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
     /// Empty when the conversation has no messages yet — rows hide the
     /// preview line rather than showing a blank.
     public let snippet: String
+    /// The parent conversation's id when this is a subagent child chat,
+    /// else `nil`. Immutable server-side (once a child, always a child).
+    /// Children never appear in the main chat list — they are reachable
+    /// only through their parent's running-subagent strip — so the chat-
+    /// list query filters `parentConvoID == nil`. Carried here so any
+    /// summary consumer can defend in depth (no badges / notifications
+    /// for children) alongside the server's own silence rule.
+    public let parentConvoID: String?
 
     public init(
         id: String,
@@ -21,7 +29,8 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
         bot: BotIdentity,
         lastActivity: Date?,
         unreadCount: Int,
-        snippet: String = ""
+        snippet: String = "",
+        parentConvoID: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -29,6 +38,28 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
         self.lastActivity = lastActivity
         self.unreadCount = unreadCount
         self.snippet = snippet
+        self.parentConvoID = parentConvoID
+    }
+}
+
+/// A subagent child conversation as surfaced in its parent's running-
+/// subagent strip and the sub-chat switcher menu. Deliberately smaller than
+/// `ChatSummary`: the strip needs only identity, a label, and whether the
+/// subagent is still running (spinner vs. done). The child's model / context
+/// gauge come free from the per-convo session-status stream once the viewer
+/// subscribes with `id`, so they're not duplicated here.
+public struct SubChatSummary: Equatable, Hashable, Identifiable, Sendable {
+    public let id: String
+    public let title: String
+    /// `true` while the subagent is active (`session_state == "running"`),
+    /// `false` once finished (`"done"`). The strip shows only running
+    /// children; the mini-header renders running/finished state.
+    public let isRunning: Bool
+
+    public init(id: String, title: String, isRunning: Bool) {
+        self.id = id
+        self.title = title
+        self.isRunning = isRunning
     }
 }
 

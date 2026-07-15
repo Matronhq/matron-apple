@@ -334,6 +334,33 @@ final class JournalSyncEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    /// A subagent child born live (its first frame is a convo_meta carrying
+    /// parent_convo_id) must NOT auto-open — children are silent (spec §6),
+    /// reachable only through the parent strip. A normal convo born right
+    /// after still fires, proving the child was filtered, not merely delayed.
+    func testLiveBornChildDoesNotAutoOpen() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1)) // c1 — existing, drives us to running
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.newConversations().makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(50))
+
+        // A child convo's first frame — convo_meta with parent_convo_id.
+        let childMeta = #"{"kind":"journal","seq":2,"convo_id":"c1:sub:a1","ts":2000,"sender":"agent:a","type":"convo_meta","payload":{"title":"explore","parent_convo_id":"c1"}}"#
+        socket.serve(childMeta)                    // child → must NOT emit
+        socket.serve(journalLine(3, convo: "cLive")) // normal new convo → emit
+
+        let emitted = await iterator.next()
+        XCTAssertEqual(emitted, "cLive",
+                       "a live-born subagent child must not auto-open; only top-level convos do")
+        await engine.endSync()
+    }
+
     // MARK: Agent RPC correlator
 
     private func sentAgentRequests(_ socket: FakeWebSocketConnection) -> [[String: Any]] {

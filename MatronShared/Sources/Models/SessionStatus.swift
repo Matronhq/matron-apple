@@ -45,12 +45,19 @@ public struct SessionStatus: Equatable, Sendable {
     /// ~/.claude.json's oauthAccount). Absent when the bridge can't read
     /// it — e.g. API-key accounts.
     public var email: String?
+    /// For a subagent child conversation, the `tool_use_id` of the parent's
+    /// spawning Task call — the bridge publishes it on every status frame
+    /// for the child, and the server replays the last one on `viewing`. Lets
+    /// the parent link its Task tool card to this child. `nil` for normal
+    /// conversations (and for children until a status frame carries it).
+    public var taskRef: String?
 
-    public init(model: String? = nil, context: Context? = nil, limits: [Limit]? = nil, email: String? = nil) {
+    public init(model: String? = nil, context: Context? = nil, limits: [Limit]? = nil, email: String? = nil, taskRef: String? = nil) {
         self.model = model
         self.context = context
         self.limits = limits
         self.email = email
+        self.taskRef = taskRef
     }
 
     /// Merge an update: each part replaces the held value only when the
@@ -60,6 +67,7 @@ public struct SessionStatus: Equatable, Sendable {
         if let context = update.context { self.context = context }
         if let limits = update.limits { self.limits = limits }
         if let email = update.email { self.email = email }
+        if let taskRef = update.taskRef { self.taskRef = taskRef }
     }
 }
 
@@ -72,15 +80,19 @@ public struct SessionStatusUpdate: Equatable, Sendable {
     public let context: SessionStatus.Context?
     public let limits: [SessionStatus.Limit]?
     public let email: String?
+    /// The spawning Task call's `tool_use_id` for a subagent child (see
+    /// `SessionStatus.taskRef`). `nil` when the frame doesn't carry one.
+    public let taskRef: String?
 
     /// No parameter defaults, deliberately: every constructor names every
     /// field, so merge sites (SessionStatus.apply, the sync engine's
     /// replay cache) can't silently drop a newly added one.
-    public init(convoID: String, model: String?, context: SessionStatus.Context?, limits: [SessionStatus.Limit]?, email: String?) {
+    public init(convoID: String, model: String?, context: SessionStatus.Context?, limits: [SessionStatus.Limit]?, email: String?, taskRef: String?) {
         self.convoID = convoID
         self.model = model
         self.context = context
         self.limits = limits
         self.email = email
+        self.taskRef = taskRef
     }
 }

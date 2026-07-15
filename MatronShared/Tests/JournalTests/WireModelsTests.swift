@@ -181,6 +181,20 @@ final class WireModelsTests: XCTestCase {
             label: "Week (Fable)", percent: 80,
             resets: "Jul 12, 6:59pm (UTC)",
             resetsAt: iso.date(from: "2026-07-12T18:59:00.000Z"))])
+        XCTAssertNil(update.taskRef, "a normal conversation's status carries no task_ref")
+    }
+
+    func testDecodeSessionStatusCarriesTaskRefForChild() throws {
+        // A subagent child's status frame rides `task_ref` (the parent's
+        // spawning Task tool_use_id), replayed on `viewing` so the app can
+        // link the Task card to the child.
+        let text = #"{"kind":"ephemeral","convo_id":"p1:sub:a1","status":{"model":"claude-fable-5","task_ref":"toolu_abc123"}}"#
+        guard case let .sessionStatus(update)? = ServerFrame.decode(text) else {
+            return XCTFail("expected sessionStatus frame")
+        }
+        XCTAssertEqual(update.convoID, "p1:sub:a1")
+        XCTAssertEqual(update.model, "claude-fable-5")
+        XCTAssertEqual(update.taskRef, "toolu_abc123")
     }
 
     func testDecodeSessionStatusPartialAndMalformed() throws {
