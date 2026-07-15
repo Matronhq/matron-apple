@@ -15,6 +15,24 @@ final class FakeDevicesProvider: DevicesProviding, @unchecked Sendable {
     /// view model does something else (races between preview and approve).
     var previewDelay: Duration = .zero
     var approveDelay: Duration = .zero
+    /// Deterministic alternative to the delays for interleaving tests: when
+    /// set, the call suspends after recording its arguments until the test
+    /// calls the matching `release*()`. Real-time delays make interleavings
+    /// a coin flip on loaded CI runners; a gate guarantees them.
+    var holdPreview = false
+    var holdApprove = false
+    private var previewContinuations: [CheckedContinuation<Void, Never>] = []
+    private var approveContinuations: [CheckedContinuation<Void, Never>] = []
+
+    func releasePreview() {
+        previewContinuations.forEach { $0.resume() }
+        previewContinuations.removeAll()
+    }
+
+    func releaseApprove() {
+        approveContinuations.forEach { $0.resume() }
+        approveContinuations.removeAll()
+    }
 
     private(set) var devicesCalls = 0
     private(set) var revokedIDs: [Int64] = []
@@ -34,12 +52,18 @@ final class FakeDevicesProvider: DevicesProviding, @unchecked Sendable {
 
     func pairPreview(code: String) async throws -> PairPreview {
         previewedCodes.append(code)
+        if holdPreview {
+            await withCheckedContinuation { previewContinuations.append($0) }
+        }
         if previewDelay > .zero { try? await Task.sleep(for: previewDelay) }
         return try previewResult.get()
     }
 
     func pairApprove(code: String, agentName: String) async throws {
         approvals.append((code, agentName))
+        if holdApprove {
+            await withCheckedContinuation { approveContinuations.append($0) }
+        }
         if approveDelay > .zero { try? await Task.sleep(for: approveDelay) }
         if let approveError { throw approveError }
     }

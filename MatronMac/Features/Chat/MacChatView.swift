@@ -185,6 +185,13 @@ struct MacChatView: View {
                             onClose: { openSubChatID = nil },
                             onOpenSibling: { openSubChatID = $0 }
                         )
+                        // Key the pane's identity to the child: switching
+                        // siblings keeps the same structural position, and
+                        // without a new identity `.task` never re-fires, so
+                        // the new sibling's timeline VM would never start
+                        // (same pattern as MacChatListView's `.id(id)` on
+                        // MacChatView).
+                        .id(childID)
                         .frame(minWidth: 380)
                     }
                 } else {
@@ -196,6 +203,9 @@ struct MacChatView: View {
                         onClose: { openSubChatID = nil },
                         onOpenSibling: { openSubChatID = $0 }
                     )
+                    // See the side-by-side branch: identity per child so a
+                    // sibling switch re-runs `.task` and starts the new VM.
+                    .id(childID)
                 }
             } else {
                 chatColumn
