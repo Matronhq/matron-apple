@@ -412,7 +412,10 @@ struct MacChatView: View {
         }
         // matron-web's cream timeline gradient behind the whole chat
         // column — bubbles and the composer material share the warm ground.
-        .background(MatronTimelineBackground())
+        // `.leading` excluded: on macOS 26 the detail column's safe area
+        // includes the floating glass sidebar, and a gradient bleeding
+        // under it gives the sidebar a heavy content-overlap drop shadow.
+        .background(MatronTimelineBackground(ignoringSafeAreaEdges: [.top, .bottom, .trailing]))
         .toolbar {
             MacChatToolbar(
                 title: chatTitle,

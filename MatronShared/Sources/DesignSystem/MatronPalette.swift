@@ -55,13 +55,23 @@ public extension Color {
 /// chat column (timeline + composer) so bubbles and the composer's
 /// material both sit on the same warm ground.
 public struct MatronTimelineBackground: View {
-    public init() {}
+    let edges: Edge.Set
+
+    /// - Parameter ignoringSafeAreaEdges: which safe-area edges the
+    ///   gradient bleeds into. iOS keeps the `.all` default; the Mac
+    ///   chat column excludes `.leading` — on macOS 26 the detail
+    ///   column's safe area includes the floating glass sidebar, and a
+    ///   gradient that bleeds under it makes the sidebar render with a
+    ///   heavy content-overlap drop shadow (Dan, 2026-07-15).
+    public init(ignoringSafeAreaEdges edges: Edge.Set = .all) {
+        self.edges = edges
+    }
 
     public var body: some View {
         LinearGradient(
             colors: [.matronTimelineTop, .matronTimelineBottom],
             startPoint: .top, endPoint: .bottom
         )
-        .ignoresSafeArea()
+        .ignoresSafeArea(edges: edges)
     }
 }
