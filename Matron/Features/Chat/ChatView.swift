@@ -285,6 +285,7 @@ struct ChatView: View {
                 VStack(spacing: 0) {
                     TimelineListContent(
                         viewModel: viewModel,
+                        stripViewModel: stripViewModel,
                         onPreview: { attachmentPreview = $0 },
                         onShowSource: { sourceItem = $0 }
                     )
@@ -607,6 +608,29 @@ struct ChatView: View {
         .navigationTitle(chatTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            // Sub-chat switcher — shown whenever this chat has ANY children
+            // (running or finished). The running strip hides itself the
+            // moment the last subagent finishes, so without this the only
+            // way back into a finished sub-chat is its timeline card; this
+            // is the permanent entry point (Dan, 2026-07-15).
+            if !stripViewModel.children.isEmpty {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        ForEach(stripViewModel.children) { child in
+                            NavigationLink(value: child.id) {
+                                Label(
+                                    child.title,
+                                    systemImage: child.isRunning
+                                        ? "circle.dashed" : "checkmark.circle"
+                                )
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "arrow.triangle.branch")
+                    }
+                    .accessibilityLabel("Subagents")
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showSessionStatus = true } label: {
                     Image(systemName: "info.circle")
@@ -769,11 +793,28 @@ struct ChatView: View {
 /// changes — the equatable check only gates parent-driven invalidation.
 private struct TimelineListContent: View, Equatable {
     let viewModel: ChatViewModel
+    /// The chat's sub-chat list, used to turn the bridge's plain
+    /// "🔀 Subtask: …" indicator messages into tappable entries that open
+    /// the child sub-chat (spec: "Task tool cards … become tappable
+    /// entries"). Reading `children` in `body` installs `@Observable`
+    /// tracking, so indicator rows re-render as children appear/finish.
+    let stripViewModel: SubChatStripViewModel
     let onPreview: (ChatView.AttachmentPreview) -> Void
     let onShowSource: (TimelineItem) -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.viewModel === rhs.viewModel
+        lhs.viewModel === rhs.viewModel && lhs.stripViewModel === rhs.stripViewModel
+    }
+
+    /// The child sub-chat a bridge subtask-indicator message refers to,
+    /// or nil when `item` isn't an indicator / no child matches (then the
+    /// row renders as the plain text message it always was).
+    private func subtaskChild(for item: TimelineItem) -> SubChatSummary? {
+        guard case .text(let body, _) = item.kind, !item.isOwn,
+              let description = SubChatStripViewModel.subtaskDescription(fromMessageBody: body)
+        else { return nil }
+        return SubChatStripViewModel.resolveSubtaskTarget(
+            description: description, among: stripViewModel.children)
     }
 
     var body: some View {
@@ -800,6 +841,18 @@ private struct TimelineListContent: View, Equatable {
                     DateSeparator(date: date)
                         .id(row.id)
                 case .message(let item):
+                    if let child = subtaskChild(for: item) {
+                        // Bridge subtask indicator → tappable card opening
+                        // the child sub-chat (`chatDestination` routes the
+                        // child id to `SubChatView`). Keeps the row's
+                        // `.id(item.id)` so scroll anchors are unaffected.
+                        NavigationLink(value: child.id) {
+                            SubtaskLinkCard(title: child.title, isRunning: child.isRunning)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal)
+                        .id(item.id)
+                    } else {
                     TimelineItemView(
                         item: item,
                         resolveImage: { viewModel.image(for: $0) },
@@ -851,6 +904,7 @@ private struct TimelineListContent: View, Equatable {
                                 Label("View source", systemImage: "curlybraces")
                             }
                         }
+                    }
                 }
             }
         }
@@ -946,8 +1000,14 @@ struct SubChatView: View {
             Divider()
             ScrollView {
                 VStack(spacing: 0) {
+                    // `stripViewModel` here is the PARENT's strip, whose
+                    // children are this child's siblings — and the bridge
+                    // flattens nested agents into siblings, so a nested
+                    // "🔀 Subtask:" indicator in this timeline resolves to
+                    // the flattened sibling and links correctly too.
                     TimelineListContent(
                         viewModel: viewModel,
+                        stripViewModel: stripViewModel,
                         onPreview: { attachmentPreview = $0 },
                         onShowSource: { sourceItem = $0 }
                     )

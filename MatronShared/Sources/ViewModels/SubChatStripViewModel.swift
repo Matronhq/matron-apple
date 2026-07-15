@@ -87,4 +87,44 @@ public final class SubChatStripViewModel {
     public var soleRunningChild: SubChatSummary? {
         runningChildren.count == 1 ? runningChildren.first : nil
     }
+
+    // MARK: - Subtask-message linking
+
+    /// The bridge announces every Task/Agent tool call in the parent
+    /// timeline as a plain text message `🔀 Subtask: <description>` — with
+    /// no machine-readable link to the child conversation it spawns (the
+    /// linking `task_ref` only rides the CHILD's status frames). Until the
+    /// bridge publishes a structured event, these two helpers make those
+    /// messages tappable: parse the indicator, then match it to a child by
+    /// title (the child's title is the same watcher label the indicator's
+    /// description came from).
+    nonisolated private static let subtaskIndicatorPrefix = "🔀 Subtask: "
+
+    /// The description carried by a bridge subtask-indicator message, or
+    /// `nil` when `body` isn't one. The indicator is always the whole
+    /// message (modulo surrounding whitespace), never an infix.
+    nonisolated public static func subtaskDescription(fromMessageBody body: String) -> String? {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix(subtaskIndicatorPrefix) else { return nil }
+        let description = trimmed.dropFirst(subtaskIndicatorPrefix.count)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return description.isEmpty ? nil : description
+    }
+
+    /// The child conversation a subtask indicator most plausibly refers to.
+    /// The bridge truncates the indicator's description to 80 chars while
+    /// the child title is the full label, so a prefix match is accepted.
+    /// Duplicate titles (the same agent re-run) tie-break by preferring a
+    /// still-running child, then the newest — `children` arrives in
+    /// creation order, so `last` is the most recent spawn, which is the
+    /// likeliest referent when the user taps a fresh indicator.
+    nonisolated public static func resolveSubtaskTarget(
+        description: String,
+        among children: [SubChatSummary]
+    ) -> SubChatSummary? {
+        let matches = children.filter {
+            $0.title == description || $0.title.hasPrefix(description)
+        }
+        return matches.last(where: \.isRunning) ?? matches.last
+    }
 }

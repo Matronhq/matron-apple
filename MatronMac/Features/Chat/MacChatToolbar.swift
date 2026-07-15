@@ -49,6 +49,13 @@ struct MacChatToolbar: ToolbarContent {
     /// gauge render in the leading capsule, usage bars in the trailing
     /// one. Nil (no status frame yet) renders the title alone.
     let status: SessionStatus?
+    /// Sub-chat switcher source. The button shows whenever the chat has
+    /// ANY children — running or finished. The running strip hides itself
+    /// the moment the last subagent finishes, so this is the permanent
+    /// entry point back into finished sub-chats (Dan, 2026-07-15).
+    /// Reading `children` in `body` installs `@Observable` tracking.
+    let stripViewModel: SubChatStripViewModel
+    let onOpenSubChat: (String) -> Void
 
     /// One height for all three clusters so the system's content-hugging
     /// glass capsules come out equal and align as a row. Sized to the
@@ -68,6 +75,26 @@ struct MacChatToolbar: ToolbarContent {
         if let limits = status?.limits, !limits.isEmpty {
             ToolbarItem(placement: .primaryAction) {
                 cluster { UsageBarsView(limits: limits, scale: .compact) }
+            }
+        }
+        if !stripViewModel.children.isEmpty {
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    ForEach(stripViewModel.children) { child in
+                        Button {
+                            onOpenSubChat(child.id)
+                        } label: {
+                            Label(
+                                child.title,
+                                systemImage: child.isRunning
+                                    ? "circle.dashed" : "checkmark.circle"
+                            )
+                        }
+                    }
+                } label: {
+                    Image(systemName: "arrow.triangle.branch")
+                }
+                .accessibilityLabel("Subagents")
             }
         }
     }

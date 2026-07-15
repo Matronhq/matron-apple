@@ -95,6 +95,64 @@ final class SubChatStripViewModelTests: XCTestCase {
         XCTAssertEqual(vm.runningChildren.count, 1, "a matching-generation stop cancels the observation")
     }
 
+    // MARK: - Subtask-message linking (pure helpers)
+
+    func test_subtaskDescription_parsesBridgeIndicatorText() {
+        XCTAssertEqual(
+            SubChatStripViewModel.subtaskDescription(fromMessageBody: "🔀 Subtask: Test sub-chat plumbing"),
+            "Test sub-chat plumbing")
+        XCTAssertEqual(
+            SubChatStripViewModel.subtaskDescription(fromMessageBody: "  🔀 Subtask: padded  \n"),
+            "padded", "surrounding whitespace must not break the match")
+    }
+
+    func test_subtaskDescription_rejectsNonSubtaskBodies() {
+        XCTAssertNil(SubChatStripViewModel.subtaskDescription(fromMessageBody: "plain message"))
+        XCTAssertNil(SubChatStripViewModel.subtaskDescription(fromMessageBody: "🔀 Subtask: "),
+                     "an empty description is not a link target")
+        XCTAssertNil(SubChatStripViewModel.subtaskDescription(fromMessageBody: "prefix 🔀 Subtask: x"),
+                     "the indicator is the whole message, not an infix")
+    }
+
+    func test_resolveSubtaskTarget_matchesTitleExactly() {
+        let children = [
+            SubChatSummary(id: "p:sub:a", title: "explore", isRunning: false),
+            SubChatSummary(id: "p:sub:b", title: "test suites", isRunning: false),
+        ]
+        XCTAssertEqual(
+            SubChatStripViewModel.resolveSubtaskTarget(description: "test suites", among: children)?.id,
+            "p:sub:b")
+        XCTAssertNil(SubChatStripViewModel.resolveSubtaskTarget(description: "unknown", among: children))
+    }
+
+    func test_resolveSubtaskTarget_prefixMatchesTruncatedIndicator() {
+        // The bridge slices the indicator's description to 80 chars; the
+        // child's title is the watcher's full label. A prefix match links
+        // the truncated indicator to the full title.
+        let longTitle = String(repeating: "x", count: 100)
+        let truncated = String(longTitle.prefix(80))
+        let children = [SubChatSummary(id: "p:sub:long", title: longTitle, isRunning: false)]
+        XCTAssertEqual(
+            SubChatStripViewModel.resolveSubtaskTarget(description: truncated, among: children)?.id,
+            "p:sub:long")
+    }
+
+    func test_resolveSubtaskTarget_prefersRunningThenNewestOnDuplicateTitles() {
+        let children = [
+            SubChatSummary(id: "p:sub:old", title: "lint", isRunning: false),
+            SubChatSummary(id: "p:sub:mid", title: "lint", isRunning: true),
+            SubChatSummary(id: "p:sub:new", title: "lint", isRunning: false),
+        ]
+        XCTAssertEqual(
+            SubChatStripViewModel.resolveSubtaskTarget(description: "lint", among: children)?.id,
+            "p:sub:mid", "a still-running child outranks finished duplicates")
+
+        let allDone = children.map { SubChatSummary(id: $0.id, title: $0.title, isRunning: false) }
+        XCTAssertEqual(
+            SubChatStripViewModel.resolveSubtaskTarget(description: "lint", among: allDone)?.id,
+            "p:sub:new", "with no running match, the newest (last-created) wins")
+    }
+
     @MainActor
     func test_stripEmptiesWhenAllChildrenFinish() async {
         let fake = FakeChildrenChatService()
