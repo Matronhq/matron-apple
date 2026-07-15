@@ -93,6 +93,17 @@ public struct MarkdownText: View {
     }
 }
 
+/// Single source of truth for the chat-message text scale, relative to
+/// each platform's system body size. Consumed by BOTH message renderers —
+/// `Theme.matronMessage` (MarkdownUI, iOS + non-timeline Mac contexts) via
+/// `FontSize(.em(_:))`, and `MarkdownAttributed` (the Mac timeline's
+/// selectable NSTextView) via `baseFontSize` — so the two paths cannot
+/// drift apart in size.
+enum MessageTextScale {
+    /// ×1.18 ⇒ ≈20pt on iOS (17pt body), ≈15.3pt on macOS (13pt body).
+    static let scale: CGFloat = 1.18
+}
+
 public extension Theme {
     /// Matron's house markdown theme: system font, monospaced inline code on a
     /// subtle grey, accent-coloured underlined links, and the public
@@ -120,23 +131,19 @@ public extension Theme {
     /// base size. Pair with a small `lineSpacing` on `MarkdownText` for the
     /// roomier line height.
     ///
-    /// The scale differs per platform because the system body size does:
-    /// iOS body is 17pt (×1.18 ≈ 20pt), macOS body is only 13pt — the
-    /// same multiplier read tiny on a desktop display, so the Mac scale
-    /// lands message text at ≈ 17.4pt to match matron-web's chat body.
-    static let matronMessage: Theme = {
-        #if os(macOS)
-        let messageScale = 1.34   // 13pt base ≈ 17.4pt messages
-        #else
-        let messageScale = 1.18   // 17pt base ≈ 20pt messages
-        #endif
-        return matron
-            .text {
-                FontFamily(.system(.default))
-                ForegroundColor(.primary)
-                FontSize(.em(messageScale))
-            }
-    }()
+    /// The multiplier applies to each platform's system body size (iOS
+    /// 17pt ≈ 20pt messages; macOS 13pt ≈ 15.3pt messages). The Mac size
+    /// walked up to ×1.34 (≈17.4pt) chasing matron-web parity during the
+    /// 2026-07 polish batch and read as oversized in daily use once the
+    /// selectable NSTextView renderer locked it in — walked back to the
+    /// pre-polish value. Change `MessageTextScale.scale`, not this theme:
+    /// it's the single source both renderers consume.
+    static let matronMessage: Theme = matron
+        .text {
+            FontFamily(.system(.default))
+            ForegroundColor(.primary)
+            FontSize(.em(MessageTextScale.scale))
+        }
 }
 
 /// Cross-platform pasteboard wrapper. Lives in DesignSystem so primitives compile
