@@ -316,7 +316,11 @@ struct ChatView: View {
                 }
                 // Grabs the backing UIScrollView (must sit INSIDE the
                 // ScrollView content — the capture walks up from here).
-                .captureNativeScrollView(into: nativeScroll)
+                // The overflow lock keeps a too-wide row from letting the
+                // whole timeline wiggle horizontally — see
+                // `HorizontalOverflowLock` (it also logs the offender).
+                .captureNativeScrollView(into: nativeScroll,
+                                         lockingHorizontalOverflow: true)
             }
             // Warm-up state: no rows yet, but not settled-empty either
             // (that's the branch above). This window used to render as a
