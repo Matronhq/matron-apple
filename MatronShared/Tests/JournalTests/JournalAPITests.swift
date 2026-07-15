@@ -211,6 +211,84 @@ final class JournalAPITests: XCTestCase {
         }
     }
 
+    // MARK: Devices + pairing (journal PR #19 spec)
+
+    func testDevicesDecodesRosterIncludingNulls() async throws {
+        StubURLProtocol.responses = ["/devices": (200, #"""
+        {"devices":[
+          {"device_id":7,"kind":"client","name":"dan-mac","created_at":1784000000000,
+           "cursor":5123,"lag":0,"last_seen_at":1784500000000,"is_self":true},
+          {"device_id":9,"kind":"agent","name":"dev-7","created_at":1784100000000,
+           "cursor":5000,"lag":123,"last_seen_at":null,"is_self":false}
+        ]}
+        """#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let devices = try await api.devices()
+        XCTAssertEqual(devices.count, 2)
+        XCTAssertEqual(devices[0], DeviceDTO(id: 7, kind: "client", name: "dan-mac",
+                                             createdAt: 1_784_000_000_000, cursor: 5123, lag: 0,
+                                             lastSeenAt: 1_784_500_000_000, isSelf: true))
+        XCTAssertEqual(devices[1].lastSeenAt, nil, "last_seen_at:null must decode as nil (never connected)")
+        XCTAssertFalse(devices[1].isSelf)
+        XCTAssertEqual(StubURLProtocol.lastRequest?.value(forHTTPHeaderField: "Authorization"), "Bearer t")
+    }
+
+    func testRevokeDevicePostsToScopedPath() async throws {
+        StubURLProtocol.responses = ["/devices/7/revoke": (200, #"{"ok":true}"#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        try await api.revokeDevice(id: 7)
+        XCTAssertEqual(StubURLProtocol.lastRequest?.url?.path, "/devices/7/revoke")
+        XCTAssertEqual(StubURLProtocol.lastRequest?.httpMethod, "POST")
+    }
+
+    func testRevokeDeviceMapsNotFound() async throws {
+        StubURLProtocol.responses = ["/devices/9/revoke": (404, #"{"error":"not_found"}"#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        do {
+            try await api.revokeDevice(id: 9)
+            XCTFail("expected throw")
+        } catch let error as JournalAPIError {
+            XCTAssertEqual(error, .notFound)
+        }
+    }
+
+    func testPairPreviewSendsCodeAndDecodes() async throws {
+        StubURLProtocol.responses = ["/pair/preview": (200, #"{"requester_ip":"65.108.10.252","expires_in":412}"#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let preview = try await api.pairPreview(code: "KTNM3VQ8")
+        XCTAssertEqual(preview, PairPreview(requesterIP: "65.108.10.252", expiresIn: 412))
+        let body = try XCTUnwrap(StubURLProtocol.lastRequestBody)
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(obj["pair_code"] as? String, "KTNM3VQ8")
+    }
+
+    func testPairApproveSendsCodeAndName() async throws {
+        StubURLProtocol.responses = ["/pair/approve": (200, #"{"status":"approved"}"#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        try await api.pairApprove(code: "KTNM3VQ8", agentName: "dev-7")
+        let body = try XCTUnwrap(StubURLProtocol.lastRequestBody)
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(obj["pair_code"] as? String, "KTNM3VQ8")
+        XCTAssertEqual(obj["agent_name"] as? String, "dev-7")
+    }
+
+    func testPairApproveMapsConflict() async throws {
+        StubURLProtocol.responses = ["/pair/approve": (409, #"{"error":"conflict"}"#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        do {
+            try await api.pairApprove(code: "KTNM3VQ8", agentName: "dev-7")
+            XCTFail("expected throw")
+        } catch let error as JournalAPIError {
+            XCTAssertEqual(error, .conflict, "409 must map to the dedicated conflict case (already approved)")
+        }
+    }
+
     // MARK: Path-prefix preservation (bugbot "Homeserver path prefix dropped")
 
     func testServerPathPrefixIsPreservedOnRequests() async throws {

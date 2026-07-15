@@ -8,6 +8,7 @@ import MatronPush
 import MatronSearch
 import MatronStorage
 import MatronSync
+import MatronViewModels
 
 /// Task 12 (Phase 7): wires the Mac app onto the matron-journal stack
 /// instead of the Matrix SDK. Same shape as the iOS `AppDependencies`
@@ -142,6 +143,13 @@ final class AppDependencies {
 
     func pushService(for session: UserSession) -> any PushService {
         JournalPushService(api: core(for: session).api, environment: pushEnvironment)
+    }
+
+    /// Devices/pairing surface (Settings → Devices). The session's one
+    /// `JournalAPI` conforms directly; the protocol exists so the view
+    /// models test against a fake.
+    func devicesService(for session: UserSession) -> any DevicesProviding {
+        core(for: session).api
     }
 
     /// Per-room `TimelineService` factory. Cached by `(userID, roomID)` so
