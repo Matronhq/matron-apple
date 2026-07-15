@@ -7,6 +7,7 @@ import XCTest
 /// the closures.
 final class FakeDevicesProvider: DevicesProviding, @unchecked Sendable {
     var rosters: [[DeviceDTO]] = [[]]
+    var devicesError: JournalAPIError?
     var revokeError: JournalAPIError?
     var previewResult: Result<PairPreview, JournalAPIError> = .failure(.notFound)
     var approveError: JournalAPIError?
@@ -22,6 +23,7 @@ final class FakeDevicesProvider: DevicesProviding, @unchecked Sendable {
 
     func devices() async throws -> [DeviceDTO] {
         devicesCalls += 1
+        if let devicesError { throw devicesError }
         return rosters.count > 1 ? rosters.removeFirst() : rosters[0]
     }
 
@@ -100,6 +102,21 @@ final class DevicesViewModelTests: XCTestCase {
         await vm.revoke(me)
         XCTAssertTrue(selfRevoked)
         XCTAssertEqual(fake.devicesCalls, 1, "no refetch on a token we just revoked")
+    }
+
+    func test_revoke_success_refetchFails_rowStillDisappears() async {
+        let fake = FakeDevicesProvider()
+        let other = device(9, kind: "agent")
+        fake.rosters = [[other]]
+        let vm = DevicesViewModel(api: fake, onSelfRevoked: {})
+        await vm.refresh()
+        // Revoke succeeds server-side; the confirming refetch then fails.
+        // The device is gone on the server, so the row must not linger.
+        fake.devicesError = .transport("offline")
+        await vm.revoke(other)
+        XCTAssertEqual(fake.revokedIDs, [9])
+        XCTAssertTrue(vm.devices.isEmpty, "server already dropped the device — the row must not survive a failed refetch")
+        XCTAssertNotNil(vm.errorMessage, "the refetch failure is still surfaced")
     }
 
     func test_revoke_serverError_surfacesMessageAndKeepsRow() async {

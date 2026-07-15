@@ -59,6 +59,10 @@ public final class DevicesViewModel {
             if device.isSelf {
                 onSelfRevoked()
             } else {
+                // The server has already dropped the device — reflect that
+                // locally first, because a failed refetch leaves `devices`
+                // untouched and the dead row would linger.
+                devices.removeAll { $0.id == device.id }
                 await refresh()
             }
         } catch {
