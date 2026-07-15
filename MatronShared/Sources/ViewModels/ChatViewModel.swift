@@ -316,6 +316,33 @@ public final class ChatViewModel {
         }
     }
 
+    /// Scroll-target id the views pin the viewport to across a
+    /// history-window extension (non-animated `proxy.scrollTo`, anchor
+    /// `.top`). The declarative `.sizeChanges` bottom anchor only covers
+    /// the prepend while `isExtendingWindow` is up — at a few hundred
+    /// rows the eager stack's layout pass outlives that hold, the
+    /// viewport parks at the NEW head, and the "first row visible"
+    /// trigger re-fires in a loop (2026-07-15 Mac trace: 240→1920 rows
+    /// in 14s, contentH 180Kpt). Pinning an actual row makes the
+    /// post-extend position — and therefore the trigger re-arm —
+    /// deterministic instead of timing-based.
+    ///
+    /// Prefers the topmost VISIBLE row (zero visual jump); separator ids
+    /// are skipped because they are day-keyed and relocate when the
+    /// window head moves (the same-day separator synthesized at the old
+    /// cut point re-materializes at the new head). Falls back to the
+    /// pre-extend window's first message row, then nil (nothing safe to
+    /// pin — callers skip the scrollTo and the anchor hold is the only
+    /// cover, i.e. today's behaviour).
+    nonisolated public static func historyPinTarget(visibleIDs: [String],
+                                                    preExtendRows: [TimelineRow]) -> String? {
+        if let id = visibleIDs.first(where: { !$0.hasPrefix("sep:") }) { return id }
+        for row in preExtendRows {
+            if case .message(let item) = row { return item.id }
+        }
+        return nil
+    }
+
     /// Snaps the render window back to its steady-state size. Called by
     /// the views only at moments when no reader can be up in history —
     /// the jump-to-bottom tap and leaving the room while following the

@@ -87,6 +87,15 @@ struct ChatView: View {
 
     final class VisibleRowsBox {
         var bottomID: String?
+        /// Every visible scroll-target id, top-to-bottom — the history
+        /// pin (`revealOlderHistory`) reads the topmost through
+        /// `ChatViewModel.historyPinTarget`. Same non-invalidating
+        /// contract as `bottomID`.
+        var orderedIDs: [String] = []
+        /// Bumped on every user-gesture begin; a history-reveal pin
+        /// captures it and drops its delayed re-asserts when the user
+        /// has gestured since (never fight an active reader).
+        var gestureCount = 0
         /// Latest raw scroll geometry, refreshed by the
         /// `onScrollGeometryChange` transform — forensic context for
         /// breadcrumbs (a bare "near-bottom → false" says the viewport
@@ -114,6 +123,39 @@ struct ChatView: View {
     /// message row), otherwise the last renderable row.
     private var bottomScrollTargetID: String? {
         viewModel.activityLabel != nil ? Self.activityFooterID : viewModel.lastRenderableItemID
+    }
+
+    /// Routes both history-reveal triggers: extends the window, then
+    /// pins the viewport to the pre-extend topmost visible row
+    /// (non-animated `scrollTo`, anchor `.top`) once the prepend
+    /// applies. The declarative `.sizeChanges` bottom anchor only
+    /// covers the prepend while `isExtendingWindow` is up (150ms) — at
+    /// a few hundred rows the eager stack's layout pass outlives it,
+    /// the viewport parked at the NEW head, and the reveal trigger
+    /// re-fired in a loop (2026-07-15 Mac trace: 240→1920 rows in 14s,
+    /// contentH 180Kpt, escaped only via the jump button). The pin is
+    /// re-asserted twice because the prepend's layout can land after
+    /// the first `scrollTo`; re-asserts drop if the user gestures or
+    /// returns to the tail meanwhile (never fight an active reader).
+    private func revealOlderHistory(via proxy: ScrollViewProxy) {
+        let pin = ChatViewModel.historyPinTarget(
+            visibleIDs: visibleRows.orderedIDs,
+            preExtendRows: viewModel.windowedRows
+        )
+        let sizeBefore = viewModel.visibleWindowSize
+        let gesture = visibleRows.gestureCount
+        Task { @MainActor in
+            await viewModel.extendHistoryWindow()
+            guard viewModel.visibleWindowSize > sizeBefore, let pin else { return }
+            guard !isFollowingTail else { return }
+            chatViewLogger.breadcrumb("history reveal pin → \(pin) (window \(sizeBefore)→\(viewModel.visibleWindowSize))")
+            proxy.scrollTo(pin, anchor: .top)
+            for delay in [UInt64(250_000_000), UInt64(800_000_000)] {
+                try? await Task.sleep(nanoseconds: delay)
+                guard !isFollowingTail, visibleRows.gestureCount == gesture else { return }
+                proxy.scrollTo(pin, anchor: .top)
+            }
+        }
     }
 
     /// Widen-then-scroll for a remembered scroll position. The widen
@@ -355,7 +397,7 @@ struct ChatView: View {
                 // estimates) — only a user who has actually dragged away
                 // from the tail can be reading toward the top.
                 if edges.nearTop, !isFollowingTail {
-                    Task { await viewModel.extendHistoryWindow() }
+                    revealOlderHistory(via: proxy)
                 }
             }
             // Per-room scroll memory feed: the bottommost visible row
@@ -364,6 +406,7 @@ struct ChatView: View {
             // state here would re-evaluate the body per scroll tick).
             .onScrollTargetVisibilityChange(idType: String.self) { visibleIDs in
                 visibleRows.bottomID = visibleIDs.last
+                visibleRows.orderedIDs = visibleIDs
                 // History-reveal trigger #2: the window's FIRST row is
                 // actually on screen. Visibility keeps firing while the
                 // user sits at the top, which the near-top edge
@@ -377,7 +420,7 @@ struct ChatView: View {
                 if !isFollowingTail,
                    let firstID = viewModel.windowedRows.first?.id,
                    visibleIDs.contains(firstID) {
-                    Task { await viewModel.extendHistoryWindow() }
+                    revealOlderHistory(via: proxy)
                 }
             }
             // Gesture-driven follow-mode transitions. Only a real drag
@@ -388,6 +431,7 @@ struct ChatView: View {
             // against — 2026-07-13 traces).
             .onUserScrollGesture(
                 begin: {
+                    visibleRows.gestureCount += 1
                     if isFollowingTail {
                         isFollowingTail = false
                         chatViewLogger.breadcrumb("follow-tail OFF (user gesture)")

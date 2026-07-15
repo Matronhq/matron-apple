@@ -218,6 +218,59 @@ final class ChatViewModelTests: XCTestCase {
         )
     }
 
+    // MARK: historyPinTarget
+
+    // The views pin the viewport to this target across a history-window
+    // extension (non-animated proxy.scrollTo, anchor .top). The declarative
+    // .sizeChanges bottom anchor only covers the prepend while
+    // isExtendingWindow is up (150ms) — at a few hundred rows the eager
+    // stack's layout pass outlives it, the viewport parks at the NEW head,
+    // and the "first row visible" trigger re-fires: 2026-07-15 Mac trace,
+    // 240→1920 rows in 14s, contentH 180Kpt, escaped only via the jump
+    // button. The pin makes re-arming deterministic instead of timing-based.
+
+    func test_historyPinTarget_picksTopmostVisibleMessageRow() {
+        let pin = ChatViewModel.historyPinTarget(
+            visibleIDs: ["42", "43", "44"],
+            preExtendRows: []
+        )
+        XCTAssertEqual(pin, "42", "the topmost visible row is the pin — zero visual jump")
+    }
+
+    func test_historyPinTarget_skipsSeparatorIDs() {
+        // Separator ids are day-keyed ("sep:<epoch>") and RELOCATE when the
+        // window head moves: the same-day separator synthesized at the old
+        // cut point re-materializes at the new head after an extension, so
+        // pinning one scrolls to the wrong place — the exact jump this
+        // helper exists to prevent.
+        let pin = ChatViewModel.historyPinTarget(
+            visibleIDs: ["sep:1752537600", "7", "8"],
+            preExtendRows: []
+        )
+        XCTAssertEqual(pin, "7")
+    }
+
+    func test_historyPinTarget_fallsBackToFirstMessageRowOfWindow() {
+        let item = TimelineItem(
+            id: "m3", sender: "@a:s", timestamp: .now,
+            kind: .text(body: "hi", formattedHTML: nil), isOwn: false
+        )
+        let pin = ChatViewModel.historyPinTarget(
+            visibleIDs: ["sep:1752537600"],
+            preExtendRows: [.separator(date: .now), .message(item)]
+        )
+        XCTAssertEqual(pin, "m3",
+            "with no visible message row, pin the pre-extend window's first message")
+    }
+
+    func test_historyPinTarget_nilWhenNothingToPin() {
+        XCTAssertNil(ChatViewModel.historyPinTarget(
+            visibleIDs: ["sep:1752537600"],
+            preExtendRows: [.separator(date: .now)]
+        ))
+        XCTAssertNil(ChatViewModel.historyPinTarget(visibleIDs: [], preExtendRows: []))
+    }
+
     @MainActor
     func test_activityIndicator_excludedFromRows_exposedAsFooterLabel() async throws {
         // The trailing activity row is rendered as a fixed footer, not a
