@@ -141,6 +141,7 @@ public struct AskUserSheetBody: View {
                     if isSending { ProgressView() } else { Text("Send") }
                 }
                 .buttonStyle(.borderedProminent)
+                .tint(.matronAccent)
                 .keyboardShortcut(.defaultAction)
                 .disabled(isSending || isExpired)
             } else if isSending {
@@ -212,8 +213,10 @@ public struct AskUserSheetBody: View {
 }
 
 /// The light, airy answer-chip chrome shared by `.choice` and `.boolean`
-/// buttons: an accent-tinted fill + hairline border with accent-coloured
-/// text that reads clearly on the white card in both colour schemes. `.plain`
+/// buttons: a brand-accent fill + hairline border with accent-coloured
+/// text that reads clearly on the white card in both colour schemes.
+/// `Color.matronAccent` (not the system `accentColor`) — the default blue
+/// read foreign against the warm cream palette (Dan, 2026-07-15). `.plain`
 /// button style drops the system's automatic disabled dimming, so callers
 /// pass `dimmed` to restore it.
 private struct AccentChip: ViewModifier {
@@ -223,14 +226,14 @@ private struct AccentChip: ViewModifier {
         content
             .padding(.vertical, 8)
             .padding(.horizontal, 12)
-            .foregroundStyle(Color.accentColor)
+            .foregroundStyle(Color.matronAccent)
             .background(
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.accentColor.opacity(0.10))
+                    .fill(Color.matronAccent.opacity(0.10))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(Color.accentColor.opacity(0.35), lineWidth: 1)
+                    .strokeBorder(Color.matronAccent.opacity(0.35), lineWidth: 1)
             )
             .contentShape(Rectangle())
             .opacity(dimmed ? 0.5 : 1)

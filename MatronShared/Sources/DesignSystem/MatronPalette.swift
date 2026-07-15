@@ -23,6 +23,14 @@ public extension Color {
     static let matronBubbleShadow = Color(
         red: 18 / 255, green: 16 / 255, blue: 14 / 255).opacity(0.08)
 
+    /// Matron's brand accent for interactive chrome (answer chips, Send
+    /// buttons): a teal from the own-bubble cyan family, replacing the
+    /// system blue `Color.accentColor` that read foreign against the warm
+    /// cream palette. Light: deep teal legible on the white card; dark:
+    /// brightened cyan legible on the warm-dark surfaces.
+    static let matronAccent = adaptive(
+        light: (11, 110, 125), dark: (110, 205, 220))
+
     /// Builds a light/dark adaptive color from 0–255 sRGB components.
     private static func adaptive(
         light: (Double, Double, Double), dark: (Double, Double, Double)
