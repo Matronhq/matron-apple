@@ -83,6 +83,13 @@ struct MacChatView: View {
         var geoDescription = ""
     }
 
+    /// Readable cap on the chat column (timeline rows + composer). On a
+    /// wide desktop window an uncapped column stretches message lines
+    /// past comfortable reading length (Dan, 2026-07-15); the column
+    /// centres in the leftover space. Width-only — row heights and the
+    /// scroll-anchor machinery are untouched.
+    private static let maxContentColumnWidth: CGFloat = 760
+
     /// Bottom-edge proximity threshold (pt) for `isNearBottom` — see iOS
     /// ChatView: 60 left engine append-shortfalls (61–63pt) in the
     /// heal's blind side.
@@ -198,6 +205,9 @@ struct MacChatView: View {
                             .id(Self.activityFooterID)
                     }
                 }
+                // Readable-width cap, centred — see `maxContentColumnWidth`.
+                .frame(maxWidth: Self.maxContentColumnWidth)
+                .frame(maxWidth: .infinity)
                 // Mac mirror of iOS: fold cross-device ask-user answers
                 // into the persisted set on every snapshot so resolved
                 // inline cards stay resolved (bugbot "Cross-device
@@ -404,7 +414,13 @@ struct MacChatView: View {
             Divider()
 
             // Drag-and-drop attachments via ComposerDropDelegate.
+            // The composer shares the timeline's readable-width cap so the
+            // input lines up with the message column; `.onDrop` sits
+            // OUTSIDE the cap so drops anywhere across the window's width
+            // still land.
             MacComposerView(viewModel: composerVM)
+                .frame(maxWidth: Self.maxContentColumnWidth)
+                .frame(maxWidth: .infinity)
                 .onDrop(
                     of: [.image, .fileURL],
                     delegate: ComposerDropDelegate(composer: composerVM)
