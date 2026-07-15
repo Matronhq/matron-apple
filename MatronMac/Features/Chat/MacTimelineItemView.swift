@@ -135,8 +135,11 @@ struct MacTimelineItemView: View {
             // HStack + Spacer: a Spacer beside a maxWidth-.infinity frame
             // makes SwiftUI split the row 50/50 between the two flexible
             // children, which is exactly the "card stops at half the pane"
-            // bug — the frame alone fills the row.
+            // bug — the frame alone fills the row. The inner frame caps the
+            // card at the same readable width as message bubbles; the outer
+            // one anchors it to the left edge (bot side).
             ToolCallCard(event: evt)
+                .frame(maxWidth: MessageBubbleMetrics.maxWidth, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal)
             .accessibilityElement(children: .combine)
@@ -147,6 +150,7 @@ struct MacTimelineItemView: View {
             // normal message bubble (Dan, 2026-07-14). No HStack + Spacer —
             // see the .toolCall comment (50/50 split bug).
             DiffCard(event: evt)
+                .frame(maxWidth: MessageBubbleMetrics.maxWidth, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal)
             .accessibilityElement(children: .combine)
@@ -159,6 +163,7 @@ struct MacTimelineItemView: View {
             // recycling reattaches to accumulated output instead of replaying.
             LiveOutputCard(session: LiveOutputSessionStore.shared.session(for: evt),
                            eventTimestamp: item.timestamp)
+                .frame(maxWidth: MessageBubbleMetrics.maxWidth, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal)
 
@@ -166,6 +171,7 @@ struct MacTimelineItemView: View {
             // Ephemeral live tile (journal tool_stream) — fills the width
             // like the liveOutput tile.
             ToolStreamCard(command: command, text: text, headTruncated: headTruncated)
+                .frame(maxWidth: MessageBubbleMetrics.maxWidth, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal)
 
