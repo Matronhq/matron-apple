@@ -995,6 +995,9 @@ struct SubChatView: View {
     @Environment(\.chatNavigationPath) private var navigationPath
     @State private var sourceItem: TimelineItem?
     @State private var attachmentPreview: ChatView.AttachmentPreview?
+    /// Captured only to install `HorizontalOverflowLock` — the sub-chat
+    /// timeline must be as wiggle-proof as the parent's (ChatView).
+    @State private var nativeScroll = NativeScrollViewBox()
     @State private var startedGeneration = 0
     /// Generation guard for the SHARED per-parent strip VM — switching to a
     /// sibling replaces this view, and the successor's `.task` can restart
@@ -1034,6 +1037,10 @@ struct SubChatView: View {
                         onShowSource: { sourceItem = $0 }
                     )
                 }
+                // Same wiggle lock as the parent timeline (ChatView) —
+                // a too-wide row must clamp + log, never pan sideways.
+                .captureNativeScrollView(into: nativeScroll,
+                                         lockingHorizontalOverflow: true)
             }
             .overlay {
                 if viewModel.rows.isEmpty { TimelineLoadingIndicator() }
