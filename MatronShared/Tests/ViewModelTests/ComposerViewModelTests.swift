@@ -193,6 +193,9 @@ final class ComposerViewModelTests: XCTestCase {
         try? Data("AUDIO".utf8).write(to: tmp)
         let fake = FakeTimelineService()
         let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
+        // Seed a stale failure from an earlier attempt — a successful voice
+        // send must clear it, same as send().
+        vm.reportAttachmentError("old failure")
 
         await vm.sendVoiceNote(url: tmp, duration: 2.5)
 

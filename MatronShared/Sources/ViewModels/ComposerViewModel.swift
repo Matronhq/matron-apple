@@ -236,6 +236,10 @@ public final class ComposerViewModel {
         do {
             let data = try Data(contentsOf: url)
             try await timeline.sendFile(data, filename: "voice-note.m4a", mimeType: "audio/mp4")
+            // A successful send clears any prior composer error, same as
+            // `send()` — a stale failure line must not outlive a voice note
+            // that actually went through.
+            sendError = nil
         } catch {
             sendError = error.localizedDescription
         }
