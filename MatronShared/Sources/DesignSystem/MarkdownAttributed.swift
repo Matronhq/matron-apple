@@ -28,11 +28,11 @@ enum MarkdownAttributed {
 
     // MARK: - Sizing constants
 
-    /// Base body size. Mirrors `Theme.matronMessage`'s macOS scale in
-    /// `MarkdownText.swift`: the system body is 13pt on macOS, scaled ×1.34 for
-    /// chat message text (≈17.4pt) to match matron-web's chat body. Keep these
-    /// two numbers in sync — if the theme scale changes there, change it here.
-    static let baseFontSize: CGFloat = 13 * 1.34
+    /// Base body size: the 13pt macOS system body at the shared
+    /// `MessageTextScale.scale` (≈15.3pt) — the same constant
+    /// `Theme.matronMessage` uses, so this renderer and MarkdownUI's
+    /// cannot drift apart in size.
+    static let baseFontSize: CGFloat = 13 * MessageTextScale.scale
 
     /// Space after a paragraph, in points — the visual gap MarkdownUI leaves
     /// between blocks.
