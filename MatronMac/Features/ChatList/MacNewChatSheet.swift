@@ -18,6 +18,10 @@ struct MacNewChatSheet: View {
     @State private var viewModel: NewChatViewModel
     /// Guards double-fire when the `.done` onChange races a re-render.
     @State private var navigated = false
+    /// Set on any dismissal (Cancel or Esc). A `start` already in flight
+    /// can't be recalled — the session will spawn on the box — but its
+    /// late `.done` must not yank the user into a chat they abandoned.
+    @State private var cancelled = false
 
     init(deps: AppDependencies, session: UserSession, onCreated: @escaping (String) -> Void) {
         self.deps = deps
@@ -45,17 +49,24 @@ struct MacNewChatSheet: View {
             }
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
+                Button("Cancel") {
+                    cancelled = true
+                    dismiss()
+                }
             }
         }
         .padding(20)
         .frame(width: 480)
         .task { await viewModel.load() }
+        // Esc / window-close dismissal never touches the Cancel button;
+        // anything that removes the sheet counts as abandoning the flow.
+        .onDisappear { if !navigated { cancelled = true } }
         .onChange(of: viewModel.phase) { _, phase in
-            guard case .done(let convoID) = phase, !navigated else { return }
+            guard case .done(let convoID) = phase, !navigated, !cancelled else { return }
             navigated = true
             Task {
                 await deps.prepareConversation(for: session, id: convoID)
+                guard !cancelled else { return }
                 onCreated(convoID)
             }
         }
