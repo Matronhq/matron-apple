@@ -68,18 +68,29 @@ public extension View {
     /// INSIDE the `ScrollView`'s content (e.g. as a `.background` of the
     /// content stack) — the capture walks *up* the native view hierarchy
     /// from the injected helper view.
-    func captureNativeScrollView(into box: NativeScrollViewBox) -> some View {
-        background(NativeScrollViewCapture(box: box))
+    ///
+    /// `lockingHorizontalOverflow` additionally installs a
+    /// `HorizontalOverflowLock` on the captured scroll view (iOS only —
+    /// the AppKit timeline has never exhibited the wiggle, and NSScrollView
+    /// constrains its document view differently).
+    func captureNativeScrollView(
+        into box: NativeScrollViewBox,
+        lockingHorizontalOverflow: Bool = false
+    ) -> some View {
+        background(NativeScrollViewCapture(
+            box: box, lockHorizontalOverflow: lockingHorizontalOverflow))
     }
 }
 
 #if canImport(UIKit)
 private struct NativeScrollViewCapture: UIViewRepresentable {
     let box: NativeScrollViewBox
+    let lockHorizontalOverflow: Bool
 
     func makeUIView(context: Context) -> CaptureView {
         let view = CaptureView()
         view.box = box
+        view.lockHorizontalOverflow = lockHorizontalOverflow
         view.isUserInteractionEnabled = false
         view.isHidden = true
         return view
@@ -87,10 +98,13 @@ private struct NativeScrollViewCapture: UIViewRepresentable {
 
     func updateUIView(_ uiView: CaptureView, context: Context) {
         uiView.box = box
+        uiView.lockHorizontalOverflow = lockHorizontalOverflow
     }
 
     final class CaptureView: UIView {
         var box: NativeScrollViewBox?
+        var lockHorizontalOverflow = false
+        private var overflowLock: HorizontalOverflowLock?
 
         override func didMoveToWindow() {
             super.didMoveToWindow()
@@ -98,13 +112,21 @@ private struct NativeScrollViewCapture: UIViewRepresentable {
             while let view = candidate, !(view is UIScrollView) {
                 candidate = view.superview
             }
-            box?.scrollView = candidate as? UIScrollView
+            let scrollView = candidate as? UIScrollView
+            box?.scrollView = scrollView
+            if lockHorizontalOverflow, overflowLock == nil, let scrollView {
+                overflowLock = HorizontalOverflowLock(scrollView: scrollView)
+            }
         }
     }
 }
 #elseif canImport(AppKit)
 private struct NativeScrollViewCapture: NSViewRepresentable {
     let box: NativeScrollViewBox
+    /// Unused on AppKit — the wiggle is a UIScrollView behavior and the Mac
+    /// timeline has never exhibited it; accepted so the shared modifier's
+    /// call site compiles for both platforms.
+    let lockHorizontalOverflow: Bool
 
     func makeNSView(context: Context) -> CaptureView {
         let view = CaptureView()

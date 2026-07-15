@@ -376,6 +376,15 @@ struct ChatListView: View {
                     for: id, parentConvoID: parentConvoID, deps: deps, session: session)
                 SubChatView(viewModel: chatVM, stripViewModel: stripVM,
                             childID: id, fallbackTitle: "Subagent")
+                    // Key the viewer's identity to the child. Switching
+                    // siblings REPLACES the path tail (pop-then-push), which
+                    // keeps the destination's structural position — without
+                    // this key SwiftUI reuses the old instance's `@State`,
+                    // so `viewModel` stays the previous child's VM and the
+                    // timeline never changes (only `childID`-derived header
+                    // fields update). Same fix as MacSubChatPane's
+                    // `.id(childID)` (f3eb091).
+                    .id(id)
             } else {
                 let summary = currentSummary(for: id)
                 let (chatVM, composerVM) = vmCache.viewModels(for: id, deps: deps, session: session)
