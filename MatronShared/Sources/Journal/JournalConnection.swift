@@ -31,7 +31,7 @@ public struct JournalConnection: Sendable {
                 switch frame {
                 case .helloOK(let headSeq):
                     return (JournalConnection(socket: socket), headSeq)
-                case .error(let code, _):
+                case .error(let code, _, _, _):
                     throw code == "auth"
                         ? JournalConnectionError.authRejected
                         : JournalConnectionError.badHandshake

@@ -334,6 +334,147 @@ final class JournalSyncEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    // MARK: Agent RPC correlator
+
+    private func sentAgentRequests(_ socket: FakeWebSocketConnection) -> [[String: Any]] {
+        socket.sent
+            .compactMap { (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any] }
+            .filter { $0["op"] as? String == "agent_request" }
+    }
+
+    private func waitUntil(_ condition: @autoclosure () -> Bool, timeout: TimeInterval = 2) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() && Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    /// Boots an engine to `.running` on one fake socket.
+    private func runningEngine() async throws -> (JournalSyncEngine, FakeWebSocketConnection) {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        return (engine, socket)
+    }
+
+    func testAgentRequestHappyPath() async throws {
+        let (engine, socket) = try await runningEngine()
+        let reply = Task {
+            try await engine.agentRequest(agentDeviceID: 9, method: "start",
+                                          paramsData: Data(#"{"workdir":"~/dev"}"#.utf8))
+        }
+        await waitUntil(!self.sentAgentRequests(socket).isEmpty)
+        let request = try XCTUnwrap(sentAgentRequests(socket).first)
+        XCTAssertEqual(request["agent_device_id"] as? Int64, 9)
+        XCTAssertEqual(request["method"] as? String, "start")
+        XCTAssertEqual((request["params"] as? [String: Any])?["workdir"] as? String, "~/dev")
+        let rid = try XCTUnwrap(request["request_id"] as? String)
+        socket.serve(#"{"kind":"rpc","response":{"request_id":"\#(rid)","agent_device_id":9,"ok":true,"result":{"convo_id":"c-new"}}}"#)
+        // A duplicate response (multicast) must be dropped, not double-resume.
+        socket.serve(#"{"kind":"rpc","response":{"request_id":"\#(rid)","agent_device_id":9,"ok":true,"result":{"convo_id":"c-new"}}}"#)
+        guard case let .ok(resultData) = try await reply.value else {
+            return XCTFail("expected ok reply")
+        }
+        let result = try XCTUnwrap(JSONSerialization.jsonObject(with: resultData) as? [String: Any])
+        XCTAssertEqual(result["convo_id"] as? String, "c-new")
+        await engine.endSync()
+    }
+
+    func testAgentRequestCorrelatedErrorBecomesFailure() async throws {
+        let (engine, socket) = try await runningEngine()
+        let reply = Task {
+            try await engine.agentRequest(agentDeviceID: 9, method: "start", paramsData: Data("{}".utf8))
+        }
+        await waitUntil(!self.sentAgentRequests(socket).isEmpty)
+        let rid = try XCTUnwrap(sentAgentRequests(socket).first?["request_id"] as? String)
+        socket.serve(#"{"kind":"control","op":"error","code":"agent_unreachable","ref":"agent_request","request_id":"\#(rid)"}"#)
+        let outcome = try await reply.value
+        XCTAssertEqual(outcome, .failure(code: "agent_unreachable", detail: nil))
+        await engine.endSync()
+    }
+
+    func testAgentRequestNotReadyResendsIdenticalFrame() async throws {
+        let (engine, socket) = try await runningEngine()
+        let reply = Task {
+            try await engine.agentRequest(agentDeviceID: 9, method: "recent_folders",
+                                          paramsData: Data("{}".utf8),
+                                          notReadyBackoff: .milliseconds(10))
+        }
+        await waitUntil(!self.sentAgentRequests(socket).isEmpty)
+        let rid = try XCTUnwrap(sentAgentRequests(socket).first?["request_id"] as? String)
+        socket.serve(#"{"kind":"control","op":"error","code":"not_ready","ref":"agent_request","request_id":"\#(rid)"}"#)
+        await waitUntil(self.sentAgentRequests(socket).count == 2)
+        let requests = sentAgentRequests(socket)
+        XCTAssertEqual(requests.count, 2, "not_ready must re-send, not fail")
+        XCTAssertEqual(requests[1]["request_id"] as? String, rid, "the re-send is the identical frame")
+        socket.serve(#"{"kind":"rpc","response":{"request_id":"\#(rid)","agent_device_id":9,"ok":true,"result":{"folders":[]}}}"#)
+        guard case .ok = try await reply.value else {
+            return XCTFail("expected ok after not_ready retry")
+        }
+        await engine.endSync()
+    }
+
+    func testAgentRequestNotReadyGivesUpAfterMaxResends() async throws {
+        let (engine, socket) = try await runningEngine()
+        let reply = Task {
+            try await engine.agentRequest(agentDeviceID: 9, method: "recent_folders",
+                                          paramsData: Data("{}".utf8),
+                                          notReadyBackoff: .milliseconds(5))
+        }
+        for attempt in 1...3 {
+            await waitUntil(self.sentAgentRequests(socket).count == attempt)
+            let rid = try XCTUnwrap(sentAgentRequests(socket).first?["request_id"] as? String)
+            socket.serve(#"{"kind":"control","op":"error","code":"not_ready","ref":"agent_request","request_id":"\#(rid)"}"#)
+        }
+        let outcome = try await reply.value
+        XCTAssertEqual(outcome, .failure(code: "not_ready", detail: nil),
+                       "exhausted resends surface not_ready to the caller")
+        XCTAssertEqual(sentAgentRequests(socket).count, 3, "initial send + two resends, no more")
+        await engine.endSync()
+    }
+
+    func testAgentRequestTimesOut() async throws {
+        let (engine, socket) = try await runningEngine()
+        do {
+            _ = try await engine.agentRequest(agentDeviceID: 9, method: "start",
+                                              paramsData: Data("{}".utf8),
+                                              timeout: .milliseconds(50))
+            XCTFail("expected timeout")
+        } catch let error as RPCRequestError {
+            XCTAssertEqual(error, .timeout)
+        }
+        _ = socket // keep alive until here
+        await engine.endSync()
+    }
+
+    func testAgentRequestFailsWhenSocketDies() async throws {
+        let (engine, socket) = try await runningEngine()
+        let reply = Task {
+            try await engine.agentRequest(agentDeviceID: 9, method: "start", paramsData: Data("{}".utf8))
+        }
+        await waitUntil(!self.sentAgentRequests(socket).isEmpty)
+        socket.closeFromServer()
+        do {
+            _ = try await reply.value
+            XCTFail("expected offline")
+        } catch let error as RPCRequestError {
+            XCTAssertEqual(error, .offline)
+        }
+        await engine.endSync()
+    }
+
+    func testAgentRequestWithoutConnectionThrowsOffline() async throws {
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([]))
+        do {
+            _ = try await engine.agentRequest(agentDeviceID: 9, method: "start", paramsData: Data("{}".utf8))
+            XCTFail("expected offline")
+        } catch let error as RPCRequestError {
+            XCTAssertEqual(error, .offline)
+        }
+    }
+
     func testStateStreamTransitions() async throws {
         let socket = FakeWebSocketConnection()
         socket.serve(helloOK(0))

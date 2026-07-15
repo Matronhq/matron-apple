@@ -1,119 +1,186 @@
+#if os(macOS)
 import SwiftUI
-import MatronChat
+import MatronJournal
 import MatronModels
+import MatronViewModels
 
-/// Mac variant of `NewChatSheet`. The Mac and iOS app targets each carry
-/// their own `AppDependencies` class (different storage container, different
-/// entitlements), so the sheet itself is duplicated — the body is
-/// platform-identical bar a `.frame` for the Mac sheet's content size and
-/// the lack of `NavigationStack` (the Mac sheet doesn't get the iOS
-/// navigation chrome).
-///
-/// See `Matron/Features/ChatList/NewChatSheet.swift` for the rationale on
-/// deriving the bot list from the existing room snapshot rather than a
-/// dedicated bot directory in Phase 2.
+/// Mac variant of `NewChatSheet` (the Mac and iOS targets each carry their
+/// own `AppDependencies`, so the sheet is duplicated per platform): pick a
+/// connected agent → pick a folder → the agent starts a session there
+/// (agent RPC — spec 2026-07-15-new-chat-flow-design.md). `onCreated`
+/// fires with the new conversation id once a placeholder row exists.
 struct MacNewChatSheet: View {
     let deps: AppDependencies
     let session: UserSession
     let onCreated: (String) -> Void
 
-    @State private var bots: [BotIdentity] = []
-    @State private var creatingFor: BotIdentity?
-    @State private var errorMessage: String?
-    /// See iOS `NewChatSheet.didLoad` — gates the empty-state render so
-    /// the first-snapshot in-flight window doesn't flash an
-    /// `ContentUnavailableView` (QA finding #5).
-    @State private var didLoad = false
+    @Environment(\.dismiss) private var dismiss
+    @State private var viewModel: NewChatViewModel
+    /// Guards double-fire when the `.done` onChange races a re-render.
+    @State private var navigated = false
+    /// Set on any dismissal (Cancel or Esc). A `start` already in flight
+    /// can't be recalled — the session will spawn on the box — but its
+    /// late `.done` must not yank the user into a chat they abandoned.
+    @State private var cancelled = false
+
+    init(deps: AppDependencies, session: UserSession, onCreated: @escaping (String) -> Void) {
+        self.deps = deps
+        self.session = session
+        self.onCreated = onCreated
+        _viewModel = State(initialValue: NewChatViewModel(api: deps.agentRPCService(for: session)))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("New chat").font(.headline)
-            if let errorMessage {
-                Text(errorMessage)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
-            // Mirror the chat list's no-rooms state — first-time user
-            // with no rooms sees a `ContentUnavailableView` instead of
-            // a silent empty list (QA finding #5).
-            if didLoad && bots.isEmpty {
-                ContentUnavailableView(
-                    "No bots yet",
-                    systemImage: "bubble.left.and.bubble.right",
-                    description: Text("Provision one via dev-boxer to get started.")
-                )
-            } else {
-                List {
-                    Section("Pick a bot") {
-                        ForEach(bots, id: \.matrixID) { bot in
-                            Button {
-                                Task { await create(with: bot) }
-                            } label: {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(bot.displayName).font(.body)
-                                        Text(bot.matrixID).font(.caption2).foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    if creatingFor == bot { ProgressView().controlSize(.small) }
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(creatingFor != nil)
-                        }
-                    }
+            Text("New Chat").font(.title2.bold())
+            switch viewModel.phase {
+            case .loadingAgents:
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text("Looking for your agents…").foregroundStyle(.secondary)
                 }
-                .listStyle(.inset)
+                .frame(maxWidth: .infinity, minHeight: 180)
+            case .agents(let agents):
+                agentPicker(agents)
+            case .folders(let agent):
+                folderPicker(agent)
+            case .done:
+                ProgressView().frame(maxWidth: .infinity, minHeight: 180)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    cancelled = true
+                    dismiss()
+                }
             }
         }
         .padding(20)
-        .frame(width: 420, height: 360)
-        .task { await loadBots() }
-    }
-
-    /// Reads room-list snapshots to derive the unique-bot set. Re-polls
-    /// on empty (1s × 30 attempts) for the same race that bit
-    /// `ChatListViewModel` — see iOS `NewChatSheet.loadBots()` for the
-    /// full rationale.
-    /// Phase 2.5 made `chatSummaries()` a long-lived stream that never
-    /// finishes, so the previous `for try await snapshot { lastSnapshot = }`
-    /// loop on this Mac sheet hung forever (the iOS counterpart was
-    /// fixed to break on first non-empty snapshot but this one was
-    /// missed — see PR #4 bugbot finding). Mirror iOS exactly:
-    /// flip `didLoad` on the first snapshot regardless of emptiness
-    /// (so a genuinely-zero-bot account sees the empty state instead
-    /// of a permanent ProgressView), then on the first non-empty
-    /// snapshot grab the bots and return.
-    private func loadBots() async {
-        let chat = deps.chatService(for: session)
-        do {
-            for try await snapshot in chat.chatSummaries() {
-                if Task.isCancelled { return }
-                if !snapshot.isEmpty {
-                    let unique = Set(snapshot.map(\.bot))
-                    bots = Array(unique).sorted { $0.displayName < $1.displayName }
-                    didLoad = true
-                    return
-                }
-                didLoad = true
+        .frame(width: 480)
+        .task { await viewModel.load() }
+        // Esc / window-close dismissal never touches the Cancel button;
+        // anything that removes the sheet counts as abandoning the flow.
+        .onDisappear { if !navigated { cancelled = true } }
+        .onChange(of: viewModel.phase) { _, phase in
+            guard case .done(let convoID) = phase, !navigated, !cancelled else { return }
+            navigated = true
+            Task {
+                await deps.prepareConversation(for: session, id: convoID)
+                guard !cancelled else { return }
+                onCreated(convoID)
             }
-        } catch {
-            // Surface the upstream stream error (e.g. SyncReadyError.timeout)
-            // in the same field as createChat failures (QA finding #10).
-            errorMessage = error.localizedDescription
-            didLoad = true
         }
     }
 
-    private func create(with bot: BotIdentity) async {
-        creatingFor = bot
-        defer { creatingFor = nil }
-        do {
-            let chat = deps.chatService(for: session)
-            let roomID = try await chat.createChat(with: bot.matrixID)
-            onCreated(roomID)
-        } catch {
-            errorMessage = error.localizedDescription
+    @ViewBuilder private func agentPicker(_ agents: [DeviceDTO]) -> some View {
+        if let error = viewModel.errorMessage {
+            Text(error).font(.callout).foregroundStyle(.red)
+        }
+        if agents.isEmpty {
+            Text("No agents yet — pair one in Settings → Devices.")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, minHeight: 120)
+        } else {
+            List(agents) { agent in
+                Button {
+                    Task { await viewModel.select(agent: agent) }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: agent.symbolName)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 22)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(agent.name.isEmpty ? "Unnamed agent" : agent.name)
+                                .fontWeight(.medium)
+                                .foregroundStyle(agent.connected ? .primary : .secondary)
+                            Text(agent.connected
+                                 ? "Connected"
+                                 : "Offline · Last seen \(agent.lastSeenText())")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if agent.connected {
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!agent.connected)
+            }
+            .listStyle(.inset)
+            .frame(height: 200)
+            if !agents.contains(where: \.connected) {
+                Text("No agents connected — is the box awake?")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder private func folderPicker(_ agent: DeviceDTO) -> some View {
+        Text("Folder on \(agent.name)")
+            .font(.callout)
+            .foregroundStyle(.secondary)
+        if let foldersError = viewModel.foldersError {
+            Text(foldersError).font(.caption).foregroundStyle(.secondary)
+        }
+        List(viewModel.folders) { folder in
+            Button {
+                Task { await viewModel.start(workdir: folder.path) }
+            } label: {
+                HStack {
+                    Text(folder.path)
+                        .font(.callout.monospaced())
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                    Spacer()
+                    Text(folder.lastUsedText())
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(viewModel.isStarting)
+        }
+        .listStyle(.inset)
+        .frame(height: 160)
+        .overlay {
+            if viewModel.folders.isEmpty && viewModel.foldersError == nil {
+                Text("No recent folders on \(agent.name).")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        HStack(spacing: 8) {
+            TextField("~/path/to/project", text: $viewModel.customPath)
+                .font(.callout.monospaced())
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { Task { await viewModel.start(workdir: viewModel.customPath) } }
+            Button {
+                Task { await viewModel.start(workdir: viewModel.customPath) }
+            } label: {
+                if viewModel.isStarting {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Text("Start Here")
+                }
+            }
+            .disabled(viewModel.isStarting
+                      || viewModel.customPath.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+        Toggle("Browser tools", isOn: $viewModel.browserEnabled)
+            .toggleStyle(.checkbox)
+        Text("Blank starts in the agent's default folder — pick a recent one above, or type a path.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        if let error = viewModel.errorMessage {
+            Text(error).font(.callout).foregroundStyle(.red)
         }
     }
 }
+#endif

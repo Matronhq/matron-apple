@@ -150,6 +150,20 @@ final class AppDependencies {
         core(for: session).api
     }
 
+    /// New Chat surface: agent roster + `recent_folders`/`start` RPCs over
+    /// the session's sync engine.
+    func agentRPCService(for session: UserSession) -> any AgentRPCProviding {
+        let core = core(for: session)
+        return JournalAgentRPCService(api: core.api, engine: core.engine)
+    }
+
+    /// Placeholder conversation row so navigating to a just-started
+    /// conversation holds even when the `start` answer beats the convo's
+    /// first journal frame (the real convo_meta overwrites it).
+    func prepareConversation(for session: UserSession, id: String) async {
+        await core(for: session).engine.ensurePlaceholderConversation(id: id, title: "New chat")
+    }
+
     /// Per-room `TimelineService` factory. Cached by `(userID, roomID)` so
     /// repeat navigations to the same room re-use the same journal timeline
     /// handle instead of rebuilding the overlay state from scratch.

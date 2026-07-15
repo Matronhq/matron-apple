@@ -39,9 +39,14 @@ public struct DeviceDTO: Equatable, Sendable, Identifiable {
     public let lag: Int64
     public let lastSeenAt: Int64?
     public let isSelf: Bool
+    /// Whether the device has a live journal connection right now (agent
+    /// RPC would reach it). Defaults false when the server predates the
+    /// flag.
+    public let connected: Bool
 
     public init(id: Int64, kind: String, name: String, createdAt: Int64,
-                cursor: Int64, lag: Int64, lastSeenAt: Int64?, isSelf: Bool) {
+                cursor: Int64, lag: Int64, lastSeenAt: Int64?, isSelf: Bool,
+                connected: Bool = false) {
         self.id = id
         self.kind = kind
         self.name = name
@@ -50,6 +55,7 @@ public struct DeviceDTO: Equatable, Sendable, Identifiable {
         self.lag = lag
         self.lastSeenAt = lastSeenAt
         self.isSelf = isSelf
+        self.connected = connected
     }
 }
 
@@ -182,7 +188,8 @@ public actor JournalAPI {
                 cursor: (d["cursor"] as? NSNumber)?.int64Value ?? 0,
                 lag: (d["lag"] as? NSNumber)?.int64Value ?? 0,
                 lastSeenAt: (d["last_seen_at"] as? NSNumber)?.int64Value,
-                isSelf: d["is_self"] as? Bool ?? false
+                isSelf: d["is_self"] as? Bool ?? false,
+                connected: d["connected"] as? Bool ?? false
             )
         }
     }

@@ -138,6 +138,28 @@ public struct ToolStreamUpdate: Equatable, Sendable {
     }
 }
 
+/// An agent's answer to an `agent_request` (protocol.md §Agent RPC).
+/// `resultData` keeps the raw JSON bytes of `result` (payloadData
+/// precedent) — the caller decodes the method-specific shape.
+public struct RPCResponse: Equatable, Sendable {
+    public let requestID: String
+    public let agentDeviceID: Int64
+    public let ok: Bool
+    public let resultData: Data?
+    public let errorCode: String?
+    public let errorDetail: String?
+
+    public init(requestID: String, agentDeviceID: Int64, ok: Bool,
+                resultData: Data?, errorCode: String?, errorDetail: String?) {
+        self.requestID = requestID
+        self.agentDeviceID = agentDeviceID
+        self.ok = ok
+        self.resultData = resultData
+        self.errorCode = errorCode
+        self.errorDetail = errorDetail
+    }
+}
+
 /// Server → client frames. Unknown `kind`s decode to nil (skip); unknown
 /// control ops decode to `.unknownControl` so the protocol can grow.
 public enum ServerFrame: Equatable, Sendable {
@@ -146,8 +168,11 @@ public enum ServerFrame: Equatable, Sendable {
     case activity(ActivityUpdate)
     case toolStream(ToolStreamUpdate)
     case sessionStatus(SessionStatusUpdate)
+    case rpcResponse(RPCResponse)
     case helloOK(headSeq: Int64)
-    case error(code: String, ref: String?)
+    /// `requestID` correlates RPC errors (`not_ready`, `agent_unreachable`,
+    /// …) back to their `agent_request`; nil for ordinary op errors.
+    case error(code: String, ref: String?, requestID: String?, detail: String?)
     case snapshotRequired
     case unknownControl(op: String)
 
@@ -249,13 +274,36 @@ public enum ServerFrame: Equatable, Sendable {
                 textDelta: obj["text"] as? String,
                 replaceText: obj["replace_text"] as? String
             ))
+        case "rpc":
+            // Only the client-side shape (a `response` object) is expected
+            // here; an agent-side `request` frame is not ours to handle.
+            guard let response = obj["response"] as? [String: Any],
+                  let requestID = response["request_id"] as? String,
+                  let ok = response["ok"] as? Bool
+            else { return nil }
+            var resultData: Data?
+            if ok, let result = response["result"] {
+                resultData = try? JSONSerialization.data(
+                    withJSONObject: result, options: [.fragmentsAllowed])
+            }
+            let error = response["error"] as? [String: Any]
+            return .rpcResponse(RPCResponse(
+                requestID: requestID,
+                agentDeviceID: (response["agent_device_id"] as? NSNumber)?.int64Value ?? 0,
+                ok: ok,
+                resultData: resultData,
+                errorCode: error?["code"] as? String,
+                errorDetail: error?["detail"] as? String))
         case "control":
             guard let op = obj["op"] as? String else { return nil }
             switch op {
             case "hello_ok":
                 return .helloOK(headSeq: (obj["seq"] as? NSNumber)?.int64Value ?? 0)
             case "error":
-                return .error(code: obj["code"] as? String ?? "unknown", ref: obj["ref"] as? String)
+                return .error(code: obj["code"] as? String ?? "unknown",
+                              ref: obj["ref"] as? String,
+                              requestID: obj["request_id"] as? String,
+                              detail: obj["detail"] as? String)
             case "snapshot_required":
                 return .snapshotRequired
             default:
@@ -281,6 +329,10 @@ public enum ClientOp: Equatable, Sendable {
     case readMarker(convoID: String, upToSeq: Int64)
     case ack(cursor: Int64)
     case viewing(convoID: String?)
+    /// A structured request to one of the user's agent devices (protocol.md
+    /// §Agent RPC). `paramsData` is a JSON-encoded object (Data keeps the
+    /// enum Equatable); unparseable bytes degrade to `{}` at encode time.
+    case agentRequest(requestID: String, agentDeviceID: Int64, method: String, paramsData: Data)
 
     public func encoded() -> String {
         let obj: [String: Any]
@@ -305,6 +357,11 @@ public enum ClientOp: Equatable, Sendable {
             obj = ["op": "ack", "cursor": NSNumber(value: cursor)]
         case let .viewing(convoID):
             obj = ["op": "viewing", "convo_id": convoID ?? NSNull()]
+        case let .agentRequest(requestID, agentDeviceID, method, paramsData):
+            let params = (try? JSONSerialization.jsonObject(with: paramsData)) as? [String: Any] ?? [:]
+            obj = ["op": "agent_request", "request_id": requestID,
+                   "agent_device_id": NSNumber(value: agentDeviceID),
+                   "method": method, "params": params]
         }
         // Dictionaries above are always valid JSON objects.
         let data = (try? JSONSerialization.data(withJSONObject: obj)) ?? Data("{}".utf8)

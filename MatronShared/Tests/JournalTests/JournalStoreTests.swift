@@ -33,6 +33,24 @@ final class JournalStoreTests: XCTestCase {
         XCTAssertEqual(convo.unreadCount, 1)
     }
 
+    func testEnsureConversationCreatesPlaceholderOnce() throws {
+        let store = try makeStore()
+        try store.ensureConversation(id: "c-new", title: "New chat")
+        let convo = try XCTUnwrap(try store.conversations().first)
+        XCTAssertEqual(convo.id, "c-new")
+        XCTAssertEqual(convo.title, "New chat")
+        XCTAssertEqual(convo.sessionState, "running")
+        XCTAssertEqual(convo.unreadCount, 0)
+
+        // Never clobbers an existing row — the real convo_meta owns it.
+        try store.applyJournal(event(1, convo: "c-new", type: "convo_meta",
+                                     payload: ["title": "Real title"]))
+        try store.ensureConversation(id: "c-new", title: "New chat")
+        let after = try XCTUnwrap(try store.conversations().first)
+        XCTAssertEqual(after.title, "Real title")
+        XCTAssertEqual(after.lastSeq, 1)
+    }
+
     func testConvoMetaSetsTitleForNewConversation() throws {
         // A conversation first seen over the socket (e.g. one the bridge just
         // created) must pick up its title from the convo_meta frame, not stay

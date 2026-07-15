@@ -217,7 +217,7 @@ final class JournalAPITests: XCTestCase {
         StubURLProtocol.responses = ["/devices": (200, #"""
         {"devices":[
           {"device_id":7,"kind":"client","name":"dan-mac","created_at":1784000000000,
-           "cursor":5123,"lag":0,"last_seen_at":1784500000000,"is_self":true},
+           "cursor":5123,"lag":0,"last_seen_at":1784500000000,"is_self":true,"connected":true},
           {"device_id":9,"kind":"agent","name":"dev-7","created_at":1784100000000,
            "cursor":5000,"lag":123,"last_seen_at":null,"is_self":false}
         ]}
@@ -228,9 +228,10 @@ final class JournalAPITests: XCTestCase {
         XCTAssertEqual(devices.count, 2)
         XCTAssertEqual(devices[0], DeviceDTO(id: 7, kind: "client", name: "dan-mac",
                                              createdAt: 1_784_000_000_000, cursor: 5123, lag: 0,
-                                             lastSeenAt: 1_784_500_000_000, isSelf: true))
+                                             lastSeenAt: 1_784_500_000_000, isSelf: true, connected: true))
         XCTAssertEqual(devices[1].lastSeenAt, nil, "last_seen_at:null must decode as nil (never connected)")
         XCTAssertFalse(devices[1].isSelf)
+        XCTAssertFalse(devices[1].connected, "absent connected key (older server) must decode as false")
         XCTAssertEqual(StubURLProtocol.lastRequest?.value(forHTTPHeaderField: "Authorization"), "Bearer t")
     }
 
