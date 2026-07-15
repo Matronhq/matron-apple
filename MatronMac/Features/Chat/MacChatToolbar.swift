@@ -10,16 +10,17 @@ import MatronDesignSystem
 /// - Center: title (+ account email underneath when known)
 /// - Trailing: usage bars
 ///
-/// On macOS 26 the system's per-item glass is replaced with our own
-/// `glassEffect` capsule (Dan, 2026-07-15 round 2): the three clusters
-/// share one fixed height so their capsules vertically centre as a row
-/// (the system capsules hug content, so the taller usage cluster hung
-/// below the other two), the corner radius comes down from the system
-/// pill to 10pt (matching the composer), and the content gets real
-/// horizontal padding so "Session" doesn't touch the capsule edge.
-/// Those APIs (`glassEffect`, `sharedBackgroundVisibility`) need the
-/// macOS 26 SDK, which ships with Swift 6.2 — the `#if compiler` guard
-/// keeps CI (Xcode 16.4 / macOS 15 SDK) compiling the plain layout.
+/// The capsules are the SYSTEM's per-item glass. Round 2 replaced them
+/// with hand-drawn `glassEffect` capsules (to control corner radius);
+/// round 3 reverted that — inside toolbar items the custom glass didn't
+/// composite as live glass and the header read as a flat grey bar
+/// (Dan, 2026-07-15: "why have we lost the glass effect in the
+/// header?"). Alignment survives the revert a simpler way: all three
+/// clusters share one fixed content height, so the system capsules —
+/// which hug their content — come out equal and vertically centred as a
+/// row. Corner radius stays the system pill; that's the price of real
+/// glass. The 12pt horizontal padding keeps "Session" and friends off
+/// the capsule edge.
 ///
 /// The refresh button was dropped after the journal rewire: it only ran
 /// `ChatViewModel.refresh()` (= `paginateBackward`, an OLDER-history
@@ -49,79 +50,35 @@ struct MacChatToolbar: ToolbarContent {
     /// one. Nil (no status frame yet) renders the title alone.
     let status: SessionStatus?
 
-    /// One height for all three clusters so their capsules align as a
-    /// row. Sized to the tallest content: three compact usage rows
-    /// (3 × ~11pt lines + 2 × 2pt spacing ≈ 37pt).
-    private static let capsuleHeight: CGFloat = 38
+    /// One height for all three clusters so the system's content-hugging
+    /// glass capsules come out equal and align as a row. Sized to the
+    /// tallest content: three compact usage rows (3 × ~11pt lines +
+    /// 2 × 2pt spacing ≈ 37pt).
+    private static let clusterHeight: CGFloat = 38
 
     var body: some ToolbarContent {
-        #if compiler(>=6.2)
-        if #available(macOS 26.0, *) {
-            glassItems
-        } else {
-            plainItems
-        }
-        #else
-        plainItems
-        #endif
-    }
-
-    #if compiler(>=6.2)
-    @available(macOS 26.0, *)
-    @ToolbarContentBuilder
-    private var glassItems: some ToolbarContent {
         if status?.model != nil || status?.context != nil {
             ToolbarItem(placement: .navigation) {
-                capsule { modelContextCluster }
+                cluster { modelContextCluster }
             }
-            .sharedBackgroundVisibility(.hidden)
         }
         ToolbarItem(placement: .principal) {
-            capsule { titleCluster }
+            cluster { titleCluster }
         }
-        .sharedBackgroundVisibility(.hidden)
         if let limits = status?.limits, !limits.isEmpty {
             ToolbarItem(placement: .primaryAction) {
-                capsule { UsageBarsView(limits: limits, scale: .compact) }
+                cluster { UsageBarsView(limits: limits, scale: .compact) }
             }
-            .sharedBackgroundVisibility(.hidden)
         }
     }
 
-    /// The custom capsule: fixed-height, centred content with enough
-    /// horizontal padding that text clears the rounded corners.
-    @available(macOS 26.0, *)
-    private func capsule(@ViewBuilder _ content: () -> some View) -> some View {
+    /// Uniform cluster chrome: fixed-height, centred content with enough
+    /// horizontal padding that text clears the system capsule's rounded
+    /// ends.
+    private func cluster(@ViewBuilder _ content: () -> some View) -> some View {
         content()
             .padding(.horizontal, 12)
-            .frame(height: Self.capsuleHeight)
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 10))
-    }
-    #endif
-
-    /// Pre-macOS 26 fallback (and the CI-compiled shape): the same three
-    /// items with plain padding, letting the system draw whatever item
-    /// chrome the OS has.
-    @ToolbarContentBuilder
-    private var plainItems: some ToolbarContent {
-        if status?.model != nil || status?.context != nil {
-            ToolbarItem(placement: .navigation) {
-                modelContextCluster
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 2)
-            }
-        }
-        ToolbarItem(placement: .principal) {
-            titleCluster
-                .padding(.horizontal, 12)
-        }
-        if let limits = status?.limits, !limits.isEmpty {
-            ToolbarItem(placement: .primaryAction) {
-                UsageBarsView(limits: limits, scale: .compact)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 2)
-            }
-        }
+            .frame(height: Self.clusterHeight)
     }
 
     private var modelContextCluster: some View {
