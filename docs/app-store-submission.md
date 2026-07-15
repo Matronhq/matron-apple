@@ -24,7 +24,7 @@ This document is the audit trail behind the submission settings. Where it says
 | Photo library usage string | **added** | Release build: present |
 | Privacy manifests (iOS + Mac) | **added** | Release builds: at bundle root / `Contents/Resources`, `plutil -lint` OK |
 | Hardened runtime (Mac, Release only) | **added** | Ad-hoc Release build: `codesign -d` → `flags=0x10002(adhoc,runtime)` |
-| App icons | complete | iOS 1024 single-size; Mac 16→512@2x all present |
+| App icons | complete | iOS 1024 single-size, Mac 16→512@2x all present; both 1024s `hasAlpha: no` (an alpha channel on the iOS icon is an automatic rejection) |
 | Release builds compile (both platforms) | verified | `xcodebuild -configuration Release` → BUILD SUCCEEDED |
 
 ### The privacy manifest audit
