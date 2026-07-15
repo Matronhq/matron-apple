@@ -22,7 +22,7 @@ final class StoragePathsTests: XCTestCase {
     #if os(macOS)
     func test_macOS_appSupportPath_isUnderUserApplicationSupport() {
         let path = StoragePaths.appSupport
-        XCTAssertTrue(path.path.contains("/Library/Application Support/chat.matron.mac"))
+        XCTAssertTrue(path.path.contains("/Library/Application Support/chat.matron.app"))
     }
 
     func test_macOS_cryptoStorePath_isUnderAppSupport() {

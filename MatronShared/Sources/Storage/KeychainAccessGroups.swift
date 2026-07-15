@@ -40,13 +40,11 @@ public enum KeychainAccessGroups {
     /// to `kSecAttrAccessGroup` (see file docblock for the historical bug).
     ///
     /// Mirrors the `keychain-access-groups` entry in:
-    /// - iOS: `Matron/App/Matron.entitlements`
-    /// - macOS: `MatronMac/App/MatronMac.entitlements`
-    public static let recoverySuffix: String = {
-        #if os(macOS)
-        return "chat.matron.mac"
-        #else
-        return "chat.matron"
-        #endif
-    }()
+    /// - iOS: `Matron/App/Matron.entitlements` (+ `.Debug` variant)
+    /// - macOS: `MatronMac/App/MatronMac.entitlements` (+ `.Debug` variant)
+    ///
+    /// One shared suffix across platforms since the bundle-ID
+    /// unification (`chat.matron.app` on both): the Mac's former
+    /// `chat.matron.mac` group went away with its bundle ID.
+    public static let recoverySuffix = "chat.matron"
 }

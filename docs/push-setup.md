@@ -1,5 +1,17 @@
 # Push setup runbook
 
+> **Superseded (2026-07): journal-server push.** This runbook describes
+> the Matrix-era pipeline (Sygnal + Tuwunel homeserver + `Client.setPusher`),
+> which the journal migration replaced. Today the apps POST their APNs
+> token to the journal server's `/push/register` (with
+> `environment: sandbox|prod`, chosen by build config), and matron-journal
+> sends pushes itself, configured via `MATRON_APNS_KEY_FILE`,
+> `MATRON_APNS_KEY_ID`, `MATRON_APNS_TEAM_ID`, and `MATRON_APNS_TOPIC`.
+> `MATRON_APNS_TOPIC` must equal the apps' bundle ID — `chat.matron.app`
+> on BOTH platforms since the bundle-ID unification (the `chat.matron.mac`
+> IDs below are historical). The Apple-side steps (APNs `.p8` key, push
+> capability on the App IDs) are still accurate.
+
 Server-side configuration required for APNs push to reach Matron on
 iOS and Mac. This is the operational counterpart to the client-side
 Phase 4 push work; **none** of the app code can be
