@@ -22,8 +22,8 @@ public protocol ChatService: Sendable {
     /// overlay (QA finding #10).
     func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error>
 
-    /// Long-lived stream of a parent conversation's subagent children,
-    /// newest-created first (running + finished). Drives the parent chat's
+    /// Long-lived stream of a parent conversation's subagent children, in
+    /// creation order (running + finished). Drives the parent chat's
     /// running-subagent strip and the sub-chat switcher menu. The stream
     /// yields the current children immediately on subscribe, then a fresh
     /// list whenever a child is created, renamed, or transitions

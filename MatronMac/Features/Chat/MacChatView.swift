@@ -49,6 +49,12 @@ struct MacChatView: View {
     /// Generation token from the observation THIS view instance started;
     /// `onDisappear` only stops the VM if it still matches (see there).
     @State private var startedGeneration = 0
+    /// Same guard for the shared per-parent strip VM: opening/closing the
+    /// sub-chat pane moves `chatColumn` between structural branches, so
+    /// this view can be torn down while its successor (or the pane, which
+    /// shares the VM) has already restarted the strip — an unconditional
+    /// `stop()` here would kill that fresh stream.
+    @State private var stripStartedGeneration = 0
     /// Backing state for the right-click "View source" sheet (Task 16).
     /// `TimelineItem` is `Identifiable` (the SDK's stable
     /// `TimelineUniqueId.id`), so `.sheet(item:)` re-presents a fresh sheet
@@ -493,6 +499,7 @@ struct MacChatView: View {
             // (bugbot "Early disappear skips observation stop").
             startedGeneration = viewModel.observationGeneration + 1
             stripViewModel.start()
+            stripStartedGeneration = stripViewModel.observationGeneration
             await viewModel.start()
             // Explicit paginate-on-open BEFORE markAsRead — see iOS
             // `ChatView`: history loads over HTTP and must not wait on
@@ -524,7 +531,7 @@ struct MacChatView: View {
             // unconditional stop() here would kill the successor's fresh
             // stream and freeze the timeline.
             viewModel.stop(ifGeneration: startedGeneration)
-            stripViewModel.stop()
+            stripViewModel.stop(ifGeneration: stripStartedGeneration)
         }
         // ⌘K opens the slash palette without typing `/`. The hidden
         // button is the SwiftUI-recommended pattern for a global keyboard
@@ -725,8 +732,10 @@ struct MacRunningSubagentStrip: View {
 /// full timeline (`MacTimelineListContent`) with NO composer, under a
 /// mini-header carrying the child's title, model, its own context gauge,
 /// running/finished state, a close/back control, and a switcher among the
-/// parent's active children (spec §4/§5). Nesting recurses — a child's own
-/// running subagents surface through its own strip once it becomes a parent.
+/// parent's active children (spec §4/§5). Nesting is supported at the data
+/// layer (`children(of:)` recurses), but the pane renders no strip of its
+/// own: the bridge flattens nested agents into direct children of the
+/// top-level session, so grandchildren never occur.
 struct MacSubChatPane: View {
     let viewModel: ChatViewModel
     /// Shared strip VM for this child's PARENT — its `children` are this
@@ -742,6 +751,10 @@ struct MacSubChatPane: View {
     @State private var sourceItem: TimelineItem?
     @State private var imagePreview: MacSubChatImagePreview?
     @State private var startedGeneration = 0
+    /// Generation guard for the SHARED per-parent strip VM — switching to a
+    /// sibling replaces this pane, and the successor's `.task` can restart
+    /// the strip before this instance's `onDisappear` (see `MacChatView`).
+    @State private var stripStartedGeneration = 0
 
     private var currentChild: SubChatSummary? {
         stripViewModel.children.first { $0.id == childID }
@@ -780,6 +793,7 @@ struct MacSubChatPane: View {
         .task {
             startedGeneration = viewModel.observationGeneration + 1
             stripViewModel.start()
+            stripStartedGeneration = stripViewModel.observationGeneration
             await viewModel.start()
             // Seed history over HTTP; no markAsRead — children carry no
             // unread state (they're silent).
@@ -787,7 +801,7 @@ struct MacSubChatPane: View {
         }
         .onDisappear {
             viewModel.stop(ifGeneration: startedGeneration)
-            stripViewModel.stop()
+            stripViewModel.stop(ifGeneration: stripStartedGeneration)
         }
         .sheet(item: $sourceItem) { item in
             MacEventSourceSheet(item: item, onDismiss: { sourceItem = nil })

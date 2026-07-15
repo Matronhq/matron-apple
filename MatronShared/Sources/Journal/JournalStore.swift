@@ -434,7 +434,7 @@ public final class JournalStore: @unchecked Sendable {
         }
     }
 
-    /// A parent's subagent children, newest-created first. Includes both
+    /// A parent's subagent children, in creation order. Includes both
     /// running and finished children (`sessionState`) so callers filter —
     /// the running-subagent strip shows only `running`, the switcher menu
     /// lists all active ones. Nesting recurses naturally: a child's own
@@ -577,7 +577,7 @@ public final class JournalStore: @unchecked Sendable {
         return Self.stream(observation, in: dbQueue)
     }
 
-    /// Live stream of a parent's subagent children (newest-created first,
+    /// Live stream of a parent's subagent children (in creation order,
     /// running + finished). Re-fires whenever a child is created, renamed,
     /// or transitions running→done, so the running-subagent strip and the
     /// switcher menu stay current without polling.

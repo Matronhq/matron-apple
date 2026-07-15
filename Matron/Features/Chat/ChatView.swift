@@ -164,6 +164,11 @@ struct ChatView: View {
     /// Generation token from the observation THIS view instance started;
     /// `onDisappear` only stops the VM if it still matches (see there).
     @State private var startedGeneration = 0
+    /// Same guard for the shared per-parent strip VM: pushing a sub-chat
+    /// runs the child's `.task` (which restarts the shared strip) before
+    /// this view's `onDisappear`, so an unconditional `stop()` here would
+    /// kill the child's freshly-started stream.
+    @State private var stripStartedGeneration = 0
     /// Backing state for the fullscreen attachment preview. `nil`
     /// hides the sheet; setting either case presents it via
     /// `.sheet(item:)`. `.image` draws the pinch-zoom viewer; `.file`
@@ -589,6 +594,7 @@ struct ChatView: View {
             // exactly the generation start() will use.
             startedGeneration = viewModel.observationGeneration + 1
             stripViewModel.start()
+            stripStartedGeneration = stripViewModel.observationGeneration
             await viewModel.start()
             // Explicit paginate-on-open BEFORE markAsRead. The store seeds
             // the timeline with whatever's mirrored locally (possibly
@@ -626,7 +632,7 @@ struct ChatView: View {
             // NEW view's `.task`/start() before the OLD view's onDisappear —
             // an unconditional stop() would kill the successor's stream.
             viewModel.stop(ifGeneration: startedGeneration)
-            stripViewModel.stop()
+            stripViewModel.stop(ifGeneration: stripStartedGeneration)
         }
         .sheet(item: $sourceItem) { item in
             EventSourceSheet(item: item)
@@ -854,8 +860,10 @@ struct RunningSubagentStrip: View {
 /// timeline (`TimelineListContent`) with NO composer, under a mini-header
 /// carrying the child's title, model, its own context gauge, running/
 /// finished state, and a switcher between the parent's active children
-/// (spec §4). Nesting recurses: the child's own running subagents surface
-/// through the strip inside its timeline exactly as at the top level.
+/// (spec §4). Nesting is supported at the data/routing layer (`children(of:)`
+/// recurses and `chatDestination` routes a grandchild id here too), but the
+/// viewer renders no strip of its own: the bridge flattens nested agents into
+/// direct children of the top-level session, so grandchildren never occur.
 struct SubChatView: View {
     @State var viewModel: ChatViewModel
     /// Shared strip VM for this child's PARENT — its `children` are this
@@ -869,6 +877,10 @@ struct SubChatView: View {
     @State private var sourceItem: TimelineItem?
     @State private var attachmentPreview: ChatView.AttachmentPreview?
     @State private var startedGeneration = 0
+    /// Generation guard for the SHARED per-parent strip VM — switching to a
+    /// sibling replaces this view, and the successor's `.task` can restart
+    /// the strip before this instance's `onDisappear` fires (see ChatView).
+    @State private var stripStartedGeneration = 0
 
     private var currentChild: SubChatSummary? {
         stripViewModel.children.first { $0.id == childID }
@@ -909,6 +921,7 @@ struct SubChatView: View {
         .task {
             startedGeneration = viewModel.observationGeneration + 1
             stripViewModel.start()
+            stripStartedGeneration = stripViewModel.observationGeneration
             await viewModel.start()
             // Seed history over HTTP (the child's rows may not be mirrored
             // locally yet), same as the full chat screen. No markAsRead:
@@ -917,7 +930,7 @@ struct SubChatView: View {
         }
         .onDisappear {
             viewModel.stop(ifGeneration: startedGeneration)
-            stripViewModel.stop()
+            stripViewModel.stop(ifGeneration: stripStartedGeneration)
         }
         .sheet(item: $sourceItem) { item in
             EventSourceSheet(item: item)

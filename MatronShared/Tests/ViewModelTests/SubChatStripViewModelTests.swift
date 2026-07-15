@@ -59,6 +59,42 @@ final class SubChatStripViewModelTests: XCTestCase {
                        "the strip shows only running children")
     }
 
+    /// The strip VM is shared per-parent between the parent chat's strip and
+    /// every child viewer's switcher, and SwiftUI can run the NEW view's
+    /// `.task`/`start()` before the OLD view's `onDisappear` on push
+    /// navigation — the same remount hazard `ChatViewModel` guards with
+    /// `stop(ifGeneration:)`. A stale surface's teardown must not cancel the
+    /// observation a successor just started.
+    @MainActor
+    func test_staleSurfaceStopCannotKillSuccessorsStream() async {
+        let fake = FakeChildrenChatService()
+        let vm = SubChatStripViewModel(chat: fake, parentConvoID: "p1")
+
+        vm.start()
+        let parentGeneration = vm.observationGeneration
+        await waitUntil { fake.continuation != nil }
+
+        // Push: the child viewer starts (new generation) BEFORE the parent's
+        // onDisappear fires with the old generation.
+        fake.continuation = nil
+        vm.start()
+        defer { vm.stop() }
+        await waitUntil { fake.continuation != nil }
+        vm.stop(ifGeneration: parentGeneration)
+
+        // The successor's stream must still be alive.
+        fake.continuation?.yield([SubChatSummary(id: "p1:sub:a", title: "explore", isRunning: true)])
+        await waitUntil { vm.runningChildren.count == 1 }
+        XCTAssertEqual(vm.runningChildren.map(\.id), ["p1:sub:a"],
+                       "a stale view's stop(ifGeneration:) must not cancel the successor's observation")
+
+        // The CURRENT surface's stop still works.
+        vm.stop(ifGeneration: vm.observationGeneration)
+        fake.continuation?.yield([])
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(vm.runningChildren.count, 1, "a matching-generation stop cancels the observation")
+    }
+
     @MainActor
     func test_stripEmptiesWhenAllChildrenFinish() async {
         let fake = FakeChildrenChatService()
