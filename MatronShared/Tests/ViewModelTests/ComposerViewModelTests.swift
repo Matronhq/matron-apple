@@ -7,6 +7,29 @@ import MatronModels
 /// because `ViewModelTests` doesn't depend on `ChatTests` — the same plain
 /// final-class pattern is used for all in-test fakes (see `FakeChatService`,
 /// `FakeAuthForVM`).
+/// Lets a test hold a send suspended mid-flight and release it on demand,
+/// so "what does the composer look like DURING the round-trip" is a
+/// deterministic question rather than a timing race.
+actor SendGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var opened = false
+    private var started = false
+
+    func markStarted() { started = true }
+    func isStarted() -> Bool { started }
+
+    func wait() async {
+        guard !opened else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func open() {
+        opened = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
 final class FakeTimelineService: TimelineService, @unchecked Sendable {
     var snapshotsToEmit: [[TimelineItem]] = []
     /// When non-nil, `items()` finishes by throwing this error after
@@ -41,8 +64,19 @@ final class FakeTimelineService: TimelineService, @unchecked Sendable {
         }
     }
 
+    /// Deterministic in-flight window: `sendText` parks here until the test
+    /// opens the gate. A wall-clock `Task.sleep` would do the same job, but
+    /// sleeping inside the suite perturbs the timer-driven
+    /// `JournalTimelineServiceTests` (sweep/gap tests) into spurious
+    /// timeouts — measured 3 failures in 4 runs vs 0 in 4 without it.
+    var sendGate: SendGate?
+
     func sendText(_ body: String, inReplyTo: String?) async throws {
         if sendDelayNanos > 0 { try? await Task.sleep(nanoseconds: sendDelayNanos) }
+        if let gate = sendGate {
+            await gate.markStarted()
+            await gate.wait()
+        }
         if let err = nextSendError { nextSendError = nil; throw err }
         sentText.append(body)
         sentInReplyTo.append(inReplyTo)
@@ -113,6 +147,54 @@ final class ComposerViewModelTests: XCTestCase {
         XCTAssertEqual(fake.sentText, ["hello world"])
         XCTAssertEqual(vm.input, "")
         XCTAssertNil(vm.sendError)
+    }
+
+    @MainActor
+    func test_send_clearsInputImmediately_notAfterTheRoundTrip() async {
+        // Dan, 2026-07-15 (iOS, rare but recurring): the message sends but
+        // the text stays sitting in the composer. Clearing `input` only
+        // AFTER `sendText` returns leaves a window — the whole network
+        // round-trip long — where a focused TextField still holds the text
+        // and can write its cached value back over the late clear. The
+        // field must go empty in the same tick as the tap; the send is then
+        // just an outcome to report.
+        let fake = FakeTimelineService()
+        let gate = SendGate()
+        fake.sendGate = gate
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
+        vm.input = "ok merge pull and restart"
+
+        let send = Task { await vm.send() }
+        // Park deterministically inside the round-trip — no wall clock.
+        while await !gate.isStarted() { await Task.yield() }
+
+        XCTAssertEqual(vm.input, "", "composer must be empty WHILE the send is still in flight")
+        XCTAssertTrue(fake.sentText.isEmpty, "precondition: the round-trip has not completed yet")
+
+        await gate.open()
+        await send.value
+        XCTAssertEqual(fake.sentText, ["ok merge pull and restart"])
+        XCTAssertEqual(vm.input, "")
+        XCTAssertNil(vm.sendError)
+    }
+
+    @MainActor
+    func test_send_restoresInput_andDraft_whenTheRoundTripFails() async {
+        // The optimistic clear must not eat the user's text: a failed send
+        // puts it back (and back into draft memory) so retry still works.
+        let fake = FakeTimelineService()
+        struct Boom: Error, LocalizedError { var errorDescription: String? { "boom" } }
+        fake.nextSendError = Boom()
+        ComposerDraftMemory._resetForTesting()
+        let vm = ComposerViewModel(roomID: "!room:s", timeline: fake, commands: [])
+        vm.input = "keep me"
+
+        await vm.send()
+
+        XCTAssertEqual(vm.input, "keep me", "failed send restores the text for retry")
+        XCTAssertEqual(vm.sendError, "boom")
+        XCTAssertEqual(ComposerDraftMemory.retrieve(roomID: "!room:s"), "keep me",
+                       "and the draft survives, so leaving the room doesn't drop it")
     }
 
     @MainActor
