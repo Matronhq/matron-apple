@@ -112,19 +112,23 @@ public final class SubChatStripViewModel {
     }
 
     /// The child conversation a subtask indicator most plausibly refers to.
-    /// The bridge truncates the indicator's description to 80 chars while
-    /// the child title is the full label, so a prefix match is accepted.
-    /// Duplicate titles (the same agent re-run) tie-break by preferring a
-    /// still-running child, then the newest — `children` arrives in
-    /// creation order, so `last` is the most recent spawn, which is the
-    /// likeliest referent when the user taps a fresh indicator.
+    /// Exact title matches are considered first; only when there is none
+    /// does prefix matching apply — the bridge truncates the indicator's
+    /// description to 80 chars while the child title is the full label, so
+    /// a prefix match covers truncation without letting a longer title
+    /// ("linting tool") steal an exact referent ("lint"). Duplicate titles
+    /// (the same agent re-run) tie-break by preferring a still-running
+    /// child, then the newest — `children` arrives in creation order, so
+    /// `last` is the most recent spawn, which is the likeliest referent
+    /// when the user taps a fresh indicator.
     nonisolated public static func resolveSubtaskTarget(
         description: String,
         among children: [SubChatSummary]
     ) -> SubChatSummary? {
-        let matches = children.filter {
-            $0.title == description || $0.title.hasPrefix(description)
-        }
+        let exact = children.filter { $0.title == description }
+        let matches = exact.isEmpty
+            ? children.filter { $0.title.hasPrefix(description) }
+            : exact
         return matches.last(where: \.isRunning) ?? matches.last
     }
 

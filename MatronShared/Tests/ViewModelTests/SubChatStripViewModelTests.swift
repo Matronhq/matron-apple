@@ -137,6 +137,17 @@ final class SubChatStripViewModelTests: XCTestCase {
             "p:sub:long")
     }
 
+    func test_resolveSubtaskTarget_exactMatchOutranksLongerPrefixMatch() {
+        let children = [
+            SubChatSummary(id: "p:sub:short", title: "lint", isRunning: false),
+            SubChatSummary(id: "p:sub:long", title: "linting tool", isRunning: true),
+        ]
+        XCTAssertEqual(
+            SubChatStripViewModel.resolveSubtaskTarget(description: "lint", among: children)?.id,
+            "p:sub:short",
+            "an exact title match wins over a newer/running child whose title merely extends it")
+    }
+
     func test_resolveSubtaskTarget_prefersRunningThenNewestOnDuplicateTitles() {
         let children = [
             SubChatSummary(id: "p:sub:old", title: "lint", isRunning: false),
