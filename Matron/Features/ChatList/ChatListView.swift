@@ -434,7 +434,10 @@ struct ChatListView: View {
 
 }
 
-private struct ChatRow: View {
+/// Internal (not private) so `ChatRowHeightTests` can pin the row-height
+/// invariant — every row must render at the same height regardless of its
+/// snippet's content (mirrors the Mac surface conventions).
+struct ChatRow: View {
     let summary: ChatSummary
 
     var body: some View {
@@ -445,7 +448,13 @@ private struct ChatRow: View {
                 // row has the same fixed height — snippets arriving /
                 // growing to a second line were resizing rows live as
                 // messages came in, making the whole list shift around.
-                Text(summary.snippet)
+                // An EMPTY snippet must render a space, not "": SwiftUI
+                // only reserves the `lineLimit` lines when there is at
+                // least one character to lay out, so a snippet-less row
+                // (brand-new convo, or an event kind with no snippet)
+                // collapsed ~16pt shorter and rows jumped as snippets
+                // came and went (Dan, 2026-07-16 — ChatRowHeightTests).
+                Text(summary.snippet.isEmpty ? " " : summary.snippet)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2, reservesSpace: true)

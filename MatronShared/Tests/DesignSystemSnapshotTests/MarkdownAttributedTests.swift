@@ -163,6 +163,68 @@ final class MarkdownAttributedTests: XCTestCase {
         XCTAssertEqual(attrs[.backgroundColor] as? NSColor, NSColor.controlBackgroundColor)
     }
 
+    // MARK: - Trailing newlines (Dan, 2026-07-16: dead space at bubble bottom)
+
+    /// A fenced code block's run text keeps its trailing "\n" from the
+    /// parser. Left in place at the END of a message it renders an empty
+    /// monospaced line + paragraph spacing — ~25pt of dead space at the
+    /// bottom of the bubble, and plan-style messages very often end with a
+    /// code block. The converted string must never end with a newline,
+    /// whatever the final block kind is.
+    func test_output_neverEndsWithNewline() {
+        let endings = [
+            "para\n\n```swift\nlet x = 1\nlet y = 2\n```",
+            "para\n\n```swift\nlet x = 1\n```\n",
+            "para\n\n- alpha\n- beta",
+            "para\n\n## Trailing heading",
+            "Closing paragraph.",
+            "Closing paragraph.\n\n\n",
+        ]
+        for source in endings {
+            let attributed = convert(source)
+            XCTAssertFalse(
+                attributed.string.hasSuffix("\n"),
+                "converted string must not end with a newline for source ending \(source.suffix(20).debugDescription)"
+            )
+        }
+    }
+
+    /// Mid-message, the same trailing "\n" doubled up with the block-boundary
+    /// newline the builder appends — an empty code-styled line between a code
+    /// block and the following paragraph. The boundary newline must be
+    /// skipped when the previous block already ends with one.
+    func test_codeBlockBeforeParagraph_singleNewlineBetween() {
+        let attributed = convert("""
+        Intro line.
+
+        ```swift
+        let x = 1
+        ```
+
+        Closing paragraph.
+        """)
+        XCTAssertTrue(
+            attributed.string.contains("let x = 1\nClosing paragraph."),
+            "exactly one newline between a code block and the next paragraph, got: \(attributed.string.debugDescription)"
+        )
+    }
+
+    /// An intentional blank line INSIDE a fenced block is content, not block
+    /// plumbing — only the block's final trailing newline is at issue.
+    func test_codeBlock_keepsInteriorBlankLines() {
+        let attributed = convert("""
+        ```swift
+        let a = 1
+
+        let b = 2
+        ```
+        """)
+        XCTAssertTrue(
+            attributed.string.contains("let a = 1\n\nlet b = 2"),
+            "interior blank line inside a code block must survive, got: \(attributed.string.debugDescription)"
+        )
+    }
+
     // MARK: - Cache
 
     func test_sameSource_returnsCachedInstance() {
