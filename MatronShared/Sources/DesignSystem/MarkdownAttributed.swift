@@ -193,9 +193,15 @@ enum MarkdownAttributed {
             // Block boundary: a new `presentationIntent` identity means a new
             // block. Separate it from the previous block with a newline (the
             // per-paragraph `paragraphSpacing` supplies the visual gap) and, for
-            // list items, prepend the marker.
+            // list items, prepend the marker. Skipped when the previous block
+            // already ends with its own newline — a fenced code block's run
+            // text keeps the parser's trailing "\n", and doubling it rendered
+            // an empty code-styled line between the block and the next
+            // paragraph (Dan, 2026-07-16).
             if previousIntent != nil, intent != previousIntent {
-                output.append(NSAttributedString(string: "\n"))
+                if !output.string.hasSuffix("\n") {
+                    output.append(NSAttributedString(string: "\n"))
+                }
                 isFirstBlock = false
             }
             if intent != previousIntent, let marker = block.marker {
@@ -217,6 +223,16 @@ enum MarkdownAttributed {
                     isFirstBlock: isFirstBlock
                 )
             ))
+        }
+
+        // Never end on a newline: a message whose LAST block is a fenced code
+        // block otherwise carries the parser's trailing "\n" into layout as
+        // an empty monospaced line + paragraph spacing — ~25pt of dead space
+        // at the bottom of the bubble, and plan-style messages very often
+        // end with a code block (Dan, 2026-07-16). Interior newlines are
+        // untouched; only the string's tail is trimmed.
+        while output.length > 0, output.string.hasSuffix("\n") {
+            output.deleteCharacters(in: NSRange(location: output.length - 1, length: 1))
         }
 
         return output
