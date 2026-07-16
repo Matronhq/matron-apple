@@ -117,7 +117,7 @@ struct TimelineItemView: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: caption ?? "Image attachment"))
 
-        case .file(let url, let filename, let sizeBytes):
+        case .file(let url, let filename, let caption, let sizeBytes):
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
                 timestamp: item.timestamp
@@ -125,6 +125,7 @@ struct TimelineItemView: View {
                 AttachmentFile(
                     filename: filename,
                     sizeBytes: sizeBytes,
+                    caption: caption,
                     // Tap handler — only fires if we have both a URL
                     // and a registered handler. Without the URL there's
                     // nothing to fetch (`.file(url: nil, …)` is a

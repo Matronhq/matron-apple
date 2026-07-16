@@ -8,22 +8,22 @@ import MatronViewModels
 /// same plain-final-class pattern is used across the repo's test fakes.
 final class FakeTimelineForComposer: TimelineService, @unchecked Sendable {
     var sentText: [String] = []
-    /// Each `sendImage` / `sendFile` invocation records `(filename, mimeType)`.
-    /// Used by `test_stagePhotoData_*` to confirm whether `attachFiles(_:)`
-    /// was reached: a successful write should result in a `sendImage` /
-    /// `sendFile` record; a failed write should leave this empty.
-    var sentAttachments: [(filename: String, mimeType: String)] = []
+    /// Each `sendImage` / `sendFile` invocation records what left the
+    /// composer, caption included — the caption is the whole reason
+    /// attachments now wait in the tray, so a fake that dropped it couldn't
+    /// tell a working send from a broken one.
+    var sentAttachments: [(filename: String, mimeType: String, caption: String?)] = []
 
     func items() -> AsyncThrowingStream<[TimelineItem], Error> {
         AsyncThrowingStream { $0.finish() }
     }
     func sendText(_ body: String, inReplyTo: String?) async throws { sentText.append(body) }
     func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {}
-    func sendImage(_ data: Data, filename: String, mimeType: String) async throws {
-        sentAttachments.append((filename, mimeType))
+    func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {
+        sentAttachments.append((filename, mimeType, caption))
     }
-    func sendFile(_ data: Data, filename: String, mimeType: String) async throws {
-        sentAttachments.append((filename, mimeType))
+    func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {
+        sentAttachments.append((filename, mimeType, caption))
     }
     func paginateBackward(requestSize: UInt16) async throws -> Bool { false }
     func markAsRead() async throws {}
@@ -132,15 +132,16 @@ final class ComposerViewBindingTests: XCTestCase {
     @MainActor
     func test_stagePhotoData_successfulWrite_proceedsToAttachFiles_andLeavesNoError() async {
         // Companion to the failure-branch test: a successful write must
-        // hand the resulting URL to `attachFiles(_:)`, surface no error,
-        // and produce a `sendFile` invocation on the timeline. Together
-        // these two tests pin the do/catch split that fixes the round-5
-        // finding without regressing the happy path.
+        // hand the resulting URL to `attachFiles(_:)` and surface no error.
+        // Together these two tests pin the do/catch split that fixes the
+        // round-5 finding without regressing the happy path.
+        //
+        // Asserts a STAGED attachment, not a sent one: attachments now wait
+        // in the tray for the user's message rather than uploading the
+        // instant they're picked.
         let fake = FakeTimelineForComposer()
         let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
 
-        // Use a `.txt` extension so `attachFiles` routes to `sendFile` (no
-        // image-specific MIME setup needed). UUID keeps the path unique.
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("matron-stage-photo-\(UUID().uuidString).txt")
         let data = Data("hello".utf8)
@@ -148,11 +149,32 @@ final class ComposerViewBindingTests: XCTestCase {
         await ComposerView.stagePhotoData(data, to: tmp, viewModel: vm)
 
         XCTAssertNil(vm.sendError, "successful write must not surface an attachment error")
-        XCTAssertEqual(fake.sentAttachments.count, 1,
-                       "successful write must reach attachFiles → sendFile")
+        XCTAssertEqual(vm.stagedAttachments.count, 1,
+                       "successful write must reach attachFiles → the tray")
+        XCTAssertTrue(fake.sentAttachments.isEmpty, "picking a photo must not send it")
         XCTAssertTrue(FileManager.default.fileExists(atPath: tmp.path))
         // Cleanup so the temp dir doesn't accumulate across re-runs.
         try? FileManager.default.removeItem(at: tmp)
+        vm.discardAttachments()
+    }
+
+    /// The send button has to light up for a photo with no text — otherwise
+    /// the tray is a trap: an attachment sits there with no way to send it.
+    @MainActor
+    func test_isSendable_isTrue_forAnAttachmentWithNoText() async {
+        let fake = FakeTimelineForComposer()
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
+        let view = ComposerView(viewModel: vm)
+        XCTAssertFalse(view.isSendable, "empty composer, empty tray")
+
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("matron-sendable-\(UUID().uuidString).png")
+        try? Data("x".utf8).write(to: tmp)
+        await vm.attachFiles([tmp])
+
+        XCTAssertTrue(view.isSendable, "an attachment alone is a sendable message")
+        try? FileManager.default.removeItem(at: tmp)
+        vm.discardAttachments()
     }
 
     @MainActor

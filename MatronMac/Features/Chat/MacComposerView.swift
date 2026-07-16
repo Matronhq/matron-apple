@@ -64,9 +64,9 @@ struct MacComposerView: View {
 
     /// Internal so `MacComposerViewBindingTests` can pin the predicate
     /// without scraping SwiftUI internals (mirrors the iOS surface).
-    var isSendable: Bool {
-        !viewModel.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
+    /// Delegates to `canSend` rather than re-deriving it: a staged
+    /// attachment is a sendable message with no text at all.
+    var isSendable: Bool { viewModel.canSend }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -162,6 +162,17 @@ struct MacComposerView: View {
     /// (empty input) or the send button. Plus + mic are gated on
     /// `mediaAvailable`, mirroring iOS `ComposerView`.
     private var composerBar: some View {
+        VStack(spacing: 0) {
+            // Above the input, so what's about to be sent sits next to the
+            // words being written about it. Same shared tray as iOS.
+            AttachmentTray(attachments: viewModel.stagedAttachments) { id in
+                viewModel.removeAttachment(id: id)
+            }
+            inputRow
+        }
+    }
+
+    private var inputRow: some View {
         HStack(alignment: .bottom, spacing: 4) {
             // Journal stack: media DISPLAY is live server-side, but the
             // client send whitelist is text-only, so composing an

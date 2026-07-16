@@ -71,9 +71,12 @@ final class PasteMenuDiagnosticTests: XCTestCase {
     }
 
     /// Drives a real paste and checks the outcome the user cares about: the
-    /// photo is sent as an attachment, and no text is dumped into the field.
+    /// photo lands in the tray, and no text is dumped into the field.
+    ///
+    /// Asserts staging rather than sending: a pasted photo now waits with
+    /// the message being written about it instead of uploading on the spot.
     @MainActor
-    func test_pastingAnImage_attachesIt_andLeavesTheFieldEmpty() async throws {
+    func test_pastingAnImage_stagesIt_andLeavesTheFieldEmpty() async throws {
         let harness = makeHarness()
         UIPasteboard.general.image = redPixel()
         // Let pasteboardd actually materialise the item before pasting it.
@@ -85,13 +88,42 @@ final class PasteMenuDiagnosticTests: XCTestCase {
 
         harness.target.paste(nil)
 
-        try await waitUntil("an attachment is sent") { !harness.fake.sentAttachments.isEmpty }
-        let sent = try XCTUnwrap(harness.fake.sentAttachments.first)
-        XCTAssertTrue(sent.mimeType.hasPrefix("image/"), "sent as \(sent.mimeType)")
+        try await waitUntil("the photo reaches the tray") {
+            !harness.viewModel.stagedAttachments.isEmpty
+        }
+        let staged = try XCTUnwrap(harness.viewModel.stagedAttachments.first)
+        XCTAssertTrue(staged.isImage, "staged as \(staged.mimeType)")
+        XCTAssertTrue(
+            harness.fake.sentAttachments.isEmpty,
+            "pasting must not send — the photo waits for the user's message"
+        )
         XCTAssertEqual(
             (harness.target as? UITextView)?.text, "",
             "a pasted photo must not also dump text into the composer"
         )
+        harness.viewModel.discardAttachments()
+    }
+
+    /// The end the user actually experiences: paste a photo, type a
+    /// question, hit send — and both leave together, as one message.
+    @MainActor
+    func test_pastingAPhotoThenTyping_sendsThemAsOneCaptionedMessage() async throws {
+        let harness = makeHarness()
+        UIPasteboard.general.image = redPixel()
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        harness.target.paste(nil)
+        try await waitUntil("the photo reaches the tray") {
+            !harness.viewModel.stagedAttachments.isEmpty
+        }
+        harness.viewModel.input = "what's wrong with this?"
+        await harness.viewModel.send()
+
+        let sent = try XCTUnwrap(harness.fake.sentAttachments.first)
+        XCTAssertTrue(sent.mimeType.hasPrefix("image/"))
+        XCTAssertEqual(sent.caption, "what's wrong with this?", "the photo must carry the question")
+        XCTAssertTrue(harness.viewModel.stagedAttachments.isEmpty, "the tray empties on send")
+        XCTAssertTrue(harness.viewModel.input.isEmpty)
     }
 
     /// Text pasted from a web page or document must arrive plain — rich-text
