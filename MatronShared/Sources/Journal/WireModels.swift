@@ -328,8 +328,15 @@ public enum ClientOp: Equatable, Sendable {
     /// `blobRef` the id from a prior `POST /media` upload. Emitted both at
     /// the top level and inside `payload` (alongside name / content type /
     /// size) per the server's media-send contract.
+    /// `caption` is the composer text this attachment left with, and is
+    /// omitted from the payload entirely when nil. The server stores media
+    /// payloads opaquely, so no schema change was needed to carry it — the
+    /// bridge reads it back off the journal frame and hands it to claude
+    /// above the upload annotation, making the picture and the sentence
+    /// about it a single prompt.
     case sendMedia(convoID: String, type: String, blobRef: String,
-                   name: String, contentType: String, size: Int, localID: String)
+                   name: String, contentType: String, size: Int,
+                   caption: String?, localID: String)
     case promptReply(convoID: String, targetSeq: Int64, choice: String?, text: String?)
     case readMarker(convoID: String, upToSeq: Int64)
     case ack(cursor: Int64)
@@ -347,11 +354,16 @@ public enum ClientOp: Equatable, Sendable {
         case let .send(convoID, body, localID):
             obj = ["op": "send", "convo_id": convoID, "type": "text",
                    "payload": ["body": body], "local_id": localID]
-        case let .sendMedia(convoID, type, blobRef, name, contentType, size, localID):
+        case let .sendMedia(convoID, type, blobRef, name, contentType, size, caption, localID):
+            var payload: [String: Any] = ["blob_ref": blobRef, "name": name,
+                                          "content_type": contentType, "size": NSNumber(value: size)]
+            // Absent rather than null for a captionless send: the bridge and
+            // the timeline mapper both treat a missing key as "no caption",
+            // and an explicit NSNull would have to be special-cased in two
+            // languages to mean the same thing.
+            if let caption, !caption.isEmpty { payload["caption"] = caption }
             obj = ["op": "send", "convo_id": convoID, "type": type, "blob_ref": blobRef,
-                   "payload": ["blob_ref": blobRef, "name": name,
-                               "content_type": contentType, "size": NSNumber(value: size)],
-                   "local_id": localID]
+                   "payload": payload, "local_id": localID]
         case let .promptReply(convoID, targetSeq, choice, text):
             obj = ["op": "prompt_reply", "convo_id": convoID,
                    "target_seq": NSNumber(value: targetSeq),

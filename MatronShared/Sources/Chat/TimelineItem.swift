@@ -27,7 +27,7 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
         case text(body: String, formattedHTML: String?)
         case image(url: URL?, caption: String?, sizeBytes: Int64?)
-        case file(url: URL?, filename: String, sizeBytes: Int64?)
+        case file(url: URL?, filename: String, caption: String?, sizeBytes: Int64?)
         /// Member joins, name changes, profile updates — anything that's a
         /// state event we still want to render as a small inline notice.
         case stateChange(text: String)

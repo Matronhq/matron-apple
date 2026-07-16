@@ -26,6 +26,22 @@ public final class ComposerViewModel {
     public var input: String = ""
     public private(set) var isSending: Bool = false
     public private(set) var sendError: String?
+
+    /// Attachments picked/pasted/dropped but not yet sent, in the order the
+    /// user added them. Both shells render these as a tray above the input;
+    /// `send()` uploads them with the composer text as their caption.
+    ///
+    /// Order is load-bearing, not cosmetic: the caption rides on the first
+    /// one, so what the user sees at the left of the tray is what carries
+    /// their words.
+    public private(set) var stagedAttachments: [StagedAttachment] = []
+
+    /// Whether `send()` would do anything — the views' send-button gate.
+    /// An attachment alone is a perfectly good message, so this is not
+    /// simply "is there text".
+    public var canSend: Bool {
+        !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !stagedAttachments.isEmpty
+    }
     /// Mac slash palette is also openable via `⌘K`; iOS toggles purely via `/` typing.
     public var palettePinnedOpen: Bool = false
 
@@ -251,14 +267,18 @@ public final class ComposerViewModel {
         return nil
     }
 
-    /// Sends the trimmed input as a text message. No-op for empty input.
-    /// On failure, records `sendError` and preserves the input so the user
-    /// can retry. On success, also drops the per-room draft entry so a
-    /// subsequent open of this room lands on an empty composer instead
-    /// of restoring the just-sent text.
+    /// Sends the composer's contents: any staged attachments (carrying the
+    /// text as their caption) or, with nothing attached, the text on its
+    /// own. No-op when there's neither.
+    ///
+    /// On failure, records `sendError` and preserves whatever didn't go out
+    /// so the user can retry. On success, also drops the per-room draft
+    /// entry so a subsequent open of this room lands on an empty composer
+    /// instead of restoring the just-sent text.
     public func send() async {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        let attachments = stagedAttachments
+        guard !trimmed.isEmpty || !attachments.isEmpty else { return }
         isSending = true
         defer { isSending = false }
 
@@ -270,37 +290,106 @@ public final class ComposerViewModel {
         // 2026-07-15, iOS — rare, because it needs a slow enough send).
         let pending = input
         input = ""
+        stagedAttachments = []
         lastRecalledValue = nil
         isNavigatingHistory = false
         folderSuggestionsSuppressedFor = nil
         ComposerDraftMemory.forget(roomID: roomID)
 
         do {
-            try await timeline.sendText(trimmed)
+            if attachments.isEmpty {
+                try await timeline.sendText(trimmed)
+            } else {
+                try await sendAttachments(attachments, caption: trimmed)
+            }
             // Record the sent line for Up/Down recall. `record` also ends
-            // any in-progress walk.
-            history.record(trimmed, room: roomID)
+            // any in-progress walk. An empty caption isn't a sent line.
+            if !trimmed.isEmpty { history.record(trimmed, room: roomID) }
             // If this was a `/start`/`/workdir` with a folder argument,
             // remember the folder for future completion.
             if let folder = Self.recentFolderArgument(from: trimmed) {
                 recentFolders.record(folder)
             }
             sendError = nil
+        } catch let failure as AttachmentSendFailure {
+            sendError = failure.underlying.localizedDescription
+            // Whatever didn't go out goes back in the tray, ahead of
+            // anything the user attached while the send was in flight.
+            stagedAttachments = failure.unsent + stagedAttachments
+            // If the caption's own attachment made it, the text HAS been
+            // delivered — restoring it would leave the user staring at
+            // words they already sent, and re-sending would duplicate them.
+            guard !failure.captionDelivered else { return }
+            restoreInput(pending)
         } catch {
             sendError = error.localizedDescription
-            // Put the user's text back — the optimistic clear must never
-            // eat a message that didn't actually go out.
-            //
-            // Unless they've moved on: a send is slow enough to type through
-            // (that's why the clear is optimistic in the first place), so a
-            // late failure must not overwrite the next message mid-keystroke.
-            // Restoring then would just trade one lost message for another,
-            // and the error banner still reports the failure either way
-            // (bugbot, PR #55).
-            guard input.isEmpty else { return }
-            input = pending
-            ComposerDraftMemory.store(roomID: roomID, text: pending)
+            restoreInput(pending)
         }
+    }
+
+    /// Puts the user's text back after a failed send — the optimistic clear
+    /// must never eat a message that didn't actually go out.
+    ///
+    /// Unless they've moved on: a send is slow enough to type through
+    /// (that's why the clear is optimistic in the first place), so a late
+    /// failure must not overwrite the next message mid-keystroke. Restoring
+    /// then would just trade one lost message for another, and the error
+    /// banner still reports the failure either way (bugbot, PR #55).
+    private func restoreInput(_ pending: String) {
+        guard input.isEmpty else { return }
+        input = pending
+        ComposerDraftMemory.store(roomID: roomID, text: pending)
+    }
+
+    /// Uploads staged attachments in order, hanging the caption on the
+    /// first.
+    ///
+    /// The caption goes on ONE attachment because the bridge injects each
+    /// media event as its own prompt: repeating it would make claude read
+    /// the same sentence once per photo. First rather than last matches
+    /// every other chat client, and means claude has the context before it
+    /// sees the pictures.
+    ///
+    /// Stops at the first failure instead of pressing on. The attachments
+    /// left behind are the ones the user chose to send together, and
+    /// sending a later one without the earlier one it referred to ("compare
+    /// these two") would arrive at claude as a non-sequitur.
+    private func sendAttachments(_ attachments: [StagedAttachment], caption: String) async throws {
+        var captionDelivered = false
+        for (index, attachment) in attachments.enumerated() {
+            let itemCaption = (index == 0 && !caption.isEmpty) ? caption : nil
+            do {
+                let data = try Data(contentsOf: attachment.url)
+                if attachment.isImage {
+                    try await timeline.sendImage(
+                        data, filename: attachment.filename,
+                        mimeType: attachment.mimeType, caption: itemCaption
+                    )
+                } else {
+                    try await timeline.sendFile(
+                        data, filename: attachment.filename,
+                        mimeType: attachment.mimeType, caption: itemCaption
+                    )
+                }
+            } catch {
+                throw AttachmentSendFailure(
+                    underlying: error,
+                    unsent: Array(attachments[index...]),
+                    captionDelivered: captionDelivered
+                )
+            }
+            attachment.deleteStagedCopy()
+            if itemCaption != nil { captionDelivered = true }
+        }
+    }
+
+    /// Carries enough context out of `sendAttachments` for `send()` to
+    /// restore exactly what didn't go out — which attachments are still
+    /// owed, and whether the text left with the one that succeeded.
+    private struct AttachmentSendFailure: Error {
+        let underlying: Error
+        let unsent: [StagedAttachment]
+        let captionDelivered: Bool
     }
 
     /// Up-arrow handler: recalls an older sent message into `input`,
@@ -365,12 +454,18 @@ public final class ComposerViewModel {
         input = text
     }
 
-    /// Mac drag-and-drop entry point. Wired by `ComposerDropDelegate` in
-    /// `MatronMac/Features/Chat/ComposerDropDelegate.swift` (Task 14c). Sends
-    /// each URL as the appropriate attachment kind (image vs file) via the
-    /// timeline. URLs that fail to read or send are recorded in
-    /// `sendError`; the previous behaviour silently dropped read failures
-    /// via `try?`, which masked iOS security-scoped-URL permission errors.
+    /// The single entry point every attach route funnels through: iOS
+    /// PhotosPicker, iOS `fileImporter`, iOS paste, Mac paste, Mac
+    /// `fileImporter`, and Mac drag-and-drop (`ComposerDropDelegate`).
+    ///
+    /// Stages each URL into the tray rather than sending it. It used to send
+    /// immediately, which is why a photo reached claude alone, before the
+    /// user had said anything about it. Because all six routes converge
+    /// here, they all gained the tray at once — and can't drift apart.
+    ///
+    /// URLs that can't be read are reported via `sendError` and staged
+    /// nothing; the previous behaviour silently dropped read failures via
+    /// `try?`, which masked iOS security-scoped-URL permission errors.
     ///
     /// Security-scoped wrap policy: `attachFiles(_:)` is *only* reached
     /// with URLs the caller has already prepared for unscoped reading.
@@ -378,35 +473,38 @@ public final class ComposerViewModel {
     ///   original URL with `start/stopAccessingSecurityScopedResource()`,
     ///   reads its bytes inside that window, and writes them to a temp
     ///   URL — temp URLs are not security-scoped, so no wrap needed here.
-    /// - iOS `PhotosPicker`: data is staged to a temp URL via
-    ///   `photoTempURL(ext:)` before the call — same as above.
-    /// - Mac `ComposerDropDelegate`: drop URLs are granted transparent
-    ///   read access by the
+    /// - iOS `PhotosPicker` / both paste paths: data is staged to a temp
+    ///   URL before the call — same as above.
+    /// - Mac `ComposerDropDelegate` / `fileImporter`: those URLs are granted
+    ///   transparent read access by the
     ///   `com.apple.security.files.user-selected.read-only` entitlement
     ///   (see `MacChatView.swift` comment on `.onDrop`).
-    /// Removing the inner wrap eliminates the round-3 bugbot finding #4
-    /// double-wrap on staged temp URLs (where the inner wrap was a no-op
-    /// but misleading).
+    ///
+    /// The copy `StagedAttachment.stage(copying:)` makes is what lets the
+    /// send happen minutes later: several of those grants are scoped to the
+    /// callback that produced them, not to whenever the user finishes typing.
     public func attachFiles(_ urls: [URL]) async {
         for url in urls {
-            let data: Data
             do {
-                data = try Data(contentsOf: url)
-            } catch {
-                sendError = error.localizedDescription
-                continue
-            }
-            let mime = (UTType(filenameExtension: url.pathExtension)?.preferredMIMEType) ?? "application/octet-stream"
-            do {
-                if mime.hasPrefix("image/") {
-                    try await timeline.sendImage(data, filename: url.lastPathComponent, mimeType: mime)
-                } else {
-                    try await timeline.sendFile(data, filename: url.lastPathComponent, mimeType: mime)
-                }
+                stagedAttachments.append(try StagedAttachment.stage(copying: url))
             } catch {
                 sendError = error.localizedDescription
             }
         }
+    }
+
+    /// Drops one attachment from the tray (the tray's per-item ✕).
+    public func removeAttachment(id: UUID) {
+        guard let index = stagedAttachments.firstIndex(where: { $0.id == id }) else { return }
+        stagedAttachments.remove(at: index).deleteStagedCopy()
+    }
+
+    /// Drops every staged attachment and deletes their copies. For a
+    /// composer being torn down with attachments still in the tray — the
+    /// files are ours, so nobody else will clean them up.
+    public func discardAttachments() {
+        stagedAttachments.forEach { $0.deleteStagedCopy() }
+        stagedAttachments = []
     }
 
     /// Sends a recorded voice note (a temp `.m4a` file produced by
@@ -416,10 +514,17 @@ public final class ComposerViewModel {
     /// via `sendError` (the same channel as `attachFiles`). `duration` is
     /// currently informational (the wire payload carries only the bytes and
     /// metadata), kept in the signature for the recording UI's benefit.
+    ///
+    /// Deliberately not staged into the tray, and captionless: a voice note
+    /// is recorded and released in one gesture, and the bridge transcribes
+    /// it into the user's own turn — there's no half-composed state to hold
+    /// and nothing for a caption to attach to.
     public func sendVoiceNote(url: URL, duration: TimeInterval) async {
         do {
             let data = try Data(contentsOf: url)
-            try await timeline.sendFile(data, filename: "voice-note.m4a", mimeType: "audio/mp4")
+            try await timeline.sendFile(
+                data, filename: "voice-note.m4a", mimeType: "audio/mp4", caption: nil
+            )
             // A successful send clears any prior composer error, same as
             // `send()` — a stale failure line must not outlive a voice note
             // that actually went through.

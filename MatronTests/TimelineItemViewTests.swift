@@ -102,7 +102,7 @@ final class TimelineItemViewTests: XCTestCase {
         let kinds: [TimelineItem.Kind] = [
             .text(body: "hi", formattedHTML: nil),
             .image(url: nil, caption: nil, sizeBytes: nil),
-            .file(url: nil, filename: "x.pdf", sizeBytes: nil),
+            .file(url: nil, filename: "x.pdf", caption: nil, sizeBytes: nil),
             .unknown(eventType: "m.audio"),
         ]
         for kind in kinds {

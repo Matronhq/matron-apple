@@ -103,7 +103,7 @@ struct MacTimelineItemView: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: caption ?? "Image attachment"))
 
-        case .file(let url, let filename, let sizeBytes):
+        case .file(let url, let filename, let caption, let sizeBytes):
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
                 timestamp: item.timestamp
@@ -111,6 +111,7 @@ struct MacTimelineItemView: View {
                 AttachmentFile(
                     filename: filename,
                     sizeBytes: sizeBytes,
+                    caption: caption,
                     onTap: {
                         if let url, let onTapFile {
                             onTapFile(url, filename)

@@ -331,7 +331,7 @@ final class JournalTimelineServiceTests: XCTestCase {
         await engine.beginSync()
         try await engine.waitUntilReady()
 
-        try await service.sendFile(Data("hello".utf8), filename: "notes.txt", mimeType: "text/plain")
+        try await service.sendFile(Data("hello".utf8), filename: "notes.txt", mimeType: "text/plain", caption: nil)
 
         try await waitUntil { socket.lastSentObject?["op"] as? String == "send" }
         let sent = socket.lastSentObject
@@ -354,7 +354,7 @@ final class JournalTimelineServiceTests: XCTestCase {
         await engine.beginSync()
         try await engine.waitUntilReady()
 
-        try await service.sendImage(Data("PNGBYTES".utf8), filename: "cat.png", mimeType: "image/png")
+        try await service.sendImage(Data("PNGBYTES".utf8), filename: "cat.png", mimeType: "image/png", caption: "what breed?")
 
         try await waitUntil { socket.lastSentObject?["op"] as? String == "send" }
         let sent = socket.lastSentObject
@@ -363,6 +363,9 @@ final class JournalTimelineServiceTests: XCTestCase {
         let payload = sent?["payload"] as? [String: Any]
         XCTAssertEqual(payload?["content_type"] as? String, "image/png")
         XCTAssertEqual(payload?["size"] as? Int, 8)
+        // End of the app's half of the caption's journey: it has to be on
+        // the actual bytes leaving the socket, not just in the enum.
+        XCTAssertEqual(payload?["caption"] as? String, "what breed?")
 
         await engine.endSync()
     }

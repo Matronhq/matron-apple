@@ -2,6 +2,7 @@ import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
 import MatronChat
+import MatronDesignSystem
 import MatronModels
 import MatronViewModels
 
@@ -34,14 +35,14 @@ struct ComposerView: View {
         return ceil(body.lineHeight) + inputPadding * 2
     }
 
-    /// Mirrors `ComposerViewModel.send()`'s own trim so the send button is
-    /// disabled for whitespace-only input. Without this, the button looks
-    /// active but `send()` no-ops on the trimmed empty string.
+    /// Mirrors `ComposerViewModel.send()`'s own no-op guard so the send
+    /// button is never active for something `send()` would ignore.
+    /// Delegates to `canSend` rather than re-deriving it: a staged
+    /// attachment is a sendable message with no text at all, and having the
+    /// view decide that separately is how the two drift apart.
     /// `internal` so `ComposerViewBindingTests` can assert this matches
     /// `send()`'s behaviour without scraping SwiftUI internals.
-    var isSendable: Bool {
-        !viewModel.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
+    var isSendable: Bool { viewModel.canSend }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -155,6 +156,17 @@ struct ComposerView: View {
     /// attach button already used — so both media surfaces disappear together
     /// if the server-side whitelist is ever turned back off.
     private var composerBar: some View {
+        VStack(spacing: 0) {
+            // Above the input, so what's about to be sent sits next to the
+            // words being written about it.
+            AttachmentTray(attachments: viewModel.stagedAttachments) { id in
+                viewModel.removeAttachment(id: id)
+            }
+            inputRow
+        }
+    }
+
+    private var inputRow: some View {
         HStack(alignment: .bottom, spacing: 4) {
             if ComposerViewModel.mediaAvailable {
                 AttachmentPicker(showPhotosPicker: $showPhotosPicker,

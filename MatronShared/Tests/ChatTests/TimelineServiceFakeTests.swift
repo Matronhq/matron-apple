@@ -17,8 +17,8 @@ final class FakeTimelineService: TimelineService, @unchecked Sendable {
     /// plain sends) — index-aligned with `sentText`.
     var sentInReplyTo: [String?] = []
     var sentButtonResponses: [(selectedValues: [String], inReplyTo: String)] = []
-    var sentImages: [(filename: String, mime: String, sizeBytes: Int)] = []
-    var sentFiles: [(filename: String, mime: String, sizeBytes: Int)] = []
+    var sentImages: [(filename: String, mime: String, sizeBytes: Int, caption: String?)] = []
+    var sentFiles: [(filename: String, mime: String, sizeBytes: Int, caption: String?)] = []
     var paginateCalls: Int = 0
     var markReadCalls: Int = 0
 
@@ -42,11 +42,11 @@ final class FakeTimelineService: TimelineService, @unchecked Sendable {
     func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {
         sentButtonResponses.append((selectedValues, promptEventID))
     }
-    func sendImage(_ data: Data, filename: String, mimeType: String) async throws {
-        sentImages.append((filename, mimeType, data.count))
+    func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {
+        sentImages.append((filename, mimeType, data.count, caption))
     }
-    func sendFile(_ data: Data, filename: String, mimeType: String) async throws {
-        sentFiles.append((filename, mimeType, data.count))
+    func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {
+        sentFiles.append((filename, mimeType, data.count, caption))
     }
     func paginateBackward(requestSize: UInt16) async throws -> Bool {
         paginateCalls += 1
@@ -103,7 +103,7 @@ final class TimelineServiceFakeTests: XCTestCase {
     func test_sendImage_recordsFilenameMimeAndSize() async throws {
         let fake = FakeTimelineService()
         let data = Data(repeating: 0xAB, count: 42)
-        try await fake.sendImage(data, filename: "pic.png", mimeType: "image/png")
+        try await fake.sendImage(data, filename: "pic.png", mimeType: "image/png", caption: nil)
         XCTAssertEqual(fake.sentImages.count, 1)
         XCTAssertEqual(fake.sentImages[0].filename, "pic.png")
         XCTAssertEqual(fake.sentImages[0].mime, "image/png")
@@ -113,7 +113,7 @@ final class TimelineServiceFakeTests: XCTestCase {
     func test_sendFile_recordsFilenameMimeAndSize() async throws {
         let fake = FakeTimelineService()
         let data = Data(repeating: 0x01, count: 7)
-        try await fake.sendFile(data, filename: "report.pdf", mimeType: "application/pdf")
+        try await fake.sendFile(data, filename: "report.pdf", mimeType: "application/pdf", caption: nil)
         XCTAssertEqual(fake.sentFiles.count, 1)
         XCTAssertEqual(fake.sentFiles[0].filename, "report.pdf")
         XCTAssertEqual(fake.sentFiles[0].mime, "application/pdf")

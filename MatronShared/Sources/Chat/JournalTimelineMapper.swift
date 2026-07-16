@@ -70,10 +70,19 @@ public enum JournalTimelineMapper {
                 serverURL.appendingPathComponent("media").appendingPathComponent($0)
             }
             let size = (payload["size"] as? NSNumber)?.int64Value
+            let caption = payload["caption"] as? String
             if event.type == JournalEventType.image {
-                kind = .image(url: url, caption: payload["caption"] as? String, sizeBytes: size)
+                kind = .image(url: url, caption: caption, sizeBytes: size)
             } else {
-                kind = .file(url: url, filename: payload["filename"] as? String ?? "file", sizeBytes: size)
+                // `name`, not `filename`: that's the key the media-send
+                // contract defines, and what both producers actually emit
+                // (the app's `.sendMedia` op and the bridge's
+                // publishFile/publishImage). Reading `filename` meant the
+                // fallback fired every single time, so every file in the
+                // timeline rendered as a generic "file" no matter what it
+                // was really called.
+                kind = .file(url: url, filename: payload["name"] as? String ?? "file",
+                             caption: caption, sizeBytes: size)
             }
 
         default:
