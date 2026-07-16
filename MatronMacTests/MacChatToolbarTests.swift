@@ -36,7 +36,7 @@ final class MacChatToolbarTests: XCTestCase {
             limits: [SessionStatus.Limit(label: "Session", percent: 39, resets: nil, resetsAt: nil)])
         let toolbar = MacChatToolbar(
             title: "Chat", status: status,
-            stripViewModel: makeStripVM(), onOpenSubChat: { _ in })
+            stripViewModel: makeStripVM(), onOpenSubChat: { _ in }, onCompact: {})
         XCTAssertEqual(toolbar.title, "Chat")
         XCTAssertEqual(toolbar.status?.context?.pct, 27)
         XCTAssertEqual(toolbar.status?.limits?.count, 1)
@@ -44,7 +44,7 @@ final class MacChatToolbarTests: XCTestCase {
         // Nil status is valid — header renders the title alone.
         XCTAssertNil(MacChatToolbar(
             title: "Chat", status: nil,
-            stripViewModel: makeStripVM(), onOpenSubChat: { _ in }).status)
+            stripViewModel: makeStripVM(), onOpenSubChat: { _ in }, onCompact: {}).status)
     }
 
 

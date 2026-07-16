@@ -580,7 +580,8 @@ struct MacChatView: View {
                 title: chatTitle,
                 status: viewModel.sessionStatus,
                 stripViewModel: stripViewModel,
-                onOpenSubChat: { openSubChatID = $0 }
+                onOpenSubChat: { openSubChatID = $0 },
+                onCompact: { Task { await viewModel.sendCommand("/compact") } }
             )
         }
         // Observation start/stop is hoisted to the outer view in `body` —

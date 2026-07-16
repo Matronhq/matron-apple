@@ -803,6 +803,23 @@ public final class ChatViewModel {
         try? await timeline.markAsRead()
     }
 
+    /// Sends a slash command on the user's behalf — the Compact buttons
+    /// next to the context gauge (Mac header, iOS session sheet) wire
+    /// here with "/compact". Deliberately bypasses `ComposerViewModel`:
+    /// a button press must not disturb the composer's draft text, staged
+    /// attachments, or Up-arrow history. The command lands in the
+    /// timeline as an ordinary own-message, so delivery (and the
+    /// bridge's response) is visible in the chat itself; a failure is
+    /// logged rather than surfaced because the button has no error UI
+    /// and the missing echo already tells the user nothing went out.
+    public func sendCommand(_ command: String) async {
+        do {
+            try await timeline.sendText(command)
+        } catch {
+            Self.logger.warning("sendCommand \(command, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     /// Retry handler for own-messages whose send state is `.failed`.
     /// Currently a stub: real SDK retry wiring lands later (the
     /// `MatrixRustSDK` exposes `Timeline.retryDecryption` /
