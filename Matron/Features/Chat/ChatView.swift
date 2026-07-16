@@ -1003,6 +1003,16 @@ struct SubChatView: View {
     /// sibling replaces this view, and the successor's `.task` can restart
     /// the strip before this instance's `onDisappear` fires (see ChatView).
     @State private var stripStartedGeneration = 0
+    /// Bottom-edge proximity, same 100pt threshold as the parent timeline
+    /// (`ChatView.nearBottomThresholdPt`). Doubles as the follow flag: at
+    /// the bottom the `.sizeChanges` anchor pins the live tail; scrolled
+    /// away it releases, and the jump button appears instead.
+    @State private var isNearBottom = true
+
+    /// proxy.scrollTo target for the jump button — a zero-size sentinel
+    /// after the last row (the eager VStack keeps it mounted, so the
+    /// parent timeline's dead-anchor hazard doesn't apply here).
+    private static let bottomSentinelID = "subchat-bottom"
 
     private var currentChild: SubChatSummary? {
         stripViewModel.children.first { $0.id == childID }
@@ -1022,31 +1032,53 @@ struct SubChatView: View {
                 onSwitch: switchTo
             )
             Divider()
-            ScrollView {
-                VStack(spacing: 0) {
-                    // `stripViewModel` here is the PARENT's strip, whose
-                    // children are this child's siblings — and the bridge
-                    // flattens nested agents into siblings, so a nested
-                    // "🔀 Subtask:" indicator in this timeline resolves to
-                    // the flattened sibling and links correctly too.
-                    TimelineListContent(
-                        viewModel: viewModel,
-                        stripViewModel: stripViewModel,
-                        onOpenSubChat: switchTo,
-                        onPreview: { attachmentPreview = $0 },
-                        onShowSource: { sourceItem = $0 }
-                    )
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 0) {
+                        // `stripViewModel` here is the PARENT's strip, whose
+                        // children are this child's siblings — and the bridge
+                        // flattens nested agents into siblings, so a nested
+                        // "🔀 Subtask:" indicator in this timeline resolves to
+                        // the flattened sibling and links correctly too.
+                        TimelineListContent(
+                            viewModel: viewModel,
+                            stripViewModel: stripViewModel,
+                            onOpenSubChat: switchTo,
+                            onPreview: { attachmentPreview = $0 },
+                            onShowSource: { sourceItem = $0 }
+                        )
+                        Color.clear
+                            .frame(height: 1)
+                            .id(Self.bottomSentinelID)
+                    }
+                    // Same wiggle lock as the parent timeline (ChatView) —
+                    // a too-wide row must clamp + log, never pan sideways.
+                    .captureNativeScrollView(into: nativeScroll,
+                                             lockingHorizontalOverflow: true)
                 }
-                // Same wiggle lock as the parent timeline (ChatView) —
-                // a too-wide row must clamp + log, never pan sideways.
-                .captureNativeScrollView(into: nativeScroll,
-                                         lockingHorizontalOverflow: true)
+                .overlay {
+                    if viewModel.rows.isEmpty { TimelineLoadingIndicator() }
+                }
+                .defaultScrollAnchor(.bottom, for: .initialOffset)
+                .defaultScrollAnchor(.bottom, for: .alignment)
+                // Follow the live tail while the user is at the bottom;
+                // release the pin the moment they scroll up to read.
+                .defaultScrollAnchor(isNearBottom ? .bottom : nil, for: .sizeChanges)
+                .onScrollGeometryChange(for: Bool.self) { geo in
+                    geo.visibleRect.maxY >= geo.contentSize.height - 100
+                } action: { _, nearBottom in
+                    if isNearBottom != nearBottom { isNearBottom = nearBottom }
+                }
+                // Same affordance as the parent timeline: visible whenever
+                // the user has left the live tail (Dan, 2026-07-16).
+                .overlay(alignment: .bottomTrailing) {
+                    if !isNearBottom {
+                        JumpToBottomButton {
+                            proxy.scrollTo(Self.bottomSentinelID, anchor: .bottom)
+                        }
+                    }
+                }
             }
-            .overlay {
-                if viewModel.rows.isEmpty { TimelineLoadingIndicator() }
-            }
-            .defaultScrollAnchor(.bottom, for: .initialOffset)
-            .defaultScrollAnchor(.bottom, for: .alignment)
         }
         .background(MatronTimelineBackground())
         .navigationTitle(currentChild?.title ?? fallbackTitle)

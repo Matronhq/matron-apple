@@ -868,6 +868,16 @@ struct MacSubChatPane: View {
     /// sibling replaces this pane, and the successor's `.task` can restart
     /// the strip before this instance's `onDisappear` (see `MacChatView`).
     @State private var stripStartedGeneration = 0
+    /// Bottom-edge proximity, same 100pt threshold as the main timeline
+    /// (`MacChatView.nearBottomThresholdPt`). Doubles as the follow flag:
+    /// at the bottom the `.sizeChanges` anchor pins the live tail; scrolled
+    /// away it releases, and the jump button appears instead.
+    @State private var isNearBottom = true
+
+    /// proxy.scrollTo target for the jump button — a zero-size sentinel
+    /// after the last row (the eager VStack keeps it mounted, so the
+    /// main timeline's dead-anchor hazard doesn't apply here).
+    private static let bottomSentinelID = "subchat-bottom"
 
     private var currentChild: SubChatSummary? {
         stripViewModel.children.first { $0.id == childID }
@@ -887,26 +897,48 @@ struct MacSubChatPane: View {
                 onSwitch: onOpenSibling
             )
             Divider()
-            ScrollView {
-                VStack(spacing: 0) {
-                    // `stripViewModel` is the PARENT's strip (siblings) —
-                    // the bridge flattens nested agents into siblings, so a
-                    // nested "🔀 Subtask:" indicator here resolves to the
-                    // flattened sibling and switches the pane to it.
-                    MacTimelineListContent(
-                        viewModel: viewModel,
-                        stripViewModel: stripViewModel,
-                        onOpenSubChat: onOpenSibling,
-                        onPreviewImage: { imagePreview = MacSubChatImagePreview(image: $0) },
-                        onShowSource: { sourceItem = $0 }
-                    )
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 0) {
+                        // `stripViewModel` is the PARENT's strip (siblings) —
+                        // the bridge flattens nested agents into siblings, so a
+                        // nested "🔀 Subtask:" indicator here resolves to the
+                        // flattened sibling and switches the pane to it.
+                        MacTimelineListContent(
+                            viewModel: viewModel,
+                            stripViewModel: stripViewModel,
+                            onOpenSubChat: onOpenSibling,
+                            onPreviewImage: { imagePreview = MacSubChatImagePreview(image: $0) },
+                            onShowSource: { sourceItem = $0 }
+                        )
+                        Color.clear
+                            .frame(height: 1)
+                            .id(Self.bottomSentinelID)
+                    }
+                }
+                .overlay {
+                    if viewModel.rows.isEmpty { TimelineLoadingIndicator() }
+                }
+                .defaultScrollAnchor(.bottom, for: .initialOffset)
+                .defaultScrollAnchor(.bottom, for: .alignment)
+                // Follow the live tail while the user is at the bottom;
+                // release the pin the moment they scroll up to read.
+                .defaultScrollAnchor(isNearBottom ? .bottom : nil, for: .sizeChanges)
+                .onScrollGeometryChange(for: Bool.self) { geo in
+                    geo.visibleRect.maxY >= geo.contentSize.height - 100
+                } action: { _, nearBottom in
+                    if isNearBottom != nearBottom { isNearBottom = nearBottom }
+                }
+                // Same affordance as the main timeline: visible whenever
+                // the user has left the live tail (Dan, 2026-07-16).
+                .overlay(alignment: .bottomTrailing) {
+                    if !isNearBottom {
+                        JumpToBottomButton {
+                            proxy.scrollTo(Self.bottomSentinelID, anchor: .bottom)
+                        }
+                    }
                 }
             }
-            .overlay {
-                if viewModel.rows.isEmpty { TimelineLoadingIndicator() }
-            }
-            .defaultScrollAnchor(.bottom, for: .initialOffset)
-            .defaultScrollAnchor(.bottom, for: .alignment)
         }
         .background(MatronTimelineBackground())
         .task {
