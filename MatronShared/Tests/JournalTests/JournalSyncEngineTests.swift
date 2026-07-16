@@ -361,6 +361,59 @@ final class JournalSyncEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    /// The fail-open the users hit: a subagent child whose FIRST applied frame
+    /// is NOT its parent-bearing convo_meta (a routed text/tool/status frame
+    /// landed first). The store row is created without the parent linkage, so
+    /// the old `parentConvoID(of:) == nil` gate published it and the Mac
+    /// yanked selection into the just-started sub-chat. The structural
+    /// `:sub:` guard suppresses the child by its id shape regardless of which
+    /// frame arrives first, so a non-meta first frame never opens anything.
+    func testLiveBornChildWhoseFirstFrameIsNotMetaDoesNotAutoOpen() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1)) // c1 — existing, drives us to running
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.newConversations().makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(50))
+
+        // A child's first applied frame is a plain text event — no
+        // parent_convo_id anywhere in it. This is the ordering hole.
+        socket.serve(journalLine(2, convo: "c1:sub:a1", type: "text")) // child → must NOT emit
+        socket.serve(journalLine(3, convo: "cLive"))                   // normal new convo → emit
+
+        let emitted = await iterator.next()
+        XCTAssertEqual(emitted, "cLive",
+                       "a child leaking a non-meta first frame must not auto-open; only the top-level convo does")
+        await engine.endSync()
+    }
+
+    /// Guards the other side of the new gate: a genuine top-level convo whose
+    /// first frame is a convo_meta (the bridge's establish upsert) MUST still
+    /// auto-open. Otherwise the fix would break the /start-from-this-device UX.
+    func testLiveBornTopLevelConvoMetaStillAutoOpens() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1)) // c1 — existing, drives us to running
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.newConversations().makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Top-level convo, first frame is its establish convo_meta — no parent.
+        let topMeta = #"{"kind":"journal","seq":2,"convo_id":"cTop","ts":2000,"sender":"agent:a","type":"convo_meta","payload":{"title":"new session"}}"#
+        socket.serve(topMeta)
+        let emitted = await iterator.next()
+        XCTAssertEqual(emitted, "cTop", "a top-level convo_meta must still auto-open")
+        await engine.endSync()
+    }
+
     // MARK: Agent RPC correlator
 
     private func sentAgentRequests(_ socket: FakeWebSocketConnection) -> [[String: Any]] {

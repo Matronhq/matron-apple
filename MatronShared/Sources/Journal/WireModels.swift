@@ -19,6 +19,13 @@ public enum JournalEventType {
     /// updates the conversation row and is skipped in the timeline.
     public static let convoMeta = "convo_meta"
 
+    /// Infix in a subagent child's convo id: `<parent>:sub:<agentId>`
+    /// (mirrors the bridge's `CHILD_CONVO_INFIX`, lib/subagent-convos.js).
+    /// A structural marker of a child that holds regardless of frame
+    /// ordering — used to keep silent children out of auto-open before their
+    /// parent_convo_id linkage (learned only from convo_meta) has arrived.
+    public static let childConvoInfix = ":sub:"
+
     /// Types that bump unread counts and set the conversation snippet —
     /// mirrors the server's MESSAGE_TYPES (src/journal.js).
     public static let messageTypes: Set<String> = [
