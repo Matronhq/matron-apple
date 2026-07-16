@@ -56,6 +56,10 @@ struct MacChatToolbar: ToolbarContent {
     /// Reading `children` in `body` installs `@Observable` tracking.
     let stripViewModel: SubChatStripViewModel
     let onOpenSubChat: (String) -> Void
+    /// Sends "/compact" for the user — the button rides next to the
+    /// context gauge so the action sits beside the number that motivates
+    /// it (Dan, 2026-07-16: "so you don't have to type it").
+    let onCompact: () -> Void
 
     /// One height for all three clusters so the system's content-hugging
     /// glass capsules come out equal and align as a row. Sized to the
@@ -117,7 +121,17 @@ struct MacChatToolbar: ToolbarContent {
                     .lineLimit(1)
             }
             if let context = status?.context {
-                ContextGaugeLabel(context: context)
+                HStack(spacing: 6) {
+                    ContextGaugeLabel(context: context)
+                    Button(action: onCompact) {
+                        Image(systemName: "arrow.down.right.and.arrow.up.left")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Compact the conversation — sends /compact")
+                    .accessibilityLabel("Compact conversation")
+                }
             }
         }
     }

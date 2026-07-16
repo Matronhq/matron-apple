@@ -1278,4 +1278,18 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertNil(vm.sessionStatus,
                      "restart must drop held meters; no frame has arrived on the new subscription yet")
     }
+
+    /// The Compact buttons (Mac header, iOS session sheet) send "/compact"
+    /// through the view model rather than the composer — a button-triggered
+    /// command must not touch the composer's draft, history, or tray.
+    @MainActor
+    func test_sendCommand_sendsBodyAsPlainText() async {
+        let fake = FakeTimelineService()
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+
+        await vm.sendCommand("/compact")
+
+        XCTAssertEqual(fake.sentText, ["/compact"])
+        XCTAssertEqual(fake.sentInReplyTo, [nil])
+    }
 }

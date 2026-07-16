@@ -11,6 +11,7 @@ import MatronDesignSystem
 /// open sheet would never refresh when the first status frame lands.
 struct SessionStatusSheet: View {
     let viewModel: ChatViewModel
+    @Environment(\.dismiss) private var dismiss
 
     private var status: SessionStatus? { viewModel.sessionStatus }
 
@@ -28,7 +29,23 @@ struct SessionStatusSheet: View {
                 if let status, hasContent {
                     VStack(alignment: .leading, spacing: 24) {
                         if let context = status.context {
-                            ContextGaugeLabel(context: context)
+                            HStack(spacing: 12) {
+                                ContextGaugeLabel(context: context)
+                                Spacer()
+                                // Sends /compact for the user (Dan,
+                                // 2026-07-16: "so you don't have to type
+                                // it"), then dismisses so the command —
+                                // and the bridge's compaction reply —
+                                // are visible in the chat.
+                                Button {
+                                    Task { await viewModel.sendCommand("/compact") }
+                                    dismiss()
+                                } label: {
+                                    Label("Compact", systemImage: "arrow.down.right.and.arrow.up.left")
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
                         }
                         if let limits = status.limits, !limits.isEmpty {
                             UsageBarsView(limits: limits, scale: .regular)
