@@ -183,7 +183,12 @@ targets:
       path: MatronMac/App/Info.plist
       properties:
         CFBundleDisplayName: Matron
-        LSApplicationCategoryType: public.app-category.social-networking
+        # Developer Tools, not Social Networking (which this was until
+        # 2026-07-16 — a leftover from "it's a chat UI"). Matron drives a
+        # coding agent; its audience is developers, and Xcode itself declares
+        # this same category. Must match the primary category set on the App
+        # Store Connect record.
+        LSApplicationCategoryType: public.app-category.developer-tools
         ITSAppUsesNonExemptEncryption: false
         # Shown in the About panel and on the Mac App Store listing. Set
         # here rather than as INFOPLIST_KEY_NSHumanReadableCopyright: this

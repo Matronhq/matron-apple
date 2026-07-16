@@ -111,6 +111,29 @@ struct ComposerPasteSupport: UIViewRepresentable {
             ])
             target.pasteConfiguration = configuration
             target.pasteDelegate = self
+            allowImagePasteMenu(on: target)
+        }
+
+        /// Makes UIKit *offer* Paste when the pasteboard holds an image.
+        ///
+        /// This is the load-bearing line, and it is not what you'd guess.
+        /// `pasteConfiguration` has nothing to do with the edit menu: measured
+        /// on a hosted `TextField`, with the configuration widened AND the
+        /// delegate installed, `canPerformAction(paste:)` was still `false` for
+        /// an image-bearing pasteboard — which is exactly the "no Paste option
+        /// appears" Dan hit (2026-07-16). A `UITextView` gates the Paste item on
+        /// `hasStrings || (allowsEditingTextAttributes && hasImages)`, so
+        /// rich-text mode is the only switch that reveals it. Flipping it took
+        /// the same measurement from `false` to `true`.
+        ///
+        /// File URLs never needed this (`hasURLs` already satisfies the gate),
+        /// which is why pasting a file worked while pasting a photo did nothing.
+        ///
+        /// Rich-text mode alone would let pasted text keep the source's font and
+        /// colour; `combineItemAttributedStrings` below strips that back to
+        /// plain so the composer looks exactly as it did before.
+        private func allowImagePasteMenu(on target: UIView & UITextPasteConfigurationSupporting) {
+            (target as? UITextView)?.allowsEditingTextAttributes = true
         }
 
         func textPasteConfigurationSupporting(
@@ -133,6 +156,25 @@ struct ComposerPasteSupport: UIViewRepresentable {
                     viewModel.reportAttachmentError(error.localizedDescription)
                 }
             }
+        }
+
+        /// Strips formatting off pasted text.
+        ///
+        /// `allowImagePasteMenu` has to put the field in rich-text mode to make
+        /// the Paste item appear for images at all, and the side effect would be
+        /// that text pasted from a web page or a document arrives carrying its
+        /// source font, size, and colour — a visible regression to a far more
+        /// common action than the one being fixed. The composer sends a plain
+        /// `String`, so flattening to the field's own typing attributes here
+        /// keeps text paste looking exactly as it did before rich text was on.
+        func textPasteConfigurationSupporting(
+            _ textPasteConfigurationSupporting: UITextPasteConfigurationSupporting,
+            combineItemAttributedStrings itemStrings: [NSAttributedString],
+            for textRange: UITextRange
+        ) -> NSAttributedString {
+            let plain = itemStrings.map(\.string).joined()
+            let attributes = (textPasteConfigurationSupporting as? UITextView)?.typingAttributes
+            return NSAttributedString(string: plain, attributes: attributes)
         }
     }
 }

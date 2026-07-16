@@ -106,8 +106,15 @@ public enum PastedAttachment {
         return destination
     }
 
-    /// Asks the provider to write its bytes to disk and copies the result
-    /// somewhere with a lifetime we control.
+    /// Asks the provider for the item's bytes and writes them somewhere with a
+    /// lifetime we control.
+    ///
+    /// Deliberately `loadDataRepresentation`, not `loadFileRepresentation`: a
+    /// pasteboard-backed provider has no file to hand over, and asking for one
+    /// fails with "Cannot load representation of type public.png" (measured on
+    /// a real paste, 2026-07-16 — it left the user with a Paste button that
+    /// silently did nothing). Data works for both pasteboard and file-backed
+    /// providers, at the cost of naming the file ourselves.
     private static func stageRepresentation(
         _ provider: NSItemProvider,
         typeIdentifier: String
@@ -116,22 +123,17 @@ public enum PastedAttachment {
         // the suggested name is the only thing the callback needs from it.
         let suggestedName = provider.suggestedName
         return try await withCheckedThrowingContinuation { continuation in
-            _ = provider.loadFileRepresentation(forTypeIdentifier: typeIdentifier) { url, error in
-                guard let url else {
+            _ = provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { data, error in
+                guard let data else {
                     continuation.resume(throwing: error ?? PastedAttachmentError.unreadableItem)
                     return
                 }
-                // The provider deletes its temporary file as soon as this
-                // callback returns, so the copy has to happen here — not
-                // after an await.
                 do {
                     let name = filename(
-                        suggestedName: suggestedName,
-                        typeIdentifier: typeIdentifier,
-                        loaded: url
+                        suggestedName: suggestedName, typeIdentifier: typeIdentifier
                     )
                     let destination = stagingURL(forName: name)
-                    try FileManager.default.copyItem(at: url, to: destination)
+                    try data.write(to: destination)
                     continuation.resume(returning: destination)
                 } catch {
                     continuation.resume(throwing: error)
@@ -140,17 +142,12 @@ public enum PastedAttachment {
         }
     }
 
-    /// Names the staged file. The extension is the load-bearing part —
-    /// `attachFiles(_:)` derives the MIME type from it, which is what decides
-    /// `sendImage` vs `sendFile` — so a provider that hands back an
-    /// extensionless file falls back to the type's own preferred extension.
-    private static func filename(
-        suggestedName: String?,
-        typeIdentifier: String,
-        loaded: URL
-    ) -> String {
-        if !loaded.pathExtension.isEmpty { return loaded.lastPathComponent }
-        let base = suggestedName ?? "pasted-file"
+    /// Names a staged inline item. The extension is the load-bearing part —
+    /// `attachFiles(_:)` derives the MIME type from it, and that's what decides
+    /// `sendImage` vs `sendFile` — so it always comes from the type identifier
+    /// itself. A pasted photo carries no suggested name, hence the fallback.
+    private static func filename(suggestedName: String?, typeIdentifier: String) -> String {
+        let base = suggestedName.map { ($0 as NSString).deletingPathExtension } ?? "pasted-file"
         guard let ext = UTType(typeIdentifier)?.preferredFilenameExtension else { return base }
         return "\(base).\(ext)"
     }
