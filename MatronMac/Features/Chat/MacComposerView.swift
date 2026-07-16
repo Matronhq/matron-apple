@@ -53,6 +53,13 @@ struct MacComposerView: View {
         return ceil(body.ascender - body.descender + body.leading)
     }
 
+    /// Both trailing accessories (mic on an empty field, send arrow once
+    /// text exists) render in this fixed-width container. Their glyphs are
+    /// different sizes (`.title3` vs `.title`), and letting each size its
+    /// own container made the input field jump sideways on the first typed
+    /// character (Dan, 2026-07-16). Wide enough for the larger send arrow.
+    private static let trailingAccessoryWidth: CGFloat = 28
+
     /// Measured height of the input's content (text + padding), driving the
     /// grow-then-scroll frame below.
     @State private var inputContentHeight: CGFloat = 0
@@ -294,7 +301,10 @@ struct MacComposerView: View {
                     Image(systemName: "mic")
                         .font(.title3)
                         .foregroundStyle(.secondary)
-                        .frame(height: Self.singleLineInputHeight)
+                        .frame(
+                            width: Self.trailingAccessoryWidth,
+                            height: Self.singleLineInputHeight
+                        )
                 }
                 .buttonStyle(.plain)
                 .help("Record a voice note")
@@ -313,7 +323,10 @@ struct MacComposerView: View {
                         .foregroundStyle(isSendable ? Color.accentColor : Color.secondary)
                         // Same one-line-tall container as the plus so
                         // the arrow centres against a single-line input.
-                        .frame(height: Self.singleLineInputHeight)
+                        .frame(
+                            width: Self.trailingAccessoryWidth,
+                            height: Self.singleLineInputHeight
+                        )
                 }
                 .buttonStyle(.plain)
                 .disabled(!isSendable || viewModel.isSending)
