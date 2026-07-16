@@ -1003,6 +1003,26 @@ struct SubChatView: View {
     /// sibling replaces this view, and the successor's `.task` can restart
     /// the strip before this instance's `onDisappear` fires (see ChatView).
     @State private var stripStartedGeneration = 0
+    /// Sticky follow flag, gesture-driven like the parent timeline's:
+    /// only a real user drag releases it. Geometry alone must not — the
+    /// viewport can leave the bottom with no gesture while a tool-heavy
+    /// turn streams (2026-07-14 06:41 trace), and a sub-chat is a pure
+    /// streaming viewer, so a geometry-gated anchor would silently stop
+    /// following mid-stream.
+    @State private var isFollowingTail = true
+    /// Bottom-edge proximity, same 100pt threshold as the parent timeline
+    /// (`ChatView.nearBottomThresholdPt`). Re-arms `isFollowingTail` when
+    /// a drag settles at the tail, and gates the follow heal.
+    @State private var isNearBottom = true
+    /// Debounced re-pin while following — same rationale as the parent
+    /// timeline's heal task: the `.sizeChanges` anchor alone doesn't
+    /// recover once churn has moved the viewport off the bottom.
+    @State private var followHealTask: Task<Void, Never>?
+
+    /// proxy.scrollTo target for the jump button — a zero-size sentinel
+    /// after the last row (the eager VStack keeps it mounted, so the
+    /// parent timeline's dead-anchor hazard doesn't apply here).
+    private static let bottomSentinelID = "subchat-bottom"
 
     private var currentChild: SubChatSummary? {
         stripViewModel.children.first { $0.id == childID }
@@ -1022,31 +1042,79 @@ struct SubChatView: View {
                 onSwitch: switchTo
             )
             Divider()
-            ScrollView {
-                VStack(spacing: 0) {
-                    // `stripViewModel` here is the PARENT's strip, whose
-                    // children are this child's siblings — and the bridge
-                    // flattens nested agents into siblings, so a nested
-                    // "🔀 Subtask:" indicator in this timeline resolves to
-                    // the flattened sibling and links correctly too.
-                    TimelineListContent(
-                        viewModel: viewModel,
-                        stripViewModel: stripViewModel,
-                        onOpenSubChat: switchTo,
-                        onPreview: { attachmentPreview = $0 },
-                        onShowSource: { sourceItem = $0 }
-                    )
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 0) {
+                        // `stripViewModel` here is the PARENT's strip, whose
+                        // children are this child's siblings — and the bridge
+                        // flattens nested agents into siblings, so a nested
+                        // "🔀 Subtask:" indicator in this timeline resolves to
+                        // the flattened sibling and links correctly too.
+                        TimelineListContent(
+                            viewModel: viewModel,
+                            stripViewModel: stripViewModel,
+                            onOpenSubChat: switchTo,
+                            onPreview: { attachmentPreview = $0 },
+                            onShowSource: { sourceItem = $0 }
+                        )
+                        Color.clear
+                            .frame(height: 1)
+                            .id(Self.bottomSentinelID)
+                    }
+                    // Same wiggle lock as the parent timeline (ChatView) —
+                    // a too-wide row must clamp + log, never pan sideways.
+                    .captureNativeScrollView(into: nativeScroll,
+                                             lockingHorizontalOverflow: true)
                 }
-                // Same wiggle lock as the parent timeline (ChatView) —
-                // a too-wide row must clamp + log, never pan sideways.
-                .captureNativeScrollView(into: nativeScroll,
-                                         lockingHorizontalOverflow: true)
+                .overlay {
+                    if viewModel.rows.isEmpty { TimelineLoadingIndicator() }
+                }
+                .defaultScrollAnchor(.bottom, for: .initialOffset)
+                .defaultScrollAnchor(.bottom, for: .alignment)
+                // Follow the live tail until the user drags away;
+                // a drag that settles back at the bottom re-arms it.
+                .defaultScrollAnchor(isFollowingTail ? .bottom : nil, for: .sizeChanges)
+                .onScrollGeometryChange(for: Bool.self) { geo in
+                    geo.visibleRect.maxY >= geo.contentSize.height - 100
+                } action: { _, nearBottom in
+                    if isNearBottom != nearBottom { isNearBottom = nearBottom }
+                    // Follow heal: churn can move the viewport off the
+                    // bottom with no user gesture; the anchor alone won't
+                    // pull it back. Debounced like the parent timeline's.
+                    if !nearBottom, isFollowingTail {
+                        followHealTask?.cancel()
+                        followHealTask = Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 300_000_000)
+                            guard !Task.isCancelled, isFollowingTail, !isNearBottom else { return }
+                            proxy.scrollTo(Self.bottomSentinelID, anchor: .bottom)
+                        }
+                    } else {
+                        followHealTask?.cancel()
+                        followHealTask = nil
+                    }
+                }
+                // Only a real drag exits follow mode — programmatic
+                // scrolls and layout drift never report `.interacting`.
+                .onUserScrollGesture(
+                    begin: { if isFollowingTail { isFollowingTail = false } },
+                    settle: { if !isFollowingTail, isNearBottom { isFollowingTail = true } }
+                )
+                // Same affordance as the parent timeline: visible whenever
+                // the user has left the live tail (Dan, 2026-07-16).
+                .overlay(alignment: .bottomTrailing) {
+                    if !isFollowingTail {
+                        JumpToBottomButton {
+                            isFollowingTail = true
+                            // Kill any in-flight fling first — scrollTo
+                            // issued during deceleration is overridden by
+                            // the deceleration animator (see
+                            // `NativeScrollViewBox`).
+                            nativeScroll.killMomentumAndSnapToBottom()
+                            proxy.scrollTo(Self.bottomSentinelID, anchor: .bottom)
+                        }
+                    }
+                }
             }
-            .overlay {
-                if viewModel.rows.isEmpty { TimelineLoadingIndicator() }
-            }
-            .defaultScrollAnchor(.bottom, for: .initialOffset)
-            .defaultScrollAnchor(.bottom, for: .alignment)
         }
         .background(MatronTimelineBackground())
         .navigationTitle(currentChild?.title ?? fallbackTitle)
@@ -1062,6 +1130,7 @@ struct SubChatView: View {
             await viewModel.paginateBackward()
         }
         .onDisappear {
+            followHealTask?.cancel()
             viewModel.stop(ifGeneration: startedGeneration)
             stripViewModel.stop(ifGeneration: stripStartedGeneration)
         }
