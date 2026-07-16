@@ -283,6 +283,10 @@ targets:
     settings:
       base:
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+        # Same as MatronMacTests below: the bundle has no hand-written
+        # plist, so Xcode must generate one or codesigning the test
+        # bundle fails outright.
+        GENERATE_INFOPLIST_FILE: YES
     dependencies:
       - target: Matron
       - package: MatronShared

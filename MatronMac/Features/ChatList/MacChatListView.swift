@@ -563,8 +563,12 @@ private struct MacChatRow: View {
                     // Snippet renders unconditionally with reserved space
                     // so row height stays fixed while messages stream in
                     // (an appearing/disappearing snippet line made the
-                    // whole list jiggle as chats updated).
-                    Text(summary.snippet)
+                    // whole list jiggle as chats updated). An EMPTY
+                    // snippet must render a space, not "" — SwiftUI only
+                    // reserves the line when there's a character to lay
+                    // out, so a snippet-less row collapsed shorter (same
+                    // fix as the iOS ChatRow, Dan 2026-07-16).
+                    Text(summary.snippet.isEmpty ? " " : summary.snippet)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .lineLimit(1, reservesSpace: true)
