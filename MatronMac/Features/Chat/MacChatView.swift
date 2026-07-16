@@ -349,6 +349,10 @@ struct MacChatView: View {
                     // natively while pinned. See iOS ChatView.
                     if let activityLabel = viewModel.activityLabel {
                         ActivityIndicatorRow(label: activityLabel)
+                            // Lift the indicator off the composer — its
+                            // own 4pt read too tight against the input
+                            // pane (Dan, 2026-07-16).
+                            .padding(.bottom, 8)
                             .id(Self.activityFooterID)
                     }
                 }

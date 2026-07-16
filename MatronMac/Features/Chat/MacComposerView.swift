@@ -52,11 +52,13 @@ struct MacComposerView: View {
         return ceil(body.ascender - body.descender + body.leading)
     }
 
-    /// Both trailing accessories (mic on an empty field, send arrow once
-    /// text exists) render in this fixed-width container. Their glyphs are
-    /// different sizes (`.title3` vs `.title`), and letting each size its
-    /// own container made the input field jump sideways on the first typed
-    /// character (Dan, 2026-07-16). Wide enough for the larger send arrow.
+    /// Every accessory button (plus on the left; mic on an empty field or
+    /// send arrow once text exists on the right) renders in this
+    /// fixed-width container. Their glyphs are different sizes (`.title2`
+    /// / `.title3` / `.title`), and letting each size its own container
+    /// made the input field jump sideways on the first typed character
+    /// and gave the plus a visibly wider gutter than the send side (Dan,
+    /// 2026-07-16). Wide enough for the largest glyph, the send arrow.
     private static let trailingAccessoryWidth: CGFloat = 28
 
     /// Measured height of the input's content (text + padding), reported by
@@ -161,15 +163,19 @@ struct MacComposerView: View {
                     Image(systemName: "plus.circle")
                         .font(.title2)
                         .foregroundStyle(.secondary)
-                        // Centre the icon in a one-line-tall container so
-                        // it lines up with the send button and the
-                        // single-line input; horizontal padding keeps the
-                        // hit target. See `singleLineInputHeight`.
-                        .frame(height: Self.singleLineInputHeight)
-                        .padding(.horizontal, 8)
+                        // Same fixed container as the trailing accessories
+                        // so both sides of the input carry identical
+                        // gutters — horizontal padding here made the left
+                        // side visibly wider than the mic/send side (Dan,
+                        // 2026-07-16). See `singleLineInputHeight`.
+                        .frame(
+                            width: Self.trailingAccessoryWidth,
+                            height: Self.singleLineInputHeight
+                        )
                 }
                 .buttonStyle(.plain)
                 .help("Attach a file")
+                .padding(.leading, 4)
             }
 
             // Grow-then-scroll input: an AppKit `NSTextView` whose text
