@@ -549,12 +549,23 @@ public actor JournalSyncEngine {
                             // user is actively connected do.
                             // Subagent children are silent (spec §6): they
                             // must never yank the user into a sub-chat via
-                            // auto-open. The server already omits them from
-                            // push/unread; this is the app's defense in
-                            // depth — a child's first frame is a convo_meta
-                            // carrying parent_convo_id, so by the time we're
-                            // here the store row already knows it's a child.
+                            // auto-open. Two guards, because the parent
+                            // linkage is learned ONLY from the child's
+                            // convo_meta and that frame can be applied AFTER
+                            // a routed text/tool/status frame for the same
+                            // child (the ordering hole that shipped the bug —
+                            // the row then exists with parent_convo_id still
+                            // NULL and the Mac yanked selection into the
+                            // just-started sub-chat):
+                            //   1. structural — a child convo id is always
+                            //      `<parent>:sub:<agentId>` (the bridge's
+                            //      CHILD_CONVO_INFIX). This holds no matter
+                            //      which of the child's frames arrives first,
+                            //      so it closes the race by construction.
+                            //   2. semantic — the learned parent linkage,
+                            //      kept as the forward-compatible filter.
                             if isNewConvo, case .running = state,
+                               !event.convoID.contains(JournalEventType.childConvoInfix),
                                (try? store.parentConvoID(of: event.convoID)) == nil {
                                 publishNewConversation(event.convoID)
                             }
