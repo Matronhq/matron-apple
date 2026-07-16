@@ -21,17 +21,16 @@ struct MacComposerView: View {
     @State var viewModel: ComposerViewModel
     @State private var recorder = VoiceRecorder()
 
-    /// Placeholder shown in the empty composer. Extracted to a single
-    /// constant because the Shift+Return key monitor scopes itself to *this*
-    /// field by matching the field editor's delegate `placeholderString`
-    /// against it — the TextField initializer and the monitor must read the
-    /// same value or the scope check silently breaks.
+    /// Placeholder shown in the empty composer — drawn as a SwiftUI overlay,
+    /// since `NSTextView` has no placeholder of its own.
     private static let placeholder = "Message…"
 
-    /// The input's vertical padding (top and bottom). Named so the
-    /// single-line height below stays tied to it: if the padding changes,
-    /// the accessory-button height follows.
-    private static let inputVerticalPadding: CGFloat = 8
+    /// The input's vertical padding (top and bottom). Reads the editor's
+    /// own inset so the single-line height below stays tied to it: if the
+    /// inset changes, the accessory-button height follows.
+    private static var inputVerticalPadding: CGFloat {
+        MacComposerTextEditor.textInset
+    }
 
     /// Rendered height of a one-line input: the body font's line height plus
     /// the input's vertical padding top and bottom. The paperclip and send
@@ -53,14 +52,16 @@ struct MacComposerView: View {
         return ceil(body.ascender - body.descender + body.leading)
     }
 
-    /// Measured height of the input's content (text + padding), driving the
-    /// grow-then-scroll frame below.
-    @State private var inputContentHeight: CGFloat = 0
+    /// Both trailing accessories (mic on an empty field, send arrow once
+    /// text exists) render in this fixed-width container. Their glyphs are
+    /// different sizes (`.title3` vs `.title`), and letting each size its
+    /// own container made the input field jump sideways on the first typed
+    /// character (Dan, 2026-07-16). Wide enough for the larger send arrow.
+    private static let trailingAccessoryWidth: CGFloat = 28
 
-    /// Token for the Shift+Return local key monitor, installed in
-    /// `.onAppear` and removed in `.onDisappear`. `Any?` because
-    /// `NSEvent.addLocalMonitorForEvents` returns an opaque object.
-    @State private var keyMonitor: Any?
+    /// Measured height of the input's content (text + padding), reported by
+    /// `MacComposerTextEditor` and driving the grow-then-scroll frame below.
+    @State private var inputContentHeight: CGFloat = 0
 
     /// Internal so `MacComposerViewBindingTests` can pin the predicate
     /// without scraping SwiftUI internals (mirrors the iOS surface).
@@ -129,31 +130,6 @@ struct MacComposerView: View {
             // abort it (discarding the temp file) rather than letting the
             // mic keep capturing with nothing to stop or send it.
             recorder.cancel()
-            if let keyMonitor {
-                NSEvent.removeMonitor(keyMonitor)
-                self.keyMonitor = nil
-            }
-        }
-        // Shift+Return inserts a newline at the caret. A local key monitor
-        // (rather than a `.keyboardShortcut`) is needed because SwiftUI's
-        // `axis: .vertical` TextField doesn't newline on Shift+Return on its
-        // own, and a shortcut can't insert at the caret position. The
-        // monitor is scoped to THIS composer by matching the field editor's
-        // delegate placeholder against `placeholder`, so the sidebar search
-        // field (a different NSTextField) keeps plain Return behaviour.
-        .onAppear {
-            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                guard event.keyCode == 36,  // 36 = Return
-                      event.modifierFlags.contains(.shift),
-                      let textView = NSApp.keyWindow?.firstResponder as? NSTextView,
-                      textView.isFieldEditor,
-                      let field = textView.delegate as? NSTextField,
-                      field.placeholderString == Self.placeholder else {
-                    return event
-                }
-                textView.insertText("\n", replacementRange: textView.selectedRange())
-                return nil
-            }
         }
     }
 
@@ -196,26 +172,68 @@ struct MacComposerView: View {
                 .help("Attach a file")
             }
 
-            // Grow-then-scroll input: the field grows with its content
-            // (unbounded lineLimit) inside a ScrollView whose frame tracks
-            // the measured content height up to `maxInputHeight` — past 8
-            // lines the frame stops growing and the content scrolls. The
-            // field editor's caret-tracking (`scrollRangeToVisible`) walks
-            // up to the nearest NSClipView, which is this ScrollView's, so
-            // typing at the end keeps the caret in view. A bare
-            // `lineLimit(1...8)` couldn't do this: on macOS the overflow
-            // was simply unreachable by scrolling (Dan, 2026-07-15).
-            ScrollView(.vertical) {
-                TextField(Self.placeholder, text: $viewModel.input, axis: .vertical)
-                    .lineLimit(1...)
-                    .textFieldStyle(.plain)
-                    .padding(Self.inputVerticalPadding)
-                    .onGeometryChange(for: CGFloat.self) { proxy in
-                        proxy.size.height
-                    } action: { height in
-                        inputContentHeight = height
+            // Grow-then-scroll input: an AppKit `NSTextView` whose text
+            // container tracks the view width (so a live window resize
+            // re-wraps the text — the SwiftUI field editor didn't, Dan
+            // 2026-07-16), inside its own NSScrollView. The frame tracks
+            // the reported content height up to `maxInputHeight` — past 8
+            // lines the frame stops growing and the content scrolls, with
+            // the text view keeping the caret in view as it always does.
+            MacComposerTextEditor(
+                text: $viewModel.input,
+                onHeightChange: { inputContentHeight = $0 },
+                // An ACTIVE history walk owns Up/Down outright — a
+                // recalled single-token slash line (e.g. "/start") pops
+                // the palette open, and letting the palette grab the
+                // arrows there would trap the walk on that entry (bugbot,
+                // PR #41). Otherwise, while the palette shows, Up/Down
+                // move its keyboard highlight; and failing both, Up
+                // recalls older sent messages (terminal-style), but only
+                // from an empty field — else the caret moves through a
+                // multi-line draft.
+                onMoveUp: {
+                    if viewModel.isNavigatingHistory {
+                        viewModel.recallOlder()
+                        return true
                     }
-            }
+                    if viewModel.showPalette, viewModel.paletteItemCount > 0 {
+                        viewModel.paletteMoveUp()
+                        return true
+                    }
+                    if viewModel.input.isEmpty {
+                        viewModel.recallOlder()
+                        return true
+                    }
+                    return false
+                },
+                onMoveDown: {
+                    if viewModel.isNavigatingHistory {
+                        viewModel.recallNewer()
+                        return true
+                    }
+                    if viewModel.showPalette, viewModel.paletteItemCount > 0 {
+                        viewModel.paletteMoveDown()
+                        return true
+                    }
+                    return false
+                },
+                // Plain Return: pick the highlighted palette row, else
+                // send. Normally the send button's
+                // `.keyboardShortcut(.return)` claims Return before the
+                // text view sees it (and its action runs the same
+                // confirm-first check); this handler covers the mic-button
+                // state, where no send shortcut exists. Returning true on
+                // the fall-through swallows the newline a bare Return
+                // would otherwise insert into an unsendable field.
+                onCommit: {
+                    if viewModel.confirmPaletteSelection() { return true }
+                    if viewModel.canSend, !viewModel.isSending {
+                        Task { await viewModel.send() }
+                    }
+                    return true
+                },
+                onPasteAttachments: { claimPasteboardAttachments() }
+            )
                 .frame(height: min(
                     max(inputContentHeight, Self.singleLineInputHeight),
                     Self.maxInputHeight
@@ -227,61 +245,20 @@ struct MacComposerView: View {
                 .background(Color.matronBubbleBot)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .shadow(color: .matronBubbleShadow, radius: 2, y: 1)
-                // An ACTIVE history walk owns Up/Down outright — a
-                // recalled single-token slash line (e.g. "/start") pops
-                // the palette open, and letting the palette grab the
-                // arrows there would trap the walk on that entry (bugbot,
-                // PR #41). Otherwise, while the palette shows, Up/Down
-                // move its keyboard highlight; and failing both, Up
-                // recalls older sent messages (terminal-style), but only
-                // from an empty field — else the caret moves through a
-                // multi-line draft.
-                .onKeyPress(.upArrow) {
-                    if viewModel.isNavigatingHistory {
-                        viewModel.recallOlder()
-                        return .handled
-                    }
-                    if viewModel.showPalette, viewModel.paletteItemCount > 0 {
-                        viewModel.paletteMoveUp()
-                        return .handled
-                    }
+                // NSTextView has no placeholder — draw it in SwiftUI,
+                // aligned with the editor's own text inset.
+                .overlay(alignment: .topLeading) {
                     if viewModel.input.isEmpty {
-                        viewModel.recallOlder()
-                        return .handled
+                        Text(Self.placeholder)
+                            .foregroundStyle(Color(nsColor: .placeholderTextColor))
+                            .padding(MacComposerTextEditor.textInset)
+                            .allowsHitTesting(false)
                     }
-                    return .ignored
-                }
-                .onKeyPress(.downArrow) {
-                    if viewModel.isNavigatingHistory {
-                        viewModel.recallNewer()
-                        return .handled
-                    }
-                    if viewModel.showPalette, viewModel.paletteItemCount > 0 {
-                        viewModel.paletteMoveDown()
-                        return .handled
-                    }
-                    return .ignored
-                }
-                // Return picks the highlighted palette row. Normally the
-                // send button's `.keyboardShortcut(.return)` claims Return
-                // before this key press fires (and its action runs the
-                // same confirm-first check); this handler covers the
-                // mic-button state, where no send shortcut exists — e.g.
-                // the palette pinned open via ⌘K over an empty field.
-                .onKeyPress(.return) {
-                    viewModel.confirmPaletteSelection() ? .handled : .ignored
                 }
                 // Any user edit exits history navigation. The VM guards
                 // its own recall writes so this doesn't fire falsely.
                 .onChange(of: viewModel.input) { _, _ in
                     viewModel.handleInputChange()
-                }
-                // ⌘V of a photo or a file attaches it, the same as a drop
-                // (`ComposerDropDelegate`) or a paperclip pick. Only image and
-                // file-URL content is claimed here, so a text paste still
-                // falls through to the field editor untouched.
-                .onPasteCommand(of: [.image, .fileURL]) { providers in
-                    Task { await attachPasted(providers) }
                 }
 
             // Mic when the field is empty (WhatsApp-style), send once the
@@ -294,7 +271,10 @@ struct MacComposerView: View {
                     Image(systemName: "mic")
                         .font(.title3)
                         .foregroundStyle(.secondary)
-                        .frame(height: Self.singleLineInputHeight)
+                        .frame(
+                            width: Self.trailingAccessoryWidth,
+                            height: Self.singleLineInputHeight
+                        )
                 }
                 .buttonStyle(.plain)
                 .help("Record a voice note")
@@ -313,7 +293,10 @@ struct MacComposerView: View {
                         .foregroundStyle(isSendable ? Color.accentColor : Color.secondary)
                         // Same one-line-tall container as the plus so
                         // the arrow centres against a single-line input.
-                        .frame(height: Self.singleLineInputHeight)
+                        .frame(
+                            width: Self.trailingAccessoryWidth,
+                            height: Self.singleLineInputHeight
+                        )
                 }
                 .buttonStyle(.plain)
                 .disabled(!isSendable || viewModel.isSending)
@@ -372,6 +355,32 @@ struct MacComposerView: View {
     private func stopRecordingAndSend() {
         guard let result = recorder.stop() else { return }
         Task { await viewModel.sendVoiceNote(url: result.url, duration: result.duration) }
+    }
+
+    /// Decides whether a ⌘V in the text editor is an attachment paste.
+    /// Bridges each `NSPasteboardItem` to an `NSItemProvider` so
+    /// `PastedAttachment.classify(_:)` — the shared, probe-verified rule for
+    /// what counts as an attachment vs text — applies unchanged. Items that
+    /// classify as text are left alone; if nothing classifies as an
+    /// attachment this returns `false` and the text view pastes normally.
+    private func claimPasteboardAttachments() -> Bool {
+        let items = NSPasteboard.general.pasteboardItems ?? []
+        let providers = items.map { item in
+            let provider = NSItemProvider()
+            for type in item.types where UTType(type.rawValue) != nil {
+                provider.registerDataRepresentation(
+                    forTypeIdentifier: type.rawValue, visibility: .all
+                ) { completion in
+                    completion(item.data(forType: type), nil)
+                    return nil
+                }
+            }
+            return provider
+        }
+        let attachments = providers.filter { PastedAttachment.classify($0) != .text }
+        guard !attachments.isEmpty else { return false }
+        Task { await attachPasted(attachments) }
+        return true
     }
 
     /// Stages each pasted item to a temporary file and hands the lot to
