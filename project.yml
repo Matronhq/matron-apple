@@ -114,7 +114,13 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: chat.matron.app
-        TARGETED_DEVICE_FAMILY: "1,2"
+        # iPhone-only for v1. The UI is a plain NavigationStack with no
+        # size-class handling, so an iPad would get a stretched iPhone
+        # layout (Guideline 4.0 risk), and claiming iPad also makes App
+        # Store validation demand all four orientations for multitasking
+        # (ITMS-90474). Adding iPad in a later update is trivial; removing
+        # it after release strands iPad users.
+        TARGETED_DEVICE_FAMILY: "1"
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         SUPPORTS_MACCATALYST: NO
         # App icon lives in Matron/Resources/Assets.xcassets (picked up
@@ -398,9 +404,11 @@ targets:
     info:
       path: MatronNSE/Info.plist
       properties:
-        # App Store validation requires the extension's version keys to
-        # exactly match the host app's — both resolve the project-level
-        # MARKETING_VERSION / CURRENT_PROJECT_VERSION, so they can't drift.
+        # App Store validation requires a display name on the extension
+        # (ITMS-90360) and the version keys to exactly match the host
+        # app's — both resolve the project-level MARKETING_VERSION /
+        # CURRENT_PROJECT_VERSION, so they can't drift.
+        CFBundleDisplayName: Matron
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
