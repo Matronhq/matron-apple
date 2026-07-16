@@ -208,8 +208,10 @@ struct MacChatView: View {
 
     /// Minimum detail width to show the child sub-chat pane BESIDE the
     /// parent timeline. Below this the child pane takes over the whole
-    /// detail area with a back chevron (spec §5).
-    private static let sideBySideMinWidth: CGFloat = 900
+    /// detail area with a back chevron (spec §5). Floor is 800 — the sum of
+    /// the two panes' own minimums (420 + 380); going lower would force one
+    /// pane below its min, so 820 keeps a small margin above that.
+    private static let sideBySideMinWidth: CGFloat = 820
 
     var body: some View {
         GeometryReader { geo in
