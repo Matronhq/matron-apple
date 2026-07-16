@@ -139,7 +139,8 @@ final class WireModelsTests: XCTestCase {
         XCTAssertEqual(send["local_id"] as? String, "L1")
 
         let media = try obj(.sendMedia(convoID: "c1", type: "image", blobRef: "b9",
-                                       name: "cat.png", contentType: "image/png", size: 42, localID: "L2"))
+                                       name: "cat.png", contentType: "image/png", size: 42,
+                                       caption: nil, localID: "L2"))
         XCTAssertEqual(media["op"] as? String, "send")
         XCTAssertEqual(media["type"] as? String, "image")
         XCTAssertEqual(media["blob_ref"] as? String, "b9")
@@ -149,6 +150,7 @@ final class WireModelsTests: XCTestCase {
         XCTAssertEqual(mediaPayload?["name"] as? String, "cat.png")
         XCTAssertEqual(mediaPayload?["content_type"] as? String, "image/png")
         XCTAssertEqual(mediaPayload?["size"] as? Int, 42)
+        XCTAssertNil(mediaPayload?["caption"], "a captionless send omits the key rather than sending null")
 
         let reply = try obj(.promptReply(convoID: "c1", targetSeq: 40, choice: "yes", text: nil))
         XCTAssertEqual(reply["target_seq"] as? Int64, 40)
@@ -164,6 +166,37 @@ final class WireModelsTests: XCTestCase {
         let marker = try obj(.readMarker(convoID: "c1", upToSeq: 40))
         XCTAssertEqual(marker["op"] as? String, "read_marker")
         XCTAssertEqual(marker["up_to_seq"] as? Int64, 40)
+    }
+
+    /// JSON-decodes an op's wire form. Mirrors the local helper inside
+    /// `testEncodeClientOps` — hoisted so the media-caption tests below can
+    /// share it.
+    private func encodedObject(_ op: ClientOp) throws -> [String: Any] {
+        try XCTUnwrap(JSONSerialization.jsonObject(with: Data(op.encoded().utf8)) as? [String: Any])
+    }
+
+    /// The caption has to land inside `payload`, because that's the part of
+    /// a media send the server stores verbatim and replays to the bridge.
+    /// Putting it anywhere else would look fine here and silently never
+    /// reach claude.
+    func testEncodeSendMediaCarriesTheCaptionInsideThePayload() throws {
+        let media = try encodedObject(.sendMedia(convoID: "c1", type: "image", blobRef: "b9",
+                                                  name: "cat.png", contentType: "image/png", size: 42,
+                                                  caption: "what breed is this?", localID: "L2"))
+
+        let payload = try XCTUnwrap(media["payload"] as? [String: Any])
+        XCTAssertEqual(payload["caption"] as? String, "what breed is this?")
+    }
+
+    /// An empty caption is the same as no caption — an attachment sent from
+    /// an empty composer must not carry an empty string down to claude.
+    func testEncodeSendMediaTreatsAnEmptyCaptionAsAbsent() throws {
+        let media = try encodedObject(.sendMedia(convoID: "c1", type: "image", blobRef: "b9",
+                                                  name: "cat.png", contentType: "image/png", size: 42,
+                                                  caption: "", localID: "L2"))
+
+        let payload = try XCTUnwrap(media["payload"] as? [String: Any])
+        XCTAssertNil(payload["caption"])
     }
 
     func testDecodeSessionStatusEphemeralFrame() throws {

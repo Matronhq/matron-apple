@@ -63,11 +63,12 @@ extension TimelineItem {
                 "caption": caption ?? NSNull(),
                 "sizeBytes": sizeBytes.map { NSNumber(value: $0) } ?? NSNull(),
             ]
-        case .file(let url, let filename, let sizeBytes):
+        case .file(let url, let filename, let caption, let sizeBytes):
             return [
                 "type": "file",
                 "url": url?.absoluteString ?? NSNull(),
                 "filename": filename,
+                "caption": caption ?? NSNull(),
                 "sizeBytes": sizeBytes.map { NSNumber(value: $0) } ?? NSNull(),
             ]
         case .stateChange(let text):

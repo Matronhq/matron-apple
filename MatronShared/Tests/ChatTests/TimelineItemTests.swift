@@ -11,7 +11,7 @@ final class TimelineItemTests: XCTestCase {
 
     func test_differentKinds_areInequal() {
         let a = TimelineItem.Kind.text(body: "hi", formattedHTML: nil)
-        let b = TimelineItem.Kind.file(url: nil, filename: "x", sizeBytes: nil)
+        let b = TimelineItem.Kind.file(url: nil, filename: "x", caption: nil, sizeBytes: nil)
         XCTAssertNotEqual(a, b)
     }
 
@@ -166,7 +166,7 @@ final class TimelineItemTests: XCTestCase {
             id: "$3",
             sender: "@a:s",
             timestamp: Date(timeIntervalSince1970: 0),
-            kind: .file(url: URL(string: "mxc://server/def"), filename: "report.pdf", sizeBytes: nil),
+            kind: .file(url: URL(string: "mxc://server/def"), filename: "report.pdf", caption: nil, sizeBytes: nil),
             isOwn: false
         )
         let json = item.prettyJSON()

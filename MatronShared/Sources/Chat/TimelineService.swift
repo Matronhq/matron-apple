@@ -42,10 +42,17 @@ public protocol TimelineService: Sendable {
     func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws
 
     /// Sends an image attachment as an `m.image` event.
-    func sendImage(_ data: Data, filename: String, mimeType: String) async throws
+    ///
+    /// `caption` is the composer text the attachment left with. It rides on
+    /// the event itself rather than following as a separate message so the
+    /// agent receives the picture and the sentence explaining it as ONE
+    /// prompt — the bridge's upload annotation puts the caption above the
+    /// file path (see the bridge's `lib/iv-uploads.js`).
+    func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?) async throws
 
-    /// Sends a file attachment as an `m.file` event.
-    func sendFile(_ data: Data, filename: String, mimeType: String) async throws
+    /// Sends a file attachment as an `m.file` event. `caption` behaves
+    /// exactly as it does for `sendImage`.
+    func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?) async throws
 
     /// Asks the SDK to paginate older history. UI subscribes via `items()`.
     /// Returns `true` if the SDK has reached the start of the room's

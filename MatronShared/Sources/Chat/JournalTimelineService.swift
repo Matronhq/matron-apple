@@ -530,24 +530,28 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                                              choice: selectedValues.joined(separator: ", "), text: nil))
     }
 
-    public func sendImage(_ data: Data, filename: String, mimeType: String) async throws {
-        try await sendMedia(data, filename: filename, mimeType: mimeType, type: "image")
+    public func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {
+        try await sendMedia(data, filename: filename, mimeType: mimeType, type: "image", caption: caption)
     }
 
-    public func sendFile(_ data: Data, filename: String, mimeType: String) async throws {
-        try await sendMedia(data, filename: filename, mimeType: mimeType, type: "file")
+    public func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {
+        try await sendMedia(data, filename: filename, mimeType: mimeType, type: "file", caption: caption)
     }
 
     /// Uploads the bytes to `POST /media` and sends the returned `blob_ref`
     /// as a media `send` op. `type` is the wire kind (`"image"` for
     /// `image/*`, `"file"` otherwise) — the caller (`sendImage`/`sendFile`)
     /// has already made that split. The op's `payload` carries the
-    /// filename, content type and byte size alongside the blob ref.
-    private func sendMedia(_ data: Data, filename: String, mimeType: String, type: String) async throws {
+    /// filename, content type, byte size and optional caption alongside the
+    /// blob ref.
+    private func sendMedia(
+        _ data: Data, filename: String, mimeType: String, type: String, caption: String?
+    ) async throws {
         let blobRef = try await api.uploadMedia(data, contentType: mimeType)
         try await engine.sendOp(.sendMedia(convoID: convoID, type: type, blobRef: blobRef,
                                            name: filename, contentType: mimeType,
-                                           size: data.count, localID: UUID().uuidString))
+                                           size: data.count, caption: caption,
+                                           localID: UUID().uuidString))
     }
 
     public func paginateBackward(requestSize: UInt16) async throws -> Bool {

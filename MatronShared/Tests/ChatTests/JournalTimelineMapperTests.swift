@@ -329,4 +329,61 @@ final class JournalTimelineMapperTests: XCTestCase {
         let multi = Array("xx😀".utf8) // 2 + 4 bytes
         XCTAssertEqual(JournalTimelineMapper.toolStreamText(bytes: multi, displayCapBytes: 3), "")
     }
+
+    // MARK: - Media events
+
+    /// Regression: the mapper read `payload["filename"]`, but the key the
+    /// media-send contract defines — and the key both producers actually
+    /// emit — is `name`. So the `?? "file"` fallback fired every time and
+    /// every file in the timeline rendered as a generic "file", whatever it
+    /// was really called.
+    func testFileEventUsesTheNameKeyTheProducersActuallySend() throws {
+        let item = map(event(1, type: "file", payload: [
+            "blob_ref": "b1", "name": "quarterly-report.pdf",
+            "content_type": "application/pdf", "size": 1234,
+        ]))
+
+        guard case let .file(_, filename, _, sizeBytes)? = item?.kind else {
+            return XCTFail("expected a file item, got \(String(describing: item?.kind))")
+        }
+        XCTAssertEqual(filename, "quarterly-report.pdf")
+        XCTAssertEqual(sizeBytes, 1234)
+    }
+
+    /// A file with no name at all still renders, rather than dropping the
+    /// event — the fallback is meant for this case, and only this case.
+    func testFileEventWithoutANameFallsBackToAPlaceholder() throws {
+        let item = map(event(1, type: "file", payload: ["blob_ref": "b1"]))
+
+        guard case let .file(_, filename, _, _)? = item?.kind else {
+            return XCTFail("expected a file item")
+        }
+        XCTAssertEqual(filename, "file")
+    }
+
+    func testImageEventCarriesItsCaption() throws {
+        let item = map(event(1, type: "image", payload: [
+            "blob_ref": "b2", "name": "cat.png",
+            "content_type": "image/png", "caption": "what breed is this?",
+        ]))
+
+        guard case let .image(url, caption, _)? = item?.kind else {
+            return XCTFail("expected an image item")
+        }
+        XCTAssertEqual(caption, "what breed is this?")
+        XCTAssertEqual(url?.absoluteString, "https://chat.example.com/media/b2")
+    }
+
+    /// Captions aren't image-only: a PDF sent with "review this before
+    /// Friday" has to show the sentence too.
+    func testFileEventCarriesItsCaption() throws {
+        let item = map(event(1, type: "file", payload: [
+            "blob_ref": "b3", "name": "contract.pdf", "caption": "review this before Friday",
+        ]))
+
+        guard case let .file(_, _, caption, _)? = item?.kind else {
+            return XCTFail("expected a file item")
+        }
+        XCTAssertEqual(caption, "review this before Friday")
+    }
 }

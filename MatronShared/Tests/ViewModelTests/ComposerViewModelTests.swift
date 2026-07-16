@@ -40,12 +40,17 @@ final class FakeTimelineService: TimelineService, @unchecked Sendable {
     /// Reply target per `sentText` entry (nil for plain sends).
     var sentInReplyTo: [String?] = []
     var sentButtonResponses: [(selectedValues: [String], inReplyTo: String)] = []
-    var sentImages: [(filename: String, mime: String, sizeBytes: Int)] = []
-    var sentFiles: [(filename: String, mime: String, sizeBytes: Int)] = []
+    var sentImages: [(filename: String, mime: String, sizeBytes: Int, caption: String?)] = []
+    var sentFiles: [(filename: String, mime: String, sizeBytes: Int, caption: String?)] = []
     var paginateCalls: Int = 0
     var markReadCalls: Int = 0
     /// When set, the next `sendText`/`sendImage`/`sendFile` call throws this error.
     var nextSendError: Error?
+    /// When set, media sends succeed this many times and every one after
+    /// throws. Lets a test pin a partial batch — the first photo lands,
+    /// the second doesn't — which is the case where the composer has to
+    /// decide whether the caption was delivered.
+    var failSendsAfter: Int?
     /// When non-zero, `sendText`/`sendButtonResponse` suspend this long
     /// before recording — lets AskUserSheetViewModelTests overlap two
     /// `send()` calls to pin the double-submit guard.
@@ -86,13 +91,30 @@ final class FakeTimelineService: TimelineService, @unchecked Sendable {
         if let err = nextSendError { nextSendError = nil; throw err }
         sentButtonResponses.append((selectedValues, promptEventID))
     }
-    func sendImage(_ data: Data, filename: String, mimeType: String) async throws {
-        if let err = nextSendError { nextSendError = nil; throw err }
-        sentImages.append((filename, mimeType, data.count))
+    /// Throws once `failSendsAfter` media sends have already succeeded.
+    private func failIfPastMediaLimit() throws {
+        guard let limit = failSendsAfter, sentImages.count + sentFiles.count >= limit else { return }
+        throw NSError(domain: "test", code: 2)
     }
-    func sendFile(_ data: Data, filename: String, mimeType: String) async throws {
+    /// Media sends honour `sendGate` for the same reason `sendText` does:
+    /// it's the only way to hold a send in flight while the test types into
+    /// the composer, which is the exact race the restore guard exists for.
+    private func awaitGate() async {
+        guard let gate = sendGate else { return }
+        await gate.markStarted()
+        await gate.wait()
+    }
+    func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {
+        await awaitGate()
         if let err = nextSendError { nextSendError = nil; throw err }
-        sentFiles.append((filename, mimeType, data.count))
+        try failIfPastMediaLimit()
+        sentImages.append((filename, mimeType, data.count, caption))
+    }
+    func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {
+        await awaitGate()
+        if let err = nextSendError { nextSendError = nil; throw err }
+        try failIfPastMediaLimit()
+        sentFiles.append((filename, mimeType, data.count, caption))
     }
     func paginateBackward(requestSize: UInt16) async throws -> Bool { paginateCalls += 1; return false }
     func markAsRead() async throws { markReadCalls += 1 }
@@ -360,37 +382,250 @@ final class ComposerViewModelTests: XCTestCase {
         XCTAssertTrue(vm.filteredCommands.contains { $0.trigger == "/start" })
     }
 
-    @MainActor
-    func test_attachFiles_readsURLBytesAndDispatchesToTimeline() async {
-        // Round-3 bugbot finding #4 dropped the security-scoped wrap
-        // from `attachFiles(_:)` itself. Callers (iOS `stageAndAttach`,
-        // iOS `PhotosPicker` temp-staging, Mac `ComposerDropDelegate`)
-        // are responsible for ensuring the URLs they pass don't need a
-        // security-scoped wrap (or have already opened one and read the
-        // bytes into a temp URL). The Mac sandbox grants drop URLs
-        // transparent read access, and both iOS staging paths convert
-        // to a tmp URL before reaching `attachFiles`.
-        //
-        // This test pins the contract: given a non-scoped URL with real
-        // bytes on disk, `attachFiles` reads them and dispatches to the
-        // timeline as the right kind based on MIME.
-        let tmpDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("attach-scope-\(UUID().uuidString)")
-        try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: tmpDir) }
-        let url = tmpDir.appendingPathComponent("hello.txt")
-        try? Data("hi".utf8).write(to: url)
+    // MARK: - Staged attachments
 
+    /// Writes a real file somewhere `attachFiles` can read it, standing in
+    /// for what every attach route hands over: a plain, non-security-scoped
+    /// URL with bytes on disk.
+    private func makeTempFile(
+        named name: String, contents: String = "hi"
+    ) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("attach-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent(name)
+        try Data(contents.utf8).write(to: url)
+        return url
+    }
+
+    /// The behaviour change at the heart of the tray: attaching stages, it
+    /// does NOT send. Before this, a picked photo uploaded instantly and
+    /// reached claude as its own context-free turn.
+    @MainActor
+    func test_attachFiles_stagesTheFile_andSendsNothingYet() async throws {
+        let url = try makeTempFile(named: "hello.txt")
+        let fake = FakeTimelineService()
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
+
+        await vm.attachFiles([url])
+
+        XCTAssertEqual(vm.stagedAttachments.count, 1)
+        XCTAssertEqual(vm.stagedAttachments.first?.filename, "hello.txt")
+        XCTAssertEqual(vm.stagedAttachments.first?.sizeBytes, 2, "the bytes should have been read")
+        XCTAssertTrue(fake.sentFiles.isEmpty, "attaching must not send — that's what send() is for")
+        XCTAssertNil(vm.sendError)
+    }
+
+    /// `attachFiles` copies rather than referencing: the URLs it's handed
+    /// come from security-scoped importers and pasteboard temp files, none
+    /// of which promise to still be readable once the user has finished
+    /// typing. Deleting the original must not break the send.
+    @MainActor
+    func test_stagedAttachment_survivesTheOriginalBeingDeleted() async throws {
+        let url = try makeTempFile(named: "doomed.txt")
         let fake = FakeTimelineService()
         let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
         await vm.attachFiles([url])
 
-        // Outcome: the file was read and dispatched to `sendFile`
-        // (text/plain isn't an image MIME). A no-op (zero bytes, no
-        // dispatch) would mean the read failed silently.
-        XCTAssertEqual(fake.sentFiles.count, 1, "attachFiles should dispatch one file")
-        XCTAssertEqual(fake.sentFiles.first?.sizeBytes, 2, "the 2-byte payload should reach the timeline intact")
-        XCTAssertNil(vm.sendError, "non-scoped tmp URL should round-trip cleanly")
+        try FileManager.default.removeItem(at: url)
+        await vm.send()
+
+        XCTAssertEqual(fake.sentFiles.count, 1, "the staged copy should still have been sendable")
+        XCTAssertEqual(fake.sentFiles.first?.sizeBytes, 2)
+        XCTAssertNil(vm.sendError)
+    }
+
+    /// THE point of the feature: the photo and the sentence about it leave
+    /// together, so claude gets one prompt instead of two.
+    @MainActor
+    func test_send_withAnImageAndText_sendsTheTextAsTheCaption() async throws {
+        let url = try makeTempFile(named: "shot.png")
+        let fake = FakeTimelineService()
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
+        await vm.attachFiles([url])
+        vm.input = "what's wrong with this?"
+
+        await vm.send()
+
+        XCTAssertEqual(fake.sentImages.count, 1, "a .png should go via sendImage")
+        XCTAssertEqual(fake.sentImages.first?.caption, "what's wrong with this?")
+        XCTAssertTrue(fake.sentText.isEmpty, "the text is the caption — it must not ALSO send separately")
+        XCTAssertTrue(vm.input.isEmpty)
+        XCTAssertTrue(vm.stagedAttachments.isEmpty, "a successful send empties the tray")
+    }
+
+    /// An attachment on its own is a complete message.
+    @MainActor
+    func test_send_withAttachmentAndNoText_sendsWithNoCaption() async throws {
+        let url = try makeTempFile(named: "shot.png")
+        let fake = FakeTimelineService()
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
+        await vm.attachFiles([url])
+
+        XCTAssertTrue(vm.canSend, "an attachment alone should enable the send button")
+        await vm.send()
+
+        XCTAssertEqual(fake.sentImages.count, 1)
+        XCTAssertNil(fake.sentImages.first?.caption)
+    }
+
+    /// The caption rides on exactly one attachment: the bridge injects each
+    /// media event as its own prompt, so repeating it would make claude read
+    /// the same sentence once per photo.
+    @MainActor
+    func test_send_withSeveralAttachments_captionsOnlyTheFirst() async throws {
+        let first = try makeTempFile(named: "a.png")
+        let second = try makeTempFile(named: "b.png")
+        let fake = FakeTimelineService()
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
+        await vm.attachFiles([first, second])
+        vm.input = "compare these"
+
+        await vm.send()
+
+        XCTAssertEqual(fake.sentImages.map(\.filename), ["a.png", "b.png"], "order must be preserved")
+        XCTAssertEqual(fake.sentImages.first?.caption, "compare these")
+        XCTAssertNil(fake.sentImages.last?.caption)
+    }
+
+    /// Text with nothing attached still behaves exactly as it always did.
+    @MainActor
+    func test_send_withTextOnly_stillSendsPlainText() async {
+        let fake = FakeTimelineService()
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
+        vm.input = "just talking"
+
+        await vm.send()
+
+        XCTAssertEqual(fake.sentText, ["just talking"])
+        XCTAssertTrue(fake.sentImages.isEmpty)
+    }
+
+    /// An empty composer with an empty tray is still a no-op.
+    @MainActor
+    func test_send_withNothing_doesNothing() async {
+        let fake = FakeTimelineService()
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
+
+        XCTAssertFalse(vm.canSend)
+        await vm.send()
+
+        XCTAssertTrue(fake.sentText.isEmpty)
+        XCTAssertTrue(fake.sentFiles.isEmpty)
+    }
+
+    @MainActor
+    func test_removeAttachment_dropsItFromTheTray() async throws {
+        let first = try makeTempFile(named: "keep.png")
+        let second = try makeTempFile(named: "drop.png")
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: FakeTimelineService(), commands: [])
+        await vm.attachFiles([first, second])
+        let doomed = try XCTUnwrap(vm.stagedAttachments.last)
+
+        vm.removeAttachment(id: doomed.id)
+
+        XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["keep.png"])
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: doomed.url.path),
+            "removing should clean up the staged copy, not leak it into tmp"
+        )
+    }
+
+    /// A failed send must not silently eat the user's photo — the whole
+    /// point of restoring the text (PR #55) applies just as much to the
+    /// attachment it was describing.
+    @MainActor
+    func test_send_whenTheAttachmentFails_keepsItStagedAndRestoresTheText() async throws {
+        let url = try makeTempFile(named: "shot.png")
+        let fake = FakeTimelineService()
+        fake.nextSendError = NSError(domain: "test", code: 1)
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
+        await vm.attachFiles([url])
+        vm.input = "look at this"
+
+        await vm.send()
+
+        XCTAssertNotNil(vm.sendError)
+        XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["shot.png"], "the photo must come back")
+        XCTAssertEqual(vm.input, "look at this", "and so must the words that went with it")
+    }
+
+    /// The asymmetric half of failure handling: if the caption-bearing
+    /// attachment DID send, the text has been delivered. Restoring it would
+    /// leave the user looking at words claude already has, and re-sending
+    /// would duplicate them.
+    @MainActor
+    func test_send_whenALaterAttachmentFails_doesNotRestoreTheDeliveredCaption() async throws {
+        let first = try makeTempFile(named: "a.png")
+        let second = try makeTempFile(named: "b.png")
+        let fake = FakeTimelineService()
+        fake.failSendsAfter = 1
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
+        await vm.attachFiles([first, second])
+        vm.input = "compare these"
+
+        await vm.send()
+
+        XCTAssertEqual(fake.sentImages.map(\.filename), ["a.png"], "only the first should have landed")
+        XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["b.png"], "the unsent one stays staged")
+        XCTAssertTrue(vm.input.isEmpty, "the caption went out with a.png — don't hand it back")
+        XCTAssertNotNil(vm.sendError)
+    }
+
+    /// A late failure must not overwrite a message the user has already
+    /// started typing (bugbot, PR #55) — the same guard, now reached via the
+    /// attachment path.
+    ///
+    /// The send is held open mid-flight rather than failed twice in a row:
+    /// the guard only bites when the failure lands on a composer the user
+    /// has since typed into, and a sequential test would just let the second
+    /// send succeed and prove nothing.
+    @MainActor
+    func test_send_failedAttachment_doesNotOverwriteNewTyping() async throws {
+        let url = try makeTempFile(named: "shot.png")
+        let fake = FakeTimelineService()
+        let gate = SendGate()
+        fake.sendGate = gate
+        fake.nextSendError = NSError(domain: "test", code: 1)
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
+        await vm.attachFiles([url])
+        vm.input = "first message"
+
+        let sending = Task { await vm.send() }
+        while await !gate.isStarted() { await Task.yield() }
+        // The user gives up waiting and starts the next message.
+        vm.input = "second message"
+        await gate.open()
+        await sending.value
+
+        XCTAssertEqual(vm.input, "second message", "a late failure must not clobber new typing")
+        XCTAssertNotNil(vm.sendError, "the failure is still reported via the banner")
+    }
+
+    @MainActor
+    func test_discardAttachments_emptiesTheTrayAndDeletesTheCopies() async throws {
+        let url = try makeTempFile(named: "shot.png")
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: FakeTimelineService(), commands: [])
+        await vm.attachFiles([url])
+        let staged = try XCTUnwrap(vm.stagedAttachments.first)
+
+        vm.discardAttachments()
+
+        XCTAssertTrue(vm.stagedAttachments.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staged.url.path))
+    }
+
+    /// An unreadable URL fails while the user is still looking at the
+    /// picker, rather than after they've composed a message around it.
+    @MainActor
+    func test_attachFiles_unreadableURL_reportsTheErrorAndStagesNothing() async {
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: FakeTimelineService(), commands: [])
+
+        await vm.attachFiles([URL(fileURLWithPath: "/nonexistent/nope.png")])
+
+        XCTAssertTrue(vm.stagedAttachments.isEmpty)
+        XCTAssertNotNil(vm.sendError)
     }
 
     // MARK: - Recent-folder completion
