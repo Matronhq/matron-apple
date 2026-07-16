@@ -868,11 +868,25 @@ struct MacSubChatPane: View {
     /// sibling replaces this pane, and the successor's `.task` can restart
     /// the strip before this instance's `onDisappear` (see `MacChatView`).
     @State private var stripStartedGeneration = 0
+    /// Sticky follow flag, gesture-driven like the main timeline's:
+    /// only a real user drag releases it. Geometry alone must not — the
+    /// viewport can leave the bottom with no gesture while a tool-heavy
+    /// turn streams (2026-07-14 06:41 trace), and a sub-chat is a pure
+    /// streaming viewer, so a geometry-gated anchor would silently stop
+    /// following mid-stream.
+    @State private var isFollowingTail = true
     /// Bottom-edge proximity, same 100pt threshold as the main timeline
-    /// (`MacChatView.nearBottomThresholdPt`). Doubles as the follow flag:
-    /// at the bottom the `.sizeChanges` anchor pins the live tail; scrolled
-    /// away it releases, and the jump button appears instead.
+    /// (`MacChatView.nearBottomThresholdPt`). Re-arms `isFollowingTail`
+    /// when a drag settles at the tail, and gates the follow heal.
     @State private var isNearBottom = true
+    /// Debounced re-pin while following — same rationale as the main
+    /// timeline's heal task: the `.sizeChanges` anchor alone doesn't
+    /// recover once churn has moved the viewport off the bottom.
+    @State private var followHealTask: Task<Void, Never>?
+    /// Captured for the jump button's momentum kill — scrollTo issued
+    /// during a live trackpad fling is overridden by the deceleration
+    /// (see `NativeScrollViewBox`).
+    @State private var nativeScroll = NativeScrollViewBox()
 
     /// proxy.scrollTo target for the jump button — a zero-size sentinel
     /// after the last row (the eager VStack keeps it mounted, so the
@@ -915,25 +929,52 @@ struct MacSubChatPane: View {
                             .frame(height: 1)
                             .id(Self.bottomSentinelID)
                     }
+                    .captureNativeScrollView(into: nativeScroll)
                 }
                 .overlay {
                     if viewModel.rows.isEmpty { TimelineLoadingIndicator() }
                 }
                 .defaultScrollAnchor(.bottom, for: .initialOffset)
                 .defaultScrollAnchor(.bottom, for: .alignment)
-                // Follow the live tail while the user is at the bottom;
-                // release the pin the moment they scroll up to read.
-                .defaultScrollAnchor(isNearBottom ? .bottom : nil, for: .sizeChanges)
+                // Follow the live tail until the user drags away;
+                // a drag that settles back at the bottom re-arms it.
+                .defaultScrollAnchor(isFollowingTail ? .bottom : nil, for: .sizeChanges)
                 .onScrollGeometryChange(for: Bool.self) { geo in
                     geo.visibleRect.maxY >= geo.contentSize.height - 100
                 } action: { _, nearBottom in
                     if isNearBottom != nearBottom { isNearBottom = nearBottom }
+                    // Follow heal: churn can move the viewport off the
+                    // bottom with no user gesture; the anchor alone won't
+                    // pull it back. Debounced like the main timeline's.
+                    if !nearBottom, isFollowingTail {
+                        followHealTask?.cancel()
+                        followHealTask = Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 300_000_000)
+                            guard !Task.isCancelled, isFollowingTail, !isNearBottom else { return }
+                            proxy.scrollTo(Self.bottomSentinelID, anchor: .bottom)
+                        }
+                    } else {
+                        followHealTask?.cancel()
+                        followHealTask = nil
+                    }
                 }
+                // Only a real drag exits follow mode — programmatic
+                // scrolls and layout drift never report `.interacting`.
+                .onUserScrollGesture(
+                    begin: { if isFollowingTail { isFollowingTail = false } },
+                    settle: { if !isFollowingTail, isNearBottom { isFollowingTail = true } }
+                )
                 // Same affordance as the main timeline: visible whenever
                 // the user has left the live tail (Dan, 2026-07-16).
                 .overlay(alignment: .bottomTrailing) {
-                    if !isNearBottom {
+                    if !isFollowingTail {
                         JumpToBottomButton {
+                            isFollowingTail = true
+                            // Kill any in-flight fling first — scrollTo
+                            // issued during deceleration is overridden by
+                            // the deceleration animator (see
+                            // `NativeScrollViewBox`).
+                            nativeScroll.killMomentumAndSnapToBottom()
                             proxy.scrollTo(Self.bottomSentinelID, anchor: .bottom)
                         }
                     }
@@ -951,6 +992,7 @@ struct MacSubChatPane: View {
             await viewModel.paginateBackward()
         }
         .onDisappear {
+            followHealTask?.cancel()
             viewModel.stop(ifGeneration: startedGeneration)
             stripViewModel.stop(ifGeneration: stripStartedGeneration)
         }
