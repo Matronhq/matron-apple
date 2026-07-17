@@ -226,6 +226,27 @@ final class JournalStoreTests: XCTestCase {
         XCTAssertEqual(updated?.first?.id, "c1")
     }
 
+    func testConversationsStreamOrderedByActivityTimeNotJustSeq() async throws {
+        // `conversationsStream()` hand-duplicates the `.order(...)` call in
+        // `conversations(now:)` rather than sharing it, so a future edit to
+        // one query without the other must fail a test — mirrors
+        // `testConversationsOrderedByActivityTimeNotJustSeq` but reads
+        // through the live stream instead of a one-shot fetch.
+        let store = try makeStore()
+        var iterator = store.conversationsStream().makeAsyncIterator()
+        let initial = await iterator.next()
+        XCTAssertEqual(initial?.count, 0)
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "c-old", title: "Old", sessionState: "running",
+                            lastSeq: 100, snippet: "s", createdAt: 0, lastTS: 1_000),
+            ConvoSummaryDTO(id: "c-new", title: "New", sessionState: "running",
+                            lastSeq: 5, snippet: "s", createdAt: 0, lastTS: 2_000),
+        ], headSeq: 100)
+        let updated = await iterator.next()
+        XCTAssertEqual(updated?.map(\.id), ["c-new", "c-old"],
+                       "newer last_activity_ts must sort first in the stream too, even with a lower last_seq")
+    }
+
     func testWipe() throws {
         let store = try makeStore()
         try store.applyJournal(event(1))
