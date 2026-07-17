@@ -110,4 +110,89 @@ final class AppDependenciesTests: XCTestCase {
         XCTAssertTrue(deps.timelineCacheContains(userID: session.userID, roomID: "!room1:s"),
                       "second-oldest must still be cached after a single eviction")
     }
+
+    // MARK: - Sign-out teardown chaining + fresh-login wipe
+
+    /// bugbot "Sign-out leaves local mirror": if the process dies between
+    /// `signOut()`'s synchronous `clearSession()` and its background wipe,
+    /// the previous user's journal SQLite mirror and the still-populated
+    /// shared search index survive on disk — a fresh sign-in would reopen
+    /// them (and a different user could search the previous user's
+    /// messages). `wipeLocalDataForFreshLogin()` empties both before the
+    /// first core opens. A fresh login resyncs from a server snapshot, so
+    /// the clean slate costs nothing.
+    func test_wipeLocalDataForFreshLogin_removesStrayJournalMirror_andEmptiesSearch() async throws {
+        let deps = AppDependencies()
+
+        // A leftover per-user SQLite mirror a crashed teardown left behind.
+        let stray = deps.journalStoreDirectory.appendingPathComponent("@ghost:s.sqlite")
+        try Data("leftover".utf8).write(to: stray)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stray.path))
+
+        // A previous user's message still sitting in the shared search index.
+        let search = try XCTUnwrap(deps.search, "search index must open in the test container")
+        let term = "freshlogin\(UUID().uuidString.prefix(8))"
+        try await search.index(roomID: "!r:s", eventID: "$ghost", sender: "@ghost:s",
+                               timestamp: Date(), body: "secret \(term) payload")
+        let before = try await search.query(term, limit: 10)
+        XCTAssertEqual(before.count, 1)
+
+        await deps.wipeLocalDataForFreshLogin()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stray.path),
+                       "fresh-login wipe must delete leftover journal mirror files")
+        let after = try await search.query(term, limit: 10)
+        XCTAssertEqual(after.count, 0,
+                       "fresh-login wipe must empty the shared search index")
+    }
+
+    /// bugbot "Teardown await drops newer job": `awaitPendingTeardown()`
+    /// must block until the sign-out teardown actually finishes — observed
+    /// here via the search wipe that runs as the last step of the teardown
+    /// task. If the await returned early (or the sign-in path skipped it),
+    /// the index would still hold the prior user's message.
+    ///
+    /// NOTE: the suspension-race that motivates the generation-counter loop
+    /// (a `signOut()` chaining a newer task *while* `awaitPendingTeardown()`
+    /// is suspended) is not deterministically reproducible without a
+    /// teardown gate seam that `AppDependencies` doesn't expose — see the
+    /// task report. This pins the await-actually-waits invariant.
+    func test_awaitPendingTeardown_waitsForSignOutSearchWipe() async throws {
+        let deps = AppDependencies()
+        let search = try XCTUnwrap(deps.search)
+        let term = "teardown\(UUID().uuidString.prefix(8))"
+        try await search.index(roomID: "!r:s", eventID: "$1", sender: "@a:s",
+                               timestamp: Date(), body: "\(term) here")
+        let before = try await search.query(term, limit: 10)
+        XCTAssertEqual(before.count, 1)
+
+        deps.signOut()
+        await deps.awaitPendingTeardown()
+
+        let after = try await search.query(term, limit: 10)
+        XCTAssertEqual(after.count, 0,
+                       "awaitPendingTeardown must not return before the teardown's search wipe completes")
+    }
+
+    /// bugbot "Sign-out drops prior teardown job": two `signOut()`s with no
+    /// await between them. The second must chain onto the first
+    /// (`await previous?.value`) rather than overwrite the stored task, and
+    /// `awaitPendingTeardown()` must loop until the newest chained task
+    /// finishes. Both teardowns running to completion is observed via the
+    /// emptied search index.
+    func test_consecutiveSignOuts_bothTeardownsCompleteUnderAwait() async throws {
+        let deps = AppDependencies()
+        let search = try XCTUnwrap(deps.search)
+        let term = "chain\(UUID().uuidString.prefix(8))"
+        try await search.index(roomID: "!r:s", eventID: "$1", sender: "@a:s",
+                               timestamp: Date(), body: "\(term) one")
+
+        deps.signOut()
+        deps.signOut()
+        await deps.awaitPendingTeardown()
+
+        let after = try await search.query(term, limit: 10)
+        XCTAssertEqual(after.count, 0,
+                       "both chained teardowns must complete before await returns")
+    }
 }

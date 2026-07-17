@@ -85,5 +85,72 @@ final class MacAppDependenciesTests: XCTestCase {
         XCTAssertFalse(deps.timelineCacheContains(userID: session.userID, roomID: "!room0:s"))
         XCTAssertTrue(deps.timelineCacheContains(userID: session.userID, roomID: "!room1:s"))
     }
+
+    // MARK: - Sign-out teardown chaining + fresh-login wipe
+
+    /// Mac mirror of `AppDependenciesTests`
+    /// `.test_wipeLocalDataForFreshLogin_removesStrayJournalMirror_andEmptiesSearch`.
+    /// bugbot "Sign-out leaves local mirror" — see the iOS test for the
+    /// full rationale.
+    func test_wipeLocalDataForFreshLogin_removesStrayJournalMirror_andEmptiesSearch() async throws {
+        let deps = AppDependencies()
+
+        let stray = deps.journalStoreDirectory.appendingPathComponent("@ghost:s.sqlite")
+        try Data("leftover".utf8).write(to: stray)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stray.path))
+
+        let search = try XCTUnwrap(deps.search, "search index must open in the test container")
+        let term = "freshlogin\(UUID().uuidString.prefix(8))"
+        try await search.index(roomID: "!r:s", eventID: "$ghost", sender: "@ghost:s",
+                               timestamp: Date(), body: "secret \(term) payload")
+        let before = try await search.query(term, limit: 10)
+        XCTAssertEqual(before.count, 1)
+
+        await deps.wipeLocalDataForFreshLogin()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stray.path),
+                       "fresh-login wipe must delete leftover journal mirror files")
+        let after = try await search.query(term, limit: 10)
+        XCTAssertEqual(after.count, 0,
+                       "fresh-login wipe must empty the shared search index")
+    }
+
+    /// Mac mirror of the iOS `test_awaitPendingTeardown_waitsForSignOutSearchWipe`.
+    /// bugbot "Teardown await drops newer job". Suspension-race determinism
+    /// isn't reachable without a teardown gate seam — see the task report.
+    func test_awaitPendingTeardown_waitsForSignOutSearchWipe() async throws {
+        let deps = AppDependencies()
+        let search = try XCTUnwrap(deps.search)
+        let term = "teardown\(UUID().uuidString.prefix(8))"
+        try await search.index(roomID: "!r:s", eventID: "$1", sender: "@a:s",
+                               timestamp: Date(), body: "\(term) here")
+        let before = try await search.query(term, limit: 10)
+        XCTAssertEqual(before.count, 1)
+
+        deps.signOut()
+        await deps.awaitPendingTeardown()
+
+        let after = try await search.query(term, limit: 10)
+        XCTAssertEqual(after.count, 0,
+                       "awaitPendingTeardown must not return before the teardown's search wipe completes")
+    }
+
+    /// Mac mirror of the iOS `test_consecutiveSignOuts_bothTeardownsCompleteUnderAwait`.
+    /// bugbot "Sign-out drops prior teardown job".
+    func test_consecutiveSignOuts_bothTeardownsCompleteUnderAwait() async throws {
+        let deps = AppDependencies()
+        let search = try XCTUnwrap(deps.search)
+        let term = "chain\(UUID().uuidString.prefix(8))"
+        try await search.index(roomID: "!r:s", eventID: "$1", sender: "@a:s",
+                               timestamp: Date(), body: "\(term) one")
+
+        deps.signOut()
+        deps.signOut()
+        await deps.awaitPendingTeardown()
+
+        let after = try await search.query(term, limit: 10)
+        XCTAssertEqual(after.count, 0,
+                       "both chained teardowns must complete before await returns")
+    }
 }
 #endif
