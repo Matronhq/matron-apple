@@ -379,10 +379,16 @@ private struct ComposerErrorBanner: View {
 
     var body: some View {
         HStack(spacing: 8) {
+            // No `.accessibilityElement(children: .combine)` here: combining
+            // would merge this text into the dismiss button's element,
+            // leaving the button's own "Dismiss error" label unreachable
+            // and dismiss unverifiable via VoiceOver. Each control stays an
+            // independent accessibility element instead.
             Text(message)
                 .font(.callout)
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityLabel("Composer error: \(message)")
             Button(action: onDismiss) {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundStyle(.white)
@@ -393,7 +399,5 @@ private struct ComposerErrorBanner: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(Color.red.opacity(0.9))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Composer error: \(message)")
     }
 }

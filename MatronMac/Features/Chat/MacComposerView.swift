@@ -73,6 +73,20 @@ struct MacComposerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // Send / attachment / voice-note failures all funnel into
+            // `sendError` (see `ComposerViewModel.reportAttachmentError`),
+            // but until now nothing rendered it — a failed send left the
+            // user staring at a composer that silently did nothing. Sits
+            // above BOTH the recording bar and the normal composer bar
+            // (not nested inside `composerBar`) so an undismissed error
+            // stays visible even while a voice recording is in progress,
+            // matching iOS `ComposerView`, whose banner is a sibling of
+            // that same recording/composerBar branch.
+            if let sendError = viewModel.sendError {
+                MacComposerErrorBanner(message: sendError) {
+                    viewModel.dismissSendError()
+                }
+            }
             if case let .recording(start) = recorder.state {
                 recordingBar(start: start)
             } else {
@@ -141,16 +155,6 @@ struct MacComposerView: View {
     /// `mediaAvailable`, mirroring iOS `ComposerView`.
     private var composerBar: some View {
         VStack(spacing: 0) {
-            // Send / attachment / voice-note failures all funnel into
-            // `sendError` (see `ComposerViewModel.reportAttachmentError`),
-            // but until now nothing rendered it — a failed send left the
-            // user staring at a composer that silently did nothing. Sits
-            // above the tray/input, same slot the iOS composer uses.
-            if let sendError = viewModel.sendError {
-                MacComposerErrorBanner(message: sendError) {
-                    viewModel.dismissSendError()
-                }
-            }
             // Above the input, so what's about to be sent sits next to the
             // words being written about it. Same shared tray as iOS.
             AttachmentTray(attachments: viewModel.stagedAttachments) { id in
@@ -453,21 +457,26 @@ private struct MacComposerErrorBanner: View {
 
     var body: some View {
         HStack(spacing: 8) {
+            // No `.accessibilityElement(children: .combine)` here: combining
+            // would merge this text into the dismiss button's element,
+            // leaving the button's own "Dismiss error" label unreachable
+            // and dismiss unverifiable via accessibility navigation. Each
+            // control stays an independent accessibility element instead.
             Text(message)
                 .font(.callout)
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityLabel("Composer error: \(message)")
             Button(action: onDismiss) {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundStyle(.white)
             }
             .buttonStyle(.plain)
             .help("Dismiss error")
+            .accessibilityLabel("Dismiss error")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(Color.red.opacity(0.9))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Composer error: \(message)")
     }
 }
