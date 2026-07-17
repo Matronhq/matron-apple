@@ -73,6 +73,20 @@ struct MacComposerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // Send / attachment / voice-note failures all funnel into
+            // `sendError` (see `ComposerViewModel.reportAttachmentError`),
+            // but until now nothing rendered it — a failed send left the
+            // user staring at a composer that silently did nothing. Sits
+            // above BOTH the recording bar and the normal composer bar
+            // (not nested inside `composerBar`) so an undismissed error
+            // stays visible even while a voice recording is in progress,
+            // matching iOS `ComposerView`, whose banner is a sibling of
+            // that same recording/composerBar branch.
+            if let sendError = viewModel.sendError {
+                MacComposerErrorBanner(message: sendError) {
+                    viewModel.dismissSendError()
+                }
+            }
             if case let .recording(start) = recorder.state {
                 recordingBar(start: start)
             } else {
@@ -426,5 +440,43 @@ struct MacComposerView: View {
         guard panel.runModal() == .OK else { return }
         let urls = panel.urls
         Task { await viewModel.attachFiles(urls) }
+    }
+}
+
+/// Dismissible strip for `ComposerViewModel.sendError`: surfaces send,
+/// attachment, and voice-note failures that previously had a recording
+/// spot (`sendError`) but nothing rendering it. Styled after the chat
+/// timeline's own error banner (`MacChatView`'s `viewModel.error` strip)
+/// so the two read as the same "the app is telling you something"
+/// vocabulary, but sits directly above the tray/input rather than the
+/// timeline, and adds a tap-to-dismiss control the timeline banner
+/// doesn't need (that one clears itself when the stream recovers).
+private struct MacComposerErrorBanner: View {
+    let message: String
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            // No `.accessibilityElement(children: .combine)` here: combining
+            // would merge this text into the dismiss button's element,
+            // leaving the button's own "Dismiss error" label unreachable
+            // and dismiss unverifiable via accessibility navigation. Each
+            // control stays an independent accessibility element instead.
+            Text(message)
+                .font(.callout)
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityLabel("Composer error: \(message)")
+            Button(action: onDismiss) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss error")
+            .accessibilityLabel("Dismiss error")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.red.opacity(0.9))
     }
 }
