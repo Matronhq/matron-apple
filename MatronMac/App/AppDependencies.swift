@@ -222,7 +222,18 @@ final class AppDependencies {
     /// new session). Mirrors iOS `AppDependencies.signOut()`.
     func signOut() {
         let oldCores = Array(cores.values)
+        // Chain onto any previous teardown: `sign out A → re-login →
+        // sign out B` overwrote `teardownTask` while A's endSync/wipe on
+        // A's cores might still be running, and `awaitPendingTeardown()`
+        // would then wait only for B — a new sign-in could race A's still-
+        // running wipe on the same on-disk SQLite (bugbot "Sign-out drops
+        // prior teardown job"). Awaiting `previous` first serialises every
+        // teardown. The bumped generation lets `awaitPendingTeardown()`
+        // notice a task chained while it was suspended. Mirrors iOS.
+        let previous = teardownTask
+        teardownGeneration &+= 1
         teardownTask = Task { [search] in
+            await previous?.value
             for core in oldCores {
                 await Self.withTimeout(seconds: 5) { try? await core.api.unregisterPush() }
                 await core.engine.endSync()          // stop the writer first…
@@ -238,16 +249,69 @@ final class AppDependencies {
         try? auth.clearSession()
     }
 
-    /// In-flight sign-out teardown, if any. See `signOut()`.
+    /// In-flight (or most-recent) sign-out teardown, if any. See `signOut()`.
+    /// Deliberately held even after completion (never nilled out — see
+    /// `awaitPendingTeardown()`); awaiting an already-finished task is
+    /// instantly satisfied, so the retained value is not a leak.
     private var teardownTask: Task<Void, Never>?
+
+    /// Monotonically increasing generation stamped each time `signOut()`
+    /// stores a `teardownTask`. `awaitPendingTeardown()` reads it before and
+    /// after its `await` to tell whether a newer teardown was chained on
+    /// while it was suspended — `Task` is a value type, so identity can't be
+    /// compared with `===`; a strictly-increasing counter is the identity.
+    /// `AppDependencies` is `@MainActor`, so counter reads/writes are
+    /// serialised; the only interleaving is across the `await` suspension.
+    private var teardownGeneration = 0
 
     /// Blocks until any pending sign-out teardown finishes. The sign-in
     /// path calls this before publishing the new session, so no new
     /// journal core can race the old one's endSync/wipe.
+    ///
+    /// Loops so that a `signOut()` chaining a newer teardown *while this is
+    /// suspended* is also waited for. The stored task is read-only here —
+    /// nulling it after the `await` (as an earlier version did) could drop a
+    /// just-chained teardown, letting a later sign-in skip its wipe (bugbot
+    /// "Teardown await drops newer job").
     func awaitPendingTeardown() async {
-        await teardownTask?.value
-        teardownTask = nil
+        while true {
+            let generation = teardownGeneration
+            guard let task = teardownTask else { return }
+            await task.value
+            // No newer teardown was stored while we awaited → done.
+            if teardownGeneration == generation { return }
+        }
     }
+
+    /// Removes every on-disk journal mirror plus the shared search index.
+    /// Fresh interactive sign-in calls this (after `awaitPendingTeardown()`,
+    /// before the first core opens): if the process died between
+    /// `signOut()`'s synchronous `clearSession()` and its background wipe,
+    /// the previous user's per-user SQLite mirror and the still-populated
+    /// shared search index survive on disk — the next fresh sign-in would
+    /// reopen them, and (worse) a different user could search the previous
+    /// user's messages (bugbot "Sign-out leaves local mirror"). A fresh
+    /// login resyncs from a server snapshot, so the clean slate costs
+    /// nothing. Session *restore* at launch must NOT call this — a restored
+    /// session keeps its mirror. Mirrors iOS.
+    ///
+    /// File removal runs on the main actor on purpose: the set is tiny (a
+    /// few SQLite files) and this runs once, before the UI publishes the
+    /// session — matching the class's existing on-main file work.
+    func wipeLocalDataForFreshLogin() async {
+        let fm = FileManager.default
+        if let files = try? fm.contentsOfDirectory(at: journalDirectory, includingPropertiesForKeys: nil) {
+            for file in files {
+                try? fm.removeItem(at: file)
+            }
+        }
+        try? await search?.wipe()
+    }
+
+    /// Test seam: the on-disk directory holding per-user journal SQLite
+    /// mirrors. `wipeLocalDataForFreshLogin()` empties it; the test asserts
+    /// a stray file placed here is gone afterwards.
+    var journalStoreDirectory: URL { journalDirectory }
 
     /// Runs `operation`, abandoning the wait (not the work) after `seconds`.
     /// Used to bound best-effort network calls inside teardown.

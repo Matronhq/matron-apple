@@ -116,9 +116,16 @@ struct MatronMacApp: App {
                             // Gate the new session on any in-flight sign-out
                             // teardown so a fast re-login can't open a second
                             // writer against the old session's store (bugbot
-                            // "Sign-out races fast re-login"). Mirrors iOS.
+                            // "Sign-out races fast re-login"). Then clear any
+                            // mirror + search index a process death left on
+                            // disk before the background wipe finished
+                            // (bugbot "Sign-out leaves local mirror") — a
+                            // fresh login resyncs from a server snapshot, so
+                            // the clean slate costs nothing. Restore skips
+                            // this. Mirrors iOS.
                             Task {
                                 await dependencies.awaitPendingTeardown()
+                                await dependencies.wipeLocalDataForFreshLogin()
                                 self.session = session
                             }
                         }
