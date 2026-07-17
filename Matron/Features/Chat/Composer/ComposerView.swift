@@ -57,6 +57,18 @@ struct ComposerView: View {
                 .padding(.bottom, 4)
             }
 
+            // Send / attachment / voice-note failures all funnel into
+            // `sendError` (see `ComposerViewModel.reportAttachmentError`),
+            // but until now nothing rendered it — a failed send left the
+            // user staring at a composer that silently did nothing. Sits
+            // above the input, same as the palette, so it doesn't shift
+            // the rest of the chat.
+            if let sendError = viewModel.sendError {
+                ComposerErrorBanner(message: sendError) {
+                    viewModel.dismissSendError()
+                }
+            }
+
             if case let .recording(start) = recorder.state {
                 recordingBar(start: start)
             } else {
@@ -350,5 +362,38 @@ struct ComposerView: View {
         if !staged.isEmpty {
             await viewModel.attachFiles(staged)
         }
+    }
+}
+
+/// Dismissible strip for `ComposerViewModel.sendError`: surfaces send,
+/// attachment, and voice-note failures that previously had a recording
+/// spot (`sendError`) but nothing rendering it. Styled after the chat
+/// timeline's own error banner (`ChatView`'s `viewModel.error` strip) so
+/// the two read as the same "the app is telling you something" vocabulary,
+/// but sits directly above the input rather than the timeline, and adds a
+/// tap-to-dismiss control the timeline banner doesn't need (that one
+/// clears itself when the stream recovers).
+private struct ComposerErrorBanner: View {
+    let message: String
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(message)
+                .font(.callout)
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button(action: onDismiss) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss error")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.red.opacity(0.9))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Composer error: \(message)")
     }
 }

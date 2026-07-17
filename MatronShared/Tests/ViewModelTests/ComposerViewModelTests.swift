@@ -328,6 +328,18 @@ final class ComposerViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_dismissSendError_clearsSendError() {
+        // Lets the composer banner (which renders `sendError`) offer a
+        // dismiss affordance without reaching around the `private(set)`
+        // invariant — same shape as `reportAttachmentError`'s write path.
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: FakeTimelineService(), commands: [])
+        vm.reportAttachmentError("boom")
+        XCTAssertEqual(vm.sendError, "boom")
+        vm.dismissSendError()
+        XCTAssertNil(vm.sendError)
+    }
+
+    @MainActor
     func test_sendVoiceNote_sendsAudioFileAndDeletesTemp() async {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("voice-\(UUID().uuidString).m4a")
