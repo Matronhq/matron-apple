@@ -265,6 +265,9 @@ final class AppDependencies {
     }
 
     /// In-flight (or most-recent) sign-out teardown, if any. See `signOut()`.
+    /// Deliberately held even after completion (never nilled out — see
+    /// `awaitPendingTeardown()`); awaiting an already-finished task is
+    /// instantly satisfied, so the retained value is not a leak.
     private var teardownTask: Task<Void, Never>?
 
     /// Monotonically increasing generation stamped each time `signOut()`
@@ -306,6 +309,10 @@ final class AppDependencies {
     /// login resyncs from a server snapshot, so the clean slate costs
     /// nothing. Session *restore* at launch must NOT call this — a restored
     /// session keeps its mirror.
+    ///
+    /// File removal runs on the main actor on purpose: the set is tiny (a
+    /// few SQLite files) and this runs once, before the UI publishes the
+    /// session — matching the class's existing on-main file work.
     func wipeLocalDataForFreshLogin() async {
         let fm = FileManager.default
         if let files = try? fm.contentsOfDirectory(at: journalDirectory, includingPropertiesForKeys: nil) {

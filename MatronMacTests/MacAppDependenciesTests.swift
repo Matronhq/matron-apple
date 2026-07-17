@@ -136,7 +136,9 @@ final class MacAppDependenciesTests: XCTestCase {
     }
 
     /// Mac mirror of the iOS `test_consecutiveSignOuts_bothTeardownsCompleteUnderAwait`.
-    /// bugbot "Sign-out drops prior teardown job".
+    /// Pins only that the await drains the latest chained teardown — see the
+    /// iOS doc comment for why the drop-prior-teardown interleaving itself
+    /// isn't deterministically coverable without an injection seam.
     func test_consecutiveSignOuts_bothTeardownsCompleteUnderAwait() async throws {
         let deps = AppDependencies()
         let search = try XCTUnwrap(deps.search)

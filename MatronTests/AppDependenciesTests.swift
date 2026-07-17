@@ -174,12 +174,14 @@ final class AppDependenciesTests: XCTestCase {
                        "awaitPendingTeardown must not return before the teardown's search wipe completes")
     }
 
-    /// bugbot "Sign-out drops prior teardown job": two `signOut()`s with no
-    /// await between them. The second must chain onto the first
-    /// (`await previous?.value`) rather than overwrite the stored task, and
-    /// `awaitPendingTeardown()` must loop until the newest chained task
-    /// finishes. Both teardowns running to completion is observed via the
-    /// emptied search index.
+    /// Two `signOut()`s with no await between them: pins only that
+    /// `awaitPendingTeardown()` drains the *latest* chained teardown (the
+    /// emptied search index is produced by the second teardown's wipe alone,
+    /// so this would pass even if the first task were dropped rather than
+    /// chained). The bugbot "Sign-out drops prior teardown job" and
+    /// "Teardown await drops newer job" interleavings are not deterministically
+    /// coverable here: `AppDependencies()` exposes no injection seam that could
+    /// hold teardown #1 mid-flight while a second sign-out races the await.
     func test_consecutiveSignOuts_bothTeardownsCompleteUnderAwait() async throws {
         let deps = AppDependencies()
         let search = try XCTUnwrap(deps.search)
