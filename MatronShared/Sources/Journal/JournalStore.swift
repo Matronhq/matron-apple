@@ -428,7 +428,15 @@ public final class JournalStore: @unchecked Sendable {
                 // yet learned the linkage (parent_convo_id still NULL), which
                 // is correct: an unlinked row is treated as top-level.
                 .filter(Column("parent_convo_id") == nil)
-                .order(Column("last_seq").desc)
+                // Ordered by `last_activity_ts` (bumped only for message
+                // traffic, see `applyJournal`) rather than `last_seq` alone
+                // (bumped for every frame incl. read_marker/session_status)
+                // so a bookkeeping frame from another device can't float a
+                // stale chat to the top. `last_seq` is only a tiebreak
+                // (e.g. rows sharing a null `last_activity_ts`); SQLite
+                // sorts NULL last under DESC, so rows that never got an
+                // activity timestamp fall to the bottom on their own.
+                .order(Column("last_activity_ts").desc, Column("last_seq").desc)
                 .fetchAll(db)
             return try records.map { try Self.applyReadTimeSnippetTTL($0, db: db, now: now) }
         }
@@ -565,7 +573,11 @@ public final class JournalStore: @unchecked Sendable {
             let records = try ConversationRecord
                 .filter(Column("hidden") == false)
                 .filter(Column("parent_convo_id") == nil)  // children live in the parent strip, not the list
-                .order(Column("last_seq").desc)
+                // See the matching comment on `conversations(now:)`:
+                // `last_activity_ts` primary, `last_seq` tiebreak — a
+                // bookkeeping-only frame must not float a stale chat to
+                // the top just because it bumped `last_seq`.
+                .order(Column("last_activity_ts").desc, Column("last_seq").desc)
                 .fetchAll(db)
             // Fresh `Date()` per re-run: the tracking closure re-executes on
             // every DB change the store observes, so a subscriber that's
