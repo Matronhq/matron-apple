@@ -202,7 +202,24 @@ struct SignInView: View {
                 ProgressView()
                 Text("Waiting for approval on your other device…")
             }
-            Button("Cancel", role: .cancel) { linkViewModel.cancel() }
+            Button("Cancel", role: .cancel) {
+                linkViewModel.cancel()
+                // The rendezvous VM parks in .connecting once it hands off
+                // to linkViewModel (RendezvousSignInViewModel.startPolling);
+                // cancel() above only resets linkViewModel, so without this
+                // the Show tab re-renders a permanently-spinning "Connecting
+                // to <host>…" with no recovery. Only reset+restart when the
+                // rendezvous VM is actually stuck there (never true for a
+                // Scan-tab camera cancel — switching off the Show tab already
+                // stops it via the qrTab onChange below — nor for a manual-
+                // code cancel that leaves an unrelated live Show-tab QR
+                // alone), and only restart it if Show is still the active
+                // tab, so a Scan-tab cancel never spuriously starts polling.
+                if case .connecting = rendezvousViewModel.phase {
+                    rendezvousViewModel.stop()
+                    if qrTab == .show { Task { await rendezvousViewModel.start() } }
+                }
+            }
         } footer: {
             Text("Approve the request on your signed-in device to finish.")
         }
