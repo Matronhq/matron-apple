@@ -112,6 +112,7 @@ struct MatronMacApp: App {
                 } else {
                     MacSignInView(
                         viewModel: SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac"),
+                        linkViewModel: LinkSignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac"),
                         onSignedIn: { session in
                             // Gate the new session on any in-flight sign-out
                             // teardown so a fast re-login can't open a second
