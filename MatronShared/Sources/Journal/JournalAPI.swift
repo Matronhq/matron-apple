@@ -18,8 +18,9 @@ public enum JournalAPIError: Error, Equatable, Sendable {
     case unauthenticated
     case forbidden
     case notFound
-    /// 409 — currently only `POST /pair/approve`: the code was already
-    /// approved (exactly-once semantics).
+    /// 409 — exactly-once semantics: `pair/approve` (already approved),
+    /// `link/claim` (code already claimed), `link/approve` (nothing to
+    /// approve yet, or already resolved).
     case conflict
     case http(status: Int, message: String)
     case transport(String)
@@ -70,6 +71,64 @@ public struct PairPreview: Equatable, Sendable {
         self.requesterIP = requesterIP
         self.expiresIn = expiresIn
     }
+}
+
+/// `POST /link/start` — a fresh device-link session for QR sign-in.
+public struct LinkStart: Equatable, Sendable {
+    /// Display form (`XXXX-XXXX`) — rendered under the QR and embedded in
+    /// the payload verbatim.
+    public let code: String
+    public let expiresIn: Int
+
+    public init(code: String, expiresIn: Int) {
+        self.code = code
+        self.expiresIn = expiresIn
+    }
+}
+
+/// `POST /link/status` — what the show side's poll sees.
+public enum LinkStatus: Equatable, Sendable {
+    case waiting(expiresIn: Int)
+    /// Someone claimed the code: show the approve card. The name is
+    /// claimant-supplied; the IP is what the server saw — both go on
+    /// screen before the user may approve (anti-phish, like PairPreview).
+    case claimed(deviceName: String, requesterIP: String, expiresIn: Int)
+}
+
+/// `POST /link/claim` — the claimant's secret poll credential.
+public struct LinkClaim: Equatable, Sendable {
+    public let claimToken: String
+    public let expiresIn: Int
+
+    public init(claimToken: String, expiresIn: Int) {
+        self.claimToken = claimToken
+        self.expiresIn = expiresIn
+    }
+}
+
+/// The identity minted at the approved `link/poll`. `username` exists
+/// because the apps store the typed username as `UserSession.userID` and a
+/// link claimant never types one.
+public struct LinkApproval: Equatable, Sendable {
+    public let token: String
+    public let deviceID: Int64
+    public let userID: Int64
+    public let username: String
+
+    public init(token: String, deviceID: Int64, userID: Int64, username: String) {
+        self.token = token
+        self.deviceID = deviceID
+        self.userID = userID
+        self.username = username
+    }
+}
+
+/// `POST /link/poll` — pending until the starter acts; `denied` and
+/// `approved` each arrive at most once (the server deletes the session).
+public enum LinkPollResult: Equatable, Sendable {
+    case pending
+    case denied
+    case approved(LinkApproval)
 }
 
 /// Thin HTTP surface of the journal server: login, snapshot, pagination,
@@ -222,6 +281,80 @@ public actor JournalAPI {
     public func pairApprove(code: String, agentName: String) async throws {
         _ = try await request(path: "/pair/approve", method: "POST",
                               body: ["pair_code": code, "agent_name": agentName])
+    }
+
+    // MARK: Device link (QR sign-in)
+
+    /// Starts (or replaces) this device's link session. `.notFound` means
+    /// the server predates /link/* — callers surface "doesn't support
+    /// device linking yet".
+    public func linkStart() async throws -> LinkStart {
+        let obj = try await request(path: "/link/start", method: "POST", body: [:])
+        guard let code = obj["link_code"] as? String,
+              let expiresIn = (obj["expires_in"] as? NSNumber)?.intValue
+        else { throw JournalAPIError.transport("malformed link start response") }
+        return LinkStart(code: code, expiresIn: expiresIn)
+    }
+
+    /// This device's active session state. `.notFound` = no active session
+    /// (expired or resolved) — the show side regenerates on it.
+    public func linkStatus() async throws -> LinkStatus {
+        let obj = try await request(path: "/link/status", method: "POST", body: [:])
+        let expiresIn = (obj["expires_in"] as? NSNumber)?.intValue ?? 0
+        switch obj["status"] as? String {
+        case "waiting":
+            return .waiting(expiresIn: expiresIn)
+        case "claimed":
+            guard let name = obj["device_name"] as? String,
+                  let ip = obj["requester_ip"] as? String
+            else { throw JournalAPIError.transport("malformed link status response") }
+            return .claimed(deviceName: name, requesterIP: ip, expiresIn: expiresIn)
+        default:
+            throw JournalAPIError.transport("malformed link status response")
+        }
+    }
+
+    /// Approves this device's claimed session. `.conflict` = nothing
+    /// claimed yet or already resolved; `.notFound` = expired/gone.
+    public func linkApprove(code: String) async throws {
+        _ = try await request(path: "/link/approve", method: "POST", body: ["link_code": code])
+    }
+
+    public func linkDeny(code: String) async throws {
+        _ = try await request(path: "/link/deny", method: "POST", body: ["link_code": code])
+    }
+
+    /// Claimant side: claims a scanned/typed code. Unauthenticated — this
+    /// API instance belongs to the *target* server and has no token yet.
+    /// `.conflict` = code already used; `.notFound` = unknown/expired.
+    public func linkClaim(code: String, deviceName: String) async throws -> LinkClaim {
+        let obj = try await request(path: "/link/claim", method: "POST",
+                                    body: ["link_code": code, "device_name": deviceName],
+                                    authenticated: false)
+        guard let token = obj["claim_token"] as? String,
+              let expiresIn = (obj["expires_in"] as? NSNumber)?.intValue
+        else { throw JournalAPIError.transport("malformed link claim response") }
+        return LinkClaim(claimToken: token, expiresIn: expiresIn)
+    }
+
+    /// Claimant poll loop body. `.notFound` after a successful claim means
+    /// the session expired (or was replaced) — surface "Sign-in expired".
+    public func linkPoll(claimToken: String) async throws -> LinkPollResult {
+        let obj = try await request(path: "/link/poll", method: "POST",
+                                    body: ["claim_token": claimToken], authenticated: false)
+        switch obj["status"] as? String {
+        case "pending": return .pending
+        case "denied": return .denied
+        case "approved":
+            guard let token = obj["token"] as? String,
+                  let deviceID = (obj["device_id"] as? NSNumber)?.int64Value,
+                  let userID = (obj["user_id"] as? NSNumber)?.int64Value,
+                  let username = obj["username"] as? String
+            else { throw JournalAPIError.transport("malformed link poll response") }
+            return .approved(LinkApproval(token: token, deviceID: deviceID, userID: userID, username: username))
+        default:
+            throw JournalAPIError.transport("malformed link poll response")
+        }
     }
 
     public enum PushEnvironment: String, Sendable {

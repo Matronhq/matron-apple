@@ -123,6 +123,7 @@ struct MatronApp: App {
                 } else {
                     SignInView(
                         viewModel: SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS"),
+                        linkViewModel: LinkSignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS"),
                         onSignedIn: { session in
                             // Gate the new session on any in-flight sign-out
                             // teardown: publishing it earlier would build a

@@ -346,4 +346,77 @@ final class JournalAPITests: XCTestCase {
         let bare = JournalAPI(serverURL: URL(string: "http://localhost:8787")!)
         XCTAssertEqual(bare.wsURL.absoluteString, "ws://localhost:8787/ws")
     }
+
+    // MARK: Device link (QR sign-in)
+
+    func testLinkStartParsesResponse() async throws {
+        StubURLProtocol.responses = ["/link/start": (200, #"{"link_code":"KTNM-3VQ8","expires_in":120}"#)]
+        let api = makeAPI()
+        await api.setToken("tok")
+        let started = try await api.linkStart()
+        XCTAssertEqual(started, LinkStart(code: "KTNM-3VQ8", expiresIn: 120))
+        XCTAssertEqual(StubURLProtocol.lastRequest?.value(forHTTPHeaderField: "Authorization"), "Bearer tok")
+    }
+
+    func testLinkStatusWaitingAndClaimed() async throws {
+        let api = makeAPI()
+        StubURLProtocol.responses = ["/link/status": (200, #"{"status":"waiting","expires_in":90}"#)]
+        let waiting = try await api.linkStatus()
+        XCTAssertEqual(waiting, .waiting(expiresIn: 90))
+        StubURLProtocol.responses = ["/link/status": (200, #"{"status":"claimed","device_name":"Pixel 9","requester_ip":"198.51.100.7","expires_in":55}"#)]
+        let claimed = try await api.linkStatus()
+        XCTAssertEqual(claimed,
+                       .claimed(deviceName: "Pixel 9", requesterIP: "198.51.100.7", expiresIn: 55))
+    }
+
+    func testLinkApproveAndDenySendCode() async throws {
+        let api = makeAPI()
+        StubURLProtocol.responses = ["/link/approve": (200, #"{"status":"approved"}"#)]
+        try await api.linkApprove(code: "KTNM-3VQ8")
+        var body = try JSONSerialization.jsonObject(with: StubURLProtocol.lastRequestBody ?? Data()) as? [String: Any]
+        XCTAssertEqual(body?["link_code"] as? String, "KTNM-3VQ8")
+        StubURLProtocol.responses = ["/link/deny": (200, #"{"status":"denied"}"#)]
+        try await api.linkDeny(code: "KTNM-3VQ8")
+        body = try JSONSerialization.jsonObject(with: StubURLProtocol.lastRequestBody ?? Data()) as? [String: Any]
+        XCTAssertEqual(body?["link_code"] as? String, "KTNM-3VQ8")
+    }
+
+    func testLinkClaimSendsBodyUnauthenticatedAndParses() async throws {
+        StubURLProtocol.responses = ["/link/claim": (200, #"{"status":"claimed","claim_token":"aa11","expires_in":60}"#)]
+        let api = makeAPI()
+        await api.setToken("tok") // must NOT be sent: claim is the unauthenticated side
+        let claim = try await api.linkClaim(code: "KTNM-3VQ8", deviceName: "Matron iOS")
+        XCTAssertEqual(claim, LinkClaim(claimToken: "aa11", expiresIn: 60))
+        XCTAssertNil(StubURLProtocol.lastRequest?.value(forHTTPHeaderField: "Authorization"))
+        let body = try JSONSerialization.jsonObject(with: StubURLProtocol.lastRequestBody ?? Data()) as? [String: Any]
+        XCTAssertEqual(body?["link_code"] as? String, "KTNM-3VQ8")
+        XCTAssertEqual(body?["device_name"] as? String, "Matron iOS")
+    }
+
+    func testLinkPollPendingDeniedApproved() async throws {
+        let api = makeAPI()
+        StubURLProtocol.responses = ["/link/poll": (200, #"{"status":"pending"}"#)]
+        let pending = try await api.linkPoll(claimToken: "aa11")
+        XCTAssertEqual(pending, .pending)
+        StubURLProtocol.responses = ["/link/poll": (200, #"{"status":"denied"}"#)]
+        let denied = try await api.linkPoll(claimToken: "aa11")
+        XCTAssertEqual(denied, .denied)
+        StubURLProtocol.responses = ["/link/poll": (200,
+            #"{"status":"approved","token":"bb22","device_id":42,"user_id":7,"username":"dan"}"#)]
+        let approved = try await api.linkPoll(claimToken: "aa11")
+        XCTAssertEqual(approved,
+                       .approved(LinkApproval(token: "bb22", deviceID: 42, userID: 7, username: "dan")))
+    }
+
+    func testLinkPollApprovedWithoutUsernameIsMalformed() async throws {
+        // username is load-bearing (it becomes UserSession.userID) — a server
+        // that omits it must fail loudly, not sign in with a garbage identity.
+        StubURLProtocol.responses = ["/link/poll": (200,
+            #"{"status":"approved","token":"bb22","device_id":42,"user_id":7}"#)]
+        let api = makeAPI()
+        do {
+            _ = try await api.linkPoll(claimToken: "aa11")
+            XCTFail("expected transport error")
+        } catch JournalAPIError.transport { /* expected */ }
+    }
 }

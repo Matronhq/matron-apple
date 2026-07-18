@@ -112,6 +112,7 @@ struct MatronMacApp: App {
                 } else {
                     MacSignInView(
                         viewModel: SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac"),
+                        linkViewModel: LinkSignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac"),
                         onSignedIn: { session in
                             // Gate the new session on any in-flight sign-out
                             // teardown so a fast re-login can't open a second
@@ -151,12 +152,15 @@ struct MatronMacApp: App {
         // for the keyboard shortcuts and notification names.
         .commands { ChatCommands() }
 
-        // Settings (⌘,), two tabs:
+        // Settings (⌘,), three tabs:
         // - General: read-only account summary + appearance + Sign Out —
         //   see `MacDeviceSettingsView` for the Task 12 rationale.
         // - Devices: the journal device roster + agent pairing (journal
         //   PR #19 spec). Self-revocation routes through the same
         //   `signOut` as the button on the General tab.
+        // - Link a Device: show-QR flow so a second device can sign in
+        //   without retyping credentials (Task 6 of the QR device-link
+        //   plan). Mac only shows codes — see `MacDeviceLinkView`.
         Settings {
             if let session {
                 TabView {
@@ -167,6 +171,11 @@ struct MatronMacApp: App {
                         onSelfRevoked: { signOut(activeSession: session) }
                     )
                     .tabItem { Label("Devices", systemImage: "laptopcomputer.and.iphone") }
+                    MacDeviceLinkView(
+                        api: dependencies.deviceLinkService(for: session),
+                        serverURL: session.homeserverURL
+                    )
+                    .tabItem { Label("Link a Device", systemImage: "qrcode") }
                 }
             } else {
                 Text("Sign in to view settings.")
