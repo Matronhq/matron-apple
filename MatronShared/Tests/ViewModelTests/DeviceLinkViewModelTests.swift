@@ -17,10 +17,38 @@ private final class FakeDeviceLinker: DeviceLinking, @unchecked Sendable {
     /// PairingViewModelTests).
     var holdStatus = false
     private var statusContinuations: [CheckedContinuation<Void, Never>] = []
+    private var bankedStatusReleases = 0
+
+    /// The gate methods run off the main actor (this class is not actor-
+    /// isolated), so a `releaseX()` can land in the window between the
+    /// call-count increment and the continuation being parked. A release
+    /// that finds nobody parked is BANKED and consumed by the next park —
+    /// without this, that interleaving loses the wake-up and the test hangs
+    /// at its 2 s `waitUntil` timeout (seen on loaded CI runners). The lock
+    /// makes park-or-consume and resume-or-bank atomic.
+    private let gateLock = NSLock()
 
     func releaseStatus() {
-        statusContinuations.forEach { $0.resume() }
+        gateLock.lock()
+        let toResume = statusContinuations
         statusContinuations.removeAll()
+        if toResume.isEmpty { bankedStatusReleases += 1 }
+        gateLock.unlock()
+        toResume.forEach { $0.resume() }
+    }
+
+    private func parkStatus() async {
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            gateLock.lock()
+            if bankedStatusReleases > 0 {
+                bankedStatusReleases -= 1
+                gateLock.unlock()
+                c.resume()
+            } else {
+                statusContinuations.append(c)
+                gateLock.unlock()
+            }
+        }
     }
 
     /// Same gated pattern as `holdStatus`, for `linkStart()` — needed to
@@ -29,10 +57,29 @@ private final class FakeDeviceLinker: DeviceLinking, @unchecked Sendable {
     /// raced against wall-clock sleeps.
     var holdStart = false
     private var startContinuations: [CheckedContinuation<Void, Never>] = []
+    private var bankedStartReleases = 0
 
     func releaseStart() {
-        startContinuations.forEach { $0.resume() }
+        gateLock.lock()
+        let toResume = startContinuations
         startContinuations.removeAll()
+        if toResume.isEmpty { bankedStartReleases += 1 }
+        gateLock.unlock()
+        toResume.forEach { $0.resume() }
+    }
+
+    private func parkStart() async {
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            gateLock.lock()
+            if bankedStartReleases > 0 {
+                bankedStartReleases -= 1
+                gateLock.unlock()
+                c.resume()
+            } else {
+                startContinuations.append(c)
+                gateLock.unlock()
+            }
+        }
     }
 
     private(set) var startCount = 0
@@ -43,7 +90,7 @@ private final class FakeDeviceLinker: DeviceLinking, @unchecked Sendable {
     func linkStart() async throws -> LinkStart {
         startCount += 1
         if holdStart {
-            await withCheckedContinuation { startContinuations.append($0) }
+            await parkStart()
         }
         let result = startResults.count > 1 ? startResults.removeFirst() : startResults[0]
         return try result.get()
@@ -51,7 +98,7 @@ private final class FakeDeviceLinker: DeviceLinking, @unchecked Sendable {
     func linkStatus() async throws -> LinkStatus {
         statusCount += 1
         if holdStatus {
-            await withCheckedContinuation { statusContinuations.append($0) }
+            await parkStatus()
         }
         let result = statusScript.count > 1 ? statusScript.removeFirst() : statusScript[0]
         return try result.get()
@@ -267,14 +314,36 @@ final class DeviceLinkViewModelTests: XCTestCase {
         var holdOffer = false
         private(set) var offerGateReached = false
         private var offerContinuations: [CheckedContinuation<Void, Never>] = []
-        func releaseOffer() { offerContinuations.forEach { $0.resume() }; offerContinuations.removeAll() }
+        private var bankedOfferReleases = 0
+        /// Banked-release gate — same rationale as FakeDeviceLinker.gateLock:
+        /// a release landing before the park must not be lost.
+        private let gateLock = NSLock()
+
+        func releaseOffer() {
+            gateLock.lock()
+            let toResume = offerContinuations
+            offerContinuations.removeAll()
+            if toResume.isEmpty { bankedOfferReleases += 1 }
+            gateLock.unlock()
+            toResume.forEach { $0.resume() }
+        }
 
         func createRendezvous() async throws -> Rendezvous { fatalError("unused") }
         func pollRendezvous(rid: String, secret: String) async throws -> RendezvousPollResult { fatalError("unused") }
         func offerRendezvous(rid: String, server: String, code: String) async throws {
             if holdOffer {
                 offerGateReached = true
-                await withCheckedContinuation { offerContinuations.append($0) }
+                await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                    gateLock.lock()
+                    if bankedOfferReleases > 0 {
+                        bankedOfferReleases -= 1
+                        gateLock.unlock()
+                        c.resume()
+                    } else {
+                        offerContinuations.append(c)
+                        gateLock.unlock()
+                    }
+                }
             }
             offers.append((rid, server, code))
             try offerResult.get()

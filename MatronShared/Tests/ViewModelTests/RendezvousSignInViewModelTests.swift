@@ -20,7 +20,21 @@ final class RendezvousSignInViewModelTests: XCTestCase {
         var holdPoll = false
         private var pollContinuations: [CheckedContinuation<Void, Never>] = []
         var pollGateReached = false
-        func releasePoll() { pollContinuations.forEach { $0.resume() }; pollContinuations.removeAll() }
+        private var bankedPollReleases = 0
+        /// Banked-release gate — same rationale as DeviceLinkViewModelTests'
+        /// FakeDeviceLinker.gateLock: this class is not actor-isolated, so a
+        /// release landing in the window before the park would be lost and
+        /// the parked call would hang to the waitUntil timeout on loaded CI.
+        private let gateLock = NSLock()
+
+        func releasePoll() {
+            gateLock.lock()
+            let toResume = pollContinuations
+            pollContinuations.removeAll()
+            if toResume.isEmpty { bankedPollReleases += 1 }
+            gateLock.unlock()
+            toResume.forEach { $0.resume() }
+        }
 
         func createRendezvous() async throws -> Rendezvous {
             createCount += 1
@@ -30,7 +44,17 @@ final class RendezvousSignInViewModelTests: XCTestCase {
             pollCount += 1
             if holdPoll {
                 pollGateReached = true
-                await withCheckedContinuation { pollContinuations.append($0) }
+                await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                    gateLock.lock()
+                    if bankedPollReleases > 0 {
+                        bankedPollReleases -= 1
+                        gateLock.unlock()
+                        c.resume()
+                    } else {
+                        pollContinuations.append(c)
+                        gateLock.unlock()
+                    }
+                }
             }
             return try (pollScript.count > 1 ? pollScript.removeFirst() : pollScript[0]).get()
         }
