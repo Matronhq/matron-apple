@@ -12,6 +12,7 @@ import MatronViewModels
 struct DeviceSettingsView: View {
     let session: UserSession
     var devicesAPI: (any DevicesProviding)? = nil
+    var linkAPI: (any DeviceLinking)? = nil
     var onSignOut: (() -> Void)? = nil
 
     var body: some View {
@@ -24,12 +25,21 @@ struct DeviceSettingsView: View {
                     value: session.homeserverURL.host ?? session.homeserverURL.absoluteString
                 )
             }
-            if let devicesAPI {
+            if devicesAPI != nil || linkAPI != nil {
                 Section("Devices") {
-                    NavigationLink {
-                        DevicesView(api: devicesAPI, onSelfRevoked: { onSignOut?() })
-                    } label: {
-                        Label("Manage Devices", systemImage: "laptopcomputer.and.iphone")
+                    if let devicesAPI {
+                        NavigationLink {
+                            DevicesView(api: devicesAPI, onSelfRevoked: { onSignOut?() })
+                        } label: {
+                            Label("Manage Devices", systemImage: "laptopcomputer.and.iphone")
+                        }
+                    }
+                    if let linkAPI {
+                        NavigationLink {
+                            DeviceLinkView(api: linkAPI, serverURL: session.homeserverURL)
+                        } label: {
+                            Label("Link a Device", systemImage: "qrcode")
+                        }
                     }
                 }
             }
