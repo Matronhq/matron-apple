@@ -51,6 +51,7 @@ public final class DeviceLinkViewModel {
 
     private let api: any DeviceLinking
     private let serverURL: URL
+    private let relay: (any RelayRendezvousing)?
     private let pollInterval: Duration
     private let errorPollInterval: Duration
     private var pollTask: Task<Void, Never>?
@@ -66,10 +67,12 @@ public final class DeviceLinkViewModel {
     private var generation = 0
 
     public init(api: any DeviceLinking, serverURL: URL,
+                relay: (any RelayRendezvousing)? = nil,
                 pollInterval: Duration = .seconds(2),
                 errorPollInterval: Duration = .seconds(5)) {
         self.api = api
         self.serverURL = serverURL
+        self.relay = relay
         self.pollInterval = pollInterval
         self.errorPollInterval = errorPollInterval
     }
@@ -123,6 +126,44 @@ public final class DeviceLinkViewModel {
             await startSession()
         } catch {
             noticeMessage = "Couldn't deny — try again."
+        }
+    }
+
+    /// Settings → Link a Device → Scan tab: the signed-in phone scanned a
+    /// signed-out device's `matron://rlink` QR. Offers THIS VM's live link
+    /// session to the relay — start() already minted a session when the
+    /// screen opened, and link/start replaces a starter's session, so
+    /// minting another here would kill the code being offered. After a
+    /// successful offer the desktop claims within seconds and the existing
+    /// status poll flips to .claimed → the normal approve card.
+    public func offerScanned(_ payload: String) async {
+        guard let relay else { return }
+        let gen = generation
+        let rid: String
+        do {
+            rid = try RendezvousURI.parse(payload)
+        } catch RendezvousURI.ParseError.unsupportedVersion {
+            noticeMessage = "This QR code needs a newer version of Matron."
+            return
+        } catch {
+            noticeMessage = "Not a Matron link code."
+            return
+        }
+        guard case .showing(let code) = phase else {
+            noticeMessage = "Still fetching a link code — try scanning again in a moment."
+            return
+        }
+        do {
+            try await relay.offerRendezvous(rid: rid, server: serverURL.absoluteString, code: code)
+            guard gen == generation else { return }
+            noticeMessage = "Sent — approve the request when it appears."
+        } catch {
+            guard gen == generation else { return }
+            switch error as? RelayError {
+            case .conflict: noticeMessage = "That code was already used by another device."
+            case .notFound: noticeMessage = "That code expired — ask the computer to show a fresh one."
+            default: noticeMessage = "Couldn't reach the Matron relay — try again."
+            }
         }
     }
 

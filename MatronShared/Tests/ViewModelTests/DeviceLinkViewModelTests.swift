@@ -256,4 +256,77 @@ final class DeviceLinkViewModelTests: XCTestCase {
         XCTAssertEqual(vm.phase, .showing(code: "KTNM-3VQ8")) // never dropped to an error screen
         vm.stop()
     }
+
+    private final class FakeRelay: RelayRendezvousing, @unchecked Sendable {
+        var offerResult: Result<Void, Error> = .success(())
+        private(set) var offers: [(rid: String, server: String, code: String)] = []
+        func createRendezvous() async throws -> Rendezvous { fatalError("unused") }
+        func pollRendezvous(rid: String, secret: String) async throws -> RendezvousPollResult { fatalError("unused") }
+        func offerRendezvous(rid: String, server: String, code: String) async throws {
+            offers.append((rid, server, code))
+            try offerResult.get()
+        }
+    }
+
+    private static let rid = "23456789BCDFGHJKMNPQRSTVWX"
+    private static let rlinkPayload = "matron://rlink?v=1&rid=23456789BCDFGHJKMNPQRSTVWX"
+
+    func test_offerScanned_sendsTheLiveSessionCodeAndServer() async {
+        let fake = FakeDeviceLinker()
+        fake.startResults = [.success(LinkStart(code: "2345-6789", expiresIn: 120))]
+        let relay = FakeRelay()
+        let vm = DeviceLinkViewModel(api: fake, serverURL: URL(string: "https://chat.example.com")!,
+                                     relay: relay, pollInterval: .milliseconds(1), errorPollInterval: .milliseconds(1))
+        await vm.start()
+        await vm.offerScanned(Self.rlinkPayload)
+        XCTAssertEqual(relay.offers.count, 1)
+        XCTAssertEqual(relay.offers[0].rid, Self.rid)
+        XCTAssertEqual(relay.offers[0].server, "https://chat.example.com")
+        XCTAssertEqual(relay.offers[0].code, "2345-6789")
+        XCTAssertEqual(vm.noticeMessage, "Sent — approve the request when it appears.")
+    }
+
+    func test_offerScanned_parseFailures_neverTouchTheRelay() async {
+        let fake = FakeDeviceLinker()
+        fake.startResults = [.success(LinkStart(code: "2345-6789", expiresIn: 120))]
+        let relay = FakeRelay()
+        let vm = DeviceLinkViewModel(api: fake, serverURL: URL(string: "https://chat.example.com")!,
+                                     relay: relay, pollInterval: .milliseconds(1), errorPollInterval: .milliseconds(1))
+        await vm.start()
+        await vm.offerScanned("matron://rlink?v=9&rid=\(Self.rid)")
+        XCTAssertEqual(vm.noticeMessage, "This QR code needs a newer version of Matron.")
+        await vm.offerScanned("https://not-matron.example.com")
+        XCTAssertEqual(vm.noticeMessage, "Not a Matron link code.")
+        XCTAssertTrue(relay.offers.isEmpty)
+    }
+
+    func test_offerScanned_relayOutcomes_mapToNotices() async {
+        for (result, notice): (Result<Void, Error>, String) in [
+            (.failure(RelayError.conflict), "That code was already used by another device."),
+            (.failure(RelayError.notFound), "That code expired — ask the computer to show a fresh one."),
+            (.failure(RelayError.transport("down")), "Couldn't reach the Matron relay — try again."),
+        ] {
+            let fake = FakeDeviceLinker()
+            fake.startResults = [.success(LinkStart(code: "2345-6789", expiresIn: 120))]
+            let relay = FakeRelay()
+            relay.offerResult = result
+            let vm = DeviceLinkViewModel(api: fake, serverURL: URL(string: "https://chat.example.com")!,
+                                         relay: relay, pollInterval: .milliseconds(1), errorPollInterval: .milliseconds(1))
+            await vm.start()
+            await vm.offerScanned(Self.rlinkPayload)
+            XCTAssertEqual(vm.noticeMessage, notice)
+        }
+    }
+
+    func test_offerScanned_withoutALiveCode_asksToRetry() async {
+        let fake = FakeDeviceLinker()
+        fake.startResults = [.failure(JournalAPIError.transport("down"))] // start fails → no .showing code
+        let relay = FakeRelay()
+        let vm = DeviceLinkViewModel(api: fake, serverURL: URL(string: "https://chat.example.com")!,
+                                     relay: relay, pollInterval: .milliseconds(1), errorPollInterval: .milliseconds(1))
+        await vm.start()
+        await vm.offerScanned(Self.rlinkPayload)
+        XCTAssertTrue(relay.offers.isEmpty)
+        XCTAssertEqual(vm.noticeMessage, "Still fetching a link code — try scanning again in a moment.")
+    }
 }
