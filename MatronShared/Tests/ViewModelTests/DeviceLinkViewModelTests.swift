@@ -278,12 +278,18 @@ final class DeviceLinkViewModelTests: XCTestCase {
         let vm = DeviceLinkViewModel(api: fake, serverURL: URL(string: "https://chat.example.com")!,
                                      relay: relay, pollInterval: .milliseconds(1), errorPollInterval: .milliseconds(1))
         await vm.start()
+        XCTAssertEqual(vm.phase, .showing(code: "2345-6789"))
+        let startCountBeforeOffer = fake.startCount
         await vm.offerScanned(Self.rlinkPayload)
         XCTAssertEqual(relay.offers.count, 1)
         XCTAssertEqual(relay.offers[0].rid, Self.rid)
         XCTAssertEqual(relay.offers[0].server, "https://chat.example.com")
         XCTAssertEqual(relay.offers[0].code, "2345-6789")
         XCTAssertEqual(vm.noticeMessage, "Sent — approve the request when it appears.")
+        // CRITICAL: offerScanned must never call linkStart() — a second
+        // linkStart would replace the live session whose code the Show tab
+        // displays, invalidating the code just handed to the relay.
+        XCTAssertEqual(fake.startCount, startCountBeforeOffer, "offerScanned must not start a new link session")
     }
 
     func test_offerScanned_parseFailures_neverTouchTheRelay() async {
@@ -313,8 +319,10 @@ final class DeviceLinkViewModelTests: XCTestCase {
             let vm = DeviceLinkViewModel(api: fake, serverURL: URL(string: "https://chat.example.com")!,
                                          relay: relay, pollInterval: .milliseconds(1), errorPollInterval: .milliseconds(1))
             await vm.start()
+            let startCountBeforeOffer = fake.startCount
             await vm.offerScanned(Self.rlinkPayload)
             XCTAssertEqual(vm.noticeMessage, notice)
+            XCTAssertEqual(fake.startCount, startCountBeforeOffer, "offerScanned must not start a new link session")
         }
     }
 
