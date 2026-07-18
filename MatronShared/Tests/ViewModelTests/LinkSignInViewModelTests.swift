@@ -16,6 +16,11 @@ private final class FakeLinkClaimer: LinkClaiming, @unchecked Sendable {
     /// DeviceLinkViewModelTests).
     var holdPoll = false
     private var pollContinuations: [CheckedContinuation<Void, Never>] = []
+    /// Same gated pattern as `holdPoll`, for `linkClaim()` — needed to
+    /// deterministically land a `cancel()` inside a claim's `linkClaim()`
+    /// await so the post-await generation re-check can be exercised.
+    var holdClaim = false
+    private var claimContinuations: [CheckedContinuation<Void, Never>] = []
     private(set) var claimedCodes: [String] = []
     private(set) var claimedDeviceNames: [String] = []
     private(set) var pollCount = 0
@@ -25,9 +30,17 @@ private final class FakeLinkClaimer: LinkClaiming, @unchecked Sendable {
         pollContinuations.removeAll()
     }
 
+    func releaseClaim() {
+        claimContinuations.forEach { $0.resume() }
+        claimContinuations.removeAll()
+    }
+
     func linkClaim(code: String, deviceName: String) async throws -> LinkClaim {
         claimedCodes.append(code)
         claimedDeviceNames.append(deviceName)
+        if holdClaim {
+            await withCheckedContinuation { claimContinuations.append($0) }
+        }
         return try claimResult.get()
     }
     func linkPoll(claimToken: String) async throws -> LinkPollResult {
@@ -212,6 +225,29 @@ final class LinkSignInViewModelTests: XCTestCase {
         try? await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(vm.phase, .idle)        // must NOT flip to .signedIn
         XCTAssertTrue(auth.persistedSessions.isEmpty) // must NOT persist a cancelled session
+    }
+
+    func test_cancel_whileClaimInFlight_doesNotStartPollingOrPersist() async {
+        // Finding 2 (residual): a linkClaim() in flight when cancel() lands
+        // — reachable via onDisappear when password sign-in completes
+        // concurrently — must not resume into .waitingForApproval +
+        // startPolling(). startPolling() snapshots the ALREADY-BUMPED
+        // generation, so the poll-loop guard can't catch it; only a
+        // post-claim-await generation re-check in claim() does. Gated
+        // (held+released) so the interleaving is exact.
+        let fake = FakeLinkClaimer()
+        fake.holdClaim = true
+        let (vm, auth) = makeVM(fake)
+        let scanTask = Task { await vm.handleScanned("matron://link?v=1&server=https%3A%2F%2Fchat.example.com&code=KTNM-3VQ8") }
+        await waitUntil(fake.claimedCodes.count >= 1)  // linkClaim parked in flight
+        vm.cancel()
+        XCTAssertEqual(vm.phase, .idle)
+        fake.releaseClaim()                            // claim resolves late with success
+        await scanTask.value
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(vm.phase, .idle)                // must NOT flip to .waitingForApproval
+        XCTAssertEqual(fake.pollCount, 0)              // no orphan poll started
+        XCTAssertTrue(auth.persistedSessions.isEmpty)  // nothing persisted
     }
 
     func test_claim_whileSignedIn_doesNotRestartStateMachine() async {

@@ -109,18 +109,31 @@ public final class LinkSignInViewModel {
         if case .signedIn = phase { return }
         guard phase != .claiming, phase != .waitingForApproval else { return }
         phase = .claiming
+        // A cancel() (bumps generation) can land while linkClaim() is in
+        // flight — reachable via the sign-in view's onDisappear when a
+        // concurrent password sign-in completes. Snapshot here and re-check
+        // after the await before any phase write / startPolling(), so the
+        // resumed call can't resurrect .waitingForApproval or spawn an
+        // orphan poll (startPolling() would snapshot the already-bumped
+        // generation, so the poll-loop guard alone can't catch this).
+        let claimGeneration = generation
         let api = apiFactory(server)
         do {
             let claim = try await api.linkClaim(code: code, deviceName: deviceDisplayName)
+            guard claimGeneration == generation else { return }
             phase = .waitingForApproval
             startPolling(api: api, server: server, claimToken: claim.claimToken)
         } catch JournalAPIError.conflict {
+            guard claimGeneration == generation else { return }
             phase = .error("This code was already used. Generate a new one on your signed-in device.")
         } catch JournalAPIError.notFound {
+            guard claimGeneration == generation else { return }
             phase = .error("Code not recognized or expired. Show a fresh QR code and try again.")
         } catch JournalAPIError.rateLimited {
+            guard claimGeneration == generation else { return }
             phase = .error("Too many attempts — try again in a minute.")
         } catch {
+            guard claimGeneration == generation else { return }
             phase = .error("Couldn't reach the server — try again.")
         }
     }
