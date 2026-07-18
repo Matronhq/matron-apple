@@ -2,14 +2,18 @@ import SwiftUI
 import MatronAuth
 import MatronModels
 import MatronViewModels
+import MatronDesignSystem
 
 struct SignInView: View {
     @State var viewModel: SignInViewModel
     @State var linkViewModel: LinkSignInViewModel
+    @State var rendezvousViewModel: RendezvousSignInViewModel
     var onSignedIn: (UserSession) -> Void
 
     @State private var showingScanner = false
     @State private var showingManualCode = false
+    private enum QRTab: String, CaseIterable { case scan = "Scan", show = "Show" }
+    @State private var qrTab: QRTab = .scan
 
     var body: some View {
         NavigationStack {
@@ -89,7 +93,14 @@ struct SignInView: View {
             // onSignedIn swapping the root, so cancel() here only ever fires
             // after the session was already forwarded. A presented scanner
             // covers (does not remove) this view, so opening it won't cancel.
-            .onDisappear { linkViewModel.cancel() }
+            .onChange(of: qrTab) { _, tab in
+                if tab == .show { Task { await rendezvousViewModel.start() } }
+                else { rendezvousViewModel.stop() }
+            }
+            .onDisappear {
+                rendezvousViewModel.stop()
+                linkViewModel.cancel() // existing line — keep
+            }
             .fullScreenCover(isPresented: $showingScanner) {
                 QRScannerView { payload in
                     Task { await linkViewModel.handleScanned(payload) }
@@ -98,15 +109,28 @@ struct SignInView: View {
         }
     }
 
-    /// "Or sign in from another device": camera scan + manual code entry.
+    /// "Or sign in from another device": camera scan / show-QR tabs + manual
+    /// code entry.
     @ViewBuilder private var linkSignIn: some View {
         Section {
-            Button {
-                showingScanner = true
-            } label: {
-                Label("Scan QR code", systemImage: "qrcode.viewfinder")
+            Picker("QR mode", selection: $qrTab) {
+                ForEach(QRTab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }
-            .accessibilityIdentifier("signin.scan")
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("signin.qrtab")
+
+            switch qrTab {
+            case .scan:
+                Button {
+                    showingScanner = true
+                } label: {
+                    Label("Scan QR code", systemImage: "qrcode.viewfinder")
+                }
+                .accessibilityIdentifier("signin.scan")
+            case .show:
+                rendezvousShow
+            }
+
             Button(showingManualCode ? "Hide link code" : "Have a link code?") {
                 showingManualCode.toggle()
             }
@@ -128,11 +152,46 @@ struct SignInView: View {
             Text("From another device")
         } footer: {
             if case .error(let message) = linkViewModel.phase {
-                Text(message).foregroundStyle(.red)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(message).foregroundStyle(.red)
+                    // The rendezvous VM parks in .connecting once it hands
+                    // off to linkViewModel; a link-side error while Show is
+                    // selected still needs a way back to a fresh QR.
+                    if qrTab == .show {
+                        Button("Show a new code") { Task { await rendezvousViewModel.start() } }
+                    }
+                }
             } else if showingManualCode {
                 Text("On your signed-in device: Settings → Link a Device. Enter the server URL above and the code shown under the QR.")
             } else {
                 Text("Signed in on another device? Show its QR under Settings → Link a Device and scan it here.")
+            }
+        }
+    }
+
+    @ViewBuilder private var rendezvousShow: some View {
+        switch rendezvousViewModel.phase {
+        case .idle, .loading:
+            ProgressView()
+        case .showing(let payload):
+            VStack(spacing: 12) {
+                QRCodeView(string: payload)
+                    .frame(width: 220, height: 220)
+                Text("Scan this with a phone that's signed in to Matron")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        case .connecting(let host):
+            VStack(spacing: 12) {
+                ProgressView()
+                Text("Connecting to \(host)…")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        case .error(let message):
+            VStack(spacing: 8) {
+                Text(message).font(.footnote).foregroundStyle(.secondary)
+                Button("Retry") { Task { await rendezvousViewModel.start() } }
             }
         }
     }
