@@ -27,7 +27,7 @@ public enum LinkURI {
 
     public static func parse(_ raw: String) throws -> (server: URL, code: String) {
         guard let components = URLComponents(string: raw),
-              components.scheme == "matron", components.host == "link"
+              components.scheme?.lowercased() == "matron", components.host?.lowercased() == "link"
         else { throw ParseError.notALink }
         let value = { (name: String) in components.queryItems?.first(where: { $0.name == name })?.value }
         guard let version = value("v") else { throw ParseError.malformed }

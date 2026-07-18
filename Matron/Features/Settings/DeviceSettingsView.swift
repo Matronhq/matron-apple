@@ -2,6 +2,7 @@ import SwiftUI
 import MatronModels
 import MatronDesignSystem
 import MatronViewModels
+import MatronJournal
 
 /// Settings → Device surface. Task 11 strips the verification / recovery-key
 /// sections (Matrix-SDK-only concepts the journal stack has no equivalent
@@ -37,7 +38,7 @@ struct DeviceSettingsView: View {
                     }
                     if let linkAPI {
                         NavigationLink {
-                            DeviceLinkView(api: linkAPI, serverURL: session.homeserverURL)
+                            DeviceLinkView(api: linkAPI, serverURL: session.homeserverURL, relay: RelayClient())
                         } label: {
                             Label("Link a Device", systemImage: "qrcode")
                         }
