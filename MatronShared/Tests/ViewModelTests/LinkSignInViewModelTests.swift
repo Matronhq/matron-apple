@@ -8,9 +8,22 @@ private final class FakeLinkClaimer: LinkClaiming, @unchecked Sendable {
     var claimResult: Result<LinkClaim, Error> = .success(LinkClaim(claimToken: "aa11", expiresIn: 60))
     /// Consumed one per poll; last repeats when dry.
     var pollScript: [Result<LinkPollResult, Error>] = [.success(.pending)]
+    /// Deterministic alternative to real-time sleeps for interleaving
+    /// tests: when set, `linkPoll()` suspends (after recording the call)
+    /// until the test calls `releasePoll()`. Real-time delays make
+    /// interleavings a coin flip on loaded CI runners; a gate guarantees
+    /// them (same pattern as `FakeDeviceLinker.holdStatus` in
+    /// DeviceLinkViewModelTests).
+    var holdPoll = false
+    private var pollContinuations: [CheckedContinuation<Void, Never>] = []
     private(set) var claimedCodes: [String] = []
     private(set) var claimedDeviceNames: [String] = []
     private(set) var pollCount = 0
+
+    func releasePoll() {
+        pollContinuations.forEach { $0.resume() }
+        pollContinuations.removeAll()
+    }
 
     func linkClaim(code: String, deviceName: String) async throws -> LinkClaim {
         claimedCodes.append(code)
@@ -19,6 +32,9 @@ private final class FakeLinkClaimer: LinkClaiming, @unchecked Sendable {
     }
     func linkPoll(claimToken: String) async throws -> LinkPollResult {
         pollCount += 1
+        if holdPoll {
+            await withCheckedContinuation { pollContinuations.append($0) }
+        }
         let result = pollScript.count > 1 ? pollScript.removeFirst() : pollScript[0]
         return try result.get()
     }
@@ -152,13 +168,26 @@ final class LinkSignInViewModelTests: XCTestCase {
     }
 
     func test_cancel_stopsPollingAndReturnsToIdle() async {
+        // Gated instead of raced against wall-clock sleeps: the original
+        // "wait for one poll, cancel(), sleep 50ms, assert no growth"
+        // version flaked under load, because cancel() only sets a
+        // cancellation flag — it doesn't wait for an already-in-flight
+        // linkPoll() call to notice. Holding that call open makes the
+        // interleaving explicit: cancel() fires while the FIRST call is
+        // provably still suspended, so releasing it and observing no
+        // SECOND call is a deterministic check that the loop respects
+        // cancellation before it re-polls (same pattern as
+        // `FakeDeviceLinker.holdStatus` / `test_stop_haltsPolling` in
+        // DeviceLinkViewModelTests).
         let fake = FakeLinkClaimer()
+        fake.holdPoll = true
         let (vm, _) = makeVM(fake)
         await vm.handleScanned("matron://link?v=1&server=https%3A%2F%2Fx.example&code=KTNM-3VQ8")
         await waitUntil(fake.pollCount >= 1)
         vm.cancel()
         XCTAssertEqual(vm.phase, .idle)
         let count = fake.pollCount
+        fake.releasePoll()
         try? await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(fake.pollCount, count)
     }
