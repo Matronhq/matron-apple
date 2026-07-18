@@ -9,6 +9,20 @@ private final class FakeDeviceLinker: DeviceLinking, @unchecked Sendable {
     var statusScript: [Result<LinkStatus, Error>] = [.success(.waiting(expiresIn: 100))]
     var approveResult: Result<Void, Error> = .success(())
     var denyResult: Result<Void, Error> = .success(())
+    /// Deterministic alternative to real-time sleeps for interleaving
+    /// tests: when set, `linkStatus()` suspends (after recording the call)
+    /// until the test calls `releaseStatus()`. Real-time delays make
+    /// interleavings a coin flip on loaded CI runners; a gate guarantees
+    /// them (same pattern as `FakeDevicesProvider.holdApprove` in
+    /// PairingViewModelTests).
+    var holdStatus = false
+    private var statusContinuations: [CheckedContinuation<Void, Never>] = []
+
+    func releaseStatus() {
+        statusContinuations.forEach { $0.resume() }
+        statusContinuations.removeAll()
+    }
+
     private(set) var startCount = 0
     private(set) var statusCount = 0
     private(set) var approvedCodes: [String] = []
@@ -21,6 +35,9 @@ private final class FakeDeviceLinker: DeviceLinking, @unchecked Sendable {
     }
     func linkStatus() async throws -> LinkStatus {
         statusCount += 1
+        if holdStatus {
+            await withCheckedContinuation { statusContinuations.append($0) }
+        }
         let result = statusScript.count > 1 ? statusScript.removeFirst() : statusScript[0]
         return try result.get()
     }
@@ -132,12 +149,22 @@ final class DeviceLinkViewModelTests: XCTestCase {
     }
 
     func test_stop_haltsPolling() async {
+        // Gated instead of raced against wall-clock sleeps: the original
+        // "wait for one poll, stop(), sleep 50ms, assert no growth" version
+        // flaked under load, because stop() only sets a cancellation flag —
+        // it doesn't wait for an already-in-flight linkStatus() call to
+        // notice. Holding that call open makes the interleaving explicit:
+        // stop() fires while the FIRST call is provably still suspended, so
+        // releasing it and observing no SECOND call is a deterministic
+        // check that the loop respects cancellation before it re-polls.
         let fake = FakeDeviceLinker()
+        fake.holdStatus = true
         let vm = makeVM(fake)
         await vm.start()
         await waitUntil(fake.statusCount >= 1)
         vm.stop()
         let count = fake.statusCount
+        fake.releaseStatus()
         try? await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(fake.statusCount, count)
     }
