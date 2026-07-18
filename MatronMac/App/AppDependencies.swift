@@ -165,6 +165,12 @@ final class AppDependencies {
         core(for: session).api
     }
 
+    /// Show-QR surface (Settings → Link a Device). Same session-scoped
+    /// `JournalAPI` as the devices surface; protocol slice for testability.
+    func deviceLinkService(for session: UserSession) -> any DeviceLinking {
+        core(for: session).api
+    }
+
     /// New Chat surface: agent roster + `recent_folders`/`start` RPCs over
     /// the session's sync engine.
     func agentRPCService(for session: UserSession) -> any AgentRPCProviding {
