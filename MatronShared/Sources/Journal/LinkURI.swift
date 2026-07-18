@@ -1,0 +1,41 @@
+import Foundation
+
+/// The QR sign-in payload — the single place the format is known:
+/// `matron://link?v=1&server=<URL-encoded base server URL>&code=XXXX-XXXX`.
+/// Android carries an equivalent parser; the server never sees the URI.
+public enum LinkURI {
+    public enum ParseError: Error, Equatable {
+        /// Not ours at all — scanner shows "Not a Matron sign-in code."
+        case notALink
+        /// Ours, but a future version — scanner shows "update the app".
+        case unsupportedVersion
+        /// Ours and v=1, but the parts don't parse.
+        case malformed
+    }
+
+    public static func format(server: URL, code: String) -> String {
+        var components = URLComponents()
+        components.scheme = "matron"
+        components.host = "link"
+        components.queryItems = [
+            URLQueryItem(name: "v", value: "1"),
+            URLQueryItem(name: "server", value: server.absoluteString),
+            URLQueryItem(name: "code", value: code),
+        ]
+        return components.url!.absoluteString
+    }
+
+    public static func parse(_ raw: String) throws -> (server: URL, code: String) {
+        guard let components = URLComponents(string: raw),
+              components.scheme == "matron", components.host == "link"
+        else { throw ParseError.notALink }
+        let value = { (name: String) in components.queryItems?.first(where: { $0.name == name })?.value }
+        guard let version = value("v") else { throw ParseError.malformed }
+        guard version == "1" else { throw ParseError.unsupportedVersion }
+        guard let serverRaw = value("server"), let server = URL(string: serverRaw),
+              server.scheme == "http" || server.scheme == "https",
+              let codeRaw = value("code"), PairingCode.isPlausible(codeRaw)
+        else { throw ParseError.malformed }
+        return (server, PairingCode.display(codeRaw))
+    }
+}
