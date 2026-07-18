@@ -2,6 +2,7 @@ import XCTest
 import MatronAuth
 import MatronModels
 import MatronViewModels
+import MatronJournal
 @testable import MatronMac
 
 final class FakeAuthForVM: AuthService, @unchecked Sendable {
@@ -36,9 +37,10 @@ final class MacSignInViewBindingTests: XCTestCase {
         vm.username = "alice"
         vm.password = "hunter2"
         let linkVM = LinkSignInViewModel(auth: fake, deviceDisplayName: "Matron Mac")
+        let rendezvousVM = RendezvousSignInViewModel(relay: RelayClient(), link: linkVM)
 
         var captured: UserSession?
-        let _ = MacSignInView(viewModel: vm, linkViewModel: linkVM) { captured = $0 }
+        let _ = MacSignInView(viewModel: vm, linkViewModel: linkVM, rendezvousViewModel: rendezvousVM) { captured = $0 }
 
         await vm.submit()
 

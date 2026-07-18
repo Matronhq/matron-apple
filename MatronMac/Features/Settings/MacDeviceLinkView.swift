@@ -45,6 +45,10 @@ struct MacDeviceLinkView: View {
                         .keyboardShortcut(.defaultAction)
                         .disabled(viewModel.isSubmitting)
                 }
+                Text("This signs a computer into **your** account — only approve if it's yours, in front of you.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
             case .approved:
                 Label("Approved — finishing sign-in on the other device.",
                       systemImage: "checkmark.circle.fill")
@@ -61,7 +65,7 @@ struct MacDeviceLinkView: View {
             }
         }
         .padding(24)
-        .frame(width: 420, height: 380)
+        .frame(width: 420, height: 420)
         .task { await viewModel.start() }
         .onDisappear { viewModel.stop() }
     }

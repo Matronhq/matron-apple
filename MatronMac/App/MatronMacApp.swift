@@ -110,9 +110,11 @@ struct MatronMacApp: App {
                         }
                     }
                 } else {
+                    let linkViewModel = LinkSignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac")
                     MacSignInView(
                         viewModel: SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac"),
-                        linkViewModel: LinkSignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac"),
+                        linkViewModel: linkViewModel,
+                        rendezvousViewModel: RendezvousSignInViewModel(relay: RelayClient(), link: linkViewModel),
                         onSignedIn: { session in
                             // Gate the new session on any in-flight sign-out
                             // teardown so a fast re-login can't open a second
