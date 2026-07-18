@@ -192,6 +192,42 @@ final class LinkSignInViewModelTests: XCTestCase {
         XCTAssertEqual(fake.pollCount, count)
     }
 
+    func test_cancel_whilePollInFlight_doesNotPersistOrSignIn() async {
+        // Finding 2 (security): a linkPoll() call already in flight when
+        // cancel() runs can resolve LATE with .approved and then persist a
+        // session the user cancelled + flip to .signedIn. Gated (held+
+        // released) so the interleaving is exact: the poll is provably
+        // parked in flight when cancel() lands, then released to prove the
+        // loop abandons (generation bumped by cancel()) before persist and
+        // before any phase write.
+        let fake = FakeLinkClaimer()
+        fake.holdPoll = true
+        fake.pollScript = [.success(.approved(LinkApproval(token: "tok99", deviceID: 42, userID: 7, username: "dan")))]
+        let (vm, auth) = makeVM(fake)
+        await vm.handleScanned("matron://link?v=1&server=https%3A%2F%2Fchat.example.com&code=KTNM-3VQ8")
+        await waitUntil(fake.pollCount >= 1)   // linkPoll parked in flight
+        vm.cancel()
+        XCTAssertEqual(vm.phase, .idle)
+        fake.releasePoll()                     // the in-flight poll resolves late with .approved
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(vm.phase, .idle)        // must NOT flip to .signedIn
+        XCTAssertTrue(auth.persistedSessions.isEmpty) // must NOT persist a cancelled session
+    }
+
+    func test_claim_whileSignedIn_doesNotRestartStateMachine() async {
+        // Finding 3: a second scan/manual submit while already .signedIn
+        // must not restart claim → poll and overwrite the signed-in state.
+        let fake = FakeLinkClaimer()
+        fake.pollScript = [.success(.approved(LinkApproval(token: "tok99", deviceID: 42, userID: 7, username: "dan")))]
+        let (vm, _) = makeVM(fake)
+        await vm.handleScanned("matron://link?v=1&server=https%3A%2F%2Fchat.example.com&code=KTNM-3VQ8")
+        await waitUntil(self.isSignedIn(vm))
+        guard case .signedIn(let session) = vm.phase else { return XCTFail("\(vm.phase)") }
+        await vm.handleScanned("matron://link?v=1&server=https%3A%2F%2Fchat.example.com&code=WXYZ-2345")
+        XCTAssertEqual(vm.phase, .signedIn(session)) // unchanged
+        XCTAssertEqual(fake.claimedCodes, ["KTNM-3VQ8"]) // no second claim
+    }
+
     func test_persistFailure_surfacesError() async {
         let fake = FakeLinkClaimer()
         fake.pollScript = [.success(.approved(LinkApproval(token: "t", deviceID: 1, userID: 1, username: "dan")))]

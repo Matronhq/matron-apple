@@ -223,6 +223,29 @@ final class DeviceLinkViewModelTests: XCTestCase {
         XCTAssertEqual(fake.statusCount, statusCountAfterAbandon)
     }
 
+    func test_approve_whileStatusInFlight_doesNotResurrectClaimed() async {
+        // Finding 1: a linkStatus() call already in flight when approve()
+        // runs its stop()+terminal-phase can resolve LATE and overwrite
+        // .approved back to .claimed. Gated (held+released) so the
+        // interleaving is exact: the second status call is provably parked
+        // in flight when approve() lands, then released to prove the loop
+        // abandons (generation bumped by stop()) before writing phase.
+        let fake = FakeDeviceLinker()
+        fake.statusScript = [.success(.claimed(deviceName: "Pixel 9", requesterIP: "1.1.1.1", expiresIn: 90))]
+        fake.holdStatus = true
+        let vm = makeVM(fake)
+        await vm.start()
+        await waitUntil(fake.statusCount >= 1)            // first linkStatus parked
+        fake.releaseStatus()                              // -> returns .claimed
+        await waitUntil(vm.phase == .claimed(deviceName: "Pixel 9", requesterIP: "1.1.1.1")
+                        && fake.statusCount >= 2)         // second linkStatus now parked in flight
+        await vm.approve()                                // terminal: stop() + .approved
+        XCTAssertEqual(vm.phase, .approved)
+        fake.releaseStatus()                              // the in-flight status resolves late
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(vm.phase, .approved)               // must NOT be resurrected to .claimed
+    }
+
     func test_transportErrorOnStatus_keepsShowingAndKeepsPolling() async {
         let fake = FakeDeviceLinker()
         fake.statusScript = [.failure(JournalAPIError.transport("offline")),

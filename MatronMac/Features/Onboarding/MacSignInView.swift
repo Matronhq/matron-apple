@@ -116,6 +116,13 @@ struct MacSignInView: View {
                 onSignedIn(session)
             }
         }
+        // Same gap as SignInView: cancel any in-flight link claim/poll when
+        // this view goes away (e.g. password sign-in navigated on) so a later
+        // Approve on the show device can't persist a session over the active
+        // one. The .signedIn forwarding above runs first (the phase mutation
+        // happens while this view is still mounted); disappearance is a
+        // downstream effect of onSignedIn.
+        .onDisappear { linkViewModel.cancel() }
     }
 }
 

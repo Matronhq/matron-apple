@@ -50,6 +50,12 @@ public final class LinkSignInViewModel {
     private let pollInterval: Duration
     private let errorPollInterval: Duration
     private var pollTask: Task<Void, Never>?
+    /// Bumped by every `cancel()` (mirrors `DeviceLinkViewModel`). The poll
+    /// loop snapshots this and re-checks it after each `await`; a mismatch
+    /// means a `cancel()` landed while a `linkPoll()` was in flight, so the
+    /// stale response is abandoned before it can persist a session the user
+    /// cancelled or flip `phase` to `.signedIn`.
+    private var generation = 0
 
     /// `apiFactory` exists for tests; the default builds a real JournalAPI
     /// against whatever server the QR names.
@@ -91,12 +97,16 @@ public final class LinkSignInViewModel {
     /// Back out: stop polling and return to the sign-in form. The show side
     /// still sees `claimed` and can deny or let the code expire.
     public func cancel() {
+        generation += 1
         pollTask?.cancel()
         pollTask = nil
         phase = .idle
     }
 
     private func claim(server: URL, code: String) async {
+        // Already signed in: a second scan/manual submit must not restart
+        // the state machine and overwrite the signed-in session.
+        if case .signedIn = phase { return }
         guard phase != .claiming, phase != .waitingForApproval else { return }
         phase = .claiming
         let api = apiFactory(server)
@@ -117,14 +127,21 @@ public final class LinkSignInViewModel {
 
     private func startPolling(api: any LinkClaiming, server: URL, claimToken: String) {
         pollTask?.cancel()
+        let pollGeneration = generation
         pollTask = Task { [weak self] in
             guard let self else { return }
             var interval = self.pollInterval
             while !Task.isCancelled {
                 try? await Task.sleep(for: interval)
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, pollGeneration == self.generation else { return }
                 do {
-                    switch try await api.linkPoll(claimToken: claimToken) {
+                    let result = try await api.linkPoll(claimToken: claimToken)
+                    // A cancel() (bumps generation) can have landed while
+                    // this linkPoll() was in flight; abandon before persist
+                    // and before any phase write so a cancelled sign-in is
+                    // never persisted or surfaced as .signedIn.
+                    guard !Task.isCancelled, pollGeneration == self.generation else { return }
+                    switch result {
                     case .pending:
                         interval = self.pollInterval
                     case .denied:

@@ -145,15 +145,23 @@ public final class DeviceLinkViewModel {
 
     private func startPolling() {
         pollTask?.cancel()
+        let pollGeneration = generation
         pollTask = Task { [weak self] in
             guard let self else { return }
             var interval = self.pollInterval
             while !Task.isCancelled {
                 try? await Task.sleep(for: interval)
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, pollGeneration == self.generation else { return }
                 if self.isSubmitting { continue } // don't race an in-flight tap
                 do {
-                    switch try await self.api.linkStatus() {
+                    let status = try await self.api.linkStatus()
+                    // A stop()/approve()/deny() (each bumps generation) can
+                    // have landed a terminal phase while this linkStatus()
+                    // was in flight; abandon before any phase write so the
+                    // late response can't resurrect e.g. .claimed over
+                    // .approved.
+                    guard !Task.isCancelled, pollGeneration == self.generation else { return }
+                    switch status {
                     case .waiting:
                         break // phase already .showing
                     case .claimed(let deviceName, let requesterIP, _):
@@ -165,7 +173,7 @@ public final class DeviceLinkViewModel {
                 } catch JournalAPIError.notFound {
                     // Expired (routine): regenerate silently. startSession
                     // spawns a fresh poll task; this one must end.
-                    guard !Task.isCancelled, !self.isSubmitting else { return }
+                    guard !Task.isCancelled, pollGeneration == self.generation, !self.isSubmitting else { return }
                     await self.startSession()
                     return
                 } catch JournalAPIError.unauthenticated {

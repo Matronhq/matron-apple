@@ -80,6 +80,16 @@ struct SignInView: View {
                     onSignedIn(session)
                 }
             }
+            // Cancel any in-flight link claim/poll when this view goes away
+            // (e.g. password sign-in navigated on): otherwise a later Approve
+            // on the show device could persist a different session over the
+            // active one. The .signedIn forwarding above runs first — the
+            // phase mutation (and its onChange) happens while this view is
+            // still mounted; disappearance is a downstream effect of
+            // onSignedIn swapping the root, so cancel() here only ever fires
+            // after the session was already forwarded. A presented scanner
+            // covers (does not remove) this view, so opening it won't cancel.
+            .onDisappear { linkViewModel.cancel() }
             .fullScreenCover(isPresented: $showingScanner) {
                 QRScannerView { payload in
                     Task { await linkViewModel.handleScanned(payload) }
