@@ -185,4 +185,42 @@ final class RendezvousSignInViewModelTests: XCTestCase {
         XCTAssertTrue(claimer.claimedCodes.isEmpty)
         XCTAssertTrue(auth.persistedSessions.isEmpty)
     }
+
+    func test_offerWhileManualClaimInFlight_isDeferredUntilClaimResolves() async {
+        // A relay offer landing while the user's own typed claim is mid-
+        // approval-wait must not hijack the shared link VM: it would
+        // overwrite the typed server/code and pin this VM's .connecting
+        // host line over a wait that belongs to a different claim (spec §4
+        // transparency). The relay's poll is a repeatable read, so the
+        // offer can be deferred and picked up once the claim resolves.
+        let relay = FakeRelay()
+        relay.pollScript = [.success(.offered(server: "https://relay-offered.example.com", code: "9999-8888"))]
+        let claimer = FakeClaimer()
+        claimer.pollScript = [.success(.pending)]
+        let (vm, link, _) = makeVM(relay: relay, claimer: claimer)
+
+        link.serverURL = "https://typed.example.com"
+        link.codeInput = "1111-2222"
+        await link.submitManual()
+        XCTAssertEqual(link.phase, .waitingForApproval)
+
+        await vm.start()
+        try? await Task.sleep(for: .milliseconds(50))
+        if case .connecting = vm.phase {
+            XCTFail("offer must not hijack an in-flight manual claim")
+        }
+        XCTAssertEqual(link.serverURL, "https://typed.example.com",
+                       "the user's typed server must not be overwritten mid-claim")
+        XCTAssertEqual(link.codeInput, "1111-2222")
+
+        // The manual claim resolves (denied → .error): a later relay poll
+        // re-fetches the still-pending offer and claims it.
+        claimer.pollScript = [.success(.denied)]
+        await waitUntil(link.serverURL == "https://relay-offered.example.com")
+        XCTAssertEqual(link.serverURL, "https://relay-offered.example.com",
+                       "deferred offer must be claimed once the link VM comes back to rest")
+        XCTAssertEqual(link.codeInput, "9999-8888")
+        vm.stop()
+        link.cancel()
+    }
 }

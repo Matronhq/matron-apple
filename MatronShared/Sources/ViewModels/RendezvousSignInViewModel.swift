@@ -79,6 +79,24 @@ public final class RendezvousSignInViewModel {
                     case .waiting:
                         try? await Task.sleep(for: self.pollInterval)
                     case .offered(let server, let code):
+                        // A scan/typed claim may already be in flight on the
+                        // shared link VM. Hijacking it here would overwrite
+                        // the user's entered server/code and pin this VM's
+                        // .connecting host line over a wait that belongs to
+                        // a different claim (spec §4 transparency). The
+                        // relay's poll is a repeatable read — the offer
+                        // survives until the rendezvous TTL — so defer: keep
+                        // polling and pick the offer up if the link VM comes
+                        // back to rest (.signedIn never resumes; the screen
+                        // is closing and a live session must not be
+                        // replaced).
+                        switch self.link.phase {
+                        case .claiming, .waitingForApproval, .signedIn:
+                            try? await Task.sleep(for: self.pollInterval)
+                            continue
+                        case .idle, .error:
+                            break
+                        }
                         self.phase = .connecting(serverHost: URL(string: server)?.host ?? server)
                         self.link.serverURL = server
                         self.link.codeInput = code

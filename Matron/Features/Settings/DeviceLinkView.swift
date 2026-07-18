@@ -60,6 +60,10 @@ struct DeviceLinkView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await viewModel.start() }
         .onDisappear { viewModel.stop() }
+        // The scanner cover lives inside scanTab, so switching tabs tears
+        // it down without flipping the flag back — returning to Scan would
+        // then reopen the camera unasked.
+        .onChange(of: linkTab) { if linkTab != .scan { showingScanner = false } }
     }
 
     /// The pre-claim QR/status content: loading, showing the code,
