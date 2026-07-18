@@ -24,6 +24,16 @@ final class LinkURITests: XCTestCase {
         XCTAssertEqual(parsed.code, "KTNM-3VQ8")
     }
 
+    // Mirrors RendezvousURI.parse's case-insensitive scheme/host comparison
+    // — RFC 3986 schemes/hosts are case-insensitive, and QR alphanumeric
+    // mode is uppercase-only, so an uppercased URI from a third-party QR
+    // renderer should still scan.
+    func test_parse_isCaseInsensitiveOnSchemeAndHost() throws {
+        let parsed = try LinkURI.parse("MATRON://LINK?v=1&server=https%3A%2F%2Fchat.example.com&code=KTNM-3VQ8")
+        XCTAssertEqual(parsed.server, URL(string: "https://chat.example.com")!)
+        XCTAssertEqual(parsed.code, "KTNM-3VQ8")
+    }
+
     func test_parse_wrongSchemeOrHost_isNotALink() {
         for raw in ["https://chat.example.com", "matron://pair?v=1", "otp://x", "not a uri at all"] {
             XCTAssertThrowsError(try LinkURI.parse(raw), raw) { error in
