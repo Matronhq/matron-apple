@@ -260,9 +260,22 @@ final class DeviceLinkViewModelTests: XCTestCase {
     private final class FakeRelay: RelayRendezvousing, @unchecked Sendable {
         var offerResult: Result<Void, Error> = .success(())
         private(set) var offers: [(rid: String, server: String, code: String)] = []
+        /// Same gated pattern as `FakeDeviceLinker.holdStatus` — needed to
+        /// deterministically land inside `offerRendezvous`'s await so a
+        /// concurrent status poll can be interleaved at an exact point
+        /// instead of raced against wall-clock sleeps.
+        var holdOffer = false
+        private(set) var offerGateReached = false
+        private var offerContinuations: [CheckedContinuation<Void, Never>] = []
+        func releaseOffer() { offerContinuations.forEach { $0.resume() }; offerContinuations.removeAll() }
+
         func createRendezvous() async throws -> Rendezvous { fatalError("unused") }
         func pollRendezvous(rid: String, secret: String) async throws -> RendezvousPollResult { fatalError("unused") }
         func offerRendezvous(rid: String, server: String, code: String) async throws {
+            if holdOffer {
+                offerGateReached = true
+                await withCheckedContinuation { offerContinuations.append($0) }
+            }
             offers.append((rid, server, code))
             try offerResult.get()
         }
@@ -336,5 +349,104 @@ final class DeviceLinkViewModelTests: XCTestCase {
         await vm.offerScanned(Self.rlinkPayload)
         XCTAssertTrue(relay.offers.isEmpty)
         XCTAssertEqual(vm.noticeMessage, "Still fetching a link code — try scanning again in a moment.")
+    }
+
+    // MARK: Finding 2 — offerScanned must inhibit poll-driven regeneration
+
+    func test_offerScanned_inhibitsPollRegenerationWhileOfferInFlight() async {
+        // Reproduces the race: a status 404 while offerRendezvous() is
+        // awaiting must not regenerate the session (which would replace
+        // the code the relay is in the middle of handing to the desktop).
+        // Held+released (not raced against sleeps) so the interleaving is
+        // deterministic: the offer is provably in flight when the poll
+        // loop tries — and fails — to regenerate.
+        let fake = FakeDeviceLinker()
+        fake.startResults = [.success(LinkStart(code: "2345-6789", expiresIn: 120)),
+                             .success(LinkStart(code: "WXYZ-2345", expiresIn: 120))]
+        fake.statusScript = [.failure(JournalAPIError.notFound)]
+        let relay = FakeRelay()
+        relay.holdOffer = true
+        let vm = DeviceLinkViewModel(api: fake, serverURL: URL(string: "https://chat.example.com")!,
+                                     relay: relay, pollInterval: .milliseconds(1), errorPollInterval: .milliseconds(1))
+        await vm.start()
+        XCTAssertEqual(vm.phase, .showing(code: "2345-6789"))
+
+        let offerTask = Task { await vm.offerScanned(Self.rlinkPayload) }
+        await waitUntil(relay.offerGateReached)
+
+        // Give the poll loop several intervals' worth of time to try (and,
+        // pre-fix, succeed at) regenerating while the offer sits open.
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(fake.startCount, 1, "poll must not regenerate the session while an offer is in flight")
+        XCTAssertEqual(vm.phase, .showing(code: "2345-6789"))
+
+        relay.releaseOffer()
+        await offerTask.value
+
+        XCTAssertEqual(relay.offers.count, 1)
+        XCTAssertEqual(relay.offers[0].code, "2345-6789", "must offer the code that was live when the scan happened")
+        vm.stop()
+    }
+
+    // MARK: Finding 3 — non-.showing notice must match loading vs. terminal
+
+    func test_offerScanned_whileLoading_asksToRetry() async {
+        let fake = FakeDeviceLinker()
+        fake.holdStart = true
+        let relay = FakeRelay()
+        let vm = DeviceLinkViewModel(api: fake, serverURL: URL(string: "https://chat.example.com")!,
+                                     relay: relay, pollInterval: .milliseconds(1), errorPollInterval: .milliseconds(1))
+        let startTask = Task { await vm.start() }
+        await waitUntil(fake.startCount >= 1)
+        XCTAssertEqual(vm.phase, .loading)
+
+        await vm.offerScanned(Self.rlinkPayload)
+        XCTAssertEqual(vm.noticeMessage, "Still fetching a link code — try scanning again in a moment.")
+        XCTAssertTrue(relay.offers.isEmpty)
+
+        fake.releaseStart()
+        await startTask.value
+        vm.stop()
+    }
+
+    func test_offerScanned_terminalPhases_sayLinkSessionInProgress() async {
+        let relay = FakeRelay()
+
+        let fakeClaimed = FakeDeviceLinker()
+        fakeClaimed.statusScript = [.success(.claimed(deviceName: "Pixel 9", requesterIP: "1.1.1.1", expiresIn: 90))]
+        let vmClaimed = DeviceLinkViewModel(api: fakeClaimed, serverURL: URL(string: "https://chat.example.com")!,
+                                            relay: relay, pollInterval: .milliseconds(1), errorPollInterval: .milliseconds(1))
+        await vmClaimed.start()
+        await waitUntil(vmClaimed.phase == .claimed(deviceName: "Pixel 9", requesterIP: "1.1.1.1"))
+        await vmClaimed.offerScanned(Self.rlinkPayload)
+        XCTAssertEqual(vmClaimed.noticeMessage,
+                       "A link session is already in progress — finish it before linking another device.")
+        vmClaimed.stop()
+
+        let fakeApproved = FakeDeviceLinker()
+        fakeApproved.statusScript = [.success(.claimed(deviceName: "Pixel 9", requesterIP: "1.1.1.1", expiresIn: 90))]
+        let vmApproved = DeviceLinkViewModel(api: fakeApproved, serverURL: URL(string: "https://chat.example.com")!,
+                                             relay: relay, pollInterval: .milliseconds(1), errorPollInterval: .milliseconds(1))
+        await vmApproved.start()
+        await waitUntil(vmApproved.phase == .claimed(deviceName: "Pixel 9", requesterIP: "1.1.1.1"))
+        await vmApproved.approve()
+        XCTAssertEqual(vmApproved.phase, .approved)
+        await vmApproved.offerScanned(Self.rlinkPayload)
+        XCTAssertEqual(vmApproved.noticeMessage,
+                       "A link session is already in progress — finish it before linking another device.")
+
+        let fakeDenied = FakeDeviceLinker()
+        fakeDenied.statusScript = [.success(.claimed(deviceName: "Pixel 9", requesterIP: "1.1.1.1", expiresIn: 90))]
+        let vmDenied = DeviceLinkViewModel(api: fakeDenied, serverURL: URL(string: "https://chat.example.com")!,
+                                           relay: relay, pollInterval: .milliseconds(1), errorPollInterval: .milliseconds(1))
+        await vmDenied.start()
+        await waitUntil(vmDenied.phase == .claimed(deviceName: "Pixel 9", requesterIP: "1.1.1.1"))
+        await vmDenied.deny()
+        XCTAssertEqual(vmDenied.phase, .denied)
+        await vmDenied.offerScanned(Self.rlinkPayload)
+        XCTAssertEqual(vmDenied.noticeMessage,
+                       "A link session is already in progress — finish it before linking another device.")
+
+        XCTAssertTrue(relay.offers.isEmpty, "none of the terminal phases should have reached the relay")
     }
 }

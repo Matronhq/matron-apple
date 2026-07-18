@@ -141,6 +141,34 @@ final class RendezvousSignInViewModelTests: XCTestCase {
         XCTAssertEqual(vm.phase, .showing(qrPayload: "matron://rlink?v=1&rid=\(Self.rid1)"))
     }
 
+    func test_connecting_whenLinkSubmitManualEarlyReturns_becomesError() async {
+        // Finding 1a: an empty server (e.g. a malformed offer) makes
+        // submitManual()'s own guard return WITHOUT starting a claim —
+        // link.phase never leaves .idle. The rendezvous VM must not park
+        // in .connecting forever; it needs to surface a retryable error.
+        let relay = FakeRelay()
+        relay.pollScript = [.success(.offered(server: "", code: "2345-6789"))]
+        let (vm, link, _) = makeVM(relay: relay, claimer: FakeClaimer())
+        await vm.start()
+        await waitUntil(vm.phase == .error("Couldn't connect to that computer's session — try again."))
+        XCTAssertEqual(vm.phase, .error("Couldn't connect to that computer's session — try again."))
+        XCTAssertEqual(link.phase, .idle)
+    }
+
+    func test_connecting_whenLinkClaimFails_becomesError() async {
+        // Finding 1b: the link VM can also land in its own .error (e.g. the
+        // server rejects the claim) — that must also unstick .connecting.
+        let relay = FakeRelay()
+        relay.pollScript = [.success(.offered(server: "https://chat.example.com", code: "2345-6789"))]
+        let claimer = FakeClaimer()
+        claimer.claimResult = .failure(JournalAPIError.notFound)
+        let (vm, link, _) = makeVM(relay: relay, claimer: claimer)
+        await vm.start()
+        await waitUntil(vm.phase == .error("Couldn't connect to that computer's session — try again."))
+        XCTAssertEqual(vm.phase, .error("Couldn't connect to that computer's session — try again."))
+        XCTAssertEqual(link.phase, .error("Code not recognized or expired. Show a fresh QR code and try again."))
+    }
+
     func test_stop_whilePollInFlight_dropsTheLateOffer() async {
         let relay = FakeRelay()
         relay.holdPoll = true

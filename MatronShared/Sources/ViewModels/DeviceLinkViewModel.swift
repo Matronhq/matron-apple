@@ -38,9 +38,9 @@ public final class DeviceLinkViewModel {
     /// One-line banner above a regenerated QR ("Code expired — showing a
     /// fresh one") or under a failed tap ("Couldn't approve — try again.").
     public private(set) var noticeMessage: String?
-    /// True while an approve/deny round-trip is in flight; reentrant taps
-    /// are ignored and the poll loop skips regeneration to avoid racing
-    /// the in-flight request.
+    /// True while an approve/deny/offer round-trip is in flight; reentrant
+    /// approve/deny taps are ignored and the poll loop skips regeneration
+    /// to avoid racing the in-flight request.
     public private(set) var isSubmitting = false
 
     /// The full QR payload for the current code (nil unless `.showing`).
@@ -150,9 +150,20 @@ public final class DeviceLinkViewModel {
             return
         }
         guard case .showing(let code) = phase else {
-            noticeMessage = "Still fetching a link code — try scanning again in a moment."
+            switch phase {
+            case .claimed, .approved, .denied:
+                noticeMessage = "A link session is already in progress — finish it before linking another device."
+            default:
+                noticeMessage = "Still fetching a link code — try scanning again in a moment."
+            }
             return
         }
+        // Mirror approve()/deny()'s poll-inhibition: without this, a
+        // 404-driven regeneration racing this await can replace the
+        // session mid-offer, so the relay hands the desktop a code this
+        // device can no longer claim.
+        isSubmitting = true
+        defer { isSubmitting = false }
         do {
             try await relay.offerRendezvous(rid: rid, server: serverURL.absoluteString, code: code)
             guard gen == generation else { return }

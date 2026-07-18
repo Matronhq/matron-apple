@@ -83,6 +83,18 @@ public final class RendezvousSignInViewModel {
                         self.link.serverURL = server
                         self.link.codeInput = code
                         await self.link.submitManual()
+                        guard gen == self.generation else { return }
+                        switch self.link.phase {
+                        case .claiming, .waitingForApproval, .signedIn:
+                            break // the link VM's own phases drive the UI from here
+                        case .idle, .error:
+                            // submitManual() either early-returned without
+                            // starting a claim (invalid server URL/code, or a
+                            // session already in progress) or the claim itself
+                            // landed in its own .error — either way this VM
+                            // must not park in .connecting forever.
+                            self.phase = .error("Couldn't connect to that computer's session — try again.")
+                        }
                         return
                     }
                 } catch RelayError.notFound {
