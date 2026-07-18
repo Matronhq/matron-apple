@@ -24,16 +24,13 @@ public enum RendezvousURI {
     }
 
     public static func parse(_ raw: String) throws -> String {
-        guard raw.hasPrefix(prefix) else { throw ParseError.notALink }
-        var params: [String: String] = [:]
-        for pair in raw.dropFirst(prefix.count).split(separator: "&") {
-            guard let eq = pair.firstIndex(of: "="), eq != pair.startIndex else { continue }
-            params[String(pair[..<eq])] = String(pair[pair.index(after: eq)...])
-                .removingPercentEncoding ?? ""
-        }
-        guard let version = params["v"] else { throw ParseError.malformed }
+        guard let components = URLComponents(string: raw),
+              components.scheme?.lowercased() == "matron", components.host?.lowercased() == "rlink"
+        else { throw ParseError.notALink }
+        let value = { (name: String) in components.queryItems?.first(where: { $0.name == name })?.value }
+        guard let version = value("v") else { throw ParseError.malformed }
         guard version == "1" else { throw ParseError.unsupportedVersion }
-        guard let rid = params["rid"], rid.range(of: ridPattern, options: .regularExpression) != nil else {
+        guard let rid = value("rid"), rid.range(of: ridPattern, options: .regularExpression) != nil else {
             throw ParseError.malformed
         }
         return rid

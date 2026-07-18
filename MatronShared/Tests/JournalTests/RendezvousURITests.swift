@@ -39,4 +39,25 @@ final class RendezvousURITests: XCTestCase {
             }
         }
     }
+
+    // Mirrors LinkURI.parse's URLComponents-based scheme/host comparison,
+    // which normalizes case rather than hand-rolling a case-sensitive
+    // `hasPrefix` check.
+    func test_parse_isCaseInsensitiveOnSchemeAndHost() throws {
+        XCTAssertEqual(try RendezvousURI.parse("MATRON://RLINK?v=1&rid=\(rid)"), rid)
+    }
+
+    // Mirrors LinkURI.parse's `queryItems?.first(where:)` — first-wins —
+    // rather than a `split`-built dictionary, which resolves last-wins.
+    func test_parse_duplicateRidKeys_firstWins() throws {
+        let ridB = String(rid.reversed()) // a different, still-valid rid
+        XCTAssertEqual(try RendezvousURI.parse("matron://rlink?v=1&rid=\(rid)&rid=\(ridB)"), rid)
+    }
+
+    // Coverage addition (not a TDD gap): an explicitly empty rid value.
+    func test_parse_emptyRidValue_isMalformed() {
+        XCTAssertThrowsError(try RendezvousURI.parse("matron://rlink?v=1&rid=")) { error in
+            XCTAssertEqual(error as? RendezvousURI.ParseError, .malformed)
+        }
+    }
 }
