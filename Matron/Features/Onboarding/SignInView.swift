@@ -156,9 +156,17 @@ struct SignInView: View {
                     Text(message).foregroundStyle(.red)
                     // The rendezvous VM parks in .connecting once it hands
                     // off to linkViewModel; a link-side error while Show is
-                    // selected still needs a way back to a fresh QR.
+                    // selected still needs a way back to a fresh QR. Reset
+                    // linkViewModel to .idle first: rendezvousShow suppresses
+                    // itself while linkViewModel.phase is .error, so
+                    // restarting the rendezvous VM alone would mint a new QR
+                    // that stays hidden behind the stale error phase — a
+                    // dead-end button that appears to do nothing.
                     if qrTab == .show {
-                        Button("Show a new code") { Task { await rendezvousViewModel.start() } }
+                        Button("Show a new code") {
+                            linkViewModel.cancel()
+                            Task { await rendezvousViewModel.start() }
+                        }
                     }
                 }
             } else if showingManualCode {
@@ -170,28 +178,41 @@ struct SignInView: View {
     }
 
     @ViewBuilder private var rendezvousShow: some View {
-        switch rendezvousViewModel.phase {
-        case .idle, .loading:
-            ProgressView()
-        case .showing(let payload):
-            VStack(spacing: 12) {
-                QRCodeView(string: payload)
-                    .frame(width: 220, height: 220)
-                Text("Scan this with a phone that's signed in to Matron")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-        case .connecting(let host):
-            VStack(spacing: 12) {
+        // The rendezvous VM checks linkViewModel's phase once, synchronously
+        // after submitManual(), and then parks in .connecting — it never
+        // reacts to linkViewModel reaching .error later on its own
+        // claim/poll loop (denial, expiry, persist failure). Once that
+        // happens, render nothing here: the footer's link-error text +
+        // "Show a new code" button (below) is the single error surface and
+        // recovery path, so a stale "Connecting to <host>…" (or a second,
+        // redundant rendezvous-error/Retry in the synchronous-failure case)
+        // never renders alongside it.
+        if case .error = linkViewModel.phase {
+            EmptyView()
+        } else {
+            switch rendezvousViewModel.phase {
+            case .idle, .loading:
                 ProgressView()
-                Text("Connecting to \(host)…")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-        case .error(let message):
-            VStack(spacing: 8) {
-                Text(message).font(.footnote).foregroundStyle(.secondary)
-                Button("Retry") { Task { await rendezvousViewModel.start() } }
+            case .showing(let payload):
+                VStack(spacing: 12) {
+                    QRCodeView(string: payload)
+                        .frame(width: 220, height: 220)
+                    Text("Scan this with a phone that's signed in to Matron")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            case .connecting(let host):
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text("Connecting to \(host)…")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            case .error(let message):
+                VStack(spacing: 8) {
+                    Text(message).font(.footnote).foregroundStyle(.secondary)
+                    Button("Retry") { Task { await rendezvousViewModel.start() } }
+                }
             }
         }
     }
