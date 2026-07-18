@@ -27,6 +27,17 @@ struct MacSignInView: View {
                 VStack(spacing: 12) {
                     ProgressView()
                     Text("Waiting for approval on your other device…")
+                    // Spec §4 (compromised-relay mitigation): when this wait
+                    // came from the rendezvous handoff, keep the offered
+                    // server host visible for the ENTIRE approval wait, not
+                    // just the sub-second claim — a manual-code claimant
+                    // flow (rendezvousViewModel not .connecting) keeps the
+                    // plain copy above unchanged.
+                    if case .connecting(let host) = rendezvousViewModel.phase {
+                        Text("Signing in to \(host) — approve the request on your signed-in device.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                     Button("Cancel") {
                         linkViewModel.cancel()
                         // The rendezvous VM parks in .connecting once it

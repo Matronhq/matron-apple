@@ -351,6 +351,36 @@ final class DeviceLinkViewModelTests: XCTestCase {
         XCTAssertEqual(vm.noticeMessage, "Still fetching a link code — try scanning again in a moment.")
     }
 
+    func test_offerScanned_reentrant_ignoresSecondScanWhileFirstOfferInFlight() async {
+        // A double-fired scan (e.g. the scanner callback firing twice for
+        // one frame) must not double-offer: a second offerRendezvous while
+        // the first is still in flight would either race the relay or, if
+        // it lands after the first succeeds, spuriously show "already used
+        // by another device" over what was actually a clean single offer.
+        let fake = FakeDeviceLinker()
+        fake.startResults = [.success(LinkStart(code: "2345-6789", expiresIn: 120))]
+        let relay = FakeRelay()
+        relay.holdOffer = true
+        let vm = DeviceLinkViewModel(api: fake, serverURL: URL(string: "https://chat.example.com")!,
+                                     relay: relay, pollInterval: .milliseconds(1), errorPollInterval: .milliseconds(1))
+        await vm.start()
+        XCTAssertEqual(vm.phase, .showing(code: "2345-6789"))
+
+        let firstOffer = Task { await vm.offerScanned(Self.rlinkPayload) }
+        await waitUntil(relay.offerGateReached)
+
+        // Fires while the first offer is still held open — must be a no-op.
+        await vm.offerScanned(Self.rlinkPayload)
+        XCTAssertTrue(relay.offers.isEmpty, "the reentrant call must not have reached the relay yet")
+
+        relay.releaseOffer()
+        await firstOffer.value
+
+        XCTAssertEqual(relay.offers.count, 1, "exactly one offer must have been recorded")
+        XCTAssertEqual(vm.noticeMessage, "Sent — approve the request when it appears.")
+        vm.stop()
+    }
+
     // MARK: Finding 2 — offerScanned must inhibit poll-driven regeneration
 
     func test_offerScanned_inhibitsPollRegenerationWhileOfferInFlight() async {
@@ -363,7 +393,13 @@ final class DeviceLinkViewModelTests: XCTestCase {
         let fake = FakeDeviceLinker()
         fake.startResults = [.success(LinkStart(code: "2345-6789", expiresIn: 120)),
                              .success(LinkStart(code: "WXYZ-2345", expiresIn: 120))]
-        fake.statusScript = [.failure(JournalAPIError.notFound)]
+        // First 404 lands *during* the offer (parked via holdStatus below),
+        // second 404 arrives after the offer resolves and must regenerate,
+        // then the regenerated session settles on .waiting.
+        fake.statusScript = [.failure(JournalAPIError.notFound),
+                             .failure(JournalAPIError.notFound),
+                             .success(.waiting(expiresIn: 100))]
+        fake.holdStatus = true
         let relay = FakeRelay()
         relay.holdOffer = true
         let vm = DeviceLinkViewModel(api: fake, serverURL: URL(string: "https://chat.example.com")!,
@@ -371,8 +407,11 @@ final class DeviceLinkViewModelTests: XCTestCase {
         await vm.start()
         XCTAssertEqual(vm.phase, .showing(code: "2345-6789"))
 
+        await waitUntil(fake.statusCount >= 1)           // a linkStatus is parked in flight
         let offerTask = Task { await vm.offerScanned(Self.rlinkPayload) }
-        await waitUntil(relay.offerGateReached)
+        await waitUntil(relay.offerGateReached)          // offer provably open, isSubmitting == true
+        fake.holdStatus = false
+        fake.releaseStatus()                             // parked call resolves to 404 while the offer is open
 
         // Give the poll loop several intervals' worth of time to try (and,
         // pre-fix, succeed at) regenerating while the offer sits open.
@@ -385,6 +424,17 @@ final class DeviceLinkViewModelTests: XCTestCase {
 
         XCTAssertEqual(relay.offers.count, 1)
         XCTAssertEqual(relay.offers[0].code, "2345-6789", "must offer the code that was live when the scan happened")
+
+        // The offer has resolved and isSubmitting has cleared — the poll
+        // loop must still be alive to notice the (still-404ing) session
+        // and regenerate. Pre-fix, the `!isSubmitting` disjunct in the
+        // notFound handler RETURNS instead of skipping, permanently killing
+        // the loop when the parked 404 above resolved — so the phone is
+        // stuck on the dead/expired QR forever and this never happens.
+        await waitUntil(vm.phase == .showing(code: "WXYZ-2345"))
+        XCTAssertEqual(vm.phase, .showing(code: "WXYZ-2345"),
+                       "poll loop must survive the in-flight offer and regenerate the expired session")
+        XCTAssertEqual(fake.startCount, 2, "startSession must run again once the offer clears isSubmitting")
         vm.stop()
     }
 

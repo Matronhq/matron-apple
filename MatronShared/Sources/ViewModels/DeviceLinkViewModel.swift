@@ -138,6 +138,9 @@ public final class DeviceLinkViewModel {
     /// status poll flips to .claimed → the normal approve card.
     public func offerScanned(_ payload: String) async {
         guard let relay else { return }
+        // A double-fired scan callback must not stack a second offer on
+        // the one still in flight.
+        guard !isSubmitting else { return }
         let gen = generation
         let rid: String
         do {
@@ -225,7 +228,11 @@ public final class DeviceLinkViewModel {
                 } catch JournalAPIError.notFound {
                     // Expired (routine): regenerate silently. startSession
                     // spawns a fresh poll task; this one must end.
-                    guard !Task.isCancelled, pollGeneration == self.generation, !self.isSubmitting else { return }
+                    guard !Task.isCancelled, pollGeneration == self.generation else { return }
+                    // An in-flight offer must not have its session replaced
+                    // — but the loop has to survive to regenerate once the
+                    // offer clears, or the device strands on a dead QR.
+                    if self.isSubmitting { continue }
                     await self.startSession()
                     return
                 } catch JournalAPIError.unauthenticated {
