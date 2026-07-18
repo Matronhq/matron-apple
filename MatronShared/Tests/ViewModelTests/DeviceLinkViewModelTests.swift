@@ -23,6 +23,18 @@ private final class FakeDeviceLinker: DeviceLinking, @unchecked Sendable {
         statusContinuations.removeAll()
     }
 
+    /// Same gated pattern as `holdStatus`, for `linkStart()` — needed to
+    /// deterministically land inside a regenerate's `linkStart` await so a
+    /// concurrent `stop()` can be interleaved at an exact point instead of
+    /// raced against wall-clock sleeps.
+    var holdStart = false
+    private var startContinuations: [CheckedContinuation<Void, Never>] = []
+
+    func releaseStart() {
+        startContinuations.forEach { $0.resume() }
+        startContinuations.removeAll()
+    }
+
     private(set) var startCount = 0
     private(set) var statusCount = 0
     private(set) var approvedCodes: [String] = []
@@ -30,6 +42,9 @@ private final class FakeDeviceLinker: DeviceLinking, @unchecked Sendable {
 
     func linkStart() async throws -> LinkStart {
         startCount += 1
+        if holdStart {
+            await withCheckedContinuation { startContinuations.append($0) }
+        }
         let result = startResults.count > 1 ? startResults.removeFirst() : startResults[0]
         return try result.get()
     }
@@ -167,6 +182,45 @@ final class DeviceLinkViewModelTests: XCTestCase {
         fake.releaseStatus()
         try? await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(fake.statusCount, count)
+    }
+
+    func test_stop_duringApproveRegenerate_abandonsStaleSession() async {
+        // Reproduces the orphan-poll-loop bug: approve() reacts to a
+        // .notFound (code expired right as the tap landed) by calling
+        // stop() then awaiting startSession() to mint a fresh code — all
+        // inside the button tap's own unstructured Task, which the view's
+        // onDisappear can't reach. If the user leaves the screen while that
+        // regenerate's linkStart() is still in flight, onDisappear's stop()
+        // has nothing to cancel (the old pollTask is already nil), and an
+        // unguarded startSession() would resurrect phase + spawn a brand
+        // new, uncancellable poll loop once linkStart() finally resolves.
+        // Held+released (not raced against sleeps) so the interleaving is
+        // deterministic: stop() is proven to land while linkStart() is
+        // provably still suspended.
+        let fake = FakeDeviceLinker()
+        fake.statusScript = [.success(.claimed(deviceName: "Pixel 9", requesterIP: "1.1.1.1", expiresIn: 5))]
+        fake.approveResult = .failure(JournalAPIError.notFound)
+        fake.startResults = [.success(LinkStart(code: "KTNM-3VQ8", expiresIn: 120)),
+                             .success(LinkStart(code: "WXYZ-2345", expiresIn: 120))]
+        let vm = makeVM(fake)
+        await vm.start()
+        await waitUntil(vm.phase == .claimed(deviceName: "Pixel 9", requesterIP: "1.1.1.1"))
+
+        fake.holdStart = true
+        let approveTask = Task { await vm.approve() }
+        await waitUntil(fake.startCount >= 2) // regenerate's linkStart() is in flight, held open
+
+        vm.stop() // the onDisappear that should orphan this regenerate
+
+        fake.releaseStart()
+        await approveTask.value
+
+        // The abandoned regenerate must not resurrect phase...
+        XCTAssertEqual(vm.phase, .claimed(deviceName: "Pixel 9", requesterIP: "1.1.1.1"))
+        // ...nor spawn a poll loop nothing can stop.
+        let statusCountAfterAbandon = fake.statusCount
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(fake.statusCount, statusCountAfterAbandon)
     }
 
     func test_transportErrorOnStatus_keepsShowingAndKeepsPolling() async {

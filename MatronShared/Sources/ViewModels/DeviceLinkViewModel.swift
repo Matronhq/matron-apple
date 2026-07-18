@@ -57,6 +57,13 @@ public final class DeviceLinkViewModel {
     /// The active session's display code — what approve/deny send back as
     /// the belt-and-braces intent check.
     private var currentCode: String?
+    /// Bumped by every `stop()`. `startSession()` snapshots this on entry
+    /// and re-checks it after each `await`; a mismatch means a `stop()`
+    /// landed while the session was starting (e.g. the view disappeared
+    /// while a regenerate's `linkStart()` was in flight), so the stale
+    /// session abandons instead of resurrecting `phase` and spawning a
+    /// poll loop that `stop()` can no longer reach.
+    private var generation = 0
 
     public init(api: any DeviceLinking, serverURL: URL,
                 pollInterval: Duration = .seconds(2),
@@ -75,6 +82,7 @@ public final class DeviceLinkViewModel {
     }
 
     public func stop() {
+        generation += 1
         pollTask?.cancel()
         pollTask = nil
     }
@@ -119,14 +127,18 @@ public final class DeviceLinkViewModel {
     }
 
     private func startSession() async {
+        let sessionGeneration = generation
         do {
             let started = try await api.linkStart()
+            guard sessionGeneration == generation else { return } // superseded by a stop() — abandon silently
             currentCode = started.code
             phase = .showing(code: started.code)
             startPolling()
         } catch JournalAPIError.notFound {
+            guard sessionGeneration == generation else { return }
             phase = .unsupported
         } catch {
+            guard sessionGeneration == generation else { return }
             phase = .error("Couldn't reach the server — try again.")
         }
     }

@@ -7,8 +7,9 @@ import MatronViewModels
 /// sections (Matrix-SDK-only concepts the journal stack has no equivalent
 /// for yet) down to a read-only account summary: userID, deviceID, and
 /// homeserver host. The Devices row (journal PR #19) pushes the roster +
-/// pairing screen; both dependencies are optional so previews / tests keep
-/// rendering the summary without a live API.
+/// pairing screen; `devicesAPI`, `linkAPI`, and `onSignOut` are all optional
+/// so previews / tests keep rendering the summary without a live API or
+/// sign-out wiring.
 struct DeviceSettingsView: View {
     let session: UserSession
     var devicesAPI: (any DevicesProviding)? = nil
