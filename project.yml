@@ -96,6 +96,10 @@ targets:
         # (not by hand in Info.plist) so `xcodegen generate` keeps it in the
         # generated plist — the same channel as NSAppTransportSecurity below.
         NSMicrophoneUsageDescription: Records voice notes to send to your agent.
+        # Camera usage string for the sign-in QR scanner (device-link
+        # login). Managed here so `xcodegen generate` keeps it in the
+        # generated plist.
+        NSCameraUsageDescription: Matron uses the camera to scan sign-in QR codes from your other devices.
         # Photo-library usage string for the attachment picker. PHPicker
         # normally needs no authorization (it runs out-of-process), but the
         # composer passes `photoLibrary: .shared()` — required for

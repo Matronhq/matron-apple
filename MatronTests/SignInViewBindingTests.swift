@@ -35,9 +35,10 @@ final class SignInViewBindingTests: XCTestCase {
         vm.serverURL = "https://matrix.example.com"
         vm.username = "alice"
         vm.password = "hunter2"
+        let linkVM = LinkSignInViewModel(auth: fake, deviceDisplayName: "Matron iOS")
 
         var captured: UserSession?
-        let _ = SignInView(viewModel: vm) { captured = $0 }
+        let _ = SignInView(viewModel: vm, linkViewModel: linkVM) { captured = $0 }
 
         await vm.submit()
 
