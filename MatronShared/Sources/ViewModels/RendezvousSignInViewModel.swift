@@ -60,7 +60,11 @@ public final class RendezvousSignInViewModel {
         do {
             let rendezvous = try await relay.createRendezvous()
             guard gen == generation else { return }
-            phase = .showing(qrPayload: RendezvousURI.format(rid: rendezvous.rid))
+            // The offer key is generated on THIS device and published only in the
+            // QR — it never reaches the relay (spec §4.2). Task 4 formalizes this
+            // as an injectable keyProvider for testability.
+            let key = RendezvousCrypto.generateKey()
+            phase = .showing(qrPayload: RendezvousURI.format(rid: rendezvous.rid, key: key))
             startPolling(rid: rendezvous.rid, secret: rendezvous.secret, gen: gen)
         } catch {
             guard gen == generation else { return }

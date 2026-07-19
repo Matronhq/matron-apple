@@ -123,7 +123,11 @@ final class RendezvousSignInViewModelTests: XCTestCase {
         let (vm, link, auth) = makeVM(relay: relay, claimer: claimer)
 
         await vm.start()
-        XCTAssertEqual(vm.phase, .showing(qrPayload: "matron://rlink?v=1&rid=\(Self.rid1)"))
+        if case .showing(let qr) = vm.phase {
+            XCTAssertTrue(qr.hasPrefix("matron://rlink?v=2&rid=\(Self.rid1)&k="))
+        } else {
+            XCTFail("expected .showing, got \(vm.phase)")
+        }
 
         let expected = UserSession(userID: "dan", deviceID: "42",
                                    homeserverURL: URL(string: "https://chat.example.com")!, accessToken: "tok99")
@@ -144,8 +148,12 @@ final class RendezvousSignInViewModelTests: XCTestCase {
         let (vm, _, _) = makeVM(relay: relay, claimer: FakeClaimer())
         await vm.start()
         await waitUntil(relay.createCount == 2)
-        await waitUntil(vm.phase == .showing(qrPayload: "matron://rlink?v=1&rid=\(Self.rid2)"))
-        XCTAssertEqual(vm.phase, .showing(qrPayload: "matron://rlink?v=1&rid=\(Self.rid2)"))
+        await waitUntil({ if case .showing = vm.phase { return true } else { return false } }())
+        if case .showing(let qr) = vm.phase {
+            XCTAssertTrue(qr.hasPrefix("matron://rlink?v=2&rid=\(Self.rid2)&k="))
+        } else {
+            XCTFail("expected .showing, got \(vm.phase)")
+        }
     }
 
     func test_createFailure_isARetryableError() async {
@@ -162,7 +170,11 @@ final class RendezvousSignInViewModelTests: XCTestCase {
         let (vm, _, _) = makeVM(relay: relay, claimer: FakeClaimer())
         await vm.start()
         await waitUntil(relay.pollCount >= 3)
-        XCTAssertEqual(vm.phase, .showing(qrPayload: "matron://rlink?v=1&rid=\(Self.rid1)"))
+        if case .showing(let qr) = vm.phase {
+            XCTAssertTrue(qr.hasPrefix("matron://rlink?v=2&rid=\(Self.rid1)&k="))
+        } else {
+            XCTFail("expected .showing, got \(vm.phase)")
+        }
     }
 
     func test_connecting_whenLinkSubmitManualEarlyReturns_becomesError() async {

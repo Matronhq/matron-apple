@@ -144,7 +144,8 @@ public final class DeviceLinkViewModel {
         let gen = generation
         let rid: String
         do {
-            rid = try RendezvousURI.parse(payload)
+            let parsed = try RendezvousURI.parse(payload)
+            rid = parsed.rid
         } catch RendezvousURI.ParseError.unsupportedVersion {
             noticeMessage = "This QR code needs a newer version of Matron."
             return

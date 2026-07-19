@@ -8,7 +8,8 @@ final class RelayClientTests: XCTestCase {
         let r = try RelayClient.mapCreate(status: 201, data: data(
             #"{"rid":"23456789BCDFGHJKMNPQRSTVWX","secret":"\#(String(repeating: "a", count: 64))","expires_in":180}"#))
         XCTAssertEqual(r, Rendezvous(rid: "23456789BCDFGHJKMNPQRSTVWX",
-                                     secret: String(repeating: "a", count: 64), expiresIn: 180))
+                                     secret: String(repeating: "a", count: 64),
+                                     expiresIn: 180))
     }
 
     func test_mapCreate_errors() {
