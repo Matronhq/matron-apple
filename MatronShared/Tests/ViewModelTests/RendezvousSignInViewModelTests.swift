@@ -8,8 +8,12 @@ import MatronModels
 final class RendezvousSignInViewModelTests: XCTestCase {
     private static let rid1 = "23456789BCDFGHJKMNPQRSTVWX"
     private static let rid2 = "X".padding(toLength: 26, withPad: "X", startingAt: 0)
-
-    // MARK: Fakes
+    // The interop vector: key + a box that opens to {server, code} below.
+    private static let vectorKeyB64 = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+    private static let vectorKey = Base64URL.decode(vectorKeyB64)!
+    private static let vectorBox = Base64URL.decode(
+        "oKGio6SlpqeoqaqrnToPSDe9Z81AX6W7cw6wrUqDdnP61jZC-XZH6w_HEC-xGSrdgwAwUjv5JvIrSLDNcjZwf1rpOAMFFZLM4JJwtKZY9E-Fmmfg")!
+    // vectorBox decrypts to server "https://chat.example.com", code "2345-6789".
 
     private final class FakeRelay: RelayRendezvousing, @unchecked Sendable {
         var createResults: [Result<Rendezvous, Error>] =
@@ -21,10 +25,6 @@ final class RendezvousSignInViewModelTests: XCTestCase {
         private var pollContinuations: [CheckedContinuation<Void, Never>] = []
         var pollGateReached = false
         private var bankedPollReleases = 0
-        /// Banked-release gate — same rationale as DeviceLinkViewModelTests'
-        /// FakeDeviceLinker.gateLock: this class is not actor-isolated, so a
-        /// release landing in the window before the park would be lost and
-        /// the parked call would hang to the waitUntil timeout on loaded CI.
         private let gateLock = NSLock()
 
         func releasePoll() {
@@ -58,7 +58,7 @@ final class RendezvousSignInViewModelTests: XCTestCase {
             }
             return try (pollScript.count > 1 ? pollScript.removeFirst() : pollScript[0]).get()
         }
-        func offerRendezvous(rid: String, server: String, code: String) async throws {}
+        func offerRendezvous(rid: String, box: Data) async throws {}
     }
 
     private final class FakeClaimer: LinkClaiming, @unchecked Sendable {
@@ -74,7 +74,6 @@ final class RendezvousSignInViewModelTests: XCTestCase {
         }
     }
 
-    // Verbatim copy of LinkSignInViewModelTests.swift's file-private FakeAuth.
     private final class FakeAuth: AuthService, @unchecked Sendable {
         var persistedSessions: [UserSession] = []
         var persistError: Error?
@@ -93,7 +92,6 @@ final class RendezvousSignInViewModelTests: XCTestCase {
         func clearSession() throws {}
     }
 
-    // Same helper convention as LinkSignInViewModelTests.swift.
     private func waitUntil(_ condition: @autoclosure () -> Bool, timeout: TimeInterval = 2) async {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition() && Date() < deadline {
@@ -102,32 +100,27 @@ final class RendezvousSignInViewModelTests: XCTestCase {
     }
 
     private func makeVM(relay: FakeRelay, claimer: FakeClaimer,
-                        auth: FakeAuth = FakeAuth())
+                        auth: FakeAuth = FakeAuth(),
+                        key: Data = vectorKey)
         -> (RendezvousSignInViewModel, LinkSignInViewModel, FakeAuth) {
         let link = LinkSignInViewModel(auth: auth, deviceDisplayName: "Matron Mac",
                                        apiFactory: { _ in claimer },
                                        pollInterval: .milliseconds(1), errorPollInterval: .milliseconds(1))
         let vm = RendezvousSignInViewModel(relay: relay, link: link,
-                                           pollInterval: .milliseconds(1), errorPollInterval: .milliseconds(1))
+                                           pollInterval: .milliseconds(1), errorPollInterval: .milliseconds(1),
+                                           keyProvider: { key })
         return (vm, link, auth)
     }
 
-    // MARK: Tests
-
-    func test_start_showsRlinkQR_thenOfferDrivesLinkSignInToCompletion() async throws {
+    func test_start_showsV2QR_thenOpensBoxAndDrivesLinkSignInToCompletion() async throws {
         let relay = FakeRelay()
-        relay.pollScript = [.success(.waiting),
-                            .success(.offered(server: "https://chat.example.com", code: "2345-6789"))]
+        relay.pollScript = [.success(.waiting), .success(.offered(box: Self.vectorBox))]
         let claimer = FakeClaimer()
         claimer.pollScript = [.success(.approved(LinkApproval(token: "tok99", deviceID: 42, userID: 7, username: "dan")))]
         let (vm, link, auth) = makeVM(relay: relay, claimer: claimer)
 
         await vm.start()
-        if case .showing(let qr) = vm.phase {
-            XCTAssertTrue(qr.hasPrefix("matron://rlink?v=2&rid=\(Self.rid1)&k="))
-        } else {
-            XCTFail("expected .showing, got \(vm.phase)")
-        }
+        XCTAssertEqual(vm.phase, .showing(qrPayload: "matron://rlink?v=2&rid=\(Self.rid1)&k=\(Self.vectorKeyB64)"))
 
         let expected = UserSession(userID: "dan", deviceID: "42",
                                    homeserverURL: URL(string: "https://chat.example.com")!, accessToken: "tok99")
@@ -136,6 +129,21 @@ final class RendezvousSignInViewModelTests: XCTestCase {
         XCTAssertEqual(vm.phase, .connecting(serverHost: "chat.example.com"))
         XCTAssertEqual(claimer.claimedCodes, ["2345-6789"])
         XCTAssertEqual(auth.persistedSessions.count, 1)
+    }
+
+    func test_undecryptableBox_silentlyRegenerates() async {
+        let relay = FakeRelay()
+        relay.createResults = [
+            .success(Rendezvous(rid: Self.rid1, secret: String(repeating: "a", count: 64), expiresIn: 180)),
+            .success(Rendezvous(rid: Self.rid2, secret: String(repeating: "b", count: 64), expiresIn: 180)),
+        ]
+        // First poll returns a box this VM's key cannot open → treat like expiry.
+        relay.pollScript = [.success(.offered(box: Data([0x00, 0x01, 0x02, 0x03, 0x04, 0x05]))), .success(.waiting)]
+        let (vm, _, _) = makeVM(relay: relay, claimer: FakeClaimer())
+        await vm.start()
+        await waitUntil(relay.createCount == 2)
+        await waitUntil(vm.phase == .showing(qrPayload: "matron://rlink?v=2&rid=\(Self.rid2)&k=\(Self.vectorKeyB64)"))
+        XCTAssertEqual(vm.phase, .showing(qrPayload: "matron://rlink?v=2&rid=\(Self.rid2)&k=\(Self.vectorKeyB64)"))
     }
 
     func test_expiredRendezvous_silentlyRegenerates() async {
@@ -148,12 +156,8 @@ final class RendezvousSignInViewModelTests: XCTestCase {
         let (vm, _, _) = makeVM(relay: relay, claimer: FakeClaimer())
         await vm.start()
         await waitUntil(relay.createCount == 2)
-        await waitUntil({ if case .showing = vm.phase { return true } else { return false } }())
-        if case .showing(let qr) = vm.phase {
-            XCTAssertTrue(qr.hasPrefix("matron://rlink?v=2&rid=\(Self.rid2)&k="))
-        } else {
-            XCTFail("expected .showing, got \(vm.phase)")
-        }
+        await waitUntil(vm.phase == .showing(qrPayload: "matron://rlink?v=2&rid=\(Self.rid2)&k=\(Self.vectorKeyB64)"))
+        XCTAssertEqual(vm.phase, .showing(qrPayload: "matron://rlink?v=2&rid=\(Self.rid2)&k=\(Self.vectorKeyB64)"))
     }
 
     func test_createFailure_isARetryableError() async {
@@ -170,32 +174,12 @@ final class RendezvousSignInViewModelTests: XCTestCase {
         let (vm, _, _) = makeVM(relay: relay, claimer: FakeClaimer())
         await vm.start()
         await waitUntil(relay.pollCount >= 3)
-        if case .showing(let qr) = vm.phase {
-            XCTAssertTrue(qr.hasPrefix("matron://rlink?v=2&rid=\(Self.rid1)&k="))
-        } else {
-            XCTFail("expected .showing, got \(vm.phase)")
-        }
-    }
-
-    func test_connecting_whenLinkSubmitManualEarlyReturns_becomesError() async {
-        // Finding 1a: an empty server (e.g. a malformed offer) makes
-        // submitManual()'s own guard return WITHOUT starting a claim —
-        // link.phase never leaves .idle. The rendezvous VM must not park
-        // in .connecting forever; it needs to surface a retryable error.
-        let relay = FakeRelay()
-        relay.pollScript = [.success(.offered(server: "", code: "2345-6789"))]
-        let (vm, link, _) = makeVM(relay: relay, claimer: FakeClaimer())
-        await vm.start()
-        await waitUntil(vm.phase == .error("Couldn't connect to that computer's session — try again."))
-        XCTAssertEqual(vm.phase, .error("Couldn't connect to that computer's session — try again."))
-        XCTAssertEqual(link.phase, .idle)
+        XCTAssertEqual(vm.phase, .showing(qrPayload: "matron://rlink?v=2&rid=\(Self.rid1)&k=\(Self.vectorKeyB64)"))
     }
 
     func test_connecting_whenLinkClaimFails_becomesError() async {
-        // Finding 1b: the link VM can also land in its own .error (e.g. the
-        // server rejects the claim) — that must also unstick .connecting.
         let relay = FakeRelay()
-        relay.pollScript = [.success(.offered(server: "https://chat.example.com", code: "2345-6789"))]
+        relay.pollScript = [.success(.offered(box: Self.vectorBox))]
         let claimer = FakeClaimer()
         claimer.claimResult = .failure(JournalAPIError.notFound)
         let (vm, link, _) = makeVM(relay: relay, claimer: claimer)
@@ -208,7 +192,7 @@ final class RendezvousSignInViewModelTests: XCTestCase {
     func test_stop_whilePollInFlight_dropsTheLateOffer() async {
         let relay = FakeRelay()
         relay.holdPoll = true
-        relay.pollScript = [.success(.offered(server: "https://chat.example.com", code: "2345-6789"))]
+        relay.pollScript = [.success(.offered(box: Self.vectorBox))]
         let claimer = FakeClaimer()
         let (vm, link, auth) = makeVM(relay: relay, claimer: claimer)
         await vm.start()
@@ -223,14 +207,8 @@ final class RendezvousSignInViewModelTests: XCTestCase {
     }
 
     func test_offerWhileManualClaimInFlight_isDeferredUntilClaimResolves() async {
-        // A relay offer landing while the user's own typed claim is mid-
-        // approval-wait must not hijack the shared link VM: it would
-        // overwrite the typed server/code and pin this VM's .connecting
-        // host line over a wait that belongs to a different claim (spec §4
-        // transparency). The relay's poll is a repeatable read, so the
-        // offer can be deferred and picked up once the claim resolves.
         let relay = FakeRelay()
-        relay.pollScript = [.success(.offered(server: "https://relay-offered.example.com", code: "9999-8888"))]
+        relay.pollScript = [.success(.offered(box: Self.vectorBox))]
         let claimer = FakeClaimer()
         claimer.pollScript = [.success(.pending)]
         let (vm, link, _) = makeVM(relay: relay, claimer: claimer)
@@ -249,13 +227,13 @@ final class RendezvousSignInViewModelTests: XCTestCase {
                        "the user's typed server must not be overwritten mid-claim")
         XCTAssertEqual(link.codeInput, "1111-2222")
 
-        // The manual claim resolves (denied → .error): a later relay poll
-        // re-fetches the still-pending offer and claims it.
+        // The manual claim resolves (denied → .error): a later poll re-fetches
+        // the still-pending box and claims it (the decrypted offer).
         claimer.pollScript = [.success(.denied)]
-        await waitUntil(link.serverURL == "https://relay-offered.example.com")
-        XCTAssertEqual(link.serverURL, "https://relay-offered.example.com",
+        await waitUntil(link.serverURL == "https://chat.example.com")
+        XCTAssertEqual(link.serverURL, "https://chat.example.com",
                        "deferred offer must be claimed once the link VM comes back to rest")
-        XCTAssertEqual(link.codeInput, "9999-8888")
+        XCTAssertEqual(link.codeInput, "2345-6789")
         vm.stop()
         link.cancel()
     }

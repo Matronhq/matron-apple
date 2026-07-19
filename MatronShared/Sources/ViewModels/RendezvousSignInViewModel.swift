@@ -2,11 +2,14 @@ import Foundation
 import MatronJournal
 
 /// Show-side of the reverse QR flow (spec §2): a signed-out device that
-/// can't scan asks the shared relay for a rendezvous, renders it as a QR,
-/// and polls. When a signed-in phone scans it and posts {server, code},
-/// this VM hands both values to the existing LinkSignInViewModel — from
-/// there the flow is byte-for-byte the shipped claim → approve → token
-/// path against the user's own journal. The relay never sees a token.
+/// can't scan generates a single-use offer key, asks the shared relay for a
+/// rendezvous, renders {rid, key} as a v=2 QR, and polls. When a signed-in
+/// phone scans it and posts an opaque box (server+code sealed under that
+/// key), this VM opens the box locally and hands {server, code} to the
+/// existing LinkSignInViewModel — from there the flow is byte-for-byte the
+/// shipped claim → approve → token path against the user's own journal. The
+/// relay only ever holds ciphertext; it never sees the key, a token, or a
+/// readable {server, code} (rendezvous-offer-encryption spec §4.2).
 @Observable @MainActor
 public final class RendezvousSignInViewModel {
     public enum Phase: Equatable {
@@ -26,6 +29,7 @@ public final class RendezvousSignInViewModel {
     private let link: LinkSignInViewModel
     private let pollInterval: Duration
     private let errorPollInterval: Duration
+    private let keyProvider: @Sendable () -> Data
     // Same stale-async discipline as LinkSignInViewModel/DeviceLinkViewModel:
     // stop() bumps the generation; every post-await branch re-checks it
     // before touching state.
@@ -33,11 +37,13 @@ public final class RendezvousSignInViewModel {
     private var pollTask: Task<Void, Never>?
 
     public init(relay: any RelayRendezvousing, link: LinkSignInViewModel,
-                pollInterval: Duration = .seconds(2), errorPollInterval: Duration = .seconds(5)) {
+                pollInterval: Duration = .seconds(2), errorPollInterval: Duration = .seconds(5),
+                keyProvider: @escaping @Sendable () -> Data = { RendezvousCrypto.generateKey() }) {
         self.relay = relay
         self.link = link
         self.pollInterval = pollInterval
         self.errorPollInterval = errorPollInterval
+        self.keyProvider = keyProvider
     }
 
     public func start() async {
@@ -60,19 +66,16 @@ public final class RendezvousSignInViewModel {
         do {
             let rendezvous = try await relay.createRendezvous()
             guard gen == generation else { return }
-            // The offer key is generated on THIS device and published only in the
-            // QR — it never reaches the relay (spec §4.2). Task 4 formalizes this
-            // as an injectable keyProvider for testability.
-            let key = RendezvousCrypto.generateKey()
+            let key = keyProvider()
             phase = .showing(qrPayload: RendezvousURI.format(rid: rendezvous.rid, key: key))
-            startPolling(rid: rendezvous.rid, secret: rendezvous.secret, gen: gen)
+            startPolling(rid: rendezvous.rid, secret: rendezvous.secret, key: key, gen: gen)
         } catch {
             guard gen == generation else { return }
             phase = .error("Couldn't reach the Matron relay — check your connection and try again.")
         }
     }
 
-    private func startPolling(rid: String, secret: String, gen: Int) {
+    private func startPolling(rid: String, secret: String, key: Data, gen: Int) {
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self, gen == self.generation else { return }
@@ -82,24 +85,30 @@ public final class RendezvousSignInViewModel {
                     switch result {
                     case .waiting:
                         try? await Task.sleep(for: self.pollInterval)
-                    case .offered(let server, let code):
+                    case .offered(let box):
                         // A scan/typed claim may already be in flight on the
-                        // shared link VM. Hijacking it here would overwrite
-                        // the user's entered server/code and pin this VM's
-                        // .connecting host line over a wait that belongs to
-                        // a different claim (spec §4 transparency). The
-                        // relay's poll is a repeatable read — the offer
-                        // survives until the rendezvous TTL — so defer: keep
-                        // polling and pick the offer up if the link VM comes
-                        // back to rest (.signedIn never resumes; the screen
-                        // is closing and a live session must not be
-                        // replaced).
+                        // shared link VM. Hijacking it here would overwrite the
+                        // user's entered server/code and pin this VM's
+                        // .connecting host line over a wait that belongs to a
+                        // different claim (spec §4 transparency). The relay's
+                        // poll is a repeatable read — the box survives until the
+                        // rendezvous TTL — so defer: keep polling and pick it up
+                        // if the link VM comes back to rest.
                         switch self.link.phase {
                         case .claiming, .waitingForApproval, .signedIn:
                             try? await Task.sleep(for: self.pollInterval)
                             continue
                         case .idle, .error:
                             break
+                        }
+                        // Open the box locally with the key we published in the
+                        // QR. An undecryptable/malformed box (someone who knows
+                        // only the rid — not the key — occupied the slot with
+                        // garbage) is treated exactly like an expired
+                        // rendezvous: regenerate and keep showing.
+                        guard let (server, code) = Self.openOffer(box, key: key) else {
+                            await self.createAndShow(gen)
+                            return
                         }
                         self.phase = .connecting(serverHost: URL(string: server)?.host ?? server)
                         self.link.serverURL = server
@@ -110,19 +119,12 @@ public final class RendezvousSignInViewModel {
                         case .claiming, .waitingForApproval, .signedIn:
                             break // the link VM's own phases drive the UI from here
                         case .idle, .error:
-                            // submitManual() either early-returned without
-                            // starting a claim (invalid server URL/code, or a
-                            // session already in progress) or the claim itself
-                            // landed in its own .error — either way this VM
-                            // must not park in .connecting forever.
                             self.phase = .error("Couldn't connect to that computer's session — try again.")
                         }
                         return
                     }
                 } catch RelayError.notFound {
                     guard !Task.isCancelled, gen == self.generation else { return }
-                    // Rendezvous expired: silently regenerate — the mirror of
-                    // the show-side's link-expiry regeneration.
                     await self.createAndShow(gen)
                     return
                 } catch {
@@ -131,5 +133,20 @@ public final class RendezvousSignInViewModel {
                 }
             }
         }
+    }
+
+    /// Decrypt and parse a polled offer box. Returns nil on any failure
+    /// (auth failure, short input, non-JSON, or missing fields) — the caller
+    /// regenerates. `submitManual()` re-validates `server` via
+    /// `ServerURLValidator` on the way into the claim, so no separate URL
+    /// validation is needed here.
+    private static func openOffer(_ box: Data, key: Data) -> (server: String, code: String)? {
+        guard let data = try? RendezvousCrypto.open(box, key: key),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let server = obj["server"] as? String,
+              let code = obj["code"] as? String else {
+            return nil
+        }
+        return (server, code)
     }
 }

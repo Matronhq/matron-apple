@@ -24,16 +24,32 @@ final class RelayClientTests: XCTestCase {
         }
     }
 
-    func test_mapPoll_coversAllStates() throws {
+    func test_offerRequest_postsBase64urlBox() throws {
+        let box = Data([0x01, 0x02, 0x03, 0x04])
+        let request = RelayClient.offerRequest(baseURL: MatronRelay.baseURL, rid: "R", box: box)
+        XCTAssertEqual(request.httpMethod, "POST")
+        let body = try XCTUnwrap(request.httpBody)
+        let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(obj["box"] as? String, Base64URL.encode(box))
+        XCTAssertEqual(obj.count, 1)
+    }
+
+    func test_mapPoll_204isWaiting_200decodesBox() throws {
         XCTAssertEqual(try RelayClient.mapPoll(status: 204, data: Data()), .waiting)
-        XCTAssertEqual(try RelayClient.mapPoll(status: 200, data: data(#"{"server":"https://j.example.com","code":"2345-6789"}"#)),
-                       .offered(server: "https://j.example.com", code: "2345-6789"))
+        let box = Data([0xaa, 0xbb, 0xcc])
+        let json = try JSONSerialization.data(withJSONObject: ["box": Base64URL.encode(box)])
+        XCTAssertEqual(try RelayClient.mapPoll(status: 200, data: json), .offered(box: box))
+    }
+
+    func test_mapPoll_undecodableBox_isTransportError() {
+        let json = try! JSONSerialization.data(withJSONObject: ["box": "!!!not-base64!!!"])
+        XCTAssertThrowsError(try RelayClient.mapPoll(status: 200, data: json))
+    }
+
+    func test_mapPoll_errorStatuses() {
         XCTAssertThrowsError(try RelayClient.mapPoll(status: 404, data: Data())) { XCTAssertEqual($0 as? RelayError, .notFound) }
         XCTAssertThrowsError(try RelayClient.mapPoll(status: 403, data: Data())) { XCTAssertEqual($0 as? RelayError, .forbidden) }
         XCTAssertThrowsError(try RelayClient.mapPoll(status: 429, data: Data())) { XCTAssertEqual($0 as? RelayError, .rateLimited) }
-        XCTAssertThrowsError(try RelayClient.mapPoll(status: 200, data: data(#"{"server":"https://x"}"#))) {
-            XCTAssertEqual($0 as? RelayError, .transport("malformed relay response"))
-        }
     }
 
     func test_mapOffer_coversAllStates() throws {
@@ -54,10 +70,11 @@ final class RelayClientTests: XCTestCase {
         XCTAssertEqual(poll.url?.absoluteString, "https://push.matron.chat/link/rendezvous/RID?secret=SEC")
         XCTAssertEqual(poll.httpMethod, "GET")
 
-        let offer = RelayClient.offerRequest(baseURL: base, rid: "RID", server: "https://j.example.com", code: "2345-6789")
+        let box = Data([0x01, 0x02, 0x03])
+        let offer = RelayClient.offerRequest(baseURL: base, rid: "RID", box: box)
         XCTAssertEqual(offer.url?.absoluteString, "https://push.matron.chat/link/rendezvous/RID/offer")
         XCTAssertEqual(offer.httpMethod, "POST")
         let body = try JSONSerialization.jsonObject(with: offer.httpBody ?? Data()) as? [String: String]
-        XCTAssertEqual(body, ["server": "https://j.example.com", "code": "2345-6789"])
+        XCTAssertEqual(body, ["box": Base64URL.encode(box)])
     }
 }
