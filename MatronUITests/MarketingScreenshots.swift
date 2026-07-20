@@ -55,7 +55,7 @@ final class MarketingScreenshots: XCTestCase {
         XCTAssertTrue(darkMode.waitForExistence(timeout: 10))
         darkMode.tap()
         let diff = app.staticTexts["SettingsView.swift"]
-        _ = diff.waitForExistence(timeout: 10)
+        XCTAssertTrue(diff.waitForExistence(timeout: 10), "dark-mode chat never rendered diff card")
         sleep(2)
         try save("ios-03-diff-chat")
     }
