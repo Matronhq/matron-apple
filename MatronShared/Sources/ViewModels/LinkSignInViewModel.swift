@@ -14,7 +14,8 @@ extension JournalAPI: LinkClaiming {}
 
 /// Signs a NEW device in from a link code — the claimant half of QR
 /// device-link login. Two entry points: `handleScanned` (camera, full
-/// `matron://link` URI) and `submitManual` (typed server URL + code).
+/// `matron://link` URI) and `submitManual` (typed server URL + code, or a
+/// pasted full `matron://link` URI, which carries its own server).
 /// Both converge on claim → poll → build the same `UserSession` shape
 /// password login builds (`userID` = the server-returned username) →
 /// `auth.persist` → `.signedIn`, which the host view forwards to the
@@ -33,13 +34,25 @@ public final class LinkSignInViewModel {
     /// Mac the code field lives on the sign-in form next to it.
     public var serverURL: String = ""
     /// Auto-formatted as `XXXX-XXXX` while typing, like PairingViewModel.
+    /// A pasted full `matron://` link is kept verbatim instead — the
+    /// formatter would strip it to alphanumerics beyond recovery.
     public var codeInput: String = "" {
         didSet {
+            if Self.isFullLink(codeInput) { return }
             let formatted = PairingCode.display(codeInput)
             if formatted != codeInput {
                 codeInput = formatted // re-enters didSet once; equality stops it
             }
         }
+    }
+
+    /// True when the code field holds a pasted `matron://` link rather than
+    /// a bare code. The views drop their server-field requirement in that
+    /// case, since the link names its own server.
+    public var codeInputIsFullLink: Bool { Self.isFullLink(codeInput) }
+
+    private static func isFullLink(_ raw: String) -> Bool {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("matron:")
     }
 
     public private(set) var phase: Phase = .idle
@@ -82,6 +95,17 @@ public final class LinkSignInViewModel {
     }
 
     public func submitManual() async {
+        if codeInputIsFullLink {
+            do {
+                let (server, code) = try LinkURI.parse(codeInput.trimmingCharacters(in: .whitespacesAndNewlines))
+                await claim(server: server, code: code)
+            } catch LinkURI.ParseError.unsupportedVersion {
+                phase = .error("This link needs a newer version of Matron.")
+            } catch {
+                phase = .error("That doesn't look like a Matron sign-in link.")
+            }
+            return
+        }
         let raw = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty, PairingCode.isPlausible(codeInput) else { return }
         let url: URL

@@ -130,6 +130,51 @@ final class LinkSignInViewModelTests: XCTestCase {
         XCTAssertEqual(session.homeserverURL.absoluteString, "https://chat.example.com")
     }
 
+    func test_manual_pastedLinkURI_claimsAgainstEmbeddedServer() async {
+        let fake = FakeLinkClaimer()
+        fake.pollScript = [.success(.approved(LinkApproval(token: "tok99", deviceID: 42, userID: 7, username: "dan")))]
+        let (vm, _) = makeVM(fake)
+        vm.codeInput = "matron://link?v=1&server=https%3A%2F%2Fchat.example.com&code=KTNM-3VQ8"
+        // The XXXX-XXXX auto-formatter must not mangle a pasted link.
+        XCTAssertEqual(vm.codeInput, "matron://link?v=1&server=https%3A%2F%2Fchat.example.com&code=KTNM-3VQ8")
+        XCTAssertTrue(vm.codeInputIsFullLink)
+        await vm.submitManual() // serverURL field never touched
+        await waitUntil(self.isSignedIn(vm))
+        XCTAssertEqual(fake.claimedCodes, ["KTNM-3VQ8"])
+        guard case .signedIn(let session) = vm.phase else { return XCTFail("\(vm.phase)") }
+        XCTAssertEqual(session.homeserverURL.absoluteString, "https://chat.example.com")
+    }
+
+    func test_manual_pastedLinkURI_overridesTypedServer_andSurvivesWhitespace() async {
+        let fake = FakeLinkClaimer()
+        fake.pollScript = [.success(.approved(LinkApproval(token: "tok99", deviceID: 42, userID: 7, username: "dan")))]
+        let (vm, _) = makeVM(fake)
+        vm.serverURL = "typed.example.org"
+        vm.codeInput = " matron://link?v=1&server=https%3A%2F%2Fchat.example.com&code=KTNM-3VQ8\n"
+        XCTAssertTrue(vm.codeInputIsFullLink)
+        await vm.submitManual()
+        await waitUntil(self.isSignedIn(vm))
+        guard case .signedIn(let session) = vm.phase else { return XCTFail("\(vm.phase)") }
+        XCTAssertEqual(session.homeserverURL.absoluteString, "https://chat.example.com")
+    }
+
+    func test_manual_pastedLinkURI_wrongVersion_and_malformed() async {
+        let (vm, _) = makeVM(FakeLinkClaimer())
+        vm.codeInput = "matron://link?v=2&server=https%3A%2F%2Fx.example&code=KTNM-3VQ8"
+        await vm.submitManual()
+        XCTAssertEqual(vm.phase, .error("This link needs a newer version of Matron."))
+        vm.codeInput = "matron://link?v=1&code=KTNM-3VQ8" // no server
+        await vm.submitManual()
+        XCTAssertEqual(vm.phase, .error("That doesn't look like a Matron sign-in link."))
+    }
+
+    func test_manual_bareCode_isNotAFullLink() async {
+        let (vm, _) = makeVM(FakeLinkClaimer())
+        vm.codeInput = "ktnm3vq8"
+        XCTAssertFalse(vm.codeInputIsFullLink)
+        XCTAssertEqual(vm.codeInput, "KTNM-3VQ8") // formatter still applies
+    }
+
     func test_manual_invalidURL_errors() async {
         let (vm, _) = makeVM(FakeLinkClaimer())
         vm.serverURL = "not a url"

@@ -143,7 +143,7 @@ struct MacSignInView: View {
                 if showingLinkCode {
                     VStack(alignment: .leading, spacing: 8) {
                         LabeledField(label: "Link code") {
-                            TextField("XXXX-XXXX", text: $linkViewModel.codeInput)
+                            TextField("XXXX-XXXX or matron:// link", text: $linkViewModel.codeInput)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.system(.body, design: .monospaced))
                                 .autocorrectionDisabled()
@@ -153,7 +153,10 @@ struct MacSignInView: View {
                             linkViewModel.serverURL = viewModel.serverURL
                             Task { await linkViewModel.submitManual() }
                         }
-                        .disabled(viewModel.serverURL.isEmpty || linkViewModel.codeInput.count < 9)
+                        // A pasted matron:// link names its own server, so it
+                        // doesn't need the form's server field.
+                        .disabled(!linkViewModel.codeInputIsFullLink
+                                  && (viewModel.serverURL.isEmpty || linkViewModel.codeInput.count < 9))
                     }
                 }
             }
