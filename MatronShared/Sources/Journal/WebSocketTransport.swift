@@ -75,8 +75,22 @@ final class URLSessionWebSocketConnection: WebSocketConnection, @unchecked Senda
     }
 
     func ping() async throws {
+        try await Self.awaitPong { task.sendPing(pongReceiveHandler: $0) }
+    }
+
+    /// `URLSessionWebSocketTask.sendPing` can invoke its pong handler a second
+    /// time when the socket dies mid-ping; `CheckedContinuation` traps on the
+    /// second resume (three MatronMac crashes on 2026-07-20), so forward only
+    /// the first callback.
+    static func awaitPong(_ sendPing: (@escaping @Sendable (Error?) -> Void) -> Void) async throws {
+        let resumed = OSAllocatedUnfairLock(initialState: false)
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            task.sendPing { error in
+            sendPing { error in
+                let isFirst = resumed.withLock { alreadyResumed in
+                    defer { alreadyResumed = true }
+                    return !alreadyResumed
+                }
+                guard isFirst else { return }
                 if let error { continuation.resume(throwing: error) }
                 else { continuation.resume() }
             }
