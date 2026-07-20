@@ -108,12 +108,17 @@ struct MacChatListView: View {
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebarColumn
-                .frame(minWidth: 260, idealWidth: 400)
                 // Drop the system sidebar-collapse toolbar button. The
                 // ⌘⇧S menu item / `.toggleSidebar` notification handler
                 // still collapses the sidebar; only the redundant toolbar
                 // chevron is removed.
                 .toolbar(removing: .sidebarToggle)
+                // MUST come after `.toolbar(removing: .sidebarToggle)`:
+                // on macOS 26 that modifier masks an inner column-width
+                // preference and the sidebar falls back to the system
+                // default (probe-bisected 2026-07-20). `.frame(idealWidth:)`
+                // doesn't size the column at all.
+                .navigationSplitViewColumnWidth(min: 260, ideal: 450, max: 600)
                 .toolbar {
                     // With the sidebar toggle removed the new-chat button
                     // is the only item in the sidebar section and packs
