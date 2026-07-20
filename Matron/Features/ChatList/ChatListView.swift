@@ -97,6 +97,7 @@ struct ChatListView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showingNewChat = true } label: { Image(systemName: "square.and.pencil") }
+                    .accessibilityLabel("New chat")
             }
             // Sign-out lives in an overflow menu next to the New-Chat
             // button until Phase 7 ships the full Settings UI. Without
