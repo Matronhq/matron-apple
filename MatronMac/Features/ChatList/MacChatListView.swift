@@ -108,7 +108,7 @@ struct MacChatListView: View {
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebarColumn
-                .frame(minWidth: 260, idealWidth: 340)
+                .frame(minWidth: 260, idealWidth: 400)
                 // Drop the system sidebar-collapse toolbar button. The
                 // ⌘⇧S menu item / `.toggleSidebar` notification handler
                 // still collapses the sidebar; only the redundant toolbar
