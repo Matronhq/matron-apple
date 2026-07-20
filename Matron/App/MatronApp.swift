@@ -121,16 +121,26 @@ struct MatronApp: App {
                         }
                     }
                 } else {
+                    let linkViewModel = LinkSignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS")
                     SignInView(
                         viewModel: SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS"),
+                        linkViewModel: linkViewModel,
+                        rendezvousViewModel: RendezvousSignInViewModel(relay: RelayClient(), link: linkViewModel),
                         onSignedIn: { session in
                             // Gate the new session on any in-flight sign-out
                             // teardown: publishing it earlier would build a
                             // second journal core against the same SQLite
                             // file the old engine is still wiping (bugbot
-                            // "Sign-out races fast re-login").
+                            // "Sign-out races fast re-login"). Then clear any
+                            // mirror + search index a process death left on
+                            // disk before the background wipe finished
+                            // (bugbot "Sign-out leaves local mirror") — a
+                            // fresh login resyncs from a server snapshot, so
+                            // the clean slate costs nothing. Restore (see
+                            // `bootstrap()`) deliberately skips this.
                             Task {
                                 await dependencies.awaitPendingTeardown()
+                                await dependencies.wipeLocalDataForFreshLogin()
                                 self.session = session
                             }
                         }

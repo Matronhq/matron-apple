@@ -543,4 +543,12 @@ public final class ComposerViewModel {
     public func reportAttachmentError(_ message: String) {
         sendError = message
     }
+
+    /// Clears a recorded `sendError`. Lets the composer's error banner
+    /// offer a dismiss affordance without a public setter, keeping the
+    /// existing `private(set)` invariant honest (mirrors
+    /// `reportAttachmentError(_:)`'s write path).
+    public func dismissSendError() {
+        sendError = nil
+    }
 }

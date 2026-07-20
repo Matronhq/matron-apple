@@ -2,16 +2,19 @@ import SwiftUI
 import MatronModels
 import MatronDesignSystem
 import MatronViewModels
+import MatronJournal
 
 /// Settings → Device surface. Task 11 strips the verification / recovery-key
 /// sections (Matrix-SDK-only concepts the journal stack has no equivalent
 /// for yet) down to a read-only account summary: userID, deviceID, and
 /// homeserver host. The Devices row (journal PR #19) pushes the roster +
-/// pairing screen; both dependencies are optional so previews / tests keep
-/// rendering the summary without a live API.
+/// pairing screen; `devicesAPI`, `linkAPI`, and `onSignOut` are all optional
+/// so previews / tests keep rendering the summary without a live API or
+/// sign-out wiring.
 struct DeviceSettingsView: View {
     let session: UserSession
     var devicesAPI: (any DevicesProviding)? = nil
+    var linkAPI: (any DeviceLinking)? = nil
     var onSignOut: (() -> Void)? = nil
 
     var body: some View {
@@ -24,12 +27,21 @@ struct DeviceSettingsView: View {
                     value: session.homeserverURL.host ?? session.homeserverURL.absoluteString
                 )
             }
-            if let devicesAPI {
+            if devicesAPI != nil || linkAPI != nil {
                 Section("Devices") {
-                    NavigationLink {
-                        DevicesView(api: devicesAPI, onSelfRevoked: { onSignOut?() })
-                    } label: {
-                        Label("Manage Devices", systemImage: "laptopcomputer.and.iphone")
+                    if let devicesAPI {
+                        NavigationLink {
+                            DevicesView(api: devicesAPI, onSelfRevoked: { onSignOut?() })
+                        } label: {
+                            Label("Manage Devices", systemImage: "laptopcomputer.and.iphone")
+                        }
+                    }
+                    if let linkAPI {
+                        NavigationLink {
+                            DeviceLinkView(api: linkAPI, serverURL: session.homeserverURL, relay: RelayClient())
+                        } label: {
+                            Label("Link a Device", systemImage: "qrcode")
+                        }
                     }
                 }
             }

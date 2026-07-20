@@ -154,6 +154,7 @@ struct ChatListView: View {
                     DeviceSettingsView(
                         session: session,
                         devicesAPI: deps?.devicesService(for: session),
+                        linkAPI: deps?.deviceLinkService(for: session),
                         onSignOut: {
                             showingDeviceSettings = false
                             onSignOut?()

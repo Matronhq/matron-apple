@@ -110,15 +110,25 @@ struct MatronMacApp: App {
                         }
                     }
                 } else {
+                    let linkViewModel = LinkSignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac")
                     MacSignInView(
                         viewModel: SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac"),
+                        linkViewModel: linkViewModel,
+                        rendezvousViewModel: RendezvousSignInViewModel(relay: RelayClient(), link: linkViewModel),
                         onSignedIn: { session in
                             // Gate the new session on any in-flight sign-out
                             // teardown so a fast re-login can't open a second
                             // writer against the old session's store (bugbot
-                            // "Sign-out races fast re-login"). Mirrors iOS.
+                            // "Sign-out races fast re-login"). Then clear any
+                            // mirror + search index a process death left on
+                            // disk before the background wipe finished
+                            // (bugbot "Sign-out leaves local mirror") — a
+                            // fresh login resyncs from a server snapshot, so
+                            // the clean slate costs nothing. Restore skips
+                            // this. Mirrors iOS.
                             Task {
                                 await dependencies.awaitPendingTeardown()
+                                await dependencies.wipeLocalDataForFreshLogin()
                                 self.session = session
                             }
                         }
@@ -144,12 +154,15 @@ struct MatronMacApp: App {
         // for the keyboard shortcuts and notification names.
         .commands { ChatCommands() }
 
-        // Settings (⌘,), two tabs:
+        // Settings (⌘,), three tabs:
         // - General: read-only account summary + appearance + Sign Out —
         //   see `MacDeviceSettingsView` for the Task 12 rationale.
         // - Devices: the journal device roster + agent pairing (journal
         //   PR #19 spec). Self-revocation routes through the same
         //   `signOut` as the button on the General tab.
+        // - Link a Device: show-QR flow so a second device can sign in
+        //   without retyping credentials (Task 6 of the QR device-link
+        //   plan). Mac only shows codes — see `MacDeviceLinkView`.
         Settings {
             if let session {
                 TabView {
@@ -160,6 +173,11 @@ struct MatronMacApp: App {
                         onSelfRevoked: { signOut(activeSession: session) }
                     )
                     .tabItem { Label("Devices", systemImage: "laptopcomputer.and.iphone") }
+                    MacDeviceLinkView(
+                        api: dependencies.deviceLinkService(for: session),
+                        serverURL: session.homeserverURL
+                    )
+                    .tabItem { Label("Link a Device", systemImage: "qrcode") }
                 }
             } else {
                 Text("Sign in to view settings.")

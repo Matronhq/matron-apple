@@ -176,6 +176,46 @@ final class JournalStoreTests: XCTestCase {
         XCTAssertEqual(try store.conversations().first?.lastActivityTS, 123_000)
     }
 
+    func testConversationsOrderedByActivityTimeNotJustSeq() throws {
+        // A conversation's position in the list must reflect when it last
+        // had real activity, not the server's journal sequence numbering.
+        // "c-old" has a much higher `lastSeq` (more journal traffic
+        // overall, e.g. session_status/read_marker bookkeeping) but its
+        // last real message is older than "c-new"'s — "c-new" must sort
+        // first.
+        let store = try makeStore()
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "c-old", title: "Old", sessionState: "running",
+                            lastSeq: 100, snippet: "s", createdAt: 0, lastTS: 1_000),
+            ConvoSummaryDTO(id: "c-new", title: "New", sessionState: "running",
+                            lastSeq: 5, snippet: "s", createdAt: 0, lastTS: 2_000),
+        ], headSeq: 100)
+        XCTAssertEqual(try store.conversations().map(\.id), ["c-new", "c-old"],
+                       "newer last_activity_ts must sort first even with a lower last_seq")
+    }
+
+    func testConversationsWithNullActivityTsSortLastTiebrokenBySeq() throws {
+        // A conversation that never got an activity timestamp (e.g. an
+        // older server's snapshot omitting `last_ts`, or a row created
+        // only via a non-message frame) must fall to the bottom of the
+        // list rather than floating above conversations with real recent
+        // activity — SQLite sorts NULL last under `DESC`, which is the
+        // behavior this test pins. Among null-activity rows, `last_seq`
+        // is the tiebreak.
+        let store = try makeStore()
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "c-null-high-seq", title: "A", sessionState: "running",
+                            lastSeq: 50, snippet: "s", createdAt: 0),
+            ConvoSummaryDTO(id: "c-null-low-seq", title: "B", sessionState: "running",
+                            lastSeq: 10, snippet: "s", createdAt: 0),
+            ConvoSummaryDTO(id: "c-active", title: "C", sessionState: "running",
+                            lastSeq: 1, snippet: "s", createdAt: 0, lastTS: 500),
+        ], headSeq: 50)
+        XCTAssertEqual(try store.conversations().map(\.id),
+                       ["c-active", "c-null-high-seq", "c-null-low-seq"],
+                       "null last_activity_ts sorts last, tiebroken by last_seq desc")
+    }
+
     func testConversationsStreamYieldsOnChange() async throws {
         let store = try makeStore()
         var iterator = store.conversationsStream().makeAsyncIterator()
@@ -184,6 +224,27 @@ final class JournalStoreTests: XCTestCase {
         try store.applyJournal(event(1))
         let updated = await iterator.next()
         XCTAssertEqual(updated?.first?.id, "c1")
+    }
+
+    func testConversationsStreamOrderedByActivityTimeNotJustSeq() async throws {
+        // `conversationsStream()` hand-duplicates the `.order(...)` call in
+        // `conversations(now:)` rather than sharing it, so a future edit to
+        // one query without the other must fail a test — mirrors
+        // `testConversationsOrderedByActivityTimeNotJustSeq` but reads
+        // through the live stream instead of a one-shot fetch.
+        let store = try makeStore()
+        var iterator = store.conversationsStream().makeAsyncIterator()
+        let initial = await iterator.next()
+        XCTAssertEqual(initial?.count, 0)
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "c-old", title: "Old", sessionState: "running",
+                            lastSeq: 100, snippet: "s", createdAt: 0, lastTS: 1_000),
+            ConvoSummaryDTO(id: "c-new", title: "New", sessionState: "running",
+                            lastSeq: 5, snippet: "s", createdAt: 0, lastTS: 2_000),
+        ], headSeq: 100)
+        let updated = await iterator.next()
+        XCTAssertEqual(updated?.map(\.id), ["c-new", "c-old"],
+                       "newer last_activity_ts must sort first in the stream too, even with a lower last_seq")
     }
 
     func testWipe() throws {

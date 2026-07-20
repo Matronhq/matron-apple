@@ -27,6 +27,8 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Matron uses the camera to scan sign-in QR codes from your other devices.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Records voice notes to send to your agent.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
