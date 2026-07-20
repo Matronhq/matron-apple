@@ -306,7 +306,7 @@ final class DeviceLinkViewModelTests: XCTestCase {
 
     private final class FakeRelay: RelayRendezvousing, @unchecked Sendable {
         var offerResult: Result<Void, Error> = .success(())
-        private(set) var offers: [(rid: String, server: String, code: String)] = []
+        private(set) var offers: [(rid: String, box: Data)] = []
         /// Same gated pattern as `FakeDeviceLinker.holdStatus` — needed to
         /// deterministically land inside `offerRendezvous`'s await so a
         /// concurrent status poll can be interleaved at an exact point
@@ -330,7 +330,7 @@ final class DeviceLinkViewModelTests: XCTestCase {
 
         func createRendezvous() async throws -> Rendezvous { fatalError("unused") }
         func pollRendezvous(rid: String, secret: String) async throws -> RendezvousPollResult { fatalError("unused") }
-        func offerRendezvous(rid: String, server: String, code: String) async throws {
+        func offerRendezvous(rid: String, box: Data) async throws {
             if holdOffer {
                 offerGateReached = true
                 await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
@@ -345,15 +345,17 @@ final class DeviceLinkViewModelTests: XCTestCase {
                     }
                 }
             }
-            offers.append((rid, server, code))
+            offers.append((rid: rid, box: box))
             try offerResult.get()
         }
     }
 
     private static let rid = "23456789BCDFGHJKMNPQRSTVWX"
-    private static let rlinkPayload = "matron://rlink?v=1&rid=23456789BCDFGHJKMNPQRSTVWX"
+    private static let vectorKeyB64 = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+    private static let vectorKey = Base64URL.decode(vectorKeyB64)!
+    private static let rlinkPayload = "matron://rlink?v=2&rid=23456789BCDFGHJKMNPQRSTVWX&k=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
 
-    func test_offerScanned_sendsTheLiveSessionCodeAndServer() async {
+    func test_offerScanned_sendsTheLiveSessionCodeAndServer() async throws {
         let fake = FakeDeviceLinker()
         fake.startResults = [.success(LinkStart(code: "2345-6789", expiresIn: 120))]
         let relay = FakeRelay()
@@ -363,10 +365,12 @@ final class DeviceLinkViewModelTests: XCTestCase {
         XCTAssertEqual(vm.phase, .showing(code: "2345-6789"))
         let startCountBeforeOffer = fake.startCount
         await vm.offerScanned(Self.rlinkPayload)
-        XCTAssertEqual(relay.offers.count, 1)
-        XCTAssertEqual(relay.offers[0].rid, Self.rid)
-        XCTAssertEqual(relay.offers[0].server, "https://chat.example.com")
-        XCTAssertEqual(relay.offers[0].code, "2345-6789")
+        let offered = try XCTUnwrap(relay.offers.last)
+        XCTAssertEqual(offered.rid, Self.rid)
+        let plaintext = try RendezvousCrypto.open(offered.box, key: Self.vectorKey)
+        let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: plaintext) as? [String: Any])
+        XCTAssertEqual(obj["server"] as? String, "https://chat.example.com")
+        XCTAssertEqual(obj["code"] as? String, "2345-6789")
         XCTAssertEqual(vm.noticeMessage, "Sent — approve the request when it appears.")
         // CRITICAL: offerScanned must never call linkStart() — a second
         // linkStart would replace the live session whose code the Show tab
@@ -381,9 +385,11 @@ final class DeviceLinkViewModelTests: XCTestCase {
         let vm = DeviceLinkViewModel(api: fake, serverURL: URL(string: "https://chat.example.com")!,
                                      relay: relay, pollInterval: .milliseconds(1), errorPollInterval: .milliseconds(1))
         await vm.start()
-        await vm.offerScanned("matron://rlink?v=9&rid=\(Self.rid)")
+        await vm.offerScanned("matron://rlink?v=9&rid=\(Self.rid)&k=\(Self.vectorKeyB64)")
         XCTAssertEqual(vm.noticeMessage, "This QR code needs a newer version of Matron.")
         await vm.offerScanned("https://not-matron.example.com")
+        XCTAssertEqual(vm.noticeMessage, "Not a Matron link code.")
+        await vm.offerScanned("matron://rlink?v=2&rid=\(Self.rid)")
         XCTAssertEqual(vm.noticeMessage, "Not a Matron link code.")
         XCTAssertTrue(relay.offers.isEmpty)
     }
@@ -452,7 +458,7 @@ final class DeviceLinkViewModelTests: XCTestCase {
 
     // MARK: Finding 2 — offerScanned must inhibit poll-driven regeneration
 
-    func test_offerScanned_inhibitsPollRegenerationWhileOfferInFlight() async {
+    func test_offerScanned_inhibitsPollRegenerationWhileOfferInFlight() async throws {
         // Reproduces the race: a status 404 while offerRendezvous() is
         // awaiting must not regenerate the session (which would replace
         // the code the relay is in the middle of handing to the desktop).
@@ -492,7 +498,10 @@ final class DeviceLinkViewModelTests: XCTestCase {
         await offerTask.value
 
         XCTAssertEqual(relay.offers.count, 1)
-        XCTAssertEqual(relay.offers[0].code, "2345-6789", "must offer the code that was live when the scan happened")
+        let offered = try XCTUnwrap(relay.offers.first)
+        let plaintext = try RendezvousCrypto.open(offered.box, key: Self.vectorKey)
+        let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: plaintext) as? [String: Any])
+        XCTAssertEqual(obj["code"] as? String, "2345-6789", "must offer the code that was live when the scan happened")
 
         // The offer has resolved and isSubmitting has cleared — the poll
         // loop must still be alive to notice the (still-404ing) session

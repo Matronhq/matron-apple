@@ -142,9 +142,9 @@ public final class DeviceLinkViewModel {
         // the one still in flight.
         guard !isSubmitting else { return }
         let gen = generation
-        let rid: String
+        let parsed: RendezvousURI.Parsed
         do {
-            rid = try RendezvousURI.parse(payload)
+            parsed = try RendezvousURI.parse(payload)
         } catch RendezvousURI.ParseError.unsupportedVersion {
             noticeMessage = "This QR code needs a newer version of Matron."
             return
@@ -161,14 +161,22 @@ public final class DeviceLinkViewModel {
             }
             return
         }
+        // Seal {server, code} under the key from the QR before it ever leaves
+        // this device. The relay — and anyone who only photographed the QR's
+        // rid — sees only opaque ciphertext (rendezvous-offer-encryption spec).
+        let plaintext = try? JSONSerialization.data(withJSONObject: ["server": serverURL.absoluteString, "code": code])
+        guard let plaintext, let box = try? RendezvousCrypto.seal(plaintext, key: parsed.key) else {
+            noticeMessage = "Couldn't reach the Matron relay — try again."
+            return
+        }
         // Mirror approve()/deny()'s poll-inhibition: without this, a
-        // 404-driven regeneration racing this await can replace the
-        // session mid-offer, so the relay hands the desktop a code this
-        // device can no longer claim.
+        // 404-driven regeneration racing this await can replace the session
+        // mid-offer, so the relay hands the desktop a code this device can no
+        // longer claim.
         isSubmitting = true
         defer { isSubmitting = false }
         do {
-            try await relay.offerRendezvous(rid: rid, server: serverURL.absoluteString, code: code)
+            try await relay.offerRendezvous(rid: parsed.rid, box: box)
             guard gen == generation else { return }
             noticeMessage = "Sent — approve the request when it appears."
         } catch {

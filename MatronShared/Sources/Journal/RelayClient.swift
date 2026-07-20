@@ -19,7 +19,7 @@ public struct Rendezvous: Equatable, Sendable {
 
 public enum RendezvousPollResult: Equatable, Sendable {
     case waiting
-    case offered(server: String, code: String)
+    case offered(box: Data)
 }
 
 public enum RelayError: Error, Equatable {
@@ -31,12 +31,13 @@ public enum RelayError: Error, Equatable {
 }
 
 /// Talks to the shared relay's rendezvous endpoints. Unauthenticated by
-/// design — the relay carries only {server, code}, never a token, and the
-/// approve tap on the signed-in phone remains the only credential gate.
+/// design — the relay carries only an opaque, app-encrypted offer box,
+/// never a token or a readable {server, code}, and the approve tap on the
+/// signed-in phone remains the only credential gate.
 public protocol RelayRendezvousing: Sendable {
     func createRendezvous() async throws -> Rendezvous
     func pollRendezvous(rid: String, secret: String) async throws -> RendezvousPollResult
-    func offerRendezvous(rid: String, server: String, code: String) async throws
+    func offerRendezvous(rid: String, box: Data) async throws
 }
 
 public struct RelayClient: RelayRendezvousing {
@@ -58,8 +59,8 @@ public struct RelayClient: RelayRendezvousing {
         return try Self.mapPoll(status: status, data: data)
     }
 
-    public func offerRendezvous(rid: String, server: String, code: String) async throws {
-        let (_, status) = try await send(Self.offerRequest(baseURL: baseURL, rid: rid, server: server, code: code))
+    public func offerRendezvous(rid: String, box: Data) async throws {
+        let (_, status) = try await send(Self.offerRequest(baseURL: baseURL, rid: rid, box: box))
         try Self.mapOffer(status: status)
     }
 
@@ -90,11 +91,11 @@ public struct RelayClient: RelayRendezvousing {
         return URLRequest(url: components.url!)
     }
 
-    static func offerRequest(baseURL: URL, rid: String, server: String, code: String) -> URLRequest {
+    static func offerRequest(baseURL: URL, rid: String, box: Data) -> URLRequest {
         var request = URLRequest(url: baseURL.appendingPathComponent("link/rendezvous/\(rid)/offer"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: ["server": server, "code": code])
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["box": Base64URL.encode(box)])
         return request
     }
 
@@ -113,11 +114,11 @@ public struct RelayClient: RelayRendezvousing {
         if status == 204 { return .waiting }
         try mapError(status, success: 200)
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let server = obj["server"] as? String,
-              let code = obj["code"] as? String else {
+              let boxString = obj["box"] as? String,
+              let box = Base64URL.decode(boxString) else {
             throw RelayError.transport("malformed relay response")
         }
-        return .offered(server: server, code: code)
+        return .offered(box: box)
     }
 
     static func mapOffer(status: Int) throws {
