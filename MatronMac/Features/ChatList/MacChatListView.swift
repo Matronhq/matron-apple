@@ -118,7 +118,7 @@ struct MacChatListView: View {
                 // preference and the sidebar falls back to the system
                 // default (probe-bisected 2026-07-20). `.frame(idealWidth:)`
                 // doesn't size the column at all.
-                .navigationSplitViewColumnWidth(min: 260, ideal: 450, max: 600)
+                .navigationSplitViewColumnWidth(min: 260, ideal: 400, max: 600)
                 .toolbar {
                     // With the sidebar toggle removed the new-chat button
                     // is the only item in the sidebar section and packs

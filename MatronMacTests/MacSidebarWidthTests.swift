@@ -42,8 +42,8 @@ final class MacSidebarWidthTests: XCTestCase {
             return
         }
         let sidebarWidth = split.arrangedSubviews.first?.frame.width ?? 0
-        XCTAssertEqual(sidebarWidth, 450, accuracy: 1,
-                       "sidebar should open at the 450pt ideal")
+        XCTAssertEqual(sidebarWidth, 400, accuracy: 1,
+                       "sidebar should open at the 400pt ideal")
         let controller = try XCTUnwrap(split.delegate as? NSSplitViewController)
         let sidebarItem = try XCTUnwrap(controller.splitViewItems.first)
         XCTAssertEqual(sidebarItem.minimumThickness, 260, accuracy: 1)
