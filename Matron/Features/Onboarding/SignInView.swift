@@ -136,7 +136,7 @@ struct SignInView: View {
             }
             .font(.callout)
             if showingManualCode {
-                TextField("XXXX-XXXX", text: $linkViewModel.codeInput)
+                TextField("XXXX-XXXX or matron:// link", text: $linkViewModel.codeInput)
                     .font(.system(.title3, design: .monospaced))
                     .textInputAutocapitalization(.characters)
                     .autocorrectionDisabled()
@@ -146,7 +146,10 @@ struct SignInView: View {
                     linkViewModel.serverURL = viewModel.serverURL
                     Task { await linkViewModel.submitManual() }
                 }
-                .disabled(viewModel.serverURL.isEmpty || linkViewModel.codeInput.count < 9)
+                // A pasted matron:// link names its own server, so it
+                // doesn't need the form's server field.
+                .disabled(!linkViewModel.codeInputIsFullLink
+                          && (viewModel.serverURL.isEmpty || linkViewModel.codeInput.count < 9))
             }
         } header: {
             Text("From another device")
