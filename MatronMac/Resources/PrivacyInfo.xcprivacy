@@ -10,10 +10,13 @@
 	is gated to `#if os(iOS)`, so the Mac binary never reaches it. The two
 	manifests describe two binaries and are expected to differ.
 
-	NSPrivacyCollectedDataTypes is a DRAFT PENDING DAN'S SIGN-OFF and must
-	agree with the App Privacy answers in App Store Connect. Both platforms
-	ship from one universal-purchase record, so these lists must stay in step
-	with the iOS manifest's.
+	NSPrivacyCollectedDataTypes is deliberately empty (Dan's sign-off,
+	2026-07-21): Matron is bring-your-own-server, so nothing the user sends
+	reaches the developer, and the push.matron.chat relays are content-blind.
+	Both platforms ship from one universal-purchase record, so this must stay
+	in step with the iOS manifest, the App Privacy answers in App Store
+	Connect ("No, we do not collect data from this app"), and the published
+	privacy policy at matron.chat/privacy.
 -->
 <plist version="1.0">
 <dict>
@@ -40,102 +43,6 @@
 		</dict>
 	</array>
 	<key>NSPrivacyCollectedDataTypes</key>
-	<array>
-		<dict>
-			<!-- Sign-in identity for the journal server. -->
-			<key>NSPrivacyCollectedDataType</key>
-			<string>NSPrivacyCollectedDataTypeEmailAddress</string>
-			<key>NSPrivacyCollectedDataTypeLinked</key>
-			<true/>
-			<key>NSPrivacyCollectedDataTypeTracking</key>
-			<false/>
-			<key>NSPrivacyCollectedDataTypePurposes</key>
-			<array>
-				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
-			</array>
-		</dict>
-		<dict>
-			<!-- The account identifier the journal server keys sessions on. -->
-			<key>NSPrivacyCollectedDataType</key>
-			<string>NSPrivacyCollectedDataTypeUserID</string>
-			<key>NSPrivacyCollectedDataTypeLinked</key>
-			<true/>
-			<key>NSPrivacyCollectedDataTypeTracking</key>
-			<false/>
-			<key>NSPrivacyCollectedDataTypePurposes</key>
-			<array>
-				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
-			</array>
-		</dict>
-		<dict>
-			<!-- Chat messages to and from the agent. -->
-			<key>NSPrivacyCollectedDataType</key>
-			<string>NSPrivacyCollectedDataTypeEmailsOrTextMessages</string>
-			<key>NSPrivacyCollectedDataTypeLinked</key>
-			<true/>
-			<key>NSPrivacyCollectedDataTypeTracking</key>
-			<false/>
-			<key>NSPrivacyCollectedDataTypePurposes</key>
-			<array>
-				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
-			</array>
-		</dict>
-		<dict>
-			<!-- Image attachments (open panel, drop, paste). -->
-			<key>NSPrivacyCollectedDataType</key>
-			<string>NSPrivacyCollectedDataTypePhotosorVideos</string>
-			<key>NSPrivacyCollectedDataTypeLinked</key>
-			<true/>
-			<key>NSPrivacyCollectedDataTypeTracking</key>
-			<false/>
-			<key>NSPrivacyCollectedDataTypePurposes</key>
-			<array>
-				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
-			</array>
-		</dict>
-		<dict>
-			<!-- Voice notes (VoiceRecorder → audio/mp4 attachment). -->
-			<key>NSPrivacyCollectedDataType</key>
-			<string>NSPrivacyCollectedDataTypeAudioData</string>
-			<key>NSPrivacyCollectedDataTypeLinked</key>
-			<true/>
-			<key>NSPrivacyCollectedDataTypeTracking</key>
-			<false/>
-			<key>NSPrivacyCollectedDataTypePurposes</key>
-			<array>
-				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
-			</array>
-		</dict>
-		<dict>
-			<!-- Non-image file attachments sent to the agent. -->
-			<key>NSPrivacyCollectedDataType</key>
-			<string>NSPrivacyCollectedDataTypeOtherUserContent</string>
-			<key>NSPrivacyCollectedDataTypeLinked</key>
-			<true/>
-			<key>NSPrivacyCollectedDataTypeTracking</key>
-			<false/>
-			<key>NSPrivacyCollectedDataTypePurposes</key>
-			<array>
-				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
-			</array>
-		</dict>
-		<dict>
-			<!--
-				The APNs device token, registered with the journal server so
-				it can wake this install. Not an advertising identifier and
-				never used for tracking.
-			-->
-			<key>NSPrivacyCollectedDataType</key>
-			<string>NSPrivacyCollectedDataTypeDeviceID</string>
-			<key>NSPrivacyCollectedDataTypeLinked</key>
-			<true/>
-			<key>NSPrivacyCollectedDataTypeTracking</key>
-			<false/>
-			<key>NSPrivacyCollectedDataTypePurposes</key>
-			<array>
-				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
-			</array>
-		</dict>
-	</array>
+	<array/>
 </dict>
 </plist>
