@@ -10,13 +10,18 @@
 	MatronNSE extension has no manifest because it links nothing and uses no
 	required-reason API; add one there the moment that changes.
 
-	NSPrivacyCollectedDataTypes is a DRAFT PENDING DAN'S SIGN-OFF. It
-	describes what the client demonstrably transmits, and it must agree with
-	the App Privacy answers in App Store Connect. The judgement call it
-	encodes: the journal server stores messages, and the default deployment
-	is a server Dan operates, so that content counts as "collected". If a
-	user self-hosts, the same data never reaches the developer — but the
-	declaration has to describe the shipping default.
+	NSPrivacyCollectedDataTypes is deliberately empty (Dan's sign-off,
+	2026-07-21). Matron is bring-your-own-server: everything the user sends —
+	sign-in identity, messages, attachments — goes only to a journal server
+	the user operates, which the developer never sees, so under Apple's
+	definition ("collect" = the developer or its partners can access the data
+	off-device for longer than needed to service the request) nothing is
+	collected. The push and device-linking relays (push.matron.chat) are
+	content-blind and forward-and-forget: they hold only an opaque token or
+	an app-encrypted box in memory, never stored or logged, so they collect
+	nothing either. This must stay in step with the App Privacy answers in
+	App Store Connect ("No, we do not collect data from this app") and the
+	published privacy policy at matron.chat/privacy.
 -->
 <plist version="1.0">
 <dict>
@@ -68,102 +73,6 @@
 		</dict>
 	</array>
 	<key>NSPrivacyCollectedDataTypes</key>
-	<array>
-		<dict>
-			<!-- Sign-in identity for the journal server. -->
-			<key>NSPrivacyCollectedDataType</key>
-			<string>NSPrivacyCollectedDataTypeEmailAddress</string>
-			<key>NSPrivacyCollectedDataTypeLinked</key>
-			<true/>
-			<key>NSPrivacyCollectedDataTypeTracking</key>
-			<false/>
-			<key>NSPrivacyCollectedDataTypePurposes</key>
-			<array>
-				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
-			</array>
-		</dict>
-		<dict>
-			<!-- The account identifier the journal server keys sessions on. -->
-			<key>NSPrivacyCollectedDataType</key>
-			<string>NSPrivacyCollectedDataTypeUserID</string>
-			<key>NSPrivacyCollectedDataTypeLinked</key>
-			<true/>
-			<key>NSPrivacyCollectedDataTypeTracking</key>
-			<false/>
-			<key>NSPrivacyCollectedDataTypePurposes</key>
-			<array>
-				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
-			</array>
-		</dict>
-		<dict>
-			<!-- Chat messages to and from the agent. -->
-			<key>NSPrivacyCollectedDataType</key>
-			<string>NSPrivacyCollectedDataTypeEmailsOrTextMessages</string>
-			<key>NSPrivacyCollectedDataTypeLinked</key>
-			<true/>
-			<key>NSPrivacyCollectedDataTypeTracking</key>
-			<false/>
-			<key>NSPrivacyCollectedDataTypePurposes</key>
-			<array>
-				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
-			</array>
-		</dict>
-		<dict>
-			<!-- Photo attachments (picker, file importer, paste). -->
-			<key>NSPrivacyCollectedDataType</key>
-			<string>NSPrivacyCollectedDataTypePhotosorVideos</string>
-			<key>NSPrivacyCollectedDataTypeLinked</key>
-			<true/>
-			<key>NSPrivacyCollectedDataTypeTracking</key>
-			<false/>
-			<key>NSPrivacyCollectedDataTypePurposes</key>
-			<array>
-				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
-			</array>
-		</dict>
-		<dict>
-			<!-- Voice notes (VoiceRecorder → audio/mp4 attachment). -->
-			<key>NSPrivacyCollectedDataType</key>
-			<string>NSPrivacyCollectedDataTypeAudioData</string>
-			<key>NSPrivacyCollectedDataTypeLinked</key>
-			<true/>
-			<key>NSPrivacyCollectedDataTypeTracking</key>
-			<false/>
-			<key>NSPrivacyCollectedDataTypePurposes</key>
-			<array>
-				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
-			</array>
-		</dict>
-		<dict>
-			<!-- Non-image file attachments sent to the agent. -->
-			<key>NSPrivacyCollectedDataType</key>
-			<string>NSPrivacyCollectedDataTypeOtherUserContent</string>
-			<key>NSPrivacyCollectedDataTypeLinked</key>
-			<true/>
-			<key>NSPrivacyCollectedDataTypeTracking</key>
-			<false/>
-			<key>NSPrivacyCollectedDataTypePurposes</key>
-			<array>
-				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
-			</array>
-		</dict>
-		<dict>
-			<!--
-				The APNs device token, registered with the journal server so
-				it can wake this install. Not an advertising identifier and
-				never used for tracking.
-			-->
-			<key>NSPrivacyCollectedDataType</key>
-			<string>NSPrivacyCollectedDataTypeDeviceID</string>
-			<key>NSPrivacyCollectedDataTypeLinked</key>
-			<true/>
-			<key>NSPrivacyCollectedDataTypeTracking</key>
-			<false/>
-			<key>NSPrivacyCollectedDataTypePurposes</key>
-			<array>
-				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
-			</array>
-		</dict>
-	</array>
+	<array/>
 </dict>
 </plist>
