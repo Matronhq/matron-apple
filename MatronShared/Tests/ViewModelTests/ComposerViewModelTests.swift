@@ -44,6 +44,8 @@ final class FakeTimelineService: TimelineService, @unchecked Sendable {
     var sentFiles: [(filename: String, mime: String, sizeBytes: Int, caption: String?)] = []
     var paginateCalls: Int = 0
     var markReadCalls: Int = 0
+    var retrySendCalls: [String] = []
+    var discardSendCalls: [String] = []
     /// When set, the next `sendText`/`sendImage`/`sendFile` call throws this error.
     var nextSendError: Error?
     /// When set, media sends succeed this many times and every one after
@@ -86,6 +88,8 @@ final class FakeTimelineService: TimelineService, @unchecked Sendable {
         sentText.append(body)
         sentInReplyTo.append(inReplyTo)
     }
+    func retrySend(itemID: String) async { retrySendCalls.append(itemID) }
+    func discardSend(itemID: String) async { discardSendCalls.append(itemID) }
     func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {
         if sendDelayNanos > 0 { try? await Task.sleep(nanoseconds: sendDelayNanos) }
         if let err = nextSendError { nextSendError = nil; throw err }

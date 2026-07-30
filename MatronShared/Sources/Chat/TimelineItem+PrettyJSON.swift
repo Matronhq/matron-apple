@@ -172,6 +172,8 @@ extension TimelineItem {
             return ["status": "sent"]
         case .sending:
             return ["status": "sending"]
+        case .queued:
+            return ["status": "queued"]
         case .failed(let reason):
             return ["status": "failed", "reason": reason]
         }

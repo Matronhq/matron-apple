@@ -1,3 +1,4 @@
+import BackgroundTasks
 import UIKit
 import UserNotifications
 
@@ -27,17 +28,58 @@ import UserNotifications
 /// which translates to a `tappedRoomID.send(...)` Combine event the
 /// host observes to deep-link into the right chat.
 final class MatronAppDelegate: NSObject, UIApplicationDelegate {
+    /// BGAppRefresh identifier — must match
+    /// `BGTaskSchedulerPermittedIdentifiers` in project.yml.
+    static let refreshTaskID = "chat.matron.refresh"
+
     /// Set by `MatronApp`'s push `.task` once a session is signed in.
     /// `@MainActor` isolation matches where both the setter (SwiftUI
     /// `.task`) and this delegate callback (APNs, on main) run.
     @MainActor var registerDeviceToken: ((Data) -> Void)?
+
+    /// Background-refresh work, set by `MatronApp` once a session exists
+    /// (nil before sign-in / after sign-out — the task then just
+    /// reschedules). Same lifecycle pattern as `registerDeviceToken`.
+    @MainActor var backgroundRefresh: (() async -> Void)?
 
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
+        // BGTaskScheduler demands registration before launch finishes; the
+        // handler body closes over `self` so `MatronApp` can install the
+        // actual work later (exactly like the push-token callback).
+        BGTaskScheduler.shared.register(
+            forTaskWithIdentifier: Self.refreshTaskID, using: nil
+        ) { [weak self] task in
+            Self.handleRefresh(task as! BGAppRefreshTask, delegate: self)
+        }
         return true
+    }
+
+    /// Asks iOS for a background wake so the journal can catch up (and the
+    /// outbox flush) while the app isn't foregrounded. Called on every
+    /// background transition and on each refresh firing; the OS coalesces
+    /// duplicate submissions and paces actual wakes itself.
+    static func scheduleBackgroundRefresh() {
+        let request = BGAppRefreshTaskRequest(identifier: refreshTaskID)
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
+        // Denied submissions (background refresh off, low power) are not
+        // actionable — the foreground reconnect path still covers catch-up.
+        try? BGTaskScheduler.shared.submit(request)
+    }
+
+    private static func handleRefresh(_ task: BGAppRefreshTask, delegate: MatronAppDelegate?) {
+        scheduleBackgroundRefresh() // always re-arm the next wake
+        let work = Task { @MainActor in
+            await delegate?.backgroundRefresh?()
+            task.setTaskCompleted(success: true)
+        }
+        // Cancellation cascades into the refresh closure's stream waits;
+        // the single completion call above still runs on the (now
+        // fast-unwinding) work task.
+        task.expirationHandler = { work.cancel() }
     }
 
     func application(

@@ -57,25 +57,17 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         self.sweepInterval = sweepInterval
     }
 
-    /// Streaming overlays + local echoes, isolated on one actor.
+    /// Streaming overlays + pending-send projection, isolated on one actor.
     ///
-    /// Re-emit plumbing: `sendText` registers a local echo from whatever
-    /// context called it (usually the main actor), and `items()` subscribers
-    /// need to see that echo immediately rather than waiting for the next
-    /// store or ephemeral event. Rather than stash a mutable closure on the
-    /// service (racy: multiple concurrent `items()` calls would clobber each
-    /// other's callback, and it's a plain `var` on a class marked
-    /// `@unchecked Sendable`), `OverlayState` exposes a `changes()`
-    /// `AsyncStream<Void>` using the same continuation-registry pattern
-    /// `JournalSyncEngine` already uses for `stateStream()` /
-    /// `ephemerals(convoID:)`: a `nonisolated` accessor hands out a fresh
-    /// `AsyncStream`, registers its continuation on the actor, and
-    /// unregisters on termination. Every actor-isolated mutation that a
-    /// subscriber must react to (currently just `addEcho`) broadcasts to all
-    /// registered continuations. This supports multiple concurrent `items()`
-    /// callers correctly and needs no mutable stored closures.
+    /// Pending sends (the timeline's own-message echoes) are a projection
+    /// of the durable outbox (`JournalStore.outboxStream(convoID:)`): rows
+    /// are created by `sendText` → `engine.sendMessage`, survive relaunch,
+    /// and are deleted by the engine when the own-text journal frame
+    /// confirms delivery. `suppressedSendIDs` bridges the gap between the
+    /// events observation and the outbox observation firing: the same
+    /// reconcile pass that surfaces the confirming row hides its echo, so
+    /// the row and its echo can never render together in one snapshot.
     actor OverlayState {
-        struct Echo { let localID: String; let body: String; let created: Date; var failed = false }
         private(set) var streaming: [String: (text: String, updated: Date)] = [:]
         /// Latest event list from the store's `ValueObservation`. The
         /// observation already fetches the full row set on every change,
@@ -130,8 +122,18 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         /// latest-wins; `.idle` clears it. Pruned by the same staleness sweep
         /// as streaming so a crashed agent's indicator can't stick forever.
         private(set) var activity: (label: String, updated: Date)?
-        private(set) var echoes: [Echo] = []
-        private var changeContinuations: [UUID: AsyncStream<Void>.Continuation] = [:]
+        /// Latest outbox rows for this conversation (queued + failed,
+        /// oldest first) — the durable replacement for the old in-memory
+        /// echo array.
+        private(set) var outboxRows: [OutboxRecord] = []
+        /// Rows hidden at render time because a reconcile pass already saw
+        /// their confirming own-text journal row (the engine's DB delete
+        /// lands a beat later; without this the delivered message and its
+        /// echo would double-render for a frame).
+        private var suppressedSendIDs: Set<String> = []
+        /// Whether the sync engine is `.running` — pending sends render as
+        /// `.sending` when online and `.queued` when not.
+        private(set) var online = false
         private let staleness: TimeInterval
         private let toolStaleness: TimeInterval
 
@@ -279,31 +281,36 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                 }
                 // Body-match is the only available signal: the server folds
                 // `local_id` into the row's idem_key and strips idem_key from
-                // broadcast/pagination rows, so the echo's id never comes
-                // back. FIFO removal is order-correct for sequential sends of
-                // identical text; prefer a *pending* echo so a delivered
-                // copy's ack can't retire an undelivered one — but when only
-                // a failed copy matches, this own-row IS its successful
-                // retry landing, so the failure is resolved and can go.
+                // broadcast/pagination rows, so the send's id never comes
+                // back. The engine deletes the outbox row on this same frame
+                // (JournalSyncEngine's `.journal` case) but that delete
+                // arrives via a separate observation — suppress the echo
+                // HERE, in the same pass that surfaces the row, so they
+                // never double-render. Preference mirrors the engine's
+                // delete: oldest queued copy first (a delivered copy's ack
+                // can't retire an undelivered one); when only a failed copy
+                // matches, this own-row IS its successful retry landing.
                 // Gated on seq > newSeqFloor: only rows arriving in THIS
-                // reconcile may retire echoes — see `lastReconciledSeq`.
+                // reconcile may suppress — see `lastReconciledSeq`.
                 if event.seq > newSeqFloor,
                    event.sender == ownSender, event.type == JournalEventType.text,
-                   let body = event.payload["body"] as? String,
-                   let index = echoes.firstIndex(where: { $0.body == body && !$0.failed })
-                            ?? echoes.firstIndex(where: { $0.body == body }) {
-                    echoes.remove(at: index)
+                   let body = event.payload["body"] as? String {
+                    let candidates = outboxRows.filter {
+                        !suppressedSendIDs.contains($0.localID) && $0.body == body
+                    }
+                    if let match = candidates.first(where: { $0.state == .queued }) ?? candidates.first {
+                        suppressedSendIDs.insert(match.localID)
+                    }
                 }
                 lastReconciledSeq = max(lastReconciledSeq, event.seq)
             }
             let cutoff = Date().addingTimeInterval(-staleness)
             streaming = streaming.filter { $0.value.updated > cutoff }
-            // Failed echoes are exempt from staleness: sweeping a "Not
-            // delivered" row away 30s later silently vanishes the user's
-            // message (2026-07-13 phone incident — send on a dead socket,
-            // message evaporated). They clear on a delivered retry (above)
-            // or when the per-room service is dropped.
-            echoes = echoes.filter { $0.failed || $0.created > cutoff }
+            // Pending sends are deliberately NOT staleness-swept: an outbox
+            // row is a durable at-least-once send (2026-07-13 phone
+            // incident — a send on a dead socket must never evaporate). It
+            // leaves the timeline only via delivery confirmation, explicit
+            // discard, or sign-out.
             if let current = activity, current.updated <= cutoff { activity = nil }
             // Tool streams are exempt from the short text-overlay cutoff —
             // a quiet build step legitimately produces nothing for minutes.
@@ -314,43 +321,22 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             resyncRequested = resyncRequested.filter { $0.value > toolCutoff }
         }
 
-        func addEcho(localID: String, body: String) {
-            echoes.append(Echo(localID: localID, body: body, created: Date()))
-            broadcastChange()
+        /// Replaces the outbox projection with the observation's latest
+        /// rows. Suppression markers for rows the engine has since deleted
+        /// are dropped so the set can't grow unbounded.
+        func setOutbox(_ rows: [OutboxRecord]) {
+            outboxRows = rows
+            suppressedSendIDs.formIntersection(rows.map(\.localID))
         }
 
-        /// A `sendText` op failed (e.g. offline): flip the echo to `.failed`
-        /// so it renders as undelivered instead of spinning forever. It
-        /// still expires via the normal staleness sweep in `reconcile`.
-        func markEchoFailed(localID: String) {
-            guard let index = echoes.firstIndex(where: { $0.localID == localID }) else { return }
-            echoes[index].failed = true
-            broadcastChange()
+        func setOnline(_ isOnline: Bool) {
+            online = isOnline
         }
 
-        /// A tick is emitted whenever isolated state changes in a way that
-        /// `items()` subscribers must re-render for (see the doc comment on
-        /// `OverlayState` above). Mirrors `JournalSyncEngine.ephemerals(convoID:)`.
-        nonisolated func changes() -> AsyncStream<Void> {
-            AsyncStream { continuation in
-                let id = UUID()
-                Task { await self.registerChange(id: id, continuation: continuation) }
-                continuation.onTermination = { _ in
-                    Task { await self.unregisterChange(id: id) }
-                }
-            }
-        }
-
-        private func registerChange(id: UUID, continuation: AsyncStream<Void>.Continuation) {
-            changeContinuations[id] = continuation
-        }
-
-        private func unregisterChange(id: UUID) {
-            changeContinuations.removeValue(forKey: id)
-        }
-
-        private func broadcastChange() {
-            for continuation in changeContinuations.values { continuation.yield(()) }
+        /// The pending sends `emit()` renders: every outbox row whose
+        /// confirming journal row hasn't been seen yet.
+        var visibleSends: [OutboxRecord] {
+            outboxRows.filter { !suppressedSendIDs.contains($0.localID) }
         }
     }
 
@@ -378,12 +364,17 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                         headTruncated: stream.headTruncated,
                         convoTS: max(lastTS, stream.updated)))
                 }
-                for echo in await overlay.echoes {
-                    items.append(TimelineItem(id: "echo:\(echo.localID)", sender: ownSender,
-                                              timestamp: echo.created,
-                                              kind: .text(body: echo.body, formattedHTML: nil),
+                let online = await overlay.online
+                for row in await overlay.visibleSends {
+                    let sendState: TimelineSendState = switch row.state {
+                    case .failed: .failed(reason: "Not delivered")
+                    case .queued: online ? .sending : .queued
+                    }
+                    items.append(TimelineItem(id: "echo:\(row.localID)", sender: ownSender,
+                                              timestamp: row.created,
+                                              kind: .text(body: row.body, formattedHTML: nil),
                                               isOwn: true,
-                                              sendState: echo.failed ? .failed(reason: "Not delivered") : .sending))
+                                              sendState: sendState))
                 }
                 // Activity indicator sits below every other row. Dated to the
                 // last row's timestamp (not "now") so it stays in that row's
@@ -465,8 +456,24 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                     signal()
                 }
             }
-            let echoTask = Task {
-                for await _ in overlay.changes() { signal() }
+            // Pending sends: the outbox observation delivers the current
+            // rows on subscribe (so queued messages survive relaunch /
+            // room re-open) and re-fires on enqueue, retry, and
+            // delivery-confirmed delete.
+            let outboxTask = Task {
+                for await rows in store.outboxStream(convoID: convoID) {
+                    await overlay.setOutbox(rows)
+                    signal()
+                }
+            }
+            // Connection state drives the queued ("waiting to send") vs
+            // sending glyph on pending sends.
+            let onlineTask = Task {
+                for await state in engine.stateStream() {
+                    let isOnline = if case .running = state { true } else { false }
+                    await overlay.setOnline(isOnline)
+                    signal()
+                }
             }
             // Overlays (streaming + echoes) only get pruned inside
             // `reconcile`, which only runs from `emit()`. Without this, a
@@ -490,7 +497,8 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                 ephemeralTask.cancel()
                 activityTask.cancel()
                 toolStreamTask.cancel()
-                echoTask.cancel()
+                outboxTask.cancel()
+                onlineTask.cancel()
                 sweepTask.cancel()
                 emitTask.cancel()
                 tickContinuation.finish()
@@ -504,17 +512,28 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             try await engine.sendOp(.promptReply(convoID: convoID, targetSeq: target, choice: nil, text: body))
             return
         }
-        let localID = UUID().uuidString
-        await overlay.addEcho(localID: localID, body: body)
-        do {
-            try await engine.sendOp(.send(convoID: convoID, body: body, localID: localID))
-        } catch {
-            // Flip the echo to failed rather than leave it stuck in
-            // `.sending` forever, and rethrow so the composer surfaces the
-            // error and keeps the user's text instead of silently eating it.
-            await overlay.markEchoFailed(localID: localID)
-            throw error
-        }
+        // Durable queue-and-flush: the outbox row IS the local echo (it
+        // arrives in `items()` via the outbox observation, as `.sending`
+        // when online or `.queued` when not) and survives offline,
+        // relaunch, and mirror wipes until the journal frame confirms
+        // delivery. Being offline is not an error any more — only a store
+        // write failure throws, so the composer can keep the user's text.
+        try await engine.sendMessage(convoID: convoID, body: body, localID: UUID().uuidString)
+    }
+
+    /// Tap-to-retry on a pending/failed own-message: requeues a failed
+    /// outbox row and forces a send attempt (or a reconnect nudge when
+    /// offline). `itemID` is the echo row's id, `echo:<localID>`.
+    public func retrySend(itemID: String) async {
+        guard itemID.hasPrefix("echo:") else { return }
+        await engine.retryOutboxItem(localID: String(itemID.dropFirst("echo:".count)))
+    }
+
+    /// Removes an unsent (queued or failed) own-message the user chose to
+    /// discard. No-op for anything that isn't a pending-send echo.
+    public func discardSend(itemID: String) async {
+        guard itemID.hasPrefix("echo:") else { return }
+        await engine.discardOutboxItem(localID: String(itemID.dropFirst("echo:".count)))
     }
 
     public func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {

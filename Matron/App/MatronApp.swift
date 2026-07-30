@@ -110,14 +110,45 @@ struct MatronApp: App {
                         _ = await pushService.requestPermission()
                         UIApplication.shared.registerForRemoteNotifications()
                     }
+                    // Background-refresh work: when iOS grants a periodic
+                    // wake, kick the reconnect and give the engine a
+                    // bounded window to catch the journal up (which also
+                    // flushes any queued sends). Same install-a-closure
+                    // lifecycle as the push token callback above.
+                    .task(id: session.userID) {
+                        let dependencies = self.dependencies
+                        appDelegate.backgroundRefresh = {
+                            guard let engine = dependencies.syncService(for: session) as? JournalSyncEngine else { return }
+                            await engine.nudge()
+                            // Bounded readiness wait: consume the state
+                            // stream until `.running` or ~15s. Task
+                            // cancellation (BGTask expiry) finishes the
+                            // stream, so this can't outlive the grant.
+                            let deadline = Date().addingTimeInterval(15)
+                            for await state in await engine.stateStream() {
+                                if case .running = state { break }
+                                if Date() > deadline { break }
+                            }
+                            // Brief settle so in-flight journal frames and
+                            // the outbox flush land before suspension.
+                            try? await Task.sleep(for: .seconds(2))
+                        }
+                    }
                     // Reconnect nudge: when the app returns to the
                     // foreground, cancel the sync engine's backoff sleep so
                     // a stale connection retries immediately instead of
                     // waiting out whatever backoff interval it landed on
-                    // while backgrounded.
+                    // while backgrounded. On the way OUT, schedule the
+                    // periodic background refresh and — if sends are still
+                    // awaiting confirmation — hold a short background grace
+                    // so a send-then-pocket actually delivers.
                     .onChange(of: scenePhase) { _, phase in
                         if phase == .active {
                             Task { await (dependencies.syncService(for: session) as? JournalSyncEngine)?.nudge() }
+                        } else if phase == .background {
+                            MatronAppDelegate.scheduleBackgroundRefresh()
+                            OutboxBackgroundGrace.holdIfNeeded(
+                                engine: dependencies.syncService(for: session) as? JournalSyncEngine)
                         }
                     }
                 } else {

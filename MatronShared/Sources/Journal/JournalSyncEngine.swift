@@ -196,6 +196,87 @@ public actor JournalSyncEngine {
         try await connection.send(op)
     }
 
+    // MARK: Offline outbox
+
+    /// Rows already written to the CURRENT socket. A row stays in the
+    /// outbox until its journal frame confirms delivery, so without this
+    /// set every extra flush pass on the same connection would resend it.
+    /// Cleared on each new connection: the server's idem key (folded from
+    /// `local_id`) dedups the once-per-connection resend of anything that
+    /// actually landed but wasn't confirmed before the socket died.
+    private var sentOnThisConnection: Set<String> = []
+    /// Single-flight latch for `flushOutbox()`.
+    private var flushingOutbox = false
+
+    /// Queue-and-flush text send — the offline-tolerant replacement for
+    /// `sendOp(.send(...))`. The message is durably enqueued first (it
+    /// survives relaunch and renders as a queued/sending echo via
+    /// `JournalStore.outboxStream`), then flushed immediately when a
+    /// connection is live. Never throws for being offline; only a store
+    /// write failure (disk) escapes, so the composer can keep the text.
+    public func sendMessage(convoID: String, body: String, localID: String) throws {
+        try store.outboxInsert(localID: localID, convoID: convoID, body: body)
+        if liveConnection != nil {
+            Task { await self.flushOutbox() }
+        }
+    }
+
+    /// Tap-to-retry for a failed (or stuck-queued) outbox row: requeues it,
+    /// clears its sent-marker so it's eligible on this connection again,
+    /// and kicks a flush — or, when offline, cancels any backoff sleep so
+    /// the reconnect (and its connect-flush) happens now.
+    public func retryOutboxItem(localID: String) {
+        try? store.outboxRequeue(localID: localID)
+        sentOnThisConnection.remove(localID)
+        if liveConnection != nil {
+            Task { await self.flushOutbox() }
+        } else {
+            nudge()
+        }
+    }
+
+    /// Removes an unsent message the user chose to discard.
+    public func discardOutboxItem(localID: String) {
+        try? store.outboxDelete(localID: localID)
+        sentOnThisConnection.remove(localID)
+    }
+
+    /// Whether any queued sends are still awaiting delivery confirmation.
+    /// The iOS host polls this from its background-task grace window so a
+    /// send-then-pocket flush can finish before the process suspends.
+    public var hasPendingOutbox: Bool {
+        !((try? store.outboxPending())?.isEmpty ?? true)
+    }
+
+    /// Sends every queued outbox row not yet written to the current
+    /// connection, oldest first. Stops on the first transport failure —
+    /// the rows stay queued and the next connection's flush retries them.
+    /// `outboxMarkAttempt` runs BEFORE the write: delivery-confirmation
+    /// deletes only attempted rows, and marking after a successful write
+    /// would race the journal frame (a frame applied before the mark
+    /// would skip the delete, and the dedup'd resend gets no fresh frame,
+    /// so the row would never clear).
+    private func flushOutbox() async {
+        guard !flushingOutbox else { return }
+        flushingOutbox = true
+        defer { flushingOutbox = false }
+        while let connection = liveConnection {
+            let rows = (try? store.outboxPending()) ?? []
+            guard let next = rows.first(where: { !sentOnThisConnection.contains($0.localID) }) else {
+                return
+            }
+            try? store.outboxMarkAttempt(localID: next.localID)
+            do {
+                try await connection.send(.send(convoID: next.convoID, body: next.body,
+                                                localID: next.localID))
+                sentOnThisConnection.insert(next.localID)
+            } catch {
+                Self.logger.warning("outbox flush stopped — socket write failed: \(error.localizedDescription, privacy: .public)")
+                return
+            }
+        }
+    }
+
     public func setViewing(convoID: String?) async {
         viewingConvoID = convoID
         try? await liveConnection?.send(.viewing(convoID: convoID))
@@ -492,6 +573,12 @@ public actor JournalSyncEngine {
                 }
                 refreshSummariesTask?.cancel()
                 refreshSummariesTask = Task { await self.refreshSummaries() } // title/state stopgap (spec §7 ask 4)
+                // Fresh socket: everything unconfirmed is eligible to resend
+                // once (idem-dedup'd server-side), including messages queued
+                // while offline. Kicked as a child task so the frame loop
+                // below starts consuming immediately.
+                sentOnThisConnection.removeAll()
+                Task { await self.flushOutbox() }
                 if store.cursor >= headSeq { setState(.running) }
 
                 let watchdog = Task {
@@ -535,6 +622,16 @@ public actor JournalSyncEngine {
                         let isNewConvo = (try? store.conversationExists(event.convoID)) == false
                         if try store.applyJournal(event) {
                             indexForSearch(event)
+                            // Delivery confirmation for the offline outbox:
+                            // an own-text frame is a queued send landing
+                            // (the server strips idem_key from broadcast
+                            // rows, so body-match is the only signal — same
+                            // heuristic as echo retirement). Only attempted
+                            // rows qualify; see outboxDeleteFirstMatching.
+                            if event.sender == ownSender, event.type == JournalEventType.text,
+                               let body = event.payload["body"] as? String {
+                                _ = try? store.outboxDeleteFirstMatching(convoID: event.convoID, body: body)
+                            }
                             appliedSinceAck += 1
                             if appliedSinceAck >= 50 {
                                 try? await connection.send(.ack(cursor: store.cursor))

@@ -40,6 +40,7 @@ public extension SendStateGlyph {
         switch state {
         case .sent: return .sent
         case .sending: return .sending
+        case .queued: return .queued
         case .failed(let reason): return .failed(reason: reason)
         }
     }

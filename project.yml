@@ -108,6 +108,14 @@ targets:
         # PHPhotoLibrary, so ship the string: absent, a prompt on that path is
         # a guaranteed crash; present-but-unused costs nothing.
         NSPhotoLibraryUsageDescription: Attaches photos from your library to send to your agent.
+        # Background catch-up: BGAppRefresh ("fetch") wakes let the journal
+        # sync — and the offline outbox flush — run periodically while the
+        # app is backgrounded. Identifier must match
+        # MatronAppDelegate.refreshTaskID.
+        UIBackgroundModes:
+          - fetch
+        BGTaskSchedulerPermittedIdentifiers:
+          - chat.matron.refresh
         # Production talks to https://chat.example.com, so ATS stays on.
         # The one carve-out is cleartext to loopback, so a locally-run
         # matron-journal dev server (http://127.0.0.1:9810, per the README

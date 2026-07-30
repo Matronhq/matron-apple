@@ -244,6 +244,12 @@ final class AppDependencies {
                 await Self.withTimeout(seconds: 5) { try? await core.api.unregisterPush() }
                 await core.engine.endSync()          // stop the writer first…
                 try? core.store.wipe()               // …then clear the mirror
+                // The mirror wipe deliberately preserves the outbox (a
+                // snapshot_required wipe must not eat unsent messages);
+                // sign-out is the one place queued sends must NOT survive —
+                // the next account on this db file must not inherit or
+                // deliver them.
+                try? core.store.wipeOutbox()
             }
             // Inside the awaited teardown so a new session's indexing can't
             // interleave with the wipe (bugbot "Search wipe races indexing").

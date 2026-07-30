@@ -64,6 +64,14 @@ public protocol TimelineService: Sendable {
     /// Marks the most recent visible event as read.
     func markAsRead() async throws
 
+    /// Retries a pending/failed own-message (the timeline's tap-to-retry
+    /// affordance). `itemID` is the timeline item's id. Implementations
+    /// without an offline outbox inherit the default no-op.
+    func retrySend(itemID: String) async
+
+    /// Discards an unsent own-message. Default no-op, same as `retrySend`.
+    func discardSend(itemID: String) async
+
     /// Per-convo stream of session-status updates (model, context gauge,
     /// account limits) — journal `status` ephemerals. The journal replays
     /// the last cached status on `viewing`, so subscribing at convo-open
@@ -83,4 +91,9 @@ public extension TimelineService {
     func sessionStatus() -> AsyncStream<SessionStatusUpdate> {
         AsyncStream { $0.finish() }
     }
+
+    /// Default no-ops so fakes and outbox-less implementations compile
+    /// unchanged; `JournalTimelineService` overrides both.
+    func retrySend(itemID: String) async {}
+    func discardSend(itemID: String) async {}
 }
