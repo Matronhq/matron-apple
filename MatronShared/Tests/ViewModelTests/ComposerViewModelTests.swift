@@ -44,6 +44,8 @@ final class FakeTimelineService: TimelineService, @unchecked Sendable {
     var sentFiles: [(filename: String, mime: String, sizeBytes: Int, caption: String?)] = []
     var paginateCalls: Int = 0
     var markReadCalls: Int = 0
+    var retrySendCalls: [String] = []
+    var discardSendCalls: [String] = []
     /// When set, the next `sendText`/`sendImage`/`sendFile` call throws this error.
     var nextSendError: Error?
     /// When set, media sends succeed this many times and every one after
@@ -85,6 +87,24 @@ final class FakeTimelineService: TimelineService, @unchecked Sendable {
         if let err = nextSendError { nextSendError = nil; throw err }
         sentText.append(body)
         sentInReplyTo.append(inReplyTo)
+    }
+    func retrySend(itemID: String) async { retrySendCalls.append(itemID) }
+    func discardSend(itemID: String) async { discardSendCalls.append(itemID) }
+    /// True per media send when the caller supplied a progress handler —
+    /// pins that the composer reaches the progress-capable protocol
+    /// requirement (dynamic dispatch), not the drop-the-handler default.
+    var mediaSendsWithProgressHandler: [Bool] = []
+    func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?,
+                   progress: (@Sendable (Double) -> Void)?) async throws {
+        mediaSendsWithProgressHandler.append(progress != nil)
+        progress?(0.5)
+        try await sendImage(data, filename: filename, mimeType: mimeType, caption: caption)
+    }
+    func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?,
+                  progress: (@Sendable (Double) -> Void)?) async throws {
+        mediaSendsWithProgressHandler.append(progress != nil)
+        progress?(0.5)
+        try await sendFile(data, filename: filename, mimeType: mimeType, caption: caption)
     }
     func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {
         if sendDelayNanos > 0 { try? await Task.sleep(nanoseconds: sendDelayNanos) }
@@ -465,6 +485,29 @@ final class ComposerViewModelTests: XCTestCase {
         XCTAssertTrue(fake.sentText.isEmpty, "the text is the caption — it must not ALSO send separately")
         XCTAssertTrue(vm.input.isEmpty)
         XCTAssertTrue(vm.stagedAttachments.isEmpty, "a successful send empties the tray")
+    }
+
+    @MainActor
+    func test_send_attachmentUpload_reportsProgressAndClearsWhenDone() async throws {
+        let url = try makeTempFile(named: "shot.png")
+        let fake = FakeTimelineService()
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
+        await vm.attachFiles([url])
+
+        await vm.send()
+
+        XCTAssertEqual(fake.mediaSendsWithProgressHandler, [true],
+                       "uploads must go through the progress-capable send")
+        XCTAssertNil(vm.uploadProgress, "progress strip clears once the batch finishes")
+    }
+
+    func test_uploadProgress_labels() {
+        let single = ComposerViewModel.UploadProgress(
+            filename: "shot.png", index: 1, count: 1, fraction: 0.2)
+        XCTAssertEqual(single.label, "Uploading shot.png…")
+        let batch = ComposerViewModel.UploadProgress(
+            filename: "b.png", index: 2, count: 3, fraction: 0.7)
+        XCTAssertEqual(batch.label, "Uploading 2 of 3…")
     }
 
     /// An attachment on its own is a complete message.

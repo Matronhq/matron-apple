@@ -55,7 +55,10 @@ public final class JournalAuthService: AuthService, @unchecked Sendable {
         } catch JournalAPIError.rateLimited {
             throw AuthError.unexpected("Too many attempts — try again in a minute")
         } catch let error as JournalAPIError {
-            throw AuthError.unexpected(String(describing: error))
+            // `localizedDescription` (LocalizedError conformance), never
+            // `String(describing:)` — the raw form leaks enum internals
+            // like "http(status: 502, message: \"\")" into the sign-in form.
+            throw AuthError.unexpected(error.localizedDescription)
         }
     }
 

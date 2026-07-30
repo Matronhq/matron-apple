@@ -27,6 +27,26 @@ public final class ComposerViewModel {
     public private(set) var isSending: Bool = false
     public private(set) var sendError: String?
 
+    /// Live state of an in-flight attachment upload, or nil when none. On a
+    /// slow uplink a multi-MB screenshot takes long enough that a bare
+    /// spinner reads as "frozen" — the views render this as a labelled
+    /// progress bar ("Uploading photo 1 of 2…") above the composer.
+    public struct UploadProgress: Equatable, Sendable {
+        public var filename: String
+        /// 1-based position within this send's batch.
+        public var index: Int
+        public var count: Int
+        /// Uploaded fraction of the current attachment (0…1).
+        public var fraction: Double
+
+        /// Display label — batch position when sending several, filename
+        /// when sending one.
+        public var label: String {
+            count > 1 ? "Uploading \(index) of \(count)…" : "Uploading \(filename)…"
+        }
+    }
+    public private(set) var uploadProgress: UploadProgress?
+
     /// Attachments picked/pasted/dropped but not yet sent, in the order the
     /// user added them. Both shells render these as a tray above the input;
     /// `send()` uploads them with the composer text as their caption.
@@ -356,19 +376,41 @@ public final class ComposerViewModel {
     /// these two") would arrive at claude as a non-sequitur.
     private func sendAttachments(_ attachments: [StagedAttachment], caption: String) async throws {
         var captionDelivered = false
+        defer { uploadProgress = nil }
         for (index, attachment) in attachments.enumerated() {
             let itemCaption = (index == 0 && !caption.isEmpty) ? caption : nil
+            uploadProgress = UploadProgress(
+                filename: attachment.filename, index: index + 1,
+                count: attachments.count, fraction: 0)
+            // Fraction updates arrive on a URLSession queue; hop to the
+            // main actor and drop stale hops that land after this
+            // attachment (or the whole batch) has moved on.
+            let batchIndex = index + 1
+            let onProgress: @Sendable (Double) -> Void = { [weak self] fraction in
+                Task { @MainActor [weak self] in
+                    guard let self, self.uploadProgress?.index == batchIndex else { return }
+                    self.uploadProgress?.fraction = fraction
+                }
+            }
             do {
-                let data = try Data(contentsOf: attachment.url)
+                // Off-main file read: a multi-MB staged screenshot loaded
+                // with a synchronous Data(contentsOf:) on the main actor
+                // froze the composer for visible fractions of a second.
+                let url = attachment.url
+                let data = try await Task.detached(priority: .userInitiated) {
+                    try Data(contentsOf: url)
+                }.value
                 if attachment.isImage {
                     try await timeline.sendImage(
                         data, filename: attachment.filename,
-                        mimeType: attachment.mimeType, caption: itemCaption
+                        mimeType: attachment.mimeType, caption: itemCaption,
+                        progress: onProgress
                     )
                 } else {
                     try await timeline.sendFile(
                         data, filename: attachment.filename,
-                        mimeType: attachment.mimeType, caption: itemCaption
+                        mimeType: attachment.mimeType, caption: itemCaption,
+                        progress: onProgress
                     )
                 }
             } catch {

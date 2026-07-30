@@ -110,14 +110,54 @@ struct MatronApp: App {
                         _ = await pushService.requestPermission()
                         UIApplication.shared.registerForRemoteNotifications()
                     }
+                    // Background-refresh work: when iOS grants a periodic
+                    // wake, kick the reconnect and give the engine a
+                    // bounded window to catch the journal up (which also
+                    // flushes any queued sends). Same install-a-closure
+                    // lifecycle as the push token callback above.
+                    .task(id: session.userID) {
+                        let dependencies = self.dependencies
+                        appDelegate.backgroundRefresh = {
+                            guard let engine = dependencies.syncService(for: session) as? JournalSyncEngine else { return }
+                            await engine.nudge()
+                            // Bounded readiness wait: consume the state
+                            // stream until `.running`, with a hard ~15s
+                            // cap. The cap is a racing task (not a check
+                            // inside the loop) because a stream that never
+                            // yields again would otherwise block the wait
+                            // until the BG grant expires (bugbot
+                            // "Background wait ignores deadline").
+                            let wait = Task {
+                                for await state in await engine.stateStream() {
+                                    if case .running = state { return }
+                                }
+                            }
+                            let cap = Task {
+                                try? await Task.sleep(for: .seconds(15))
+                                wait.cancel()
+                            }
+                            await wait.value
+                            cap.cancel()
+                            // Brief settle so in-flight journal frames and
+                            // the outbox flush land before suspension.
+                            try? await Task.sleep(for: .seconds(2))
+                        }
+                    }
                     // Reconnect nudge: when the app returns to the
                     // foreground, cancel the sync engine's backoff sleep so
                     // a stale connection retries immediately instead of
                     // waiting out whatever backoff interval it landed on
-                    // while backgrounded.
+                    // while backgrounded. On the way OUT, schedule the
+                    // periodic background refresh and — if sends are still
+                    // awaiting confirmation — hold a short background grace
+                    // so a send-then-pocket actually delivers.
                     .onChange(of: scenePhase) { _, phase in
                         if phase == .active {
                             Task { await (dependencies.syncService(for: session) as? JournalSyncEngine)?.nudge() }
+                        } else if phase == .background {
+                            MatronAppDelegate.scheduleBackgroundRefresh()
+                            OutboxBackgroundGrace.holdIfNeeded(
+                                engine: dependencies.syncService(for: session) as? JournalSyncEngine)
                         }
                     }
                 } else {
@@ -173,6 +213,11 @@ struct MatronApp: App {
         // callback survives sign-out"). The next session's push .task
         // installs a fresh one.
         appDelegate.registerDeviceToken = nil
+        // Same lifecycle as the token callback: a background refresh firing
+        // after sign-out must not reopen the previous account's journal
+        // mid-wipe (bugbot "Stale refresh after sign-out"). The next
+        // session's .task installs a fresh closure.
+        appDelegate.backgroundRefresh = nil
         // Drop any deep-linked room from the prior session so the next
         // sign-in lands at the chat list root, not stranded inside a
         // (now-inaccessible) prior-account room.

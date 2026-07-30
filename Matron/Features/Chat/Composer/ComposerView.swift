@@ -69,6 +69,13 @@ struct ComposerView: View {
                 }
             }
 
+            // Determinate upload feedback: on a slow uplink a multi-MB
+            // screenshot otherwise spends many seconds behind a bare
+            // disabled send button, which reads as the app hanging.
+            if let upload = viewModel.uploadProgress {
+                UploadProgressBar(label: upload.label, fraction: upload.fraction)
+            }
+
             if case let .recording(start) = recorder.state {
                 recordingBar(start: start)
             } else {

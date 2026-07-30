@@ -419,43 +419,58 @@ final class JournalTimelineServiceTests: XCTestCase {
         XCTAssertTrue(try store.events(convoID: "c1").isEmpty)
     }
 
-    // MARK: (f) sendText failure flips the local echo to .failed instead of
-    // leaving it stuck in .sending forever, and rethrows so the caller
-    // (ComposerViewModel) can surface the error and keep the user's text.
+    // MARK: (f) an offline sendText queues durably instead of throwing —
+    // the echo renders as .queued and the composer keeps nothing back.
 
-    func testSendTextFailureMarksEchoFailed() async throws {
+    func testSendTextOfflineQueuesAndRendersQueuedEcho() async throws {
         let store = try makeStore()
         let api = JournalAPI(serverURL: URL(string: "https://x")!)
         // No socket at all and `beginSync()` never called: `liveConnection`
-        // stays nil, so `sendOp` throws `.offline` synchronously, exactly
-        // like calling send while genuinely offline.
+        // stays nil, exactly like calling send while genuinely offline.
         let engine = makeEngine(store: store, connector: FakeJournalConnector([]), api: api)
         let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api, session: makeSession())
 
         let (collector, task) = collectItems(service.items())
         try await waitUntil { await collector.values.last != nil } // initial empty snapshot
 
-        do {
-            try await service.sendText("hi there", inReplyTo: nil)
-            XCTFail("expected sendText to rethrow the offline send failure")
-        } catch {
-            XCTAssertEqual(error as? JournalSyncError, .offline)
-        }
+        // Offline is no longer an error — the message queues durably.
+        try await service.sendText("hi there", inReplyTo: nil)
 
         try await waitUntil {
             guard let last = await collector.values.last else { return false }
-            return last.contains { $0.isOwn && $0.sendState == .failed(reason: "Not delivered") }
+            return last.contains { $0.isOwn && $0.sendState == .queued }
         }
-        let failed = await collector.values.last!
-        XCTAssertEqual(failed.count, 1)
-        XCTAssertEqual(failed.first?.sendState, .failed(reason: "Not delivered"))
-        if case let .text(body, _) = failed.first?.kind {
+        let queued = await collector.values.last!
+        XCTAssertEqual(queued.count, 1)
+        XCTAssertEqual(queued.first?.sendState, .queued)
+        if case let .text(body, _) = queued.first?.kind {
             XCTAssertEqual(body, "hi there")
         } else {
             XCTFail("expected echo .text kind")
         }
+        // And it is durably in the outbox, ready for the next connection.
+        XCTAssertEqual(try store.outboxPending().map(\.body), ["hi there"])
 
         task.cancel()
+    }
+
+    // MARK: tap-to-retry requeues a failed row; discard removes it
+
+    func testRetrySendRequeuesFailedOutboxRow() async throws {
+        let store = try makeStore()
+        let api = JournalAPI(serverURL: URL(string: "https://x")!)
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api, session: makeSession())
+        try store.outboxInsert(localID: "F", convoID: "c1", body: "stuck", now: Date())
+        try store.outboxMarkFailed(localID: "F", error: "rejected")
+
+        await service.retrySend(itemID: "echo:F")
+        XCTAssertEqual(try store.outboxPending().map(\.localID), ["F"],
+                       "retry puts the failed row back in the flush set")
+
+        await service.discardSend(itemID: "echo:F")
+        XCTAssertTrue(try store.outboxRows(convoID: "c1").isEmpty,
+                      "discard removes the unsent message")
     }
 
     // MARK: prompt replies must target a real journal row
@@ -473,75 +488,137 @@ final class JournalTimelineServiceTests: XCTestCase {
         }
     }
 
-    // MARK: echo reconciliation must not retire a failed echo
+    // MARK: pending-send suppression (echo ↔ journal-row handoff)
 
-    func testReconcileSkipsFailedEchoOnDuplicateBody() async throws {
-        // Two echoes with identical text: the first failed to send, the
-        // second was delivered. The delivered copy's journal row must
-        // retire the *pending* echo, leaving the failed one visible.
+    private func outboxRow(_ localID: String, body: String,
+                           state: OutboxRecord.State = .queued,
+                           createdAt: Int64 = 0, attempts: Int = 1) -> OutboxRecord {
+        OutboxRecord(localID: localID, convoID: "c1", body: body,
+                     createdAt: createdAt, state: state, attempts: attempts, lastError: nil)
+    }
+
+    func testSendStateMapping() async throws {
+        // .connecting covers journal catch-up on a LIVE socket, where the
+        // connect-flush has already written attempted rows to the wire —
+        // those must read "Sending…", not "waiting to send when online"
+        // (bugbot "Queued label while already on the wire"). Unattempted
+        // rows genuinely haven't left; offline (backoff) queues everything.
         let overlay = JournalTimelineService.OverlayState(staleness: 30)
-        await overlay.addEcho(localID: "failed-one", body: "dup")
-        await overlay.markEchoFailed(localID: "failed-one")
-        await overlay.addEcho(localID: "delivered-one", body: "dup")
+        let attempted = outboxRow("a", body: "x", attempts: 1)
+        let unattempted = outboxRow("b", body: "y", attempts: 0)
+        let failed = outboxRow("f", body: "z", state: .failed)
+
+        await overlay.setSyncState(.connecting)
+        var state = await overlay.sendState(for: attempted)
+        XCTAssertEqual(state, .sending)
+        state = await overlay.sendState(for: unattempted)
+        XCTAssertEqual(state, .queued)
+
+        await overlay.setSyncState(.running)
+        state = await overlay.sendState(for: unattempted)
+        XCTAssertEqual(state, .sending)
+
+        await overlay.setSyncState(.offline(reason: nil))
+        state = await overlay.sendState(for: attempted)
+        XCTAssertEqual(state, .queued)
+        state = await overlay.sendState(for: failed)
+        XCTAssertEqual(state, .failed(reason: "Not delivered"))
+    }
+
+    func testReconcileDoesNotSuppressNeverAttemptedSend() async throws {
+        // Mirrors outboxDeleteFirstMatching's `attempts > 0` rule: an own
+        // row with the same body as a row this device NEVER sent (queued
+        // offline; the twin came from another device) must not hide the
+        // echo — the engine keeps the row and will still deliver it, so
+        // hiding it would make a message the user watched disappear
+        // reappear later (bugbot "UI suppresses without outbox delete").
+        let overlay = JournalTimelineService.OverlayState(staleness: 30)
+        await overlay.setOutbox([outboxRow("unsent", body: "dup", attempts: 0)])
+        let ownEvent = JournalEvent(
+            seq: 1, convoID: "c1", ts: Date(), sender: "user:dan", type: "text",
+            payloadData: Data(#"{"body":"dup"}"#.utf8))
+        await overlay.reconcile(with: [ownEvent], ownSender: "user:dan")
+        let visible = await overlay.visibleSends
+        XCTAssertEqual(visible.map(\.localID), ["unsent"],
+                       "a never-attempted row stays visible — it is still owed delivery")
+    }
+
+    func testReconcileSuppressesQueuedCopyBeforeFailedOnDuplicateBody() async throws {
+        // Two pending sends with identical text: one failed, one queued
+        // (delivered). The delivered copy's journal row must suppress the
+        // *queued* echo, leaving the failed one visible.
+        let overlay = JournalTimelineService.OverlayState(staleness: 30)
+        await overlay.setOutbox([
+            outboxRow("failed-one", body: "dup", state: .failed, createdAt: 1),
+            outboxRow("delivered-one", body: "dup", state: .queued, createdAt: 2),
+        ])
 
         let ownEvent = JournalEvent(
             seq: 1, convoID: "c1", ts: Date(), sender: "user:dan", type: "text",
             payloadData: Data(#"{"body":"dup"}"#.utf8))
         await overlay.reconcile(with: [ownEvent], ownSender: "user:dan")
 
-        let echoes = await overlay.echoes
-        XCTAssertEqual(echoes.map(\.localID), ["failed-one"],
-                       "the delivered echo retires; the failed one stays visible")
-        XCTAssertTrue(echoes.first?.failed ?? false)
+        let visible = await overlay.visibleSends
+        XCTAssertEqual(visible.map(\.localID), ["failed-one"],
+                       "the delivered copy hides; the failed one stays visible")
     }
 
-    // MARK: failed echoes persist; delivered retries clear them
-
-    func testFailedEchoSurvivesStalenessSweep() async throws {
-        // A "Not delivered" row must not silently evaporate after the
-        // staleness window (2026-07-13: send on a dead socket, message
-        // vanished 30s later). Pending echoes still expire.
+    func testPendingSendsAreExemptFromStalenessSweep() async throws {
+        // Outbox rows are durable at-least-once sends — a queued message
+        // must never evaporate on a timer (2026-07-13: send on a dead
+        // socket, message vanished 30s later).
         let overlay = JournalTimelineService.OverlayState(staleness: 0.02)
-        await overlay.addEcho(localID: "gone", body: "pending one")
-        await overlay.addEcho(localID: "kept", body: "failed one")
-        await overlay.markEchoFailed(localID: "kept")
+        await overlay.setOutbox([outboxRow("kept", body: "queued one")])
         try await Task.sleep(for: .milliseconds(60))
         await overlay.reconcile(with: [], ownSender: "user:dan")
-        let echoes = await overlay.echoes
-        XCTAssertEqual(echoes.map(\.localID), ["kept"],
-                       "failed echoes are exempt from staleness; pending ones expire")
+        let visible = await overlay.visibleSends
+        XCTAssertEqual(visible.map(\.localID), ["kept"])
     }
 
-    func testDeliveredRetryClearsFailedEcho() async throws {
+    func testDeliveredRetrySuppressesFailedEcho() async throws {
         // Only a failed copy matches the arriving own row → that row IS
         // the successful retry landing; the failure is resolved.
         let overlay = JournalTimelineService.OverlayState(staleness: 30)
-        await overlay.addEcho(localID: "failed-one", body: "dup")
-        await overlay.markEchoFailed(localID: "failed-one")
+        await overlay.setOutbox([outboxRow("failed-one", body: "dup", state: .failed)])
         let ownEvent = JournalEvent(
             seq: 1, convoID: "c1", ts: Date(), sender: "user:dan", type: "text",
             payloadData: Data(#"{"body":"dup"}"#.utf8))
         await overlay.reconcile(with: [ownEvent], ownSender: "user:dan")
-        let echoes = await overlay.echoes
-        XCTAssertTrue(echoes.isEmpty, "a delivered retry resolves the failed echo")
+        let visible = await overlay.visibleSends
+        XCTAssertTrue(visible.isEmpty, "a delivered retry resolves the failed echo")
     }
 
-    func testOldHistoryRowDoesNotClearFailedEcho() async throws {
+    func testOldHistoryRowDoesNotSuppressFreshSend() async throws {
         // reconcile re-walks the FULL event list on every emit. An old own
         // message with the same body (seen in a prior reconcile) must not
-        // retire a fresh failed echo — only rows ARRIVING may (bugbot
+        // hide a fresh pending send — only rows ARRIVING may (bugbot
         // "History clears failed echo").
         let overlay = JournalTimelineService.OverlayState(staleness: 30)
         let oldOwnRow = JournalEvent(
             seq: 5, convoID: "c1", ts: Date(), sender: "user:dan", type: "text",
             payloadData: Data(#"{"body":"dup"}"#.utf8))
         await overlay.reconcile(with: [oldOwnRow], ownSender: "user:dan") // row is now history
-        await overlay.addEcho(localID: "fresh-fail", body: "dup")
-        await overlay.markEchoFailed(localID: "fresh-fail")
+        await overlay.setOutbox([outboxRow("fresh", body: "dup")])
         await overlay.reconcile(with: [oldOwnRow], ownSender: "user:dan") // same list re-walked
-        let echoes = await overlay.echoes
-        XCTAssertEqual(echoes.map(\.localID), ["fresh-fail"],
-                       "an already-seen row must not resolve a newer failure")
+        let visible = await overlay.visibleSends
+        XCTAssertEqual(visible.map(\.localID), ["fresh"],
+                       "an already-seen row must not hide a newer send")
+    }
+
+    func testSuppressionMarkerDropsWhenRowLeavesOutbox() async throws {
+        // The engine's delivery-confirmed delete removes the row; the
+        // suppression marker must go with it so the set can't pin memory
+        // (and a reused localID could never be silently hidden).
+        let overlay = JournalTimelineService.OverlayState(staleness: 30)
+        await overlay.setOutbox([outboxRow("a", body: "dup")])
+        let ownEvent = JournalEvent(
+            seq: 1, convoID: "c1", ts: Date(), sender: "user:dan", type: "text",
+            payloadData: Data(#"{"body":"dup"}"#.utf8))
+        await overlay.reconcile(with: [ownEvent], ownSender: "user:dan")
+        await overlay.setOutbox([]) // engine deleted the row
+        await overlay.setOutbox([outboxRow("a", body: "new message")])
+        let visible = await overlay.visibleSends
+        XCTAssertEqual(visible.map(\.localID), ["a"], "marker must not outlive the row")
     }
 
     // MARK: (g) a stalled overlay (no finalize, no further activity) self-

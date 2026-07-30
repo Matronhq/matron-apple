@@ -26,6 +26,36 @@ public enum JournalAPIError: Error, Equatable, Sendable {
     case transport(String)
 }
 
+/// Human-readable descriptions: these errors surface verbatim in UI banners
+/// via `error.localizedDescription` (chat error overlay, composer send
+/// error, sign-in form). Without this conformance Foundation renders the
+/// gibberish "MatronJournal.JournalAPIError error 2." (Dan's 2026-07-30
+/// screenshot — a rate-limit on a flaky link shown as an enum dump).
+extension JournalAPIError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .badCredentials:
+            return "Invalid credentials."
+        case .lockedOut(let retryAfterSeconds):
+            return "Too many attempts — try again in \(retryAfterSeconds)s."
+        case .rateLimited:
+            return "The server is busy — trying again shortly."
+        case .unauthenticated:
+            return "Signed out by the server — please sign in again."
+        case .forbidden:
+            return "The server refused the request."
+        case .notFound:
+            return "Not found on the server."
+        case .conflict:
+            return "Already handled — possibly on another device."
+        case .http(let status, let message):
+            return message.isEmpty ? "Server error (HTTP \(status))." : message
+        case .transport(let detail):
+            return detail.isEmpty ? "Couldn't reach the server." : "Couldn't reach the server — \(detail)"
+        }
+    }
+}
+
 /// One row of `GET /devices` — a client (app) or agent (headless box)
 /// enrolled on the signed-in user's account. Timestamps are epoch ms;
 /// `lastSeenAt` is nil for a device that has never connected.
@@ -224,8 +254,55 @@ public actor JournalAPI {
     /// subsequent media `send`. Mirrors `mediaData(blobRef:)`'s request
     /// style and `error(status:data:)` mapping.
     public func uploadMedia(_ data: Data, contentType: String) async throws -> String {
-        let (respData, response) = try await rawRequest(path: "/media", method: "POST", body: nil,
-                                                        rawBody: data, rawContentType: contentType)
+        try await uploadMedia(data, contentType: contentType, progress: nil)
+    }
+
+    /// Progress-reporting variant: `progress` receives the fraction of the
+    /// request body sent (0…1), delivered off the main thread. Built on a
+    /// URLSessionUploadTask (rather than `rawRequest`'s `data(for:)`)
+    /// because only a task exposes byte-level progress — the whole point on
+    /// a slow uplink, where a multi-MB screenshot otherwise looks frozen.
+    /// The timeout is raised well past the 60s default for the same
+    /// reason: a legitimate slow upload must not die mid-body.
+    public func uploadMedia(
+        _ data: Data, contentType: String,
+        progress: (@Sendable (Double) -> Void)?
+    ) async throws -> String {
+        var components = URLComponents(url: serverURL, resolvingAgainstBaseURL: false)!
+        components.percentEncodedPath = Self.basePath(of: components) + "/media"
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 300
+        if let token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+
+        let (respData, response): (Data, HTTPURLResponse) = try await withCheckedThrowingContinuation { continuation in
+            // Declared before the completion closure so it can invalidate
+            // the observation; assigned after the task exists. The strong
+            // capture in the completion closure is also what keeps the
+            // observation alive for the task's lifetime.
+            var observation: NSKeyValueObservation?
+            let task = urlSession.uploadTask(with: request, from: data) { body, resp, error in
+                observation?.invalidate()
+                if let error {
+                    continuation.resume(throwing: JournalAPIError.transport(error.localizedDescription))
+                    return
+                }
+                guard let http = resp as? HTTPURLResponse else {
+                    continuation.resume(throwing: JournalAPIError.transport("non-HTTP response"))
+                    return
+                }
+                continuation.resume(returning: (body ?? Data(), http))
+            }
+            if let progress {
+                observation = task.progress.observe(\.fractionCompleted, options: [.new]) { p, _ in
+                    progress(p.fractionCompleted)
+                }
+            }
+            task.resume()
+        }
         guard response.statusCode == 200 else { throw Self.error(status: response.statusCode, data: respData) }
         guard let obj = (try? JSONSerialization.jsonObject(with: respData)) as? [String: Any],
               let mediaID = obj["media_id"] as? String

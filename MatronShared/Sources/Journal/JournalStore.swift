@@ -100,6 +100,52 @@ enum JournalStoreTestError: Error {
     case simulatedWriteFailure
 }
 
+/// One unsent text message in the offline send queue. Rows are created by
+/// `JournalSyncEngine.sendMessage`, flushed FIFO on (re)connect with the
+/// same `local_id` every attempt (the server folds it into the row's
+/// idem_key, so at-least-once resends are dedup-safe — protocol.md
+/// "Publishes and sends are at-least-once"), and deleted only when the
+/// own-text journal frame confirming delivery is applied.
+public struct OutboxRecord: Codable, FetchableRecord, PersistableRecord, Equatable, Sendable {
+    public static let databaseTableName = "outbox"
+
+    public enum State: String, Codable, Sendable {
+        /// Waiting for a connection (or for the next flush pass).
+        case queued
+        /// Rejected or given up — resent only via an explicit user retry.
+        case failed
+    }
+
+    public var localID: String
+    public var convoID: String
+    public var body: String
+    public var createdAt: Int64
+    public var state: State
+    public var attempts: Int
+    public var lastError: String?
+
+    public var created: Date { Date(timeIntervalSince1970: Double(createdAt) / 1000) }
+
+    public init(localID: String, convoID: String, body: String, createdAt: Int64,
+                state: State, attempts: Int, lastError: String?) {
+        self.localID = localID
+        self.convoID = convoID
+        self.body = body
+        self.createdAt = createdAt
+        self.state = state
+        self.attempts = attempts
+        self.lastError = lastError
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case body, state, attempts
+        case localID = "local_id"
+        case convoID = "convo_id"
+        case createdAt = "created_at"
+        case lastError = "last_error"
+    }
+}
+
 /// Local mirror of the user's journal. The UI reads ONLY this store; the
 /// sync engine is the only writer. `cursor` advances inside the same
 /// transaction as the event insert — the wedge-proof property.
@@ -156,6 +202,20 @@ public final class JournalStore: @unchecked Sendable {
                 t.add(column: "parent_convo_id", .text)
             }
             try db.create(indexOn: "conversation", columns: ["parent_convo_id"])
+        }
+        // v3: offline send queue. Text sends that can't reach the server
+        // yet persist here (surviving relaunch and the snapshot_required
+        // mirror wipe — see `wipe()`) and flush FIFO on reconnect.
+        migrator.registerMigration("v3") { db in
+            try db.create(table: "outbox") { t in
+                t.column("local_id", .text).primaryKey()
+                t.column("convo_id", .text).notNull().indexed()
+                t.column("body", .text).notNull()
+                t.column("created_at", .integer).notNull()
+                t.column("state", .text).notNull().defaults(to: "queued")
+                t.column("attempts", .integer).notNull().defaults(to: 0)
+                t.column("last_error", .text)
+            }
         }
         try migrator.migrate(dbQueue)
         // Boot-time TTL sweep, mirroring the server's expire-logs job
@@ -363,6 +423,18 @@ public final class JournalStore: @unchecked Sendable {
             }
             try convo.save(db)
             try Self.setCursor(db, event.seq)
+            // Delivery confirmation for the offline outbox, in the SAME
+            // transaction as the row insert: an own-text frame is a queued
+            // send landing (body-match is the only signal — the server
+            // strips idem_key from broadcast rows). Doing it here rather
+            // than as a follow-up write means the confirming row and its
+            // outbox delete commit or fail together, so a relaunch can
+            // never show a durable duplicate echo beside the delivered
+            // message.
+            if event.sender == ownSender, event.type == JournalEventType.text,
+               let body = payload["body"] as? String {
+                try Self.outboxDeleteFirstMatching(db, convoID: event.convoID, body: body)
+            }
             return true
         }
     }
@@ -560,9 +632,126 @@ public final class JournalStore: @unchecked Sendable {
         }
     }
 
+    /// Clears the journal mirror (events, conversations, cursor) but NOT
+    /// the outbox: this runs on `snapshot_required` (replay gap too large),
+    /// and a mirror wipe must not eat the user's unsent messages. Sign-out
+    /// calls `wipeOutbox()` separately.
     public func wipe() throws {
         try dbQueue.write { db in
             try db.execute(sql: "DELETE FROM event; DELETE FROM conversation; DELETE FROM meta;")
+        }
+    }
+
+    // MARK: Outbox
+
+    /// Enqueues one unsent text message. Idempotent on `localID` so a retry
+    /// racing the original insert can't duplicate the row.
+    public func outboxInsert(localID: String, convoID: String, body: String, now: Date = Date()) throws {
+        try dbQueue.write { db in
+            try OutboxRecord(
+                localID: localID, convoID: convoID, body: body,
+                createdAt: Int64(now.timeIntervalSince1970 * 1000),
+                state: .queued, attempts: 0, lastError: nil
+            ).insert(db, onConflict: .ignore)
+        }
+    }
+
+    /// Every queued row across all conversations, oldest first — the flush
+    /// order. Failed rows are excluded: they only move again via an
+    /// explicit user retry (`outboxRequeue`).
+    public func outboxPending() throws -> [OutboxRecord] {
+        try dbQueue.read { db in
+            try OutboxRecord
+                .filter(Column("state") == OutboxRecord.State.queued.rawValue)
+                .order(Column("created_at").asc, Column("local_id").asc)
+                .fetchAll(db)
+        }
+    }
+
+    /// All outbox rows for one conversation (queued AND failed), oldest
+    /// first — what the timeline renders as pending/failed echoes.
+    public func outboxRows(convoID: String) throws -> [OutboxRecord] {
+        try dbQueue.read { db in
+            try OutboxRecord
+                .filter(Column("convo_id") == convoID)
+                .order(Column("created_at").asc, Column("local_id").asc)
+                .fetchAll(db)
+        }
+    }
+
+    public func outboxMarkAttempt(localID: String) throws {
+        try dbQueue.write { db in
+            try db.execute(sql: "UPDATE outbox SET attempts = attempts + 1 WHERE local_id = ?",
+                           arguments: [localID])
+        }
+    }
+
+    public func outboxMarkFailed(localID: String, error: String?) throws {
+        try dbQueue.write { db in
+            try db.execute(sql: "UPDATE outbox SET state = 'failed', last_error = ? WHERE local_id = ?",
+                           arguments: [error, localID])
+        }
+    }
+
+    /// Puts a failed row back in the flush set (tap-to-retry).
+    public func outboxRequeue(localID: String) throws {
+        try dbQueue.write { db in
+            try db.execute(sql: "UPDATE outbox SET state = 'queued', last_error = NULL WHERE local_id = ?",
+                           arguments: [localID])
+        }
+    }
+
+    public func outboxDelete(localID: String) throws {
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM outbox WHERE local_id = ?", arguments: [localID])
+        }
+    }
+
+    /// Delivery confirmation: an own-text journal frame with `body` landed
+    /// for `convoID` — delete the OLDEST attempted row with that body and
+    /// return its `localID` (nil when nothing matches). The server strips
+    /// the idem_key from broadcast rows, so body-match is the only signal
+    /// (mirrors the echo-retirement heuristic in
+    /// `JournalTimelineService.OverlayState.reconcile`). Only rows with
+    /// `attempts > 0` qualify: a never-sent row can't be the one the frame
+    /// confirms — deleting it would silently eat a message that never went
+    /// out (e.g. the same text sent from another device).
+    /// Queued rows are preferred over failed ones (mirroring the old echo
+    /// retirement: "prefer a pending echo so a delivered copy's ack can't
+    /// retire an undelivered one — but when only a failed copy matches,
+    /// this own-row IS its successful retry landing").
+    ///
+    /// `applyJournal` runs the same deletion INSIDE its own transaction
+    /// (via the static helper) so a confirming row and its outbox delete
+    /// commit atomically — a delete failing after the row persisted would
+    /// leave a durable duplicate echo after relaunch (bugbot "Outbox
+    /// delete failure leaves duplicate"). This public wrapper remains for
+    /// tests and non-transactional callers.
+    @discardableResult
+    public func outboxDeleteFirstMatching(convoID: String, body: String) throws -> String? {
+        try dbQueue.write { db in
+            try Self.outboxDeleteFirstMatching(db, convoID: convoID, body: body)
+        }
+    }
+
+    @discardableResult
+    private static func outboxDeleteFirstMatching(_ db: Database, convoID: String, body: String) throws -> String? {
+        let candidates = try OutboxRecord
+            .filter(Column("convo_id") == convoID && Column("body") == body)
+            .filter(Column("attempts") > 0)
+            .order(Column("created_at").asc, Column("local_id").asc)
+            .fetchAll(db)
+        guard let row = candidates.first(where: { $0.state == .queued }) ?? candidates.first
+        else { return nil }
+        try row.delete(db)
+        return row.localID
+    }
+
+    /// Sign-out hygiene: the next account on this database file must not
+    /// inherit (or send) the previous user's queued messages.
+    public func wipeOutbox() throws {
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM outbox")
         }
     }
 
@@ -598,6 +787,19 @@ public final class JournalStore: @unchecked Sendable {
             try ConversationRecord
                 .filter(Column("parent_convo_id") == parentConvoID)
                 .order(Column("created_at").asc, Column("id").asc)
+                .fetchAll(db)
+        }
+        return Self.stream(observation, in: dbQueue)
+    }
+
+    /// Live stream of one conversation's outbox rows (queued + failed,
+    /// oldest first). The timeline renders these as pending/failed echoes;
+    /// re-fires on enqueue, state change, and delivery-confirmed delete.
+    public func outboxStream(convoID: String) -> AsyncStream<[OutboxRecord]> {
+        let observation = ValueObservation.tracking { db in
+            try OutboxRecord
+                .filter(Column("convo_id") == convoID)
+                .order(Column("created_at").asc, Column("local_id").asc)
                 .fetchAll(db)
         }
         return Self.stream(observation, in: dbQueue)

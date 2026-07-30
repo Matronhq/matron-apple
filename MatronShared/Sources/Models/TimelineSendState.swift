@@ -9,5 +9,9 @@ import Foundation
 public enum TimelineSendState: Equatable, Sendable {
     case sent
     case sending
+    /// Durably queued in the offline outbox — will send automatically when
+    /// a connection is available. Distinct from `.sending` so the UI can
+    /// be honest that nothing is in flight yet.
+    case queued
     case failed(reason: String)
 }

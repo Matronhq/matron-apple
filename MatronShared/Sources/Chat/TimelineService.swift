@@ -54,6 +54,16 @@ public protocol TimelineService: Sendable {
     /// exactly as it does for `sendImage`.
     func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?) async throws
 
+    /// Progress-reporting variants: `progress` receives the uploaded
+    /// fraction (0…1), off-main. Protocol requirements (not extension-only
+    /// overloads) so calls through `any TimelineService` dispatch to the
+    /// real implementation; the extension defaults forward to the plain
+    /// versions so fakes and outbox-less implementations compile unchanged.
+    func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?,
+                   progress: (@Sendable (Double) -> Void)?) async throws
+    func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?,
+                  progress: (@Sendable (Double) -> Void)?) async throws
+
     /// Asks the SDK to paginate older history. UI subscribes via `items()`.
     /// Returns `true` if the SDK has reached the start of the room's
     /// history (further calls would be no-ops); `false` otherwise. The
@@ -63,6 +73,14 @@ public protocol TimelineService: Sendable {
 
     /// Marks the most recent visible event as read.
     func markAsRead() async throws
+
+    /// Retries a pending/failed own-message (the timeline's tap-to-retry
+    /// affordance). `itemID` is the timeline item's id. Implementations
+    /// without an offline outbox inherit the default no-op.
+    func retrySend(itemID: String) async
+
+    /// Discards an unsent own-message. Default no-op, same as `retrySend`.
+    func discardSend(itemID: String) async
 
     /// Per-convo stream of session-status updates (model, context gauge,
     /// account limits) — journal `status` ephemerals. The journal replays
@@ -82,5 +100,21 @@ public extension TimelineService {
     /// implementations and test fakes without one need no changes.
     func sessionStatus() -> AsyncStream<SessionStatusUpdate> {
         AsyncStream { $0.finish() }
+    }
+
+    /// Default no-ops so fakes and outbox-less implementations compile
+    /// unchanged; `JournalTimelineService` overrides both.
+    func retrySend(itemID: String) async {}
+    func discardSend(itemID: String) async {}
+
+    /// Defaults: drop the progress handler and forward to the plain sends.
+    func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?,
+                   progress: (@Sendable (Double) -> Void)?) async throws {
+        try await sendImage(data, filename: filename, mimeType: mimeType, caption: caption)
+    }
+
+    func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?,
+                  progress: (@Sendable (Double) -> Void)?) async throws {
+        try await sendFile(data, filename: filename, mimeType: mimeType, caption: caption)
     }
 }

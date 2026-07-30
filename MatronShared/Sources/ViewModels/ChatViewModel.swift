@@ -820,23 +820,23 @@ public final class ChatViewModel {
         }
     }
 
-    /// Retry handler for own-messages whose send state is `.failed`.
-    /// Currently a stub: real SDK retry wiring lands later (the
-    /// `MatrixRustSDK` exposes `Timeline.retryDecryption` /
-    /// `Timeline.send` queue replays, but the right hook for "retry
-    /// this specific failed local-echo" needs a service-layer
-    /// addition to `TimelineService` that hasn't shipped yet).
-    /// Logging-only so taps are observable in the debugger; no state
-    /// mutation here so the failed glyph stays visible until the
-    /// underlying snapshot updates.
-    ///
-    /// TODO(phase-3+): replace this stub with `timeline.retrySend(itemID:)`
-    /// once the service-layer surface lands. Until then the UI
-    /// affordance exists but the behaviour is a noop — this is
-    /// deliberate so the visual treatment can ship ahead of the SDK
-    /// wiring without the call site silently swallowing taps.
+    /// Retry handler for own-messages whose send state is `.failed` or
+    /// `.queued` — the timeline's tap-to-retry affordance. Requeues the
+    /// message's outbox row and forces a send attempt (or a reconnect
+    /// nudge when offline); the echo's state updates flow back through
+    /// the normal `items()` snapshot stream.
     public func retrySend(itemID: String) {
-        Self.logger.info("retrySend tapped for item=\(itemID, privacy: .public) (stub)")
+        Self.logger.info("retrySend tapped for item=\(itemID, privacy: .public)")
+        let timeline = self.timeline
+        Task { await timeline.retrySend(itemID: itemID) }
+    }
+
+    /// Discards an unsent (queued/failed) own-message — the escape hatch
+    /// for a message the user no longer wants delivered.
+    public func discardSend(itemID: String) {
+        Self.logger.info("discardSend tapped for item=\(itemID, privacy: .public)")
+        let timeline = self.timeline
+        Task { await timeline.discardSend(itemID: itemID) }
     }
 
     /// Mac toolbar refresh button + ⌘R menu shortcut wire here. Re-paginating

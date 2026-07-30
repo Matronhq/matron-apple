@@ -87,6 +87,12 @@ struct MacComposerView: View {
                     viewModel.dismissSendError()
                 }
             }
+            // Determinate upload feedback — same rationale as iOS
+            // ComposerView: a slow uplink must look like progress, not a
+            // hang.
+            if let upload = viewModel.uploadProgress {
+                UploadProgressBar(label: upload.label, fraction: upload.fraction)
+            }
             if case let .recording(start) = recorder.state {
                 recordingBar(start: start)
             } else {

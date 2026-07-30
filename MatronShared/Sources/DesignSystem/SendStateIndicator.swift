@@ -8,6 +8,8 @@ import SwiftUI
 public enum SendStateGlyph: Equatable, Sendable {
     case sending
     case sent
+    /// Waiting in the offline outbox for connectivity.
+    case queued
     case failed(reason: String)
 }
 
@@ -44,6 +46,22 @@ public struct SendStateIndicator: View {
             }
             .foregroundStyle(.secondary)
             .accessibilityLabel("Sending")
+
+        case .queued:
+            // Offline outbox: honest "not in flight yet" treatment. A
+            // Button (like .failed) so a tap can force a send attempt /
+            // reconnect nudge via the same onRetry plumbing.
+            Button(action: { onRetry?() }) {
+                HStack(spacing: 4) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.caption2)
+                    Text("Waiting to send — will retry when online")
+                        .font(.caption2)
+                }
+                .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Queued. Will send when online. Tap to try now.")
 
         case .failed(let reason):
             // Tappable retry affordance. `.borderless` button style

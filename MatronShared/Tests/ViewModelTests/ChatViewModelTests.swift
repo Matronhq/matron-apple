@@ -786,15 +786,28 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func test_retrySend_isCallable_andStubDoesNotThrow() {
-        // Stub-only contract: the SDK retry path lands later. The
-        // surface needs to exist now so the View can wire the failed-
-        // send "Tap to retry" affordance ahead of the service layer.
-        // This test pins that the method exists, accepts a String,
-        // and doesn't crash — exactly what the View depends on.
+    func test_retrySend_forwardsToTimelineService() async throws {
+        // The "Tap to retry" affordance must actually reach the service
+        // layer (it shipped as a logging-only stub once — the button did
+        // nothing).
         let timeline = FakeTimelineService()
         let vm = ChatViewModel(roomID: "!r:s", timeline: timeline, media: FakeMediaService())
-        vm.retrySend(itemID: "abc")
+        vm.retrySend(itemID: "echo:abc")
+        for _ in 0..<100 where timeline.retrySendCalls.isEmpty {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertEqual(timeline.retrySendCalls, ["echo:abc"])
+    }
+
+    @MainActor
+    func test_discardSend_forwardsToTimelineService() async throws {
+        let timeline = FakeTimelineService()
+        let vm = ChatViewModel(roomID: "!r:s", timeline: timeline, media: FakeMediaService())
+        vm.discardSend(itemID: "echo:abc")
+        for _ in 0..<100 where timeline.discardSendCalls.isEmpty {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertEqual(timeline.discardSendCalls, ["echo:abc"])
     }
 
     @MainActor

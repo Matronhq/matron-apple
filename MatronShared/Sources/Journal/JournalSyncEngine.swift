@@ -9,6 +9,18 @@ public enum JournalSyncError: Error, Equatable, Sendable {
     case authRevoked
 }
 
+/// Surfaced verbatim in UI banners via `localizedDescription` — without
+/// this, an offline send rendered as "MatronJournal.JournalSyncError
+/// error 0." (Dan's 2026-07-30 screenshot).
+extension JournalSyncError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .offline: return "No connection to the server."
+        case .authRevoked: return "This device was signed out by the server."
+        }
+    }
+}
+
 /// An agent's answer to `agentRequest` — either the method's result (raw
 /// JSON bytes, caller decodes) or the bridge/server error code.
 public enum RPCReply: Equatable, Sendable {
@@ -23,6 +35,15 @@ public enum RPCRequestError: Error, Equatable, Sendable {
     case timeout
     /// No live journal connection to send on (or it died mid-request).
     case offline
+}
+
+extension RPCRequestError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .timeout: return "The agent didn't answer in time."
+        case .offline: return "No connection to the server."
+        }
+    }
 }
 
 /// The single writer of the JournalStore and owner of the reconnect loop.
@@ -194,6 +215,134 @@ public actor JournalSyncEngine {
     public func sendOp(_ op: ClientOp) async throws {
         guard let connection = liveConnection else { throw JournalSyncError.offline }
         try await connection.send(op)
+    }
+
+    // MARK: Offline outbox
+
+    /// Rows already written to the CURRENT socket. A row stays in the
+    /// outbox until its journal frame confirms delivery, so without this
+    /// set every extra flush pass on the same connection would resend it.
+    /// Cleared on each new connection: the server's idem key (folded from
+    /// `local_id`) dedups the once-per-connection resend of anything that
+    /// actually landed but wasn't confirmed before the socket died.
+    private var sentOnThisConnection: Set<String> = []
+    /// FIFO of the same localIDs, in write order. A server rejection frame
+    /// (`op:'error', ref:'send'`) names only the op, not the row — but the
+    /// socket is processed in order on both ends, so the rejection belongs
+    /// to the oldest write that hasn't been confirmed or failed yet.
+    private var sendOrderThisConnection: [String] = []
+    /// Single-flight latch for `flushOutbox()`.
+    private var flushingOutbox = false
+    /// Set when a flush is requested while one is running: the running
+    /// flush re-drains before releasing the latch, so a row enqueued after
+    /// the in-flight flush's last outbox read can't strand until the next
+    /// reconnect (bugbot "Concurrent flush task dropped").
+    private var flushRequestedWhileBusy = false
+
+    /// Queue-and-flush text send — the offline-tolerant replacement for
+    /// `sendOp(.send(...))`. The message is durably enqueued first (it
+    /// survives relaunch and renders as a queued/sending echo via
+    /// `JournalStore.outboxStream`), then flushed immediately when a
+    /// connection is live. Never throws for being offline; only a store
+    /// write failure (disk) escapes, so the composer can keep the text.
+    public func sendMessage(convoID: String, body: String, localID: String) throws {
+        try store.outboxInsert(localID: localID, convoID: convoID, body: body)
+        if liveConnection != nil {
+            Task { await self.flushOutbox() }
+        }
+    }
+
+    /// Tap-to-retry for a failed (or stuck-queued) outbox row: requeues it,
+    /// clears its sent-marker so it's eligible on this connection again,
+    /// and kicks a flush — or, when offline, cancels any backoff sleep so
+    /// the reconnect (and its connect-flush) happens now.
+    public func retryOutboxItem(localID: String) {
+        try? store.outboxRequeue(localID: localID)
+        sentOnThisConnection.remove(localID)
+        if liveConnection != nil {
+            Task { await self.flushOutbox() }
+        } else {
+            nudge()
+        }
+    }
+
+    /// Removes an unsent message the user chose to discard.
+    public func discardOutboxItem(localID: String) {
+        try? store.outboxDelete(localID: localID)
+        sentOnThisConnection.remove(localID)
+    }
+
+    /// A post-hello `{op:'error', ref:'send'}` frame: the server REJECTED a
+    /// send op (validation), so retrying it unchanged can never succeed —
+    /// flip the row to `.failed` (surfacing "Not delivered — tap to retry")
+    /// instead of leaving it silently re-flushing on every reconnect
+    /// forever (bugbot "Send rejections never mark rows failed"). The frame
+    /// carries no row id; FIFO ordering picks the victim (see
+    /// `sendOrderThisConnection`). Rows already confirmed-deleted (or
+    /// already failed) are skipped.
+    private func handleSendRejected(code: String, detail: String?) {
+        let stillQueued = Set(((try? store.outboxPending()) ?? []).map(\.localID))
+        while !sendOrderThisConnection.isEmpty {
+            let localID = sendOrderThisConnection.removeFirst()
+            guard stillQueued.contains(localID) else { continue }
+            Self.logger.warning("server rejected send \(localID, privacy: .public): \(code, privacy: .public) \(detail ?? "", privacy: .public)")
+            try? store.outboxMarkFailed(localID: localID, error: detail ?? code)
+            sentOnThisConnection.remove(localID)
+            return
+        }
+    }
+
+    /// Whether any queued sends are still awaiting delivery confirmation.
+    /// The iOS host polls this from its background-task grace window so a
+    /// send-then-pocket flush can finish before the process suspends.
+    public var hasPendingOutbox: Bool {
+        !((try? store.outboxPending())?.isEmpty ?? true)
+    }
+
+    /// Sends every queued outbox row not yet written to the current
+    /// connection, oldest first. Stops on the first transport failure —
+    /// the rows stay queued and the next connection's flush retries them.
+    /// `outboxMarkAttempt` runs BEFORE the write: delivery-confirmation
+    /// deletes only attempted rows, and marking after a successful write
+    /// would race the journal frame (a frame applied before the mark
+    /// would skip the delete, and the dedup'd resend gets no fresh frame,
+    /// so the row would never clear).
+    private func flushOutbox() async {
+        guard !flushingOutbox else {
+            // A flush is mid-flight and may already have taken its last
+            // outbox read; flag it to re-drain so the row that prompted
+            // this call can't be skipped until the next reconnect.
+            flushRequestedWhileBusy = true
+            return
+        }
+        flushingOutbox = true
+        defer { flushingOutbox = false }
+        repeat {
+            flushRequestedWhileBusy = false
+            await drainOutbox()
+        } while flushRequestedWhileBusy
+    }
+
+    /// One drain pass: sends every eligible queued row FIFO, stopping on
+    /// the first transport failure (rows stay queued for the next
+    /// connection's flush).
+    private func drainOutbox() async {
+        while let connection = liveConnection {
+            let rows = (try? store.outboxPending()) ?? []
+            guard let next = rows.first(where: { !sentOnThisConnection.contains($0.localID) }) else {
+                return
+            }
+            try? store.outboxMarkAttempt(localID: next.localID)
+            do {
+                try await connection.send(.send(convoID: next.convoID, body: next.body,
+                                                localID: next.localID))
+                sentOnThisConnection.insert(next.localID)
+                sendOrderThisConnection.append(next.localID)
+            } catch {
+                Self.logger.warning("outbox flush stopped — socket write failed: \(error.localizedDescription, privacy: .public)")
+                return
+            }
+        }
     }
 
     public func setViewing(convoID: String?) async {
@@ -492,6 +641,13 @@ public actor JournalSyncEngine {
                 }
                 refreshSummariesTask?.cancel()
                 refreshSummariesTask = Task { await self.refreshSummaries() } // title/state stopgap (spec §7 ask 4)
+                // Fresh socket: everything unconfirmed is eligible to resend
+                // once (idem-dedup'd server-side), including messages queued
+                // while offline. Kicked as a child task so the frame loop
+                // below starts consuming immediately.
+                sentOnThisConnection.removeAll()
+                sendOrderThisConnection.removeAll()
+                Task { await self.flushOutbox() }
                 if store.cursor >= headSeq { setState(.running) }
 
                 let watchdog = Task {
@@ -533,6 +689,9 @@ public actor JournalSyncEngine {
                         // first-ever frame of a convo sees `false`, so this
                         // is true exactly once per new conversation.
                         let isNewConvo = (try? store.conversationExists(event.convoID)) == false
+                        // Note: delivery-confirmed outbox deletion happens
+                        // INSIDE applyJournal's transaction (atomic with the
+                        // row insert) — see JournalStore.applyJournal.
                         if try store.applyJournal(event) {
                             indexForSearch(event)
                             appliedSinceAck += 1
@@ -631,11 +790,14 @@ public actor JournalSyncEngine {
                         }
                     case .rpcResponse(let response):
                         resumeRPC(response)
-                    case .error(let code, _, let requestID, let detail):
-                        // Correlated RPC errors resume their waiter; other
+                    case .error(let code, let ref, let requestID, let detail):
+                        // Correlated RPC errors resume their waiter; a
+                        // rejected send op fails its outbox row; other
                         // post-hello control frames are advisory.
                         if let requestID {
                             failRPC(requestID: requestID, code: code, detail: detail)
+                        } else if ref == "send" {
+                            handleSendRejected(code: code, detail: detail)
                         }
                     case .helloOK, .unknownControl:
                         break // post-hello control frames are advisory
