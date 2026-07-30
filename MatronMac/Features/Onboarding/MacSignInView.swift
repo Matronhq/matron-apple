@@ -60,7 +60,7 @@ struct MacSignInView: View {
             } else {
                 VStack(alignment: .leading, spacing: 12) {
                     LabeledField(label: "Server") {
-                        TextField("https://matrix.example.com", text: $viewModel.serverURL)
+                        TextField("https://your-server.example.com", text: $viewModel.serverURL)
                             .textFieldStyle(.roundedBorder)
                             .autocorrectionDisabled()
                             .accessibilityIdentifier("signin.server")

@@ -35,7 +35,7 @@ struct SignInView: View {
                         // data detection styles `https://…` placeholders as
                         // tappable blue link text — looks like an error /
                         // link, not a hint.
-                        TextField("Homeserver URL", text: $viewModel.serverURL)
+                        TextField("Server URL", text: $viewModel.serverURL)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
