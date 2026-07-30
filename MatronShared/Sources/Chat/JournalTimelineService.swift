@@ -131,9 +131,9 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         /// lands a beat later; without this the delivered message and its
         /// echo would double-render for a frame).
         private var suppressedSendIDs: Set<String> = []
-        /// Whether the sync engine is `.running` — pending sends render as
-        /// `.sending` when online and `.queued` when not.
-        private(set) var online = false
+        /// Last-known engine connection state — drives the queued/sending
+        /// glyph on pending sends (see `sendState(for:)`).
+        private(set) var syncState: SyncConnectionState = .connecting
         private let staleness: TimeInterval
         private let toolStaleness: TimeInterval
 
@@ -336,14 +336,30 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             suppressedSendIDs.formIntersection(rows.map(\.localID))
         }
 
-        func setOnline(_ isOnline: Bool) {
-            online = isOnline
+        func setSyncState(_ state: SyncConnectionState) {
+            syncState = state
         }
 
         /// The pending sends `emit()` renders: every outbox row whose
         /// confirming journal row hasn't been seen yet.
         var visibleSends: [OutboxRecord] {
             outboxRows.filter { !suppressedSendIDs.contains($0.localID) }
+        }
+
+        /// Glyph state for one pending send. `.connecting` covers journal
+        /// catch-up on a LIVE socket — the connect-flush has already put
+        /// attempted rows on the wire there, so they show `.sending`, not
+        /// "waiting to send when online" (bugbot "Queued label while
+        /// already on the wire"). A never-attempted row during
+        /// `.connecting` genuinely hasn't left, and everything is
+        /// `.queued` while `.offline` (backoff).
+        func sendState(for row: OutboxRecord) -> TimelineSendState {
+            if row.state == .failed { return .failed(reason: "Not delivered") }
+            switch syncState {
+            case .running: return .sending
+            case .connecting: return row.attempts > 0 ? .sending : .queued
+            case .offline: return .queued
+            }
         }
     }
 
@@ -371,17 +387,12 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                         headTruncated: stream.headTruncated,
                         convoTS: max(lastTS, stream.updated)))
                 }
-                let online = await overlay.online
                 for row in await overlay.visibleSends {
-                    let sendState: TimelineSendState = switch row.state {
-                    case .failed: .failed(reason: "Not delivered")
-                    case .queued: online ? .sending : .queued
-                    }
                     items.append(TimelineItem(id: "echo:\(row.localID)", sender: ownSender,
                                               timestamp: row.created,
                                               kind: .text(body: row.body, formattedHTML: nil),
                                               isOwn: true,
-                                              sendState: sendState))
+                                              sendState: await overlay.sendState(for: row)))
                 }
                 // Activity indicator sits below every other row. Dated to the
                 // last row's timestamp (not "now") so it stays in that row's
@@ -477,8 +488,7 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             // sending glyph on pending sends.
             let onlineTask = Task {
                 for await state in engine.stateStream() {
-                    let isOnline = if case .running = state { true } else { false }
-                    await overlay.setOnline(isOnline)
+                    await overlay.setSyncState(state)
                     signal()
                 }
             }

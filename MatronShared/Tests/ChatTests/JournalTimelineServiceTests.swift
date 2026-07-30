@@ -497,6 +497,34 @@ final class JournalTimelineServiceTests: XCTestCase {
                      createdAt: createdAt, state: state, attempts: attempts, lastError: nil)
     }
 
+    func testSendStateMapping() async throws {
+        // .connecting covers journal catch-up on a LIVE socket, where the
+        // connect-flush has already written attempted rows to the wire —
+        // those must read "Sending…", not "waiting to send when online"
+        // (bugbot "Queued label while already on the wire"). Unattempted
+        // rows genuinely haven't left; offline (backoff) queues everything.
+        let overlay = JournalTimelineService.OverlayState(staleness: 30)
+        let attempted = outboxRow("a", body: "x", attempts: 1)
+        let unattempted = outboxRow("b", body: "y", attempts: 0)
+        let failed = outboxRow("f", body: "z", state: .failed)
+
+        await overlay.setSyncState(.connecting)
+        var state = await overlay.sendState(for: attempted)
+        XCTAssertEqual(state, .sending)
+        state = await overlay.sendState(for: unattempted)
+        XCTAssertEqual(state, .queued)
+
+        await overlay.setSyncState(.running)
+        state = await overlay.sendState(for: unattempted)
+        XCTAssertEqual(state, .sending)
+
+        await overlay.setSyncState(.offline(reason: nil))
+        state = await overlay.sendState(for: attempted)
+        XCTAssertEqual(state, .queued)
+        state = await overlay.sendState(for: failed)
+        XCTAssertEqual(state, .failed(reason: "Not delivered"))
+    }
+
     func testReconcileDoesNotSuppressNeverAttemptedSend() async throws {
         // Mirrors outboxDeleteFirstMatching's `attempts > 0` rule: an own
         // row with the same body as a row this device NEVER sent (queued
