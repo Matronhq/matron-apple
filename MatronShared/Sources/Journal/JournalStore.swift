@@ -423,6 +423,18 @@ public final class JournalStore: @unchecked Sendable {
             }
             try convo.save(db)
             try Self.setCursor(db, event.seq)
+            // Delivery confirmation for the offline outbox, in the SAME
+            // transaction as the row insert: an own-text frame is a queued
+            // send landing (body-match is the only signal — the server
+            // strips idem_key from broadcast rows). Doing it here rather
+            // than as a follow-up write means the confirming row and its
+            // outbox delete commit or fail together, so a relaunch can
+            // never show a durable duplicate echo beside the delivered
+            // message.
+            if event.sender == ownSender, event.type == JournalEventType.text,
+               let body = payload["body"] as? String {
+                try Self.outboxDeleteFirstMatching(db, convoID: event.convoID, body: body)
+            }
             return true
         }
     }
@@ -708,19 +720,31 @@ public final class JournalStore: @unchecked Sendable {
     /// retirement: "prefer a pending echo so a delivered copy's ack can't
     /// retire an undelivered one — but when only a failed copy matches,
     /// this own-row IS its successful retry landing").
+    ///
+    /// `applyJournal` runs the same deletion INSIDE its own transaction
+    /// (via the static helper) so a confirming row and its outbox delete
+    /// commit atomically — a delete failing after the row persisted would
+    /// leave a durable duplicate echo after relaunch (bugbot "Outbox
+    /// delete failure leaves duplicate"). This public wrapper remains for
+    /// tests and non-transactional callers.
     @discardableResult
     public func outboxDeleteFirstMatching(convoID: String, body: String) throws -> String? {
         try dbQueue.write { db in
-            let candidates = try OutboxRecord
-                .filter(Column("convo_id") == convoID && Column("body") == body)
-                .filter(Column("attempts") > 0)
-                .order(Column("created_at").asc, Column("local_id").asc)
-                .fetchAll(db)
-            guard let row = candidates.first(where: { $0.state == .queued }) ?? candidates.first
-            else { return nil }
-            try row.delete(db)
-            return row.localID
+            try Self.outboxDeleteFirstMatching(db, convoID: convoID, body: body)
         }
+    }
+
+    @discardableResult
+    private static func outboxDeleteFirstMatching(_ db: Database, convoID: String, body: String) throws -> String? {
+        let candidates = try OutboxRecord
+            .filter(Column("convo_id") == convoID && Column("body") == body)
+            .filter(Column("attempts") > 0)
+            .order(Column("created_at").asc, Column("local_id").asc)
+            .fetchAll(db)
+        guard let row = candidates.first(where: { $0.state == .queued }) ?? candidates.first
+        else { return nil }
+        try row.delete(db)
+        return row.localID
     }
 
     /// Sign-out hygiene: the next account on this database file must not

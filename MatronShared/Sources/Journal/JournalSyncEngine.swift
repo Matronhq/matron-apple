@@ -226,6 +226,11 @@ public actor JournalSyncEngine {
     /// `local_id`) dedups the once-per-connection resend of anything that
     /// actually landed but wasn't confirmed before the socket died.
     private var sentOnThisConnection: Set<String> = []
+    /// FIFO of the same localIDs, in write order. A server rejection frame
+    /// (`op:'error', ref:'send'`) names only the op, not the row — but the
+    /// socket is processed in order on both ends, so the rejection belongs
+    /// to the oldest write that hasn't been confirmed or failed yet.
+    private var sendOrderThisConnection: [String] = []
     /// Single-flight latch for `flushOutbox()`.
     private var flushingOutbox = false
     /// Set when a flush is requested while one is running: the running
@@ -265,6 +270,26 @@ public actor JournalSyncEngine {
     public func discardOutboxItem(localID: String) {
         try? store.outboxDelete(localID: localID)
         sentOnThisConnection.remove(localID)
+    }
+
+    /// A post-hello `{op:'error', ref:'send'}` frame: the server REJECTED a
+    /// send op (validation), so retrying it unchanged can never succeed —
+    /// flip the row to `.failed` (surfacing "Not delivered — tap to retry")
+    /// instead of leaving it silently re-flushing on every reconnect
+    /// forever (bugbot "Send rejections never mark rows failed"). The frame
+    /// carries no row id; FIFO ordering picks the victim (see
+    /// `sendOrderThisConnection`). Rows already confirmed-deleted (or
+    /// already failed) are skipped.
+    private func handleSendRejected(code: String, detail: String?) {
+        let stillQueued = Set(((try? store.outboxPending()) ?? []).map(\.localID))
+        while !sendOrderThisConnection.isEmpty {
+            let localID = sendOrderThisConnection.removeFirst()
+            guard stillQueued.contains(localID) else { continue }
+            Self.logger.warning("server rejected send \(localID, privacy: .public): \(code, privacy: .public) \(detail ?? "", privacy: .public)")
+            try? store.outboxMarkFailed(localID: localID, error: detail ?? code)
+            sentOnThisConnection.remove(localID)
+            return
+        }
     }
 
     /// Whether any queued sends are still awaiting delivery confirmation.
@@ -312,6 +337,7 @@ public actor JournalSyncEngine {
                 try await connection.send(.send(convoID: next.convoID, body: next.body,
                                                 localID: next.localID))
                 sentOnThisConnection.insert(next.localID)
+                sendOrderThisConnection.append(next.localID)
             } catch {
                 Self.logger.warning("outbox flush stopped — socket write failed: \(error.localizedDescription, privacy: .public)")
                 return
@@ -620,6 +646,7 @@ public actor JournalSyncEngine {
                 // while offline. Kicked as a child task so the frame loop
                 // below starts consuming immediately.
                 sentOnThisConnection.removeAll()
+                sendOrderThisConnection.removeAll()
                 Task { await self.flushOutbox() }
                 if store.cursor >= headSeq { setState(.running) }
 
@@ -662,18 +689,11 @@ public actor JournalSyncEngine {
                         // first-ever frame of a convo sees `false`, so this
                         // is true exactly once per new conversation.
                         let isNewConvo = (try? store.conversationExists(event.convoID)) == false
+                        // Note: delivery-confirmed outbox deletion happens
+                        // INSIDE applyJournal's transaction (atomic with the
+                        // row insert) — see JournalStore.applyJournal.
                         if try store.applyJournal(event) {
                             indexForSearch(event)
-                            // Delivery confirmation for the offline outbox:
-                            // an own-text frame is a queued send landing
-                            // (the server strips idem_key from broadcast
-                            // rows, so body-match is the only signal — same
-                            // heuristic as echo retirement). Only attempted
-                            // rows qualify; see outboxDeleteFirstMatching.
-                            if event.sender == ownSender, event.type == JournalEventType.text,
-                               let body = event.payload["body"] as? String {
-                                _ = try? store.outboxDeleteFirstMatching(convoID: event.convoID, body: body)
-                            }
                             appliedSinceAck += 1
                             if appliedSinceAck >= 50 {
                                 try? await connection.send(.ack(cursor: store.cursor))
@@ -770,11 +790,14 @@ public actor JournalSyncEngine {
                         }
                     case .rpcResponse(let response):
                         resumeRPC(response)
-                    case .error(let code, _, let requestID, let detail):
-                        // Correlated RPC errors resume their waiter; other
+                    case .error(let code, let ref, let requestID, let detail):
+                        // Correlated RPC errors resume their waiter; a
+                        // rejected send op fails its outbox row; other
                         // post-hello control frames are advisory.
                         if let requestID {
                             failRPC(requestID: requestID, code: code, detail: detail)
+                        } else if ref == "send" {
+                            handleSendRejected(code: code, detail: detail)
                         }
                     case .helloOK, .unknownControl:
                         break // post-hello control frames are advisory

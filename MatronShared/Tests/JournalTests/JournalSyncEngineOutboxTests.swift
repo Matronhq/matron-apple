@@ -161,6 +161,40 @@ final class JournalSyncEngineOutboxTests: XCTestCase {
         await engine.endSync()
     }
 
+    func testServerRejectionMarksOldestUnconfirmedSendFailed() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        try await engine.sendMessage(convoID: "c1", body: "bad one", localID: "R1")
+        await waitFor(!self.sentSendOps(socket).isEmpty)
+        // The server rejects the op — validation errors can never succeed
+        // on retry, so the row must surface as failed instead of silently
+        // re-flushing on every reconnect forever.
+        socket.serve(#"{"kind":"control","op":"error","code":"bad_request","ref":"send","detail":"nope"}"#)
+        await waitFor((try? store.outboxPending().isEmpty) == true)
+        let rows = try store.outboxRows(convoID: "c1")
+        XCTAssertEqual(rows.map(\.state), [.failed])
+        XCTAssertEqual(rows.first?.lastError, "nope")
+        await engine.endSync()
+    }
+
+    func testApplyJournalDeletesOutboxRowAtomically() throws {
+        // Delivery-confirmed deletion lives INSIDE applyJournal's
+        // transaction (store-level, no engine involved) so the confirming
+        // row and the outbox delete commit together.
+        let store = try seededStore()
+        try store.outboxInsert(localID: "A", convoID: "c1", body: "hello", now: Date())
+        try store.outboxMarkAttempt(localID: "A")
+        let own = JournalEvent(
+            seq: 1, convoID: "c1", ts: Date(), sender: "user:dan", type: "text",
+            payloadData: Data(#"{"body":"hello"}"#.utf8))
+        XCTAssertTrue(try store.applyJournal(own))
+        XCTAssertTrue(try store.outboxRows(convoID: "c1").isEmpty)
+    }
+
     func testDiscardOutboxItemDeletesRow() async throws {
         let store = try seededStore()
         let engine = makeEngine(store: store, connector: FakeConnector([]))
