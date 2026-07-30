@@ -63,4 +63,14 @@ final class SignInViewModelTests: XCTestCase {
         await vm.submit()
         XCTAssertEqual(vm.state, .idle)
     }
+
+    // App Review rejected 1.0 (350) because the Server field shipped
+    // pre-filled with a dead host: the reviewer saw a filled field, typed
+    // only the demo credentials, and got "Couldn't reach that server."
+    // The field must start empty so the user has to supply their server.
+    @MainActor
+    func test_serverURL_defaultsToEmpty() {
+        let vm = SignInViewModel(auth: FakeAuthForVM(), deviceDisplayName: "Matron Tests")
+        XCTAssertEqual(vm.serverURL, "")
+    }
 }

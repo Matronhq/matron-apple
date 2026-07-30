@@ -12,7 +12,10 @@ public final class SignInViewModel {
         case signedIn(UserSession)
     }
 
-    public var serverURL: String = "https://chat.example.com"
+    // Deliberately empty: shipping a pre-filled default (formerly a dead
+    // placeholder host) meant the field looked already-answered — App Review
+    // signed in over it and hit "Couldn't reach that server."
+    public var serverURL: String = ""
     public var username: String = ""
     public var password: String = ""
     public private(set) var state: State = .idle
