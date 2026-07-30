@@ -9,6 +9,18 @@ public enum JournalSyncError: Error, Equatable, Sendable {
     case authRevoked
 }
 
+/// Surfaced verbatim in UI banners via `localizedDescription` — without
+/// this, an offline send rendered as "MatronJournal.JournalSyncError
+/// error 0." (Dan's 2026-07-30 screenshot).
+extension JournalSyncError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .offline: return "No connection to the server."
+        case .authRevoked: return "This device was signed out by the server."
+        }
+    }
+}
+
 /// An agent's answer to `agentRequest` — either the method's result (raw
 /// JSON bytes, caller decodes) or the bridge/server error code.
 public enum RPCReply: Equatable, Sendable {
@@ -23,6 +35,15 @@ public enum RPCRequestError: Error, Equatable, Sendable {
     case timeout
     /// No live journal connection to send on (or it died mid-request).
     case offline
+}
+
+extension RPCRequestError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .timeout: return "The agent didn't answer in time."
+        case .offline: return "No connection to the server."
+        }
+    }
 }
 
 /// The single writer of the JournalStore and owner of the reconnect loop.

@@ -550,11 +550,21 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
     }
 
     public func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {
-        try await sendMedia(data, filename: filename, mimeType: mimeType, type: "image", caption: caption)
+        try await sendMedia(data, filename: filename, mimeType: mimeType, type: "image", caption: caption, progress: nil)
     }
 
     public func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {
-        try await sendMedia(data, filename: filename, mimeType: mimeType, type: "file", caption: caption)
+        try await sendMedia(data, filename: filename, mimeType: mimeType, type: "file", caption: caption, progress: nil)
+    }
+
+    public func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?,
+                          progress: (@Sendable (Double) -> Void)?) async throws {
+        try await sendMedia(data, filename: filename, mimeType: mimeType, type: "image", caption: caption, progress: progress)
+    }
+
+    public func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?,
+                         progress: (@Sendable (Double) -> Void)?) async throws {
+        try await sendMedia(data, filename: filename, mimeType: mimeType, type: "file", caption: caption, progress: progress)
     }
 
     /// Uploads the bytes to `POST /media` and sends the returned `blob_ref`
@@ -564,9 +574,10 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
     /// filename, content type, byte size and optional caption alongside the
     /// blob ref.
     private func sendMedia(
-        _ data: Data, filename: String, mimeType: String, type: String, caption: String?
+        _ data: Data, filename: String, mimeType: String, type: String, caption: String?,
+        progress: (@Sendable (Double) -> Void)?
     ) async throws {
-        let blobRef = try await api.uploadMedia(data, contentType: mimeType)
+        let blobRef = try await api.uploadMedia(data, contentType: mimeType, progress: progress)
         try await engine.sendOp(.sendMedia(convoID: convoID, type: type, blobRef: blobRef,
                                            name: filename, contentType: mimeType,
                                            size: data.count, caption: caption,
