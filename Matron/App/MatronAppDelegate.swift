@@ -1,4 +1,5 @@
 import BackgroundTasks
+import os
 import UIKit
 import UserNotifications
 
@@ -72,14 +73,28 @@ final class MatronAppDelegate: NSObject, UIApplicationDelegate {
 
     private static func handleRefresh(_ task: BGAppRefreshTask, delegate: MatronAppDelegate?) {
         scheduleBackgroundRefresh() // always re-arm the next wake
+        // Exactly-once completion shared by the normal path and the expiry
+        // path: iOS treats a never-completed task as a failed background
+        // execution, so expiry must not depend on the work task unwinding
+        // promptly — and the work task finishing later must not complete a
+        // second time (bugbot "BG expiry omits task completion").
+        let completed = OSAllocatedUnfairLock(initialState: false)
+        let completeOnce: @Sendable (Bool) -> Void = { success in
+            let first = completed.withLock { done -> Bool in
+                if done { return false }
+                done = true
+                return true
+            }
+            if first { task.setTaskCompleted(success: success) }
+        }
         let work = Task { @MainActor in
             await delegate?.backgroundRefresh?()
-            task.setTaskCompleted(success: true)
+            completeOnce(true)
         }
-        // Cancellation cascades into the refresh closure's stream waits;
-        // the single completion call above still runs on the (now
-        // fast-unwinding) work task.
-        task.expirationHandler = { work.cancel() }
+        task.expirationHandler = {
+            work.cancel()
+            completeOnce(false)
+        }
     }
 
     func application(

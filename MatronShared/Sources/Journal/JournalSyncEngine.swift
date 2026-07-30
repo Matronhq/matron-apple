@@ -228,6 +228,11 @@ public actor JournalSyncEngine {
     private var sentOnThisConnection: Set<String> = []
     /// Single-flight latch for `flushOutbox()`.
     private var flushingOutbox = false
+    /// Set when a flush is requested while one is running: the running
+    /// flush re-drains before releasing the latch, so a row enqueued after
+    /// the in-flight flush's last outbox read can't strand until the next
+    /// reconnect (bugbot "Concurrent flush task dropped").
+    private var flushRequestedWhileBusy = false
 
     /// Queue-and-flush text send — the offline-tolerant replacement for
     /// `sendOp(.send(...))`. The message is durably enqueued first (it
@@ -278,9 +283,25 @@ public actor JournalSyncEngine {
     /// would skip the delete, and the dedup'd resend gets no fresh frame,
     /// so the row would never clear).
     private func flushOutbox() async {
-        guard !flushingOutbox else { return }
+        guard !flushingOutbox else {
+            // A flush is mid-flight and may already have taken its last
+            // outbox read; flag it to re-drain so the row that prompted
+            // this call can't be skipped until the next reconnect.
+            flushRequestedWhileBusy = true
+            return
+        }
         flushingOutbox = true
         defer { flushingOutbox = false }
+        repeat {
+            flushRequestedWhileBusy = false
+            await drainOutbox()
+        } while flushRequestedWhileBusy
+    }
+
+    /// One drain pass: sends every eligible queued row FIFO, stopping on
+    /// the first transport failure (rows stay queued for the next
+    /// connection's flush).
+    private func drainOutbox() async {
         while let connection = liveConnection {
             let rows = (try? store.outboxPending()) ?? []
             guard let next = rows.first(where: { !sentOnThisConnection.contains($0.localID) }) else {

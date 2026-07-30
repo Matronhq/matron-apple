@@ -492,9 +492,27 @@ final class JournalTimelineServiceTests: XCTestCase {
 
     private func outboxRow(_ localID: String, body: String,
                            state: OutboxRecord.State = .queued,
-                           createdAt: Int64 = 0) -> OutboxRecord {
+                           createdAt: Int64 = 0, attempts: Int = 1) -> OutboxRecord {
         OutboxRecord(localID: localID, convoID: "c1", body: body,
-                     createdAt: createdAt, state: state, attempts: 1, lastError: nil)
+                     createdAt: createdAt, state: state, attempts: attempts, lastError: nil)
+    }
+
+    func testReconcileDoesNotSuppressNeverAttemptedSend() async throws {
+        // Mirrors outboxDeleteFirstMatching's `attempts > 0` rule: an own
+        // row with the same body as a row this device NEVER sent (queued
+        // offline; the twin came from another device) must not hide the
+        // echo — the engine keeps the row and will still deliver it, so
+        // hiding it would make a message the user watched disappear
+        // reappear later (bugbot "UI suppresses without outbox delete").
+        let overlay = JournalTimelineService.OverlayState(staleness: 30)
+        await overlay.setOutbox([outboxRow("unsent", body: "dup", attempts: 0)])
+        let ownEvent = JournalEvent(
+            seq: 1, convoID: "c1", ts: Date(), sender: "user:dan", type: "text",
+            payloadData: Data(#"{"body":"dup"}"#.utf8))
+        await overlay.reconcile(with: [ownEvent], ownSender: "user:dan")
+        let visible = await overlay.visibleSends
+        XCTAssertEqual(visible.map(\.localID), ["unsent"],
+                       "a never-attempted row stays visible — it is still owed delivery")
     }
 
     func testReconcileSuppressesQueuedCopyBeforeFailedOnDuplicateBody() async throws {

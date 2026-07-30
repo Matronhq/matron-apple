@@ -295,8 +295,15 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                 if event.seq > newSeqFloor,
                    event.sender == ownSender, event.type == JournalEventType.text,
                    let body = event.payload["body"] as? String {
+                    // `attempts > 0` mirrors outboxDeleteFirstMatching: a
+                    // never-attempted row can't be the send this row
+                    // confirms (e.g. the same text sent from another
+                    // device while this one queued offline) — hiding it
+                    // here while the engine keeps the row would deliver a
+                    // message the user watched disappear (bugbot "UI
+                    // suppresses without outbox delete").
                     let candidates = outboxRows.filter {
-                        !suppressedSendIDs.contains($0.localID) && $0.body == body
+                        !suppressedSendIDs.contains($0.localID) && $0.body == body && $0.attempts > 0
                     }
                     if let match = candidates.first(where: { $0.state == .queued }) ?? candidates.first {
                         suppressedSendIDs.insert(match.localID)

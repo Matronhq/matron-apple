@@ -121,14 +121,23 @@ struct MatronApp: App {
                             guard let engine = dependencies.syncService(for: session) as? JournalSyncEngine else { return }
                             await engine.nudge()
                             // Bounded readiness wait: consume the state
-                            // stream until `.running` or ~15s. Task
-                            // cancellation (BGTask expiry) finishes the
-                            // stream, so this can't outlive the grant.
-                            let deadline = Date().addingTimeInterval(15)
-                            for await state in await engine.stateStream() {
-                                if case .running = state { break }
-                                if Date() > deadline { break }
+                            // stream until `.running`, with a hard ~15s
+                            // cap. The cap is a racing task (not a check
+                            // inside the loop) because a stream that never
+                            // yields again would otherwise block the wait
+                            // until the BG grant expires (bugbot
+                            // "Background wait ignores deadline").
+                            let wait = Task {
+                                for await state in await engine.stateStream() {
+                                    if case .running = state { return }
+                                }
                             }
+                            let cap = Task {
+                                try? await Task.sleep(for: .seconds(15))
+                                wait.cancel()
+                            }
+                            await wait.value
+                            cap.cancel()
                             // Brief settle so in-flight journal frames and
                             // the outbox flush land before suspension.
                             try? await Task.sleep(for: .seconds(2))
@@ -204,6 +213,11 @@ struct MatronApp: App {
         // callback survives sign-out"). The next session's push .task
         // installs a fresh one.
         appDelegate.registerDeviceToken = nil
+        // Same lifecycle as the token callback: a background refresh firing
+        // after sign-out must not reopen the previous account's journal
+        // mid-wipe (bugbot "Stale refresh after sign-out"). The next
+        // session's .task installs a fresh closure.
+        appDelegate.backgroundRefresh = nil
         // Drop any deep-linked room from the prior session so the next
         // sign-in lands at the chat list root, not stranded inside a
         // (now-inaccessible) prior-account room.
