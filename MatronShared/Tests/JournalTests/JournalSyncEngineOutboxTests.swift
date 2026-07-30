@@ -195,6 +195,25 @@ final class JournalSyncEngineOutboxTests: XCTestCase {
         XCTAssertTrue(try store.outboxRows(convoID: "c1").isEmpty)
     }
 
+    func testReplayedDuplicateFrameDoesNotDeleteOutboxRow() throws {
+        // applyJournal's outbox deletion sits BEHIND the seq > cursor
+        // guard: a replayed/duplicate own-text frame is a no-op and must
+        // not retire a live queued row (post-wipe cold start jumps the
+        // cursor to /snapshot's headSeq, so history is never re-applied
+        // through applyJournal either — pagination uses insertHistory,
+        // which never touches the outbox).
+        let store = try seededStore()
+        let own = JournalEvent(
+            seq: 1, convoID: "c1", ts: Date(), sender: "user:dan", type: "text",
+            payloadData: Data(#"{"body":"dup"}"#.utf8))
+        XCTAssertTrue(try store.applyJournal(own))     // cursor → 1
+        try store.outboxInsert(localID: "Q", convoID: "c1", body: "dup", now: Date())
+        try store.outboxMarkAttempt(localID: "Q")
+        XCTAssertFalse(try store.applyJournal(own), "duplicate frame is a no-op")
+        XCTAssertEqual(try store.outboxRows(convoID: "c1").map(\.localID), ["Q"],
+                       "a replayed frame must not retire a live queued send")
+    }
+
     func testDiscardOutboxItemDeletesRow() async throws {
         let store = try seededStore()
         let engine = makeEngine(store: store, connector: FakeConnector([]))
