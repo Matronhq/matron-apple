@@ -247,6 +247,35 @@ final class JournalSyncEngineOutboxTests: XCTestCase {
         await engine.endSync()
     }
 
+    func testReplayedMediaFrameDoesNotRetireLiveMediaSlot() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        // An older delivered media frame lands and applies (cursor → 1).
+        socket.serve(ownImageLine(1, blobRef: "b1"))
+        await waitFor((try? store.events(convoID: "c1").count) == 1)
+        // A NEW media send goes out whose blobRef collides with it (e.g. a
+        // content-addressed upload of the same bytes), then a text send:
+        // FIFO is [M1, T1].
+        try await engine.sendOp(mediaOp(blobRef: "b1", localID: "M1"))
+        try await engine.sendMessage(convoID: "c1", body: "keep me", localID: "T1")
+        await waitFor(self.sentSendOps(socket).count >= 2)
+        // The SAME frame is replayed (seq <= cursor, apply no-ops). It must
+        // not retire M1's live slot…
+        socket.serve(ownImageLine(1, blobRef: "b1"))
+        // …so the rejection that follows is absorbed by M1's slot instead
+        // of falling through to fail the innocent text row.
+        socket.serve(errorLine())
+        socket.serve(otherTextLine(2, body: "x")) // processing barrier
+        await waitFor((try? store.events(convoID: "c1").count) == 2)
+        XCTAssertEqual(try store.outboxRows(convoID: "c1").map(\.state), [.queued],
+                       "a replayed media frame must not retire a live media slot")
+        await engine.endSync()
+    }
+
     func testDuplicateRejectionOfRetriedRowDoesNotFailLaterSend() async throws {
         let socket = FakeWebSocketConnection()
         socket.serve(helloOK(0))

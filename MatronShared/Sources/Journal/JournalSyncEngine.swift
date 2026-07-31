@@ -747,19 +747,25 @@ public actor JournalSyncEngine {
                         // read before applyJournal creates one. Only the
                         // first-ever frame of a convo sees `false`, so this
                         // is true exactly once per new conversation.
-                        // A delivered media send retires its rejection-FIFO
-                        // slot the moment its own-sender file/image frame
-                        // echoes the blobRef back — see confirmMediaSend.
-                        if event.sender == ownSender,
-                           event.type == JournalEventType.file || event.type == JournalEventType.image,
-                           let blobRef = event.payload["blob_ref"] as? String {
-                            confirmMediaSend(blobRef: blobRef)
-                        }
                         let isNewConvo = (try? store.conversationExists(event.convoID)) == false
                         // Note: delivery-confirmed outbox deletion happens
                         // INSIDE applyJournal's transaction (atomic with the
                         // row insert) — see JournalStore.applyJournal.
                         if try store.applyJournal(event) {
+                            // A delivered media send retires its
+                            // rejection-FIFO slot the moment its own-sender
+                            // file/image frame echoes the blobRef back —
+                            // see confirmMediaSend. Inside the apply-success
+                            // branch: a REPLAYED frame (seq <= cursor, apply
+                            // no-ops) must not retire a live slot whose
+                            // blobRef collides with the replayed one
+                            // (bugbot "Media confirm ignores duplicate
+                            // guard").
+                            if event.sender == ownSender,
+                               event.type == JournalEventType.file || event.type == JournalEventType.image,
+                               let blobRef = event.payload["blob_ref"] as? String {
+                                confirmMediaSend(blobRef: blobRef)
+                            }
                             indexForSearch(event)
                             appliedSinceAck += 1
                             if appliedSinceAck >= 50 {
