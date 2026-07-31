@@ -16,6 +16,23 @@ final class JournalSyncEngineOutboxTests: XCTestCase {
         #"{"kind":"journal","seq":\#(seq),"convo_id":"\#(convo)","ts":\#(seq * 1000),"sender":"user:dan","type":"text","payload":{"body":"\#(body)"}}"#
     }
 
+    private func otherTextLine(_ seq: Int64, body: String) -> String {
+        #"{"kind":"journal","seq":\#(seq),"convo_id":"c1","ts":\#(seq * 1000),"sender":"agent:a","type":"text","payload":{"body":"\#(body)"}}"#
+    }
+
+    private func ownImageLine(_ seq: Int64, blobRef: String) -> String {
+        #"{"kind":"journal","seq":\#(seq),"convo_id":"c1","ts":\#(seq * 1000),"sender":"user:dan","type":"image","payload":{"blob_ref":"\#(blobRef)","name":"x.png"}}"#
+    }
+
+    private func errorLine(_ detail: String = "nope") -> String {
+        #"{"kind":"control","op":"error","code":"bad_request","ref":"send","detail":"\#(detail)"}"#
+    }
+
+    private func mediaOp(blobRef: String, localID: String) -> ClientOp {
+        .sendMedia(convoID: "c1", type: "image", blobRef: blobRef, name: "x.png",
+                   contentType: "image/png", size: 3, caption: nil, localID: localID)
+    }
+
     private func makeEngine(
         store: JournalStore, connector: any WebSocketConnecting
     ) -> JournalSyncEngine {
@@ -181,6 +198,84 @@ final class JournalSyncEngineOutboxTests: XCTestCase {
         await engine.endSync()
     }
 
+    func testMediaRejectionDoesNotFailQueuedTextRow() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        // Media first, then a text send: rejection FIFO is [M1, T1].
+        try await engine.sendOp(mediaOp(blobRef: "b1", localID: "M1"))
+        try await engine.sendMessage(convoID: "c1", body: "keep me", localID: "T1")
+        await waitFor(self.sentSendOps(socket).count >= 2)
+        // The server rejects the MEDIA op. Its slot absorbs the error; the
+        // queued text row must be untouched.
+        socket.serve(errorLine())
+        // Barrier: a trailing frame whose apply proves the error frame was
+        // fully processed before we assert.
+        socket.serve(otherTextLine(1, body: "x"))
+        await waitFor((try? store.events(convoID: "c1").count) == 1)
+        XCTAssertEqual(try store.outboxRows(convoID: "c1").map(\.state), [.queued],
+                       "a media rejection must not fail an innocent text row")
+        // A SECOND rejection now belongs to the text send.
+        socket.serve(errorLine())
+        await waitFor((try? store.outboxRows(convoID: "c1").map(\.state)) == [.failed])
+        XCTAssertEqual(try store.outboxRows(convoID: "c1").map(\.state), [.failed])
+        await engine.endSync()
+    }
+
+    func testDeliveredMediaSlotDoesNotSwallowTextRejection() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        try await engine.sendOp(mediaOp(blobRef: "b1", localID: "M1"))
+        try await engine.sendMessage(convoID: "c1", body: "reject me", localID: "T1")
+        await waitFor(self.sentSendOps(socket).count >= 2)
+        // The media send is DELIVERED — its own-sender image frame echoes
+        // the blobRef back, which must retire its FIFO slot…
+        socket.serve(ownImageLine(1, blobRef: "b1"))
+        await waitFor((try? store.events(convoID: "c1").count) == 1)
+        // …so the text rejection that follows lands on the text row instead
+        // of being swallowed by the stale media slot.
+        socket.serve(errorLine())
+        await waitFor((try? store.outboxRows(convoID: "c1").map(\.state)) == [.failed])
+        XCTAssertEqual(try store.outboxRows(convoID: "c1").map(\.state), [.failed])
+        await engine.endSync()
+    }
+
+    func testDuplicateRejectionOfRetriedRowDoesNotFailLaterSend() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        try await engine.sendMessage(convoID: "c1", body: "retry me", localID: "R1")
+        await waitFor(self.sentSendOps(socket).count >= 1)
+        // Same-connection retry: a SECOND write of R1 goes out, so R1
+        // legitimately holds two FIFO slots (one per in-flight write).
+        await engine.retryOutboxItem(localID: "R1")
+        await waitFor(self.sentSendOps(socket).count >= 2)
+        try await engine.sendMessage(convoID: "c1", body: "keep me", localID: "T2")
+        await waitFor(self.sentSendOps(socket).count >= 3)
+        // Wire order [R1, R1, T2]; the server rejects BOTH writes of R1.
+        // The first rejection fails R1; the second must be absorbed as the
+        // duplicate write of an already-failed row — not fall through and
+        // fail the innocent T2.
+        socket.serve(errorLine())
+        socket.serve(errorLine())
+        socket.serve(otherTextLine(1, body: "x")) // processing barrier
+        await waitFor((try? store.events(convoID: "c1").count) == 1)
+        let rows = try store.outboxRows(convoID: "c1")
+        XCTAssertEqual(rows.map(\.localID), ["R1", "T2"])
+        XCTAssertEqual(rows.map(\.state), [.failed, .queued])
+        await engine.endSync()
+    }
+
     func testApplyJournalDeletesOutboxRowAtomically() throws {
         // Delivery-confirmed deletion lives INSIDE applyJournal's
         // transaction (store-level, no engine involved) so the confirming
@@ -201,7 +296,7 @@ final class JournalSyncEngineOutboxTests: XCTestCase {
         // not retire a live queued row (post-wipe cold start jumps the
         // cursor to /snapshot's headSeq, so history is never re-applied
         // through applyJournal either — pagination uses insertHistory,
-        // which never touches the outbox).
+        // whose own confirmation pass is timestamp-guarded).
         let store = try seededStore()
         let own = JournalEvent(
             seq: 1, convoID: "c1", ts: Date(), sender: "user:dan", type: "text",
