@@ -215,6 +215,12 @@ public actor JournalSyncEngine {
     public func sendOp(_ op: ClientOp) async throws {
         guard let connection = liveConnection else { throw JournalSyncError.offline }
         try await connection.send(op)
+        // A media send occupies a rejection-FIFO slot like any other
+        // `op:"send"` — see `mediaSendsThisConnection`.
+        if case let .sendMedia(_, _, blobRef, _, _, _, _, localID) = op {
+            mediaSendsThisConnection[localID] = blobRef
+            sendOrderThisConnection.append(localID)
+        }
     }
 
     // MARK: Offline outbox
@@ -231,6 +237,17 @@ public actor JournalSyncEngine {
     /// socket is processed in order on both ends, so the rejection belongs
     /// to the oldest write that hasn't been confirmed or failed yet.
     private var sendOrderThisConnection: [String] = []
+    /// Media sends in flight on the current socket, `localID → blobRef`.
+    /// `sendMedia` goes over the wire as `op:"send"` too, so a rejected
+    /// media op consumes a FIFO slot exactly like a text send — without a
+    /// slot of its own it would fail an innocent queued TEXT row instead
+    /// ("media rejection misattributed", ported from matron-android #14).
+    /// There is no durable outbox row for media, so a media slot absorbs
+    /// its own rejection, and delivery retires it when the own-sender
+    /// file/image journal frame echoes the blobRef back
+    /// (`confirmMediaSend`) — a delivered media slot left in the FIFO
+    /// would swallow the NEXT text rejection.
+    private var mediaSendsThisConnection: [String: String] = [:]
     /// Single-flight latch for `flushOutbox()`.
     private var flushingOutbox = false
     /// Set when a flush is requested while one is running: the running
@@ -278,18 +295,48 @@ public actor JournalSyncEngine {
     /// instead of leaving it silently re-flushing on every reconnect
     /// forever (bugbot "Send rejections never mark rows failed"). The frame
     /// carries no row id; FIFO ordering picks the victim (see
-    /// `sendOrderThisConnection`). Rows already confirmed-deleted (or
-    /// already failed) are skipped.
+    /// `sendOrderThisConnection`). Exactly ONE slot is consumed per error
+    /// frame, dispatched on what the slot actually is:
+    ///   - a media slot absorbs the rejection (no durable row to fail);
+    ///   - a deleted row means that write was already confirmed — its slot
+    ///     is stale, skip to the next;
+    ///   - an already-failed row means this is the rejection of a
+    ///     DUPLICATE write of the same row (a same-connection retry puts
+    ///     two writes in flight, one FIFO slot each) — absorb it, or it
+    ///     would fall through and fail the next innocent in-flight send;
+    ///   - a queued row is the victim: mark it failed.
     private func handleSendRejected(code: String, detail: String?) {
-        let stillQueued = Set(((try? store.outboxPending()) ?? []).map(\.localID))
         while !sendOrderThisConnection.isEmpty {
             let localID = sendOrderThisConnection.removeFirst()
-            guard stillQueued.contains(localID) else { continue }
+            if mediaSendsThisConnection.removeValue(forKey: localID) != nil {
+                Self.logger.warning("server rejected media send \(localID, privacy: .public): \(code, privacy: .public) \(detail ?? "", privacy: .public)")
+                return
+            }
+            guard let row = (try? store.outboxRow(localID: localID)) ?? nil else {
+                continue // confirmed-deleted (or discarded): this write succeeded
+            }
+            if row.state == .failed {
+                Self.logger.warning("server rejected duplicate write of failed send \(localID, privacy: .public): \(code, privacy: .public)")
+                return
+            }
             Self.logger.warning("server rejected send \(localID, privacy: .public): \(code, privacy: .public) \(detail ?? "", privacy: .public)")
             try? store.outboxMarkFailed(localID: localID, error: detail ?? code)
             sentOnThisConnection.remove(localID)
             return
         }
+    }
+
+    /// The own-sender file/image journal frame carrying `blobRef` landed:
+    /// that media send was delivered, so retire its rejection-FIFO slot.
+    /// In-order socket delivery makes this sound — a confirmation for a
+    /// media send can only arrive after every rejection that precedes it.
+    private func confirmMediaSend(blobRef: String) {
+        guard let localID = sendOrderThisConnection.first(where: { mediaSendsThisConnection[$0] == blobRef })
+        else { return }
+        if let index = sendOrderThisConnection.firstIndex(of: localID) {
+            sendOrderThisConnection.remove(at: index)
+        }
+        mediaSendsThisConnection.removeValue(forKey: localID)
     }
 
     /// Whether any queued sends are still awaiting delivery confirmation.
@@ -332,7 +379,18 @@ public actor JournalSyncEngine {
             guard let next = rows.first(where: { !sentOnThisConnection.contains($0.localID) }) else {
                 return
             }
-            try? store.outboxMarkAttempt(localID: next.localID)
+            do {
+                try store.outboxMarkAttempt(localID: next.localID)
+            } catch {
+                // A send whose attempt mark didn't persist can never be
+                // confirmed (delivery-delete and echo suppression both
+                // require attempts > 0) — sending it anyway would leave a
+                // permanent ghost "queued" echo beside the delivered
+                // message. Stop the drain; the row stays queued for a
+                // flush whose mark does persist.
+                Self.logger.warning("outbox flush stopped — markAttempt write failed for \(next.localID, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                return
+            }
             do {
                 try await connection.send(.send(convoID: next.convoID, body: next.body,
                                                 localID: next.localID))
@@ -647,6 +705,7 @@ public actor JournalSyncEngine {
                 // below starts consuming immediately.
                 sentOnThisConnection.removeAll()
                 sendOrderThisConnection.removeAll()
+                mediaSendsThisConnection.removeAll()
                 Task { await self.flushOutbox() }
                 if store.cursor >= headSeq { setState(.running) }
 
@@ -693,6 +752,20 @@ public actor JournalSyncEngine {
                         // INSIDE applyJournal's transaction (atomic with the
                         // row insert) — see JournalStore.applyJournal.
                         if try store.applyJournal(event) {
+                            // A delivered media send retires its
+                            // rejection-FIFO slot the moment its own-sender
+                            // file/image frame echoes the blobRef back —
+                            // see confirmMediaSend. Inside the apply-success
+                            // branch: a REPLAYED frame (seq <= cursor, apply
+                            // no-ops) must not retire a live slot whose
+                            // blobRef collides with the replayed one
+                            // (bugbot "Media confirm ignores duplicate
+                            // guard").
+                            if event.sender == ownSender,
+                               event.type == JournalEventType.file || event.type == JournalEventType.image,
+                               let blobRef = event.payload["blob_ref"] as? String {
+                                confirmMediaSend(blobRef: blobRef)
+                            }
                             indexForSearch(event)
                             appliedSinceAck += 1
                             if appliedSinceAck >= 50 {

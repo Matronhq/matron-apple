@@ -472,6 +472,20 @@ public final class JournalStore: @unchecked Sendable {
             for e in events {
                 try EventRecord(e).insert(db, onConflict: .ignore)
             }
+            // Delivery confirmation for the post-snapshot_required gap:
+            // `applyColdSnapshot` jumps the cursor past the frames that
+            // would have confirmed sends delivered just before the wipe,
+            // so those frames only ever come back through history refills.
+            // Without this pass the rows stayed queued forever, re-flushing
+            // (idem-deduped, but ghost-echoing) on every reconnect. The
+            // `journaledAtMs` guard keeps old replayed history from eating
+            // a fresh queued send with the same body.
+            for e in events where e.sender == ownSender && e.type == JournalEventType.text {
+                guard let body = e.payload["body"] as? String else { continue }
+                try Self.outboxDeleteFirstMatching(
+                    db, convoID: e.convoID, body: body,
+                    journaledAtMs: Int64(e.ts.timeIntervalSince1970 * 1000))
+            }
             // Paginated rows can include unread messages (e.g. the refill
             // after a snapshot_required wipe re-fetches the newest page).
             // Live `applyJournal` counts unread incrementally; without a
@@ -679,6 +693,16 @@ public final class JournalStore: @unchecked Sendable {
         }
     }
 
+    /// One outbox row by primary key, or nil when it no longer exists
+    /// (confirmed-deleted or discarded). The engine's rejection handler
+    /// dispatches on the row's actual state — see
+    /// `JournalSyncEngine.handleSendRejected`.
+    public func outboxRow(localID: String) throws -> OutboxRecord? {
+        try dbQueue.read { db in
+            try OutboxRecord.fetchOne(db, key: localID)
+        }
+    }
+
     public func outboxMarkAttempt(localID: String) throws {
         try dbQueue.write { db in
             try db.execute(sql: "UPDATE outbox SET attempts = attempts + 1 WHERE local_id = ?",
@@ -734,13 +758,22 @@ public final class JournalStore: @unchecked Sendable {
         }
     }
 
+    /// `journaledAtMs` — when set, only rows created at or before that
+    /// timestamp qualify: a confirming event can't predate its own row, so
+    /// an OLD own-text replayed by history pagination must not retire a
+    /// FRESH queued send with the same body (see `insertHistory`). Live
+    /// `applyJournal` passes nil — its seq > cursor guard already excludes
+    /// replays.
     @discardableResult
-    private static func outboxDeleteFirstMatching(_ db: Database, convoID: String, body: String) throws -> String? {
+    private static func outboxDeleteFirstMatching(
+        _ db: Database, convoID: String, body: String, journaledAtMs: Int64? = nil
+    ) throws -> String? {
         let candidates = try OutboxRecord
             .filter(Column("convo_id") == convoID && Column("body") == body)
             .filter(Column("attempts") > 0)
             .order(Column("created_at").asc, Column("local_id").asc)
             .fetchAll(db)
+            .filter { journaledAtMs == nil || $0.createdAt <= journaledAtMs! }
         guard let row = candidates.first(where: { $0.state == .queued }) ?? candidates.first
         else { return nil }
         try row.delete(db)

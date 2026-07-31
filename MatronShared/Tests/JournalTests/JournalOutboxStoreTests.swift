@@ -11,6 +11,48 @@ final class JournalOutboxStoreTests: XCTestCase {
         try JournalStore(databaseURL: nil, ownSender: "user:dan")
     }
 
+    /// An own-text journal event whose timestamp derives from `seq`
+    /// (seq seconds → seq*1000 ms), so tests can position it before or
+    /// after an outbox row's `createdAt`.
+    private func ownText(_ seq: Int64, body: String, sender: String = "user:dan") -> JournalEvent {
+        JournalEvent(seq: seq, convoID: "c1", ts: Date(timeIntervalSince1970: Double(seq)),
+                     sender: sender, type: "text",
+                     payloadData: Data(#"{"body":"\#(body)"}"#.utf8))
+    }
+
+    func testInsertHistoryConfirmsPostSnapshotOutboxRow() throws {
+        // After a snapshot_required wipe the cursor jumps past the
+        // confirming frames — the history refill must confirm attempted
+        // rows instead, or delivered sends stay queued forever.
+        let store = try makeStore()
+        try store.outboxInsert(localID: "A", convoID: "c1", body: "hello",
+                               now: Date(timeIntervalSince1970: 1))
+        try store.outboxMarkAttempt(localID: "A")
+        try store.insertHistory([ownText(2, body: "hello")]) // ts after the row
+        XCTAssertTrue(try store.outboxRows(convoID: "c1").isEmpty)
+    }
+
+    func testOldHistoryEventDoesNotConfirmFreshSend() throws {
+        // An identical body sent LONG AGO and replayed by pagination must
+        // not eat a fresh queued send: a confirming event can't predate
+        // its own row.
+        let store = try makeStore()
+        try store.outboxInsert(localID: "A", convoID: "c1", body: "hello",
+                               now: Date(timeIntervalSince1970: 5))
+        try store.outboxMarkAttempt(localID: "A")
+        try store.insertHistory([ownText(1, body: "hello")]) // ts before the row
+        XCTAssertEqual(try store.outboxRows(convoID: "c1").map(\.localID), ["A"])
+    }
+
+    func testInsertHistoryFromOtherSenderKeepsOutboxRow() throws {
+        let store = try makeStore()
+        try store.outboxInsert(localID: "A", convoID: "c1", body: "hello",
+                               now: Date(timeIntervalSince1970: 1))
+        try store.outboxMarkAttempt(localID: "A")
+        try store.insertHistory([ownText(2, body: "hello", sender: "agent:a")])
+        XCTAssertEqual(try store.outboxRows(convoID: "c1").map(\.localID), ["A"])
+    }
+
     func testInsertAndFetchPendingFIFO() throws {
         let store = try makeStore()
         try store.outboxInsert(localID: "a", convoID: "c1", body: "first",
