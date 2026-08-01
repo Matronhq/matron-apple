@@ -108,6 +108,15 @@ struct MatronMacApp: App {
                             Task { await appLock.unlock() }
                         }
                     }
+                    // Cold-launch automatic prompt: at launch,
+                    // didBecomeActive fires before this branch exists (the
+                    // session restores asynchronously), so the .task owns
+                    // the first prompt — same split as iOS.
+                    .task {
+                        guard appLock.isLocked, !lockAutoPrompted else { return }
+                        lockAutoPrompted = true
+                        await appLock.unlock()
+                    }
                     // Lock countdown starts when Matron stops being the
                     // frontmost app. Anchored on this signed-in branch view
                     // (not the type-switching Group) — see the sign-out

@@ -34,11 +34,10 @@ struct MacLockOverlay: View {
                 }
             }
         }
-        // One automatic prompt per lock engagement; the overlay unmounts
-        // on unlock, so a re-lock mounts afresh and prompts again. If two
-        // windows both mount this (main + Settings), the controller's
-        // isUnlocking guard collapses the pair into a single prompt.
-        .task { await controller.unlock() }
+        // No auto-prompt here: this view mounts once per WINDOW (main +
+        // Settings each get one), so a per-mount prompt would re-nag a
+        // user who already cancelled whenever another window appears.
+        // The host owns the once-per-activation automatic prompt.
     }
 }
 #endif
