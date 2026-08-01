@@ -186,20 +186,26 @@ struct MatronApp: App {
                     }
                     // The lock flips outside scenePhase changes too (unlock
                     // succeeds, settings toggles it) — keep the overlay
-                    // window in step.
+                    // window in step. Recompute the shield from the CURRENT
+                    // phase: an unlock completes while the scene is still
+                    // .inactive (the system auth UI holds it there), and
+                    // hardcoding shield: false would strip the cover the
+                    // app-switcher snapshot still needs (bugbot "Lock
+                    // change drops inactive shield").
                     .onChange(of: appLock.isLocked) { _, _ in
-                        AppLockOverlay.update(controller: appLock, shield: false)
+                        AppLockOverlay.update(
+                            controller: appLock,
+                            shield: appLock.isEnabled && scenePhase != .active)
                     }
                     // Cold launch while enabled starts locked before any
-                    // scenePhase change fires: mount the overlay and offer
-                    // the one automatic prompt here.
+                    // scenePhase change fires; the overlay window itself is
+                    // mounted synchronously in bootstrap() (before the
+                    // session publishes) so chat never paints a first
+                    // frame — this task only owes the automatic prompt.
                     .task {
-                        guard appLock.isLocked else { return }
-                        AppLockOverlay.update(controller: appLock, shield: false)
-                        if !lockAutoPrompted {
-                            lockAutoPrompted = true
-                            await appLock.unlock()
-                        }
+                        guard appLock.isLocked, !lockAutoPrompted else { return }
+                        lockAutoPrompted = true
+                        await appLock.unlock()
                     }
                 } else {
                     let linkViewModel = LinkSignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS")
@@ -237,7 +243,16 @@ struct MatronApp: App {
     /// finds no session and falls through to the SignInView. No migration
     /// from the old Matrix-SDK session store — Task 11 amendment 5.
     private func bootstrap() async {
-        session = try? await dependencies.auth.restoreSession()
+        let restored = try? await dependencies.auth.restoreSession()
+        // Mount the lock window BEFORE publishing the session: SwiftUI
+        // would otherwise paint the chat list for at least a frame ahead
+        // of the signed-in branch's async .task (bugbot "Cold launch
+        // shows chat first"). Gated on a restored session — over the
+        // sign-in view a lock would just strand the user.
+        if restored != nil, appLock.isLocked {
+            AppLockOverlay.update(controller: appLock, shield: false)
+        }
+        session = restored
         bootstrapDone = true
     }
 
