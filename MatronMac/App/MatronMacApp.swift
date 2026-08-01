@@ -29,6 +29,10 @@ struct MatronMacApp: App {
     /// because it guards every scene — the chat window and Settings both
     /// mount its overlay.
     @State private var appLock = AppLockController(auth: LocalBiometricAuthenticator())
+    /// One automatic auth prompt per activation stay, mirroring iOS: a
+    /// user who cancelled shouldn't be re-prompted until they leave and
+    /// come back.
+    @State private var lockAutoPrompted = false
 
     init() {
         // Opt out of macOS 26's floating glass sidebar and keep the
@@ -95,6 +99,14 @@ struct MatronMacApp: App {
                     .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                         Task { await (dependencies.syncService(for: session) as? JournalSyncEngine)?.nudge() }
                         appLock.noteBecameActive()
+                        // Foreground re-prompt parity with iOS: returning
+                        // to a still-locked app offers auth again instead
+                        // of stranding the user on the manual button
+                        // (bugbot "Mac lacks foreground re-prompt").
+                        if appLock.isLocked, !lockAutoPrompted {
+                            lockAutoPrompted = true
+                            Task { await appLock.unlock() }
+                        }
                     }
                     // Lock countdown starts when Matron stops being the
                     // frontmost app. Anchored on this signed-in branch view
@@ -103,6 +115,11 @@ struct MatronMacApp: App {
                     // silently drops notifications on macOS.
                     .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in
                         appLock.noteResignedActive()
+                        // The system auth dialog itself can deactivate the
+                        // app; resetting the prompt latch during an
+                        // in-flight evaluation would re-prompt on every
+                        // cancel — an infinite nag loop.
+                        if !appLock.isUnlocking { lockAutoPrompted = false }
                     }
                     .environment(\.appLockController, appLock)
                     // App Nap suppression: an idle/unfocused Mac app gets its
