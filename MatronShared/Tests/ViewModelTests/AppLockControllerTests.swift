@@ -4,13 +4,25 @@ import XCTest
 private final class FakeAuthenticator: BiometricAuthenticating, @unchecked Sendable {
     var method: String? = "Face ID"
     var result: Result<Bool, Error> = .success(true)
+    /// When true, authenticate() parks on a continuation until release()
+    /// — models the system prompt sitting on screen.
+    var hold = false
     private(set) var authenticateCalls = 0
+    private var waiters: [CheckedContinuation<Bool, Error>] = []
 
     func availableMethodName() -> String? { method }
 
     func authenticate(reason: String) async throws -> Bool {
         authenticateCalls += 1
+        if hold {
+            return try await withCheckedThrowingContinuation { waiters.append($0) }
+        }
         return try result.get()
+    }
+
+    func release(_ value: Bool = true) {
+        waiters.forEach { $0.resume(returning: value) }
+        waiters.removeAll()
     }
 }
 
@@ -151,6 +163,24 @@ final class AppLockControllerTests: XCTestCase {
 
     func test_timeout_defaultsToFiveMinutes() {
         XCTAssertEqual(makeController().timeout, .fiveMinutes)
+    }
+
+    func test_disableDuringEnableAuthPrompt_wins() async {
+        // The user flips the toggle on, the system prompt sits on screen,
+        // they change their mind and flip it off — the enable completing
+        // afterwards must NOT re-enable behind their back.
+        auth.hold = true
+        let lock = makeController()
+        let enable = Task { await lock.setEnabled(true) }
+        for _ in 0..<200 where auth.authenticateCalls == 0 {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertEqual(auth.authenticateCalls, 1, "enable is parked in its prompt")
+        await lock.setEnabled(false)
+        auth.release(true)
+        await enable.value
+        XCTAssertFalse(lock.isEnabled, "the later disable intent wins")
+        XCTAssertFalse(defaults.bool(forKey: AppLockController.enabledKey))
     }
 
     func test_resignWhileAlreadyLocked_thenQuickReturn_staysLocked() async {

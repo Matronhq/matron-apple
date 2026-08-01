@@ -86,6 +86,10 @@ public final class AppLockController {
     private let defaults: UserDefaults
     private let now: () -> Date
     private var resignedAt: Date?
+    /// Monotonic intent counter: every `setEnabled` call supersedes any
+    /// still-awaiting predecessor, so an enable whose auth prompt outlives
+    /// the user's change of mind can't re-enable behind their back.
+    private var enableGeneration = 0
 
     public init(
         auth: any BiometricAuthenticating,
@@ -115,9 +119,17 @@ public final class AppLockController {
     /// needs no auth: the app is already unlocked to reach the toggle.
     public func setEnabled(_ enabled: Bool) async {
         unlockError = nil
+        // Bump BEFORE the no-op guard: a disable that matches current
+        // state still expresses fresh intent that must invalidate an
+        // enable suspended in its auth prompt.
+        enableGeneration += 1
+        let generation = enableGeneration
         guard enabled != isEnabled else { return }
         if enabled {
             guard await runAuth(reason: "Confirm you can unlock Matron") else { return }
+            // The user may have reversed the toggle while the prompt was
+            // up — a stale enable must not win over their later intent.
+            guard generation == enableGeneration else { return }
         }
         isEnabled = enabled
         defaults.set(enabled, forKey: Self.enabledKey)
