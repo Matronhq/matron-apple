@@ -251,6 +251,12 @@ struct MatronMacApp: App {
     /// per-session journal caches via `AppDependencies.signOut()` — the
     /// resulting `session == nil` branch re-mounts the sign-in view.
     private func signOut(activeSession: UserSession) {
+        // The File → Sign Out menu command routes here through the command
+        // bus, which the in-window lock overlay can't intercept — without
+        // this guard a passerby could wipe a locked app's session (and its
+        // queued outbox) from the menu bar (bugbot "Menu sign-out bypasses
+        // lock"). Unlock first, then sign out.
+        guard !appLock.isLocked else { return }
         dependencies.signOut()
         session = nil
         // Detach APNs from the dead session — a late token callback would
