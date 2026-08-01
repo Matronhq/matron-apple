@@ -200,4 +200,33 @@ final class AppLockControllerTests: XCTestCase {
         lock.noteBecameActive()
         XCTAssertTrue(lock.isLocked)
     }
+
+    func test_coldLaunch_enabledButNoAuthMethod_doesNotLock() {
+        // Passcode removed since enabling: a lock nothing can open is a
+        // permanent lockout, not security — the lock stands down.
+        defaults.set(true, forKey: AppLockController.enabledKey)
+        auth.method = nil
+        XCTAssertFalse(makeController().isLocked)
+    }
+
+    func test_idleTimeout_withNoAuthMethod_doesNotEngage() async {
+        let lock = makeController()
+        await lock.setEnabled(true)
+        lock.timeout = .immediately
+        auth.method = nil
+        lock.noteResignedActive()
+        lock.noteBecameActive()
+        XCTAssertFalse(lock.isLocked)
+    }
+
+    func test_unlock_afterAuthMethodVanishes_standsDown() async {
+        // Locked while resident, passcode removed in the background.
+        defaults.set(true, forKey: AppLockController.enabledKey)
+        let lock = makeController()
+        XCTAssertTrue(lock.isLocked)
+        auth.method = nil
+        await lock.unlock()
+        XCTAssertFalse(lock.isLocked)
+        XCTAssertEqual(auth.authenticateCalls, 0, "nothing to evaluate against")
+    }
 }

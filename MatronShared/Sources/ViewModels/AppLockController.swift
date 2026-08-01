@@ -115,8 +115,11 @@ public final class AppLockController {
             self.timeout = .fiveMinutes
         }
         // A cold launch has no trusted "last active" moment, so an
-        // enabled lock always engages at startup.
-        self.isLocked = enabled
+        // enabled lock always engages at startup — unless the device can
+        // no longer evaluate ANY auth (passcode removed since enabling):
+        // a lock nothing can open is a permanent lockout, not security,
+        // and whoever removed the passcode had to own the device to do it.
+        self.isLocked = enabled && auth.availableMethodName() != nil
     }
 
     /// Enabling authenticates first — proving the method works before it
@@ -150,7 +153,8 @@ public final class AppLockController {
     /// Call when the app returns to the foreground.
     public func noteBecameActive() {
         defer { resignedAt = nil }
-        guard isEnabled, !isLocked, let resignedAt else { return }
+        guard isEnabled, !isLocked, let resignedAt,
+              auth.availableMethodName() != nil else { return }
         if now().timeIntervalSince(resignedAt) >= Double(timeout.rawValue) {
             isLocked = true
         }
@@ -158,6 +162,14 @@ public final class AppLockController {
 
     public func unlock() async {
         guard isLocked, !isUnlocking else { return }
+        // The auth method can vanish WHILE locked (passcode removed with
+        // the app backgrounded and still resident). Same reasoning as the
+        // init guard: an unopenable lock is a lockout, so stand down.
+        guard auth.availableMethodName() != nil else {
+            isLocked = false
+            resignedAt = nil
+            return
+        }
         unlockError = nil
         if await runAuth(reason: "Unlock Matron") {
             isLocked = false
