@@ -183,6 +183,16 @@ final class AppLockControllerTests: XCTestCase {
         XCTAssertFalse(defaults.bool(forKey: AppLockController.enabledKey))
     }
 
+    func test_unlockAttempt_stampsLastAuthEndedAt() async {
+        defaults.set(true, forKey: AppLockController.enabledKey)
+        auth.result = .success(false)
+        let lock = makeController()
+        XCTAssertNil(lock.lastAuthEndedAt)
+        await lock.unlock()
+        XCTAssertEqual(lock.lastAuthEndedAt, clock,
+                       "hosts use this stamp to tell auth-dialog churn from a real app switch")
+    }
+
     func test_resignWhileAlreadyLocked_thenQuickReturn_staysLocked() async {
         defaults.set(true, forKey: AppLockController.enabledKey)
         let lock = makeController()

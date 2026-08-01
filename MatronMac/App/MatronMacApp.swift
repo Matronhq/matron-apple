@@ -115,11 +115,18 @@ struct MatronMacApp: App {
                     // silently drops notifications on macOS.
                     .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in
                         appLock.noteResignedActive()
-                        // The system auth dialog itself can deactivate the
-                        // app; resetting the prompt latch during an
-                        // in-flight evaluation would re-prompt on every
-                        // cancel — an infinite nag loop.
-                        if !appLock.isUnlocking { lockAutoPrompted = false }
+                        // The system auth dialog deactivates the app when
+                        // it appears (isUnlocking covers that) and can
+                        // churn resign/activate once more as it tears
+                        // down after a cancel — by then isUnlocking is
+                        // already false, so also ignore resigns landing
+                        // within a second of the attempt finishing. A
+                        // genuine leave-and-return takes longer, so the
+                        // once-per-stay re-prompt is unaffected (bugbot
+                        // "Mac cancel re-triggers unlock prompts").
+                        let dialogChurn = appLock.isUnlocking
+                            || (appLock.lastAuthEndedAt.map { Date().timeIntervalSince($0) < 1 } ?? false)
+                        if !dialogChurn { lockAutoPrompted = false }
                     }
                     .environment(\.appLockController, appLock)
                     // App Nap suppression: an idle/unfocused Mac app gets its

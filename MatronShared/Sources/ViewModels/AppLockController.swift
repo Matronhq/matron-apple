@@ -74,6 +74,11 @@ public final class AppLockController {
     public private(set) var isEnabled: Bool
     public private(set) var isUnlocking = false
     public private(set) var unlockError: String?
+    /// When the most recent auth evaluation finished (success, failure, or
+    /// cancel). Hosts use this to tell the auth dialog's own
+    /// activate/resign churn apart from a genuine app switch when
+    /// deciding whether to offer another automatic prompt.
+    public private(set) var lastAuthEndedAt: Date?
     public var timeout: AppLockTimeout {
         didSet { defaults.set(timeout.rawValue, forKey: Self.timeoutKey) }
     }
@@ -162,7 +167,10 @@ public final class AppLockController {
 
     private func runAuth(reason: String) async -> Bool {
         isUnlocking = true
-        defer { isUnlocking = false }
+        defer {
+            isUnlocking = false
+            lastAuthEndedAt = now()
+        }
         do {
             if try await auth.authenticate(reason: reason) { return true }
             unlockError = "Authentication didn't complete — try again."
