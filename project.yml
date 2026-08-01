@@ -100,6 +100,9 @@ targets:
         # login). Managed here so `xcodegen generate` keeps it in the
         # generated plist.
         NSCameraUsageDescription: Matron uses the camera to scan sign-in QR codes from your other devices.
+        # App lock (Settings → Privacy). Without this key the first
+        # Face ID evaluation crashes the process outright.
+        NSFaceIDUsageDescription: Face ID unlocks Matron.
         # Photo-library usage string for the attachment picker. PHPicker
         # normally needs no authorization (it runs out-of-process), but the
         # composer passes `photoLibrary: .shared()` — required for

@@ -352,6 +352,12 @@ struct CurrentSessionKey: EnvironmentKey {
     static let defaultValue: UserSession? = nil
 }
 
+/// Carries the app-wide biometric lock so Settings can offer the
+/// enable/timeout controls. `nil` in previews/tests hides the section.
+struct AppLockControllerKey: EnvironmentKey {
+    static let defaultValue: AppLockController? = nil
+}
+
 extension EnvironmentValues {
     var appDependencies: AppDependencies? {
         get { self[AppDependenciesKey.self] }
@@ -360,5 +366,9 @@ extension EnvironmentValues {
     var currentSession: UserSession? {
         get { self[CurrentSessionKey.self] }
         set { self[CurrentSessionKey.self] = newValue }
+    }
+    var appLockController: AppLockController? {
+        get { self[AppLockControllerKey.self] }
+        set { self[AppLockControllerKey.self] = newValue }
     }
 }

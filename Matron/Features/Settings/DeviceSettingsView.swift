@@ -16,6 +16,8 @@ struct DeviceSettingsView: View {
     var devicesAPI: (any DevicesProviding)? = nil
     var linkAPI: (any DeviceLinking)? = nil
     var onSignOut: (() -> Void)? = nil
+    /// Injected by MatronApp; nil in previews/tests hides the section.
+    @Environment(\.appLockController) private var appLock
 
     var body: some View {
         Form {
@@ -42,6 +44,32 @@ struct DeviceSettingsView: View {
                         } label: {
                             Label("Link a Device", systemImage: "qrcode")
                         }
+                    }
+                }
+            }
+            // Only offered when the device can actually authenticate —
+            // a toggle that can never unlock again would lock the user
+            // out of their own chats.
+            if let appLock, let method = appLock.methodName {
+                Section("Privacy") {
+                    Toggle("Require \(method)", isOn: Binding(
+                        get: { appLock.isEnabled },
+                        set: { enabled in Task { await appLock.setEnabled(enabled) } }
+                    ))
+                    if appLock.isEnabled {
+                        Picker("Lock", selection: Binding(
+                            get: { appLock.timeout },
+                            set: { appLock.timeout = $0 }
+                        )) {
+                            ForEach(AppLockTimeout.allCases) { timeout in
+                                Text(timeout.title).tag(timeout)
+                            }
+                        }
+                    }
+                    if let error = appLock.unlockError {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
                     }
                 }
             }

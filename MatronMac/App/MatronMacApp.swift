@@ -25,6 +25,10 @@ struct MatronMacApp: App {
     /// menus all switch together.
     @AppStorage(MatronAppearance.storageKey) private var appearanceRaw =
         MatronAppearance.system.rawValue
+    /// Biometric app lock (Touch ID with password fallback). Host-level
+    /// because it guards every scene — the chat window and Settings both
+    /// mount its overlay.
+    @State private var appLock = AppLockController(auth: LocalBiometricAuthenticator())
 
     init() {
         // Opt out of macOS 26's floating glass sidebar and keep the
@@ -90,7 +94,17 @@ struct MatronMacApp: App {
                     // is the Mac equivalent of iOS's `scenePhase == .active`.
                     .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                         Task { await (dependencies.syncService(for: session) as? JournalSyncEngine)?.nudge() }
+                        appLock.noteBecameActive()
                     }
+                    // Lock countdown starts when Matron stops being the
+                    // frontmost app. Anchored on this signed-in branch view
+                    // (not the type-switching Group) — see the sign-out
+                    // listener note above for why root-level onReceive
+                    // silently drops notifications on macOS.
+                    .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in
+                        appLock.noteResignedActive()
+                    }
+                    .environment(\.appLockController, appLock)
                     // App Nap suppression: an idle/unfocused Mac app gets its
                     // timers and runloop throttled, which freezes the journal
                     // engine's ping watchdog and backoff sleeper — a silently
@@ -140,6 +154,14 @@ struct MatronMacApp: App {
             .onChange(of: appearanceRaw, initial: true) { _, raw in
                 NSApp.appearance = MatronAppearance(storedValue: raw).nsAppearance
             }
+            // Gated on a live session: pre-bootstrap and the sign-in view
+            // hold nothing worth hiding, and a cold-launch lock would
+            // otherwise sit over the sign-in form.
+            .overlay {
+                if appLock.isLocked, session != nil {
+                    MacLockOverlay(controller: appLock)
+                }
+            }
         }
         .windowResizability(.contentMinSize)
         // Fresh-install window size. macOS restores the user's own frame
@@ -164,25 +186,36 @@ struct MatronMacApp: App {
         //   without retyping credentials (Task 6 of the QR device-link
         //   plan). Mac only shows codes — see `MacDeviceLinkView`.
         Settings {
-            if let session {
-                TabView {
-                    MacDeviceSettingsView(session: session, onSignOut: { signOut(activeSession: session) })
-                        .tabItem { Label("General", systemImage: "gearshape") }
-                    MacDevicesView(
-                        api: dependencies.devicesService(for: session),
-                        onSelfRevoked: { signOut(activeSession: session) }
-                    )
-                    .tabItem { Label("Devices", systemImage: "laptopcomputer.and.iphone") }
-                    MacDeviceLinkView(
-                        api: dependencies.deviceLinkService(for: session),
-                        serverURL: session.homeserverURL
-                    )
-                    .tabItem { Label("Link a Device", systemImage: "qrcode") }
+            Group {
+                if let session {
+                    TabView {
+                        MacDeviceSettingsView(session: session, onSignOut: { signOut(activeSession: session) })
+                            .tabItem { Label("General", systemImage: "gearshape") }
+                            .environment(\.appLockController, appLock)
+                        MacDevicesView(
+                            api: dependencies.devicesService(for: session),
+                            onSelfRevoked: { signOut(activeSession: session) }
+                        )
+                        .tabItem { Label("Devices", systemImage: "laptopcomputer.and.iphone") }
+                        MacDeviceLinkView(
+                            api: dependencies.deviceLinkService(for: session),
+                            serverURL: session.homeserverURL
+                        )
+                        .tabItem { Label("Link a Device", systemImage: "qrcode") }
+                    }
+                } else {
+                    Text("Sign in to view settings.")
+                        .padding()
+                        .frame(width: 420, height: 200)
                 }
-            } else {
-                Text("Sign in to view settings.")
-                    .padding()
-                    .frame(width: 420, height: 200)
+            }
+            // Settings is its own window: without this overlay, ⌘, while
+            // locked would expose account details — and the Privacy toggle
+            // that turns the lock off.
+            .overlay {
+                if appLock.isLocked, session != nil {
+                    MacLockOverlay(controller: appLock)
+                }
             }
         }
     }

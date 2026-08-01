@@ -3,6 +3,7 @@ import SwiftUI
 import AppKit
 import MatronModels
 import MatronDesignSystem
+import MatronViewModels
 
 /// Mac analogue of `DeviceSettingsView` (iOS Task 11 / Mac Task 12). Same
 /// reduction as the iOS view — the Encryption + Recovery-key sections are
@@ -20,6 +21,8 @@ struct MacDeviceSettingsView: View {
     /// Sign-out action. Optional so previews / tests can omit it and
     /// render the view without a destructive action wired up.
     var onSignOut: (() -> Void)? = nil
+    /// Injected by MatronMacApp; nil in previews/tests hides the section.
+    @Environment(\.appLockController) private var appLock
 
     var body: some View {
         Form {
@@ -30,6 +33,32 @@ struct MacDeviceSettingsView: View {
                     "Server",
                     value: session.homeserverURL.host ?? session.homeserverURL.absoluteString
                 )
+            }
+            // Only offered when the device can actually authenticate —
+            // a toggle that can never unlock again would lock the user
+            // out of their own chats. Mirrors iOS DeviceSettingsView.
+            if let appLock, let method = appLock.methodName {
+                Section("Privacy") {
+                    Toggle("Require \(method)", isOn: Binding(
+                        get: { appLock.isEnabled },
+                        set: { enabled in Task { await appLock.setEnabled(enabled) } }
+                    ))
+                    if appLock.isEnabled {
+                        Picker("Lock", selection: Binding(
+                            get: { appLock.timeout },
+                            set: { appLock.timeout = $0 }
+                        )) {
+                            ForEach(AppLockTimeout.allCases) { timeout in
+                                Text(timeout.title).tag(timeout)
+                            }
+                        }
+                    }
+                    if let error = appLock.unlockError {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                }
             }
             Section("Appearance") {
                 // Writes MatronAppearance.storageKey; MatronMacApp's root
@@ -44,7 +73,8 @@ struct MacDeviceSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 420, height: 320)
+        // Tall enough for the Privacy section when biometrics exist.
+        .frame(width: 420, height: 440)
         .navigationTitle("Device")
     }
 }
