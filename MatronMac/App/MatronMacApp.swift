@@ -127,14 +127,20 @@ struct MatronMacApp: App {
                         // The system auth dialog deactivates the app when
                         // it appears (isUnlocking covers that) and can
                         // churn resign/activate once more as it tears
-                        // down after a cancel — by then isUnlocking is
+                        // down after a CANCEL — by then isUnlocking is
                         // already false, so also ignore resigns landing
-                        // within a second of the attempt finishing. A
-                        // genuine leave-and-return takes longer, so the
-                        // once-per-stay re-prompt is unaffected (bugbot
-                        // "Mac cancel re-triggers unlock prompts").
+                        // within a second of a still-locked attempt
+                        // finishing (bugbot "Mac cancel re-triggers
+                        // unlock prompts"). Scoped to isLocked: after a
+                        // successful unlock the same window must not
+                        // swallow a genuine quick departure, or the next
+                        // locked return would skip its automatic prompt
+                        // (bugbot "Mac skips auto unlock prompt") — and
+                        // clearing the latch while unlocked is harmless,
+                        // since prompts only ever fire when locked.
                         let dialogChurn = appLock.isUnlocking
-                            || (appLock.lastAuthEndedAt.map { Date().timeIntervalSince($0) < 1 } ?? false)
+                            || (appLock.isLocked
+                                && (appLock.lastAuthEndedAt.map { Date().timeIntervalSince($0) < 1 } ?? false))
                         if !dialogChurn { lockAutoPrompted = false }
                     }
                     .environment(\.appLockController, appLock)
