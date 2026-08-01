@@ -379,6 +379,13 @@ struct ChatNavigationPathKey: EnvironmentKey {
     static let defaultValue: Binding<[String]>? = nil
 }
 
+/// Carries the app-wide biometric lock so Settings can offer the
+/// enable/timeout controls. `nil` in previews/tests, which simply hides
+/// the Privacy section.
+struct AppLockControllerKey: EnvironmentKey {
+    static let defaultValue: AppLockController? = nil
+}
+
 extension EnvironmentValues {
     var appDependencies: AppDependencies? {
         get { self[AppDependenciesKey.self] }
@@ -391,5 +398,9 @@ extension EnvironmentValues {
     var chatNavigationPath: Binding<[String]>? {
         get { self[ChatNavigationPathKey.self] }
         set { self[ChatNavigationPathKey.self] = newValue }
+    }
+    var appLockController: AppLockController? {
+        get { self[AppLockControllerKey.self] }
+        set { self[AppLockControllerKey.self] = newValue }
     }
 }

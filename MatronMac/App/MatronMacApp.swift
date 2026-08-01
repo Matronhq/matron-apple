@@ -25,6 +25,14 @@ struct MatronMacApp: App {
     /// menus all switch together.
     @AppStorage(MatronAppearance.storageKey) private var appearanceRaw =
         MatronAppearance.system.rawValue
+    /// Biometric app lock (Touch ID with password fallback). Host-level
+    /// because it guards every scene — the chat window and Settings both
+    /// mount its overlay.
+    @State private var appLock = AppLockController(auth: LocalBiometricAuthenticator())
+    /// One automatic auth prompt per activation stay, mirroring iOS: a
+    /// user who cancelled shouldn't be re-prompted until they leave and
+    /// come back.
+    @State private var lockAutoPrompted = false
 
     init() {
         // Opt out of macOS 26's floating glass sidebar and keep the
@@ -90,7 +98,52 @@ struct MatronMacApp: App {
                     // is the Mac equivalent of iOS's `scenePhase == .active`.
                     .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                         Task { await (dependencies.syncService(for: session) as? JournalSyncEngine)?.nudge() }
+                        appLock.noteBecameActive()
+                        // Foreground re-prompt parity with iOS: returning
+                        // to a still-locked app offers auth again instead
+                        // of stranding the user on the manual button
+                        // (bugbot "Mac lacks foreground re-prompt").
+                        if appLock.isLocked, !lockAutoPrompted {
+                            lockAutoPrompted = true
+                            Task { await appLock.unlock() }
+                        }
                     }
+                    // Cold-launch automatic prompt: at launch,
+                    // didBecomeActive fires before this branch exists (the
+                    // session restores asynchronously), so the .task owns
+                    // the first prompt — same split as iOS.
+                    .task {
+                        guard appLock.isLocked, !lockAutoPrompted else { return }
+                        lockAutoPrompted = true
+                        await appLock.unlock()
+                    }
+                    // Lock countdown starts when Matron stops being the
+                    // frontmost app. Anchored on this signed-in branch view
+                    // (not the type-switching Group) — see the sign-out
+                    // listener note above for why root-level onReceive
+                    // silently drops notifications on macOS.
+                    .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in
+                        appLock.noteResignedActive()
+                        // The system auth dialog deactivates the app when
+                        // it appears (isUnlocking covers that) and can
+                        // churn resign/activate once more as it tears
+                        // down after a CANCEL — by then isUnlocking is
+                        // already false, so also ignore resigns landing
+                        // within a second of a still-locked attempt
+                        // finishing (bugbot "Mac cancel re-triggers
+                        // unlock prompts"). Scoped to isLocked: after a
+                        // successful unlock the same window must not
+                        // swallow a genuine quick departure, or the next
+                        // locked return would skip its automatic prompt
+                        // (bugbot "Mac skips auto unlock prompt") — and
+                        // clearing the latch while unlocked is harmless,
+                        // since prompts only ever fire when locked.
+                        let dialogChurn = appLock.isUnlocking
+                            || (appLock.isLocked
+                                && (appLock.lastAuthEndedAt.map { Date().timeIntervalSince($0) < 1 } ?? false))
+                        if !dialogChurn { lockAutoPrompted = false }
+                    }
+                    .environment(\.appLockController, appLock)
                     // App Nap suppression: an idle/unfocused Mac app gets its
                     // timers and runloop throttled, which freezes the journal
                     // engine's ping watchdog and backoff sleeper — a silently
@@ -140,6 +193,14 @@ struct MatronMacApp: App {
             .onChange(of: appearanceRaw, initial: true) { _, raw in
                 NSApp.appearance = MatronAppearance(storedValue: raw).nsAppearance
             }
+            // Gated on a live session: pre-bootstrap and the sign-in view
+            // hold nothing worth hiding, and a cold-launch lock would
+            // otherwise sit over the sign-in form.
+            .overlay {
+                if appLock.isLocked, session != nil {
+                    MacLockOverlay(controller: appLock)
+                }
+            }
         }
         .windowResizability(.contentMinSize)
         // Fresh-install window size. macOS restores the user's own frame
@@ -164,25 +225,36 @@ struct MatronMacApp: App {
         //   without retyping credentials (Task 6 of the QR device-link
         //   plan). Mac only shows codes — see `MacDeviceLinkView`.
         Settings {
-            if let session {
-                TabView {
-                    MacDeviceSettingsView(session: session, onSignOut: { signOut(activeSession: session) })
-                        .tabItem { Label("General", systemImage: "gearshape") }
-                    MacDevicesView(
-                        api: dependencies.devicesService(for: session),
-                        onSelfRevoked: { signOut(activeSession: session) }
-                    )
-                    .tabItem { Label("Devices", systemImage: "laptopcomputer.and.iphone") }
-                    MacDeviceLinkView(
-                        api: dependencies.deviceLinkService(for: session),
-                        serverURL: session.homeserverURL
-                    )
-                    .tabItem { Label("Link a Device", systemImage: "qrcode") }
+            Group {
+                if let session {
+                    TabView {
+                        MacDeviceSettingsView(session: session, onSignOut: { signOut(activeSession: session) })
+                            .tabItem { Label("General", systemImage: "gearshape") }
+                            .environment(\.appLockController, appLock)
+                        MacDevicesView(
+                            api: dependencies.devicesService(for: session),
+                            onSelfRevoked: { signOut(activeSession: session) }
+                        )
+                        .tabItem { Label("Devices", systemImage: "laptopcomputer.and.iphone") }
+                        MacDeviceLinkView(
+                            api: dependencies.deviceLinkService(for: session),
+                            serverURL: session.homeserverURL
+                        )
+                        .tabItem { Label("Link a Device", systemImage: "qrcode") }
+                    }
+                } else {
+                    Text("Sign in to view settings.")
+                        .padding()
+                        .frame(width: 420, height: 200)
                 }
-            } else {
-                Text("Sign in to view settings.")
-                    .padding()
-                    .frame(width: 420, height: 200)
+            }
+            // Settings is its own window: without this overlay, ⌘, while
+            // locked would expose account details — and the Privacy toggle
+            // that turns the lock off.
+            .overlay {
+                if appLock.isLocked, session != nil {
+                    MacLockOverlay(controller: appLock)
+                }
             }
         }
     }
@@ -201,6 +273,12 @@ struct MatronMacApp: App {
     /// per-session journal caches via `AppDependencies.signOut()` — the
     /// resulting `session == nil` branch re-mounts the sign-in view.
     private func signOut(activeSession: UserSession) {
+        // The File → Sign Out menu command routes here through the command
+        // bus, which the in-window lock overlay can't intercept — without
+        // this guard a passerby could wipe a locked app's session (and its
+        // queued outbox) from the menu bar (bugbot "Menu sign-out bypasses
+        // lock"). Unlock first, then sign out.
+        guard !appLock.isLocked else { return }
         dependencies.signOut()
         session = nil
         // Detach APNs from the dead session — a late token callback would

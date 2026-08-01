@@ -100,6 +100,9 @@ targets:
         # login). Managed here so `xcodegen generate` keeps it in the
         # generated plist.
         NSCameraUsageDescription: Matron uses the camera to scan sign-in QR codes from your other devices.
+        # App lock (Settings → Privacy). Without this key the first
+        # Face ID evaluation crashes the process outright.
+        NSFaceIDUsageDescription: Face ID unlocks Matron.
         # Photo-library usage string for the attachment picker. PHPicker
         # normally needs no authorization (it runs out-of-process), but the
         # composer passes `photoLibrary: .shared()` — required for
@@ -221,6 +224,10 @@ targets:
         # (not by hand in Info.plist) so `xcodegen generate` keeps it in the
         # generated plist — the same channel as NSAppTransportSecurity below.
         NSMicrophoneUsageDescription: Records voice notes to send to your agent.
+        # App lock (Settings → Privacy). macOS Touch ID doesn't strictly
+        # require this the way iOS Face ID does, but the key is harmless
+        # and future-proofs biometric evaluation on Mac hardware.
+        NSFaceIDUsageDescription: Biometrics unlock Matron.
         # See the iOS target: ATS stays on for production https; the only
         # carve-out is cleartext to loopback for a local matron-journal
         # dev server. ServerURLValidator restricts explicit http:// to

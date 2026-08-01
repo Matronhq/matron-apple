@@ -33,6 +33,14 @@ struct MatronApp: App {
     /// it covers the sign-in view and every sheet, not just the chat UI.
     @AppStorage(MatronAppearance.storageKey) private var appearanceRaw =
         MatronAppearance.system.rawValue
+    /// Biometric app lock. Lives at the host (not per-session) because the
+    /// lock guards the whole UI surface and must engage before any session
+    /// content renders on a cold launch.
+    @State private var appLock = AppLockController(auth: LocalBiometricAuthenticator())
+    /// One automatic Face ID prompt per foreground stay — the prompt's own
+    /// dismissal re-fires `.active`, so prompting from every `.active`
+    /// transition would nag a user who cancelled in an endless loop.
+    @State private var lockAutoPrompted = false
 
     var body: some Scene {
         WindowGroup {
@@ -55,6 +63,10 @@ struct MatronApp: App {
                     }
                     .environment(\.appDependencies, dependencies)
                     .environment(\.currentSession, session)
+                    // Settings (a sheet off the chat list) reads this to
+                    // render the Privacy section — sheets inherit the
+                    // presenting hierarchy's environment.
+                    .environment(\.appLockController, appLock)
                     // Lets the running-subagent strip / sub-chat switcher
                     // push a child chat or switch siblings on the same stack.
                     .environment(\.chatNavigationPath, $chatPath)
@@ -154,10 +166,54 @@ struct MatronApp: App {
                     .onChange(of: scenePhase) { _, phase in
                         if phase == .active {
                             Task { await (dependencies.syncService(for: session) as? JournalSyncEngine)?.nudge() }
+                            appLock.noteBecameActive()
+                            if appLock.isLocked, !lockAutoPrompted {
+                                lockAutoPrompted = true
+                                Task { await appLock.unlock() }
+                            }
                         } else if phase == .background {
                             MatronAppDelegate.scheduleBackgroundRefresh()
                             OutboxBackgroundGrace.holdIfNeeded(
                                 engine: dependencies.syncService(for: session) as? JournalSyncEngine)
+                            // .background, not .inactive: a Control Center
+                            // peek or the Face ID prompt itself briefly
+                            // passes through .inactive and must not start
+                            // the lock countdown.
+                            appLock.noteResignedActive()
+                            lockAutoPrompted = false
+                        }
+                        AppLockOverlay.update(controller: appLock, shield: appLock.isEnabled && phase != .active)
+                    }
+                    // The lock flips outside scenePhase changes too (unlock
+                    // succeeds, settings toggles it) — keep the overlay
+                    // window in step. Recompute the shield from the CURRENT
+                    // phase: an unlock completes while the scene is still
+                    // .inactive (the system auth UI holds it there), and
+                    // hardcoding shield: false would strip the cover the
+                    // app-switcher snapshot still needs (bugbot "Lock
+                    // change drops inactive shield").
+                    .onChange(of: appLock.isLocked) { _, _ in
+                        AppLockOverlay.update(
+                            controller: appLock,
+                            shield: appLock.isEnabled && scenePhase != .active)
+                    }
+                    // Cold launch while enabled starts locked before any
+                    // scenePhase change fires; the overlay window mounts
+                    // synchronously in bootstrap() (before the session
+                    // publishes) so chat never paints a first frame. The
+                    // mount here is the safety net for launches where
+                    // bootstrap found no attached window scene yet (e.g. a
+                    // background launch) — this view appearing proves a
+                    // scene exists now (bugbot "Lock overlay mount fails
+                    // silently"). Then the one automatic prompt.
+                    .task {
+                        guard appLock.isLocked else { return }
+                        AppLockOverlay.update(
+                            controller: appLock,
+                            shield: appLock.isEnabled && scenePhase != .active)
+                        if !lockAutoPrompted {
+                            lockAutoPrompted = true
+                            await appLock.unlock()
                         }
                     }
                 } else {
@@ -196,7 +252,16 @@ struct MatronApp: App {
     /// finds no session and falls through to the SignInView. No migration
     /// from the old Matrix-SDK session store — Task 11 amendment 5.
     private func bootstrap() async {
-        session = try? await dependencies.auth.restoreSession()
+        let restored = try? await dependencies.auth.restoreSession()
+        // Mount the lock window BEFORE publishing the session: SwiftUI
+        // would otherwise paint the chat list for at least a frame ahead
+        // of the signed-in branch's async .task (bugbot "Cold launch
+        // shows chat first"). Gated on a restored session — over the
+        // sign-in view a lock would just strand the user.
+        if restored != nil, appLock.isLocked {
+            AppLockOverlay.update(controller: appLock, shield: false)
+        }
+        session = restored
         bootstrapDone = true
     }
 
@@ -205,6 +270,11 @@ struct MatronApp: App {
     /// `AppDependencies.signOut()` — the resulting `session == nil` branch
     /// re-mounts the SignInView.
     private func signOut() {
+        // Defense-in-depth parity with the Mac host: no UI path reaches
+        // sign-out under the lock window, but if the overlay ever failed
+        // to mount this still stops a session (and queued-outbox) wipe
+        // without authentication. Unlock first, then sign out.
+        guard !appLock.isLocked else { return }
         dependencies.signOut()
         session = nil
         // Detach APNs from the dead session: the token callback captured
