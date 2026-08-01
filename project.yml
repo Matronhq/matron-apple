@@ -224,6 +224,10 @@ targets:
         # (not by hand in Info.plist) so `xcodegen generate` keeps it in the
         # generated plist — the same channel as NSAppTransportSecurity below.
         NSMicrophoneUsageDescription: Records voice notes to send to your agent.
+        # App lock (Settings → Privacy). macOS Touch ID doesn't strictly
+        # require this the way iOS Face ID does, but the key is harmless
+        # and future-proofs biometric evaluation on Mac hardware.
+        NSFaceIDUsageDescription: Biometrics unlock Matron.
         # See the iOS target: ATS stays on for production https; the only
         # carve-out is cleartext to loopback for a local matron-journal
         # dev server. ServerURLValidator restricts explicit http:// to

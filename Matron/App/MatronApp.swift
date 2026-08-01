@@ -198,14 +198,23 @@ struct MatronApp: App {
                             shield: appLock.isEnabled && scenePhase != .active)
                     }
                     // Cold launch while enabled starts locked before any
-                    // scenePhase change fires; the overlay window itself is
-                    // mounted synchronously in bootstrap() (before the
-                    // session publishes) so chat never paints a first
-                    // frame — this task only owes the automatic prompt.
+                    // scenePhase change fires; the overlay window mounts
+                    // synchronously in bootstrap() (before the session
+                    // publishes) so chat never paints a first frame. The
+                    // mount here is the safety net for launches where
+                    // bootstrap found no attached window scene yet (e.g. a
+                    // background launch) — this view appearing proves a
+                    // scene exists now (bugbot "Lock overlay mount fails
+                    // silently"). Then the one automatic prompt.
                     .task {
-                        guard appLock.isLocked, !lockAutoPrompted else { return }
-                        lockAutoPrompted = true
-                        await appLock.unlock()
+                        guard appLock.isLocked else { return }
+                        AppLockOverlay.update(
+                            controller: appLock,
+                            shield: appLock.isEnabled && scenePhase != .active)
+                        if !lockAutoPrompted {
+                            lockAutoPrompted = true
+                            await appLock.unlock()
+                        }
                     }
                 } else {
                     let linkViewModel = LinkSignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS")
@@ -261,6 +270,11 @@ struct MatronApp: App {
     /// `AppDependencies.signOut()` — the resulting `session == nil` branch
     /// re-mounts the SignInView.
     private func signOut() {
+        // Defense-in-depth parity with the Mac host: no UI path reaches
+        // sign-out under the lock window, but if the overlay ever failed
+        // to mount this still stops a session (and queued-outbox) wipe
+        // without authentication. Unlock first, then sign out.
+        guard !appLock.isLocked else { return }
         dependencies.signOut()
         session = nil
         // Detach APNs from the dead session: the token callback captured
