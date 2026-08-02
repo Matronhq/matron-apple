@@ -86,6 +86,54 @@ final class MacChatViewTests: XCTestCase {
         }
     }
 
+    /// The classification rule behind `ComposerTextView`'s drag-type
+    /// filtering: file/image/media flavors fall through to the chat
+    /// column's drop target ("Drop here to add"), text flavors stay with
+    /// the text view so dragging text into the composer keeps working.
+    func test_isAttachmentDragType_classifiesFileAndImageFlavors() {
+        // Must fall through to the attachment drop target.
+        XCTAssertTrue(ComposerTextView.isAttachmentDragType(.fileURL))
+        XCTAssertTrue(ComposerTextView.isAttachmentDragType(.fileContents))
+        XCTAssertTrue(ComposerTextView.isAttachmentDragType(.tiff))
+        XCTAssertTrue(ComposerTextView.isAttachmentDragType(.png))
+        XCTAssertTrue(ComposerTextView.isAttachmentDragType(
+            .init("NSFilenamesPboardType")))
+        XCTAssertTrue(ComposerTextView.isAttachmentDragType(
+            .init("com.apple.pasteboard.promised-file-url")))
+        XCTAssertTrue(ComposerTextView.isAttachmentDragType(
+            .init("Apple PNG pasteboard type")))
+        XCTAssertTrue(ComposerTextView.isAttachmentDragType(
+            .init(UTType.mpeg4Movie.identifier)))
+        // Must stay with the text view.
+        XCTAssertFalse(ComposerTextView.isAttachmentDragType(.string))
+        XCTAssertFalse(ComposerTextView.isAttachmentDragType(.rtf))
+        XCTAssertFalse(ComposerTextView.isAttachmentDragType(
+            .init(UTType.utf8PlainText.identifier)))
+    }
+
+    /// A live `ComposerTextView` must not declare file/image drag
+    /// flavors — any it declares get handled as a text insertion,
+    /// swallowing drops over the input field before the chat column's
+    /// `.onDrop` (and its "Drop here to add" overlay) could react.
+    /// `acceptableDragTypes` is the surface AppKit's drag registration
+    /// derives from (the modern text system leaves
+    /// `registeredDraggedTypes` empty, so that's not assertable). Text
+    /// flavors must survive so text drags still insert.
+    func test_composerTextView_acceptsTextButNotFileDragTypes() {
+        let textView = ComposerTextView()
+        textView.isEditable = true
+        let acceptable = textView.acceptableDragTypes
+        XCTAssertFalse(acceptable.isEmpty,
+                       "Text drags should still be accepted")
+        let leaked = acceptable.filter { ComposerTextView.isAttachmentDragType($0) }
+        XCTAssertTrue(leaked.isEmpty,
+                      "File/image drag flavors leaked into acceptance: \(leaked)")
+        XCTAssertTrue(
+            acceptable.contains { $0.rawValue.contains("String")
+                || UTType($0.rawValue)?.conforms(to: .text) == true },
+            "Plain-text drags must keep working in the composer, got: \(acceptable)")
+    }
+
     /// `⌘K` toggles the slash palette open without typing `/`. The view
     /// wires `palettePinnedOpen.toggle()` to a hidden button with
     /// `.keyboardShortcut("k", modifiers: .command)`; here we verify the

@@ -21,7 +21,9 @@ private let paginateLogger = Logger(subsystem: "chat.matron", category: "mac-cha
 /// absent, so trackpad-only Macs without a hardware ⌘R can still drive
 /// refresh once a binding lands).
 ///
-/// Drag-and-drop attachments via `.onDrop(of: [.image, .fileURL], delegate:)`,
+/// Drag-and-drop attachments via `.onDrop(of: [.image, .fileURL], delegate:)`
+/// on the WHOLE chat column (timeline + composer, WhatsApp-style, with a
+/// "Drop here to add" overlay while a drag hovers — Dan, 2026-08-02),
 /// which routes through `ComposerDropDelegate → ComposerViewModel.attachFiles(_:)`
 /// — same pipeline as the iOS PhotosPicker / fileImporter sites. The
 /// security-scoped-resource bracketing the iOS `fileImporter` site
@@ -74,6 +76,10 @@ struct MacChatView: View {
     /// updated by `onScrollGeometryChange`, consumed by the gesture
     /// settle handler to re-arm follow-tail.
     @State private var isNearBottom = true
+    /// A file/image drag is hovering over the chat column — shows the
+    /// "Drop here to add" overlay. Driven by `ComposerDropDelegate`'s
+    /// `dropEntered`/`dropExited`/`performDrop`.
+    @State private var isDropTargeted = false
     /// Reference box for the bottommost visible row id (per-room scroll
     /// memory). A class box, not value `@State`: visibility updates
     /// arrive per row crossing while scrolling, and a value-typed write
@@ -567,18 +573,36 @@ struct MacChatView: View {
 
             Divider()
 
-            // Drag-and-drop attachments via ComposerDropDelegate. The
-            // composer spans the full pane width — only message bubbles
+            // The composer spans the full pane width — only message bubbles
             // carry the readable cap (Dan, 2026-07-15).
             MacComposerView(viewModel: composerVM)
-                .onDrop(
-                    of: [.image, .fileURL],
-                    delegate: ComposerDropDelegate(composer: composerVM)
-                )
         }
         // matron-web's cream timeline gradient behind the whole chat
         // column — bubbles and the composer material share the warm ground.
         .background(MatronTimelineBackground())
+        // Drag-and-drop attachments via ComposerDropDelegate — on the whole
+        // column, not just the composer strip, so dropping anywhere in the
+        // conversation attaches (Dan, 2026-08-02). `ComposerTextView`
+        // deliberately unregisters file/image drag types so drags over the
+        // input field reach this handler instead of being inserted as text.
+        .onDrop(
+            of: [.image, .fileURL],
+            delegate: ComposerDropDelegate(
+                composer: composerVM,
+                isTargeted: $isDropTargeted
+            )
+        )
+        // WhatsApp-style hover affordance: dashed border + "Drop here to
+        // add" over the chat while a valid drag is above it. Hit-testing
+        // off so the overlay never intercepts the drag it narrates.
+        .overlay {
+            if isDropTargeted {
+                DropHereOverlay()
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: isDropTargeted)
         .toolbar {
             MacChatToolbar(
                 title: chatTitle,
@@ -1077,5 +1101,38 @@ private struct MacSubChatMiniHeader: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.bar)
+    }
+}
+
+/// Full-column hover affordance for drag-and-drop attachments —
+/// WhatsApp-style "drop zone" (Dan, 2026-08-02): frosted wash over the
+/// timeline, dashed brand-colored border, and a "Drop here to add"
+/// headline. Purely visual; the drop itself is handled by the
+/// `.onDrop`/`ComposerDropDelegate` this overlays (the call site turns
+/// hit-testing off).
+struct DropHereOverlay: View {
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+            RoundedRectangle(cornerRadius: 16)
+                .strokeBorder(
+                    Color.matronAccent,
+                    style: StrokeStyle(lineWidth: 2, dash: [8, 6])
+                )
+                .padding(16)
+            VStack(spacing: 12) {
+                Image(systemName: "square.and.arrow.down.on.square")
+                    .font(.system(size: 42, weight: .light))
+                Text("Drop here to add")
+                    .font(.title3.weight(.semibold))
+                Text("Files and images will be attached to your message")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .foregroundStyle(Color.matronAccent)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Drop here to add attachments")
     }
 }

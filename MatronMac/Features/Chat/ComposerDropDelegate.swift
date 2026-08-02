@@ -15,12 +15,26 @@ import MatronViewModels
 @MainActor
 struct ComposerDropDelegate: DropDelegate {
     let composer: ComposerViewModel
+    /// Hover state for the chat column's "Drop here to add" overlay.
+    /// `dropEntered`/`dropExited` bracket the hover; `performDrop` also
+    /// clears it because AppKit doesn't send `dropExited` after a drop
+    /// lands.
+    var isTargeted: Binding<Bool> = .constant(false)
 
     func validateDrop(info: DropInfo) -> Bool {
         info.hasItemsConforming(to: [.image, .fileURL])
     }
 
+    func dropEntered(info: DropInfo) {
+        isTargeted.wrappedValue = true
+    }
+
+    func dropExited(info: DropInfo) {
+        isTargeted.wrappedValue = false
+    }
+
     func performDrop(info: DropInfo) -> Bool {
+        isTargeted.wrappedValue = false
         let providers = info.itemProviders(for: [.fileURL, .image])
         guard !providers.isEmpty else { return false }
         Task { @MainActor in
