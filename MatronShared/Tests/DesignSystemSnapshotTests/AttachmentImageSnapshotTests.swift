@@ -6,7 +6,7 @@ import SnapshotTesting
 final class AttachmentImageSnapshotTests: XCTestCase {
     func test_placeholder() {
         assertVariants(
-            of: AttachmentImage(image: nil, caption: "screenshot.png").frame(width: 320),
+            of: AttachmentImage(image: nil, meta: "screenshot.png").frame(width: 320),
             named: "placeholder"
         )
     }

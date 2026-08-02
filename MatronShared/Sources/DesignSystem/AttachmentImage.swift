@@ -3,7 +3,14 @@ import SwiftUI
 /// Shared design-system primitive for an image attachment in the chat
 /// timeline. Renders the supplied `Image` (or a placeholder when not yet
 /// fetched), caps to a 280×280 box with rounded corners, and surfaces an
-/// optional caption underneath.
+/// optional `meta` line (byte size and the like) underneath in small
+/// secondary type.
+///
+/// A user-typed caption deliberately does NOT render here: the caption is
+/// the message, so the timeline call sites render it themselves with the
+/// platform's normal message-text view (`SelectableMessageText` /
+/// `MarkdownText`) at full body size — it used to squeeze through this
+/// slot as small gray `.caption2` text (Dan, 2026-08-02).
 ///
 /// `onTap` was previously dropped (QA finding #12) because every Phase-2
 /// call site passed `nil` and the fullscreen viewer that would consume it
@@ -12,18 +19,18 @@ import SwiftUI
 public struct AttachmentImage: View {
     let image: Image?
     let placeholder: String
-    let caption: String?
+    let meta: String?
     let onTap: (() -> Void)?
 
     public init(
         image: Image?,
         placeholder: String = "Image",
-        caption: String? = nil,
+        meta: String? = nil,
         onTap: (() -> Void)? = nil
     ) {
         self.image = image
         self.placeholder = placeholder
-        self.caption = caption
+        self.meta = meta
         self.onTap = onTap
     }
 
@@ -55,8 +62,8 @@ public struct AttachmentImage: View {
             .contentShape(Rectangle())
             .onTapGesture { onTap?() }
 
-            if let caption {
-                Text(caption).font(.caption2).foregroundStyle(.secondary)
+            if let meta {
+                Text(meta).font(.caption2).foregroundStyle(.secondary)
             }
         }
     }
