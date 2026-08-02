@@ -15,6 +15,10 @@ final class StateBridgesTests: XCTestCase {
         XCTAssertEqual(SyncBannerState.from(.connecting), .connecting)
     }
 
+    func test_syncBannerState_mapsCatchingUpToLoading() {
+        XCTAssertEqual(SyncBannerState.from(.catchingUp), .loading)
+    }
+
     func test_syncBannerState_mapsRunning() {
         XCTAssertEqual(SyncBannerState.from(.running), .running)
     }

@@ -295,7 +295,9 @@ struct MacChatListView: View {
             let sync = deps.syncService(for: session)
             for await state in await sync.stateStream() {
                 connectionState = .from(state)
-                if state == .running { hasEverConnected = true }
+                // Catch-up counts: the socket IS established there, so a
+                // drop mid-replay should come back as "Reconnecting…".
+                if state == .running || state == .catchingUp { hasEverConnected = true }
             }
         }
         // Auto-open a conversation the bridge just created while we're live

@@ -220,7 +220,9 @@ struct ChatListView: View {
             let sync = deps.syncService(for: session)
             for await state in await sync.stateStream() {
                 connectionState = .from(state)
-                if state == .running { hasEverConnected = true }
+                // Catch-up counts: the socket IS established there, so a
+                // drop mid-replay should come back as "Reconnecting…".
+                if state == .running || state == .catchingUp { hasEverConnected = true }
             }
         }
         // App-icon badge mirrors the chat list's running unread total.
@@ -262,6 +264,17 @@ struct ChatListView: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel(hasEverConnected ? "Reconnecting" : "Connecting")
             .accessibilityIdentifier("sync.banner.connecting")
+        case .loading:
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Loading messages…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Loading messages")
+            .accessibilityIdentifier("sync.banner.loading")
         case .offline:
             HStack(spacing: 6) {
                 Image(systemName: "wifi.slash")

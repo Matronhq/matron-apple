@@ -7,12 +7,14 @@ import SwiftUI
 /// consistent vocabulary for "the app is telling you something" across
 /// surfaces.
 ///
-/// Three visual states, driven by `state`:
+/// Four visual states, driven by `state`:
 ///   * `.connecting` — accent-tinted material strip with a tiny
 ///     `ProgressView` and "Connecting…" / "Reconnecting…" copy. Picks
 ///     between those two strings via `hasEverBeenRunning` so a fresh
 ///     app open doesn't say "Reconnecting" before there's been a
 ///     connection to lose.
+///   * `.loading` — same strip with "Loading messages…": the socket is
+///     established and missed history is streaming in.
 ///   * `.running` — view returns nothing (zero-height). Caller can wrap
 ///     in `if state != .running { … }` but rendering the empty body
 ///     here lets the call site stay flat without an explicit guard.
@@ -40,17 +42,27 @@ public struct ConnectionStatusBanner: View {
         case .running:
             EmptyView()
         case .connecting:
-            connectingBanner
+            progressBanner(text: hasEverConnected ? "Reconnecting…" : "Connecting…",
+                           accessibilityLabel: hasEverConnected ? "Reconnecting" : "Connecting",
+                           accessibilityIdentifier: "sync.banner.connecting")
+        case .loading:
+            // Connection is up; the server is replaying missed history.
+            // Saying "Connecting…" here read as a connection that never
+            // completes (Dan, 2026-08-02) — the honest word is loading.
+            progressBanner(text: "Loading messages…",
+                           accessibilityLabel: "Loading messages",
+                           accessibilityIdentifier: "sync.banner.loading")
         case .offline(let reason):
             offlineBanner(reason: reason)
         }
     }
 
-    private var connectingBanner: some View {
+    private func progressBanner(text: String, accessibilityLabel: String,
+                                accessibilityIdentifier: String) -> some View {
         HStack(spacing: 8) {
             ProgressView()
                 .controlSize(.small)
-            Text(hasEverConnected ? "Reconnecting…" : "Connecting…")
+            Text(text)
                 .font(.callout)
                 .foregroundStyle(.secondary)
             Spacer(minLength: 0)
@@ -60,8 +72,8 @@ public struct ConnectionStatusBanner: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.ultraThinMaterial)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(hasEverConnected ? "Reconnecting" : "Connecting")
-        .accessibilityIdentifier("sync.banner.connecting")
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityIdentifier(accessibilityIdentifier)
         .transition(.move(edge: .top).combined(with: .opacity))
     }
 
@@ -97,6 +109,7 @@ public struct ConnectionStatusBanner: View {
 /// boundary — mapping is identity-shaped, so the cost is one switch.
 public enum SyncBannerState: Equatable, Sendable {
     case connecting
+    case loading
     case running
     case offline(reason: String?)
 }

@@ -25,6 +25,7 @@ public extension SyncBannerState {
     static func from(_ state: SyncConnectionState) -> SyncBannerState {
         switch state {
         case .connecting: return .connecting
+        case .catchingUp: return .loading
         case .running: return .running
         case .offline(let reason): return .offline(reason: reason)
         }
