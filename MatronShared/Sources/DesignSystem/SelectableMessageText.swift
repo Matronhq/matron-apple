@@ -47,11 +47,13 @@ private struct SelectableTextViewRepresentable: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSTextView {
-        // A bare `NSTextView` (no enclosing scroll view) laid out at full
+        // A bare text view (no enclosing scroll view) laid out at full
         // content height. `drawsBackground = false` lets the message-bubble
         // chrome show through; `textContainerInset = .zero` keeps our own
-        // paragraph metrics authoritative.
-        let textView = NSTextView()
+        // paragraph metrics authoritative. `MouseTrackingRescueTextView`,
+        // not plain `NSTextView` — message bubbles are exactly where the
+        // 2026-08-02 tracking-loop wedge hit (see that class's doc).
+        let textView = MouseTrackingRescueTextView()
         textView.isEditable = false
         textView.isSelectable = true
         textView.drawsBackground = false

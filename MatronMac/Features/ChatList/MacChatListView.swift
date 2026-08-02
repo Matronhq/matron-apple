@@ -148,6 +148,7 @@ struct MacChatListView: View {
                 MacSearchResultsView(
                     viewModel: searchModel,
                     onSelectChat: { chat in
+                        listLogger.notice("selection set by search-chat-hit: \(chat.id, privacy: .public)")
                         selectedSummaryID = chat.id
                         searchModel.query = ""
                     },
@@ -155,6 +156,7 @@ struct MacChatListView: View {
                         // Opens the hit's room. Precise scroll-to-event
                         // (focused-timeline) is a Phase 6 follow-up — same scope
                         // as iOS jump-to-message.
+                        listLogger.notice("selection set by search-message-hit: \(hit.roomID, privacy: .public)")
                         selectedSummaryID = hit.roomID
                         searchModel.query = ""
                     }
@@ -240,6 +242,7 @@ struct MacChatListView: View {
         // listener just feeds it the right ID.
         .onReceive(NotificationCenter.default.publisher(for: .matronOpenRoom)) { note in
             if let roomID = note.userInfo?[MacNotificationHandler.roomIDKey] as? String {
+                listLogger.notice("selection set by notification-tap: \(roomID, privacy: .public)")
                 selectedSummaryID = roomID
             }
         }
@@ -252,6 +255,7 @@ struct MacChatListView: View {
         // call at `Matron/App/MatronApp.swift:177`.
         .task {
             if let pending = MacNotificationHandler.shared.consumePendingRoomID() {
+                listLogger.notice("selection set by cold-start-tap-drain: \(pending, privacy: .public)")
                 selectedSummaryID = pending
             }
         }
@@ -275,6 +279,7 @@ struct MacChatListView: View {
                     // Select the new chat; the newConversations auto-open
                     // (below) may deliver the same id when the convo_meta
                     // lands — setting an identical selection is a no-op.
+                    listLogger.notice("selection set by new-chat-sheet: \(convoID, privacy: .public)")
                     selectedSummaryID = convoID
                 }
             } else {
@@ -309,6 +314,7 @@ struct MacChatListView: View {
         .task(id: session?.userID) {
             guard let deps, let session else { return }
             for await roomID in await deps.syncService(for: session).newConversations() {
+                listLogger.notice("selection set by auto-open: \(roomID, privacy: .public)")
                 selectedSummaryID = roomID
             }
         }
