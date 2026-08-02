@@ -97,22 +97,34 @@ struct TimelineItemView: View {
                 style: item.isOwn ? .me : .bot,
                 timestamp: item.timestamp
             ) {
-                AttachmentImage(
-                    image: resolvedImage(for: url),
-                    placeholder: "Image",
-                    caption: caption ?? sizeBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) },
-                    // Forward tap to the parent only when we've got a
-                    // resolved Image AND a registered handler. Tapping
-                    // a still-loading placeholder is a no-op — opening
-                    // the fullscreen viewer with no bytes would just
-                    // show an empty black sheet.
-                    onTap: {
-                        if let img = resolvedImage(for: url),
-                           let onTapImage {
-                            onTapImage(img)
+                // The caption renders OUTSIDE AttachmentImage as a normal
+                // message body — it's the message, and the small gray
+                // `.caption2` slot it used to squeeze through made it read
+                // like metadata (Dan, 2026-08-02). The byte size only shows
+                // when there's no caption, matching the old fallback.
+                VStack(alignment: .leading, spacing: 6) {
+                    AttachmentImage(
+                        image: resolvedImage(for: url),
+                        placeholder: "Image",
+                        meta: caption == nil
+                            ? sizeBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
+                            : nil,
+                        // Forward tap to the parent only when we've got a
+                        // resolved Image AND a registered handler. Tapping
+                        // a still-loading placeholder is a no-op — opening
+                        // the fullscreen viewer with no bytes would just
+                        // show an empty black sheet.
+                        onTap: {
+                            if let img = resolvedImage(for: url),
+                               let onTapImage {
+                                onTapImage(img)
+                            }
                         }
+                    )
+                    if let caption, !caption.isEmpty {
+                        MarkdownText(caption, theme: .matronMessage, lineSpacing: 4)
                     }
-                )
+                }
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: caption ?? "Image attachment"))
@@ -122,20 +134,26 @@ struct TimelineItemView: View {
                 style: item.isOwn ? .me : .bot,
                 timestamp: item.timestamp
             ) {
-                AttachmentFile(
-                    filename: filename,
-                    sizeBytes: sizeBytes,
-                    caption: caption,
-                    // Tap handler — only fires if we have both a URL
-                    // and a registered handler. Without the URL there's
-                    // nothing to fetch (`.file(url: nil, …)` is a
-                    // theoretical state but possible per the model).
-                    onTap: {
-                        if let url, let onTapFile {
-                            onTapFile(url, filename)
+                // Caption outside the tappable chip, as a normal message
+                // body — see the `.image` case.
+                VStack(alignment: .leading, spacing: 6) {
+                    AttachmentFile(
+                        filename: filename,
+                        sizeBytes: sizeBytes,
+                        // Tap handler — only fires if we have both a URL
+                        // and a registered handler. Without the URL there's
+                        // nothing to fetch (`.file(url: nil, …)` is a
+                        // theoretical state but possible per the model).
+                        onTap: {
+                            if let url, let onTapFile {
+                                onTapFile(url, filename)
+                            }
                         }
+                    )
+                    if let caption, !caption.isEmpty {
+                        MarkdownText(caption, theme: .matronMessage, lineSpacing: 4)
                     }
-                )
+                }
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "File attachment: \(filename)"))

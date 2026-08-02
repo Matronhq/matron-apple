@@ -83,22 +83,35 @@ struct MacTimelineItemView: View {
                 style: item.isOwn ? .me : .bot,
                 timestamp: item.timestamp
             ) {
-                AttachmentImage(
-                    image: resolvedImage(for: url),
-                    placeholder: "Image",
-                    caption: caption ?? sizeBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) },
-                    // Tap forwards to the parent only when the bytes
-                    // have already resolved AND a handler is wired.
-                    // Tapping a still-loading placeholder is a no-op
-                    // so the fullscreen viewer doesn't open with an
-                    // empty `Image`.
-                    onTap: {
-                        if let img = resolvedImage(for: url),
-                           let onTapImage {
-                            onTapImage(img)
+                // The caption renders OUTSIDE AttachmentImage as a normal
+                // message body — it's the message, and the small gray
+                // `.caption2` slot it used to squeeze through made it read
+                // like metadata (Dan, 2026-08-02). The byte size only
+                // shows when there's no caption, matching the old
+                // caption-wins fallback.
+                VStack(alignment: .leading, spacing: 6) {
+                    AttachmentImage(
+                        image: resolvedImage(for: url),
+                        placeholder: "Image",
+                        meta: caption == nil
+                            ? sizeBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
+                            : nil,
+                        // Tap forwards to the parent only when the bytes
+                        // have already resolved AND a handler is wired.
+                        // Tapping a still-loading placeholder is a no-op
+                        // so the fullscreen viewer doesn't open with an
+                        // empty `Image`.
+                        onTap: {
+                            if let img = resolvedImage(for: url),
+                               let onTapImage {
+                                onTapImage(img)
+                            }
                         }
+                    )
+                    if let caption, !caption.isEmpty {
+                        SelectableMessageText(caption)
                     }
-                )
+                }
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: caption ?? "Image attachment"))
@@ -108,16 +121,22 @@ struct MacTimelineItemView: View {
                 style: item.isOwn ? .me : .bot,
                 timestamp: item.timestamp
             ) {
-                AttachmentFile(
-                    filename: filename,
-                    sizeBytes: sizeBytes,
-                    caption: caption,
-                    onTap: {
-                        if let url, let onTapFile {
-                            onTapFile(url, filename)
+                // Caption outside the tappable chip, as a normal message
+                // body — see the `.image` case.
+                VStack(alignment: .leading, spacing: 6) {
+                    AttachmentFile(
+                        filename: filename,
+                        sizeBytes: sizeBytes,
+                        onTap: {
+                            if let url, let onTapFile {
+                                onTapFile(url, filename)
+                            }
                         }
+                    )
+                    if let caption, !caption.isEmpty {
+                        SelectableMessageText(caption)
                     }
-                )
+                }
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "File attachment: \(filename)"))
