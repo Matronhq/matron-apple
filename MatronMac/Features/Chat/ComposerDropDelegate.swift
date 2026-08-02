@@ -21,19 +21,47 @@ struct ComposerDropDelegate: DropDelegate {
     /// lands.
     var isTargeted: Binding<Bool> = .constant(false)
 
+    /// Timestamp of the latest drag event over the column — the stuck-
+    /// overlay watchdog in `MacChatView` clears `isTargeted` when this
+    /// goes stale (see `dragWatchdogGrace`).
+    var activity: DragActivityBox = DragActivityBox()
+
+    /// How long the overlay survives without a single drag event before
+    /// the watchdog assumes the session died. A cancelled drag (Esc, or
+    /// released elsewhere) can end WITHOUT `dropExited` (bugbot, PR #86),
+    /// which would pin the overlay forever. The trade-off at 3s: a hand
+    /// held perfectly still over the column that long loses the overlay —
+    /// and the next 1px of movement fires `dropUpdated`, which re-raises
+    /// it.
+    static let dragWatchdogGrace: Duration = .seconds(3)
+
     /// Every flavor the chat column accepts. Must stay a superset of what
     /// `ComposerTextView.isAttachmentDragType` makes the input field
     /// decline — a flavor declined there and not accepted here would go
-    /// dead (bugbot, PR #86). Pinned by
+    /// dead (bugbot, PR #86). `.pdf` is here for exactly that reason: the
+    /// text view declines the legacy `Apple PDF pasteboard type`, and PDF
+    /// conforms to none of file-url/image/movie/audio (the other legacy
+    /// flavors map into `.image`/`.movie`). Pinned by
     /// `test_columnAcceptsEverythingTheComposerDeclines`.
-    static let acceptedTypes: [UTType] = [.fileURL, .image, .movie, .audio]
+    static let acceptedTypes: [UTType] = [.fileURL, .image, .movie, .audio, .pdf]
 
     func validateDrop(info: DropInfo) -> Bool {
         info.hasItemsConforming(to: Self.acceptedTypes)
     }
 
     func dropEntered(info: DropInfo) {
+        activity.lastEvent = ContinuousClock.now
         isTargeted.wrappedValue = true
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        activity.lastEvent = ContinuousClock.now
+        // Self-heal after a watchdog false-positive: any drag movement
+        // proves the session is alive, so re-raise the overlay.
+        if !isTargeted.wrappedValue {
+            isTargeted.wrappedValue = true
+        }
+        return nil
     }
 
     func dropExited(info: DropInfo) {
@@ -108,6 +136,15 @@ struct ComposerDropDelegate: DropDelegate {
             return .failure(error)
         }
     }
+}
+
+/// Reference box for the drag-session heartbeat. A class, not `@State`
+/// value semantics: `dropUpdated` fires on every mouse move and a value
+/// write per tick would re-evaluate the whole chat column body — same
+/// pattern as `MacChatView.VisibleRowsBox`.
+@MainActor
+final class DragActivityBox {
+    var lastEvent: ContinuousClock.Instant = .now
 }
 
 /// Drop-delegate-specific errors. Promoted to a typed enum (vs an

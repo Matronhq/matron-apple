@@ -120,6 +120,11 @@ final class MacChatViewTests: XCTestCase {
             .fileURL, .png, .tiff, .jpeg, .gif, .heic, .webP,
             .mpeg4Movie, .quickTimeMovie, .avi,
             .mp3, .wav, .mpeg4Audio,
+            // The modern identities of the legacy flavors the composer
+            // strips ("Apple PDF pasteboard type", "Apple PICT pasteboard
+            // type", QuickTime 'moov') — legacy raw strings have no
+            // UTType, so their modern equivalents stand in here.
+            .pdf, .init("com.apple.pict")!, .init("com.apple.quicktime-movie")!,
         ]
         for flavor in modernFlavors {
             guard ComposerTextView.isAttachmentDragType(.init(flavor.identifier)) else { continue }

@@ -78,8 +78,12 @@ struct MacChatView: View {
     @State private var isNearBottom = true
     /// A file/image drag is hovering over the chat column — shows the
     /// "Drop here to add" overlay. Driven by `ComposerDropDelegate`'s
-    /// `dropEntered`/`dropExited`/`performDrop`.
+    /// `dropEntered`/`dropUpdated`/`dropExited`/`performDrop`, cleared by
+    /// the watchdog below if the drag session dies without `dropExited`.
     @State private var isDropTargeted = false
+    /// Heartbeat the drop delegate stamps on every drag event — the
+    /// stuck-overlay watchdog reads it. Class box: see `VisibleRowsBox`.
+    @State private var dragActivity = DragActivityBox()
     /// Reference box for the bottommost visible row id (per-room scroll
     /// memory). A class box, not value `@State`: visibility updates
     /// arrive per row crossing while scrolling, and a value-typed write
@@ -589,7 +593,8 @@ struct MacChatView: View {
             of: ComposerDropDelegate.acceptedTypes,
             delegate: ComposerDropDelegate(
                 composer: composerVM,
-                isTargeted: $isDropTargeted
+                isTargeted: $isDropTargeted,
+                activity: dragActivity
             )
         )
         // WhatsApp-style hover affordance: dashed border + "Drop here to
@@ -603,6 +608,21 @@ struct MacChatView: View {
             }
         }
         .animation(.easeInOut(duration: 0.15), value: isDropTargeted)
+        // Stuck-overlay watchdog (bugbot, PR #86): a cancelled drag can
+        // end without `dropExited`, which would pin the overlay forever.
+        // Clear it once the delegate's heartbeat goes stale; a false
+        // clear self-heals via `dropUpdated` on the next drag movement.
+        .task(id: isDropTargeted) {
+            guard isDropTargeted else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(500))
+                if ContinuousClock.now - dragActivity.lastEvent
+                    > ComposerDropDelegate.dragWatchdogGrace {
+                    isDropTargeted = false
+                    return
+                }
+            }
+        }
         .toolbar {
             MacChatToolbar(
                 title: chatTitle,
