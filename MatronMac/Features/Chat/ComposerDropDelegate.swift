@@ -50,6 +50,7 @@ struct ComposerDropDelegate: DropDelegate {
     }
 
     func dropEntered(info: DropInfo) {
+        activity.dropCompleted = false
         activity.lastEvent = ContinuousClock.now
         isTargeted.wrappedValue = true
     }
@@ -57,8 +58,12 @@ struct ComposerDropDelegate: DropDelegate {
     func dropUpdated(info: DropInfo) -> DropProposal? {
         activity.lastEvent = ContinuousClock.now
         // Self-heal after a watchdog false-positive: any drag movement
-        // proves the session is alive, so re-raise the overlay.
-        if !isTargeted.wrappedValue {
+        // proves the session is alive, so re-raise the overlay. The
+        // `dropCompleted` guard is load-bearing: AppKit delivers a
+        // trailing `dropUpdated` AFTER `performDrop`, and without the
+        // guard that update resurrected the overlay for a few seconds
+        // post-drop until the watchdog cleared it (Dan, 2026-08-02).
+        if !activity.dropCompleted, !isTargeted.wrappedValue {
             isTargeted.wrappedValue = true
         }
         return nil
@@ -69,6 +74,7 @@ struct ComposerDropDelegate: DropDelegate {
     }
 
     func performDrop(info: DropInfo) -> Bool {
+        activity.dropCompleted = true
         isTargeted.wrappedValue = false
         let providers = info.itemProviders(for: Self.acceptedTypes)
         guard !providers.isEmpty else { return false }
@@ -145,6 +151,10 @@ struct ComposerDropDelegate: DropDelegate {
 @MainActor
 final class DragActivityBox {
     var lastEvent: ContinuousClock.Instant = .now
+    /// Set by `performDrop`, reset by the next `dropEntered` — blocks the
+    /// trailing `dropUpdated` AppKit sends after a landed drop from
+    /// re-raising the overlay (see `dropUpdated`).
+    var dropCompleted = false
 }
 
 /// Drop-delegate-specific errors. Promoted to a typed enum (vs an
