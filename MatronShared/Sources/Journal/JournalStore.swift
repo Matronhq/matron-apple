@@ -364,6 +364,49 @@ public final class JournalStore: @unchecked Sendable {
             throw JournalStoreTestError.simulatedWriteFailure
         }
         return try dbQueue.write { db in
+            try self.applyOne(db, event)
+        }
+    }
+
+    /// Catch-up replay fast path: applies a whole run of frames in ONE
+    /// transaction. `applyJournal` per frame means one fsync'd commit per
+    /// frame — and, worse, one `ValueObservation` re-fire per frame, so
+    /// every subscriber (the full chat-list query, the open conversation's
+    /// entire event list) re-fetches per replayed row: O(backlog × history)
+    /// during catch-up, which is why loading history after an offline
+    /// stretch visibly crawled (Dan, 2026-08-02: "could it not be
+    /// instant?"). Batching collapses that to one commit and one
+    /// observation fire per batch.
+    ///
+    /// All-or-nothing: any thrown write rolls back the whole batch, leaving
+    /// the cursor at its pre-batch value — the same "cursor never advances
+    /// past a failed write" shape as the single-frame path, coarser by at
+    /// most one batch (the engine salvages the prefix one-by-one on
+    /// failure; see `applyReplayBatch`). Returns the events actually
+    /// applied (duplicates with seq <= cursor are skipped, exactly as in
+    /// `applyJournal`), in order, so the caller can run per-event side
+    /// effects (search indexing, media-send confirmation) for real writes
+    /// only.
+    public func applyJournalBatch(_ events: [JournalEvent]) throws -> [JournalEvent] {
+        guard !events.isEmpty else { return [] }
+        if let fail = failApplyForTesting, events.contains(where: { fail($0.seq) }) {
+            throw JournalStoreTestError.simulatedWriteFailure
+        }
+        return try dbQueue.write { db in
+            var applied: [JournalEvent] = []
+            applied.reserveCapacity(events.count)
+            for event in events {
+                if try self.applyOne(db, event) { applied.append(event) }
+            }
+            return applied
+        }
+    }
+
+    /// Shared per-event apply body, called inside a `dbQueue.write`
+    /// transaction by both `applyJournal` (own transaction per event) and
+    /// `applyJournalBatch` (one transaction for the run). Returns `false`
+    /// for a duplicate (seq <= cursor) without writing anything.
+    private func applyOne(_ db: Database, _ event: JournalEvent) throws -> Bool {
             let current = try Int64.fetchOne(db, sql: "SELECT value FROM meta WHERE key = 'cursor'") ?? 0
             guard event.seq > current else { return false }
             try EventRecord(event).save(db)
@@ -436,7 +479,6 @@ public final class JournalStore: @unchecked Sendable {
                 try Self.outboxDeleteFirstMatching(db, convoID: event.convoID, body: body)
             }
             return true
-        }
     }
 
     private static func recountUnread(_ db: Database, convoID: String, after seq: Int64, ownSender: String) throws -> Int {

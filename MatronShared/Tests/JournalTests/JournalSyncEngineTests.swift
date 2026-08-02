@@ -598,6 +598,27 @@ final class JournalSyncEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    /// A backlog larger than `replayBatchSize` (250) exercises the batched
+    /// catch-up path across multiple flushes — size-triggered mid-replay
+    /// flushes plus the boundary flush at headSeq — and must still land a
+    /// gap-free, exactly-once copy and reach `.running`.
+    func testLargeBacklogReplaysGapFreeThroughBatchedApply() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(600))
+        for seq in 1...600 { socket.serve(journalLine(Int64(seq))) }
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        for _ in 0..<1000 where store.cursor < 600 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(store.cursor, 600)
+        XCTAssertEqual(try store.events(convoID: "c1").map(\.seq), Array(1...600),
+                       "batched replay must be gap-free and exactly-once")
+        try await engine.waitUntilReady()
+        await engine.endSync()
+    }
+
     /// Chaos-style: a cursor-aware fake server that cuts the connection at a
     /// random point mid-replay on every connect (see ChaosServerConnector).
     /// The store must still converge to an exact, gap-free prefix copy.
@@ -639,10 +660,18 @@ final class JournalSyncEngineTests: XCTestCase {
         socket2.serve(journalLine(2)) // resumed from the unchanged cursor (1)
         socket2.serve(journalLine(3))
         let store = try seededStore()
-        var hasFailedOnce = false
+        // A persistent failure for the lifetime of the first connection.
+        // Three shots because the batched replay path probes the hook up to
+        // three times before giving up on a connection: the batch apply's
+        // own check, the one-by-one salvage retry, and the teardown flush
+        // (see applyReplayBatch / flushReplayBufferOnTeardown). A
+        // fail-exactly-once hook would let the salvage retry absorb the
+        // error without a reconnect — a nicer recovery, but not the
+        // wedge-vs-reconnect property this test exists to pin.
+        var failuresRemaining = 3
         store.failApplyForTesting = { seq in
-            guard seq == 2, !hasFailedOnce else { return false }
-            hasFailedOnce = true
+            guard seq == 2, failuresRemaining > 0 else { return false }
+            failuresRemaining -= 1
             return true
         }
         let connector = FakeConnector([socket1, socket2])
