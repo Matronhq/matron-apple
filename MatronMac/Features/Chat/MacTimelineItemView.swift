@@ -114,7 +114,11 @@ struct MacTimelineItemView: View {
                 }
             }
             .accessibilityElement(children: .combine)
-            .accessibilityLabel(Self.accessibilityLabel(for: item, body: caption ?? "Image attachment"))
+            // Empty-string captions are hidden visually, so they must not
+            // become a blank VoiceOver body either (bugbot, PR #88).
+            .accessibilityLabel(Self.accessibilityLabel(
+                for: item,
+                body: caption.flatMap { $0.isEmpty ? nil : $0 } ?? "Image attachment"))
 
         case .file(let url, let filename, let caption, let sizeBytes):
             MessageBubble(
@@ -139,7 +143,12 @@ struct MacTimelineItemView: View {
                 }
             }
             .accessibilityElement(children: .combine)
-            .accessibilityLabel(Self.accessibilityLabel(for: item, body: "File attachment: \(filename)"))
+            // The caption is visible message text now — VoiceOver must
+            // speak it too, not just the filename (bugbot, PR #88).
+            .accessibilityLabel(Self.accessibilityLabel(
+                for: item,
+                body: caption.flatMap { $0.isEmpty ? nil : "File attachment: \(filename). \($0)" }
+                    ?? "File attachment: \(filename)"))
 
         case .stateChange(let text):
             HStack {
