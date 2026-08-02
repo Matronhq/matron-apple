@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 /// The AppKit text editor backing the Mac composer input.
 ///
@@ -181,4 +182,56 @@ final class ComposerTextView: NSTextView {
         if claimPasteboardAttachments?() == true { return }
         super.paste(sender)
     }
+
+    /// Stock `NSTextView` accepts file/image drags itself (it inserts
+    /// them as text or attachment cells), which swallowed drops over the
+    /// input field before the chat column's `.onDrop`
+    /// (→ `ComposerDropDelegate` and its "Drop here to add" overlay)
+    /// could see them. `acceptableDragTypes` is the documented NSTextView
+    /// surface declaring which drag flavors the text view handles —
+    /// AppKit's drag registration (`updateDragTypeRegistration()`)
+    /// derives from it, so filtering here survives the re-registration
+    /// AppKit performs on editability changes. Note the modern text
+    /// system does NOT reflect this in `registeredDraggedTypes` (probed
+    /// empty on macOS 26 even for a stock text view in a window) — this
+    /// property is the only reliable hook. Text/RTF/URL flavors stay, so
+    /// dragging text or links into the composer keeps working.
+    override var acceptableDragTypes: [NSPasteboard.PasteboardType] {
+        super.acceptableDragTypes.filter { !Self.isAttachmentDragType($0) }
+    }
+
+    /// `true` for pasteboard types that should fall through to the chat
+    /// column's attachment drop target instead of being handled as a text
+    /// insertion. Covers both modern UTIs and the legacy flavors
+    /// NSTextView still lists (probed on macOS 26: `NSFilenamesPboardType`,
+    /// file promises, `Apple PNG/PDF/PICT pasteboard type`,
+    /// `NeXT TIFF v4.0 pasteboard type`, QuickTime `moov`). Internal so
+    /// `MatronMacTests` can pin the rule.
+    static func isAttachmentDragType(_ type: NSPasteboard.PasteboardType) -> Bool {
+        // NOT `.fileContents`: the chat column's drop target can't load
+        // that flavor (no UTType, no NSItemProvider representation), so
+        // declining it here would make such drags go dead — the text
+        // view keeps its historic handling instead (bugbot, PR #86).
+        if type == .fileURL { return true }
+        if legacyAttachmentFlavors.contains(type.rawValue) { return true }
+        // File-promise flavors (Photos, Mail, browsers).
+        if type.rawValue.hasPrefix("com.apple.pasteboard.promised-file") { return true }
+        guard let ut = UTType(type.rawValue) else { return false }
+        // `.pdf` matches the legacy "Apple PDF pasteboard type" exclusion
+        // above — if AppKit ever lists the modern UTI instead, PDF drags
+        // must still fall through to the column (which accepts `.pdf`).
+        return ut.conforms(to: .image) || ut.conforms(to: .movie)
+            || ut.conforms(to: .audio) || ut.conforms(to: .pdf)
+    }
+
+    private static let legacyAttachmentFlavors: Set<String> = [
+        "NSFilenamesPboardType",
+        "com.apple.NSFilePromiseItemMetaData",
+        "NeXT TIFF v4.0 pasteboard type",
+        "Apple PNG pasteboard type",
+        "Apple PDF pasteboard type",
+        "Apple PICT pasteboard type",
+        // CorePasteboardFlavorType 'moov' — legacy QuickTime movie.
+        "CorePasteboardFlavorType 0x6D6F6F76",
+    ]
 }

@@ -7,9 +7,10 @@ import UniformTypeIdentifiers
 /// Shared because both app shells receive the same `NSItemProvider` currency
 /// from very different plumbing — iOS via a `UITextPasteDelegate` on the text
 /// field's backing view, Mac via `onPasteCommand` — and the rule for what
-/// counts as an attachment must not drift between them. `ComposerDropDelegate`
-/// stays on its own `loadURL` path: a drop only ever carries file URLs, and it
-/// has no text branch to get wrong.
+/// counts as an attachment must not drift between them. Mac drag-and-drop
+/// (`ComposerDropDelegate`) resolves file URLs itself but falls back to
+/// `stage(_:)` for providers that carry only data (an image dragged off a
+/// web page), so drops and pastes of the same payload land identically.
 public enum PastedAttachment {
     /// What a pasted item should become.
     public enum Kind: Equatable {

@@ -86,6 +86,103 @@ final class MacChatViewTests: XCTestCase {
         }
     }
 
+    /// The classification rule behind `ComposerTextView`'s drag-type
+    /// filtering: file/image/media flavors fall through to the chat
+    /// column's drop target ("Drop here to add"), text flavors stay with
+    /// the text view so dragging text into the composer keeps working.
+    func test_isAttachmentDragType_classifiesFileAndImageFlavors() {
+        // Must fall through to the attachment drop target.
+        XCTAssertTrue(ComposerTextView.isAttachmentDragType(.fileURL))
+        XCTAssertTrue(ComposerTextView.isAttachmentDragType(.tiff))
+        XCTAssertTrue(ComposerTextView.isAttachmentDragType(.png))
+        XCTAssertTrue(ComposerTextView.isAttachmentDragType(
+            .init("NSFilenamesPboardType")))
+        XCTAssertTrue(ComposerTextView.isAttachmentDragType(
+            .init("com.apple.pasteboard.promised-file-url")))
+        XCTAssertTrue(ComposerTextView.isAttachmentDragType(
+            .init("Apple PNG pasteboard type")))
+        XCTAssertTrue(ComposerTextView.isAttachmentDragType(
+            .init(UTType.mpeg4Movie.identifier)))
+        XCTAssertTrue(ComposerTextView.isAttachmentDragType(
+            .init(UTType.pdf.identifier)))
+        // Must stay with the text view.
+        XCTAssertFalse(ComposerTextView.isAttachmentDragType(.string))
+        XCTAssertFalse(ComposerTextView.isAttachmentDragType(.rtf))
+        XCTAssertFalse(ComposerTextView.isAttachmentDragType(
+            .init(UTType.utf8PlainText.identifier)))
+    }
+
+    /// Pins the invariant behind bugbot's PR #86 finding: any modern
+    /// flavor the input field declines must be one the chat column
+    /// accepts — a flavor declined by `ComposerTextView` and rejected by
+    /// `ComposerDropDelegate.acceptedTypes` would make the drag go dead
+    /// (no insertion, no attachment, no overlay).
+    func test_columnAcceptsEverythingTheComposerDeclines() {
+        let modernFlavors: [UTType] = [
+            .fileURL, .png, .tiff, .jpeg, .gif, .heic, .webP,
+            .mpeg4Movie, .quickTimeMovie, .avi,
+            .mp3, .wav, .mpeg4Audio,
+            // The modern identities of the legacy flavors the composer
+            // strips ("Apple PDF pasteboard type", "Apple PICT pasteboard
+            // type", QuickTime 'moov') — legacy raw strings have no
+            // UTType, so their modern equivalents stand in here.
+            .pdf, .init("com.apple.pict")!, .init("com.apple.quicktime-movie")!,
+        ]
+        for flavor in modernFlavors {
+            guard ComposerTextView.isAttachmentDragType(.init(flavor.identifier)) else { continue }
+            XCTAssertTrue(
+                ComposerDropDelegate.acceptedTypes.contains { flavor.conforms(to: $0) },
+                "\(flavor.identifier) is declined by the composer but not accepted by the chat column")
+        }
+    }
+
+    /// A provider with no URL representation — an image dragged off a web
+    /// page arrives as raw data — must resolve through the
+    /// `PastedAttachment.stage` fallback to a readable temp file rather
+    /// than failing (bugbot, PR #86: the input field declines these
+    /// flavors now, so the column has to land them).
+    func test_loadURL_stagesDataOnlyProvider() async throws {
+        let payload = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(
+            forTypeIdentifier: UTType.png.identifier, visibility: .all
+        ) { completion in
+            completion(payload, nil)
+            return nil
+        }
+        let resolved = await ComposerDropDelegate.loadURL(from: provider)
+        switch resolved {
+        case .success(let url):
+            XCTAssertEqual(try Data(contentsOf: url), payload)
+            try? FileManager.default.removeItem(at: url)
+        case .failure(let error):
+            XCTFail("Expected staged temp URL, got \(error)")
+        }
+    }
+
+    /// A live `ComposerTextView` must not declare file/image drag
+    /// flavors — any it declares get handled as a text insertion,
+    /// swallowing drops over the input field before the chat column's
+    /// `.onDrop` (and its "Drop here to add" overlay) could react.
+    /// `acceptableDragTypes` is the surface AppKit's drag registration
+    /// derives from (the modern text system leaves
+    /// `registeredDraggedTypes` empty, so that's not assertable). Text
+    /// flavors must survive so text drags still insert.
+    func test_composerTextView_acceptsTextButNotFileDragTypes() {
+        let textView = ComposerTextView()
+        textView.isEditable = true
+        let acceptable = textView.acceptableDragTypes
+        XCTAssertFalse(acceptable.isEmpty,
+                       "Text drags should still be accepted")
+        let leaked = acceptable.filter { ComposerTextView.isAttachmentDragType($0) }
+        XCTAssertTrue(leaked.isEmpty,
+                      "File/image drag flavors leaked into acceptance: \(leaked)")
+        XCTAssertTrue(
+            acceptable.contains { $0.rawValue.contains("String")
+                || UTType($0.rawValue)?.conforms(to: .text) == true },
+            "Plain-text drags must keep working in the composer, got: \(acceptable)")
+    }
+
     /// `⌘K` toggles the slash palette open without typing `/`. The view
     /// wires `palettePinnedOpen.toggle()` to a hidden button with
     /// `.keyboardShortcut("k", modifiers: .command)`; here we verify the
