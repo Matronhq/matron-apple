@@ -103,6 +103,8 @@ final class MacChatViewTests: XCTestCase {
             .init("Apple PNG pasteboard type")))
         XCTAssertTrue(ComposerTextView.isAttachmentDragType(
             .init(UTType.mpeg4Movie.identifier)))
+        XCTAssertTrue(ComposerTextView.isAttachmentDragType(
+            .init(UTType.pdf.identifier)))
         // Must stay with the text view.
         XCTAssertFalse(ComposerTextView.isAttachmentDragType(.string))
         XCTAssertFalse(ComposerTextView.isAttachmentDragType(.rtf))

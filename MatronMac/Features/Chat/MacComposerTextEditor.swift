@@ -217,7 +217,11 @@ final class ComposerTextView: NSTextView {
         // File-promise flavors (Photos, Mail, browsers).
         if type.rawValue.hasPrefix("com.apple.pasteboard.promised-file") { return true }
         guard let ut = UTType(type.rawValue) else { return false }
-        return ut.conforms(to: .image) || ut.conforms(to: .movie) || ut.conforms(to: .audio)
+        // `.pdf` matches the legacy "Apple PDF pasteboard type" exclusion
+        // above — if AppKit ever lists the modern UTI instead, PDF drags
+        // must still fall through to the column (which accepts `.pdf`).
+        return ut.conforms(to: .image) || ut.conforms(to: .movie)
+            || ut.conforms(to: .audio) || ut.conforms(to: .pdf)
     }
 
     private static let legacyAttachmentFlavors: Set<String> = [
