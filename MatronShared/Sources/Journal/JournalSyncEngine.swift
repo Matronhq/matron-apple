@@ -707,7 +707,13 @@ public actor JournalSyncEngine {
                 sendOrderThisConnection.removeAll()
                 mediaSendsThisConnection.removeAll()
                 Task { await self.flushOutbox() }
-                if store.cursor >= headSeq { setState(.running) }
+                // Socket is up: either we're already caught up, or the
+                // server is about to replay the backlog. The latter is
+                // "loading history", not "connecting" — the distinction
+                // matters after a long offline stretch, where the replay
+                // can take visible seconds and a "Connecting…" banner
+                // reads as a connection that never completes.
+                setState(store.cursor >= headSeq ? .running : .catchingUp)
 
                 let watchdog = Task {
                     var misses = 0

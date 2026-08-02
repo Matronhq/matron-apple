@@ -574,6 +574,30 @@ final class JournalSyncEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    /// A connect with a replay backlog (cursor < hello_ok's head) must pass
+    /// through `.catchingUp` — the UI renders that window as "Loading
+    /// messages…", not "Connecting…" (the socket is already up).
+    func testConnectWithBacklogReportsCatchingUpBeforeRunning() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(2))
+        socket.serve(journalLine(1))
+        socket.serve(journalLine(2))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        var iterator = engine.stateStream().makeAsyncIterator()
+        let initial = await iterator.next()
+        XCTAssertEqual(initial, .connecting)
+        await engine.beginSync()
+        var seen: [SyncConnectionState] = []
+        for _ in 0..<4 {
+            guard let state = await iterator.next() else { break }
+            seen.append(state)
+            if state == .running { break }
+        }
+        XCTAssertEqual(seen, [.catchingUp, .running],
+                       "backlog connect should surface catch-up, then running")
+        await engine.endSync()
+    }
+
     /// Chaos-style: a cursor-aware fake server that cuts the connection at a
     /// random point mid-replay on every connect (see ChaosServerConnector).
     /// The store must still converge to an exact, gap-free prefix copy.

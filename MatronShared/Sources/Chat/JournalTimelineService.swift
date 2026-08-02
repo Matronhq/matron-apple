@@ -346,18 +346,20 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             outboxRows.filter { !suppressedSendIDs.contains($0.localID) }
         }
 
-        /// Glyph state for one pending send. `.connecting` covers journal
+        /// Glyph state for one pending send. `.catchingUp` is journal
         /// catch-up on a LIVE socket — the connect-flush has already put
         /// attempted rows on the wire there, so they show `.sending`, not
         /// "waiting to send when online" (bugbot "Queued label while
-        /// already on the wire"). A never-attempted row during
-        /// `.connecting` genuinely hasn't left, and everything is
-        /// `.queued` while `.offline` (backoff).
+        /// already on the wire"). `.connecting` gets the same treatment:
+        /// the reconnect is imminent and its connect-flush resends
+        /// attempted rows first thing. A never-attempted row in either
+        /// state genuinely hasn't left, and everything is `.queued`
+        /// while `.offline` (backoff).
         func sendState(for row: OutboxRecord) -> TimelineSendState {
             if row.state == .failed { return .failed(reason: "Not delivered") }
             switch syncState {
             case .running: return .sending
-            case .connecting: return row.attempts > 0 ? .sending : .queued
+            case .connecting, .catchingUp: return row.attempts > 0 ? .sending : .queued
             case .offline: return .queued
             }
         }
