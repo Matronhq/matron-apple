@@ -586,7 +586,7 @@ struct MacChatView: View {
         // deliberately unregisters file/image drag types so drags over the
         // input field reach this handler instead of being inserted as text.
         .onDrop(
-            of: [.image, .fileURL],
+            of: ComposerDropDelegate.acceptedTypes,
             delegate: ComposerDropDelegate(
                 composer: composerVM,
                 isTargeted: $isDropTargeted

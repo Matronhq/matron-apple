@@ -208,7 +208,11 @@ final class ComposerTextView: NSTextView {
     /// `NeXT TIFF v4.0 pasteboard type`, QuickTime `moov`). Internal so
     /// `MatronMacTests` can pin the rule.
     static func isAttachmentDragType(_ type: NSPasteboard.PasteboardType) -> Bool {
-        if type == .fileURL || type == .fileContents { return true }
+        // NOT `.fileContents`: the chat column's drop target can't load
+        // that flavor (no UTType, no NSItemProvider representation), so
+        // declining it here would make such drags go dead — the text
+        // view keeps its historic handling instead (bugbot, PR #86).
+        if type == .fileURL { return true }
         if legacyAttachmentFlavors.contains(type.rawValue) { return true }
         // File-promise flavors (Photos, Mail, browsers).
         if type.rawValue.hasPrefix("com.apple.pasteboard.promised-file") { return true }
