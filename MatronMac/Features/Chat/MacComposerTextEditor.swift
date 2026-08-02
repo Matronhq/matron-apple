@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import MatronDesignSystem
 import UniformTypeIdentifiers
 
 /// The AppKit text editor backing the Mac composer input.
@@ -174,8 +175,10 @@ struct MacComposerTextEditor: NSViewRepresentable {
 /// `NSTextView` that offers ⌘V pastes carrying files or images to the
 /// composer's attachment flow before falling back to a text paste —
 /// mirroring what `.onPasteCommand(of: [.image, .fileURL])` did for the
-/// SwiftUI field.
-final class ComposerTextView: NSTextView {
+/// SwiftUI field. Subclasses `MouseTrackingRescueTextView` so a press in
+/// the composer can't wedge AppKit's mouse-tracking loop (see that
+/// class's doc for the 2026-08-02 freeze).
+final class ComposerTextView: MouseTrackingRescueTextView {
     var claimPasteboardAttachments: (() -> Bool)?
 
     override func paste(_ sender: Any?) {
