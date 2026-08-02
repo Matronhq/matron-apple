@@ -23,6 +23,59 @@ final class JournalStoreTests: XCTestCase {
         XCTAssertEqual(try store.events(convoID: "c1").map(\.seq), [1, 2])
     }
 
+    // MARK: applyJournalBatch (catch-up fast path)
+
+    func testBatchApplyMatchesSingleFrameSemantics() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1))
+        // Batch spanning a duplicate (seq 1), two convos, meta and unread
+        // bookkeeping — the returned list must contain exactly the frames
+        // that wrote, in order, with the same summary state a frame-by-frame
+        // apply would produce.
+        let batch = [
+            event(1),  // duplicate: seq <= cursor, must be skipped
+            event(2, payload: ["body": "two"]),
+            event(3, convo: "c2", type: "convo_meta", payload: ["title": "Other"]),
+            event(4, convo: "c2", payload: ["body": "four"]),
+        ]
+        let applied = try store.applyJournalBatch(batch)
+        XCTAssertEqual(applied.map(\.seq), [2, 3, 4])
+        XCTAssertEqual(store.cursor, 4)
+        XCTAssertEqual(try store.events(convoID: "c1").map(\.seq), [1, 2])
+        let c1 = try XCTUnwrap(try store.conversations().first { $0.id == "c1" })
+        XCTAssertEqual(c1.snippet, "two")
+        XCTAssertEqual(c1.unreadCount, 2)
+        let c2 = try XCTUnwrap(try store.conversations().first { $0.id == "c2" })
+        XCTAssertEqual(c2.title, "Other")
+        XCTAssertEqual(c2.unreadCount, 1)
+        XCTAssertEqual(try store.applyJournalBatch(batch).map(\.seq), [],
+                       "re-applying the same batch must be a complete no-op")
+    }
+
+    func testBatchApplyConfirmsQueuedSendInSameTransaction() throws {
+        // The outbox delete must ride inside the batch transaction exactly
+        // as it does in the single-frame path — a delivered send's queued
+        // row and its confirming event commit together.
+        let store = try makeStore()
+        try store.outboxInsert(localID: "A", convoID: "c1", body: "queued hello")
+        try store.outboxMarkAttempt(localID: "A") // only attempted rows can be confirmed delivered
+        XCTAssertEqual(try store.outboxRows(convoID: "c1").count, 1)
+        _ = try store.applyJournalBatch([
+            event(1, sender: "user:dan", payload: ["body": "queued hello"]),
+        ])
+        XCTAssertEqual(try store.outboxRows(convoID: "c1").count, 0,
+                       "own-text frame in a batch must confirm the queued send")
+    }
+
+    func testBatchApplyIsAllOrNothingOnInjectedFailure() throws {
+        let store = try makeStore()
+        store.failApplyForTesting = { $0 == 2 }
+        XCTAssertThrowsError(try store.applyJournalBatch([event(1), event(2), event(3)]))
+        XCTAssertEqual(store.cursor, 0, "failed batch must leave the cursor untouched")
+        XCTAssertEqual(try store.events(convoID: "c1").map(\.seq), [],
+                       "failed batch must write nothing")
+    }
+
     func testAutoCreatesConversationAndUpdatesSummary() throws {
         let store = try makeStore()
         try store.applyJournal(event(1, payload: ["body": "hello world"]))

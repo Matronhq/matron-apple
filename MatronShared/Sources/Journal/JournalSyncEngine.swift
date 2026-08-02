@@ -678,6 +678,16 @@ public actor JournalSyncEngine {
 
     private func runLoop() async {
         while !Task.isCancelled {
+            // Catch-up replay buffer: while `.catchingUp`, frames accumulate
+            // here and land via `applyJournalBatch` — one transaction + one
+            // observation fire per batch instead of per frame (see that
+            // method's doc for why per-frame was slow). Declared outside the
+            // `do` so every teardown path (stream end, thrown error) can
+            // flush it: the buffered frames are real journal rows, and a
+            // link that dies early in every replay would otherwise re-buffer
+            // the same head-of-backlog forever without ever advancing the
+            // cursor (livelock).
+            var replayBuffer: [JournalEvent] = []
             do {
                 setState(.connecting)
                 try await coldStartIfNeeded()
@@ -732,9 +742,49 @@ public actor JournalSyncEngine {
                 defer { watchdog.cancel() }
 
                 var appliedSinceAck: Int64 = 0
+                // Batches flush by size OR elapsed time, so a slow link
+                // still renders progressively instead of stalling on a
+                // half-full buffer.
+                var lastReplayFlush = ContinuousClock.now
                 frameLoop: for try await frame in connection.frames() {
                     switch frame {
                     case .journal(let event):
+                        // Backlog frame mid-catch-up: buffer it. The
+                        // publish-new-conversation path below is gated on
+                        // `.running` anyway, so batching these frames skips
+                        // no behavior — only the per-frame commit.
+                        if case .catchingUp = state, event.seq < headSeq {
+                            replayBuffer.append(event)
+                            if replayBuffer.count < Self.replayBatchSize,
+                               ContinuousClock.now - lastReplayFlush < Self.replayFlushInterval {
+                                continue
+                            }
+                            appliedSinceAck += try await applyReplayBatch(replayBuffer, connection: connection)
+                            replayBuffer.removeAll(keepingCapacity: true)
+                            lastReplayFlush = ContinuousClock.now
+                            if appliedSinceAck >= 50 {
+                                try? await connection.send(.ack(cursor: store.cursor))
+                                appliedSinceAck = 0
+                            }
+                            continue
+                        }
+                        // First frame at/past headSeq (or a state change)
+                        // while frames are still buffered: flush the buffer
+                        // together with this frame, then promote to
+                        // `.running` — the same boundary the single-frame
+                        // path hits below.
+                        if !replayBuffer.isEmpty {
+                            replayBuffer.append(event)
+                            appliedSinceAck += try await applyReplayBatch(replayBuffer, connection: connection)
+                            replayBuffer.removeAll(keepingCapacity: true)
+                            lastReplayFlush = ContinuousClock.now
+                            if appliedSinceAck >= 50 {
+                                try? await connection.send(.ack(cursor: store.cursor))
+                                appliedSinceAck = 0
+                            }
+                            if store.cursor >= headSeq { setState(.running) }
+                            continue
+                        }
                         // Propagate a throw (disk full, sqlite I/O error) rather than
                         // swallowing it: the cursor is only advanced inside the same
                         // transaction as a successful write (JournalStore.applyJournal),
@@ -758,21 +808,7 @@ public actor JournalSyncEngine {
                         // INSIDE applyJournal's transaction (atomic with the
                         // row insert) — see JournalStore.applyJournal.
                         if try store.applyJournal(event) {
-                            // A delivered media send retires its
-                            // rejection-FIFO slot the moment its own-sender
-                            // file/image frame echoes the blobRef back —
-                            // see confirmMediaSend. Inside the apply-success
-                            // branch: a REPLAYED frame (seq <= cursor, apply
-                            // no-ops) must not retire a live slot whose
-                            // blobRef collides with the replayed one
-                            // (bugbot "Media confirm ignores duplicate
-                            // guard").
-                            if event.sender == ownSender,
-                               event.type == JournalEventType.file || event.type == JournalEventType.image,
-                               let blobRef = event.payload["blob_ref"] as? String {
-                                confirmMediaSend(blobRef: blobRef)
-                            }
-                            indexForSearch(event)
+                            didApply(event)
                             appliedSinceAck += 1
                             if appliedSinceAck >= 50 {
                                 try? await connection.send(.ack(cursor: store.cursor))
@@ -826,6 +862,13 @@ public actor JournalSyncEngine {
                         // empty-store check on the next connect. Then wipe
                         // the mirror.
                         Self.logger.warning("snapshot_required: replay gap too large — wiping local mirror (cursor \(self.store.cursor, privacy: .public))")
+                        // Pre-wipe frames must never land post-wipe: drop the
+                        // buffer BEFORE the wipe so the teardown flush below
+                        // can't replay them onto the emptied store. (The
+                        // server sends snapshot_required instead of a replay,
+                        // so the buffer should already be empty — belt and
+                        // braces.)
+                        replayBuffer.removeAll()
                         refreshSummariesTask?.cancel()
                         storeEpoch += 1
                         // The status replay cache mirrors journal state; a
@@ -882,7 +925,12 @@ public actor JournalSyncEngine {
                         break // post-hello control frames are advisory
                     }
                 }
+                // Stream ended (server closed the socket): land whatever the
+                // replay buffered before the cut. The next connect's hello
+                // acks the advanced cursor, so the server resumes past it.
+                flushReplayBufferOnTeardown(&replayBuffer)
             } catch JournalConnectionError.authRejected {
+                flushReplayBufferOnTeardown(&replayBuffer)
                 Self.logger.warning("server rejected auth — stopping sync (signed out by server)")
                 liveConnection = nil
                 setState(.offline(reason: "Signed out by server"))
@@ -891,6 +939,7 @@ public actor JournalSyncEngine {
                 runTask = nil
                 return
             } catch {
+                flushReplayBufferOnTeardown(&replayBuffer)
                 // Fall through to backoff — but never silently: the
                 // 2026-07-13 phone incident sat in this loop for 90
                 // minutes (proxy refusing the ws upgrade) with nothing in
@@ -936,6 +985,78 @@ public actor JournalSyncEngine {
         backoffSleeper = sleeper
         await sleeper.value // nudge() cancels this → immediate retry
         backoffSleeper = nil
+    }
+
+    /// Max frames per catch-up batch. Big enough that a multi-thousand-frame
+    /// backlog costs tens of commits instead of thousands; small enough that
+    /// each observation re-fire (full chat-list + open-timeline re-query)
+    /// stays a visible-progress heartbeat rather than one monolithic pause.
+    private static let replayBatchSize = 250
+    /// Max time a buffered frame waits before being flushed — on a slow link
+    /// the batch fills slowly, and without this bound the UI would sit on
+    /// "Loading messages…" showing nothing until 250 frames trickled in.
+    private static let replayFlushInterval: Duration = .milliseconds(200)
+
+    /// Applies a buffered catch-up batch in one store transaction, then runs
+    /// the per-event side effects for the frames that actually wrote.
+    /// Returns the applied count (duplicates excluded — they must not count
+    /// toward the ack batch, same as the single-frame path).
+    ///
+    /// On a thrown batch (all-or-nothing, fully rolled back) this salvages
+    /// the prefix one-by-one via `applyJournal`, preserving the single-frame
+    /// path's exactly-once shape: everything before the failing seq lands
+    /// and is acked-able, the cursor stops right before the failure, and the
+    /// throw still escapes to the reconnect path.
+    private func applyReplayBatch(_ batch: [JournalEvent], connection: JournalConnection) async throws -> Int64 {
+        var applied: [JournalEvent]
+        do {
+            applied = try store.applyJournalBatch(batch)
+        } catch {
+            applied = []
+            do {
+                for event in batch {
+                    if try store.applyJournal(event) { applied.append(event) }
+                }
+            } catch let salvageError {
+                for event in applied { didApply(event) }
+                try? await connection.send(.ack(cursor: store.cursor))
+                throw salvageError
+            }
+            // Whole batch salvaged one-by-one (the batch throw was
+            // transient): fall through to the normal side-effect pass.
+        }
+        for event in applied { didApply(event) }
+        return Int64(applied.count)
+    }
+
+    /// Teardown-path flush (stream end, thrown error): best-effort batch
+    /// apply with no salvage and no ack — the connection is gone or going,
+    /// and the next connect's hello acks whatever cursor this landed. A
+    /// failed apply here just leaves the cursor where it was; the reconnect
+    /// replays the same frames.
+    private func flushReplayBufferOnTeardown(_ buffer: inout [JournalEvent]) {
+        guard !buffer.isEmpty else { return }
+        if let applied = try? store.applyJournalBatch(buffer) {
+            for event in applied { didApply(event) }
+        }
+        buffer.removeAll()
+    }
+
+    /// Side effects owed to every frame that actually wrote (apply returned
+    /// `true`). Kept out of the duplicate path on purpose: a REPLAYED frame
+    /// (seq <= cursor, apply no-ops) must not retire a live media-send slot
+    /// whose blobRef collides with the replayed one (bugbot "Media confirm
+    /// ignores duplicate guard").
+    private func didApply(_ event: JournalEvent) {
+        // A delivered media send retires its rejection-FIFO slot the moment
+        // its own-sender file/image frame echoes the blobRef back — see
+        // confirmMediaSend.
+        if event.sender == ownSender,
+           event.type == JournalEventType.file || event.type == JournalEventType.image,
+           let blobRef = event.payload["blob_ref"] as? String {
+            confirmMediaSend(blobRef: blobRef)
+        }
+        indexForSearch(event)
     }
 
     private func indexForSearch(_ event: JournalEvent) {
