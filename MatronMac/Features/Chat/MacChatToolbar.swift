@@ -6,8 +6,8 @@ import MatronDesignSystem
 
 /// Mac chat detail column toolbar. Layout — three separate toolbar items,
 /// each in its own glass capsule (Dan, 2026-07-15: "separate bubbles"):
-/// - Leading: model name above the context gauge
-/// - Center: title (+ account email underneath when known)
+/// - Leading: model name, context gauge, host vitals (CPU/RAM)
+/// - Center: title (+ workdir and account email underneath when known)
 /// - Trailing: usage bars
 ///
 /// The capsules are the SYSTEM's per-item glass. Round 2 replaced them
@@ -68,7 +68,7 @@ struct MacChatToolbar: ToolbarContent {
     private static let clusterHeight: CGFloat = 38
 
     var body: some ToolbarContent {
-        if status?.model != nil || status?.context != nil {
+        if status?.model != nil || status?.context != nil || status?.vitals != nil {
             ToolbarItem(placement: .navigation) {
                 cluster { modelContextCluster }
             }
@@ -133,24 +133,51 @@ struct MacChatToolbar: ToolbarContent {
                     .accessibilityLabel("Compact conversation")
                 }
             }
+            // Bridge-host CPU/RAM as a third quiet line — text, not bars,
+            // so machine metrics never read as account subscription meters
+            // (the bridge keeps them out of limits[] for the same reason).
+            // Three caption lines match the cluster height budget, which
+            // was already sized for three compact usage rows.
+            if let vitals = status?.vitals, let line = UsageMetersFormat.vitalsLine(vitals) {
+                Text(line)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .help("Bridge host CPU and RAM")
+                    .accessibilityLabel("Bridge host: \(line)")
+            }
         }
     }
 
     private var titleCluster: some View {
-        // The bridge machine's logged-in account email rides under
-        // the title when the status frame carries it.
+        // The session's workdir (home-abbreviated — it's the BRIDGE
+        // machine's path) and the logged-in account email ride under the
+        // title on one quiet line when the status frame carries them.
         VStack(spacing: 0) {
             Text(title)
                 .font(.headline)
                 .lineLimit(1)
                 .truncationMode(.tail)
-            if let email = status?.email {
-                Text(email)
+            if let subtitle = titleSubtitle {
+                Text(subtitle)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
         }
+    }
+
+    /// Internal (not private) so MacChatToolbarTests can pin the join
+    /// format without rendering.
+    var titleSubtitle: String? {
+        var parts: [String] = []
+        if let workdir = status?.workdir {
+            parts.append(UsageMetersFormat.homeAbbreviated(workdir))
+        }
+        if let email = status?.email {
+            parts.append(email)
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 }

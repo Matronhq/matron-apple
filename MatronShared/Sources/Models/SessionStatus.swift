@@ -38,6 +38,21 @@ public struct SessionStatus: Equatable, Sendable {
         }
     }
 
+    /// Host CPU/RAM sample from the bridge machine, published top-level
+    /// (deliberately NOT a `Limit` — these are machine metrics, not account
+    /// subscription meters, and must never render as one). Either half can
+    /// be nil: CPU needs two sampler ticks, so the first frames after a
+    /// bridge boot carry RAM alone.
+    public struct Vitals: Equatable, Sendable {
+        public let cpuPct: Int?
+        public let ramPct: Int?
+
+        public init(cpuPct: Int?, ramPct: Int?) {
+            self.cpuPct = cpuPct
+            self.ramPct = ramPct
+        }
+    }
+
     public var model: String?
     public var context: Context?
     public var limits: [Limit]?
@@ -51,13 +66,19 @@ public struct SessionStatus: Equatable, Sendable {
     /// the parent link its Task tool card to this child. `nil` for normal
     /// conversations (and for children until a status frame carries it).
     public var taskRef: String?
+    /// The session's absolute working directory on the bridge machine.
+    public var workdir: String?
+    /// Last host CPU/RAM sample from the bridge machine.
+    public var vitals: Vitals?
 
-    public init(model: String? = nil, context: Context? = nil, limits: [Limit]? = nil, email: String? = nil, taskRef: String? = nil) {
+    public init(model: String? = nil, context: Context? = nil, limits: [Limit]? = nil, email: String? = nil, taskRef: String? = nil, workdir: String? = nil, vitals: Vitals? = nil) {
         self.model = model
         self.context = context
         self.limits = limits
         self.email = email
         self.taskRef = taskRef
+        self.workdir = workdir
+        self.vitals = vitals
     }
 
     /// Merge an update: each part replaces the held value only when the
@@ -68,6 +89,8 @@ public struct SessionStatus: Equatable, Sendable {
         if let limits = update.limits { self.limits = limits }
         if let email = update.email { self.email = email }
         if let taskRef = update.taskRef { self.taskRef = taskRef }
+        if let workdir = update.workdir { self.workdir = workdir }
+        if let vitals = update.vitals { self.vitals = vitals }
     }
 }
 
@@ -83,16 +106,22 @@ public struct SessionStatusUpdate: Equatable, Sendable {
     /// The spawning Task call's `tool_use_id` for a subagent child (see
     /// `SessionStatus.taskRef`). `nil` when the frame doesn't carry one.
     public let taskRef: String?
+    /// Absolute workdir on the bridge machine. `nil` when absent.
+    public let workdir: String?
+    /// Host CPU/RAM sample. `nil` when absent or carrying no numbers.
+    public let vitals: SessionStatus.Vitals?
 
     /// No parameter defaults, deliberately: every constructor names every
     /// field, so merge sites (SessionStatus.apply, the sync engine's
     /// replay cache) can't silently drop a newly added one.
-    public init(convoID: String, model: String?, context: SessionStatus.Context?, limits: [SessionStatus.Limit]?, email: String?, taskRef: String?) {
+    public init(convoID: String, model: String?, context: SessionStatus.Context?, limits: [SessionStatus.Limit]?, email: String?, taskRef: String?, workdir: String?, vitals: SessionStatus.Vitals?) {
         self.convoID = convoID
         self.model = model
         self.context = context
         self.limits = limits
         self.email = email
         self.taskRef = taskRef
+        self.workdir = workdir
+        self.vitals = vitals
     }
 }

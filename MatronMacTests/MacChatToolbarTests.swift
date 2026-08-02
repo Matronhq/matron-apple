@@ -47,6 +47,24 @@ final class MacChatToolbarTests: XCTestCase {
             stripViewModel: makeStripVM(), onOpenSubChat: { _ in }, onCompact: {}).status)
     }
 
+    /// The under-title line joins the home-abbreviated workdir and the
+    /// account email with a middle dot; either alone stands by itself, and
+    /// with neither the line disappears (nil, not an empty Text).
+    func testTitleSubtitleJoinsWorkdirAndEmail() {
+        func toolbar(workdir: String? = nil, email: String? = nil) -> MacChatToolbar {
+            MacChatToolbar(
+                title: "Chat",
+                status: SessionStatus(email: email, workdir: workdir),
+                stripViewModel: makeStripVM(), onOpenSubChat: { _ in }, onCompact: {})
+        }
+        XCTAssertEqual(
+            toolbar(workdir: "/Users/dan/Dev/matron-bridge", email: "dan@example.com").titleSubtitle,
+            "~/Dev/matron-bridge · dan@example.com")
+        XCTAssertEqual(toolbar(workdir: "/opt/matron").titleSubtitle, "/opt/matron")
+        XCTAssertEqual(toolbar(email: "dan@example.com").titleSubtitle, "dan@example.com")
+        XCTAssertNil(toolbar().titleSubtitle)
+    }
+
 
     /// The sidebar-toggle button posts `.toggleSidebar` on the command
     /// bus. The toolbar tests the listener side; Task 14e tests the

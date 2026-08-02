@@ -270,6 +270,20 @@ public enum ServerFrame: Equatable, Sendable {
                     }
                     if !parsed.isEmpty { limits = parsed }
                 }
+                // Host CPU/RAM sample — top-level `vitals`, never a limits[]
+                // entry (machine metrics must not render as subscription
+                // meters). Either half can be null (CPU needs two sampler
+                // ticks after a bridge boot); an object carrying neither
+                // number degrades to nil so the merge keeps the last good
+                // sample instead of blanking it.
+                var vitals: SessionStatus.Vitals?
+                if let raw = status["vitals"] as? [String: Any] {
+                    let cpu = (raw["cpu_pct"] as? NSNumber)?.intValue
+                    let ram = (raw["ram_pct"] as? NSNumber)?.intValue
+                    if cpu != nil || ram != nil {
+                        vitals = SessionStatus.Vitals(cpuPct: cpu, ramPct: ram)
+                    }
+                }
                 return .sessionStatus(SessionStatusUpdate(
                     convoID: convoID, model: status["model"] as? String,
                     context: context, limits: limits,
@@ -278,7 +292,9 @@ public enum ServerFrame: Equatable, Sendable {
                     // tool_use_id — replayed on `viewing` so a client that
                     // opens the child learns its task_ref without waiting
                     // for the next turn-end frame. Absent for normal convos.
-                    taskRef: status["task_ref"] as? String))
+                    taskRef: status["task_ref"] as? String,
+                    workdir: status["workdir"] as? String,
+                    vitals: vitals))
             }
             guard let ref = obj["message_ref"] as? String else { return nil }
             return .ephemeral(EphemeralUpdate(

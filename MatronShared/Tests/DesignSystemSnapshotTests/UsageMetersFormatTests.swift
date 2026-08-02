@@ -1,5 +1,6 @@
 import XCTest
 import SwiftUI
+import MatronModels
 @testable import MatronDesignSystem
 
 final class UsageMetersFormatTests: XCTestCase {
@@ -62,4 +63,28 @@ final class UsageMetersFormatTests: XCTestCase {
         // 1_760_000_000 is Thu 2025-10-09 08:53:20 UTC; +3 days lands Sun 08:53 -> "Sun 8am".
         XCTAssertEqual(UsageMetersFormat.resetDisplay(resetsAt: now.addingTimeInterval(3 * 24 * 3600), raw: nil, now: now, timeZone: utc), "Sun 8am")
     }
+    func testHomeAbbreviated() {
+        // The path is the BRIDGE machine's, so abbreviation is textual —
+        // never FileManager's local home.
+        XCTAssertEqual(UsageMetersFormat.homeAbbreviated("/Users/dan/Dev/matron-bridge"), "~/Dev/matron-bridge")
+        XCTAssertEqual(UsageMetersFormat.homeAbbreviated("/home/dan/apps/web"), "~/apps/web")
+        // A bare home dir is just "~".
+        XCTAssertEqual(UsageMetersFormat.homeAbbreviated("/Users/dan"), "~")
+        // Non-home paths pass through untouched.
+        XCTAssertEqual(UsageMetersFormat.homeAbbreviated("/opt/matron/web-journal"), "/opt/matron/web-journal")
+        // A path that merely STARTS with a home-like prefix but has no
+        // separator after the username is not abbreviated.
+        XCTAssertEqual(UsageMetersFormat.homeAbbreviated("/Users"), "/Users")
+        XCTAssertEqual(UsageMetersFormat.homeAbbreviated(""), "")
+    }
+
+    func testVitalsLine() {
+        XCTAssertEqual(UsageMetersFormat.vitalsLine(SessionStatus.Vitals(cpuPct: 12, ramPct: 63)), "CPU 12% · RAM 63%")
+        // The CPU half is null until the bridge sampler has two samples.
+        XCTAssertEqual(UsageMetersFormat.vitalsLine(SessionStatus.Vitals(cpuPct: nil, ramPct: 63)), "RAM 63%")
+        XCTAssertEqual(UsageMetersFormat.vitalsLine(SessionStatus.Vitals(cpuPct: 12, ramPct: nil)), "CPU 12%")
+        // Nothing to show -> nil so callers drop the line entirely.
+        XCTAssertNil(UsageMetersFormat.vitalsLine(SessionStatus.Vitals(cpuPct: nil, ramPct: nil)))
+    }
+
 }

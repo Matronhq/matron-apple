@@ -217,6 +217,38 @@ final class WireModelsTests: XCTestCase {
         XCTAssertNil(update.taskRef, "a normal conversation's status carries no task_ref")
     }
 
+    /// The bridge publishes the session's absolute workdir and a host
+    /// CPU/RAM sample (`vitals`, top-level — deliberately NOT a limits[]
+    /// entry, so it can't render as a subscription meter) on every frame.
+    func testDecodeSessionStatusCarriesWorkdirAndVitals() throws {
+        let text = #"{"kind":"ephemeral","convo_id":"c1","status":{"model":"claude-fable-5","workdir":"/Users/dan/Dev/matron-bridge","vitals":{"cpu_pct":12,"ram_pct":63,"sampled_at_ms":1754172000000}}}"#
+        guard case let .sessionStatus(update)? = ServerFrame.decode(text) else {
+            return XCTFail("expected sessionStatus frame")
+        }
+        XCTAssertEqual(update.workdir, "/Users/dan/Dev/matron-bridge")
+        XCTAssertEqual(update.vitals, SessionStatus.Vitals(cpuPct: 12, ramPct: 63))
+    }
+
+    func testDecodeSessionStatusVitalsDegradeGracefully() throws {
+        // cpu_pct is null until the bridge's sampler has two samples — the
+        // RAM half must survive alone.
+        guard case let .sessionStatus(ramOnly)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"vitals":{"cpu_pct":null,"ram_pct":63,"sampled_at_ms":1}}}"#) else {
+            return XCTFail("expected sessionStatus frame with ram-only vitals")
+        }
+        XCTAssertEqual(ramOnly.vitals, SessionStatus.Vitals(cpuPct: nil, ramPct: 63))
+
+        // A vitals object with neither number decodes as absent vitals, so
+        // the merge keeps the last good sample instead of blanking it.
+        guard case let .sessionStatus(empty)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"model":"m","vitals":{"sampled_at_ms":1}}}"#) else {
+            return XCTFail("expected sessionStatus frame with empty vitals")
+        }
+        XCTAssertNil(empty.vitals)
+        XCTAssertNil(empty.workdir)
+        XCTAssertEqual(empty.model, "m")
+    }
+
     func testDecodeSessionStatusCarriesTaskRefForChild() throws {
         // A subagent child's status frame rides `task_ref` (the parent's
         // spawning Task tool_use_id), replayed on `viewing` so the app can
