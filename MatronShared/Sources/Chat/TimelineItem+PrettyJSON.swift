@@ -2,8 +2,8 @@ import Foundation
 import MatronEvents
 
 extension TimelineItem {
-    /// Pretty-printed, JSON-shaped dump of the DTO for the long-press /
-    /// right-click "View source" sheet (Phase 2 Task 16).
+    /// Pretty-printed, JSON-shaped dump of the DTO for the Mac right-click
+    /// "View source" sheet (Phase 2 Task 16; iOS dropped its entry).
     ///
     /// Phase 2 only has access to the `TimelineItem` DTO — not the underlying
     /// raw Matrix event JSON. This synthesises a JSON-shaped record from the

@@ -1,10 +1,11 @@
 import SwiftUI
 import MatronChat
 
-/// Mac analogue of `EventSourceSheet` (iOS Task 16). Renders the row's
+/// Right-click "View source" sheet for a timeline row (Task 16; Mac only —
+/// the iOS long-press menu dropped its View-source entry, Dan 2026-08-03).
+/// Renders the row's
 /// DTO as pretty-printed JSON in a scrollable, selectable `Text`.
 ///
-/// Mac differences vs iOS:
 ///   - No `NavigationStack` / nav bar — Mac sheets render bare.
 ///   - Sized via `.frame(minWidth:minHeight:)` so the JSON dump has room.
 ///   - "Done" button at the bottom-trailing edge with `.defaultAction`
@@ -33,7 +34,6 @@ struct MacEventSourceSheet: View {
             ScrollView {
                 // TODO Phase 3 (QA finding #19): swap `item.prettyJSON()`
                 // for the SDK's raw event JSON (`EventTimelineItem.originalJson`).
-                // Mirrors the iOS `EventSourceSheet` TODO.
                 Text(item.prettyJSON())
                     .font(.system(.callout, design: .monospaced))
                     .padding(16)
