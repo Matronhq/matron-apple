@@ -4,10 +4,10 @@ import MatronModels
 /// Tappable strip pinned at the top of a large conversation nudging the
 /// user to compact it. Tapping sends a bare `/compact` (the caller wires
 /// `onCompact` to `ChatViewModel.sendCommand`). Mirrors
-/// `ConnectionStatusBanner` in shape — full-width, leading-aligned,
-/// ultra-thin material — so it reads as the same "the app is telling you
-/// something" vocabulary; the Android client ships the identical banner
-/// (`CompactContextBanner.kt`), and the two stay copy- and
+/// `ConnectionStatusBanner`'s offline state — full-width, leading-aligned,
+/// opaque red with white content — so it reads as the same "the app needs
+/// your attention" vocabulary; the Android client ships the equivalent
+/// banner (`CompactContextBanner.kt`), and the two stay copy- and
 /// threshold-compatible.
 public struct CompactContextBanner: View {
     /// Absolute context size (in tokens) past which the banner appears.
@@ -48,17 +48,17 @@ public struct CompactContextBanner: View {
                 // gauge, so the two affordances read as one action.
                 Image(systemName: "arrow.down.right.and.arrow.up.left")
                     .font(.caption)
-                    .foregroundStyle(.tint)
+                    .foregroundStyle(.white)
                 Text(Self.title(tokens: tokens))
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white)
                     .lineLimit(1)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.ultraThinMaterial)
+            .background(Color.red.opacity(0.9))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
