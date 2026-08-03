@@ -137,11 +137,13 @@ struct MacChatToolbar: ToolbarContent {
             // so machine metrics never read as account subscription meters
             // (the bridge keeps them out of limits[] for the same reason).
             // Three caption lines match the cluster height budget, which
-            // was already sized for three compact usage rows.
+            // was already sized for three compact usage rows. Same
+            // `.secondary` as the model/context lines above — `.tertiary`
+            // was hard to read against the toolbar (Dan, 2026-08-03).
             if let vitals = status?.vitals, let line = UsageMetersFormat.vitalsLine(vitals) {
                 Text(line)
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .help("Bridge host CPU and RAM")
                     .accessibilityLabel("Bridge host: \(line)")
