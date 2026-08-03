@@ -34,6 +34,34 @@ final class MacNotificationHandlerTests: XCTestCase {
         await fulfillment(of: [exp], timeout: 1.0)
     }
 
+    func test_handleTap_relayPayload_resolvesRoomIDFromApsThreadID() async {
+        // The push relay carries the convo id ONLY as `aps.thread-id` —
+        // no top-level `room_id` custom key. This is the payload shape
+        // that reached devices in the field while taps silently failed
+        // to navigate; pin that it now resolves.
+        let handler = MacNotificationHandler()
+        let exp = expectation(description: "matronOpenRoom posted")
+
+        let token = NotificationCenter.default.addObserver(
+            forName: .matronOpenRoom, object: nil, queue: nil
+        ) { note in
+            if let roomID = note.userInfo?[MacNotificationHandler.roomIDKey] as? String,
+               roomID == "convo-abc123" {
+                exp.fulfill()
+            }
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        handler.handleTap(userInfo: [
+            "aps": [
+                "alert": ["title": "Some chat", "body": "Turn finished"],
+                "thread-id": "convo-abc123",
+            ],
+        ])
+
+        await fulfillment(of: [exp], timeout: 1.0)
+    }
+
     func test_handleTap_missingRoomID_isHarmless() async {
         // Tapping a notification whose userInfo doesn't carry a
         // `room_id` (corrupt payload, or a system notification we
