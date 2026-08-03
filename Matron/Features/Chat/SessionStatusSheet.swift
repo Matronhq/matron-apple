@@ -20,7 +20,7 @@ struct SessionStatusSheet: View {
     /// footnote rather than claiming "no usage data yet".
     private var hasContent: Bool {
         status?.model != nil || status?.context != nil || !(status?.limits ?? []).isEmpty
-            || status?.email != nil
+            || status?.email != nil || status?.workdir != nil || status?.vitals != nil
     }
 
     var body: some View {
@@ -50,15 +50,26 @@ struct SessionStatusSheet: View {
                         if let limits = status.limits, !limits.isEmpty {
                             UsageBarsView(limits: limits, scale: .regular)
                         }
-                        if status.email != nil || status.model != nil {
-                            // Account footer: the bridge machine's logged-in
-                            // email above the model name, both quiet.
+                        if status.email != nil || status.model != nil
+                            || status.workdir != nil || status.vitals != nil {
+                            // Session footer: the bridge machine's logged-in
+                            // email, model, workdir (home-abbreviated — the
+                            // BRIDGE machine's path) and host CPU/RAM, all
+                            // quiet.
                             VStack(alignment: .leading, spacing: 2) {
                                 if let email = status.email {
                                     Text(email)
                                 }
                                 if let model = status.model {
                                     Text(model)
+                                }
+                                if let workdir = status.workdir {
+                                    Text(UsageMetersFormat.homeAbbreviated(workdir))
+                                }
+                                if let vitals = status.vitals,
+                                   let line = UsageMetersFormat.vitalsLine(vitals) {
+                                    Text(line)
+                                        .accessibilityLabel("Bridge host: \(line)")
                                 }
                             }
                             .font(.footnote)

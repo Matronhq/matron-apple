@@ -1,4 +1,5 @@
 import SwiftUI
+import MatronModels
 
 /// Pure formatting for the usage/context meters — kept off the views so
 /// the label mapping, countdown wording, and thresholds unit-test without
@@ -67,4 +68,31 @@ public enum UsageMetersFormat {
         formatter.dateFormat = "EEE ha"
         return formatter.string(from: resetsAt)
     }
+    /// Abbreviate a BRIDGE-machine path's home prefix to "~". Textual only —
+    /// the path belongs to the bridge host, so FileManager's local home
+    /// would be the wrong machine. Handles the two layouts bridges run on
+    /// (macOS /Users/<name>, Linux /home/<name>); anything else passes
+    /// through untouched.
+    public static func homeAbbreviated(_ path: String) -> String {
+        for prefix in ["/Users/", "/home/"] where path.hasPrefix(prefix) {
+            let rest = path.dropFirst(prefix.count)
+            guard !rest.isEmpty else { return path }
+            if let slash = rest.firstIndex(of: "/") {
+                return "~" + rest[slash...]
+            }
+            return "~"
+        }
+        return path
+    }
+
+    /// "CPU 12% · RAM 63%" — the bridge host's vitals as one quiet caption
+    /// line. Either half can be missing (CPU needs two sampler ticks after
+    /// a bridge boot); nil when neither is known so callers drop the line.
+    public static func vitalsLine(_ vitals: SessionStatus.Vitals) -> String? {
+        var parts: [String] = []
+        if let cpu = vitals.cpuPct { parts.append("CPU \(cpu)%") }
+        if let ram = vitals.ramPct { parts.append("RAM \(ram)%") }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
 }
