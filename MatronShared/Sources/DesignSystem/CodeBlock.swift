@@ -3,8 +3,8 @@ import SwiftUI
 /// Public design-system primitive for a fenced code block: monospaced source
 /// in a horizontally scrollable container, with a language label and a copy
 /// button. Used by `MarkdownText` (via `Theme.matron.codeBlock`) and is also
-/// reused outside the markdown bridge — Phase-5
-/// `ToolCallCard` import it directly.
+/// reused outside the markdown bridge — the Phase-5 `ToolCallCard` imports
+/// it directly.
 public struct CodeBlock: View {
     public let language: String
     public let source: String
