@@ -57,11 +57,6 @@ struct MacChatView: View {
     /// shares the VM) has already restarted the strip — an unconditional
     /// `stop()` here would kill that fresh stream.
     @State private var stripStartedGeneration = 0
-    /// Backing state for the right-click "View source" sheet (Task 16).
-    /// `TimelineItem` is `Identifiable` (the SDK's stable
-    /// `TimelineUniqueId.id`), so `.sheet(item:)` re-presents a fresh sheet
-    /// when the user picks a different row.
-    @State private var sourceItem: TimelineItem?
     /// Sticky "following the live tail" mode — see iOS `ChatView` for
     /// the full trace-driven rationale. Exited only by a real user drag
     /// (gesture phases); re-engaged when scrolling settles near the
@@ -347,8 +342,7 @@ struct MacChatView: View {
                         viewModel: viewModel,
                         stripViewModel: stripViewModel,
                         onOpenSubChat: { openSubChatID = $0 },
-                        onPreviewImage: { imagePreview = ImagePreview(image: $0) },
-                        onShowSource: { sourceItem = $0 }
+                        onPreviewImage: { imagePreview = ImagePreview(image: $0) }
                     )
                     .equatable()
                     // Inline typing indicator under the last bubble —
@@ -689,9 +683,6 @@ struct MacChatView: View {
         .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.slashCommand))) { _ in
             composerVM.palettePinnedOpen.toggle()
         }
-        .sheet(item: $sourceItem) { item in
-            MacEventSourceSheet(item: item, onDismiss: { sourceItem = nil })
-        }
         // Mac fullscreen image preview — Mac's `NSWorkspace.shared.open`
         // already owns the file path, so the only sheet wired here is
         // for the in-app pinch-zoom-style image viewer.
@@ -732,7 +723,6 @@ private struct MacTimelineListContent: View, Equatable {
     let stripViewModel: SubChatStripViewModel
     let onOpenSubChat: (String) -> Void
     let onPreviewImage: (Image) -> Void
-    let onShowSource: (TimelineItem) -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.viewModel === rhs.viewModel && lhs.stripViewModel === rhs.stripViewModel
@@ -814,6 +804,10 @@ private struct MacTimelineListContent: View, Equatable {
                         // No `.onAppear` history trigger — an eager stack
                         // mounts every row immediately; the near-top
                         // geometry check in `MacChatView` owns extension.
+                        // Copy only (Dan, 2026-08-03: no Share / View
+                        // source, same as the iOS long-press menu). An
+                        // empty builder result (non-text rows) presents
+                        // no menu at all.
                         .contextMenu {
                             if case .text(let body, _) = item.kind {
                                 Button {
@@ -821,17 +815,6 @@ private struct MacTimelineListContent: View, Equatable {
                                 } label: {
                                     Label("Copy", systemImage: "doc.on.doc")
                                 }
-                                ShareLink(item: body) {
-                                    Label("Share", systemImage: "square.and.arrow.up")
-                                }
-                            }
-                            // "View source" applies to every kind —
-                            // text, image, file, stateChange, unknown
-                            // — so it lives outside the `.text` guard.
-                            Button {
-                                onShowSource(item)
-                            } label: {
-                                Label("View source", systemImage: "curlybraces")
                             }
                         }
                     }
@@ -905,7 +888,6 @@ struct MacSubChatPane: View {
     let onClose: () -> Void
     let onOpenSibling: (String) -> Void
 
-    @State private var sourceItem: TimelineItem?
     @State private var imagePreview: MacSubChatImagePreview?
     @State private var startedGeneration = 0
     /// Generation guard for the SHARED per-parent strip VM — switching to a
@@ -966,8 +948,7 @@ struct MacSubChatPane: View {
                             viewModel: viewModel,
                             stripViewModel: stripViewModel,
                             onOpenSubChat: onOpenSibling,
-                            onPreviewImage: { imagePreview = MacSubChatImagePreview(image: $0) },
-                            onShowSource: { sourceItem = $0 }
+                            onPreviewImage: { imagePreview = MacSubChatImagePreview(image: $0) }
                         )
                         Color.clear
                             .frame(height: 1)
@@ -1039,9 +1020,6 @@ struct MacSubChatPane: View {
             followHealTask?.cancel()
             viewModel.stop(ifGeneration: startedGeneration)
             stripViewModel.stop(ifGeneration: stripStartedGeneration)
-        }
-        .sheet(item: $sourceItem) { item in
-            MacEventSourceSheet(item: item, onDismiss: { sourceItem = nil })
         }
         .sheet(item: $imagePreview) { preview in
             AttachmentFullscreenViewer(image: preview.image, onDismiss: { imagePreview = nil })

@@ -35,11 +35,6 @@ struct ChatView: View {
     /// blips (notification centre, etc.) so only a real resume triggers it.
     @Environment(\.scenePhase) private var scenePhase
     @State private var wasBackgrounded = false
-    /// Backing state for the "View source" sheet. `TimelineItem` is
-    /// `Identifiable` (the SDK's stable `TimelineUniqueId.id`), so
-    /// `.sheet(item:)` re-presents a fresh sheet whenever the user picks a
-    /// different row instead of clinging to the prior one.
-    @State private var sourceItem: TimelineItem?
     /// Sticky "following the live tail" mode. `true` from open-at-tail
     /// until the user *deliberately drags away* (gesture phases via
     /// `onUserScrollGesture`); re-engaged when scrolling settles near the
@@ -287,8 +282,7 @@ struct ChatView: View {
                         viewModel: viewModel,
                         stripViewModel: stripViewModel,
                         onOpenSubChat: nil,
-                        onPreview: { attachmentPreview = $0 },
-                        onShowSource: { sourceItem = $0 }
+                        onPreview: { attachmentPreview = $0 }
                     )
                     .equatable()
                     // The bot's typing / tool-use indicator, inline
@@ -707,9 +701,6 @@ struct ChatView: View {
             viewModel.stop(ifGeneration: startedGeneration)
             stripViewModel.stop(ifGeneration: stripStartedGeneration)
         }
-        .sheet(item: $sourceItem) { item in
-            EventSourceSheet(item: item)
-        }
         // Fullscreen attachment preview. Presented from a tap on
         // either an `AttachmentImage` or `AttachmentFile` row;
         // payload selects between the pinch-zoom image viewer and
@@ -811,7 +802,6 @@ private struct TimelineListContent: View, Equatable {
     /// rather than return to the parent.
     let onOpenSubChat: ((String) -> Void)?
     let onPreview: (ChatView.AttachmentPreview) -> Void
-    let onShowSource: (TimelineItem) -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.viewModel === rhs.viewModel && lhs.stripViewModel === rhs.stripViewModel
@@ -901,6 +891,9 @@ private struct TimelineListContent: View, Equatable {
                         // row immediately), so window extension is driven
                         // solely by the scroll-geometry near-top check in
                         // `ChatView`.
+                        // Copy only (Dan, 2026-08-03: no Share / View
+                        // source on the phone). An empty builder result
+                        // (non-text rows) presents no menu at all.
                         .contextMenu {
                             if case .text(let body, _) = item.kind {
                                 Button {
@@ -912,17 +905,6 @@ private struct TimelineListContent: View, Equatable {
                                 } label: {
                                     Label("Copy", systemImage: "doc.on.doc")
                                 }
-                                ShareLink(item: body) {
-                                    Label("Share", systemImage: "square.and.arrow.up")
-                                }
-                            }
-                            // "View source" applies to every kind —
-                            // text, image, file, stateChange, unknown
-                            // — so it lives outside the `.text` guard.
-                            Button {
-                                onShowSource(item)
-                            } label: {
-                                Label("View source", systemImage: "curlybraces")
                             }
                         }
                     }
@@ -993,7 +975,6 @@ struct SubChatView: View {
     let fallbackTitle: String
 
     @Environment(\.chatNavigationPath) private var navigationPath
-    @State private var sourceItem: TimelineItem?
     @State private var attachmentPreview: ChatView.AttachmentPreview?
     /// Captured only to install `HorizontalOverflowLock` — the sub-chat
     /// timeline must be as wiggle-proof as the parent's (ChatView).
@@ -1054,8 +1035,7 @@ struct SubChatView: View {
                             viewModel: viewModel,
                             stripViewModel: stripViewModel,
                             onOpenSubChat: switchTo,
-                            onPreview: { attachmentPreview = $0 },
-                            onShowSource: { sourceItem = $0 }
+                            onPreview: { attachmentPreview = $0 }
                         )
                         Color.clear
                             .frame(height: 1)
@@ -1133,9 +1113,6 @@ struct SubChatView: View {
             followHealTask?.cancel()
             viewModel.stop(ifGeneration: startedGeneration)
             stripViewModel.stop(ifGeneration: stripStartedGeneration)
-        }
-        .sheet(item: $sourceItem) { item in
-            EventSourceSheet(item: item)
         }
         .sheet(item: $attachmentPreview) { preview in
             switch preview {
