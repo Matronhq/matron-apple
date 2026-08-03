@@ -103,6 +103,10 @@ private struct SelectableTextViewRepresentable: NSViewRepresentable {
     /// http(s)/unknown schemes ever reach this delegate.
     final class Coordinator: NSObject, NSTextViewDelegate {
         func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+            // Tell the press-rescue layer the link WAS dispatched, whichever
+            // internal AppKit route got here — this is what keeps the
+            // swallowed-click fallback from ever double-opening.
+            (textView as? MouseTrackingRescueTextView)?.noteLinkClickHandled()
             let url: URL?
             switch link {
             case let value as URL: url = value
