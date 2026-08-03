@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import UserNotifications
+import MatronPush
 
 /// Routes APNs notification taps to the SwiftUI host so the user lands
 /// on the correct chat after tapping a notification banner. Singleton
@@ -51,7 +52,10 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         defer { completionHandler() }
-        guard let roomID = response.notification.request.content.userInfo["room_id"] as? String else {
+        // The relay carries the convo id as `aps.thread-id`, not a
+        // top-level `room_id` — PushDeepLink resolves both shapes.
+        guard let roomID = PushDeepLink.roomID(
+            fromUserInfo: response.notification.request.content.userInfo) else {
             return
         }
         // UN guarantees this delegate method runs on the main thread,

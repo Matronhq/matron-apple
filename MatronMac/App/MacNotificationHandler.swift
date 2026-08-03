@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import UserNotifications
+import MatronPush
 
 /// Mac-side `UNUserNotificationCenterDelegate`. Two surfaces:
 ///
@@ -83,7 +84,9 @@ public final class MacNotificationHandler: NSObject, UNUserNotificationCenterDel
     /// `.matronOpenRoom` post + the activate-window side effects
     /// without standing up the full UN pipeline.
     func handleTap(userInfo: [AnyHashable: Any]) {
-        guard let roomID = userInfo["room_id"] as? String else { return }
+        // The relay carries the convo id as `aps.thread-id`, not a
+        // top-level `room_id` — PushDeepLink resolves both shapes.
+        guard let roomID = PushDeepLink.roomID(fromUserInfo: userInfo) else { return }
         // Buffer first, then post. If the tap is a cold-start (app
         // launched specifically because the user clicked the
         // notification), MacChatListView's `.onReceive` subscriber
