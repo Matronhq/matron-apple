@@ -1305,4 +1305,43 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(fake.sentText, ["/compact"])
         XCTAssertEqual(fake.sentInReplyTo, [nil])
     }
+
+    /// Repeated taps on a Compact affordance (banner or button) must not
+    /// queue a second bare /compact while the first is still in flight —
+    /// the second call returns without sending.
+    @MainActor
+    func test_sendCommand_ignoresSecondCallWhileFirstInFlight() async throws {
+        let fake = FakeTimelineService()
+        let gate = SendGate()
+        fake.sendGate = gate
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+
+        let first = Task { await vm.sendCommand("/compact") }
+        for _ in 0..<200 where !(await gate.isStarted()) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let started = await gate.isStarted()
+        XCTAssertTrue(started, "first send never reached the service")
+
+        // Second tap while the first send is parked at the gate.
+        await vm.sendCommand("/compact")
+
+        await gate.open()
+        await first.value
+        XCTAssertEqual(fake.sentText, ["/compact"],
+                       "the in-flight guard must swallow the second tap")
+    }
+
+    /// The guard is a latch only for the in-flight window — once the first
+    /// command completes, the next tap sends again.
+    @MainActor
+    func test_sendCommand_allowsNextCommandAfterCompletion() async {
+        let fake = FakeTimelineService()
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+
+        await vm.sendCommand("/compact")
+        await vm.sendCommand("/compact")
+
+        XCTAssertEqual(fake.sentText, ["/compact", "/compact"])
+    }
 }

@@ -249,6 +249,16 @@ struct ChatView: View {
                     .background(Color.red.opacity(0.9))
                     .accessibilityLabel("Chat error: \(errorMessage)")
             }
+            // Tap-to-compact nudge once the session's context passes the
+            // absolute threshold (see CompactContextBanner.shouldShow).
+            // Sits between the error banner and the subagent strip, same
+            // slot as the Android client.
+            if let context = viewModel.sessionStatus?.context,
+               CompactContextBanner.shouldShow(context) {
+                CompactContextBanner(tokens: context.tokens) {
+                    Task { await viewModel.sendCommand("/compact") }
+                }
+            }
             // Sticky strip of running subagents pinned above the timeline.
             // Hidden when none are running (see RunningSubagentStrip). Tap a
             // pill to open that subagent's read-only sub-chat.

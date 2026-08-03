@@ -803,6 +803,11 @@ public final class ChatViewModel {
         try? await timeline.markAsRead()
     }
 
+    /// In-flight latch for `sendCommand` — repeated taps on a Compact
+    /// affordance (banner or gauge button) must not each queue another
+    /// bare /compact while the first is still sending.
+    private var commandInFlight = false
+
     /// Sends a slash command on the user's behalf — the Compact buttons
     /// next to the context gauge (Mac header, iOS session sheet) wire
     /// here with "/compact". Deliberately bypasses `ComposerViewModel`:
@@ -813,6 +818,9 @@ public final class ChatViewModel {
     /// logged rather than surfaced because the button has no error UI
     /// and the missing echo already tells the user nothing went out.
     public func sendCommand(_ command: String) async {
+        guard !commandInFlight else { return }
+        commandInFlight = true
+        defer { commandInFlight = false }
         do {
             try await timeline.sendText(command)
         } catch {
