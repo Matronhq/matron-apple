@@ -29,8 +29,12 @@ final class CompactContextBannerTests: XCTestCase {
     func test_title_usesCompactTokens() {
         XCTAssertEqual(
             CompactContextBanner.title(tokens: 265_400),
-            "Large conversation (265k tokens) · Tap to compact"
+            "Large conversation (265k)"
         )
+    }
+
+    func test_actionTitle_isCompact() {
+        XCTAssertEqual(CompactContextBanner.actionTitle, "Compact")
     }
 
     func test_spokenLabel_usesSpokenTokens() {

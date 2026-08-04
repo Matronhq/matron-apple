@@ -7,7 +7,7 @@ import MatronModels
 /// `ConnectionStatusBanner`'s offline state — full-width, leading-aligned,
 /// opaque red with white content — so it reads as the same "the app needs
 /// your attention" vocabulary; the Android client ships the equivalent
-/// banner (`CompactContextBanner.kt`), and the two stay copy- and
+/// banner (`CompactContextBanner.kt`), and the two stay
 /// threshold-compatible.
 public struct CompactContextBanner: View {
     /// Absolute context size (in tokens) past which the banner appears.
@@ -22,10 +22,15 @@ public struct CompactContextBanner: View {
         return context.tokens > tokenThreshold
     }
 
-    /// Visible copy — exposed for tests so the wording stays pinned.
+    /// Visible copy — exposed for tests so the wording stays pinned. The
+    /// token count and the action verb are separate pieces: the title may
+    /// truncate on narrow phones, the trailing "Compact" action never does.
     static func title(tokens: Int) -> String {
-        "Large conversation (\(UsageMetersFormat.compactTokens(tokens)) tokens) · Tap to compact"
+        "Large conversation (\(UsageMetersFormat.compactTokens(tokens)))"
     }
+
+    /// Trailing action label, rendered next to the compact glyph.
+    static let actionTitle = "Compact"
 
     /// VoiceOver copy: the abbreviated "265k" reads badly spoken, so the
     /// label swaps in `spokenTokens` ("265 thousand").
@@ -44,16 +49,22 @@ public struct CompactContextBanner: View {
     public var body: some View {
         Button(action: onCompact) {
             HStack(spacing: 8) {
-                // Same glyph as the Compact button beside the context
-                // gauge, so the two affordances read as one action.
-                Image(systemName: "arrow.down.right.and.arrow.up.left")
-                    .font(.caption)
-                    .foregroundStyle(.white)
                 Text(Self.title(tokens: tokens))
                     .font(.callout)
                     .foregroundStyle(.white)
                     .lineLimit(1)
-                Spacer(minLength: 0)
+                Spacer(minLength: 8)
+                // Same glyph as the Compact button beside the context
+                // gauge, so the two affordances read as one action. The
+                // action pair is fixedSize so a narrow phone truncates the
+                // title, never the verb.
+                Image(systemName: "arrow.down.right.and.arrow.up.left")
+                    .font(.caption)
+                    .foregroundStyle(.white)
+                Text(Self.actionTitle)
+                    .font(.callout)
+                    .foregroundStyle(.white)
+                    .fixedSize()
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
