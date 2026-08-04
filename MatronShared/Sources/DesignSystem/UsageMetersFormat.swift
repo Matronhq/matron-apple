@@ -48,6 +48,21 @@ public enum UsageMetersFormat {
         return .red
     }
 
+    /// Fill width for a usage bar, proportional with two perceptual
+    /// guards sized to the capsule height: a bar that isn't exhausted
+    /// never renders flush-full — below 100% the fill leaves at least one
+    /// capsule-height of track visible, so 90–95% stops reading as "all
+    /// gone" (only a true 100% touches the far edge) — and a nonzero
+    /// percent renders at least the capsule's own diameter, below which
+    /// the shape distorts.
+    public static func barFillWidth(percent: Int, barWidth: CGFloat, barHeight: CGFloat) -> CGFloat {
+        let clamped = min(max(percent, 0), 100)
+        guard clamped > 0 else { return 0 }
+        guard clamped < 100 else { return barWidth }
+        let proportional = barWidth * CGFloat(clamped) / 100
+        return min(max(proportional, barHeight), barWidth - barHeight)
+    }
+
     /// Reset time for a bar's trailing text. Near resets read as a
     /// countdown, far ones as local weekday + hour; no timestamp falls
     /// back to the raw text the bridge scraped.

@@ -41,7 +41,9 @@ final class UsageMetersSnapshotTests: XCTestCase {
         let limits = [
             limit("Session", 12, resetsAt: fixedNow.addingTimeInterval(45 * 60)),
             limit("Week (all models)", 55, resetsAt: fixedNow.addingTimeInterval(3 * 24 * 3600)),
-            limit("Week (Fable)", 81, resetsAt: fixedNow.addingTimeInterval(3 * 24 * 3600)),
+            // 95% pins the near-full guard: the fill must stop short of
+            // the track's far edge so the bar doesn't read as exhausted.
+            limit("Week (Fable)", 95, resetsAt: fixedNow.addingTimeInterval(3 * 24 * 3600)),
         ]
         assertVariants(
             of: UsageBarsView(limits: limits, scale: .regular, fixedNow: fixedNow)
