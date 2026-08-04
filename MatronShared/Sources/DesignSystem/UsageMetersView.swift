@@ -63,6 +63,11 @@ public struct UsageBarsView: View {
                     Text("\(UsageMetersFormat.barLabel(limit.label)):")
                         .gridColumnAlignment(.trailing)
                     bar(for: limit)
+                    // Exact number beside the bar — near-full bars are
+                    // visually ambiguous at this size (Dan, 2026-08-04).
+                    Text("\(limit.percent)%")
+                        .gridColumnAlignment(.trailing)
+                        .monospacedDigit()
                     Text(UsageMetersFormat.resetDisplay(resetsAt: limit.resetsAt, raw: limit.resets, now: now) ?? "")
                         .foregroundStyle(.secondary)
                 }
@@ -74,12 +79,16 @@ public struct UsageBarsView: View {
     }
 
     private func bar(for limit: SessionStatus.Limit) -> some View {
-        let fraction = CGFloat(min(max(limit.percent, 0), 100)) / 100
-        return ZStack(alignment: .leading) {
-            Capsule().fill(Color.primary.opacity(0.12))
+        // Track opacity 0.12 → 0.2: at 3pt tall the remaining sliver of a
+        // 90% bar was too faint to register against a saturated red fill.
+        ZStack(alignment: .leading) {
+            Capsule().fill(Color.primary.opacity(0.2))
             Capsule()
                 .fill(UsageMetersFormat.barColor(percent: limit.percent))
-                .frame(width: scale.barWidth * fraction)
+                .frame(width: UsageMetersFormat.barFillWidth(
+                    percent: limit.percent,
+                    barWidth: scale.barWidth,
+                    barHeight: scale.barHeight))
         }
         .frame(width: scale.barWidth, height: scale.barHeight)
     }

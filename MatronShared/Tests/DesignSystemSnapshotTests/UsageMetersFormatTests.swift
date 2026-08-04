@@ -40,6 +40,24 @@ final class UsageMetersFormatTests: XCTestCase {
         XCTAssertEqual(UsageMetersFormat.barColor(percent: 100), .red)
     }
 
+    func testBarFillWidth() {
+        // Compact scale: 90pt bar, 3pt capsule.
+        XCTAssertEqual(UsageMetersFormat.barFillWidth(percent: 0, barWidth: 90, barHeight: 3), 0)
+        XCTAssertEqual(UsageMetersFormat.barFillWidth(percent: 50, barWidth: 90, barHeight: 3), 45)
+        // Nonzero fills never shrink below the capsule's own diameter.
+        XCTAssertEqual(UsageMetersFormat.barFillWidth(percent: 1, barWidth: 90, barHeight: 3), 3)
+        // Near-full bars keep a capsule-height sliver of track visible —
+        // 95% of 90pt is 85.5pt but caps at 87pt.
+        XCTAssertEqual(UsageMetersFormat.barFillWidth(percent: 95, barWidth: 90, barHeight: 3), 85.5)
+        XCTAssertEqual(UsageMetersFormat.barFillWidth(percent: 99, barWidth: 90, barHeight: 3), 87)
+        // Only a true 100% (or beyond) touches the far edge.
+        XCTAssertEqual(UsageMetersFormat.barFillWidth(percent: 100, barWidth: 90, barHeight: 3), 90)
+        XCTAssertEqual(UsageMetersFormat.barFillWidth(percent: 120, barWidth: 90, barHeight: 3), 90)
+        XCTAssertEqual(UsageMetersFormat.barFillWidth(percent: -5, barWidth: 90, barHeight: 3), 0)
+        // Regular scale: 160pt bar, 6pt capsule — cap is 154pt.
+        XCTAssertEqual(UsageMetersFormat.barFillWidth(percent: 99, barWidth: 160, barHeight: 6), 154)
+    }
+
     func testResetDisplay() {
         let now = Date(timeIntervalSince1970: 1_760_000_000)
         let utc = TimeZone(identifier: "UTC")!
