@@ -58,6 +58,13 @@ public final class DeviceLinkViewModel {
     /// The active session's display code — what approve/deny send back as
     /// the belt-and-braces intent check.
     private var currentCode: String?
+    /// The last payload the relay accepted. The inline scanner keeps the
+    /// desktop's QR in frame after a successful offer, so it re-fires the
+    /// same payload on a cooldown — those repeats must not reach the relay,
+    /// where they'd 409 and stamp "already used by another device" over a
+    /// clean send. Only set on success: failed offers stay retryable just by
+    /// keeping the code in frame.
+    private var lastOfferedPayload: String?
     /// Bumped by every `stop()`. `startSession()` snapshots this on entry
     /// and re-checks it after each `await`; a mismatch means a `stop()`
     /// landed while the session was starting (e.g. the view disappeared
@@ -80,6 +87,7 @@ public final class DeviceLinkViewModel {
     public func start() async {
         stop()
         noticeMessage = nil
+        lastOfferedPayload = nil
         phase = .loading
         await startSession()
     }
@@ -141,6 +149,9 @@ public final class DeviceLinkViewModel {
         // A double-fired scan callback must not stack a second offer on
         // the one still in flight.
         guard !isSubmitting else { return }
+        // Inline-scanner repeats of a code the relay already accepted are
+        // no-ops (see lastOfferedPayload).
+        guard payload != lastOfferedPayload else { return }
         let gen = generation
         let parsed: RendezvousURI.Parsed
         do {
@@ -178,6 +189,7 @@ public final class DeviceLinkViewModel {
         do {
             try await relay.offerRendezvous(rid: parsed.rid, box: box)
             guard gen == generation else { return }
+            lastOfferedPayload = payload
             noticeMessage = "Sent — approve the request when it appears."
         } catch {
             guard gen == generation else { return }
