@@ -218,6 +218,121 @@ final class ChatViewModelTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func test_identicalSnapshot_isSkippedWithoutRecommit() async throws {
+        // The journal re-yields the full timeline on events that change
+        // nothing visible; each no-op reassignment of the @Observable
+        // arrays forced a full re-render of the visible window (the
+        // 2026-08-05 chat-switch hang). Identical snapshots must not
+        // touch `items`.
+        let fake = FakeTimelineService()
+        let item = TimelineItem(
+            id: "1", sender: "@a:s", timestamp: .now,
+            kind: .text(body: "hi", formattedHTML: nil), isOwn: false
+        )
+        fake.snapshotsToEmit = [[item], [item]]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        await task.value
+
+        XCTAssertEqual(vm.items.count, 1)
+        XCTAssertEqual(
+            vm.appliedSnapshotCount, 1,
+            "an identical re-yield must be skipped, not recommitted"
+        )
+    }
+
+    @MainActor
+    func test_streamBurst_coalescesToLatestSnapshot() async throws {
+        // A streaming turn delivers snapshots several times a second.
+        // Inside the coalesce window only the FIRST commits immediately;
+        // later arrivals supersede each other and the freshest one lands
+        // via the end-of-stream flush — nothing may be lost, and the
+        // middle of the burst must never commit.
+        func item(_ i: Int) -> TimelineItem {
+            TimelineItem(
+                id: "m\(i)", sender: "@a:s", timestamp: .now,
+                kind: .text(body: "msg \(i)", formattedHTML: nil), isOwn: false
+            )
+        }
+        let fake = FakeTimelineService()
+        fake.snapshotsToEmit = [
+            [item(0)],
+            [item(0), item(1)],
+            [item(0), item(1), item(2)],
+        ]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        // Widen the window so the whole burst deterministically falls
+        // inside it regardless of test-host scheduling.
+        vm.snapshotCoalesceInterval = .seconds(5)
+        let task = await vm.start()
+        await task.value
+
+        XCTAssertEqual(vm.items.count, 3, "the burst's final snapshot must win")
+        XCTAssertEqual(
+            vm.appliedSnapshotCount, 2,
+            "first snapshot immediate + flushed latest; the superseded middle must not commit"
+        )
+    }
+
+    @MainActor
+    func test_entryWindow_smallFirstPaint_thenSettles() async throws {
+        // Room entry paints a short tail (one cheap layout transaction —
+        // the 120-row build was the bulk of the chat-switch stall), then
+        // settles to steady state behind the extend anchor.
+        let fake = FakeTimelineService()
+        let items = (0..<200).map { i in
+            TimelineItem(
+                id: "m\(i)", sender: "@a:s", timestamp: .now,
+                kind: .text(body: "msg \(i)", formattedHTML: nil), isOwn: false
+            )
+        }
+        fake.snapshotsToEmit = [items]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        vm.beginEntryWindow()   // views call this before start()
+        let task = await vm.start()
+        await task.value
+
+        XCTAssertEqual(vm.windowedRows.count, 41, "entry paint = 40-row tail + leading separator")
+        if case .message(let lastItem)? = vm.windowedRows.last {
+            XCTAssertEqual(lastItem.id, "m199", "the entry window is still the TAIL slice")
+        } else {
+            XCTFail("the entry window must end on the newest message")
+        }
+
+        await vm.settleEntryWindow()
+        XCTAssertEqual(vm.windowedRows.count, 121, "settling must reach the steady-state window")
+        XCTAssertFalse(
+            vm.isExtendingWindow,
+            "the settle hold must release before settleEntryWindow returns"
+        )
+    }
+
+    @MainActor
+    func test_beginEntryWindow_neverShrinksAGrownWindow() async throws {
+        // A restore (ensureWindowContains) or a reader left up in history
+        // owns a window wider than steady state; the entry shrink must
+        // yield to it in either call order.
+        let fake = FakeTimelineService()
+        let items = (0..<200).map { i in
+            TimelineItem(
+                id: "m\(i)", sender: "@a:s", timestamp: .now,
+                kind: .text(body: "msg \(i)", formattedHTML: nil), isOwn: false
+            )
+        }
+        fake.snapshotsToEmit = [items]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        await task.value
+
+        vm.ensureWindowContains("m5")
+        vm.beginEntryWindow()
+        XCTAssertNotNil(
+            vm.windowedRows.first { if case .message(let i) = $0 { return i.id == "m5" }; return false },
+            "entry shrink must not yank a restore target out of the window"
+        )
+    }
+
     // MARK: historyPinTarget
 
     // The views pin the viewport to this target across a history-window
