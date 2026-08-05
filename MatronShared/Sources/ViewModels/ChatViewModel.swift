@@ -986,9 +986,10 @@ public final class ChatViewModel {
     /// bare /compact while the first is still sending.
     private var commandInFlight = false
 
-    /// Sends a slash command on the user's behalf — the Compact buttons
-    /// next to the context gauge (Mac header, iOS session sheet) wire
-    /// here with "/compact". Deliberately bypasses `ComposerViewModel`:
+    /// Sends a command on the user's behalf — the Compact buttons next
+    /// to the context gauge (Mac header, iOS session sheet) wire here
+    /// with "/compact", and the floating `StopTurnButton` with "!esc".
+    /// Deliberately bypasses `ComposerViewModel`:
     /// a button press must not disturb the composer's draft text, staged
     /// attachments, or Up-arrow history. The command lands in the
     /// timeline as an ordinary own-message, so delivery (and the

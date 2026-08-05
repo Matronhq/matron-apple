@@ -606,6 +606,22 @@ struct ChatView: View {
                     }
                 }
             }
+            // Floating stop — visible while the bot is mid-turn (the
+            // activity indicator is live). Sends the bridge's !esc
+            // interrupt as an ordinary own-message, so delivery shows
+            // in the timeline itself. `MinDisplayDuration` bridges the
+            // label's brief nil flickers between consecutive tool
+            // activities so the button doesn't stutter.
+            .overlay(alignment: .topTrailing) {
+                MinDisplayDuration(while: viewModel.activityLabel != nil) { visible in
+                    if visible {
+                        StopTurnButton {
+                            Task { await viewModel.sendCommand("!esc") }
+                        }
+                    }
+                }
+                .animation(.easeInOut(duration: 0.18), value: viewModel.activityLabel != nil)
+            }
             }
             }
             ComposerView(viewModel: composerVM)
