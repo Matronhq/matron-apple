@@ -333,6 +333,47 @@ final class ChatViewModelTests: XCTestCase {
         )
     }
 
+    // MARK: isTurnRunning (floating stop button)
+
+    /// Polls until `condition` holds (2s deadline) — the sessionState
+    /// observation task runs concurrently with the drained items stream,
+    /// so the flag lands a beat after `start()` returns.
+    @MainActor
+    private func waitFor(_ condition: @autoclosure @MainActor () -> Bool) async {
+        let deadline = Date().addingTimeInterval(2)
+        while !condition() && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+
+    @MainActor
+    func test_sessionStateRunning_setsIsTurnRunning() async {
+        let fake = FakeTimelineService()
+        fake.snapshotsToEmit = [[]]
+        fake.sessionStatesToEmit = ["running"]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        await task.value
+        await waitFor(vm.isTurnRunning)
+        XCTAssertTrue(vm.isTurnRunning, "a 'running' session_state must arm the stop button")
+        vm.stop()
+    }
+
+    @MainActor
+    func test_sessionStateWaiting_clearsIsTurnRunning() async {
+        // The turn-end signal: running → waiting must drop the flag even
+        // though no timeline snapshot changed.
+        let fake = FakeTimelineService()
+        fake.snapshotsToEmit = [[]]
+        fake.sessionStatesToEmit = ["running", "waiting"]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        await task.value
+        await waitFor(!vm.isTurnRunning)
+        XCTAssertFalse(vm.isTurnRunning, "'waiting' (turn end) must disarm the stop button")
+        vm.stop()
+    }
+
     // MARK: historyPinTarget
 
     // The views pin the viewport to this target across a history-window

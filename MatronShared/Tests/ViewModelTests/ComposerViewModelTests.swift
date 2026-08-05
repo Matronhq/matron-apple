@@ -71,6 +71,18 @@ final class FakeTimelineService: TimelineService, @unchecked Sendable {
         }
     }
 
+    /// Session-state values `sessionState()` yields (then finishes) —
+    /// drives `ChatViewModel.isTurnRunning` tests.
+    var sessionStatesToEmit: [String] = []
+
+    func sessionState() -> AsyncStream<String> {
+        let states = sessionStatesToEmit
+        return AsyncStream { continuation in
+            for s in states { continuation.yield(s) }
+            continuation.finish()
+        }
+    }
+
     /// Deterministic in-flight window: `sendText` parks here until the test
     /// opens the gate. A wall-clock `Task.sleep` would do the same job, but
     /// sleeping inside the suite perturbs the timer-driven

@@ -19,7 +19,7 @@ public struct StopTurnButton: View {
     public var body: some View {
         Button(action: action) {
             Image(systemName: "stop.circle.fill")
-                .font(.system(size: 28))
+                .font(.system(size: 36))
                 .foregroundStyle(.primary, .regularMaterial)
                 .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
         }

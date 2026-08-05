@@ -606,21 +606,22 @@ struct ChatView: View {
                     }
                 }
             }
-            // Floating stop — visible while the bot is mid-turn (the
-            // activity indicator is live). Sends the bridge's !esc
-            // interrupt as an ordinary own-message, so delivery shows
-            // in the timeline itself. `MinDisplayDuration` bridges the
-            // label's brief nil flickers between consecutive tool
-            // activities so the button doesn't stutter.
+            // Floating stop — solid for the whole turn: `isTurnRunning`
+            // (durable session_state, flipped at turn start/end) carries
+            // it; the ephemeral activity label is OR-ed in as a fast
+            // path in case a session_state frame is missed. Sends the
+            // bridge's !esc interrupt as an ordinary own-message, so
+            // delivery shows in the timeline itself.
             .overlay(alignment: .topTrailing) {
-                MinDisplayDuration(while: viewModel.activityLabel != nil) { visible in
+                MinDisplayDuration(while: viewModel.isTurnRunning || viewModel.activityLabel != nil) { visible in
                     if visible {
                         StopTurnButton {
                             Task { await viewModel.sendCommand("!esc") }
                         }
                     }
                 }
-                .animation(.easeInOut(duration: 0.18), value: viewModel.activityLabel != nil)
+                .animation(.easeInOut(duration: 0.18),
+                           value: viewModel.isTurnRunning || viewModel.activityLabel != nil)
             }
             }
             }

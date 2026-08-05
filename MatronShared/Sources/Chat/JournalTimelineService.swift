@@ -631,6 +631,10 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         engine.sessionStatus(convoID: convoID)
     }
 
+    public func sessionState() -> AsyncStream<String> {
+        store.sessionStateStream(convoID: convoID)
+    }
+
     public func markAsRead() async throws {
         guard let maxSeq = try store.maxSeq(convoID: convoID) else { return }
         do {
