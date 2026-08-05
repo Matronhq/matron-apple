@@ -4,9 +4,11 @@ import SwiftUI
 /// Shown as an overlay in the top-trailing corner while the bot's
 /// activity indicator is live (an agent turn is running); tapping
 /// invokes `action`, which the host binds to sending the bridge's
-/// `!esc` interrupt. Same shape language as `JumpToBottomButton` so the
-/// two floating chat controls read as one family — this one sits on the
-/// opposite end of the same trailing edge.
+/// `!esc` interrupt. Same shape language AND tint as
+/// `JumpToBottomButton` so the two floating chat controls read as one
+/// family — this one sits on the opposite end of the same trailing
+/// edge. (Red was tried first; Dan preferred the neutral tint,
+/// 2026-08-05.)
 public struct StopTurnButton: View {
     private let action: () -> Void
 
@@ -18,7 +20,7 @@ public struct StopTurnButton: View {
         Button(action: action) {
             Image(systemName: "stop.circle.fill")
                 .font(.system(size: 28))
-                .foregroundStyle(.red, .regularMaterial)
+                .foregroundStyle(.primary, .regularMaterial)
                 .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
         }
         .buttonStyle(.plain)
