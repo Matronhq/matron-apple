@@ -456,6 +456,50 @@ final class DeviceLinkViewModelTests: XCTestCase {
         vm.stop()
     }
 
+    func test_offerScanned_repeatOfAcceptedPayload_isIgnored() async {
+        // The inline scanner keeps the desktop's QR in frame after a
+        // successful offer and re-fires the same payload on a cooldown.
+        // Those repeats must not reach the relay — a second offer for the
+        // same rid would 409 and stamp "already used by another device"
+        // over a clean send.
+        let fake = FakeDeviceLinker()
+        fake.startResults = [.success(LinkStart(code: "2345-6789", expiresIn: 120))]
+        let relay = FakeRelay()
+        let vm = DeviceLinkViewModel(api: fake, serverURL: URL(string: "https://chat.example.com")!,
+                                     relay: relay, pollInterval: .milliseconds(1), errorPollInterval: .milliseconds(1))
+        await vm.start()
+        await vm.offerScanned(Self.rlinkPayload)
+        XCTAssertEqual(relay.offers.count, 1)
+        XCTAssertEqual(vm.noticeMessage, "Sent — approve the request when it appears.")
+
+        await vm.offerScanned(Self.rlinkPayload)
+        XCTAssertEqual(relay.offers.count, 1, "a repeat of the accepted payload must not re-offer")
+        XCTAssertEqual(vm.noticeMessage, "Sent — approve the request when it appears.")
+        vm.stop()
+    }
+
+    func test_offerScanned_failedOffer_staysRetryableWithSamePayload() async {
+        // Only ACCEPTED payloads are deduped: after a transport failure the
+        // user retries just by keeping the code in frame — the cooldown
+        // re-fire with the identical payload must reach the relay again.
+        let fake = FakeDeviceLinker()
+        fake.startResults = [.success(LinkStart(code: "2345-6789", expiresIn: 120))]
+        let relay = FakeRelay()
+        relay.offerResult = .failure(RelayError.transport("down"))
+        let vm = DeviceLinkViewModel(api: fake, serverURL: URL(string: "https://chat.example.com")!,
+                                     relay: relay, pollInterval: .milliseconds(1), errorPollInterval: .milliseconds(1))
+        await vm.start()
+        await vm.offerScanned(Self.rlinkPayload)
+        XCTAssertEqual(relay.offers.count, 1)
+        XCTAssertEqual(vm.noticeMessage, "Couldn't reach the Matron relay — try again.")
+
+        relay.offerResult = .success(())
+        await vm.offerScanned(Self.rlinkPayload)
+        XCTAssertEqual(relay.offers.count, 2, "the same payload must be re-offerable after a failure")
+        XCTAssertEqual(vm.noticeMessage, "Sent — approve the request when it appears.")
+        vm.stop()
+    }
+
     // MARK: Finding 2 — offerScanned must inhibit poll-driven regeneration
 
     func test_offerScanned_inhibitsPollRegenerationWhileOfferInFlight() async throws {

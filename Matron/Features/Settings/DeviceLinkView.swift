@@ -13,7 +13,6 @@ struct DeviceLinkView: View {
 
     private enum LinkTab: String, CaseIterable { case show = "Show", scan = "Scan" }
     @State private var linkTab: LinkTab = .show
-    @State private var showingScanner = false
 
     init(api: any DeviceLinking, serverURL: URL, relay: any RelayRendezvousing) {
         _viewModel = State(initialValue: DeviceLinkViewModel(api: api, serverURL: serverURL, relay: relay))
@@ -60,10 +59,6 @@ struct DeviceLinkView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await viewModel.start() }
         .onDisappear { viewModel.stop() }
-        // The scanner cover lives inside scanTab, so switching tabs tears
-        // it down without flipping the flag back — returning to Scan would
-        // then reopen the camera unasked.
-        .onChange(of: linkTab) { if linkTab != .scan { showingScanner = false } }
     }
 
     /// The pre-claim QR/status content: loading, showing the code,
@@ -89,22 +84,19 @@ struct DeviceLinkView: View {
         }
     }
 
+    /// The camera is live the moment this tab appears — no button, no
+    /// cover. Switching tabs unmounts the surface, which stops the capture
+    /// session. The refire cooldown lets a code kept in frame retry after
+    /// a failed offer; successful repeats are dropped by the view model.
     @ViewBuilder private var scanTab: some View {
-        VStack(spacing: 12) {
-            Text("If your computer is showing a Matron QR code, scan it to sign it in as you.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            Button {
-                showingScanner = true
-            } label: {
-                Label("Scan the computer's QR code", systemImage: "qrcode.viewfinder")
-            }
-            .buttonStyle(.borderedProminent)
-        }
-        .fullScreenCover(isPresented: $showingScanner) {
-            QRScannerView { payload in
+        Section {
+            QRScannerSurface(onScanned: { payload in
                 Task { await viewModel.offerScanned(payload) }
-            }
+            }, refireDelay: 2.5)
+            .frame(height: 300)
+            .listRowInsets(EdgeInsets())
+        } footer: {
+            Text("If your computer is showing a Matron QR code, point the camera at it to sign that computer in as you.")
         }
     }
 

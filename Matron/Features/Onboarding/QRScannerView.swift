@@ -1,13 +1,42 @@
 import SwiftUI
 import AVFoundation
 
-/// Full-screen QR scanner for sign-in (device-link login). QR metadata
-/// objects only; fires `onScanned` once per presentation with the raw
-/// payload string. Camera-permission denial renders an explanation with a
-/// Settings deep-link — the manual code path remains on the sign-in form.
+/// Full-screen QR scanner for sign-in (device-link login). Wraps
+/// `QRScannerSurface` in navigation chrome with a Cancel button; fires
+/// `onScanned` once per presentation and dismisses.
 struct QRScannerView: View {
     @Environment(\.dismiss) private var dismiss
     let onScanned: (String) -> Void
+
+    var body: some View {
+        NavigationStack {
+            QRScannerSurface(onScanned: { payload in
+                dismiss()
+                onScanned(payload)
+            })
+            .ignoresSafeArea()
+            .navigationTitle("Scan QR code")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+/// The chrome-less scanner: camera permission + preview + fallback
+/// messages. Hosts decide the framing — `QRScannerView` goes full-screen
+/// for onboarding; Settings → Link a Device → Scan embeds it inline as a
+/// card, where `refireDelay` lets the same mounted camera report again
+/// after a cooldown (a full-screen host dismisses on first fire, so the
+/// default fire-once is right there).
+struct QRScannerSurface: View {
+    let onScanned: (String) -> Void
+    /// Seconds before the scanner may fire again after a hit; nil = once
+    /// per presentation.
+    var refireDelay: TimeInterval?
 
     @State private var authorized: Bool?
     /// Set when the capture session fails to configure in the authorized
@@ -16,32 +45,22 @@ struct QRScannerView: View {
     @State private var setupFailed = false
 
     var body: some View {
-        NavigationStack {
-            Group {
-                switch authorized {
-                case .none:
-                    ProgressView()
-                case .some(true) where setupFailed:
-                    // No camera hardware / capture setup failed: "Open
-                    // Settings" wouldn't help, so omit it — just the message
-                    // and the manual-code fallback.
-                    unavailableMessage("Couldn't start the camera on this device.", showSettings: false)
-                case .some(true):
-                    CameraPreview(onScanned: { payload in
-                        dismiss()
-                        onScanned(payload)
-                    }, onSetupFailed: { setupFailed = true })
-                    .ignoresSafeArea()
-                case .some(false):
-                    unavailableMessage("Matron needs camera access to scan sign-in codes.", showSettings: true)
-                }
-            }
-            .navigationTitle("Scan QR code")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") { dismiss() }
-                }
+        Group {
+            switch authorized {
+            case .none:
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .some(true) where setupFailed:
+                // No camera hardware / capture setup failed: "Open
+                // Settings" wouldn't help, so omit it — just the message
+                // and the manual-code fallback.
+                unavailableMessage("Couldn't start the camera on this device.", showSettings: false)
+            case .some(true):
+                CameraPreview(onScanned: onScanned,
+                              onSetupFailed: { setupFailed = true },
+                              refireDelay: refireDelay)
+            case .some(false):
+                unavailableMessage("Matron needs camera access to scan sign-in codes.", showSettings: true)
             }
         }
         .task {
@@ -76,6 +95,7 @@ struct QRScannerView: View {
                 .multilineTextAlignment(.center)
         }
         .padding(32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -86,11 +106,13 @@ private struct CameraPreview: UIViewControllerRepresentable {
     /// configured, so the SwiftUI layer can replace the black preview with
     /// the manual-code fallback instead of a dead screen.
     let onSetupFailed: () -> Void
+    let refireDelay: TimeInterval?
 
     func makeUIViewController(context: Context) -> ScannerViewController {
         let controller = ScannerViewController()
         controller.onScanned = onScanned
         controller.onSetupFailed = onSetupFailed
+        controller.refireDelay = refireDelay
         return controller
     }
 
@@ -100,6 +122,10 @@ private struct CameraPreview: UIViewControllerRepresentable {
 final class ScannerViewController: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
     var onScanned: ((String) -> Void)?
     var onSetupFailed: (() -> Void)?
+    /// nil = fire once per presentation (full-screen host dismisses on
+    /// fire); otherwise re-arm after this many seconds so an inline host
+    /// can report retries without remounting the camera.
+    var refireDelay: TimeInterval?
     private let session = AVCaptureSession()
     private var didFire = false
 
@@ -151,7 +177,12 @@ final class ScannerViewController: UIViewController, AVCaptureMetadataOutputObje
               let object = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
               object.type == .qr, let payload = object.stringValue
         else { return }
-        didFire = true // one payload per presentation — a QR in frame fires repeatedly
+        didFire = true // a QR in frame fires this delegate many times a second
         onScanned?(payload)
+        if let refireDelay {
+            DispatchQueue.main.asyncAfter(deadline: .now() + refireDelay) { [weak self] in
+                self?.didFire = false
+            }
+        }
     }
 }
