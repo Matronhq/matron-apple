@@ -35,6 +35,18 @@ final class BotCommandCatalogTests: XCTestCase {
         }
     }
 
+    /// Pins the 2026-08-05 palette audit against the bridge's command set:
+    /// /timer and /switch were missing entirely, and the rescue keystrokes
+    /// must be the bang forms — the bridge only intercepts "!esc"/"!enter";
+    /// a typed "/esc" passes through into the agent's terminal as junk.
+    func test_claudeBridge_includesTimerSwitchAndBangRescues() {
+        let triggers = Set(BotCommandCatalog.claudeBridge.map(\.trigger))
+        for expected in ["/timer", "/switch", "!esc", "!enter"] {
+            XCTAssertTrue(triggers.contains(expected), "catalog must include \(expected)")
+        }
+        XCTAssertFalse(triggers.contains("/esc"), "slash-form esc is not a bridge command")
+    }
+
     func test_claudeBridge_isNonEmpty_andHasUniqueTriggers() {
         let all = BotCommandCatalog.claudeBridge
         XCTAssertFalse(all.isEmpty)

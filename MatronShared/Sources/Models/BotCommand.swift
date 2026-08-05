@@ -37,6 +37,7 @@ public enum BotCommandCatalog {
         // Info
         BotCommand(trigger: "/status", summary: "Show current session info"),
         BotCommand(trigger: "/agent", summary: "Show the current agent"),
+        BotCommand(trigger: "/switch", summary: "Hand this conversation to the other coding agent", argHint: "<claude|codex>"),
         BotCommand(trigger: "/working", summary: "Toggle tool call visibility"),
         BotCommand(trigger: "/mcp", summary: "Show MCP server status"),
         BotCommand(trigger: "/model", summary: "Show current model"),
@@ -53,7 +54,14 @@ public enum BotCommandCatalog {
         BotCommand(trigger: "/login", summary: "Log in to your Anthropic account"),
         BotCommand(trigger: "/logout", summary: "Log out of your Anthropic account"),
         // Misc
-        BotCommand(trigger: "/esc", summary: "Cancel the current turn"),
+        BotCommand(trigger: "/timer", summary: "Send a message to this chat later", argHint: "<duration> <message>"),
+        // The rescue keystrokes are bang-only on the bridge: a typed "/esc"
+        // is NOT intercepted — it falls through as a TUI slash passthrough
+        // and lands in the agent's terminal as a junk command. The palette
+        // must complete the bang form. (The filter matches either prefix,
+        // so typing "/es…" still surfaces it.)
+        BotCommand(trigger: "!esc", summary: "Cancel the current turn"),
+        BotCommand(trigger: "!enter", summary: "Press Enter in the agent's terminal"),
         BotCommand(trigger: "/help", summary: "Show command help"),
     ]
 
