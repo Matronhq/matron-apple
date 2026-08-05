@@ -87,6 +87,14 @@ public protocol TimelineService: Sendable {
     /// the last cached status on `viewing`, so subscribing at convo-open
     /// is enough to populate a header immediately.
     func sessionStatus() -> AsyncStream<SessionStatusUpdate>
+
+    /// Per-convo stream of the conversation's session state — "running"
+    /// while an agent turn is in flight, "waiting"/"done" otherwise —
+    /// mirroring the bridge's durable `session_status` journal events.
+    /// Solid for the whole turn, unlike the ephemeral activity indicator
+    /// (which the staleness sweep can clear mid-turn); drives the floating
+    /// stop button.
+    func sessionState() -> AsyncStream<String>
 }
 
 public extension TimelineService {
@@ -99,6 +107,12 @@ public extension TimelineService {
     /// Default: no status source — an immediately-finished stream, so
     /// implementations and test fakes without one need no changes.
     func sessionStatus() -> AsyncStream<SessionStatusUpdate> {
+        AsyncStream { $0.finish() }
+    }
+
+    /// Default: no session-state source, same immediately-finished shape
+    /// as `sessionStatus()`.
+    func sessionState() -> AsyncStream<String> {
         AsyncStream { $0.finish() }
     }
 

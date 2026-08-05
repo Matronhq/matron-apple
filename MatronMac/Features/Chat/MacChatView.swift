@@ -585,18 +585,19 @@ struct MacChatView: View {
                     }
                 }
             }
-            // Floating stop — visible while the bot is mid-turn. See
-            // iOS `ChatView` for the !esc-as-own-message rationale and
-            // `MinDisplayDuration`'s flicker-bridging role.
+            // Floating stop — solid for the whole turn via the durable
+            // session_state; see iOS `ChatView` for the signal and
+            // !esc-as-own-message rationale.
             .overlay(alignment: .topTrailing) {
-                MinDisplayDuration(while: viewModel.activityLabel != nil) { visible in
+                MinDisplayDuration(while: viewModel.isTurnRunning || viewModel.activityLabel != nil) { visible in
                     if visible {
                         StopTurnButton {
                             Task { await viewModel.sendCommand("!esc") }
                         }
                     }
                 }
-                .animation(.easeInOut(duration: 0.18), value: viewModel.activityLabel != nil)
+                .animation(.easeInOut(duration: 0.18),
+                           value: viewModel.isTurnRunning || viewModel.activityLabel != nil)
             }
             }
             }

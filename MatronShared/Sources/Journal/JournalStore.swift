@@ -867,6 +867,20 @@ public final class JournalStore: @unchecked Sendable {
         return Self.stream(observation, in: dbQueue)
     }
 
+    /// Live stream of one conversation's `session_state` — "running" while
+    /// an agent turn is in flight, "waiting"/"done" otherwise, flipped by
+    /// the bridge's durable `session_status` journal events at turn
+    /// start/end. The floating stop button keys off this rather than the
+    /// ephemeral activity indicator, which legitimately clears mid-turn
+    /// (bridge dedups activity frames; the overlay staleness sweep drops a
+    /// quiet indicator after 30s).
+    public func sessionStateStream(convoID: String) -> AsyncStream<String> {
+        let observation = ValueObservation.tracking { db in
+            try ConversationRecord.fetchOne(db, key: convoID)?.sessionState ?? "waiting"
+        }
+        return Self.stream(observation, in: dbQueue)
+    }
+
     /// Live stream of one conversation's outbox rows (queued + failed,
     /// oldest first). The timeline renders these as pending/failed echoes;
     /// re-fires on enqueue, state change, and delivery-confirmed delete.

@@ -98,6 +98,15 @@ public final class ChatViewModel {
     /// replays the cached one on convo-open, so this populates promptly).
     public private(set) var sessionStatus: SessionStatus?
 
+    /// True while the conversation's session state is "running" — the
+    /// bridge flips it via durable `session_status` journal events at
+    /// turn start and turn end. Drives the floating `StopTurnButton`,
+    /// which must hold solid for the whole turn: the ephemeral
+    /// `activityLabel` legitimately clears mid-turn (the bridge dedups
+    /// activity frames and the overlay staleness sweep drops a quiet
+    /// indicator after 30s), so it can't carry that job alone.
+    public private(set) var isTurnRunning = false
+
     /// Calendar used for date-separator bucketing. Injectable so tests
     /// can pin a deterministic timezone without poking the host
     /// runtime. Default is `Calendar.current` so production callers
@@ -660,6 +669,7 @@ public final class ChatViewModel {
     private let media: MediaService
     private var observationTask: Task<Void, Never>?
     private var statusTask: Task<Void, Never>?
+    private var sessionStateTask: Task<Void, Never>?
     /// Tracks `mxc://` URLs with a request already in flight so we don't
     /// fire duplicate fetches on every SwiftUI re-render.
     private var inFlightRequests: Set<URL> = []
@@ -867,6 +877,21 @@ public final class ChatViewModel {
             }
         }
 
+        // Deliberately NOT reset before the stream re-arms: on a warm
+        // remount mid-turn the observation re-emits the current state
+        // immediately, and a false-then-true blip would flicker the stop
+        // button on every chat switch.
+        sessionStateTask?.cancel()
+        sessionStateTask = Task { [weak self] in
+            for await state in timeline.sessionState() {
+                guard let self else { return }
+                await MainActor.run {
+                    let running = state == "running"
+                    if self.isTurnRunning != running { self.isTurnRunning = running }
+                }
+            }
+        }
+
         await firstSignal.wait()
         return task
     }
@@ -891,6 +916,8 @@ public final class ChatViewModel {
         observationTask = nil
         statusTask?.cancel()
         statusTask = nil
+        sessionStateTask?.cancel()
+        sessionStateTask = nil
         emptyDebounceTask?.cancel()
         emptyDebounceTask = nil
         resumeTask?.cancel()
