@@ -21,7 +21,7 @@ struct MatronApp: App {
     @State private var bootstrapDone = false
     /// Phase 4 Task 6 — chat-list `NavigationStack` path. Hoisted to the
     /// host so a notification tap (routed via
-    /// `NotificationDelegate.shared.tappedRoomID`) can append a room ID
+    /// `NotificationDelegate.shared.tappedRoomID`) can set the room ID
     /// and SwiftUI's stack drives the existing
     /// `ChatListView.navigationDestination(for: ChatSummary.ID.self)`
     /// branch. `[String]` because `ChatSummary.ID == String`.
@@ -53,12 +53,10 @@ struct MatronApp: App {
                         ChatListView(
                             viewModel: ChatListViewModel(chat: dependencies.chatService(for: session)),
                             onSignOut: { signOut() },
-                            // Phase 6 (Search): a search result navigates by
-                            // appending the room ID onto the stack path the
-                            // host owns (same mechanism as a notification tap).
-                            onOpenChat: { roomID in
-                                if chatPath.last != roomID { chatPath.append(roomID) }
-                            }
+                            // Phase 6 (Search): a search result navigates via
+                            // the stack path the host owns (same mechanism as
+                            // a notification tap).
+                            onOpenChat: { roomID in openChat(roomID) }
                         )
                     }
                     .environment(\.appDependencies, dependencies)
@@ -72,27 +70,25 @@ struct MatronApp: App {
                     .environment(\.chatNavigationPath, $chatPath)
                     // Notification-tap deep link. The NSE-rewritten
                     // userInfo carries `room_id`; NotificationDelegate
-                    // publishes that ID and we append it onto the
-                    // navigation path so the existing
+                    // publishes that ID and we set it as the navigation
+                    // path so the existing
                     // `navigationDestination(for: ChatSummary.ID.self)`
                     // branch in ChatListView pushes the chat. Idempotent
                     // on duplicate sends.
                     .onReceive(NotificationDelegate.shared.tappedRoomID) { roomID in
-                        if chatPath.last != roomID {
-                            chatPath.append(roomID)
-                        }
+                        openChat(roomID)
                     }
                     .task { try? await dependencies.syncService(for: session).start() }
                     // Auto-open a conversation the bridge just created while
                     // we're live (e.g. the user sent /start in another chat).
                     // The engine only emits ids for convos born while running,
                     // so this won't fire for the cold-start / reconnect
-                    // backlog. Appends onto the same nav path a notification
-                    // tap uses, so the new chat pushes into view without the
+                    // backlog. Sets the same nav path a notification tap
+                    // uses, so the new chat pushes into view without the
                     // user hunting for it in the list.
                     .task(id: session.userID) {
                         for await roomID in await dependencies.syncService(for: session).newConversations() {
-                            if chatPath.last != roomID { chatPath.append(roomID) }
+                            openChat(roomID)
                         }
                     }
                     .task(id: session.userID) {
@@ -103,9 +99,8 @@ struct MatronApp: App {
                         // subscribed and `PassthroughSubject` dropped the
                         // value. The delegate buffers such taps in
                         // `pendingRoomID`; drain it here.
-                        if let pending = NotificationDelegate.shared.consumePendingRoomID(),
-                           chatPath.last != pending {
-                            chatPath.append(pending)
+                        if let pending = NotificationDelegate.shared.consumePendingRoomID() {
+                            openChat(pending)
                         }
                     }
                     // Push pipeline: request permission, register for
@@ -245,6 +240,20 @@ struct MatronApp: App {
             }
             .preferredColorScheme(MatronAppearance(storedValue: appearanceRaw).colorScheme)
         }
+    }
+
+    /// Open a top-level conversation by REPLACING the whole navigation
+    /// path, never appending: notification taps, search results, and
+    /// auto-opened new conversations used to stack chat-on-chat, so the
+    /// back button walked through previous conversations. Back from a
+    /// conversation always returns to the chat list (Dan, 2026-08-06).
+    /// Sub-chat viewers still push onto their parent (`[parent, child]`),
+    /// so back from a subagent pops to its conversation — and a deep link
+    /// arriving while one is open collapses the stack to the target.
+    /// No-op when the target is already the sole open chat, keeping
+    /// duplicate sends idempotent.
+    private func openChat(_ roomID: String) {
+        if chatPath != [roomID] { chatPath = [roomID] }
     }
 
     /// Restores any persisted journal session (file-backed, keyed
