@@ -281,7 +281,17 @@ struct MacChatView: View {
             startedGeneration = viewModel.observationGeneration + 1
             stripViewModel.start()
             stripStartedGeneration = stripViewModel.observationGeneration
+            // Small first-paint window: the switch stall was one big
+            // layout transaction building the full 120-row window.
+            // Paint a short tail first, then settle to steady state
+            // once that frame is up.
+            viewModel.beginEntryWindow()
             await viewModel.start()
+            // Let the entry-sized window's frame land before growing
+            // it — settling in the same transaction as the first paint
+            // would put the full window back into the switch stall.
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            await viewModel.settleEntryWindow()
             // Explicit paginate-on-open BEFORE markAsRead — see iOS
             // `ChatView`: history loads over HTTP and must not wait on
             // the live socket, which a half-dead connection can hang.
@@ -1020,7 +1030,13 @@ struct MacSubChatPane: View {
             startedGeneration = viewModel.observationGeneration + 1
             stripViewModel.start()
             stripStartedGeneration = stripViewModel.observationGeneration
+            // Same small-first-paint sequence as the parent pane — the
+            // pane split rebuilds this subtree the same way a sidebar
+            // switch rebuilds the parent's.
+            viewModel.beginEntryWindow()
             await viewModel.start()
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            await viewModel.settleEntryWindow()
             // Seed history over HTTP; no markAsRead — children carry no
             // unread state (they're silent).
             await viewModel.paginateBackward()

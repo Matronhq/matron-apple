@@ -191,7 +191,22 @@ public final class ChatViewModel {
     /// before restoring — a remembered id the room no longer contains
     /// would scroll to nothing (bugbot "Scroll anchor ID mismatch" for
     /// the namespace subtlety).
-    public private(set) var rowAnchorIDs: Set<String> = []
+    ///
+    /// Computed on demand with a per-snapshot memo rather than rebuilt
+    /// eagerly: restores read it a handful of times per room open, but
+    /// the eager build hashed every row id on EVERY snapshot commit —
+    /// measurable at 3,000-item rooms × several commits/sec while
+    /// streaming (2026-08-05 sample: `Hasher._combine` in the hot
+    /// stacks).
+    public var rowAnchorIDs: Set<String> {
+        if let cached = rowAnchorIDsCache { return cached }
+        let built = Set(rows.map { row in
+            if case .message(let item) = row { return item.id }
+            return row.id
+        })
+        rowAnchorIDsCache = built
+        return built
+    }
 
     /// Label of the bot's trailing activity indicator (typing / tool-use),
     /// or `nil` when idle. Extracted from the snapshot's `activityIndicator`
@@ -210,6 +225,114 @@ public final class ChatViewModel {
         applyDerivedRecompute()
     }
 
+    /// Minimum spacing between snapshot commits while a stream is live.
+    /// During an agent turn the journal delivers full-timeline snapshots
+    /// several times a second; each commit reassigns the `@Observable`
+    /// arrays and re-renders the whole visible window, which kept the
+    /// main thread ~40% busy on a 2026-08-05 sample and made chat
+    /// switches queue behind render passes. Commits outside a turn are
+    /// unaffected — the first snapshot after 250ms of quiet applies
+    /// immediately. `var` so tests can widen it to make coalescing
+    /// deterministic.
+    var snapshotCoalesceInterval: Duration = .milliseconds(250)
+    /// Latest stream snapshot received inside the coalesce window,
+    /// waiting for `coalesceTask` (or a flush) to commit it. Newer
+    /// arrivals overwrite it — only the freshest snapshot matters.
+    private var pendingSnapshot: [TimelineItem]?
+    private var coalesceTask: Task<Void, Never>?
+    private var lastCommitInstant: ContinuousClock.Instant?
+    /// Count of snapshots actually applied (not skipped as no-ops, not
+    /// superseded in the coalescer). Diagnostic; tests use it to pin the
+    /// skip/coalesce behaviour.
+    private(set) var appliedSnapshotCount = 0
+
+    /// Entry point for every snapshot the live stream yields. Commits
+    /// immediately when the commit is load-bearing for a caller's
+    /// contract — the first snapshot (`start()` returns after it), a
+    /// paginate in flight (`isPaginatingBackward` holds the views'
+    /// bottom anchor until the prepend lands), or a window extension —
+    /// and otherwise coalesces bursts so streaming turns commit at most
+    /// once per `snapshotCoalesceInterval`.
+    private func receiveSnapshot(_ snapshot: [TimelineItem]) {
+        if !hasReceivedFirstSnapshot || isPaginatingBackward || isExtendingWindow {
+            commitSnapshot(snapshot)
+            return
+        }
+        let now = ContinuousClock.now
+        if let last = lastCommitInstant, now - last < snapshotCoalesceInterval {
+            pendingSnapshot = snapshot
+            scheduleCoalescedCommit(after: snapshotCoalesceInterval - (now - last))
+        } else {
+            commitSnapshot(snapshot)
+        }
+    }
+
+    /// The single commit path for stream snapshots. Identical snapshots
+    /// are skipped without touching the `@Observable` arrays — the
+    /// journal re-yields the full timeline on events that change nothing
+    /// visible (the 11:22 log window shows long runs of "items 764→764"),
+    /// and every no-op reassignment forced SwiftUI to re-walk the whole
+    /// rendered window. The Equatable compare is O(N) worst case but
+    /// costs far less than the render it prevents.
+    private func commitSnapshot(_ snapshot: [TimelineItem]) {
+        pendingSnapshot = nil
+        coalesceTask?.cancel()
+        coalesceTask = nil
+        lastCommitInstant = .now
+        let before = items.count
+        if !hasReceivedFirstSnapshot || snapshot != items {
+            appliedSnapshotCount += 1
+            applySnapshot(snapshot)
+            Self.logger.diag("snapshot: items \(before)→\(snapshot.count) firstRenderable=\(self.firstRenderableItemID ?? "nil")")
+        } else {
+            Self.logger.diag("snapshot: unchanged (items=\(before)) — commit skipped")
+        }
+        // Clear any prior error once a fresh snapshot lands.
+        self.error = nil
+        // Flip on the first processed snapshot so the empty-state
+        // placeholder gates correctly even when the snapshot itself
+        // is empty.
+        self.hasReceivedFirstSnapshot = true
+        // Debounce the empty-state so a transient timeline clear
+        // (sliding-sync reset) doesn't flash the "no messages yet"
+        // placeholder.
+        self.updateSettledEmpty(isEmpty: snapshot.isEmpty)
+        // Content → empty is the signature of the local mirror being
+        // wiped underneath an open view (snapshot_required: the server
+        // declined to replay a too-large gap and the engine wiped the
+        // store). Nothing else refetches an already-open chat —
+        // paginate only fires on open and on scroll-up — so without
+        // this the visible messages vanish and the view stays blank
+        // forever.
+        if before > 0 && snapshot.isEmpty {
+            self.scheduleHistoryRefill()
+        }
+    }
+
+    private func scheduleCoalescedCommit(after delay: Duration) {
+        guard coalesceTask == nil else { return }
+        coalesceTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard let self, !Task.isCancelled else { return }
+            self.coalesceTask = nil
+            if let pending = self.pendingSnapshot {
+                self.commitSnapshot(pending)
+            }
+        }
+    }
+
+    /// Commits whatever the coalescer is still holding, immediately.
+    /// Called on stream end / stream error (so the last delivered state
+    /// is never lost) and on `stop()` (so a cached VM's items are
+    /// current when the room is next opened).
+    func flushPendingSnapshot() {
+        coalesceTask?.cancel()
+        coalesceTask = nil
+        if let pending = pendingSnapshot {
+            commitSnapshot(pending)
+        }
+    }
+
     /// Rebuilds `rows` + `firstRenderableItemID` + `lastRenderableItemID`
     /// from the current `items`. Pulled out so a calendar change can
     /// also re-bucket without going through `applySnapshot`. Single
@@ -224,8 +347,8 @@ public final class ChatViewModel {
         var first: TimelineItem.ID?
         var last: TimelineItem.ID?
         var lastIsOwn = false
-        var previousDay: Date?
         var nextActivityLabel: String?
+        currentDayInterval = nil
         for item in items {
             // The trailing activity indicator renders as a fixed footer
             // (below the scrollable timeline, above the composer), NOT a
@@ -253,10 +376,20 @@ public final class ChatViewModel {
             if first == nil { first = item.id }
             last = item.id
             lastIsOwn = item.isOwn
-            let day = calendar.startOfDay(for: item.timestamp)
-            if previousDay == nil || day != previousDay {
-                nextRows.append(.separator(date: item.timestamp))
-                previousDay = day
+            // Day bucketing via a cached day interval, not
+            // `startOfDay(for:)` per item — this recompute runs on every
+            // committed snapshot, and in a 3,000-item room the per-item
+            // calendar call dominated the pass (2026-08-05 sample:
+            // multiple commits/sec while streaming). Consecutive items
+            // almost always share a day, so the common case is two Date
+            // compares. Deliberately half-open (`< end`): DateInterval's
+            // own `contains` includes the end instant, which would
+            // misfile an exactly-midnight timestamp into the previous day.
+            let ts = item.timestamp
+            let sameDay = currentDayInterval.map { ts >= $0.start && ts < $0.end } ?? false
+            if !sameDay {
+                currentDayInterval = calendar.dateInterval(of: .day, for: ts)
+                nextRows.append(.separator(date: ts))
             }
             nextRows.append(.message(item))
         }
@@ -265,12 +398,19 @@ public final class ChatViewModel {
         self.lastRenderableItemID = last
         self.lastRenderableItemIsOwn = lastIsOwn
         self.activityLabel = nextActivityLabel
-        self.rowAnchorIDs = Set(nextRows.map { row in
-            if case .message(let item) = row { return item.id }
-            return row.id
-        })
+        self.rowAnchorIDsCache = nil
         recomputeWindow()
     }
+
+    /// Backing memo for `rowAnchorIDs`. `@ObservationIgnored` — the set
+    /// is consulted imperatively at scroll-restore moments, never from a
+    /// `body`, so observation tracking would only add overhead.
+    @ObservationIgnored private var rowAnchorIDsCache: Set<String>?
+
+    /// Scratch state for `applyDerivedRecompute`'s day bucketing —
+    /// reset at the top of every pass; a property only so the loop
+    /// body reads clearly.
+    @ObservationIgnored private var currentDayInterval: DateInterval?
 
     /// Rebuilds `windowedRows` from `rows` and the current window size.
     /// If the window cut lands mid-day, a leading date separator for the
@@ -341,6 +481,44 @@ public final class ChatViewModel {
             if case .message(let item) = row { return item.id }
         }
         return nil
+    }
+
+    /// First-paint window size on room entry. Switching rooms rebuilds
+    /// the whole detail pane (`.id(id)`-keyed), and eagerly laying out
+    /// `defaultWindowSize` heterogeneous rows in that one transaction is
+    /// the bulk of the 0.5–1.2s switch stall traced on 2026-08-05.
+    /// Painting a smaller tail first and growing to steady state right
+    /// after the first frame splits the cost into two transactions, the
+    /// second of which lands behind a bottom anchor (invisible at the
+    /// tail).
+    private static let entryWindowSize = 40
+
+    /// Shrinks the window to `entryWindowSize` for a room's first paint.
+    /// Called by the views at the top of their open sequence, BEFORE
+    /// `start()`. Guarded to the untouched steady-state size so it never
+    /// fights a window someone else grew — a scroll-position restore's
+    /// `ensureWindowContains` (either order: our shrink then its grow,
+    /// or its grow then our no-op) and a reader left up in history both
+    /// keep their larger window.
+    public func beginEntryWindow() {
+        guard visibleWindowSize == Self.defaultWindowSize else { return }
+        visibleWindowSize = Self.entryWindowSize
+        recomputeWindow()
+    }
+
+    /// Grows the entry window to steady state after the first frame has
+    /// painted. Same `isExtendingWindow` hold as `extendHistoryWindow`
+    /// so the views' bottom anchor covers the prepend. No-op if the
+    /// window already reached (or passed) steady state — e.g. a restore
+    /// widened it first.
+    public func settleEntryWindow() async {
+        guard visibleWindowSize < Self.defaultWindowSize else { return }
+        isExtendingWindow = true
+        visibleWindowSize = Self.defaultWindowSize
+        Self.logger.diag("entry window settle → \(self.visibleWindowSize) rows (of \(self.rows.count) local)")
+        recomputeWindow()
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        isExtendingWindow = false
     }
 
     /// Snaps the render window back to its steady-state size. Called by
@@ -593,6 +771,12 @@ public final class ChatViewModel {
         settledEmpty = false
         emptyDebounceTask?.cancel()
         emptyDebounceTask = nil
+        // Reset the snapshot coalescer so the NEW stream's first snapshot
+        // commits immediately — `start()`'s "returns after the first
+        // snapshot has been applied" contract must hold on a warm remount
+        // too, not just on a fresh VM.
+        flushPendingSnapshot()
+        lastCommitInstant = nil
         // Held meters are only as fresh as the engine's status replay
         // cache: on re-subscribe the engine yields the cached value back
         // immediately when it's still valid, and after a mirror wipe (which
@@ -615,30 +799,7 @@ public final class ChatViewModel {
                         return
                     }
                     await MainActor.run {
-                        let before = self.items.count
-                        self.applySnapshot(snapshot)
-                        Self.logger.diag("snapshot: items \(before)→\(snapshot.count) firstRenderable=\(self.firstRenderableItemID ?? "nil")")
-                        // Clear any prior error once a fresh snapshot lands.
-                        self.error = nil
-                        // Flip on the first applied snapshot so the
-                        // empty-state placeholder gates correctly even
-                        // when the snapshot itself is empty.
-                        self.hasReceivedFirstSnapshot = true
-                        // Debounce the empty-state so a transient timeline
-                        // clear (sliding-sync reset) doesn't flash the
-                        // "no messages yet" placeholder.
-                        self.updateSettledEmpty(isEmpty: snapshot.isEmpty)
-                        // Content → empty is the signature of the local
-                        // mirror being wiped underneath an open view
-                        // (snapshot_required: the server declined to replay
-                        // a too-large gap and the engine wiped the store).
-                        // Nothing else refetches an already-open chat —
-                        // paginate only fires on open and on scroll-up — so
-                        // without this the visible messages vanish and the
-                        // view stays blank forever.
-                        if before > 0 && snapshot.isEmpty {
-                            self.scheduleHistoryRefill()
-                        }
+                        self.receiveSnapshot(snapshot)
                     }
                     firstSignal.fireOnce()
                 }
@@ -652,7 +813,13 @@ public final class ChatViewModel {
                 MatronFileLog.append("timeline stream threw under an open view: \(error.localizedDescription)")
                 let message = error.localizedDescription
                 if let self {
-                    await MainActor.run { self.error = message }
+                    await MainActor.run {
+                        // Flush BEFORE recording the error — a commit
+                        // clears `error`, so the reverse order would
+                        // swallow the message we're about to surface.
+                        self.flushPendingSnapshot()
+                        self.error = message
+                    }
                 }
             }
             // Stream finished (or threw) without yielding any snapshot —
@@ -671,6 +838,13 @@ public final class ChatViewModel {
             }
             if let self {
                 await MainActor.run {
+                    // Stream over — apply any snapshot still held by the
+                    // coalescer so the final state reflects the last thing
+                    // the stream delivered. Tests lean on this: they await
+                    // the observation task's completion and then assert on
+                    // `items`, and a trailing coalesced snapshot must not
+                    // still be pending at that point.
+                    self.flushPendingSnapshot()
                     self.hasReceivedFirstSnapshot = true
                     // A room whose live timeline never warmed up is
                     // genuinely empty — let the placeholder settle in.
@@ -709,6 +883,10 @@ public final class ChatViewModel {
     /// Cancels the in-flight observation task. Call from `View.onDisappear`
     /// to release the AsyncStream's continuation. Idempotent.
     public func stop() {
+        // Land any coalesced snapshot before tearing the stream down —
+        // the VM outlives the view (ChatVMCache) and its items must be
+        // current when the room is next opened.
+        flushPendingSnapshot()
         observationTask?.cancel()
         observationTask = nil
         statusTask?.cancel()
