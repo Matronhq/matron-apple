@@ -610,15 +610,7 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         try store.insertHistory(newOnes)
         if let search {
             for event in newOnes {
-                let body: String? = switch event.type {
-                case JournalEventType.text: event.payload["body"] as? String
-                case JournalEventType.toolOutput: event.payload["snippet"] as? String
-                // diff → snippet precedence mirrors JournalTimelineMapper,
-                // same as the live-sync indexer in JournalSyncEngine.
-                case JournalEventType.diff: event.payload["diff"] as? String ?? event.payload["snippet"] as? String
-                default: nil
-                }
-                if let body, !body.isEmpty {
+                if let body = event.searchableBody {
                     try? await search.index(roomID: event.convoID, eventID: String(event.seq),
                                             sender: event.sender, timestamp: event.ts, body: body)
                 }

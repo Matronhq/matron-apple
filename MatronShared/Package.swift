@@ -194,6 +194,6 @@ let package = Package(
             path: "Tests/EventsTests"
         ),
         .testTarget(name: "SearchTests", dependencies: ["MatronSearch"], path: "Tests/SearchTests"),
-        .testTarget(name: "JournalTests", dependencies: ["MatronJournal", "MatronModels"], path: "Tests/JournalTests"),
+        .testTarget(name: "JournalTests", dependencies: ["MatronJournal", "MatronModels", "MatronSearch"], path: "Tests/JournalTests"),
     ]
 )

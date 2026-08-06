@@ -64,4 +64,31 @@ final class SearchServiceLiveTests: XCTestCase {
         let done = try await svc.backfillComplete(roomID: "!r:s")
         XCTAssertTrue(done)
     }
+
+    func test_backfillOldestEventID_roundTrips() async throws {
+        let before = try await svc.backfillOldestEventID(roomID: "!r:s")
+        XCTAssertNil(before, "no progress row yet")
+        try await svc.recordBackfillProgress(roomID: "!r:s", indexedCount: 3, oldestEventID: "42", complete: false)
+        let after = try await svc.backfillOldestEventID(roomID: "!r:s")
+        XCTAssertEqual(after, "42")
+        // Upsert path: a later record replaces the resume point.
+        try await svc.recordBackfillProgress(roomID: "!r:s", indexedCount: 6, oldestEventID: "17", complete: false)
+        let updated = try await svc.backfillOldestEventID(roomID: "!r:s")
+        XCTAssertEqual(updated, "17")
+    }
+
+    func test_resetBackfill_clearsBookkeepingButKeepsMessages() async throws {
+        try await svc.index(roomID: "!r:s", eventID: "$1", sender: "@a:s",
+                            timestamp: Date(), body: "still searchable after reset")
+        try await svc.recordBackfillProgress(roomID: "!r:s", indexedCount: 1, oldestEventID: "$1", complete: true)
+
+        try await svc.resetBackfill()
+
+        let done = try await svc.backfillComplete(roomID: "!r:s")
+        XCTAssertFalse(done, "reset must clear the complete flag")
+        let oldest = try await svc.backfillOldestEventID(roomID: "!r:s")
+        XCTAssertNil(oldest)
+        let hits = try await svc.query("searchable", limit: 10)
+        XCTAssertEqual(hits.count, 1, "indexed messages must survive a bookkeeping reset")
+    }
 }

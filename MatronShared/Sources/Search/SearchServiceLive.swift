@@ -83,6 +83,24 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
         }
     }
 
+    public func backfillOldestEventID(roomID: String) async throws -> String? {
+        try await queue.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT backfill_oldest_event_id FROM indexed_rooms WHERE room_id = ?",
+                arguments: [roomID]
+            )
+        }
+    }
+
+    public func resetBackfill() async throws {
+        try await queue.write { db in
+            // Bookkeeping only — `messages`/`messages_fts` stay intact, so
+            // existing hits keep working while rooms re-walk.
+            try db.execute(sql: "DELETE FROM indexed_rooms")
+        }
+    }
+
     public func backfillComplete(roomID: String) async throws -> Bool {
         try await queue.read { db in
             let value = try Int.fetchOne(db, sql: "SELECT backfill_complete FROM indexed_rooms WHERE room_id = ?", arguments: [roomID]) ?? 0

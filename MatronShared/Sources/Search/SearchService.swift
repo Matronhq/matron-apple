@@ -22,6 +22,18 @@ public protocol SearchService: Sendable {
     /// True if backfill has previously completed for `roomID`.
     func backfillComplete(roomID: String) async throws -> Bool
 
+    /// The oldest event id a previous backfill walk reached for `roomID`
+    /// (recorded via `recordBackfillProgress`), or `nil` if backfill has
+    /// never run there. The walk's resume point.
+    func backfillOldestEventID(roomID: String) async throws -> String?
+
+    /// Clears all backfill bookkeeping while keeping the indexed messages.
+    /// Called when the local journal mirror re-bootstraps from a snapshot:
+    /// the unbridgeable replay gap means "complete" flags may now hide
+    /// head-side holes, so every room must be re-walked (cheap — already-
+    /// indexed events just re-INSERT OR REPLACE).
+    func resetBackfill() async throws
+
     /// Number of indexed events for `roomID` (used by BackfillRunner to resume).
     func eventCount(roomID: String) async throws -> Int
 
