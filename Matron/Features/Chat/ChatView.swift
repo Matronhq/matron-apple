@@ -354,7 +354,12 @@ struct ChatView: View {
                 // Side write into the box (cheap, non-invalidating):
                 // keeps the latest raw numbers available to every
                 // breadcrumb site without waking the render loop.
-                visibleRows.geoDescription = "visY=\(Int(geo.visibleRect.minY))–\(Int(geo.visibleRect.maxY)) contentH=\(Int(geo.contentSize.height)) containerH=\(Int(geo.containerSize.height))"
+                // Debug-gated — this closure runs per scroll frame, and
+                // the interpolation allocated a fresh String 60–120×/s
+                // during every scroll even in normal use.
+                if MatronDebug.enabled {
+                    visibleRows.geoDescription = "visY=\(Int(geo.visibleRect.minY))–\(Int(geo.visibleRect.maxY)) contentH=\(Int(geo.contentSize.height)) containerH=\(Int(geo.containerSize.height))"
+                }
                 return ScrollEdgeState(
                     nearTop: geo.visibleRect.minY < Self.nearTopThresholdPt,
                     nearBottom: geo.visibleRect.maxY
@@ -727,6 +732,13 @@ struct ChatView: View {
             // an unconditional stop() would kill the successor's stream.
             viewModel.stop(ifGeneration: startedGeneration)
             stripViewModel.stop(ifGeneration: stripStartedGeneration)
+            // Close live-output viewer sockets behind the departing chat
+            // (accumulated output is kept; cards reconnect on re-appear).
+            // Scoped to THIS chat's sessions — a global suspend froze
+            // still-visible tiles in overlapping chats (Mac pane; bugbot).
+            // Safe against the same-room remount race above: the new view's
+            // cards call startIfNeeded from their own .task on appear.
+            LiveOutputSessionStore.shared.suspendSessions(in: viewModel.roomID)
         }
         // Fullscreen attachment preview. Presented from a tap on
         // either an `AttachmentImage` or `AttachmentFile` row;
@@ -909,7 +921,8 @@ private struct TimelineListContent: View, Equatable {
                         },
                         askViewModel: { viewModel.askViewModel(forPrompt: $0) },
                         isPromptAnswered: { viewModel.isPromptAnswered($0) },
-                        answerSummary: { viewModel.answerSummary(forPrompt: $0) }
+                        answerSummary: { viewModel.answerSummary(forPrompt: $0) },
+                        convoID: viewModel.roomID
                     )
                         .id(item.id)
                         // No `.onAppear` history trigger here: row
@@ -1140,6 +1153,9 @@ struct SubChatView: View {
             followHealTask?.cancel()
             viewModel.stop(ifGeneration: startedGeneration)
             stripViewModel.stop(ifGeneration: stripStartedGeneration)
+            // Same viewer-socket hygiene as the parent chat's onDisappear,
+            // scoped to this child so the parent's tiles stay live.
+            LiveOutputSessionStore.shared.suspendSessions(in: viewModel.roomID)
         }
         .sheet(item: $attachmentPreview) { preview in
             switch preview {

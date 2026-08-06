@@ -17,20 +17,28 @@ public struct MarkdownText: View {
     let raw: String
     let theme: Theme
     let lineSpacing: CGFloat
+    let cacheParsed: Bool
 
     /// - Parameters:
     ///   - theme: markdown theme. Defaults to `.matron`; chat messages pass
     ///     `.matronMessage` for a slightly larger body size.
     ///   - lineSpacing: extra spacing between wrapped lines. Defaults to `0`;
     ///     chat messages pass a small value for more comfortable line height.
-    public init(_ raw: String, theme: Theme = .matron, lineSpacing: CGFloat = 0) {
+    ///   - cacheParsed: pass `false` for text that mutates between renders
+    ///     (a streaming message). Every delta changes the cache key, so a
+    ///     streaming reply was a guaranteed miss that ALSO inserted hundreds
+    ///     of throwaway intermediate entries — evicting the immutable
+    ///     historical messages the cache exists for.
+    public init(_ raw: String, theme: Theme = .matron, lineSpacing: CGFloat = 0,
+                cacheParsed: Bool = true) {
         self.raw = raw
         self.theme = theme
         self.lineSpacing = lineSpacing
+        self.cacheParsed = cacheParsed
     }
 
     public var body: some View {
-        Markdown(Self.content(for: raw))
+        Markdown(Self.content(for: raw, cache: cacheParsed))
             .markdownTheme(theme)
             .lineSpacing(lineSpacing)
             .textSelection(.enabled)
@@ -76,13 +84,15 @@ public struct MarkdownText: View {
     }()
 
     /// `internal` so unit tests can verify the memo hit path.
-    static func content(for raw: String) -> MarkdownContent {
+    static func content(for raw: String, cache: Bool = true) -> MarkdownContent {
         let key = raw as NSString
         if let cached = contentCache.object(forKey: key) {
             return cached.content
         }
         let parsed = MarkdownContent(raw)
-        contentCache.setObject(ParsedMarkdown(parsed), forKey: key)
+        if cache {
+            contentCache.setObject(ParsedMarkdown(parsed), forKey: key)
+        }
         return parsed
     }
 

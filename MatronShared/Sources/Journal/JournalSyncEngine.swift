@@ -76,6 +76,19 @@ public actor JournalSyncEngine {
     /// (no `.offline` blip in the UI, no backoff sleep) — the network is
     /// there, we're just rebinding to it.
     private var pathChangeReconnect = false
+    /// Trailing-edge debounce for path-change rebinds. A flapping network
+    /// (Wi-Fi↔cellular handoff, train travel) fires the monitor in bursts;
+    /// each burst used to close the socket and start a zero-delay
+    /// TCP+TLS+upgrade handshake immediately. Waiting out the burst rebinds
+    /// once, on the path that actually sticks.
+    private var pathDebounceTask: Task<Void, Never>?
+    /// When the last debounced rebind happened. A second path change inside
+    /// `pathRebindCooldown` means the network is flapping — skip the forced
+    /// close entirely and let the ping watchdog (or a failed write) surface
+    /// a genuinely dead socket through the normal backoff path.
+    private var lastPathRebind: ContinuousClock.Instant?
+    private static let pathDebounce: Duration = .seconds(1)
+    private static let pathRebindCooldown: Duration = .seconds(10)
     private var liveConnection: JournalConnection?
     private var viewingConvoID: String?
     private var backoffSleeper: Task<Void, Never>?
@@ -113,10 +126,22 @@ public actor JournalSyncEngine {
     }
     private var rpcPending: [String: PendingRPC] = [:]
 
+    /// Liveness-probe cadence. 60s (not the original 20s): a 20s ping is
+    /// the worst case for cellular battery — the radio never reaches its
+    /// idle state between wakes — and the server runs its own 20s ws-level
+    /// heartbeat that terminates dead clients regardless. The client ping
+    /// only exists so WE notice a black-holed socket; the path monitor
+    /// covers the common cause (interface change) far faster than any ping.
+    private let pingInterval: Duration
+    /// When the last server frame arrived on the live socket. A frame is
+    /// proof of liveness — the watchdog skips its ping (and the radio wake
+    /// it costs) whenever one arrived within the last interval.
+    private var lastFrameAt: ContinuousClock.Instant?
+
     public init(
         api: JournalAPI, store: JournalStore, connector: any WebSocketConnecting,
         token: String, ownSender: String, search: (any SearchService)?,
-        backoffBaseSeconds: Double = 1.0
+        backoffBaseSeconds: Double = 1.0, pingInterval: Duration = .seconds(60)
     ) {
         self.api = api
         self.store = store
@@ -125,6 +150,7 @@ public actor JournalSyncEngine {
         self.ownSender = ownSender
         self.search = search
         self.backoffBaseSeconds = backoffBaseSeconds
+        self.pingInterval = pingInterval
     }
 
     // MARK: Lifecycle
@@ -143,6 +169,8 @@ public actor JournalSyncEngine {
         pathMonitor = nil
         lastPathSignature = nil
         pathChangeReconnect = false
+        pathDebounceTask?.cancel()
+        pathDebounceTask = nil
         failReadyWaiters(JournalSyncError.offline)
         failAllRPC(RPCRequestError.offline)
         // Drop the status replay cache with the connection: values cached
@@ -162,6 +190,14 @@ public actor JournalSyncEngine {
     }
 
     public var isRunning: Bool { runTask != nil }
+
+    /// True when the socket is up AND caught up (`.running`). Read by the
+    /// iOS background-refresh path to decide whether the post-catch-up
+    /// settle sleep is owed at all.
+    public var isConnectedAndCaughtUp: Bool {
+        if case .running = state { return true }
+        return false
+    }
 
     public func waitUntilReady() async throws {
         if case .running = state { return }
@@ -206,6 +242,26 @@ public actor JournalSyncEngine {
             nudge() // mid-backoff: retry now on the fresh path
             return
         }
+        // Debounce (trailing edge): rebind once the burst settles, not once
+        // per callback. Each new change restarts the wait.
+        pathDebounceTask?.cancel()
+        pathDebounceTask = Task {
+            try? await Task.sleep(for: Self.pathDebounce)
+            guard !Task.isCancelled else { return }
+            self.performPathRebind()
+        }
+    }
+
+    private func performPathRebind() {
+        guard liveConnection != nil else { return }
+        let now = ContinuousClock.now
+        if let last = lastPathRebind, now - last < Self.pathRebindCooldown {
+            // Still flapping. Don't force another handshake — if the socket
+            // really died with the old path, the watchdog ping or the next
+            // write notices and the normal backoff paces the reconnects.
+            return
+        }
+        lastPathRebind = now
         pathChangeReconnect = true
         liveConnection?.close()
     }
@@ -725,11 +781,19 @@ public actor JournalSyncEngine {
                 // reads as a connection that never completes.
                 setState(store.cursor >= headSeq ? .running : .catchingUp)
 
+                lastFrameAt = ContinuousClock.now
                 let watchdog = Task {
                     var misses = 0
                     while !Task.isCancelled {
-                        try? await Task.sleep(for: .seconds(20))
+                        try? await Task.sleep(for: pingInterval)
                         if Task.isCancelled { return }
+                        // A frame within the last interval already proves
+                        // the socket is alive — don't wake the radio just
+                        // to hear a pong we effectively already have.
+                        if let last = lastFrameAt, ContinuousClock.now - last < pingInterval {
+                            misses = 0
+                            continue
+                        }
                         do {
                             try await connection.ping()
                             misses = 0
@@ -747,6 +811,7 @@ public actor JournalSyncEngine {
                 // half-full buffer.
                 var lastReplayFlush = ContinuousClock.now
                 frameLoop: for try await frame in connection.frames() {
+                    lastFrameAt = ContinuousClock.now
                     switch frame {
                     case .journal(let event):
                         // Backlog frame mid-catch-up: buffer it. The
@@ -1028,14 +1093,14 @@ public actor JournalSyncEngine {
                     if try store.applyJournal(event) { applied.append(event) }
                 }
             } catch let salvageError {
-                for event in applied { didApply(event) }
+                didApplyBatch(applied)
                 try? await connection.send(.ack(cursor: store.cursor))
                 throw salvageError
             }
             // Whole batch salvaged one-by-one (the batch throw was
             // transient): fall through to the normal side-effect pass.
         }
-        for event in applied { didApply(event) }
+        didApplyBatch(applied)
         return Int64(applied.count)
     }
 
@@ -1047,7 +1112,7 @@ public actor JournalSyncEngine {
     private func flushReplayBufferOnTeardown(_ buffer: inout [JournalEvent]) {
         guard !buffer.isEmpty else { return }
         if let applied = try? store.applyJournalBatch(buffer) {
-            for event in applied { didApply(event) }
+            didApplyBatch(applied)
         }
         buffer.removeAll()
     }
@@ -1058,15 +1123,36 @@ public actor JournalSyncEngine {
     /// whose blobRef collides with the replayed one (bugbot "Media confirm
     /// ignores duplicate guard").
     private func didApply(_ event: JournalEvent) {
-        // A delivered media send retires its rejection-FIFO slot the moment
-        // its own-sender file/image frame echoes the blobRef back — see
-        // confirmMediaSend.
+        confirmMediaSendIfNeeded(event)
+        indexForSearch(event)
+    }
+
+    /// Batch form of `didApply` for the replay paths: media confirms run
+    /// per-event as before, but search indexing collapses into a single
+    /// `indexBatch` call — one write transaction and one Task for the whole
+    /// batch instead of one of each per frame.
+    private func didApplyBatch(_ events: [JournalEvent]) {
+        guard !events.isEmpty else { return }
+        for event in events { confirmMediaSendIfNeeded(event) }
+        guard let search else { return }
+        let entries = events.compactMap { event -> SearchIndexEntry? in
+            guard let body = event.searchableBody else { return nil }
+            return SearchIndexEntry(roomID: event.convoID, eventID: String(event.seq),
+                                    sender: event.sender, timestamp: event.ts, body: body)
+        }
+        guard !entries.isEmpty else { return }
+        Task { try? await search.indexBatch(entries) }
+    }
+
+    /// A delivered media send retires its rejection-FIFO slot the moment
+    /// its own-sender file/image frame echoes the blobRef back — see
+    /// confirmMediaSend.
+    private func confirmMediaSendIfNeeded(_ event: JournalEvent) {
         if event.sender == ownSender,
            event.type == JournalEventType.file || event.type == JournalEventType.image,
            let blobRef = event.payload["blob_ref"] as? String {
             confirmMediaSend(blobRef: blobRef)
         }
-        indexForSearch(event)
     }
 
     private func indexForSearch(_ event: JournalEvent) {

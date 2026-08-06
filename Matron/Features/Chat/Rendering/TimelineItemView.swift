@@ -43,6 +43,10 @@ struct TimelineItemView: View {
     var isPromptAnswered: ((String) -> Bool)? = nil
     /// The chosen-answer summary for an answered prompt (nil = not answered).
     var answerSummary: ((String) -> String?)? = nil
+    /// The conversation this row belongs to — tags live-output sessions in
+    /// the shared store so chat teardown can suspend only its own sockets
+    /// (`suspendSessions(in:)`). `nil` keeps previews/tests compiling.
+    var convoID: String? = nil
 
     var body: some View {
         // Note: `shouldRender(_:)` is the contract for "is this Kind
@@ -83,7 +87,11 @@ struct TimelineItemView: View {
                 style: item.isOwn ? .me : .bot,
                 timestamp: item.timestamp
             ) {
-                MarkdownText(body, theme: .matronMessage, lineSpacing: 4)
+                // A streaming overlay row ("eph:<ref>") re-renders with a
+                // longer body on every commit — caching those parses would
+                // just churn the markdown memo and evict real messages.
+                MarkdownText(body, theme: .matronMessage, lineSpacing: 4,
+                             cacheParsed: !item.id.hasPrefix("eph:"))
             }
             // VoiceOver previously announced the body text without sender
             // context — `.combine` collapses the bubble + label into a
@@ -209,7 +217,7 @@ struct TimelineItemView: View {
             // The session comes from the shared store so a row recycled
             // by LazyVStack reattaches to its accumulated output.
             HStack {
-                LiveOutputCard(session: LiveOutputSessionStore.shared.session(for: evt),
+                LiveOutputCard(session: LiveOutputSessionStore.shared.session(for: evt, convoID: convoID),
                                eventTimestamp: item.timestamp)
                     .frame(maxWidth: 480, alignment: .leading)
                 Spacer(minLength: 0)

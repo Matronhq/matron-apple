@@ -588,6 +588,27 @@ final class JournalStoreTests: XCTestCase {
         XCTAssertNil(convo.parentConvoID, "the new column defaults NULL for pre-existing rows")
     }
 
+    func testFileBackedStoreRunsInWALMode() throws {
+        // Battery: the live sync path commits one transaction per journal
+        // frame; rollback-journal mode paid a create+fsync+delete of the
+        // `-journal` sidecar for each. WAL is set in prepareDatabase — the
+        // `-wal` sidecar existing after a write proves the mode took.
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let url = dir.appendingPathComponent("journal.sqlite")
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let store = try JournalStore(databaseURL: url, ownSender: "user:dan")
+        try store.applyJournal(event(1, convo: "c1", payload: ["body": "wal probe"]))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path + "-wal"),
+                      "file-backed store must run in WAL journal mode")
+
+        // Reopen: the persistent mode plus a fresh prepareDatabase must not
+        // break an existing store.
+        let reopened = try JournalStore(databaseURL: url, ownSender: "user:dan")
+        XCTAssertEqual(try reopened.conversations().first?.snippet, "wal probe")
+    }
+
     func testChildrenStreamYieldsOnChildCreationAndFinish() async throws {
         let store = try makeStore()
         try store.applyJournal(event(1, convo: "p1", type: "convo_meta", payload: ["title": "Parent"]))

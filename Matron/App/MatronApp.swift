@@ -126,6 +126,12 @@ struct MatronApp: App {
                         let dependencies = self.dependencies
                         appDelegate.backgroundRefresh = {
                             guard let engine = dependencies.syncService(for: session) as? JournalSyncEngine else { return }
+                            // Already connected and caught up (e.g. the wake
+                            // landed inside an outbox-grace window): nothing
+                            // to wait for and — unless sends are pending —
+                            // nothing to settle either. The unconditional 2s
+                            // settle used to bill every single wake.
+                            let alreadyCaughtUp = await engine.isConnectedAndCaughtUp
                             await engine.nudge()
                             // Bounded readiness wait: consume the state
                             // stream until `.running`, with a hard ~15s
@@ -146,8 +152,15 @@ struct MatronApp: App {
                             await wait.value
                             cap.cancel()
                             // Brief settle so in-flight journal frames and
-                            // the outbox flush land before suspension.
-                            try? await Task.sleep(for: .seconds(2))
+                            // the outbox flush land before suspension —
+                            // owed only when there was a catch-up or sends
+                            // are still pending. (`||` can't await — its
+                            // right operand is an autoclosure.)
+                            var needsSettle = !alreadyCaughtUp
+                            if !needsSettle { needsSettle = await engine.hasPendingOutbox }
+                            if needsSettle {
+                                try? await Task.sleep(for: .seconds(2))
+                            }
                         }
                     }
                     // Reconnect nudge: when the app returns to the

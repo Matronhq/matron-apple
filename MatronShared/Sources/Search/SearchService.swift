@@ -7,6 +7,14 @@ public protocol SearchService: Sendable {
     /// Inserts a single message into the index. Idempotent on (roomID, eventID).
     func index(roomID: String, eventID: String, sender: String, timestamp: Date, body: String) async throws
 
+    /// Indexes many messages in one call. Same idempotence as `index`;
+    /// `SearchServiceLive` does the whole batch in a single write
+    /// transaction (a catch-up replay used to spawn one transaction — and
+    /// one unstructured Task — per frame). A protocol requirement (not just
+    /// an extension helper) so `any SearchService` dispatches to the live
+    /// override; the extension default below keeps existing fakes compiling.
+    func indexBatch(_ entries: [SearchIndexEntry]) async throws
+
     /// Removes a single event (used for redactions).
     func remove(eventID: String) async throws
 
@@ -39,4 +47,30 @@ public protocol SearchService: Sendable {
 
     /// True if an event with `eventID` is already indexed (used by BackfillRunner to skip duplicates).
     func contains(eventID: String) async throws -> Bool
+}
+
+/// One message's index-ready fields — the unit of `indexBatch`.
+public struct SearchIndexEntry: Sendable {
+    public let roomID: String
+    public let eventID: String
+    public let sender: String
+    public let timestamp: Date
+    public let body: String
+
+    public init(roomID: String, eventID: String, sender: String, timestamp: Date, body: String) {
+        self.roomID = roomID
+        self.eventID = eventID
+        self.sender = sender
+        self.timestamp = timestamp
+        self.body = body
+    }
+}
+
+public extension SearchService {
+    func indexBatch(_ entries: [SearchIndexEntry]) async throws {
+        for entry in entries {
+            try await index(roomID: entry.roomID, eventID: entry.eventID,
+                            sender: entry.sender, timestamp: entry.timestamp, body: entry.body)
+        }
+    }
 }

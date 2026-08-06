@@ -159,7 +159,27 @@ public final class JournalStore: @unchecked Sendable {
         if let url = databaseURL {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            dbQueue = try DatabaseQueue(path: url.path)
+            var config = Configuration()
+            config.prepareDatabase { db in
+                // WAL, not the default rollback journal. The live sync path
+                // commits one transaction per journal frame (several per
+                // second during a streaming turn); in rollback mode each of
+                // those creates, fsyncs, and deletes a `-journal` file.
+                // synchronous=NORMAL is the documented-safe WAL pairing: a
+                // power cut can lose the tail transactions but never
+                // corrupts, and the cursor/insert invariant makes that loss
+                // benign — the server replays everything past the cursor.
+                _ = try String.fetchOne(db, sql: "PRAGMA journal_mode = WAL")
+                try db.execute(sql: "PRAGMA synchronous = NORMAL")
+            }
+            // File protection (iOS): the mirror and its WAL sidecars all
+            // carry the OS default, CompleteUntilFirstUserAuthentication —
+            // deliberately NOT upgraded to NSFileProtectionComplete like
+            // the search index's, because background sync and BGAppRefresh
+            // write here while the device is locked and Complete would fail
+            // those writes. The sidecars match the main file's class, so
+            // WAL introduces no protection downgrade.
+            dbQueue = try DatabaseQueue(path: url.path, configuration: config)
         } else {
             dbQueue = try DatabaseQueue()
         }

@@ -31,6 +31,10 @@ struct MacTimelineItemView: View {
     var askViewModel: ((String) -> AskUserSheetViewModel?)? = nil
     var isPromptAnswered: ((String) -> Bool)? = nil
     var answerSummary: ((String) -> String?)? = nil
+    /// The conversation this row belongs to — tags live-output sessions in
+    /// the shared store so chat teardown can suspend only its own sockets
+    /// (`suspendSessions(in:)`). `nil` keeps previews/tests compiling.
+    var convoID: String? = nil
 
     var body: some View {
         // See iOS `TimelineItemView.body` — `shouldRender` is dead
@@ -190,7 +194,7 @@ struct MacTimelineItemView: View {
             // Fills the width like a normal message bubble — terminal output
             // wants columns. Session from the shared store so LazyVStack row
             // recycling reattaches to accumulated output instead of replaying.
-            LiveOutputCard(session: LiveOutputSessionStore.shared.session(for: evt),
+            LiveOutputCard(session: LiveOutputSessionStore.shared.session(for: evt, convoID: convoID),
                            eventTimestamp: item.timestamp)
                 .frame(maxWidth: MessageBubbleMetrics.maxWidth, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
