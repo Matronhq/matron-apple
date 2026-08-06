@@ -13,31 +13,50 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
 
     public func index(roomID: String, eventID: String, sender: String, timestamp: Date, body: String) async throws {
         try await queue.write { db in
-            // UPSERT, not INSERT OR REPLACE: REPLACE resolves the event_id conflict by
-            // deleting the old row WITHOUT firing the AFTER DELETE trigger (delete
-            // triggers only fire on REPLACE-deletions when recursive_triggers is ON),
-            // which strands the old rowid's tokens in messages_fts — the 2026-08-06
-            // index corruption. DO UPDATE keeps the rowid and fires the AFTER UPDATE
-            // trigger, which maintains the FTS mirror correctly. The WHERE makes a
-            // re-index of identical values (the backfill's common case) a no-op, so
-            // it costs no FTS churn.
-            try db.execute(
-                sql: """
-                    INSERT INTO messages(room_id, event_id, sender, timestamp, body)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(event_id) DO UPDATE SET
-                        room_id = excluded.room_id,
-                        sender = excluded.sender,
-                        timestamp = excluded.timestamp,
-                        body = excluded.body
-                    WHERE messages.room_id IS NOT excluded.room_id
-                       OR messages.sender IS NOT excluded.sender
-                       OR messages.timestamp IS NOT excluded.timestamp
-                       OR messages.body IS NOT excluded.body
-                """,
-                arguments: [roomID, eventID, sender, Int(timestamp.timeIntervalSince1970), body]
-            )
+            try Self.upsert(db, roomID: roomID, eventID: eventID, sender: sender,
+                            timestamp: timestamp, body: body)
         }
+    }
+
+    public func indexBatch(_ entries: [SearchIndexEntry]) async throws {
+        guard !entries.isEmpty else { return }
+        // One transaction (and one fsync) for the whole batch — a catch-up
+        // replay indexes hundreds of rows, and per-row transactions made
+        // that hundreds of journal commits.
+        try await queue.write { db in
+            for entry in entries {
+                try Self.upsert(db, roomID: entry.roomID, eventID: entry.eventID,
+                                sender: entry.sender, timestamp: entry.timestamp, body: entry.body)
+            }
+        }
+    }
+
+    // UPSERT, not INSERT OR REPLACE: REPLACE resolves the event_id conflict by
+    // deleting the old row WITHOUT firing the AFTER DELETE trigger (delete
+    // triggers only fire on REPLACE-deletions when recursive_triggers is ON),
+    // which strands the old rowid's tokens in messages_fts — the 2026-08-06
+    // index corruption. DO UPDATE keeps the rowid and fires the AFTER UPDATE
+    // trigger, which maintains the FTS mirror correctly. The WHERE makes a
+    // re-index of identical values (the backfill's common case) a no-op, so
+    // it costs no FTS churn.
+    private static func upsert(_ db: Database, roomID: String, eventID: String,
+                               sender: String, timestamp: Date, body: String) throws {
+        try db.execute(
+            sql: """
+                INSERT INTO messages(room_id, event_id, sender, timestamp, body)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(event_id) DO UPDATE SET
+                    room_id = excluded.room_id,
+                    sender = excluded.sender,
+                    timestamp = excluded.timestamp,
+                    body = excluded.body
+                WHERE messages.room_id IS NOT excluded.room_id
+                   OR messages.sender IS NOT excluded.sender
+                   OR messages.timestamp IS NOT excluded.timestamp
+                   OR messages.body IS NOT excluded.body
+            """,
+            arguments: [roomID, eventID, sender, Int(timestamp.timeIntervalSince1970), body]
+        )
     }
 
     public func remove(eventID: String) async throws {

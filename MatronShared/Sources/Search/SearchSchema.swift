@@ -104,8 +104,31 @@ public enum SearchSchema {
         config.busyMode = .timeout(2)
         config.prepareDatabase { db in
             try db.execute(sql: "PRAGMA foreign_keys = ON")
+            // WAL instead of the default rollback journal: every index write
+            // used to create+fsync+delete a `-journal` file. WAL appends and
+            // fsyncs far less (synchronous=NORMAL is the documented-safe
+            // pairing — a power cut can lose the last transactions but never
+            // corrupts, and this index can always be rebuilt from the
+            // journal mirror). Persistent in the file; re-issuing per
+            // connection is a no-op.
+            _ = try String.fetchOne(db, sql: "PRAGMA journal_mode = WAL")
+            try db.execute(sql: "PRAGMA synchronous = NORMAL")
         }
         let queue = try DatabaseQueue(path: path.path, configuration: config)
+        #if os(iOS)
+        // The WAL sidecars are created lazily by SQLite, not by us, so they
+        // don't inherit the pre-created main file's protection class. Force
+        // them into existence with an empty write, then match the main
+        // file's NSFileProtectionComplete.
+        try queue.write { _ in }
+        for suffix in ["-wal", "-shm"] {
+            let sidecar = path.path + suffix
+            if FileManager.default.fileExists(atPath: sidecar) {
+                try? FileManager.default.setAttributes(
+                    [.protectionKey: FileProtectionType.complete], ofItemAtPath: sidecar)
+            }
+        }
+        #endif
         #if os(iOS) && !targetEnvironment(simulator)
         // Defensive check: confirm protection is set on the resulting file.
         // Device + signed builds only — the iOS Simulator doesn't enforce data

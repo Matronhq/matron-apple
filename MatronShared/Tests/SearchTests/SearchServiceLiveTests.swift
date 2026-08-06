@@ -108,6 +108,40 @@ final class SearchServiceLiveTests: XCTestCase {
         XCTAssertEqual(hits.count, 1)
     }
 
+    func test_indexBatch_singleTransaction_matchesPerRowIndexing() async throws {
+        // The engine's catch-up path indexes whole replay batches through
+        // this override (one write transaction). Same idempotence and FTS
+        // integrity as per-row index() — including re-batching rows the
+        // live feeder already indexed.
+        let ts = Date(timeIntervalSince1970: 1_745_000_000)
+        try await svc.index(roomID: "!r:s", eventID: "$1", sender: "@a:s", timestamp: ts, body: "already live-indexed")
+        try await svc.indexBatch([
+            SearchIndexEntry(roomID: "!r:s", eventID: "$1", sender: "@a:s", timestamp: ts, body: "already live-indexed"),
+            SearchIndexEntry(roomID: "!r:s", eventID: "$2", sender: "@a:s", timestamp: ts, body: "batch row two"),
+            SearchIndexEntry(roomID: "!r:s", eventID: "$3", sender: "@b:s", timestamp: ts, body: "batch row three"),
+        ])
+        try assertFTSIntegrity()
+        let count = try await svc.eventCount(roomID: "!r:s")
+        XCTAssertEqual(count, 3)
+        let hits = try await svc.query("batch row", limit: 10)
+        XCTAssertEqual(hits.count, 2)
+        // Changed body via batch must replace, not duplicate (UPSERT path).
+        try await svc.indexBatch([
+            SearchIndexEntry(roomID: "!r:s", eventID: "$2", sender: "@a:s", timestamp: ts, body: "rewritten"),
+        ])
+        try assertFTSIntegrity()
+        let oldBody = try await svc.query("two", limit: 10)
+        XCTAssertEqual(oldBody.count, 0, "old body must leave FTS")
+        let newBody = try await svc.query("rewritten", limit: 10)
+        XCTAssertEqual(newBody.count, 1)
+    }
+
+    func test_indexBatch_empty_isNoOp() async throws {
+        try await svc.indexBatch([])
+        let count = try await svc.eventCount(roomID: "!r:s")
+        XCTAssertEqual(count, 0)
+    }
+
     func test_remove_clearsFTSRow() async throws {
         // Redaction path: `remove(eventID:)` must purge both messages and messages_fts.
         try await svc.index(roomID: "!r:s", eventID: "$1", sender: "@a:s", timestamp: Date(), body: "secret payload")

@@ -10,6 +10,9 @@ public struct ActivityIndicatorRow: View {
     /// Drives the dot animation. A single phase shared across the three dots,
     /// each offset so they pulse in sequence.
     @State private var animating = false
+    /// Reduce Motion also spares the battery: the pulse runs at the display's
+    /// refresh rate (120Hz on ProMotion) for as long as the agent is working.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(label: String) {
         self.label = label
@@ -22,9 +25,10 @@ public struct ActivityIndicatorRow: View {
                     Circle()
                         .frame(width: 6, height: 6)
                         .foregroundStyle(.secondary)
-                        .opacity(animating ? 1 : 0.3)
+                        .opacity(animating && !reduceMotion ? 1 : 0.3)
                         .animation(
-                            .easeInOut(duration: 0.6)
+                            reduceMotion ? nil :
+                                .easeInOut(duration: 0.6)
                                 .repeatForever()
                                 .delay(Double(index) * 0.2),
                             value: animating
@@ -41,6 +45,10 @@ public struct ActivityIndicatorRow: View {
         .padding(.horizontal)
         .padding(.vertical, 4)
         .onAppear { animating = true }
+        // Parks the repeatForever animation when the row unmounts — without
+        // this a re-appearing row could layer a fresh animation on a phase
+        // SwiftUI kept alive.
+        .onDisappear { animating = false }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label.isEmpty ? "Agent is working" : label)
     }

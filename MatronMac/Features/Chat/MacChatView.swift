@@ -306,6 +306,10 @@ struct MacChatView: View {
             // stream and freeze the timeline.
             viewModel.stop(ifGeneration: startedGeneration)
             stripViewModel.stop(ifGeneration: stripStartedGeneration)
+            // Close live-output viewer sockets behind the departing chat
+            // (accumulated output kept; cards reconnect on re-appear via
+            // their own startIfNeeded). Mirrors iOS ChatView.
+            LiveOutputSessionStore.shared.suspendAll()
         }
     }
 

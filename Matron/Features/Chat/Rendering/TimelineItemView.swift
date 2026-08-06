@@ -83,7 +83,11 @@ struct TimelineItemView: View {
                 style: item.isOwn ? .me : .bot,
                 timestamp: item.timestamp
             ) {
-                MarkdownText(body, theme: .matronMessage, lineSpacing: 4)
+                // A streaming overlay row ("eph:<ref>") re-renders with a
+                // longer body on every commit — caching those parses would
+                // just churn the markdown memo and evict real messages.
+                MarkdownText(body, theme: .matronMessage, lineSpacing: 4,
+                             cacheParsed: !item.id.hasPrefix("eph:"))
             }
             // VoiceOver previously announced the body text without sender
             // context — `.combine` collapses the bubble + label into a

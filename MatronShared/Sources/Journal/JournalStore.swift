@@ -159,7 +159,20 @@ public final class JournalStore: @unchecked Sendable {
         if let url = databaseURL {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            dbQueue = try DatabaseQueue(path: url.path)
+            var config = Configuration()
+            config.prepareDatabase { db in
+                // WAL, not the default rollback journal. The live sync path
+                // commits one transaction per journal frame (several per
+                // second during a streaming turn); in rollback mode each of
+                // those creates, fsyncs, and deletes a `-journal` file.
+                // synchronous=NORMAL is the documented-safe WAL pairing: a
+                // power cut can lose the tail transactions but never
+                // corrupts, and the cursor/insert invariant makes that loss
+                // benign — the server replays everything past the cursor.
+                _ = try String.fetchOne(db, sql: "PRAGMA journal_mode = WAL")
+                try db.execute(sql: "PRAGMA synchronous = NORMAL")
+            }
+            dbQueue = try DatabaseQueue(path: url.path, configuration: config)
         } else {
             dbQueue = try DatabaseQueue()
         }

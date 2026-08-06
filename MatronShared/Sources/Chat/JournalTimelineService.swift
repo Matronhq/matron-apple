@@ -85,6 +85,21 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         /// Seqs the mapper returned `nil` for — memoized separately so
         /// hidden event types aren't re-parsed on every emit either.
         private var unmappable: Set<Int64> = []
+        /// The two payload fields `reconcile` reads, memoized per seq.
+        /// `JournalEvent.payload` re-parses the row's JSON on EVERY access,
+        /// and `reconcile` walks every event on every emit — per streaming
+        /// tick that was O(history × JSON-parse), the dominant CPU cost of
+        /// a turn in a long conversation. Rows are immutable per seq, so
+        /// the extraction can never go stale.
+        private var reconcileFields: [Int64: (messageRef: String?, body: String?)] = [:]
+
+        private func fields(for event: JournalEvent) -> (messageRef: String?, body: String?) {
+            if let cached = reconcileFields[event.seq] { return cached }
+            let payload = event.payload
+            let extracted = (payload["message_ref"] as? String, payload["body"] as? String)
+            reconcileFields[event.seq] = extracted
+            return extracted
+        }
 
         func setEvents(_ events: [JournalEvent]) {
             self.events = events
@@ -257,7 +272,8 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         func reconcile(with events: [JournalEvent], ownSender: String) {
             let newSeqFloor = lastReconciledSeq
             for event in events {
-                if let ref = event.payload["message_ref"] as? String {
+                let payloadFields = fields(for: event)
+                if let ref = payloadFields.messageRef {
                     streaming.removeValue(forKey: ref)
                     // Retire the live tool tile: the durable row IS the
                     // command's completed form. Recorded even when no tile
@@ -274,7 +290,7 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                 // text IS that stream's finalized form — retire the overlay
                 // so it doesn't double-show the message until staleness.
                 if event.sender != ownSender, event.type == JournalEventType.text,
-                   let body = event.payload["body"] as? String {
+                   let body = payloadFields.body {
                     for (ref, entry) in streaming where entry.text == body {
                         streaming.removeValue(forKey: ref)
                     }
@@ -294,7 +310,7 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                 // reconcile may suppress — see `lastReconciledSeq`.
                 if event.seq > newSeqFloor,
                    event.sender == ownSender, event.type == JournalEventType.text,
-                   let body = event.payload["body"] as? String {
+                   let body = payloadFields.body {
                     // `attempts > 0` mirrors outboxDeleteFirstMatching: a
                     // never-attempted row can't be the send this row
                     // confirms (e.g. the same text sent from another
@@ -326,6 +342,12 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             let toolCutoff = Date().addingTimeInterval(-toolStaleness)
             toolStreams = toolStreams.filter { $0.value.updated > toolCutoff }
             resyncRequested = resyncRequested.filter { $0.value > toolCutoff }
+            // Same bound as the mapped-item memo: after a mirror wipe the
+            // event list shrinks and dead seqs would pin their extractions.
+            if reconcileFields.count > events.count + 256 {
+                let live = Set(events.map(\.seq))
+                reconcileFields = reconcileFields.filter { live.contains($0.key) }
+            }
         }
 
         /// Replaces the outbox projection with the observation's latest

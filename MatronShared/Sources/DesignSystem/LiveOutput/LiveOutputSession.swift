@@ -203,6 +203,23 @@ public final class LiveOutputSession {
         expiryTask = nil
     }
 
+    /// Closes the socket but keeps the accumulated output, so a later
+    /// `startIfNeeded()` (the card re-appearing) reconnects and resumes from
+    /// `consumedBytes`. Used when the user leaves the chat — up to `limit`
+    /// viewer sockets used to stay open (and stream, and ANSI-parse) behind
+    /// a chat nobody was looking at.
+    public func suspend() {
+        runTask?.cancel()
+        runTask = nil
+        expiryTask?.cancel()
+        expiryTask = nil
+        guard !isTerminal else { return }
+        // Fresh retry budget for the eventual resume — exhausted attempts
+        // belong to the old connection, not the next view.
+        attempts = 0
+        phase = .idle
+    }
+
     /// Live `URLSessionWebSocketTask` connector (the default). Yields
     /// decoded frames; finishes on clean close, throws on failure.
     private static let webSocketConnector: Connector = { url in
@@ -273,5 +290,12 @@ public final class LiveOutputSessionStore {
             sessions.removeValue(forKey: evicted)?.teardown()
         }
         return created
+    }
+
+    /// Suspends every live session's socket (output is kept; cards
+    /// reconnect via `startIfNeeded` when they re-appear). Called when the
+    /// user leaves a chat or the app backgrounds.
+    public func suspendAll() {
+        for session in sessions.values { session.suspend() }
     }
 }

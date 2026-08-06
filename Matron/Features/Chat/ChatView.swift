@@ -354,7 +354,12 @@ struct ChatView: View {
                 // Side write into the box (cheap, non-invalidating):
                 // keeps the latest raw numbers available to every
                 // breadcrumb site without waking the render loop.
-                visibleRows.geoDescription = "visY=\(Int(geo.visibleRect.minY))–\(Int(geo.visibleRect.maxY)) contentH=\(Int(geo.contentSize.height)) containerH=\(Int(geo.containerSize.height))"
+                // Debug-gated — this closure runs per scroll frame, and
+                // the interpolation allocated a fresh String 60–120×/s
+                // during every scroll even in normal use.
+                if MatronDebug.enabled {
+                    visibleRows.geoDescription = "visY=\(Int(geo.visibleRect.minY))–\(Int(geo.visibleRect.maxY)) contentH=\(Int(geo.contentSize.height)) containerH=\(Int(geo.containerSize.height))"
+                }
                 return ScrollEdgeState(
                     nearTop: geo.visibleRect.minY < Self.nearTopThresholdPt,
                     nearBottom: geo.visibleRect.maxY
@@ -727,6 +732,11 @@ struct ChatView: View {
             // an unconditional stop() would kill the successor's stream.
             viewModel.stop(ifGeneration: startedGeneration)
             stripViewModel.stop(ifGeneration: stripStartedGeneration)
+            // Close live-output viewer sockets behind the departing chat
+            // (accumulated output is kept; cards reconnect on re-appear).
+            // Safe against the same-room remount race above: the new view's
+            // cards call startIfNeeded from their own .task on appear.
+            LiveOutputSessionStore.shared.suspendAll()
         }
         // Fullscreen attachment preview. Presented from a tap on
         // either an `AttachmentImage` or `AttachmentFile` row;
@@ -1140,6 +1150,8 @@ struct SubChatView: View {
             followHealTask?.cancel()
             viewModel.stop(ifGeneration: startedGeneration)
             stripViewModel.stop(ifGeneration: stripStartedGeneration)
+            // Same viewer-socket hygiene as the parent chat's onDisappear.
+            LiveOutputSessionStore.shared.suspendAll()
         }
         .sheet(item: $attachmentPreview) { preview in
             switch preview {

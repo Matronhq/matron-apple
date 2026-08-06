@@ -147,6 +147,14 @@ final class AppDependencies {
             try? await Task.sleep(for: .seconds(10))
             var backoff = Duration.seconds(30)
             while !Task.isCancelled {
+                // Backgrounded (a BG-refresh wake or the outbox grace
+                // window): that runtime belongs to catch-up and send
+                // delivery, not to history paging — don't spend its radio
+                // time on a sweep the next foreground can run.
+                if await MainActor.run(body: { UIApplication.shared.applicationState == .background }) {
+                    try? await Task.sleep(for: .seconds(60))
+                    continue
+                }
                 // An empty list means the first snapshot hasn't landed yet —
                 // treat it like a failed pass and retry on the backoff curve.
                 let ids = (try? store.allConversationIDs()) ?? []
