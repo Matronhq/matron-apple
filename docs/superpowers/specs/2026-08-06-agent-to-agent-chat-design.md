@@ -87,6 +87,13 @@ which serves double duty:
 - **Reads:** agents get roster metadata only (devices, conversations with
   titles/state/last-activity/summary) — no cross-agent transcript reads in
   v1. A future grants extension can add read sharing if a use case demands it.
+- **Everything is scoped to the token's owner user.** A device token (client
+  or agent) is minted for exactly one user at pairing, and every journal
+  endpoint already filters on that user id (`snapshot`, message reads, media,
+  devices). The roster, summaries, invites, participants, and room fan-out
+  inherit that: an agent can only ever see and be invited into conversations
+  whose `owner_user_id` matches its own token's user — never other users'
+  chats on the same journal. No new cross-user surface is introduced.
 - **Legacy:** conversations with `agent_device_id IS NULL` retain current
   broadcast behavior during migration.
 
@@ -168,9 +175,12 @@ state visible (title suffix until accepted, e.g. "… (inviting dev-2)").
   default 30 min, generous because busy is reported honestly and separately).
 - **`summary` column** on conversations: writable via the existing upsert
   path by the owning bridge, returned in `/snapshot` and the roster payload.
-- **Roster**: agents can already see `GET /devices`; add conversation
-  metadata (id, title, state, last activity, summary, agent_device_id) to an
-  agent-accessible endpoint or RPC for targeting.
+- **Roster**: a NEW agent-accessible endpoint or RPC (correction: `GET
+  /devices` is deliberately client-devices-only today — "an agent has no
+  business enumerating its user's other devices" — and stays that way).
+  Returns the calling token's user's own devices + conversation metadata
+  (id, title, state, last activity, summary, agent_device_id) for targeting,
+  filtered by `owner_user_id` like every other journal read.
 
 ## Bridge changes (matron-bridge)
 
