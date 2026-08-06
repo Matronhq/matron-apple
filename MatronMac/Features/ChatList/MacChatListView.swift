@@ -97,8 +97,18 @@ struct MacChatListView: View {
         searchModel?.query.isEmpty ?? true
     }
 
-    private func logSelectionChange(_ old: ChatSummary.ID?, _ new: ChatSummary.ID?) {
+    private func handleSelectionChange(_ old: ChatSummary.ID?, _ new: ChatSummary.ID?) {
         listLogger.notice("sidebar selection: \(old ?? "nil", privacy: .public) → \(new ?? "nil", privacy: .public)")
+        // Navigating to a conversation — sidebar click, notification tap,
+        // auto-open — means "show me that chat". While search results occupy
+        // the detail column only a *result* click cleared the query, so a
+        // sidebar click changed the selection underneath but left the results
+        // panel covering the chat (Dan, 2026-08-06: "stuck on the search
+        // results"). Clearing here swaps the detail back for every selection
+        // source; the search-hit handlers' own clear becomes a no-op.
+        if new != nil, searchQueryIsEmpty == false {
+            searchModel?.query = ""
+        }
     }
 
     private func logDetailSwap(_ wasEmpty: Bool, _ isEmpty: Bool) {
@@ -195,7 +205,7 @@ struct MacChatListView: View {
         // helped tip Xcode 16.4's type-checker budget for this `body`
         // (CI "unable to type-check in reasonable time" — same class as
         // the `allChatSummaries` hoist above).
-        .onChange(of: selectedSummaryID, logSelectionChange)
+        .onChange(of: selectedSummaryID, handleSelectionChange)
         // The search branch swap destroys/remounts the chat detail — log
         // the flips so a detail remount can be attributed to it.
         .onChange(of: searchQueryIsEmpty, logDetailSwap)
