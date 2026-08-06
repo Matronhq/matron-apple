@@ -51,7 +51,7 @@ settings:
     # unique, monotonic build number. Set at the project level (not per
     # target) because App Store validation requires the NSE's version keys
     # to exactly match its host app's.
-    MARKETING_VERSION: "1.0.2"
+    MARKETING_VERSION: "1.0.3"
     CURRENT_PROJECT_VERSION: 1
   configs:
     Debug:
