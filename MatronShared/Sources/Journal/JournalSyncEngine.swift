@@ -977,6 +977,14 @@ public actor JournalSyncEngine {
         guard store.cursor == 0, (try? store.conversations().isEmpty) != false else { return }
         let snapshot = try await api.snapshot()
         try store.applyColdSnapshot(snapshot.conversations, headSeq: snapshot.seq)
+        // A cold bootstrap means the replay gap (if any) was unbridgeable —
+        // events between the search index's last look at each conversation
+        // and the snapshot head were never live-indexed, so any persisted
+        // "backfill complete" flags may now hide head-side holes. Reset the
+        // bookkeeping (messages stay indexed) so the backfill sweep re-walks
+        // every conversation from its head. Best-effort: a failed reset just
+        // leaves search coverage where it was.
+        if let search { try? await search.resetBackfill() }
     }
 
     private func backoff() async {
@@ -1063,23 +1071,10 @@ public actor JournalSyncEngine {
 
     private func indexForSearch(_ event: JournalEvent) {
         guard let search else { return }
-        let payload = event.payload
-        let body: String?
-        switch event.type {
-        case JournalEventType.text:
-            body = payload["body"] as? String
-        case JournalEventType.toolOutput:
-            body = payload["snippet"] as? String
-        case JournalEventType.diff:
-            // Mirror JournalTimelineMapper's precedence (diff, then
-            // snippet) so what the user can SEE is what search can FIND —
-            // diff rows carrying only a `diff` field were invisible to FTS
-            // (bugbot "Diff events omit search text").
-            body = payload["diff"] as? String ?? payload["snippet"] as? String
-        default:
-            body = nil
-        }
-        guard let body, !body.isEmpty else { return }
+        // Body extraction lives in `JournalEvent.searchableBody` (shared with
+        // paginateBackward and the history backfill) so the three feeders
+        // can't drift — see SearchBackfill.swift.
+        guard let body = event.searchableBody else { return }
         let convoID = event.convoID
         let seq = event.seq
         let sender = event.sender

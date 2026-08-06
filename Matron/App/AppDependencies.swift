@@ -39,6 +39,9 @@ final class AppDependencies {
         let api: JournalAPI
         let store: JournalStore
         let engine: JournalSyncEngine
+        /// Background search-history backfill sweep for this session (see
+        /// `SearchBackfillCoordinator`). Cancelled on sign-out.
+        var backfillTask: Task<Void, Never>?
         init(api: JournalAPI, store: JournalStore, engine: JournalSyncEngine) {
             self.api = api
             self.store = store
@@ -115,8 +118,39 @@ final class AppDependencies {
             ownSender: "user:\(session.userID)", search: search
         )
         let core = JournalCore(api: api, store: store, engine: engine)
+        core.backfillTask = Self.startBackfill(search: search, api: api, store: store)
         cores[session.userID] = core
         return core
+    }
+
+    /// Kicks off the background search-history backfill for a session's
+    /// core: a low-priority sweep that walks every conversation's server
+    /// history into the FTS index, so search covers messages this device
+    /// never saw live (fresh installs and snapshot re-bootstraps start with
+    /// an empty message index — the 'dev-z' gap). Retries with backoff while
+    /// any conversation fails (offline launch, server error) and ends for
+    /// the session once a sweep completes cleanly; conversations created
+    /// after that are live-indexed from their first frame anyway. Shared
+    /// with MatronMac via copy — keep the two in sync.
+    static func startBackfill(search: SearchService?, api: JournalAPI, store: JournalStore) -> Task<Void, Never>? {
+        guard let search else { return nil }
+        let coordinator = SearchBackfillCoordinator(search: search) { convoID, beforeSeq, limit in
+            try await api.messages(convoID: convoID, beforeSeq: beforeSeq, limit: limit)
+        }
+        return Task(priority: .utility) {
+            // Let the initial connect + catch-up replay land before adding
+            // background request load.
+            try? await Task.sleep(for: .seconds(10))
+            var delay = Duration.seconds(30)
+            while !Task.isCancelled {
+                let ids = (try? store.allConversationIDs()) ?? []
+                // An empty list means the first snapshot hasn't landed yet —
+                // fall through to the retry sleep rather than declaring done.
+                if !ids.isEmpty, await coordinator.run(convoIDs: ids) { return }
+                try? await Task.sleep(for: delay)
+                delay = min(delay * 2, .seconds(600))
+            }
+        }
     }
 
     /// `any SyncService` (not `JournalSyncEngine` directly) so existing
@@ -249,6 +283,12 @@ final class AppDependencies {
         teardownTask = Task { [search] in
             await previous?.value
             for core in oldCores {
+                // Stop the backfill sweep before the search wipe below so it
+                // can't repopulate the index with the old user's messages.
+                // Awaited (not just cancelled): an in-flight page of index
+                // writes landing after the wipe would resurrect them.
+                core.backfillTask?.cancel()
+                await core.backfillTask?.value
                 // Best-effort server-side push deregistration while the API
                 // still holds a valid token (Finding 3). Bounded so a dead
                 // network can't hold re-login hostage to a URLSession

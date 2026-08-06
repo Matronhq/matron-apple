@@ -570,6 +570,22 @@ public final class JournalStore: @unchecked Sendable {
         }
     }
 
+    /// Every conversation id in the mirror — including hidden rows and
+    /// subagent children, which `conversations()` filters out — ordered
+    /// most-recently-active first. Backs the search-history backfill sweep:
+    /// hidden and child conversations still hold searchable messages, and
+    /// activity ordering indexes the conversations the user is most likely
+    /// to search before the long tail. (DESC puts NULL activity rows last,
+    /// same as `conversations()`.)
+    public func allConversationIDs() throws -> [String] {
+        try dbQueue.read { db in
+            try String.fetchAll(db, sql: """
+                SELECT id FROM conversation
+                ORDER BY last_activity_ts DESC, last_seq DESC
+                """)
+        }
+    }
+
     /// A parent's subagent children, in creation order. Includes both
     /// running and finished children (`sessionState`) so callers filter —
     /// the running-subagent strip shows only `running`, the switcher menu
