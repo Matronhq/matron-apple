@@ -270,31 +270,51 @@ public final class LiveOutputSessionStore {
 
     private var sessions: [String: LiveOutputSession] = [:]
     private var order: [String] = []
+    /// Which conversation's timeline last rendered each session's card —
+    /// the scope key for `suspendSessions(in:)`.
+    private var convoTags: [String: String] = [:]
     private let limit: Int
+    /// Injectable for tests (stub connectors); production uses the default.
+    private let sessionFactory: @MainActor (LiveOutputEvent) -> LiveOutputSession
 
-    public init(limit: Int = 8) {
+    public init(limit: Int = 8,
+                sessionFactory: @escaping @MainActor (LiveOutputEvent) -> LiveOutputSession = { LiveOutputSession(event: $0) }) {
         self.limit = limit
+        self.sessionFactory = sessionFactory
     }
 
-    public func session(for event: LiveOutputEvent) -> LiveOutputSession {
+    public func session(for event: LiveOutputEvent, convoID: String? = nil) -> LiveOutputSession {
+        if let convoID { convoTags[event.toolUseID] = convoID }
         if let existing = sessions[event.toolUseID] {
             order.removeAll { $0 == event.toolUseID }
             order.append(event.toolUseID)
             return existing
         }
-        let created = LiveOutputSession(event: event)
+        let created = sessionFactory(event)
         sessions[event.toolUseID] = created
         order.append(event.toolUseID)
         if order.count > limit {
             let evicted = order.removeFirst()
+            convoTags.removeValue(forKey: evicted)
             sessions.removeValue(forKey: evicted)?.teardown()
         }
         return created
     }
 
-    /// Suspends every live session's socket (output is kept; cards
-    /// reconnect via `startIfNeeded` when they re-appear). Called when the
-    /// user leaves a chat or the app backgrounds.
+    /// Suspends the sockets of sessions rendered by `convoID`'s timeline
+    /// (output is kept; cards reconnect via `startIfNeeded` when they
+    /// re-appear). Scoped, not global: chats can overlap on screen (Mac
+    /// parent chat + sub-chat pane), and a blanket suspend from one chat's
+    /// `onDisappear` froze the other's still-visible tiles — they only
+    /// re-kick on remount or expand.
+    public func suspendSessions(in convoID: String) {
+        for (toolUseID, tag) in convoTags where tag == convoID {
+            sessions[toolUseID]?.suspend()
+        }
+    }
+
+    /// Suspends every live session's socket. For whole-app scopes (e.g.
+    /// backgrounding); chat teardown should use `suspendSessions(in:)`.
     public func suspendAll() {
         for session in sessions.values { session.suspend() }
     }

@@ -308,8 +308,10 @@ struct MacChatView: View {
             stripViewModel.stop(ifGeneration: stripStartedGeneration)
             // Close live-output viewer sockets behind the departing chat
             // (accumulated output kept; cards reconnect on re-appear via
-            // their own startIfNeeded). Mirrors iOS ChatView.
-            LiveOutputSessionStore.shared.suspendAll()
+            // their own startIfNeeded). Scoped to THIS chat: the sub-chat
+            // pane can still be on screen with live tiles of its own, and
+            // a global suspend froze them (bugbot). Mirrors iOS ChatView.
+            LiveOutputSessionStore.shared.suspendSessions(in: viewModel.roomID)
         }
     }
 
@@ -835,7 +837,8 @@ private struct MacTimelineListContent: View, Equatable {
                         },
                         askViewModel: { viewModel.askViewModel(forPrompt: $0) },
                         isPromptAnswered: { viewModel.isPromptAnswered($0) },
-                        answerSummary: { viewModel.answerSummary(forPrompt: $0) }
+                        answerSummary: { viewModel.answerSummary(forPrompt: $0) },
+                        convoID: viewModel.roomID
                     )
                         .id(item.id)
                         // No `.onAppear` history trigger — an eager stack
@@ -1063,6 +1066,9 @@ struct MacSubChatPane: View {
             followHealTask?.cancel()
             viewModel.stop(ifGeneration: startedGeneration)
             stripViewModel.stop(ifGeneration: stripStartedGeneration)
+            // Closing the pane leaves the parent chat on screen — suspend
+            // only this child's viewer sockets, never the parent's.
+            LiveOutputSessionStore.shared.suspendSessions(in: childID)
         }
         .sheet(item: $imagePreview) { preview in
             AttachmentFullscreenViewer(image: preview.image, onDismiss: { imagePreview = nil })

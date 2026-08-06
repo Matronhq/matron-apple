@@ -182,6 +182,36 @@ final class LiveOutputSessionTests: XCTestCase {
         let aNew = store.session(for: event())
         XCTAssertFalse(a === aNew, "evicted session must not be resurrected")
     }
+
+    func testSuspendSessionsIsScopedToConvo() async {
+        // Two chats can be on screen at once (Mac parent + sub-chat pane):
+        // one chat's teardown must not freeze the other's live tiles.
+        let store = LiveOutputSessionStore(limit: 4, sessionFactory: { event in
+            LiveOutputSession(event: event, connector: { _ in
+                AsyncThrowingStream { continuation in
+                    continuation.yield(.data(chunk: "x"))
+                    // Never finishes — models a live, still-streaming socket.
+                }
+            })
+        })
+        let url = URL(string: "https://viewer.example.com/live?token=t")!
+        let a = LiveOutputEvent(toolUseID: "a", command: "ls", viewerURL: url, expiresAt: nil)
+        let b = LiveOutputEvent(toolUseID: "b", command: "ls", viewerURL: url, expiresAt: nil)
+        let sessionA = store.session(for: a, convoID: "convo-A")
+        let sessionB = store.session(for: b, convoID: "convo-B")
+        sessionA.startIfNeeded()
+        sessionB.startIfNeeded()
+        await waitUntil { sessionA.phase == .streaming && sessionB.phase == .streaming }
+
+        store.suspendSessions(in: "convo-A")
+        XCTAssertEqual(sessionA.phase, .idle, "own convo's session must suspend")
+        XCTAssertEqual(sessionB.phase, .streaming, "other convo's session must stay live")
+
+        // A re-render from another chat re-tags the session; scope follows.
+        _ = store.session(for: b, convoID: "convo-A")
+        store.suspendSessions(in: "convo-A")
+        XCTAssertEqual(sessionB.phase, .idle, "re-tagged session suspends with its new convo")
+    }
 }
 
 private actor Counter {

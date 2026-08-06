@@ -734,9 +734,11 @@ struct ChatView: View {
             stripViewModel.stop(ifGeneration: stripStartedGeneration)
             // Close live-output viewer sockets behind the departing chat
             // (accumulated output is kept; cards reconnect on re-appear).
+            // Scoped to THIS chat's sessions — a global suspend froze
+            // still-visible tiles in overlapping chats (Mac pane; bugbot).
             // Safe against the same-room remount race above: the new view's
             // cards call startIfNeeded from their own .task on appear.
-            LiveOutputSessionStore.shared.suspendAll()
+            LiveOutputSessionStore.shared.suspendSessions(in: viewModel.roomID)
         }
         // Fullscreen attachment preview. Presented from a tap on
         // either an `AttachmentImage` or `AttachmentFile` row;
@@ -919,7 +921,8 @@ private struct TimelineListContent: View, Equatable {
                         },
                         askViewModel: { viewModel.askViewModel(forPrompt: $0) },
                         isPromptAnswered: { viewModel.isPromptAnswered($0) },
-                        answerSummary: { viewModel.answerSummary(forPrompt: $0) }
+                        answerSummary: { viewModel.answerSummary(forPrompt: $0) },
+                        convoID: viewModel.roomID
                     )
                         .id(item.id)
                         // No `.onAppear` history trigger here: row
@@ -1150,8 +1153,9 @@ struct SubChatView: View {
             followHealTask?.cancel()
             viewModel.stop(ifGeneration: startedGeneration)
             stripViewModel.stop(ifGeneration: stripStartedGeneration)
-            // Same viewer-socket hygiene as the parent chat's onDisappear.
-            LiveOutputSessionStore.shared.suspendAll()
+            // Same viewer-socket hygiene as the parent chat's onDisappear,
+            // scoped to this child so the parent's tiles stay live.
+            LiveOutputSessionStore.shared.suspendSessions(in: viewModel.roomID)
         }
         .sheet(item: $attachmentPreview) { preview in
             switch preview {

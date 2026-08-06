@@ -172,6 +172,13 @@ public final class JournalStore: @unchecked Sendable {
                 _ = try String.fetchOne(db, sql: "PRAGMA journal_mode = WAL")
                 try db.execute(sql: "PRAGMA synchronous = NORMAL")
             }
+            // File protection (iOS): the mirror and its WAL sidecars all
+            // carry the OS default, CompleteUntilFirstUserAuthentication —
+            // deliberately NOT upgraded to NSFileProtectionComplete like
+            // the search index's, because background sync and BGAppRefresh
+            // write here while the device is locked and Complete would fail
+            // those writes. The sidecars match the main file's class, so
+            // WAL introduces no protection downgrade.
             dbQueue = try DatabaseQueue(path: url.path, configuration: config)
         } else {
             dbQueue = try DatabaseQueue()
