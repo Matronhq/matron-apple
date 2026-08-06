@@ -130,10 +130,14 @@ final class AppDependencies {
     /// history into the FTS index, so search covers messages this device
     /// never saw live (fresh installs and snapshot re-bootstraps start with
     /// an empty message index — the 'dev-z' gap). Retries with backoff while
-    /// any conversation fails (offline launch, server error) and ends for
-    /// the session once a sweep completes cleanly; conversations created
-    /// after that are live-indexed from their first frame anyway. Mirror of
-    /// the iOS implementation — keep the two in sync.
+    /// any conversation fails (offline launch, server error). Stays resident
+    /// for the whole session even after a clean sweep: a mid-session
+    /// `snapshot_required` bootstrap resets the backfill bookkeeping
+    /// (`coldStartIfNeeded`) and only a later pass here re-walks the gap —
+    /// exiting after the first clean sweep would leave that hole until the
+    /// next launch (bugbot "Backfill never restarts after sweep"). An
+    /// all-complete idle pass is pure local reads, so the long cadence
+    /// costs no network. Mirror of the iOS implementation — keep in sync.
     static func startBackfill(search: SearchService?, api: JournalAPI, store: JournalStore) -> Task<Void, Never>? {
         guard let search else { return nil }
         let coordinator = SearchBackfillCoordinator(search: search) { convoID, beforeSeq, limit in
@@ -143,14 +147,18 @@ final class AppDependencies {
             // Let the initial connect + catch-up replay land before adding
             // background request load.
             try? await Task.sleep(for: .seconds(10))
-            var delay = Duration.seconds(30)
+            var backoff = Duration.seconds(30)
             while !Task.isCancelled {
-                let ids = (try? store.allConversationIDs()) ?? []
                 // An empty list means the first snapshot hasn't landed yet —
-                // fall through to the retry sleep rather than declaring done.
-                if !ids.isEmpty, await coordinator.run(convoIDs: ids) { return }
-                try? await Task.sleep(for: delay)
-                delay = min(delay * 2, .seconds(600))
+                // treat it like a failed pass and retry on the backoff curve.
+                let ids = (try? store.allConversationIDs()) ?? []
+                if !ids.isEmpty, await coordinator.run(convoIDs: ids) {
+                    backoff = .seconds(30) // a later failure restarts the curve
+                    try? await Task.sleep(for: .seconds(900))
+                } else {
+                    try? await Task.sleep(for: backoff)
+                    backoff = min(backoff * 2, .seconds(600))
+                }
             }
         }
     }
