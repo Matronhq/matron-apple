@@ -93,9 +93,9 @@ which serves double duty:
 ## Room lifecycle
 
 1. Agent A calls `agent_chat_start(target, topic, justification, message)`.
-   Target is chosen from the roster — canonically a specific conversation
-   (i.e. "the session behind convo X"); a bare device target resolves to that
-   box's most recently active session.
+   Target is a specific conversation chosen from the roster ("the session
+   behind convo X"), picked using titles and summaries. There is no
+   bare-device targeting.
 2. Bridge A mints a room id (UUID, top-level), upserts the conversation with
    title `«boxA» ↔ «boxB» — «topic»`, publishes the opening message, and sends
    the invite through the journal.
@@ -110,9 +110,32 @@ which serves double duty:
    requests a chat: «justification». Accept or refuse.") and answers via
    `agent_chat_accept` / `agent_chat_refuse(reason)`.
 6. On accept the server adds the `joined` participant row; the opening message
-   is delivered to the target session as a turn; from then on each agent's
-   room messages become turns for the other, and Dan's messages become turns
-   for both.
+   is delivered to the target session as a turn; from then on room messages
+   are delivered to the other participants (and Dan's messages to both) via
+   the hybrid model below.
+
+### Delivery model (hybrid push + inbox)
+
+- **Idle session** → an inbound room message is delivered immediately as a
+  turn.
+- **Busy session** → inbound room messages do NOT queue individually. They
+  accumulate, and when the current turn ends the bridge coalesces everything
+  pending into one "room update" turn (all messages, attributed, in order) —
+  one interruption per busy period regardless of peer chattiness.
+- **On demand** → `agent_chat_read(room_id)` returns recent room history, so
+  an agent can check a room mid-turn (inbox semantics when the agent wants
+  them).
+
+### Output routing and room etiquette
+
+The room only ever receives what an agent explicitly sends via
+`agent_chat_send` (or `send_attachment`). A session's working output for a
+room-triggered turn — streaming text, tool cards, diffs — renders in its own
+main conversation as usual and is never rerouted to the room. Rooms are
+therefore structurally coordination channels; they cannot fill with tool
+noise. The tool descriptions additionally instruct agents to keep room
+messages concise and coordination-focused (outcomes, questions, decisions —
+not running commentary).
 7. Manual flow: Dan can hand any agent a room id; `agent_chat_join(room_id)`
    sends the same invite in reverse — the room's creator session receives the
    request turn and accepts or refuses on behalf of the room.
@@ -165,6 +188,9 @@ state visible (title suffix until accepted, e.g. "… (inviting dev-2)").
     turns regardless — nothing is lost by not waiting.
   - `agent_chat_accept(room_id)` / `agent_chat_refuse(room_id, reason)` /
     `agent_chat_join(room_id)` / `agent_chat_leave(room_id)`.
+  - `agent_chat_read(room_id, limit?)` — recent room history on demand
+    (backed by the existing `GET /convo/:id/messages` pagination, allowed for
+    joined agents).
   - `send_attachment(path, caption?, room_id?)` — uploads via the existing
     agent-token `POST /media` (50 MB cap), publishes `image` (for image
     content types) or `file` events with `{blob_ref, name, content_type,
@@ -174,10 +200,11 @@ state visible (title suffix until accepted, e.g. "… (inviting dev-2)").
 - **Input router carve-out**: today the router drops every frame whose sender
   is not `user:*` (its loop guard). New rule, in order: (1) own-echo guard —
   drop frames from this bridge's own agent sender name; (2) frames in rooms
-  this bridge has **joined** become turns for the mapped session, attributed
-  as "«agent name» (agent, room «title»)"; (3) `user:*` frames in joined
-  rooms are normal user input to the mapped session; (4) everything else
-  drops exactly as today.
+  this bridge has **joined** are routed to the mapped session via the hybrid
+  delivery model (immediate turn when idle; coalesced room-update turn when
+  busy), attributed as "«agent name» (agent, room «title»)"; (3) `user:*`
+  frames in joined rooms follow the same path; (4) everything else drops
+  exactly as today.
 - **Invite handling**: incoming invite → instant ack with session idle/busy →
   inject request turn → answer via tool → journal answer op.
 - **Room↔session mapping** persisted to disk (same pattern as the journal
