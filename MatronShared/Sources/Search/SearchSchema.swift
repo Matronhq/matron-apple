@@ -8,8 +8,9 @@ import GRDB
 /// storing everything in the FTS table, a normal `messages` table holds the
 /// indexable columns (with a `UNIQUE` `event_id`), `messages_fts` is an FTS5
 /// mirror of just `body` (`content='messages'`), and three triggers keep the two
-/// in sync. This makes `INSERT OR REPLACE INTO messages` (idempotent re-index)
-/// and `DELETE FROM messages WHERE event_id = ?` (redaction) behave correctly.
+/// in sync. Re-index goes through an UPSERT (never `INSERT OR REPLACE` — REPLACE
+/// skips the delete trigger and strands FTS entries, see the v2 migration) and
+/// `DELETE FROM messages WHERE event_id = ?` (redaction) behaves correctly.
 public enum SearchSchema {
     public static func migrate(_ migrator: inout DatabaseMigrator) {
         migrator.registerMigration("v1: messages + messages_fts + indexed_rooms") { db in
@@ -61,6 +62,16 @@ public enum SearchSchema {
                 );
             """)
         }
+
+        migrator.registerMigration("v2: rebuild messages_fts (REPLACE ghost entries)") { db in
+            // Stores written while `index()` used INSERT OR REPLACE hold ghost FTS
+            // entries: REPLACE deleted conflicting content rows without firing the
+            // AFTER DELETE trigger, so the dead rowids' tokens stayed in the index
+            // ('integrity-check' reported SQLITE_CORRUPT on Dan's live store,
+            // 2026-08-06). `rebuild` regenerates the whole FTS index from the
+            // content table — sub-second even at ~100k rows.
+            try db.execute(sql: "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+        }
     }
 
     /// Opens (or creates) a database at `path` with Data Protection set to complete.
@@ -86,6 +97,11 @@ public enum SearchSchema {
         }
         #endif
         var config = Configuration()
+        // A second connection (an overlapping app instance during relaunch, or a
+        // diagnostic sqlite3 shell) briefly holding the lock surfaced as a
+        // hard "database is locked" backfill failure (2026-08-06). Wait it out
+        // instead of erroring immediately.
+        config.busyMode = .timeout(2)
         config.prepareDatabase { db in
             try db.execute(sql: "PRAGMA foreign_keys = ON")
         }

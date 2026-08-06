@@ -1,4 +1,5 @@
 import XCTest
+import GRDB
 @testable import MatronSearch
 
 final class SearchServiceLiveTests: XCTestCase {
@@ -37,6 +38,74 @@ final class SearchServiceLiveTests: XCTestCase {
         XCTAssertEqual(hits.count, 0, "old body must not remain in FTS after re-index")
         let hits2 = try await svc.query("second", limit: 10)
         XCTAssertEqual(hits2.count, 1)
+    }
+
+    /// FTS5's external-content integrity check (`rank = 1` verifies the index
+    /// against the content table). Throws SQLITE_CORRUPT when the two diverge —
+    /// e.g. ghost entries left by a REPLACE that deleted a content row without
+    /// firing the delete trigger.
+    private func assertFTSIntegrity(file: StaticString = #filePath, line: UInt = #line) throws {
+        let queue = try DatabaseQueue(path: url.path)
+        XCTAssertNoThrow(
+            try queue.write { db in
+                try db.execute(sql: "INSERT INTO messages_fts(messages_fts, rank) VALUES('integrity-check', 1)")
+            },
+            "messages_fts diverged from its content table",
+            file: file, line: line
+        )
+    }
+
+    func test_reindex_keepsFTSIntegrity() async throws {
+        // The backfill re-indexes events the live feeder already indexed, so the
+        // duplicate-event path runs constantly. INSERT OR REPLACE broke it: REPLACE
+        // deletes the conflicting row WITHOUT firing the AFTER DELETE trigger
+        // (recursive_triggers is off), leaving ghost FTS entries for dead rowids —
+        // 2026-08-06 live corruption on Dan's Mac store.
+        let ts = Date(timeIntervalSince1970: 1_745_000_000)
+        try await svc.index(roomID: "!r:s", eventID: "$1", sender: "@a:s", timestamp: ts, body: "same body")
+        try await svc.index(roomID: "!r:s", eventID: "$1", sender: "@a:s", timestamp: ts, body: "same body")
+        try await svc.index(roomID: "!r:s", eventID: "$1", sender: "@a:s", timestamp: ts, body: "changed body")
+        try assertFTSIntegrity()
+        let hits = try await svc.query("body", limit: 10)
+        XCTAssertEqual(hits.count, 1, "one event must yield exactly one hit after re-indexing")
+        XCTAssertTrue(hits[0].snippet.contains("changed"))
+    }
+
+    func test_migration_rebuildsGhostEntriesFromOlderStores() async throws {
+        // Stores written before the UPSERT fix contain ghost FTS entries. The v2
+        // migration's `rebuild` must repair them on open. Recreate the damage
+        // against a v1-only store, then let a full open migrate + repair it.
+        let corruptURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("corrupt-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: corruptURL) }
+        do {
+            let queue = try DatabaseQueue(path: corruptURL.path)
+            var migrator = DatabaseMigrator()
+            SearchSchema.migrate(&migrator)
+            try migrator.migrate(queue, upTo: "v1: messages + messages_fts + indexed_rooms")
+            try queue.inDatabase { db in
+                // The old index() SQL: REPLACE on a duplicate event_id orphans
+                // the first row's FTS entry.
+                for _ in 0..<2 {
+                    try db.execute(sql: """
+                        INSERT OR REPLACE INTO messages(room_id, event_id, sender, timestamp, body)
+                        VALUES ('!r:s', '$1', '@a:s', 0, 'ghost maker')
+                    """)
+                }
+                XCTAssertThrowsError(
+                    try db.execute(sql: "INSERT INTO messages_fts(messages_fts, rank) VALUES('integrity-check', 1)"),
+                    "REPLACE should have corrupted the FTS index — if not, this test is stale"
+                )
+            }
+        }
+
+        let repaired = try SearchServiceLive(databaseURL: corruptURL)
+        let queue = try DatabaseQueue(path: corruptURL.path)
+        try queue.inDatabase { db in
+            try db.execute(sql: "INSERT INTO messages_fts(messages_fts, rank) VALUES('integrity-check', 1)")
+        }
+        let hits = try await repaired.query("ghost", limit: 10)
+        XCTAssertEqual(hits.count, 1)
     }
 
     func test_remove_clearsFTSRow() async throws {
