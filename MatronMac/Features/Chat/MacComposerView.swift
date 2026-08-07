@@ -258,7 +258,8 @@ struct MacComposerView: View {
                     }
                     return true
                 },
-                onPasteAttachments: { claimPasteboardAttachments() }
+                onPasteAttachments: { claimPasteboardAttachments() },
+                onAttachablePasteboardTypes: { attachablePasteboardTypes() }
             )
                 .frame(height: min(
                     max(inputContentHeight, Self.singleLineInputHeight),
@@ -384,29 +385,24 @@ struct MacComposerView: View {
     }
 
     /// Decides whether a ⌘V in the text editor is an attachment paste.
-    /// Bridges each `NSPasteboardItem` to an `NSItemProvider` so
+    /// `PasteboardAttachmentBridge` does the bridging so
     /// `PastedAttachment.classify(_:)` — the shared, probe-verified rule for
     /// what counts as an attachment vs text — applies unchanged. Items that
     /// classify as text are left alone; if nothing classifies as an
     /// attachment this returns `false` and the text view pastes normally.
     private func claimPasteboardAttachments() -> Bool {
-        let items = NSPasteboard.general.pasteboardItems ?? []
-        let providers = items.map { item in
-            let provider = NSItemProvider()
-            for type in item.types where UTType(type.rawValue) != nil {
-                provider.registerDataRepresentation(
-                    forTypeIdentifier: type.rawValue, visibility: .all
-                ) { completion in
-                    completion(item.data(forType: type), nil)
-                    return nil
-                }
-            }
-            return provider
-        }
-        let attachments = providers.filter { PastedAttachment.classify($0) != .text }
+        let attachments = PasteboardAttachmentBridge.attachments(on: .general)
         guard !attachments.isEmpty else { return false }
         Task { await attachPasted(attachments) }
         return true
+    }
+
+    /// The flavours the text view should advertise as readable so AppKit
+    /// enables Paste. Without this an image-only pasteboard leaves Paste
+    /// disabled and ⌘V merely beeps — `claimPasteboardAttachments` above is
+    /// never reached. Non-consuming; see `PasteboardAttachmentBridge`.
+    private func attachablePasteboardTypes() -> [NSPasteboard.PasteboardType] {
+        PasteboardAttachmentBridge.readableTypesToOffer(on: .general)
     }
 
     /// Stages each pasted item to a temporary file and hands the lot to

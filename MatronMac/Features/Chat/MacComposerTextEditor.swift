@@ -26,6 +26,9 @@ import UniformTypeIdentifiers
 ///   the caret, which is the whole reason the old event monitor existed.
 /// - `onPasteAttachments` returns `true` when it claimed the pasteboard
 ///   (files or images); text pastes fall through to the text view.
+/// - `onAttachablePasteboardTypes` reports the flavours worth offering as
+///   readable, which is what makes AppKit *enable* Paste for an image; it
+///   must not consume the pasteboard.
 struct MacComposerTextEditor: NSViewRepresentable {
     @Binding var text: String
     let onHeightChange: (CGFloat) -> Void
@@ -33,6 +36,7 @@ struct MacComposerTextEditor: NSViewRepresentable {
     let onMoveDown: () -> Bool
     let onCommit: () -> Bool
     let onPasteAttachments: () -> Bool
+    let onAttachablePasteboardTypes: () -> [NSPasteboard.PasteboardType]
 
     /// Matches the `.padding(8)` the SwiftUI field carried, so the swap
     /// doesn't move the text. `MacComposerView.singleLineInputHeight`
@@ -72,6 +76,7 @@ struct MacComposerTextEditor: NSViewRepresentable {
 
         textView.delegate = context.coordinator
         textView.claimPasteboardAttachments = onPasteAttachments
+        textView.attachablePasteboardTypes = onAttachablePasteboardTypes
 
         let scrollView = NSScrollView()
         scrollView.documentView = textView
@@ -103,6 +108,7 @@ struct MacComposerTextEditor: NSViewRepresentable {
         context.coordinator.parent = self
         guard let textView = scrollView.documentView as? ComposerTextView else { return }
         textView.claimPasteboardAttachments = onPasteAttachments
+        textView.attachablePasteboardTypes = onAttachablePasteboardTypes
         if textView.string != text {
             textView.string = text
             // External writes (history recall, palette completion) replace
@@ -180,6 +186,20 @@ struct MacComposerTextEditor: NSViewRepresentable {
 /// class's doc for the 2026-08-02 freeze).
 final class ComposerTextView: MouseTrackingRescueTextView {
     var claimPasteboardAttachments: (() -> Bool)?
+
+    /// The extra flavours to advertise as readable, so AppKit *offers* Paste
+    /// for a pasteboard we intend to claim. Non-consuming: AppKit asks on
+    /// every Edit-menu open and every ⌘V, so this must never stage anything.
+    ///
+    /// Without it an image-only pasteboard matches nothing in
+    /// `readablePasteboardTypes` (the view is `isRichText = false`), AppKit
+    /// disables Paste, and ⌘V just beeps — `paste(_:)` below never runs. See
+    /// `PasteboardAttachmentBridge` for the measurement.
+    var attachablePasteboardTypes: (() -> [NSPasteboard.PasteboardType])?
+
+    override var readablePasteboardTypes: [NSPasteboard.PasteboardType] {
+        super.readablePasteboardTypes + (attachablePasteboardTypes?() ?? [])
+    }
 
     override func paste(_ sender: Any?) {
         if claimPasteboardAttachments?() == true { return }
