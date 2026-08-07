@@ -93,6 +93,56 @@ final class ChatListViewBindingTests: XCTestCase {
                      "lookup must return nil for a room removed from the latest snapshot")
     }
 
+    /// Structural-identity pin (Dan's 2026-08-07 report: a chat showed one
+    /// room's title over another room's timeline). `MatronApp.openChat`
+    /// REPLACES the navigation path (`[A]` → `[B]`, the 2026-08-06
+    /// back-button change), so the pushed destination keeps its structural
+    /// position across a chat switch. Without an explicit `.id(id)` on the
+    /// top-level `ChatView`, SwiftUI reuses the previous instance's
+    /// `@State` (`viewModel`, `composerVM`, `stripViewModel` — still chat
+    /// A's) while the plain-`let` `chatTitle` updates to chat B: B's title
+    /// over A's messages. The `SubChatView` branch and the Mac panes carry
+    /// the same key (f3eb091).
+    ///
+    /// The `ChatView` branch is unreachable from a unit test (it's gated
+    /// on `@Environment` deps that only resolve inside a live hierarchy)
+    /// and SwiftUI exposes no runtime probe for structural identity, so
+    /// this pins the source contract instead: the `ChatView` construction
+    /// inside `chatDestination` must carry `.id(id)`.
+    func test_chatDestination_keysTopLevelChatViewIdentityToRoomID() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // MatronTests/
+            .deletingLastPathComponent()  // repo root
+            .appendingPathComponent("Matron/Features/ChatList/ChatListView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        guard let funcStart = source.range(of: "func chatDestination(") else {
+            return XCTFail("chatDestination(for:) not found — move this pin alongside any rename")
+        }
+        let body = String(source[funcStart.upperBound...])
+
+        // The top-level branch is the `ChatView(` construction that is NOT
+        // the `SubChatView(` one.
+        let topLevel = try NSRegularExpression(pattern: "(?<!Sub)ChatView\\(")
+        let matches = topLevel.matches(in: body, range: NSRange(body.startIndex..., in: body))
+        guard let match = matches.last, let start = Range(match.range, in: body) else {
+            return XCTFail("top-level ChatView construction not found in chatDestination")
+        }
+        let branch = String(body[start.lowerBound...])
+        // Scope the assertion to this branch (up to the destination's
+        // else) so an `.id` elsewhere in the file can't satisfy the pin.
+        let scoped = branch.range(of: "} else {").map { String(branch[..<$0.lowerBound]) } ?? branch
+        XCTAssertTrue(
+            scoped.contains(".id(id)"),
+            """
+            The top-level ChatView in chatDestination(for:) must be keyed \
+            with .id(id): openChat replaces the path tail in place, and an \
+            unkeyed destination keeps the previous chat's @State view models \
+            under the new chat's title.
+            """
+        )
+    }
+
     /// The destination view-builder doesn't crash when called with an
     /// id whose room has been removed from the snapshot. Renders the
     /// `Session unavailable`-style placeholder via the `else` branch.
