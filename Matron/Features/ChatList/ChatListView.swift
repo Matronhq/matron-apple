@@ -409,6 +409,14 @@ struct ChatListView: View {
                     stripViewModel: vmCache.stripViewModel(forParent: id, deps: deps, session: session),
                     chatTitle: summary?.title ?? ""
                 )
+                // Key the chat's identity to its room. `openChat` REPLACES
+                // the path ([A] → [B]), which keeps this destination's
+                // structural position — without this key SwiftUI reuses the
+                // old instance's `@State`, so `viewModel`/`composerVM` stay
+                // chat A's while the plain-`let` `chatTitle` updates to
+                // chat B: B's title over A's timeline. Same fix as the
+                // SubChatView branch above and MacSubChatPane (f3eb091).
+                .id(id)
             }
         } else {
             ContentUnavailableView(
