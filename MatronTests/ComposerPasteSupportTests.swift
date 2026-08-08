@@ -78,6 +78,28 @@ final class ComposerPasteSupportTests: XCTestCase {
         XCTAssertTrue(textView.pasteDelegate === coordinator)
     }
 
+    /// Regression test for the 2026-08-08 `/start` crash: UIKit's
+    /// `pasteConfiguration` setter stores a *copy* whose backing store is an
+    /// immutable `__NSFrozenOrderedSetM`. A second coordinator installing on a
+    /// view the first already configured reads that frozen copy back, and
+    /// mutating it (`addAcceptableTypeIdentifiers`) throws
+    /// `NSInvalidArgumentException`. That is exactly what happens when a new
+    /// conversation's composer walks the hierarchy while the old composer is
+    /// still in the window.
+    @MainActor
+    func test_install_survivesAViewAnotherCoordinatorAlreadyConfigured() {
+        let textView = UITextView()
+        ComposerPasteSupport.Coordinator(viewModel: makeViewModel()).install(on: textView)
+
+        let second = ComposerPasteSupport.Coordinator(viewModel: makeViewModel())
+        second.install(on: textView)
+
+        let accepted = textView.pasteConfiguration?.acceptableTypeIdentifiers ?? []
+        XCTAssertTrue(accepted.contains(UTType.image.identifier))
+        XCTAssertTrue(accepted.contains(UTType.fileURL.identifier))
+        XCTAssertTrue(textView.pasteDelegate === second)
+    }
+
     /// `updateUIView` runs on every keystroke, so an installed-and-live target
     /// must not re-trigger the hierarchy walk.
     @MainActor
