@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>chat.matron.refresh</string>
+	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
@@ -29,12 +33,18 @@
 	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>Matron uses the camera to scan sign-in QR codes from your other devices.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Face ID unlocks Matron.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Records voice notes to send to your agent.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Attaches photos from your library to send to your agent.</string>
 	<key>UIApplicationSupportsMultipleScenes</key>
 	<false/>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+	</array>
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>UIColorName</key>
