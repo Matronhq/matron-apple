@@ -329,6 +329,7 @@ struct MacChatView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.red.opacity(0.9))
                     .accessibilityLabel("Chat error: \(errorMessage)")
+                    .chatTopBanner()
             }
             // Tap-to-compact nudge once the session's context passes the
             // absolute threshold — same slot and behaviour as iOS
@@ -338,6 +339,7 @@ struct MacChatView: View {
                 CompactContextBanner(tokens: context.tokens) {
                     Task { await viewModel.sendCommand("/compact") }
                 }
+                .chatTopBanner()
             }
             // Sticky strip of running subagents above the timeline. Clicking
             // a pill opens that subagent in the split detail pane (or a
