@@ -67,9 +67,11 @@ final class AppDependencies {
     /// "search is broken", not "search is off", which is the harder bug to
     /// report.
     ///
-    /// Both halves are repaired here: live indexing via the engine's
-    /// `attachSearch`, and the backfill sweep that `startBackfill` declines to
-    /// start without an index.
+    /// All three halves are repaired here: live indexing from now on via the
+    /// engine's `attachSearch`; the backfill sweep that `startBackfill`
+    /// declines to start without an index; and the events that landed in
+    /// between, which are in the store but not the index —
+    /// `resetBookkeepingFirst` is what recovers those (see `startBackfill`).
     private func adoptSearch(_ service: SearchService) {
         for core in cores.values {
             // Only the engine (an actor, hence Sendable) crosses into the
@@ -77,7 +79,8 @@ final class AppDependencies {
             let engine = core.engine
             Task { await engine.attachSearch(service) }
             if core.backfillTask == nil {
-                core.backfillTask = Self.startBackfill(search: service, api: core.api, store: core.store)
+                core.backfillTask = Self.startBackfill(search: service, api: core.api, store: core.store,
+                                                       resetBookkeepingFirst: true)
             }
         }
     }
@@ -198,12 +201,29 @@ final class AppDependencies {
     /// next launch (bugbot "Backfill never restarts after sweep"). An
     /// all-complete idle pass is pure local reads, so the long cadence
     /// costs no network. Shared with MatronMac via copy — keep in sync.
-    static func startBackfill(search: SearchService?, api: JournalAPI, store: JournalStore) -> Task<Void, Never>? {
+    ///
+    /// `resetBookkeepingFirst` is for the late-attach path (`adoptSearch`):
+    /// events applied while the index was shut are in the store but not in
+    /// FTS, and they sit at each conversation's HEAD — precisely where the
+    /// coordinator does not look, since it returns immediately for a room
+    /// already flagged backfill-complete and otherwise resumes walking
+    /// *downward* from its recorded oldest point. Clearing the bookkeeping
+    /// re-walks every room from its newest page, which is the same remedy
+    /// `coldStartIfNeeded` applies for the same reason (head-side holes
+    /// hidden by stale complete flags). Indexed messages are untouched and
+    /// re-indexing is idempotent, so the cost is re-paging history once.
+    static func startBackfill(search: SearchService?, api: JournalAPI, store: JournalStore,
+                              resetBookkeepingFirst: Bool = false) -> Task<Void, Never>? {
         guard let search else { return nil }
         let coordinator = SearchBackfillCoordinator(search: search) { convoID, beforeSeq, limit in
             try await api.messages(convoID: convoID, beforeSeq: beforeSeq, limit: limit)
         }
         return Task(priority: .utility) {
+            // Inside the task and ahead of the sleep, so it is ordered before
+            // the coordinator's first backfillComplete() check. Best-effort:
+            // a failed reset leaves coverage where it was, exactly as the
+            // cold-start reset does.
+            if resetBookkeepingFirst { try? await search.resetBackfill() }
             // Let the initial connect + catch-up replay land before adding
             // background request load.
             try? await Task.sleep(for: .seconds(10))

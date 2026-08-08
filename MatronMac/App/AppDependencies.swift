@@ -152,12 +152,21 @@ final class AppDependencies {
     /// next launch (bugbot "Backfill never restarts after sweep"). An
     /// all-complete idle pass is pure local reads, so the long cadence
     /// costs no network. Mirror of the iOS implementation — keep in sync.
-    static func startBackfill(search: SearchService?, api: JournalAPI, store: JournalStore) -> Task<Void, Never>? {
+    ///
+    /// `resetBookkeepingFirst` exists for iOS's late-attach path, where the
+    /// index can only be opened after the device unlocks and the events
+    /// applied in the meantime sit unindexed at each conversation's head.
+    /// macOS has no file-protection classes, so its index opens at init and
+    /// no caller here passes `true` — the parameter is carried purely to keep
+    /// the two copies textually identical.
+    static func startBackfill(search: SearchService?, api: JournalAPI, store: JournalStore,
+                              resetBookkeepingFirst: Bool = false) -> Task<Void, Never>? {
         guard let search else { return nil }
         let coordinator = SearchBackfillCoordinator(search: search) { convoID, beforeSeq, limit in
             try await api.messages(convoID: convoID, beforeSeq: beforeSeq, limit: limit)
         }
         return Task(priority: .utility) {
+            if resetBookkeepingFirst { try? await search.resetBackfill() }
             // Let the initial connect + catch-up replay land before adding
             // background request load.
             try? await Task.sleep(for: .seconds(10))
