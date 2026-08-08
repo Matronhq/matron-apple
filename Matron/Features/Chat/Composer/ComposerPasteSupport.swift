@@ -100,16 +100,24 @@ struct ComposerPasteSupport: UIViewRepresentable {
         func install(on target: UIView & UITextPasteConfigurationSupporting) {
             guard self.target !== target else { return }
             self.target = target
-            // Add to the field's own configuration rather than replacing it:
-            // a fresh `UIPasteConfiguration` would drop the text types the
-            // field set up for itself, breaking ordinary text paste.
-            let configuration = target.pasteConfiguration ?? UIPasteConfiguration()
-            configuration.addAcceptableTypeIdentifiers([
+            // Keep the field's own identifiers so ordinary text paste still
+            // works, but never mutate the configuration the view hands back:
+            // the setter stores a copy whose backing store is an immutable
+            // `__NSFrozenOrderedSetM`, so `addAcceptableTypeIdentifiers` on a
+            // read-back configuration throws NSInvalidArgumentException. Two
+            // coordinators can reach one view — during the push of a freshly
+            // created conversation the new composer's hierarchy walk runs
+            // while the old composer is still in the window — and the second
+            // install crashed the app exactly that way (2026-08-08).
+            let existing = target.pasteConfiguration?.acceptableTypeIdentifiers ?? []
+            let attachmentTypes = [
                 UTType.image.identifier,
                 UTType.fileURL.identifier,
                 UTType.data.identifier,
-            ])
-            target.pasteConfiguration = configuration
+            ].filter { !existing.contains($0) }
+            target.pasteConfiguration = UIPasteConfiguration(
+                acceptableTypeIdentifiers: existing + attachmentTypes
+            )
             target.pasteDelegate = self
             allowImagePasteMenu(on: target)
         }
