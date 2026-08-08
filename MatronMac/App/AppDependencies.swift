@@ -1,4 +1,5 @@
 import Foundation
+import os
 import SwiftUI
 import MatronAuth
 import MatronChat
@@ -27,7 +28,15 @@ final class AppDependencies {
     /// SQLite store can't be opened (rare); the journal services all treat
     /// search as optional, so the app degrades to "search disabled" rather
     /// than failing to launch.
+    ///
+    /// macOS has no file-protection classes, so unlike iOS this open does not
+    /// depend on device lock state — but the failure is logged rather than
+    /// swallowed for the same reason: search UI is gated on this being
+    /// non-nil, and a silently disabled index looks exactly like a build
+    /// without the feature.
     let search: SearchService?
+
+    private static let logger = os.Logger(subsystem: "chat.matron.mac", category: "app-dependencies")
 
     private let sessionsDirectory: URL
     private let journalDirectory: URL
@@ -89,7 +98,12 @@ final class AppDependencies {
         // just disables search. `searchDBPath` is a non-optional URL on
         // macOS (vs. the App-Group optional on iOS) — it resolves under
         // the same `appSupport` dir as `container`.
-        search = try? SearchServiceLive(databaseURL: StoragePaths.searchDBPath)
+        do {
+            search = try SearchServiceLive.open(databaseURL: StoragePaths.searchDBPath)
+        } catch {
+            search = nil
+            Self.logger.error("search index unavailable: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     /// Debug builds register sandbox APNs tokens; TestFlight/App Store

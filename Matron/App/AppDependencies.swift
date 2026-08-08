@@ -1,4 +1,5 @@
 import Foundation
+import os
 import SwiftUI
 import MatronAuth
 import MatronChat
@@ -22,11 +23,37 @@ import MatronViewModels
 @MainActor
 final class AppDependencies {
     let auth: AuthService
-    /// Phase 6 (Search): the local FTS index. Optional — `nil` only if the
-    /// SQLite store can't be opened (rare); the journal services all treat
-    /// search as optional, so the app degrades to "search disabled" rather
-    /// than failing to launch.
-    let search: SearchService?
+    /// Phase 6 (Search): the local FTS index. Optional — `nil` while the
+    /// SQLite store can't be opened; the journal services all treat search as
+    /// optional, so the app degrades to "search disabled" rather than failing
+    /// to launch.
+    ///
+    /// Resolved on demand and RE-attempted after a failure, rather than opened
+    /// once in `init`. The index file carries `NSFileProtectionComplete`
+    /// (see `SearchSchema.makeDatabase`), so opening it throws whenever the
+    /// device is locked — and this app gets launched in the background while
+    /// locked, by push wake and background refresh. A one-shot `try?` in
+    /// `init` therefore left this nil for the entire life of such a process,
+    /// which silently removed the chat list's search button (it renders only
+    /// when this is non-nil) until the app was force-quit. Retrying means the
+    /// first render after unlock picks the index up.
+    var search: SearchService? {
+        if let openedSearch { return openedSearch }
+        do {
+            let service = try SearchServiceLive.open(databaseURL: searchDatabaseURL)
+            openedSearch = service
+            return service
+        } catch {
+            // Never swallowed silently again: a missing search button is
+            // otherwise indistinguishable from a build without the feature.
+            Self.logger.error("search index unavailable: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
+    private static let logger = os.Logger(subsystem: "chat.matron", category: "app-dependencies")
+    private var openedSearch: SearchService?
+    private let searchDatabaseURL: URL
 
     private let sessionsDirectory: URL
     private let journalDirectory: URL
@@ -81,13 +108,14 @@ final class AppDependencies {
 
         auth = JournalAuthService(sessionStore: FileSessionStore(directory: sessionsDirectory))
         // Phase 6 (Search): the FTS index lives in the App Group container,
-        // alongside the journal store, so the NSE/host share it. `try?`
-        // keeps init non-throwing — a failed open just disables search.
+        // alongside the journal store, so the NSE/host share it. Only the
+        // path is resolved here — the open itself is deferred to `search`,
+        // which retries (see there: a locked device can't open the index, and
+        // init runs on background launches too).
         // Without the group entitlement (test runner / Previews) the index
         // sits beside the fallback journal container instead of being
         // silently disabled (bugbot "iOS search path mismatch").
-        let searchURL = StoragePaths.searchDBPath ?? StoragePaths.searchDB(in: container)
-        search = try? SearchServiceLive(databaseURL: searchURL)
+        searchDatabaseURL = StoragePaths.searchDBPath ?? StoragePaths.searchDB(in: container)
     }
 
     /// Xcode debug builds register sandbox APNs tokens; TestFlight/App
