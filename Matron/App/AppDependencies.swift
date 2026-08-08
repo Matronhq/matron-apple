@@ -40,7 +40,7 @@ final class AppDependencies {
     var search: SearchService? {
         if let openedSearch { return openedSearch }
         do {
-            let service = try SearchServiceLive(databaseURL: searchDatabaseURL)
+            let service = try SearchServiceLive.open(databaseURL: searchDatabaseURL)
             openedSearch = service
             return service
         } catch {

@@ -11,6 +11,51 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
         self.queue = try SearchSchema.makeDatabase(at: databaseURL)
     }
 
+    /// Opens the index, recycling the store if it is structurally unopenable.
+    ///
+    /// The index is a *derived* cache — every row in it can be rebuilt from the
+    /// journal mirror and the server backfill (`startBackfill`). So a store that
+    /// can't be opened is never worth preserving: the old `try?` at the call
+    /// sites turned any such failure into "search silently does not exist on
+    /// this device, forever", which is exactly how a corrupt-on-disk index
+    /// reads to the user (Dan's iPhone, 2026-08-08 — the search button was
+    /// gated on this service being non-nil, so it just never appeared).
+    ///
+    /// Recycling is deliberately NOT applied to a failure caused by iOS data
+    /// protection. `matron-search.sqlite` is `NSFileProtectionComplete`, so a
+    /// launch while the device is locked (background push wake) genuinely
+    /// cannot open it, and deleting a perfectly good index because the phone
+    /// happened to be locked would throw away the whole index on every locked
+    /// launch. The two cases are told apart by trying to read a byte of the
+    /// file directly: unreadable ⇒ protection ⇒ transient, rethrow and let the
+    /// caller retry later; readable ⇒ the bytes are there and SQLite still
+    /// refused them ⇒ structural, recycle once.
+    public static func open(databaseURL: URL) throws -> SearchServiceLive {
+        do {
+            return try SearchServiceLive(databaseURL: databaseURL)
+        } catch {
+            guard FileManager.default.fileExists(atPath: databaseURL.path),
+                  isReadable(databaseURL) else { throw error }
+            for url in [databaseURL,
+                        URL(fileURLWithPath: databaseURL.path + "-wal"),
+                        URL(fileURLWithPath: databaseURL.path + "-shm")] {
+                try? FileManager.default.removeItem(at: url)
+            }
+            return try SearchServiceLive(databaseURL: databaseURL)
+        }
+    }
+
+    /// True when the file's bytes can actually be read right now. On iOS a
+    /// `false` here means data protection is holding the file shut (the device
+    /// is locked), not that the contents are bad.
+    private static func isReadable(_ url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        // A zero-length read still exercises the protection check, but an empty
+        // file would then look "readable" — read a real byte where there is one.
+        return (try? handle.read(upToCount: 1)) != nil
+    }
+
     public func index(roomID: String, eventID: String, sender: String, timestamp: Date, body: String) async throws {
         try await queue.write { db in
             try Self.upsert(db, roomID: roomID, eventID: eventID, sender: sender,

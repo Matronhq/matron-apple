@@ -99,7 +99,7 @@ final class AppDependencies {
         // macOS (vs. the App-Group optional on iOS) — it resolves under
         // the same `appSupport` dir as `container`.
         do {
-            search = try SearchServiceLive(databaseURL: StoragePaths.searchDBPath)
+            search = try SearchServiceLive.open(databaseURL: StoragePaths.searchDBPath)
         } catch {
             search = nil
             Self.logger.error("search index unavailable: \(error.localizedDescription, privacy: .public)")

@@ -194,4 +194,33 @@ final class SearchServiceLiveTests: XCTestCase {
         let hits = try await svc.query("searchable", limit: 10)
         XCTAssertEqual(hits.count, 1, "indexed messages must survive a bookkeeping reset")
     }
+
+    // MARK: - open(databaseURL:) recovery
+
+    func test_open_recyclesAStoreThatCannotBeOpened() async throws {
+        let corruptURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("corrupt-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: corruptURL) }
+        // Not a SQLite file at all — stands in for any structurally unopenable
+        // store (corrupt page, failed migration). The plain initialiser must
+        // fail on it; `open` must recover instead of leaving search disabled.
+        try Data("this is not a database".utf8).write(to: corruptURL)
+        XCTAssertThrowsError(try SearchServiceLive(databaseURL: corruptURL))
+
+        let recovered = try SearchServiceLive.open(databaseURL: corruptURL)
+        try await recovered.index(roomID: "!r:s", eventID: "$1", sender: "@a:s",
+                                  timestamp: Date(), body: "usable after recycling")
+        let hits = try await recovered.query("recycling", limit: 10)
+        XCTAssertEqual(hits.count, 1, "recycled store must be a working index")
+    }
+
+    func test_open_keepsAHealthyStoresContents() async throws {
+        try await svc.index(roomID: "!r:s", eventID: "$1", sender: "@a:s",
+                            timestamp: Date(), body: "must survive reopening")
+        svc = nil
+
+        let reopened = try SearchServiceLive.open(databaseURL: url)
+        let hits = try await reopened.query("survive", limit: 10)
+        XCTAssertEqual(hits.count, 1, "a store that opens cleanly must never be recycled")
+    }
 }
