@@ -386,4 +386,57 @@ final class JournalTimelineMapperTests: XCTestCase {
         }
         XCTAssertEqual(caption, "review this before Friday")
     }
+
+    // MARK: Agent-chat consent card
+
+    func testAgentChatPermissionRequestMapsToItsOwnKind() throws {
+        let item = try XCTUnwrap(map(event(11, type: "permission_request", payload: [
+            "kind": "agent_chat", "request": "invite", "room_id": "room-1",
+            "from_device_id": 4, "from_name": "dev-2", "target_device_id": 7,
+            "topic": "ci triage", "justification": "need the build log",
+        ])))
+        guard case .agentChatRequest(let eventID, let request) = item.kind else {
+            return XCTFail("expected .agentChatRequest, got \(item.kind)")
+        }
+        XCTAssertEqual(eventID, "11")
+        XCTAssertEqual(request.roomID, "room-1")
+        XCTAssertEqual(request.targetDeviceID, 7)
+    }
+
+    /// The regression this whole case exists for: the agent-chat card has no
+    /// `description`/`options`, so the generic branch rendered it as the
+    /// literal words "Permission request" with Allow/Deny buttons that
+    /// answered over `prompt_reply` — a channel that never reaches the
+    /// parked row, so the tap did nothing at all.
+    func testAgentChatCardNoLongerFallsBackToAGenericPrompt() throws {
+        let item = try XCTUnwrap(map(event(12, type: "permission_request", payload: [
+            "kind": "agent_chat", "request": "join", "room_id": "r",
+            "from_device_id": 4, "target_device_id": 4,
+        ])))
+        if case .askUser(_, let evt) = item.kind {
+            XCTFail("mapped to a generic ask with prompt \(evt.prompt)")
+        }
+    }
+
+    func testNonAgentChatPermissionRequestKeepsTheGenericRendering() throws {
+        let item = try XCTUnwrap(map(event(13, type: "permission_request", payload: [
+            "description": "Allow writing to /etc?", "options": ["Allow", "Deny"],
+        ])))
+        guard case .askUser(_, let evt) = item.kind else {
+            return XCTFail("expected .askUser, got \(item.kind)")
+        }
+        XCTAssertEqual(evt.prompt, "Allow writing to /etc?")
+    }
+
+    /// A card whose payload is missing something the answer call needs is
+    /// unanswerable — better a generic card than buttons that would 400.
+    func testUnanswerableAgentChatPayloadFallsBackToTheGenericCard() throws {
+        let item = try XCTUnwrap(map(event(14, type: "permission_request", payload: [
+            "kind": "agent_chat", "request": "invite", "from_device_id": 4,
+        ])))
+        guard case .askUser = item.kind else {
+            return XCTFail("expected the generic fallback, got \(item.kind)")
+        }
+    }
+
 }

@@ -90,6 +90,89 @@ public struct DeviceDTO: Equatable, Sendable, Identifiable {
     }
 }
 
+/// The user's answer to an agent-chat consent card. Mirrors the `decision`
+/// field of `POST /agent-chat/answer`. Lives here rather than beside
+/// `AgentChatRequest` in MatronEvents because it is a wire argument, not an
+/// event — and MatronJournal is a leaf that does not depend on MatronEvents.
+public enum AgentChatDecision: String, Equatable, Sendable, Codable {
+    case approve
+    case deny
+}
+
+/// One row of `GET /agent-chat/pending` — an agent's request to chat that is
+/// parked waiting on this user. The durable form of the consent card, for
+/// asks that arrived while no client was connected.
+///
+/// `roomID` + `targetDeviceID` are the answer key; the two names are the
+/// devices', already sanitised server-side and nil when a device has since
+/// been revoked.
+public struct AgentChatPendingDTO: Equatable, Sendable, Identifiable {
+    public let roomID: String
+    public let targetDeviceID: Int64
+    public let initiatorDeviceID: Int64
+    public let initiatorName: String?
+    public let targetName: String?
+    public let topic: String?
+    public let justification: String?
+    public let roomTitle: String
+    public let createdAt: Int64
+
+    /// Unique per parked row: the server's own primary key for one
+    /// (`convo_agents.convo_id`, `agent_device_id`).
+    public var id: String { "\(roomID)/\(targetDeviceID)" }
+
+    public init(roomID: String, targetDeviceID: Int64, initiatorDeviceID: Int64,
+                initiatorName: String?, targetName: String?, topic: String?,
+                justification: String?, roomTitle: String, createdAt: Int64) {
+        self.roomID = roomID
+        self.targetDeviceID = targetDeviceID
+        self.initiatorDeviceID = initiatorDeviceID
+        self.initiatorName = initiatorName
+        self.targetName = targetName
+        self.topic = topic
+        self.justification = justification
+        self.roomTitle = roomTitle
+        self.createdAt = createdAt
+    }
+
+    /// Who to name on the card. Falls back to the device id rather than
+    /// going blank when the requesting device has been revoked mid-ask.
+    public var requesterLabel: String {
+        let name = initiatorName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty ? "Device \(initiatorDeviceID)" : name
+    }
+}
+
+/// One row of `GET /agent-chat/allowances` — a directed pair the user chose
+/// to trust with "always allow", which skips the consent card entirely from
+/// then on. Directed: A→B says nothing about B→A.
+public struct AgentChatAllowanceDTO: Equatable, Sendable, Identifiable {
+    public let fromDeviceID: Int64
+    public let targetDeviceID: Int64
+    public let fromName: String?
+    public let targetName: String?
+    public let createdAt: Int64
+
+    public var id: String { "\(fromDeviceID)->\(targetDeviceID)" }
+
+    public init(fromDeviceID: Int64, targetDeviceID: Int64, fromName: String?,
+                targetName: String?, createdAt: Int64) {
+        self.fromDeviceID = fromDeviceID
+        self.targetDeviceID = targetDeviceID
+        self.fromName = fromName
+        self.targetName = targetName
+        self.createdAt = createdAt
+    }
+
+    public var fromLabel: String { Self.label(fromName, fromDeviceID) }
+    public var targetLabel: String { Self.label(targetName, targetDeviceID) }
+
+    private static func label(_ name: String?, _ id: Int64) -> String {
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? "Device \(id)" : trimmed
+    }
+}
+
 /// `POST /pair/preview` — who is asking to join, shown to the user before
 /// approve is offered (anti-phish requirement of the pairing design).
 public struct PairPreview: Equatable, Sendable {
@@ -358,6 +441,93 @@ public actor JournalAPI {
     public func pairApprove(code: String, agentName: String) async throws {
         _ = try await request(path: "/pair/approve", method: "POST",
                               body: ["pair_code": code, "agent_name": agentName])
+    }
+
+    // MARK: Agent chat consent
+
+    /// Asks parked waiting on this user, across every room. The durable
+    /// counterpart to the live consent card — an ask minted while no client
+    /// was connected is only ever visible here.
+    public func agentChatPending() async throws -> [AgentChatPendingDTO] {
+        let obj = try await request(path: "/agent-chat/pending")
+        return (obj["pending"] as? [[String: Any]] ?? []).compactMap { p in
+            guard let roomID = p["convo_id"] as? String,
+                  let target = (p["agent_device_id"] as? NSNumber)?.int64Value,
+                  let initiator = (p["initiator_device_id"] as? NSNumber)?.int64Value
+            else { return nil }
+            return AgentChatPendingDTO(
+                roomID: roomID,
+                targetDeviceID: target,
+                initiatorDeviceID: initiator,
+                initiatorName: p["initiator_name"] as? String,
+                targetName: p["agent_name"] as? String,
+                topic: Self.nonEmpty(p["topic"]),
+                justification: Self.nonEmpty(p["justification"]),
+                roomTitle: p["title"] as? String ?? "",
+                createdAt: (p["created_at"] as? NSNumber)?.int64Value ?? 0
+            )
+        }
+    }
+
+    /// Answers one parked ask. The ONLY path that resolves a consent card —
+    /// a `prompt_reply` into the room never touches the parked row.
+    ///
+    /// `alwaysAllow` on an approval records a standing allowance for the
+    /// directed pair, so future asks between those two agents skip the card.
+    /// It is also the only way to create one; `revokeAgentChatAllowance` is
+    /// the way back.
+    ///
+    /// Returns the server's `delivered` flag: whether the approved invite
+    /// reached the target's socket right now, or is still owed to it. Throws
+    /// `.conflict` if the row is no longer awaiting an answer (already
+    /// answered here or elsewhere, or expired) and `.notFound` if the room
+    /// isn't this user's.
+    @discardableResult
+    public func answerAgentChat(
+        roomID: String, targetDeviceID: Int64,
+        decision: AgentChatDecision, alwaysAllow: Bool = false
+    ) async throws -> Bool {
+        var body: [String: Any] = [
+            "room_id": roomID, "target_device_id": targetDeviceID,
+            "decision": decision.rawValue,
+        ]
+        // Sent only when true: the server treats `always_allow` as strictly
+        // `=== true`, and a denial has no allowance to record either way.
+        if alwaysAllow, decision == .approve { body["always_allow"] = true }
+        let obj = try await request(path: "/agent-chat/answer", method: "POST", body: body)
+        return obj["delivered"] as? Bool ?? false
+    }
+
+    /// Directed pairs the user has granted "always allow".
+    public func agentChatAllowances() async throws -> [AgentChatAllowanceDTO] {
+        let obj = try await request(path: "/agent-chat/allowances")
+        return (obj["allowances"] as? [[String: Any]] ?? []).compactMap { a in
+            guard let from = (a["from_device_id"] as? NSNumber)?.int64Value,
+                  let target = (a["target_device_id"] as? NSNumber)?.int64Value
+            else { return nil }
+            return AgentChatAllowanceDTO(
+                fromDeviceID: from, targetDeviceID: target,
+                fromName: a["from_name"] as? String,
+                targetName: a["target_name"] as? String,
+                createdAt: (a["created_at"] as? NSNumber)?.int64Value ?? 0
+            )
+        }
+    }
+
+    /// Withdraws a standing allowance, so that pair has to ask again.
+    /// Idempotent server-side — revoking one that is already gone succeeds.
+    public func revokeAgentChatAllowance(fromDeviceID: Int64, targetDeviceID: Int64) async throws {
+        _ = try await request(
+            path: "/agent-chat/allowances/revoke", method: "POST",
+            body: ["from_device_id": fromDeviceID, "target_device_id": targetDeviceID])
+    }
+
+    /// The journal defaults an absent topic/justification to `""` rather than
+    /// omitting the key, so "absent" and "empty" arrive identically.
+    private static func nonEmpty(_ raw: Any?) -> String? {
+        guard let s = raw as? String else { return nil }
+        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     // MARK: Device link (QR sign-in)

@@ -3,6 +3,7 @@ import SwiftUI
 import os
 import MatronChat
 import MatronEvents
+import MatronJournal
 import MatronModels
 import MatronStorage
 
@@ -686,12 +687,98 @@ public final class ChatViewModel {
         "matron.answeredPrompts.\(roomID)"
     }
 
-    public init(roomID: String, timeline: TimelineService, media: MediaService) {
+    /// Answers agent-chat consent cards. Optional so the many call sites
+    /// that don't render them (tests, previews) construct unchanged; a card
+    /// with no answerer renders read-only rather than offering buttons that
+    /// would do nothing — the exact failure this whole change exists to fix.
+    private let agentChat: (any AgentChatAnswering)?
+
+    /// Consent cards answered on THIS device, keyed by journal seq, with the
+    /// decision made. Persisted under `matron.agentChatAnswers.<roomID>`.
+    ///
+    /// Unlike an ask-user reply, answering a consent card is an HTTP call and
+    /// produces no journal event — so there is nothing in the timeline to
+    /// read the outcome back from, on this device or any other. Local memory
+    /// is the only thing standing between the user and a card that looks
+    /// unanswered forever.
+    private var agentChatAnswers: [String: String]
+
+    private var agentChatAnswersDefaultsKey: String {
+        "matron.agentChatAnswers.\(roomID)"
+    }
+
+    /// Live per-card state while a call is in flight or has failed. Not
+    /// persisted: a send that was interrupted should come back answerable.
+    private var agentChatTransientStates: [String: AgentChatCardState] = [:]
+
+    public init(roomID: String, timeline: TimelineService, media: MediaService,
+                agentChat: (any AgentChatAnswering)? = nil) {
         self.roomID = roomID
         self.timeline = timeline
         self.media = media
+        self.agentChat = agentChat
         let stored = UserDefaults.standard.stringArray(forKey: "matron.answeredPrompts.\(roomID)") ?? []
         self.answeredPromptIDs = Set(stored)
+        self.agentChatAnswers = UserDefaults.standard
+            .dictionary(forKey: "matron.agentChatAnswers.\(roomID)") as? [String: String] ?? [:]
+    }
+
+    // MARK: Agent-chat consent cards
+
+    /// Render state for one consent card. A remembered decision wins over
+    /// everything: once answered, the card is history.
+    public func agentChatState(_ eventID: String) -> AgentChatCardState {
+        if let decision = agentChatAnswers[eventID] {
+            if decision == "expired" { return .expired }
+            return .answered(approved: decision == AgentChatDecision.approve.rawValue)
+        }
+        if let transient = agentChatTransientStates[eventID] { return transient }
+        // No answerer wired: show the card, but don't offer buttons that
+        // cannot resolve it.
+        return agentChat == nil ? .expired : .idle
+    }
+
+    /// Answers a consent card. The ONLY path that resolves one — a reply
+    /// into the room never reaches the parked row.
+    ///
+    /// A 409 means the row stopped awaiting an answer between the card being
+    /// drawn and the tap (answered on another device, or 24h expired); that
+    /// is not an error the user can act on, so it settles the card as
+    /// expired rather than showing a failure they'd only retry.
+    public func answerAgentChat(
+        eventID: String, request: AgentChatRequest,
+        decision: AgentChatDecision, alwaysAllow: Bool
+    ) async {
+        guard let agentChat, agentChatAnswers[eventID] == nil else { return }
+        if case .sending = agentChatState(eventID) { return }
+        agentChatTransientStates[eventID] = .sending
+        do {
+            try await agentChat.answerAgentChat(
+                roomID: request.roomID, targetDeviceID: request.targetDeviceID,
+                decision: decision, alwaysAllow: alwaysAllow)
+            rememberAgentChatAnswer(eventID, decision.rawValue)
+        } catch JournalAPIError.conflict {
+            rememberAgentChatAnswer(eventID, "expired")
+        } catch {
+            agentChatTransientStates[eventID] = .failed(Self.describeAgentChatError(error))
+        }
+    }
+
+    private func rememberAgentChatAnswer(_ eventID: String, _ value: String) {
+        agentChatTransientStates.removeValue(forKey: eventID)
+        agentChatAnswers[eventID] = value
+        UserDefaults.standard.set(agentChatAnswers, forKey: agentChatAnswersDefaultsKey)
+    }
+
+    static func describeAgentChatError(_ error: Error) -> String {
+        switch error {
+        case JournalAPIError.transport:
+            return "Couldn't reach the server — check your connection and try again."
+        case JournalAPIError.notFound:
+            return "That request is no longer on the server."
+        default:
+            return "The server refused that answer."
+        }
     }
 
     /// Debounces the empty → `settledEmpty` transition (see `settledEmpty`).

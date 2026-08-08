@@ -224,6 +224,9 @@ struct MatronMacApp: App {
         // - Link a Device: show-QR flow so a second device can sign in
         //   without retyping credentials (Task 6 of the QR device-link
         //   plan). Mac only shows codes — see `MacDeviceLinkView`.
+        // - Agent Chats: requests from one agent to talk to another that are
+        //   still waiting on a decision, plus the standing allowances that
+        //   let future ones through without asking.
         Settings {
             Group {
                 if let session {
@@ -241,6 +244,8 @@ struct MatronMacApp: App {
                             serverURL: session.homeserverURL
                         )
                         .tabItem { Label("Link a Device", systemImage: "qrcode") }
+                        MacAgentChatView(api: dependencies.agentChatService(for: session))
+                            .tabItem { Label("Agent Chats", systemImage: "person.2.wave.2") }
                     }
                 } else {
                     Text("Sign in to view settings.")

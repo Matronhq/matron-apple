@@ -60,6 +60,14 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         /// the snapshot so `ChatViewModel.pendingAsk()` can mark the
         /// prompt answered across devices.
         case askUserAnswer(promptEventID: String, selectedValues: [String])
+        /// The journal's agent-chat consent card — one agent asking to talk
+        /// to another. Its own case, not an `.askUser`, because the answer
+        /// goes over HTTP (`POST /agent-chat/answer`) rather than into the
+        /// timeline, and because who-is-asking and why are the whole point
+        /// of the decision. `eventID` is the journal seq, used to remember
+        /// locally that this card was answered — the answer produces no
+        /// journal event to read that back from.
+        case agentChatRequest(eventID: String, AgentChatRequest)
         /// Transient typing / tool-use indicator (matron-journal `activity`
         /// ephemeral). Not persisted and not part of history — appended as a
         /// trailing overlay row while the agent is thinking or running a

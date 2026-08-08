@@ -44,13 +44,22 @@ public enum JournalTimelineMapper {
             kind = .askUser(eventID: String(event.seq), askUserEvent(fromPrompt: payload))
 
         case JournalEventType.permissionRequest:
-            let description = payload["description"] as? String ?? "Permission request"
-            let optionValues = (payload["options"] as? [String]) ?? ["Allow", "Deny"]
-            kind = .askUser(eventID: String(event.seq), AskUserEvent(
-                prompt: description,
-                kind: .choice(options: optionValues.map { AskUserEvent.Option(id: $0, label: $0) },
-                              allowOther: false),
-                expiresAt: nil, replyChannel: .buttonResponse))
+            // The agent-chat consent card first: it carries none of the keys
+            // the generic branch reads, so it used to render as the literal
+            // string "Permission request" with Allow/Deny buttons that
+            // answered over `prompt_reply` — a channel that never reaches the
+            // parked row. The tap did nothing and the ask expired 24h later.
+            if let request = AgentChatRequest.parse(payload: payload) {
+                kind = .agentChatRequest(eventID: String(event.seq), request)
+            } else {
+                let description = payload["description"] as? String ?? "Permission request"
+                let optionValues = (payload["options"] as? [String]) ?? ["Allow", "Deny"]
+                kind = .askUser(eventID: String(event.seq), AskUserEvent(
+                    prompt: description,
+                    kind: .choice(options: optionValues.map { AskUserEvent.Option(id: $0, label: $0) },
+                                  allowOther: false),
+                    expiresAt: nil, replyChannel: .buttonResponse))
+            }
 
         case JournalEventType.promptReply:
             let target = (payload["target_seq"] as? NSNumber)?.int64Value

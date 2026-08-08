@@ -520,6 +520,12 @@ public final class JournalStore: @unchecked Sendable {
         case JournalEventType.prompt:
             return "? " + String((payload["question"] as? String ?? "").prefix(110))
         case JournalEventType.permissionRequest:
+            // The agent-chat consent card carries no `description`, so the
+            // generic branch produced a bare "permission: " in the chat list
+            // — and disagreed with the server, whose snippetOf returns this
+            // string for the same event. A snapshot and a live frame must
+            // not render the same row two different ways.
+            if payload["kind"] as? String == "agent_chat" { return "🤝 Agent chat request" }
             return "permission: " + String((payload["description"] as? String ?? "").prefix(100))
         default:
             if let s = payload["snippet"] as? String { return String(s.prefix(120)) }

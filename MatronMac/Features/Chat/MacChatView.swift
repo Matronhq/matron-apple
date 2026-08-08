@@ -2,6 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import MatronChat
 import MatronModels
+import MatronJournal
 import MatronViewModels
 import MatronDesignSystem
 import os
@@ -840,6 +841,15 @@ private struct MacTimelineListContent: View, Equatable {
                         askViewModel: { viewModel.askViewModel(forPrompt: $0) },
                         isPromptAnswered: { viewModel.isPromptAnswered($0) },
                         answerSummary: { viewModel.answerSummary(forPrompt: $0) },
+                        agentChatState: { viewModel.agentChatState($0) },
+                        onAnswerAgentChat: { eventID, request, approve, alwaysAllow in
+                            Task {
+                                await viewModel.answerAgentChat(
+                                    eventID: eventID, request: request,
+                                    decision: approve ? .approve : .deny,
+                                    alwaysAllow: alwaysAllow)
+                            }
+                        },
                         convoID: viewModel.roomID
                     )
                         .id(item.id)
