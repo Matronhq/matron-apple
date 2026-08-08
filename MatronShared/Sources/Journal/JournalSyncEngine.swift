@@ -60,7 +60,9 @@ public actor JournalSyncEngine {
     private let connector: any WebSocketConnecting
     private let token: String
     private let ownSender: String
-    private let search: (any SearchService)?
+    /// `var`, not `let`, purely so `attachSearch(_:)` can fill it in later —
+    /// see there. Only ever goes nil → non-nil.
+    private var search: (any SearchService)?
     private let backoffBaseSeconds: Double
 
     private var runTask: Task<Void, Never>?
@@ -152,6 +154,28 @@ public actor JournalSyncEngine {
         self.backoffBaseSeconds = backoffBaseSeconds
         self.pingInterval = pingInterval
     }
+
+    /// Hands the engine a search index it was built without.
+    ///
+    /// On iOS the index is `NSFileProtectionComplete`, so it cannot be opened
+    /// while the device is locked — and the app is launched locked, by push
+    /// wake and background refresh. An engine built during one of those
+    /// launches captured `nil` and stopped indexing for the entire life of the
+    /// process, even though the index became available the moment the user
+    /// unlocked. Since the engine outlives the session and nothing rebuilds
+    /// it, the only way out is to attach the index once it opens.
+    ///
+    /// No-op once a search service is set: the index is a process-wide
+    /// singleton, so a second attach would be the same object, and swapping
+    /// one mid-flight would strand writes queued against the first.
+    public func attachSearch(_ service: any SearchService) {
+        guard search == nil else { return }
+        search = service
+    }
+
+    /// Whether an index is currently attached. Lets the owner decide whether a
+    /// core still needs `attachSearch(_:)` without tracking that separately.
+    public var hasSearch: Bool { search != nil }
 
     // MARK: Lifecycle
 

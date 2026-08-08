@@ -42,12 +42,43 @@ final class AppDependencies {
         do {
             let service = try SearchServiceLive.open(databaseURL: searchDatabaseURL)
             openedSearch = service
+            // Anything built while the index was shut has to be told about it
+            // now — see `adoptSearch`. Retrying the open is only half a fix if
+            // the session that came up locked keeps indexing into nothing.
+            adoptSearch(service)
             return service
         } catch {
             // Never swallowed silently again: a missing search button is
             // otherwise indistinguishable from a build without the feature.
             Self.logger.error("search index unavailable: \(error.localizedDescription, privacy: .public)")
             return nil
+        }
+    }
+
+    /// Attaches a just-opened index to every session core that was built
+    /// without one.
+    ///
+    /// `core(for:)` reads `search` once, at construction, and the core it
+    /// builds is cached for the process's life. A background launch while the
+    /// device is locked therefore produced a session whose sync engine never
+    /// indexed anything and whose history backfill never started — and, worse,
+    /// the retry above meant the search UI appeared as soon as the user
+    /// unlocked, searching an index nothing was writing to. That reads as
+    /// "search is broken", not "search is off", which is the harder bug to
+    /// report.
+    ///
+    /// Both halves are repaired here: live indexing via the engine's
+    /// `attachSearch`, and the backfill sweep that `startBackfill` declines to
+    /// start without an index.
+    private func adoptSearch(_ service: SearchService) {
+        for core in cores.values {
+            // Only the engine (an actor, hence Sendable) crosses into the
+            // task; `core` itself stays on the main actor.
+            let engine = core.engine
+            Task { await engine.attachSearch(service) }
+            if core.backfillTask == nil {
+                core.backfillTask = Self.startBackfill(search: service, api: core.api, store: core.store)
+            }
         }
     }
 
@@ -139,6 +170,9 @@ final class AppDependencies {
         let api = JournalAPI(serverURL: session.homeserverURL, token: session.accessToken)
         let dbURL = journalDirectory.appendingPathComponent("\(session.userID).sqlite")
         let store = try! JournalStore(databaseURL: dbURL, ownSender: "user:\(session.userID)")
+        // One read, used for both: on a locked background launch this is nil
+        // and stays nil for this core until `adoptSearch` fills it in.
+        let search = self.search
         let engine = JournalSyncEngine(
             api: api, store: store,
             connector: URLSessionWebSocketConnector(),
