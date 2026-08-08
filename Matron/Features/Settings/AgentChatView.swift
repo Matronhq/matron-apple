@@ -34,7 +34,9 @@ struct AgentChatView: View {
                 }
             } else {
                 Section {
-                    if viewModel.pending.isEmpty {
+                    if !viewModel.hasLoaded {
+                        ProgressView()
+                    } else if viewModel.pending.isEmpty {
                         Text("No requests waiting.")
                             .font(.callout)
                             .foregroundStyle(.secondary)
@@ -50,7 +52,9 @@ struct AgentChatView: View {
                 }
 
                 Section {
-                    if viewModel.allowances.isEmpty {
+                    if !viewModel.hasLoaded {
+                        ProgressView()
+                    } else if viewModel.allowances.isEmpty {
                         Text("None — every request asks you first.")
                             .font(.callout)
                             .foregroundStyle(.secondary)

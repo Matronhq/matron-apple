@@ -45,6 +45,12 @@ public final class AgentChatViewModel {
     /// screen can say so instead of showing two permanently empty lists.
     public private(set) var isSupported = true
 
+    /// `false` until the first successful load. The screens gate their
+    /// "nothing here" copy on it: `refresh()` runs from `.task`, i.e. after
+    /// the first frame, so an unguarded empty list tells the user they have no
+    /// pending requests a beat before their pending requests appear.
+    public private(set) var hasLoaded = false
+
     private let api: any AgentChatProviding
 
     public init(api: any AgentChatProviding) {
@@ -55,11 +61,15 @@ public final class AgentChatViewModel {
         isLoading = true
         defer { isLoading = false }
         do {
-            // Sequential, not concurrent: two round trips on screen entry is
-            // nothing, and a partial failure that left one list stale beside
-            // a fresh one would be worse than one clear error.
-            pending = try await api.agentChatPending().sorted { $0.createdAt > $1.createdAt }
-            allowances = try await api.agentChatAllowances().sorted { $0.createdAt > $1.createdAt }
+            // Both calls first, both assignments after: a partial failure must
+            // not leave one list fresh beside the other's stale contents, next
+            // to an error saying the load failed. Sequential rather than
+            // concurrent because two round trips on screen entry is nothing.
+            let freshPending = try await api.agentChatPending()
+            let freshAllowances = try await api.agentChatAllowances()
+            pending = freshPending.sorted { $0.createdAt > $1.createdAt }
+            allowances = freshAllowances.sorted { $0.createdAt > $1.createdAt }
+            hasLoaded = true
             isSupported = true
             errorMessage = nil
         } catch JournalAPIError.notFound {
@@ -67,6 +77,7 @@ public final class AgentChatViewModel {
             // rather than showing two permanently empty lists as if the user
             // simply had nothing pending.
             isSupported = false
+            hasLoaded = true
             pending = []
             allowances = []
             errorMessage = nil

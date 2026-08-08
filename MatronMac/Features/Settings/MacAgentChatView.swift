@@ -25,7 +25,9 @@ struct MacAgentChatView: View {
             if viewModel.isSupported {
                 List {
                     Section("Waiting for you") {
-                        if viewModel.pending.isEmpty {
+                        if !viewModel.hasLoaded {
+                            ProgressView().controlSize(.small)
+                        } else if viewModel.pending.isEmpty {
                             Text("No requests waiting.")
                                 .foregroundStyle(.secondary)
                                 .font(.callout)
@@ -36,7 +38,9 @@ struct MacAgentChatView: View {
                         }
                     }
                     Section("Always allowed") {
-                        if viewModel.allowances.isEmpty {
+                        if !viewModel.hasLoaded {
+                            ProgressView().controlSize(.small)
+                        } else if viewModel.allowances.isEmpty {
                             Text("None — every request asks you first.")
                                 .foregroundStyle(.secondary)
                                 .font(.callout)

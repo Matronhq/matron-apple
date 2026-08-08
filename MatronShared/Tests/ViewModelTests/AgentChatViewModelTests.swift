@@ -10,6 +10,7 @@ private final class FakeAgentChatAPI: AgentChatProviding, @unchecked Sendable {
     var pending: [AgentChatPendingDTO] = []
     var allowances: [AgentChatAllowanceDTO] = []
     var pendingError: Error?
+    var allowancesError: Error?
     var answerError: Error?
     var revokeError: Error?
     private(set) var answers: [(roomID: String, targetDeviceID: Int64,
@@ -25,6 +26,7 @@ private final class FakeAgentChatAPI: AgentChatProviding, @unchecked Sendable {
 
     func agentChatAllowances() async throws -> [AgentChatAllowanceDTO] {
         if let pendingError { throw pendingError }
+        if let allowancesError { throw allowancesError }
         return allowances
     }
 
@@ -174,4 +176,40 @@ final class AgentChatViewModelTests: XCTestCase {
             roomTitle: "", createdAt: 0)
         XCTAssertEqual(row.requesterLabel, "Device 4")
     }
+
+    /// A partial failure must not leave one list fresh beside the other's
+    /// stale contents, next to an error saying the load failed.
+    func test_halfFailedRefreshLeavesBothListsAsTheyWere() async {
+        let api = FakeAgentChatAPI()
+        api.pending = [pendingRow(room: "first")]
+        api.allowances = [allowanceRow()]
+        let vm = AgentChatViewModel(api: api)
+        await vm.refresh()
+
+        api.pending = [pendingRow(room: "second")]
+        api.allowancesError = JournalAPIError.transport("offline")
+        await vm.refresh()
+
+        XCTAssertEqual(vm.pending.map(\.roomID), ["first"], "the pending list must not have advanced alone")
+        XCTAssertEqual(vm.allowances.count, 1)
+        XCTAssertNotNil(vm.errorMessage)
+    }
+
+    /// `refresh()` runs from `.task`, i.e. after the first frame — an
+    /// unguarded empty list tells the user they have no pending requests a
+    /// beat before their pending requests appear.
+    func test_hasLoadedIsFalseUntilTheFirstLoadSettles() async {
+        let api = FakeAgentChatAPI()
+        let vm = AgentChatViewModel(api: api)
+        XCTAssertFalse(vm.hasLoaded)
+
+        api.pendingError = JournalAPIError.transport("offline")
+        await vm.refresh()
+        XCTAssertFalse(vm.hasLoaded, "a failed load has not established that the lists are empty")
+
+        api.pendingError = nil
+        await vm.refresh()
+        XCTAssertTrue(vm.hasLoaded)
+    }
+
 }
