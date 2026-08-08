@@ -223,4 +223,48 @@ final class SearchServiceLiveTests: XCTestCase {
         let hits = try await reopened.query("survive", limit: 10)
         XCTAssertEqual(hits.count, 1, "a store that opens cleanly must never be recycled")
     }
+
+    // A readable file that SQLite refuses is not automatically a broken one.
+    // The index lives in the App Group container shared with the NSE, and the
+    // iOS open path writes to force the WAL sidecars into existence, so a busy
+    // writer past the 2s timeout produces exactly that shape — and recycling
+    // on it wipes a healthy index.
+
+    func test_open_recyclesOnlyOnSQLiteVerdictsAboutContent() {
+        XCTAssertTrue(SearchServiceLive.isStructurallyUnusable(
+            DatabaseError(resultCode: .SQLITE_CORRUPT)))
+        XCTAssertTrue(SearchServiceLive.isStructurallyUnusable(
+            DatabaseError(resultCode: .SQLITE_NOTADB)))
+        // What a broken FTS index actually raises.
+        XCTAssertTrue(SearchServiceLive.isStructurallyUnusable(
+            DatabaseError(resultCode: .SQLITE_CORRUPT_VTAB)),
+            "extended corruption codes carry the primary code and must recycle too")
+    }
+
+    func test_open_treatsATransientRefusalAsRetryableRatherThanCorrupt() {
+        for code: ResultCode in [.SQLITE_BUSY, .SQLITE_LOCKED, .SQLITE_IOERR,
+                                 .SQLITE_CANTOPEN, .SQLITE_PERM, .SQLITE_AUTH] {
+            XCTAssertFalse(SearchServiceLive.isStructurallyUnusable(DatabaseError(resultCode: code)),
+                           "\(code) must never cost the user their index")
+        }
+        struct Unrelated: Error {}
+        XCTAssertFalse(SearchServiceLive.isStructurallyUnusable(Unrelated()),
+                       "a non-SQLite failure says nothing about the bytes on disk")
+    }
+
+    func test_open_leavesABusyStoreIntactInsteadOfWipingIt() async throws {
+        try await svc.index(roomID: "!r:s", eventID: "$1", sender: "@a:s",
+                            timestamp: Date(), body: "must survive a busy writer")
+        svc = nil
+
+        // Stand in for the NSE holding the write lock: `open` sees a readable
+        // file and a refusal it cannot attribute to bad content, so it must
+        // rethrow for a later retry rather than recycle.
+        XCTAssertFalse(SearchServiceLive.isStructurallyUnusable(DatabaseError(resultCode: .SQLITE_BUSY)))
+
+        // The index is still there for the retry that follows.
+        let reopened = try SearchServiceLive.open(databaseURL: url)
+        let hits = try await reopened.query("busy", limit: 10)
+        XCTAssertEqual(hits.count, 1)
+    }
 }

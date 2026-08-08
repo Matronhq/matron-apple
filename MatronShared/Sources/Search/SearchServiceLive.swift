@@ -26,15 +26,27 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
     /// launch while the device is locked (background push wake) genuinely
     /// cannot open it, and deleting a perfectly good index because the phone
     /// happened to be locked would throw away the whole index on every locked
-    /// launch. The two cases are told apart by trying to read a byte of the
-    /// file directly: unreadable ⇒ protection ⇒ transient, rethrow and let the
-    /// caller retry later; readable ⇒ the bytes are there and SQLite still
-    /// refused them ⇒ structural, recycle once.
+    /// launch. That case is caught by trying to read a byte of the file
+    /// directly: unreadable ⇒ protection ⇒ transient, rethrow and let the
+    /// caller retry later.
+    ///
+    /// Readable-but-refused is NOT enough on its own, though. `SQLITE_BUSY` is
+    /// the obvious counter-example: the App Group index is shared with the
+    /// notification-service extension, and this open does a real write on iOS
+    /// (`SearchSchema.makeDatabase` forces the WAL sidecars into existence), so
+    /// an NSE holding the write lock past the 2s busy timeout produces a
+    /// perfectly readable file that SQLite still refuses. Wiping there destroys
+    /// a healthy index — the exact outcome recycling exists to avoid. So the
+    /// error itself has to say the bytes are unusable: only `SQLITE_CORRUPT`
+    /// (including its extended forms, which is what a broken FTS index raises)
+    /// and `SQLITE_NOTADB` are recycled, and everything else is rethrown for a
+    /// later retry.
     public static func open(databaseURL: URL) throws -> SearchServiceLive {
         do {
             return try SearchServiceLive(databaseURL: databaseURL)
         } catch {
-            guard FileManager.default.fileExists(atPath: databaseURL.path),
+            guard isStructurallyUnusable(error),
+                  FileManager.default.fileExists(atPath: databaseURL.path),
                   isReadable(databaseURL) else { throw error }
             for url in [databaseURL,
                         URL(fileURLWithPath: databaseURL.path + "-wal"),
@@ -43,6 +55,26 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
             }
             return try SearchServiceLive(databaseURL: databaseURL)
         }
+    }
+
+    /// Whether `error` means the bytes on disk are not a usable database, as
+    /// opposed to a database that merely cannot be opened *right now*.
+    ///
+    /// Only the two verdicts SQLite gives about content are treated as fatal.
+    /// Everything else — busy, locked, I/O errors, permissions, a non-SQLite
+    /// error thrown on the way — is transient by assumption, because the cost
+    /// of being wrong in that direction is one more failed open, while the cost
+    /// of being wrong the other way is the user's whole search index.
+    ///
+    /// The primary code is what gets compared: SQLite reports corruption
+    /// through extended codes too (`SQLITE_CORRUPT_VTAB` is what a corrupt FTS
+    /// index raises), and every extended code carries its primary code in the
+    /// low 8 bits.
+    static func isStructurallyUnusable(_ error: Error) -> Bool {
+        guard let dbError = error as? DatabaseError else { return false }
+        let primary = dbError.resultCode.rawValue & 0xFF
+        return primary == ResultCode.SQLITE_CORRUPT.rawValue
+            || primary == ResultCode.SQLITE_NOTADB.rawValue
     }
 
     /// True when the file's bytes can actually be read right now. On iOS a

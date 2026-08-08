@@ -109,6 +109,37 @@ final class SearchBackfillCoordinatorTests: XCTestCase {
         XCTAssertTrue(calls.isEmpty)
     }
 
+    // Both of the coordinator's skip paths — the complete flag above and the
+    // downward resume below — are blind to a HEAD-side hole. iOS opens the
+    // index only once the device unlocks, so events applied during a locked
+    // background launch are in the store and not in FTS, right at each
+    // conversation's head. Clearing the bookkeeping first (what
+    // `startBackfill(resetBookkeepingFirst:)` does, and what
+    // `coldStartIfNeeded` already did for the same reason) is what makes the
+    // next sweep re-walk from the newest page and pick them up.
+    func test_resetBackfill_makesACompletedConversationWalkFromItsHeadAgain() async throws {
+        let search = InMemorySearchService()
+        await search.seedProgress(roomID: "c1", oldestEventID: "1", complete: true)
+        let events = (1...3).map { makeEvent(seq: Int64($0), payload: ["body": "msg \($0)"]) }
+        let pager = ScriptedPager(events: events)
+        let coordinator = makeCoordinator(search: search, pager: pager, pageSize: 10)
+
+        // Precondition: without the reset, the head-side hole stays a hole.
+        _ = await coordinator.run(convoIDs: ["c1"])
+        let callsBefore = await pager.calls
+        XCTAssertTrue(callsBefore.isEmpty, "a complete room is skipped without fetching")
+
+        try await search.resetBackfill()
+        let allComplete = await coordinator.run(convoIDs: ["c1"])
+
+        XCTAssertTrue(allComplete)
+        let calls = await pager.calls
+        XCTAssertEqual(calls.map(\.beforeSeq), [nil], "the re-walk must start at the newest page")
+        let indexed = await search.indexed
+        XCTAssertEqual(Set(indexed.keys), Set(["1", "2", "3"]),
+                       "events applied while the index was shut must end up indexed")
+    }
+
     func test_resume_startsFromRecordedOldest() async throws {
         let search = InMemorySearchService()
         await search.seedProgress(roomID: "c1", oldestEventID: "40", complete: false)

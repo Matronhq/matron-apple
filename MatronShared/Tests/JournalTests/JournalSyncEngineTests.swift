@@ -1,6 +1,7 @@
 import XCTest
 import Foundation
 import MatronModels
+import MatronSearch
 @testable import MatronJournal
 
 final class JournalSyncEngineTests: XCTestCase {
@@ -1029,6 +1030,101 @@ final class JournalSyncEngineTests: XCTestCase {
 
         await engine.endSync()
     }
+
+    // MARK: - Late search attachment
+    //
+    // On iOS the FTS index is NSFileProtectionComplete, so a background launch
+    // while the device is locked cannot open it. The engine is built once per
+    // session and cached for the life of the process, so one such launch used
+    // to leave it with `search: nil` forever — indexing nothing, while the
+    // search UI reappeared the moment the user unlocked.
+
+    func testEngineBuiltWithoutSearchIndexesOnceAnIndexIsAttached() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1, body: "findable"))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+
+        let spy = RecordingSearchService()
+        await engine.attachSearch(spy)
+
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        // Indexing is fire-and-forget from the engine's perspective (a
+        // detached Task per batch), so wait for the write rather than
+        // assuming it has landed by the time replay reports ready.
+        let indexed = await spy.waitForFirstEntry()
+        XCTAssertEqual(indexed?.roomID, "c1")
+        XCTAssertEqual(indexed?.eventID, "1")
+        await engine.endSync()
+    }
+
+    func testAttachingSearchTwiceKeepsTheFirstIndex() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1, body: "findable"))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        let hasSearchBefore = await engine.hasSearch
+        XCTAssertFalse(hasSearchBefore)
+
+        let first = RecordingSearchService()
+        await engine.attachSearch(first)
+        let hasSearchAfter = await engine.hasSearch
+        XCTAssertTrue(hasSearchAfter)
+        // A second attach must not swap the service out from under writes
+        // already queued against the first.
+        let second = RecordingSearchService()
+        await engine.attachSearch(second)
+
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        _ = await first.waitForFirstEntry()
+        let firstCount = await first.count
+        let secondCount = await second.count
+        XCTAssertEqual(firstCount, 1, "writes must still reach the originally attached index")
+        XCTAssertEqual(secondCount, 0, "the later attach must have been ignored")
+        await engine.endSync()
+    }
+}
+
+/// Records what an engine asks it to index; every other `SearchService`
+/// requirement is an unused stub. An actor so the engine's detached indexing
+/// tasks and the test's assertions cannot race.
+actor RecordingSearchService: SearchService {
+    private(set) var entries: [SearchIndexEntry] = []
+    var count: Int { entries.count }
+
+    func index(roomID: String, eventID: String, sender: String, timestamp: Date, body: String) async throws {
+        entries.append(SearchIndexEntry(roomID: roomID, eventID: eventID, sender: sender,
+                                        timestamp: timestamp, body: body))
+    }
+
+    func indexBatch(_ newEntries: [SearchIndexEntry]) async throws {
+        entries.append(contentsOf: newEntries)
+    }
+
+    /// Polls until the engine's fire-and-forget indexing task has landed, or
+    /// gives up after a second — a failed wait fails the assertion that
+    /// follows rather than hanging the suite.
+    func waitForFirstEntry() async -> SearchIndexEntry? {
+        for _ in 0..<100 {
+            if let first = entries.first { return first }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return nil
+    }
+
+    func remove(eventID: String) async throws {}
+    func query(_ text: String, limit: Int) async throws -> [SearchHit] { [] }
+    func wipe() async throws {}
+    func recordBackfillProgress(roomID: String, indexedCount: Int, oldestEventID: String?, complete: Bool) async throws {}
+    func backfillComplete(roomID: String) async throws -> Bool { false }
+    func backfillOldestEventID(roomID: String) async throws -> String? { nil }
+    func resetBackfill() async throws {}
+    func eventCount(roomID: String) async throws -> Int { entries.count }
+    func contains(eventID: String) async throws -> Bool { entries.contains { $0.eventID == eventID } }
 }
 
 /// Local stub for the snapshot_required engine tests — deliberately separate
