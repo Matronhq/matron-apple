@@ -27,6 +27,23 @@ public enum StoragePaths {
 
     #elseif os(macOS)
     public static let appSupport: URL = {
+        #if DEBUG
+        // Test-only isolation seam. The Mac app is UNSANDBOXED, so it
+        // resolves Application Support from the logged-in account — a
+        // screenshot / UI-test run launched on the developer's own machine
+        // would otherwise open the developer's REAL session and mirror
+        // (and a `$HOME` launch-env override does NOT redirect it, because
+        // `.applicationSupportDirectory` comes from the password database,
+        // not `$HOME`). This override lets the marketing-screenshot harness
+        // point the app at a throwaway container holding demo data. Never
+        // set in a shipping build (DEBUG-gated) and unset in normal runs.
+        if let override = ProcessInfo.processInfo.environment["MATRON_APP_SUPPORT_OVERRIDE"],
+           !override.isEmpty {
+            let dir = URL(fileURLWithPath: override, isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            return dir
+        }
+        #endif
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         // Named after the (unified) bundle ID. Renamed from
         // `chat.matron.mac` with the bundle-ID unification — existing
