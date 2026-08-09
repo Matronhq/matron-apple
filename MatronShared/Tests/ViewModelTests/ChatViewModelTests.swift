@@ -20,6 +20,58 @@ final class FakeMediaService: MediaService, @unchecked Sendable {
     }
 }
 
+/// Test-only fake for `focus(seq:)`'s paginate-until-loaded loop. The
+/// shared `FakeTimelineService` (see `ComposerViewModelTests.swift`)
+/// serves a fixed `snapshotsToEmit` list and its `paginateBackward`
+/// always returns `false` without growing `items` — fine for the
+/// existing "was paginate called" tests, but `focus(seq:)` needs a
+/// fake where each `paginateBackward` call actually prepends an older
+/// page and re-delivers it through the same `items()` subscription
+/// `ChatViewModel.start()` holds open, so its poll-for-growth loop
+/// observes real growth (or genuine no-growth, to exercise the
+/// `reachedHistoryStart` latch).
+final class PagingFakeTimelineService: TimelineService, @unchecked Sendable {
+    private var currentItems: [TimelineItem]
+    private var olderPages: [[TimelineItem]]
+    private(set) var paginateCalls = 0
+    private var continuation: AsyncThrowingStream<[TimelineItem], Error>.Continuation?
+
+    init(loaded: [TimelineItem], olderPages: [[TimelineItem]]) {
+        self.currentItems = loaded
+        self.olderPages = olderPages
+    }
+
+    func items() -> AsyncThrowingStream<[TimelineItem], Error> {
+        AsyncThrowingStream { continuation in
+            self.continuation = continuation
+            continuation.yield(self.currentItems)
+        }
+    }
+
+    func sendText(_ body: String, inReplyTo: String?) async throws {}
+    func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {}
+    func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
+    func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
+
+    /// Pops the next queued older page (if any) and prepends it to the
+    /// currently-loaded items, re-yielding the grown snapshot. Returns
+    /// `true` once no pages remain — mirroring the SDK's "reached start"
+    /// signal, though (like the live impl) `ChatViewModel` doesn't trust
+    /// that return value alone; it derives `reachedHistoryStart` from
+    /// consecutive no-growth calls, which this fake's empty-queue
+    /// no-op naturally produces.
+    func paginateBackward(requestSize: UInt16) async throws -> Bool {
+        paginateCalls += 1
+        guard !olderPages.isEmpty else { return true }
+        let page = olderPages.removeFirst()
+        currentItems = page + currentItems
+        continuation?.yield(currentItems)
+        return olderPages.isEmpty
+    }
+
+    func markAsRead() async throws {}
+}
+
 /// Drives `ChatViewModel` against the same `FakeTimelineService` that the
 /// `ComposerViewModelTests` already exposes in this target. Because both test
 /// files compile into the same `ViewModelTests` SPM target, sharing the fake
@@ -1517,5 +1569,82 @@ final class ChatViewModelTests: XCTestCase {
         await waitUntil { vm.summaryEntries.count == 2 }
         XCTAssertEqual(vm.summaryEntries.map(\.seq), [40, 10])
         vm.stop()
+    }
+
+    // MARK: - focus(seq:) jump-to-message
+
+    /// Seeds a VM with one fully-loaded snapshot of text messages whose
+    /// ids are `String(seq)` for each seq in `seqs` (ascending, matching
+    /// `JournalTimelineMapper`'s convention) — the plain case, no
+    /// pagination involved.
+    @MainActor
+    private func makeVMWithMessages(seqs: [Int]) async -> ChatViewModel {
+        let items = seqs.map { seq in
+            TimelineItem(
+                id: String(seq), sender: "@a:s", timestamp: .now,
+                kind: .text(body: "msg \(seq)", formattedHTML: nil), isOwn: false
+            )
+        }
+        let fake = FakeTimelineService()
+        fake.snapshotsToEmit = [items]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        await vm.start()
+        return vm
+    }
+
+    /// Seeds a VM on `PagingFakeTimelineService`: `loaded` is the
+    /// initially-available window, `olderPages` is the queue of pages a
+    /// `paginateBackward()` call reveals one at a time (oldest page
+    /// last, matching pagination order). Every seq across every range
+    /// becomes a text message row with id `String(seq)`.
+    @MainActor
+    private func makeVMWithPagedHistory(
+        loaded: [ClosedRange<Int>], olderPages: [[ClosedRange<Int>]]
+    ) async -> ChatViewModel {
+        func items(for ranges: [ClosedRange<Int>]) -> [TimelineItem] {
+            ranges.flatMap { range in
+                range.map { seq in
+                    TimelineItem(
+                        id: String(seq), sender: "@a:s", timestamp: .now,
+                        kind: .text(body: "msg \(seq)", formattedHTML: nil), isOwn: false
+                    )
+                }
+            }
+        }
+        let fake = PagingFakeTimelineService(
+            loaded: items(for: loaded),
+            olderPages: olderPages.map(items(for:))
+        )
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        await vm.start()
+        return vm
+    }
+
+    @MainActor
+    func testFocusPicksNearestRowAtOrBeforeSeq() async {
+        let vm = await makeVMWithMessages(seqs: [10, 20, 30, 40])
+        await vm.focus(seq: 35)
+        XCTAssertEqual(vm.pendingFocusID, "30")   // nearest message with seq <= 35
+    }
+
+    @MainActor
+    func testFocusPaginatesBackwardUntilTargetLoaded() async {
+        // Target seq 150 only appears after two paginateBackward calls
+        // (page 200...299, then page 100...199).
+        let vm = await makeVMWithPagedHistory(
+            loaded: [300...340], olderPages: [[200...299], [100...199]]
+        )
+        await vm.focus(seq: 150)
+        XCTAssertEqual(vm.pendingFocusID, "150")
+    }
+
+    @MainActor
+    func testFocusLandsOnOldestWhenRegionUnavailable() async {
+        // No older pages queued — reachedHistoryStart latches after two
+        // consecutive no-growth paginateBackward calls, and focus falls
+        // back to the oldest row actually loaded.
+        let vm = await makeVMWithPagedHistory(loaded: [300...340], olderPages: [])
+        await vm.focus(seq: 5)
+        XCTAssertEqual(vm.pendingFocusID, "300")   // oldest available row
     }
 }

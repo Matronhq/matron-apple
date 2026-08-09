@@ -573,6 +573,62 @@ public final class ChatViewModel {
         }
     }
 
+    /// Pending scroll anchor for a TOC jump. Views observe this exactly
+    /// like the existing scroll-restore flow (`pendingRestoreID` in
+    /// ChatView.swift / MacChatView.swift): disengage tail-follow, call
+    /// `ensureWindowContains(id)`, `proxy.scrollTo(id, anchor: .top)`,
+    /// then `clearPendingFocus()`.
+    public private(set) var pendingFocusID: String?
+
+    /// Clears `pendingFocusID` once a view has consumed it and scrolled.
+    public func clearPendingFocus() { pendingFocusID = nil }
+
+    /// Navigates the transcript to the message nearest (at or before)
+    /// `seq` — the summaries TOC panel's jump-to-message action. Pages
+    /// history backward until the target region is loaded locally,
+    /// giving up when `reachedHistoryStart` latches (see
+    /// `paginateBackward()`'s doc comment for why that latch, not the
+    /// SDK's own return value, is the source of truth); at that point it
+    /// lands on the oldest row actually available rather than doing
+    /// nothing.
+    ///
+    /// `paginateBackward()` already guarantees progress-or-latch — each
+    /// call either grows `items` or advances
+    /// `consecutiveNoGrowthPaginates` toward `reachedHistoryStart` — so
+    /// this loop terminates without an extra iteration cap.
+    public func focus(seq: Int64) async {
+        while nearestMessageID(atOrBefore: seq) == nil && !reachedHistoryStart {
+            await paginateBackward()
+        }
+        let target = nearestMessageID(atOrBefore: seq) ?? oldestMessageID()
+        guard let target else { return }
+        ensureWindowContains(target)
+        pendingFocusID = target
+    }
+
+    /// Latest `rows` message id whose seq is `<= seq`, or nil if every
+    /// loaded message postdates it. `rows` is ascending (oldest first —
+    /// see `applyDerivedRecompute`), so the scan can stop at the first
+    /// row past the target.
+    private func nearestMessageID(atOrBefore seq: Int64) -> String? {
+        var best: String?
+        for row in rows {
+            guard case .message(let item) = row, let rowSeq = Int64(item.id) else { continue }
+            if rowSeq <= seq { best = item.id } else { break }
+        }
+        return best
+    }
+
+    /// The oldest loaded message row's id — the fallback landing spot
+    /// when the target region never loads (history genuinely doesn't
+    /// reach that far back).
+    private func oldestMessageID() -> String? {
+        for row in rows {
+            if case .message(let item) = row, Int64(item.id) != nil { return item.id }
+        }
+        return nil
+    }
+
     /// `true` while a `paginateBackward()` call is in flight — and,
     /// crucially, until the paginated snapshot has been APPLIED (the call
     /// awaits the items stream delivery before returning). The views
