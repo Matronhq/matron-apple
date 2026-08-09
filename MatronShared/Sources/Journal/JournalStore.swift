@@ -154,6 +154,7 @@ public struct SummaryEntryRecord: Codable, FetchableRecord, PersistableRecord, E
     public var seq: Int64
     public var toc: String
     public var detail: String
+    /// Milliseconds since epoch, like every other Int64 timestamp column in this store.
     public var createdAt: Int64
 
     enum CodingKeys: String, CodingKey {
@@ -169,7 +170,7 @@ public struct SummaryEntryRecord: Codable, FetchableRecord, PersistableRecord, E
         self.seq = event.seq
         self.toc = toc
         self.detail = obj["detail"] as? String ?? ""
-        self.createdAt = Int64(event.ts.timeIntervalSince1970)
+        self.createdAt = Int64(event.ts.timeIntervalSince1970 * 1000)
     }
 }
 
