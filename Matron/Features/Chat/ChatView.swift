@@ -216,6 +216,8 @@ struct ChatView: View {
     @State private var attachmentPreview: AttachmentPreview?
     /// ⓘ toolbar button → session-status sheet (context gauge + usage bars).
     @State private var showSessionStatus = false
+    /// Tappable title → summaries TOC sheet (jump-to-point navigation).
+    @State private var showSummaries = false
     /// Sheet payload for fullscreen attachment previews. Identifiable
     /// via a per-present UUID so two consecutive taps re-mount the
     /// sheet (and so `.sheet(item:)` doesn't conflate two separate
@@ -525,6 +527,18 @@ struct ChatView: View {
                     isFollowingTail = true
                 }
             }
+            // Summaries TOC jump target — same shape as the pendingRestoreID
+            // observer above, but imperative rather than snapshot-gated:
+            // `focus(seq:)` only sets `pendingFocusID` once the target row
+            // is already loaded (paginating backward as needed first), so
+            // there's no "rows just populated" gate to wait on here.
+            .onChange(of: viewModel.pendingFocusID) { _, target in
+                guard let target else { return }
+                isFollowingTail = false          // or the tail-follow engine yanks back to bottom
+                viewModel.ensureWindowContains(target)
+                withAnimation(nil) { proxy.scrollTo(target, anchor: .top) }
+                viewModel.clearPendingFocus()
+            }
             // Discrete tail changes (a send's echo, a finalized reply, a
             // tool-output row — NOT streaming growth, which keeps the
             // row id). Two jobs: (1) your own outgoing message always
@@ -637,9 +651,21 @@ struct ChatView: View {
         // column — bubbles (white / cyan) and the composer material all
         // render over the same warm ground.
         .background(MatronTimelineBackground())
+        // Keep `.navigationTitle` for the back-button label on the pushed
+        // destination even though the visible title is now the tappable
+        // principal item below — dropping it blanks the "< Back" text.
         .navigationTitle(chatTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            // Tappable title → summaries TOC sheet (jump-to-point nav).
+            ToolbarItem(placement: .principal) {
+                Button { showSummaries = true } label: {
+                    Text(chatTitle)
+                        .font(.headline)
+                        .lineLimit(1)
+                }
+                .buttonStyle(.plain)
+            }
             // Sub-chat switcher — shown whenever this chat has ANY children
             // (running or finished). The running strip hides itself the
             // moment the last subagent finishes, so without this the only
@@ -672,6 +698,9 @@ struct ChatView: View {
         }
         .sheet(isPresented: $showSessionStatus) {
             SessionStatusSheet(viewModel: viewModel)
+        }
+        .sheet(isPresented: $showSummaries) {
+            SummariesSheet(viewModel: viewModel)
         }
         .task {
             // (Scroll-memory restore lives on the ScrollView inside the
