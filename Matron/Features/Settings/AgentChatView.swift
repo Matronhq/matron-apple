@@ -23,6 +23,7 @@ struct AgentChatView: View {
             if let error = viewModel.errorMessage {
                 Section {
                     Text(error).font(.callout).foregroundStyle(.red)
+                    Button("Try Again") { Task { await viewModel.refresh() } }
                 }
             }
 
@@ -32,6 +33,13 @@ struct AgentChatView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
+            } else if !viewModel.hasLoaded && !viewModel.isLoading && viewModel.errorMessage != nil {
+                // The first load failed and nothing is in flight: the error
+                // above, with its retry, is the whole screen. Two spinners over
+                // sections that will never fill would claim we were still
+                // trying. (Before the first attempt there is no error yet, so
+                // the sections below still show their loading state.)
+                EmptyView()
             } else {
                 Section {
                     if !viewModel.hasLoaded {

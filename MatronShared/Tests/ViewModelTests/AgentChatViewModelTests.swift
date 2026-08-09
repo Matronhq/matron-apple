@@ -212,4 +212,18 @@ final class AgentChatViewModelTests: XCTestCase {
         XCTAssertTrue(vm.hasLoaded)
     }
 
+    /// The state the screens read to tell "still fetching" from "tried and
+    /// failed". Both look like `hasLoaded == false`, and a spinner shown for
+    /// the second one claims we are still trying when we have already given up.
+    func test_failedFirstLoadIsNotStillLoading() async {
+        let api = FakeAgentChatAPI()
+        api.pendingError = JournalAPIError.transport("offline")
+        let vm = AgentChatViewModel(api: api)
+
+        await vm.refresh()
+
+        XCTAssertFalse(vm.hasLoaded)
+        XCTAssertFalse(vm.isLoading, "a spinner here would outlive the attempt it stands for")
+        XCTAssertNotNil(vm.errorMessage, "which leaves the error and its retry as the whole screen")
+    }
 }

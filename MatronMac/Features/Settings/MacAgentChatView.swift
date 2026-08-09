@@ -22,7 +22,19 @@ struct MacAgentChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if viewModel.isSupported {
+            if !viewModel.isSupported {
+                Spacer()
+                Text("This server doesn't support agent chats yet.")
+                    .foregroundStyle(.secondary)
+                    .font(.callout)
+                Spacer()
+            } else if !viewModel.hasLoaded && !viewModel.isLoading && viewModel.errorMessage != nil {
+                // The first load failed and nothing is in flight: the error and
+                // Refresh button in the footer are the whole screen. Two
+                // spinners over sections that will never fill would claim we
+                // were still trying.
+                Spacer()
+            } else {
                 List {
                     Section("Waiting for you") {
                         if !viewModel.hasLoaded {
@@ -51,12 +63,6 @@ struct MacAgentChatView: View {
                         }
                     }
                 }
-            } else {
-                Spacer()
-                Text("This server doesn't support agent chats yet.")
-                    .foregroundStyle(.secondary)
-                    .font(.callout)
-                Spacer()
             }
             Divider()
             HStack {
