@@ -106,16 +106,11 @@ final class AppDependencies {
         }
     }
 
-    /// Debug builds register sandbox APNs tokens; TestFlight/App Store
-    /// builds are prod. See iOS `AppDependencies.pushEnvironment` for why
-    /// this is a full statement body rather than an inline `#if`
-    /// expression.
+    /// Read from the signed provisioning profile (`embedded.provisionprofile`
+    /// under `Contents/`), not from the build configuration — see iOS
+    /// `AppDependencies.pushEnvironment` and `PushEnvironmentResolver`.
     private var pushEnvironment: JournalAPI.PushEnvironment {
-        #if DEBUG
-        return .sandbox
-        #else
-        return .prod
-        #endif
+        PushEnvironmentResolver.resolve()
     }
 
     /// Builds (or returns the cached) journal stack for `session`. A store

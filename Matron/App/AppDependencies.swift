@@ -152,16 +152,13 @@ final class AppDependencies {
         searchDatabaseURL = StoragePaths.searchDBPath ?? StoragePaths.searchDB(in: container)
     }
 
-    /// Xcode debug builds register sandbox APNs tokens; TestFlight/App
-    /// Store builds are prod. Written as a full statement body (not an
-    /// inline `#if` expression) because a computed property's getter can't
-    /// use `#if`/`#else` as a value-producing expression directly.
+    /// Which APNs environment this install's tokens belong to, read from the
+    /// signed provisioning profile rather than assumed from the build
+    /// configuration — see `PushEnvironmentResolver` for why the `#if DEBUG`
+    /// rule this replaces was silently wrong for every locally installed
+    /// Release build.
     private var pushEnvironment: JournalAPI.PushEnvironment {
-        #if DEBUG
-        return .sandbox
-        #else
-        return .prod
-        #endif
+        PushEnvironmentResolver.resolve()
     }
 
     /// Builds (or returns the cached) journal stack for `session`. A store
