@@ -1500,4 +1500,22 @@ final class ChatViewModelTests: XCTestCase {
 
         XCTAssertEqual(fake.sentText, ["/compact", "/compact"])
     }
+
+    // MARK: - Summary TOC entries
+
+    /// `summaryEntriesStream()` frames flow through to published state
+    /// unchanged (order, newest-first, preserved from the service).
+    @MainActor
+    func testSummaryEntriesFlowFromServiceToViewModel() async {
+        let fake = FakeTimelineService()
+        fake.summaryEntriesToEmit = [
+            ConversationSummaryEntry(seq: 40, toc: "Newer", detail: "d2", date: .init(timeIntervalSince1970: 2)),
+            ConversationSummaryEntry(seq: 10, toc: "Older", detail: "d1", date: .init(timeIntervalSince1970: 1)),
+        ]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        await vm.start()
+        await waitUntil { vm.summaryEntries.count == 2 }
+        XCTAssertEqual(vm.summaryEntries.map(\.seq), [40, 10])
+        vm.stop()
+    }
 }

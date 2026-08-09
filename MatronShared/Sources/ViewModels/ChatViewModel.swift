@@ -99,6 +99,11 @@ public final class ChatViewModel {
     /// replays the cached one on convo-open, so this populates promptly).
     public private(set) var sessionStatus: SessionStatus?
 
+    /// TOC summary entries for this conversation, newest-first — mirrors
+    /// `TimelineService.summaryEntriesStream()`. Empty until the journal
+    /// replays the room's summary rows (or forever, on backends without one).
+    public private(set) var summaryEntries: [ConversationSummaryEntry] = []
+
     /// True while the conversation's session state is "running" — the
     /// bridge flips it via durable `session_status` journal events at
     /// turn start and turn end. Drives the floating `StopTurnButton`,
@@ -671,6 +676,7 @@ public final class ChatViewModel {
     private var observationTask: Task<Void, Never>?
     private var statusTask: Task<Void, Never>?
     private var sessionStateTask: Task<Void, Never>?
+    private var summaryEntriesTask: Task<Void, Never>?
     /// Tracks `mxc://` URLs with a request already in flight so we don't
     /// fire duplicate fetches on every SwiftUI re-render.
     private var inFlightRequests: Set<URL> = []
@@ -979,6 +985,17 @@ public final class ChatViewModel {
             }
         }
 
+        summaryEntriesTask?.cancel()
+        summaryEntriesTask = Task { [weak self] in
+            guard let stream = self?.timeline.summaryEntriesStream() else { return }
+            for await entries in stream {
+                guard let self, !Task.isCancelled else { return }
+                await MainActor.run {
+                    self.summaryEntries = entries
+                }
+            }
+        }
+
         await firstSignal.wait()
         return task
     }
@@ -1005,6 +1022,8 @@ public final class ChatViewModel {
         statusTask = nil
         sessionStateTask?.cancel()
         sessionStateTask = nil
+        summaryEntriesTask?.cancel()
+        summaryEntriesTask = nil
         emptyDebounceTask?.cancel()
         emptyDebounceTask = nil
         resumeTask?.cancel()
