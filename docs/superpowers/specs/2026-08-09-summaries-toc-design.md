@@ -2,7 +2,11 @@
 
 **Date:** 2026-08-09
 **Repos touched:** matron-bridge, matron-journal, matron-apple (iOS + Mac)
-**Deploy order:** journal (dev-2) → bridge (needs `OPENAI_API_KEY`) → apps
+**Deploy order:** journal (dev-2) → apps → bridge (needs `OPENAI_API_KEY`).
+Apps must precede the bridge: current apps render unknown event kinds visibly
+(`[unsupported event: summary]`), so the transcript exclusion has to be installed
+before the bridge starts emitting. The journal change is inert until the bridge
+publishes, so it can go first.
 
 ## Problem
 
@@ -92,20 +96,23 @@ summarization (keys and firehose live on the bridge; would bill once per device)
 
 ### Journal (matron-journal)
 
-1. Add `'summary'` to `MESSAGE_TYPES`.
-2. **Silence, everywhere except the stream:** `summary` events must not
-   - update the conversation's chat-list snippet (`snippetOf` returns null / callers
-     skip snippet update for this kind),
-   - increment unread counts or badges,
-   - trigger push notifications (`push.js` classify ignores the kind).
-   They do fan out live over WS like any event, so an open app gets TOC entries in
-   real time.
-3. **Retention:** summary events follow the same retention policy as ordinary
-   messages — no special pinning. If a TOC entry outlives the messages around it,
-   navigation degrades gracefully (see Apps).
-4. Older apps must tolerate the new kind. Verify the apps' event decoder skips
-   unknown kinds (believed true — confirm during implementation); if not, journal
-   deploy waits for the app release instead of preceding it.
+1. Add `'summary'` to `AGENT_PUBLISH_TYPES` (the ws.js validation whitelist) but
+   **not** to `MESSAGE_TYPES` (journal.js) — that array drives snippet writes and
+   unread increment/recompute, so omission gives us "no snippet, no unread" by the
+   same accepted design precedent as the `edit` kind. `last_seq` still advances.
+2. **Push opt-out is the one real edit:** `push.js` `classify()` fails open (its
+   final return treats unknown kinds as routine activity), so add an explicit
+   `if (type === 'summary') return null` alongside the `convo_meta` case.
+3. Fanout, cursor replay, and `/messages` pagination are type-agnostic — no
+   changes needed. Summaries stay out of the FTS index (`indexableBody` already
+   excludes unknown kinds). Accepted side effect: the chat-list `last_ts` moves on
+   a summary event, but since passes fire at turn end — seconds after real
+   messages — this is unobservable in practice.
+4. **Retention:** the journal never deletes events (retention only rewrites
+   `tool_output` payloads), so TOC entries persist and replay indefinitely.
+5. Current apps render unknown kinds visibly (`[unsupported event: summary]`), so
+   the app-side transcript exclusion must be installed before the bridge emits —
+   hence the journal → apps → bridge deploy order.
 
 ### Apps (matron-apple, both platforms)
 
@@ -118,10 +125,13 @@ summarization (keys and firehose live on the bridge; would bill once per device)
    newest-first. Row: `toc` line, disclosure to expand `detail`. Empty state:
    "No summaries yet — they appear as the conversation grows."
 3. **Navigation:** tapping a row dismisses the panel and scrolls the transcript to
-   the nearest message with `seq <= entry.seq`, reusing the existing
-   jump-to-message machinery (search navigation path). If the target is outside the
-   loaded window, load around that seq first; if the region was pruned by
-   retention, land on the oldest available message.
+   the nearest message with `seq <= entry.seq`. There is no existing
+   jump-to-message machinery (search hits currently just open the room — precise
+   scroll was deferred as a "Phase 6 follow-up"), so this feature builds it: a
+   shared `ChatViewModel.focus(seq:)` that pages history backward until the target
+   region is loaded (respecting the `reachedHistoryStart` latch), widens the row
+   window, and hands the anchor to the per-platform scroll glue with tail-follow
+   disengaged. Search-hit navigation can adopt the same API later.
 
 ### Cost note
 
