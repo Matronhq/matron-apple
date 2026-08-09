@@ -18,6 +18,7 @@ public enum JournalEventType {
     /// Conversation metadata (title, etc.). Carries no message body — it
     /// updates the conversation row and is skipped in the timeline.
     public static let convoMeta = "convo_meta"
+    public static let summary = "summary"
 
     /// Infix in a subagent child's convo id: `<parent>:sub:<agentId>`
     /// (mirrors the bridge's `CHILD_CONVO_INFIX`, lib/subagent-convos.js).

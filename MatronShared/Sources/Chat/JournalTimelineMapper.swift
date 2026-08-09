@@ -20,7 +20,8 @@ public enum JournalTimelineMapper {
 
         switch event.type {
         case JournalEventType.readMarker, JournalEventType.edit,
-             JournalEventType.sessionStatus, JournalEventType.convoMeta:
+             JournalEventType.sessionStatus, JournalEventType.convoMeta,
+             JournalEventType.summary:
             return nil
 
         case JournalEventType.text:
