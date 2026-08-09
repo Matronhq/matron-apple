@@ -210,6 +210,11 @@ struct MacChatView: View {
         let image: Image
     }
 
+    /// Drives the summaries TOC popover — flipped on by the title cluster
+    /// button in `MacChatToolbar`, off by `MacSummariesPanel.onSelect`
+    /// (and by the system on outside-click dismissal).
+    @State private var showSummaries = false
+
     let chatTitle: String
 
     /// Minimum detail width to show the child sub-chat pane BESIDE the
@@ -536,6 +541,19 @@ struct MacChatView: View {
                     isFollowingTail = true
                 }
             }
+            // Summaries TOC jump target — same shape as the pendingRestoreID
+            // observer above, but imperative rather than snapshot-gated:
+            // `focus(seq:)` only sets `pendingFocusID` once the target row
+            // is already loaded (paginating backward as needed first), so
+            // there's no "rows just populated" gate to wait on here. See
+            // iOS `ChatView` for the twin.
+            .onChange(of: viewModel.pendingFocusID) { _, target in
+                guard let target else { return }
+                isFollowingTail = false          // or the tail-follow engine yanks back to bottom
+                viewModel.ensureWindowContains(target)
+                withAnimation(nil) { proxy.scrollTo(target, anchor: .top) }
+                viewModel.clearPendingFocus()
+            }
             // Discrete tail changes: own sends always return to the
             // bottom; while following, instant re-pin per new row. See
             // iOS ChatView for the trace rationale.
@@ -665,7 +683,14 @@ struct MacChatView: View {
                 status: viewModel.sessionStatus,
                 stripViewModel: stripViewModel,
                 onOpenSubChat: { openSubChatID = $0 },
-                onCompact: { Task { await viewModel.sendCommand("/compact") } }
+                onCompact: { Task { await viewModel.sendCommand("/compact") } },
+                showSummaries: $showSummaries,
+                popoverContent: {
+                    AnyView(MacSummariesPanel(entries: viewModel.summaryEntries) { seq in
+                        showSummaries = false
+                        Task { await viewModel.focus(seq: seq) }
+                    })
+                }
             )
         }
         // Observation start/stop is hoisted to the outer view in `body` —
