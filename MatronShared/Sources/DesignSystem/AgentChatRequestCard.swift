@@ -48,6 +48,14 @@ public struct AgentChatRequestCard: View {
 
             Text(request.headline).font(.body)
 
+            // Which session on each side, in the form the conversation list
+            // uses, so the user can match the ask against a chat they know.
+            // Against an older journal that names no sessions these degrade
+            // to the device alone rather than vanishing — the two ends are
+            // the point of the card, so they always get a row.
+            detail(label: "From", value: request.fromLabel)
+            detail(label: "To", value: request.toLabel)
+
             if let topic = request.topic {
                 detail(label: "About", value: topic)
             }

@@ -141,7 +141,7 @@ extension AgentChatPendingDTO {
     public var headline: String {
         initiatorDeviceID == targetDeviceID
             ? "\(requesterLabel) wants to join a chat."
-            : "\(requesterLabel) wants to start a chat with another agent."
+            : "\(requesterLabel) wants to start a chat with \(targetLabel)."
     }
 
     public func ageText(now: Date = Date()) -> String {

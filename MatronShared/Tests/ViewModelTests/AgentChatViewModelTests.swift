@@ -164,7 +164,7 @@ final class AgentChatViewModelTests: XCTestCase {
     /// two shapes apart in the pending list — there is no `request` field.
     func test_headlineDistinguishesJoinFromInvite() {
         XCTAssertEqual(pendingRow(target: 7, initiator: 4).headline,
-                       "dev-2 wants to start a chat with another agent.")
+                       "dev-2 wants to start a chat with dev-3.")
         XCTAssertEqual(pendingRow(target: 4, initiator: 4).headline,
                        "dev-2 wants to join a chat.")
     }

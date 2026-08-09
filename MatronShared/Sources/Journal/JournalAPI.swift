@@ -141,6 +141,13 @@ public struct AgentChatPendingDTO: Equatable, Sendable, Identifiable {
         let name = initiatorName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return name.isEmpty ? "Device \(initiatorDeviceID)" : name
     }
+
+    /// Who is being asked. Meaningful only for an invite: a join row
+    /// self-targets, so on a join this names the requester again.
+    public var targetLabel: String {
+        let name = targetName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty ? "Device \(targetDeviceID)" : name
+    }
 }
 
 /// One row of `GET /agent-chat/allowances` — a directed pair the user chose
