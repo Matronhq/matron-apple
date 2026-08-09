@@ -1640,11 +1640,50 @@ final class ChatViewModelTests: XCTestCase {
 
     @MainActor
     func testFocusLandsOnOldestWhenRegionUnavailable() async {
-        // No older pages queued — reachedHistoryStart latches after two
-        // consecutive no-growth paginateBackward calls, and focus falls
-        // back to the oldest row actually loaded.
+        // No older pages queued, so every paginateBackward() call is a
+        // genuine (uncontended) no-growth no-op. focus()'s loop bails to
+        // the oldest-row fallback on the first such call rather than
+        // waiting out `reachedHistoryStart`'s full 2-consecutive-call
+        // latch — see the no-progress-bail branch in `focus(seq:)`.
         let vm = await makeVMWithPagedHistory(loaded: [300...340], olderPages: [])
         await vm.focus(seq: 5)
         XCTAssertEqual(vm.pendingFocusID, "300")   // oldest available row
+    }
+
+    /// Regression pin for the reentrancy-guard finding on commit 1beb4a9:
+    /// `ChatViewModel.paginateBackward()`'s reentrancy guard
+    /// (`if isPaginatingBackward { return }`) early-returns with no
+    /// suspension point, so a `focus(seq:)` loop that just called
+    /// `await paginateBackward()` in a bare `while` — trusting it to
+    /// always grow `items` or advance `reachedHistoryStart` — could spin
+    /// the MainActor forever the moment ANY call (contended or, as here,
+    /// a fake that never grows and never latches) fails to move either.
+    /// This fake models that: no older pages are ever queued, so every
+    /// `paginateBackward()` call is a permanent no-op — the loop must
+    /// still terminate (via the no-contention no-progress bail) and land
+    /// on the oldest row, not hang. Bounded by an explicit timeout so a
+    /// regression fails the assertion instead of hanging the test run.
+    @MainActor
+    func testFocusBailsWithoutSpinning_whenPaginationNeverProgressesOrLatches() async {
+        let vm = await makeVMWithPagedHistory(loaded: [300...340], olderPages: [])
+
+        let finished = await Task.detached {
+            await withTaskGroup(of: Bool.self) { group in
+                group.addTask { @MainActor in
+                    await vm.focus(seq: 5)
+                    return true
+                }
+                group.addTask {
+                    try? await Task.sleep(nanoseconds: 8_000_000_000)
+                    return false
+                }
+                let first = await group.next()!
+                group.cancelAll()
+                return first
+            }
+        }.value
+
+        XCTAssertTrue(finished, "focus(seq:) must bail rather than spin when pagination never progresses")
+        XCTAssertEqual(vm.pendingFocusID, "300", "falls back to the oldest loaded row")
     }
 }

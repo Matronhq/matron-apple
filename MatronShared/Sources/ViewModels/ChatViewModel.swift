@@ -592,13 +592,30 @@ public final class ChatViewModel {
     /// lands on the oldest row actually available rather than doing
     /// nothing.
     ///
-    /// `paginateBackward()` already guarantees progress-or-latch — each
-    /// call either grows `items` or advances
-    /// `consecutiveNoGrowthPaginates` toward `reachedHistoryStart` — so
-    /// this loop terminates without an extra iteration cap.
+    /// `paginateBackward()` guarantees progress-or-latch (each call
+    /// either grows `items` or advances `consecutiveNoGrowthPaginates`
+    /// toward `reachedHistoryStart`) — BUT only on the path that
+    /// actually runs. Its reentrancy guard (`if isPaginatingBackward {
+    /// return }`) early-returns with no suspension point, so if another
+    /// call is already in flight (the near-top scroll listener,
+    /// `scheduleHistoryRefill`) when a TOC jump lands, looping straight
+    /// back into `await paginateBackward()` would spin the MainActor
+    /// synchronously forever without ever yielding it to that in-flight
+    /// call's own continuation. Each iteration below checks whether its
+    /// `paginateBackward()` call actually moved anything; if not, it
+    /// either yields (genuinely contended — give the in-flight call a
+    /// turn, then retry) or bails to the oldest-row fallback (no
+    /// contention and no movement — belt-and-braces exit in case the
+    /// progress-or-latch guarantee above is ever violated).
     public func focus(seq: Int64) async {
         while nearestMessageID(atOrBefore: seq) == nil && !reachedHistoryStart {
+            let beforeCount = items.count
             await paginateBackward()
+            let madeProgress = items.count != beforeCount || reachedHistoryStart
+            if !madeProgress {
+                guard isPaginatingBackward else { break }
+                await Task.yield()
+            }
         }
         let target = nearestMessageID(atOrBefore: seq) ?? oldestMessageID()
         guard let target else { return }
