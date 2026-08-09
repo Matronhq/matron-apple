@@ -36,18 +36,39 @@ public struct AgentChatRequest: Equatable, Sendable {
     /// The device the parked row is filed under — the other half of the
     /// answer key. For a join this is the joiner itself, not the room owner.
     public let targetDeviceID: Int64
+    /// The device on the far end of the ask, for display only. For an invite
+    /// that is `targetDeviceID`; for a join it is the room's *owner*, which
+    /// `targetDeviceID` is emphatically not. Never follow `targetDeviceID`
+    /// to label the far end.
+    public let toName: String
+    /// The two sessions, id and title each. The id is the stable handle —
+    /// titles are agent-written and change — and the title is what the user
+    /// recognises from their conversation list. Empty when the requesting
+    /// bridge named no conversation.
+    public let fromConvoID: String
+    public let fromConvoTitle: String
+    public let toConvoID: String
+    public let toConvoTitle: String
     public let topic: String?
     public let justification: String?
 
     public init(
         ask: Ask, roomID: String, fromDeviceID: Int64, fromName: String,
-        targetDeviceID: Int64, topic: String?, justification: String?
+        targetDeviceID: Int64, toName: String = "",
+        fromConvoID: String = "", fromConvoTitle: String = "",
+        toConvoID: String = "", toConvoTitle: String = "",
+        topic: String?, justification: String?
     ) {
         self.ask = ask
         self.roomID = roomID
         self.fromDeviceID = fromDeviceID
         self.fromName = fromName
         self.targetDeviceID = targetDeviceID
+        self.toName = toName
+        self.fromConvoID = fromConvoID
+        self.fromConvoTitle = fromConvoTitle
+        self.toConvoID = toConvoID
+        self.toConvoTitle = toConvoTitle
         self.topic = topic
         self.justification = justification
     }
@@ -70,6 +91,13 @@ public struct AgentChatRequest: Equatable, Sendable {
             fromDeviceID: from,
             fromName: payload["from_name"] as? String ?? "",
             targetDeviceID: target,
+            // Display-only, and all optional: a journal that predates them
+            // still yields an answerable card, just a less specific one.
+            toName: payload["to_name"] as? String ?? "",
+            fromConvoID: payload["from_convo_id"] as? String ?? "",
+            fromConvoTitle: payload["from_convo_title"] as? String ?? "",
+            toConvoID: payload["to_convo_id"] as? String ?? "",
+            toConvoTitle: payload["to_convo_title"] as? String ?? "",
             topic: nonEmpty(payload["topic"]),
             justification: nonEmpty(payload["justification"])
         )
@@ -91,10 +119,56 @@ public struct AgentChatRequest: Equatable, Sendable {
         fromName.isEmpty ? "Device \(fromDeviceID)" : fromName
     }
 
-    /// One line stating what is being asked, in the user's terms.
+    /// The name to show for the far end, same fallback as `requesterLabel`.
+    /// For a join the far end is the room's owner, so this deliberately does
+    /// not fall back to `targetDeviceID` — that id is the joiner.
+    public var targetLabel: String {
+        if !toName.isEmpty { return toName }
+        return ask == .invite ? "Device \(targetDeviceID)" : "the room's owner"
+    }
+
+    /// A session rendered the way the conversation list renders it: the first
+    /// two characters of its id, then its title.
+    ///
+    /// Bridges seed a session title as `"<box>:<first two of the id> words"`,
+    /// which is the string the list shows — so when the title already opens
+    /// with those two characters this returns the title untouched rather than
+    /// stuttering ("69 · 2:69 text carry…"). Rooms and sub-chats carry no
+    /// such prefix, which is why the id is sent alongside and the short form
+    /// is derived from it rather than trusted to be in the words.
+    ///
+    /// `nil` when the journal named no conversation — the card drops the row
+    /// rather than showing an empty one.
+    public static func sessionLabel(id: String, title: String) -> String? {
+        let short = String(id.prefix(2))
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if short.isEmpty { return title.isEmpty ? nil : title }
+        if title.isEmpty { return short }
+        let firstWord = title.prefix(while: { !$0.isWhitespace })
+        let carriesShortID = firstWord == short || firstWord.hasSuffix(":\(short)")
+        return carriesShortID ? title : "\(short) · \(title)"
+    }
+
+    /// "dan-mac — 2:69 text carry and fitting parity", or just the device
+    /// name when no session was named.
+    private static func endpointLabel(device: String, convoID: String, convoTitle: String) -> String {
+        guard let session = sessionLabel(id: convoID, title: convoTitle) else { return device }
+        return "\(device) — \(session)"
+    }
+
+    public var fromLabel: String {
+        Self.endpointLabel(device: requesterLabel, convoID: fromConvoID, convoTitle: fromConvoTitle)
+    }
+
+    public var toLabel: String {
+        Self.endpointLabel(device: targetLabel, convoID: toConvoID, convoTitle: toConvoTitle)
+    }
+
+    /// One line stating what is being asked, in the user's terms. Names the
+    /// far end: "another agent" is not something a user can consent to.
     public var headline: String {
         switch ask {
-        case .invite: return "\(requesterLabel) wants to start a chat with another agent."
+        case .invite: return "\(requesterLabel) wants to start a chat with \(targetLabel)."
         case .join: return "\(requesterLabel) wants to join this chat."
         }
     }
