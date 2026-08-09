@@ -15,6 +15,9 @@ struct DeviceSettingsView: View {
     let session: UserSession
     var devicesAPI: (any DevicesProviding)? = nil
     var linkAPI: (any DeviceLinking)? = nil
+    /// Agent-chat consent surface. Optional like the others so previews and
+    /// tests render the summary without a live API.
+    var agentChatAPI: (any AgentChatProviding)? = nil
     var onSignOut: (() -> Void)? = nil
     /// Injected by MatronApp; nil in previews/tests hides the section.
     @Environment(\.appLockController) private var appLock
@@ -43,6 +46,13 @@ struct DeviceSettingsView: View {
                             DeviceLinkView(api: linkAPI, serverURL: session.homeserverURL, relay: RelayClient())
                         } label: {
                             Label("Link a Device", systemImage: "qrcode")
+                        }
+                    }
+                    if let agentChatAPI {
+                        NavigationLink {
+                            AgentChatView(api: agentChatAPI)
+                        } label: {
+                            Label("Agent Chats", systemImage: "person.2.wave.2")
                         }
                     }
                 }

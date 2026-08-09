@@ -3,6 +3,7 @@ import UIKit
 import os
 import MatronChat
 import MatronModels
+import MatronJournal
 import MatronViewModels
 import MatronDesignSystem
 
@@ -922,6 +923,15 @@ private struct TimelineListContent: View, Equatable {
                         askViewModel: { viewModel.askViewModel(forPrompt: $0) },
                         isPromptAnswered: { viewModel.isPromptAnswered($0) },
                         answerSummary: { viewModel.answerSummary(forPrompt: $0) },
+                        agentChatState: { viewModel.agentChatState($0) },
+                        onAnswerAgentChat: { eventID, request, approve, alwaysAllow in
+                            Task {
+                                await viewModel.answerAgentChat(
+                                    eventID: eventID, request: request,
+                                    decision: approve ? .approve : .deny,
+                                    alwaysAllow: alwaysAllow)
+                            }
+                        },
                         convoID: viewModel.roomID
                     )
                         .id(item.id)

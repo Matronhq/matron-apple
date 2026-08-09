@@ -635,4 +635,28 @@ final class JournalStoreTests: XCTestCase {
         }.value
         XCTAssertEqual(first?.first?.id, "c1")
     }
+
+    // MARK: Snippets
+
+    /// The chat-list snippet must agree with the server's own `snippetOf`
+    /// (matron-journal src/journal.js). It did not for the agent-chat consent
+    /// card: that payload carries no `description`, so the generic branch
+    /// produced a bare "permission: " — meaning the same event read one way
+    /// when it arrived live and another when it came back in a snapshot.
+    func testAgentChatCardSnippetMatchesTheServer() {
+        XCTAssertEqual(
+            JournalStore.snippet(type: "permission_request", payload: [
+                "kind": "agent_chat", "request": "invite", "room_id": "r",
+                "from_name": "dev-2",
+            ]),
+            "🤝 Agent chat request")
+    }
+
+    func testOtherPermissionRequestsKeepTheDescriptionSnippet() {
+        XCTAssertEqual(
+            JournalStore.snippet(type: "permission_request",
+                                 payload: ["description": "Allow writing to /etc?"]),
+            "permission: Allow writing to /etc?")
+    }
+
 }

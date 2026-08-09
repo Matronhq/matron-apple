@@ -31,6 +31,11 @@ struct MacTimelineItemView: View {
     var askViewModel: ((String) -> AskUserSheetViewModel?)? = nil
     var isPromptAnswered: ((String) -> Bool)? = nil
     var answerSummary: ((String) -> String?)? = nil
+    /// Agent-chat consent card — mirrors the iOS surface. `nil` renders the
+    /// card read-only rather than offering buttons with nothing behind them.
+    var agentChatState: ((String) -> AgentChatCardState)? = nil
+    var onAnswerAgentChat: ((_ eventID: String, _ request: AgentChatRequest,
+                             _ approve: Bool, _ alwaysAllow: Bool) -> Void)? = nil
     /// The conversation this row belongs to — tags live-output sessions in
     /// the shared store so chat teardown can suspend only its own sockets
     /// (`suspendSessions(in:)`). `nil` keeps previews/tests compiling.
@@ -218,6 +223,26 @@ struct MacTimelineItemView: View {
             .padding(.horizontal)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Question: \(evt.prompt)"))
+
+        case .agentChatRequest(let eventID, let request):
+            // Same inline treatment as iOS: the decision belongs beside the
+            // ask, and its answer leaves over HTTP, not into the timeline.
+            HStack {
+                AgentChatRequestCard(
+                    request: request,
+                    state: agentChatState?(eventID) ?? .expired,
+                    onApprove: { alwaysAllow in
+                        onAnswerAgentChat?(eventID, request, true, alwaysAllow)
+                    },
+                    onDeny: { onAnswerAgentChat?(eventID, request, false, false) }
+                )
+                .frame(maxWidth: 360, alignment: .leading)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(Self.accessibilityLabel(
+                for: item, body: "Agent chat request. \(request.headline)"))
 
         case .askUserAnswer:
             // `chat.matron.button_response` answers are bookkeeping for

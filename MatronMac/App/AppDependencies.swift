@@ -230,6 +230,13 @@ final class AppDependencies {
         core(for: session).api
     }
 
+    /// Agent-chat consent surface: answering the cards inline in a chat, and
+    /// the Settings screen listing parked requests and standing allowances.
+    /// Same session-scoped `JournalAPI`; protocol slice for testability.
+    func agentChatService(for session: UserSession) -> any AgentChatProviding {
+        core(for: session).api
+    }
+
     /// Show-QR surface (Settings → Link a Device). Same session-scoped
     /// `JournalAPI` as the devices surface; protocol slice for testability.
     func deviceLinkService(for session: UserSession) -> any DeviceLinking {

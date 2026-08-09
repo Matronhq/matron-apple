@@ -43,6 +43,14 @@ struct TimelineItemView: View {
     var isPromptAnswered: ((String) -> Bool)? = nil
     /// The chosen-answer summary for an answered prompt (nil = not answered).
     var answerSummary: ((String) -> String?)? = nil
+    /// Render state for an agent-chat consent card. `nil` (previews, tests)
+    /// renders the card read-only rather than offering buttons with nothing
+    /// behind them.
+    var agentChatState: ((String) -> AgentChatCardState)? = nil
+    /// Answers a consent card: approve (optionally always-allowing the pair)
+    /// or decline. Goes to `POST /agent-chat/answer`, not into the timeline.
+    var onAnswerAgentChat: ((_ eventID: String, _ request: AgentChatRequest,
+                             _ approve: Bool, _ alwaysAllow: Bool) -> Void)? = nil
     /// The conversation this row belongs to — tags live-output sessions in
     /// the shared store so chat teardown can suspend only its own sockets
     /// (`suspendSessions(in:)`). `nil` keeps previews/tests compiling.
@@ -245,6 +253,24 @@ struct TimelineItemView: View {
             .padding(.horizontal)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: "Question: \(evt.prompt)"))
+
+        case .agentChatRequest(let eventID, let request):
+            HStack {
+                AgentChatRequestCard(
+                    request: request,
+                    state: agentChatState?(eventID) ?? .expired,
+                    onApprove: { alwaysAllow in
+                        onAnswerAgentChat?(eventID, request, true, alwaysAllow)
+                    },
+                    onDeny: { onAnswerAgentChat?(eventID, request, false, false) }
+                )
+                .frame(maxWidth: 360, alignment: .leading)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(Self.accessibilityLabel(
+                for: item, body: "Agent chat request. \(request.headline)"))
 
         case .askUserAnswer:
             // `chat.matron.button_response` answers are bookkeeping for
