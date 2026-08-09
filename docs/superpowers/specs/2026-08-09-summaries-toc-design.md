@@ -60,6 +60,15 @@ summarization (keys and firehose live on the bridge; would bill once per device)
    with the session (survives bridge restarts; prevents double-fire on resume).
    Counting semantics are unchanged: only user/assistant *text* bubbles count
    (interim narration included, tool calls excluded).
+   **Prompt window is incremental, not fixed:** each pass sends only the messages
+   since the last successful pass (`chatHistory.slice(_lastSummaryMsgCount)`),
+   capped at 200 bubbles, plus the previous `ROSTER:` paragraph as a short context
+   preamble so the title and rolling summary stay coherent. This replaces today's
+   fixed `slice(-50)`, which re-sent ~45 already-summarized messages every pass
+   (~10× re-billing per message over its lifetime) and never actually included the
+   prior summary text in the prompt. If a turn exceeds the cap, the oldest overflow
+   is dropped from the prompt but `_lastSummaryMsgCount` still advances past it, so
+   nothing is double-summarized later.
 2. **Publish a TOC event per pass.** New publisher method
    `publishSummary(convoId, payload)` → journal frame kind `summary`, payload:
    - `toc` — the incremental one-liner: `NEW:` when a cumulative summary exists,
@@ -76,9 +85,10 @@ summarization (keys and firehose live on the bridge; would bill once per device)
    - Else if `GEMINI_API_KEY` is set → existing Gemini client (model from
      `SUMMARY_MODEL`, default `gemini-3-flash-preview`).
    - Else → summarization off (title fallback naming still runs, as today).
-   `maybeUpdatePinnedSummary` calls this instead of `genAI` directly; prompt text,
-   parsing (`parseTitlePassResponse`), and the ROSTER-must-be-last constraint are
-   unchanged. `.env.example` and README document the new envs.
+   `maybeUpdatePinnedSummary` calls this instead of `genAI` directly; the prompt
+   gains the prior-`ROSTER:` preamble and the incremental window (see #1), while
+   the response format, parsing (`parseTitlePassResponse`), and the
+   ROSTER-must-be-last constraint are unchanged. `.env.example` and README document the new envs.
 
 ### Journal (matron-journal)
 
@@ -115,9 +125,11 @@ summarization (keys and firehose live on the bridge; would bill once per device)
 
 ### Cost note
 
-A pass sends ≤50 messages (~10–25k input tokens worst case) and returns ~150
-tokens. At Luna prices that's well under a cent per pass; the switch is for
-direction-of-travel, not material savings.
+A typical pass now sends 5–15 new bubbles plus the prior rolling paragraph
+(~1–5k input tokens; the 200-bubble cap bounds the worst case at roughly
+50–100k, ≈ $0.02 on Luna) and returns ~150 tokens. The incremental window is
+the bigger saving — each message is summarized ~once instead of ~10× — with the
+Luna switch (2.5× cheaper per token) on top.
 
 ## Error handling
 
@@ -132,8 +144,10 @@ direction-of-travel, not material savings.
 ## Testing
 
 - **Bridge:** unit tests for the turn-end gate (threshold, persistence of
-  `_lastSummaryMsgCount`, no mid-turn fire), provider selection (OpenAI present /
-  Gemini only / neither), and the published payload shape.
+  `_lastSummaryMsgCount`, no mid-turn fire), the incremental window (slice from
+  last pass, 200-bubble cap with cursor advancing past overflow, prior-roster
+  preamble present), provider selection (OpenAI present / Gemini only / neither),
+  and the published payload shape.
 - **Journal:** kind accepted and fanned out; no snippet change, no unread
   increment, no push for `summary` events.
 - **Apps:** decoder → `summary_entries` row (live + replay); transcript excludes the
