@@ -649,6 +649,25 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         store.sessionStateStream(convoID: convoID)
     }
 
+    public func summaryEntriesStream() -> AsyncStream<[ConversationSummaryEntry]> {
+        let upstream = store.summaryEntriesStream(convoID: convoID)
+        return AsyncStream { continuation in
+            let task = Task {
+                for await records in upstream {
+                    continuation.yield(records.map {
+                        // SummaryEntryRecord.createdAt is milliseconds since
+                        // epoch (the store's Int64-timestamp convention) —
+                        // divide by 1000 to get a `Date`.
+                        ConversationSummaryEntry(seq: $0.seq, toc: $0.toc, detail: $0.detail,
+                                                 date: Date(timeIntervalSince1970: TimeInterval($0.createdAt) / 1000))
+                    })
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
     public func markAsRead() async throws {
         guard let maxSeq = try store.maxSeq(convoID: convoID) else { return }
         do {

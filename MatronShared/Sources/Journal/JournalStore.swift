@@ -146,6 +146,34 @@ public struct OutboxRecord: Codable, FetchableRecord, PersistableRecord, Equatab
     }
 }
 
+/// One TOC entry per bridge summary pass. Derived from `summary` journal
+/// events; the event's own seq is the transcript anchor.
+public struct SummaryEntryRecord: Codable, FetchableRecord, PersistableRecord, Equatable, Sendable {
+    public static let databaseTableName = "summary_entry"
+    public var convoID: String
+    public var seq: Int64
+    public var toc: String
+    public var detail: String
+    /// Milliseconds since epoch, like every other Int64 timestamp column in this store.
+    public var createdAt: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case convoID = "convo_id", seq, toc, detail, createdAt = "created_at"
+    }
+
+    public init?(event: JournalEvent) {
+        guard event.type == JournalEventType.summary,
+              let obj = try? JSONSerialization.jsonObject(with: event.payloadData) as? [String: Any],
+              let toc = obj["toc"] as? String, !toc.isEmpty
+        else { return nil }
+        self.convoID = event.convoID
+        self.seq = event.seq
+        self.toc = toc
+        self.detail = obj["detail"] as? String ?? ""
+        self.createdAt = Int64(event.ts.timeIntervalSince1970 * 1000)
+    }
+}
+
 /// Local mirror of the user's journal. The UI reads ONLY this store; the
 /// sync engine is the only writer. `cursor` advances inside the same
 /// transaction as the event insert — the wedge-proof property.
@@ -235,6 +263,18 @@ public final class JournalStore: @unchecked Sendable {
                 t.column("state", .text).notNull().defaults(to: "queued")
                 t.column("attempts", .integer).notNull().defaults(to: 0)
                 t.column("last_error", .text)
+            }
+        }
+        // v4: TOC summary entries — one row per bridge summary pass, derived
+        // from `summary` journal events. seq doubles as the transcript anchor.
+        migrator.registerMigration("v4") { db in
+            try db.create(table: "summary_entry") { t in
+                t.column("convo_id", .text).notNull().indexed()
+                t.column("seq", .integer).notNull()
+                t.column("toc", .text).notNull()
+                t.column("detail", .text).notNull()
+                t.column("created_at", .integer).notNull()
+                t.primaryKey(["convo_id", "seq"])
             }
         }
         try migrator.migrate(dbQueue)
@@ -430,6 +470,9 @@ public final class JournalStore: @unchecked Sendable {
             let current = try Int64.fetchOne(db, sql: "SELECT value FROM meta WHERE key = 'cursor'") ?? 0
             guard event.seq > current else { return false }
             try EventRecord(event).save(db)
+            if let entry = SummaryEntryRecord(event: event) {
+                try entry.insert(db, onConflict: .ignore)
+            }
 
             var convo = try ConversationRecord.fetchOne(db, key: event.convoID) ?? ConversationRecord(
                 id: event.convoID, title: "", sessionState: "running", lastSeq: 0,
@@ -539,6 +582,9 @@ public final class JournalStore: @unchecked Sendable {
         try dbQueue.write { db in
             for e in events {
                 try EventRecord(e).insert(db, onConflict: .ignore)
+                if let entry = SummaryEntryRecord(event: e) {
+                    try entry.insert(db, onConflict: .ignore)
+                }
             }
             // Delivery confirmation for the post-snapshot_required gap:
             // `applyColdSnapshot` jumps the cursor past the frames that
@@ -677,6 +723,17 @@ public final class JournalStore: @unchecked Sendable {
         }
     }
 
+    /// TOC entries for one conversation, newest first — the summary rail's
+    /// one-shot read.
+    public func summaryEntries(convoID: String) throws -> [SummaryEntryRecord] {
+        try dbQueue.read { db in
+            try SummaryEntryRecord
+                .filter(Column("convo_id") == convoID)
+                .order(Column("seq").desc)
+                .fetchAll(db)
+        }
+    }
+
     /// Whether a conversation row already exists. Used by the sync engine to
     /// tell a brand-new conversation (its first-ever frame) apart from a
     /// later frame on an existing one, so it can surface only the former.
@@ -736,7 +793,7 @@ public final class JournalStore: @unchecked Sendable {
     /// calls `wipeOutbox()` separately.
     public func wipe() throws {
         try dbQueue.write { db in
-            try db.execute(sql: "DELETE FROM event; DELETE FROM conversation; DELETE FROM meta;")
+            try db.execute(sql: "DELETE FROM event; DELETE FROM conversation; DELETE FROM meta; DELETE FROM summary_entry;")
         }
     }
 
@@ -943,6 +1000,17 @@ public final class JournalStore: @unchecked Sendable {
                 .order(Column("seq"))
                 .fetchAll(db)
                 .map(\.journalEvent)
+        }
+        return Self.stream(observation, in: dbQueue)
+    }
+
+    /// Live stream of one conversation's TOC entries, newest first.
+    public func summaryEntriesStream(convoID: String) -> AsyncStream<[SummaryEntryRecord]> {
+        let observation = ValueObservation.tracking { db in
+            try SummaryEntryRecord
+                .filter(Column("convo_id") == convoID)
+                .order(Column("seq").desc)
+                .fetchAll(db)
         }
         return Self.stream(observation, in: dbQueue)
     }

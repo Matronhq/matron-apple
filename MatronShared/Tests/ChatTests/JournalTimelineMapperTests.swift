@@ -268,6 +268,10 @@ final class JournalTimelineMapperTests: XCTestCase {
         XCTAssertEqual(type, "shiny_new_thing")
     }
 
+    func testSummaryEventsAreExcludedFromTranscript() {
+        XCTAssertNil(map(event(11, type: "summary", payload: ["toc": "Fixed auth", "detail": "…", "model": "m"])))
+    }
+
     func testStreamingItem() {
         let item = JournalTimelineMapper.streamingItem(messageRef: "m1", text: "working…",
                                                        convoTS: Date(timeIntervalSince1970: 99))

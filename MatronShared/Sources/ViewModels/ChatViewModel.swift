@@ -99,6 +99,11 @@ public final class ChatViewModel {
     /// replays the cached one on convo-open, so this populates promptly).
     public private(set) var sessionStatus: SessionStatus?
 
+    /// TOC summary entries for this conversation, newest-first — mirrors
+    /// `TimelineService.summaryEntriesStream()`. Empty until the journal
+    /// replays the room's summary rows (or forever, on backends without one).
+    public private(set) var summaryEntries: [ConversationSummaryEntry] = []
+
     /// True while the conversation's session state is "running" — the
     /// bridge flips it via durable `session_status` journal events at
     /// turn start and turn end. Drives the floating `StopTurnButton`,
@@ -568,6 +573,79 @@ public final class ChatViewModel {
         }
     }
 
+    /// Pending scroll anchor for a TOC jump. Views observe this exactly
+    /// like the existing scroll-restore flow (`pendingRestoreID` in
+    /// ChatView.swift / MacChatView.swift): disengage tail-follow, call
+    /// `ensureWindowContains(id)`, `proxy.scrollTo(id, anchor: .top)`,
+    /// then `clearPendingFocus()`.
+    public private(set) var pendingFocusID: String?
+
+    /// Clears `pendingFocusID` once a view has consumed it and scrolled.
+    public func clearPendingFocus() { pendingFocusID = nil }
+
+    /// Navigates the transcript to the message nearest (at or before)
+    /// `seq` — the summaries TOC panel's jump-to-message action. Pages
+    /// history backward until the target region is loaded locally,
+    /// giving up when `reachedHistoryStart` latches (see
+    /// `paginateBackward()`'s doc comment for why that latch, not the
+    /// SDK's own return value, is the source of truth); at that point it
+    /// lands on the oldest row actually available rather than doing
+    /// nothing.
+    ///
+    /// `paginateBackward()` guarantees progress-or-latch (each call
+    /// either grows `items` or advances `consecutiveNoGrowthPaginates`
+    /// toward `reachedHistoryStart`) — BUT only on the path that
+    /// actually runs. Its reentrancy guard (`if isPaginatingBackward {
+    /// return }`) early-returns with no suspension point, so if another
+    /// call is already in flight (the near-top scroll listener,
+    /// `scheduleHistoryRefill`) when a TOC jump lands, looping straight
+    /// back into `await paginateBackward()` would spin the MainActor
+    /// synchronously forever without ever yielding it to that in-flight
+    /// call's own continuation. Each iteration below checks whether its
+    /// `paginateBackward()` call actually moved anything; if not, it
+    /// either yields (genuinely contended — give the in-flight call a
+    /// turn, then retry) or bails to the oldest-row fallback (no
+    /// contention and no movement — belt-and-braces exit in case the
+    /// progress-or-latch guarantee above is ever violated).
+    public func focus(seq: Int64) async {
+        while nearestMessageID(atOrBefore: seq) == nil && !reachedHistoryStart {
+            let beforeCount = items.count
+            await paginateBackward()
+            let madeProgress = items.count != beforeCount || reachedHistoryStart
+            if !madeProgress {
+                guard isPaginatingBackward else { break }
+                await Task.yield()
+            }
+        }
+        let target = nearestMessageID(atOrBefore: seq) ?? oldestMessageID()
+        guard let target else { return }
+        ensureWindowContains(target)
+        pendingFocusID = target
+    }
+
+    /// Latest `rows` message id whose seq is `<= seq`, or nil if every
+    /// loaded message postdates it. `rows` is ascending (oldest first —
+    /// see `applyDerivedRecompute`), so the scan can stop at the first
+    /// row past the target.
+    private func nearestMessageID(atOrBefore seq: Int64) -> String? {
+        var best: String?
+        for row in rows {
+            guard case .message(let item) = row, let rowSeq = Int64(item.id) else { continue }
+            if rowSeq <= seq { best = item.id } else { break }
+        }
+        return best
+    }
+
+    /// The oldest loaded message row's id — the fallback landing spot
+    /// when the target region never loads (history genuinely doesn't
+    /// reach that far back).
+    private func oldestMessageID() -> String? {
+        for row in rows {
+            if case .message(let item) = row, Int64(item.id) != nil { return item.id }
+        }
+        return nil
+    }
+
     /// `true` while a `paginateBackward()` call is in flight — and,
     /// crucially, until the paginated snapshot has been APPLIED (the call
     /// awaits the items stream delivery before returning). The views
@@ -671,6 +749,7 @@ public final class ChatViewModel {
     private var observationTask: Task<Void, Never>?
     private var statusTask: Task<Void, Never>?
     private var sessionStateTask: Task<Void, Never>?
+    private var summaryEntriesTask: Task<Void, Never>?
     /// Tracks `mxc://` URLs with a request already in flight so we don't
     /// fire duplicate fetches on every SwiftUI re-render.
     private var inFlightRequests: Set<URL> = []
@@ -979,6 +1058,17 @@ public final class ChatViewModel {
             }
         }
 
+        summaryEntriesTask?.cancel()
+        summaryEntriesTask = Task { [weak self] in
+            guard let stream = self?.timeline.summaryEntriesStream() else { return }
+            for await entries in stream {
+                guard let self, !Task.isCancelled else { return }
+                await MainActor.run {
+                    self.summaryEntries = entries
+                }
+            }
+        }
+
         await firstSignal.wait()
         return task
     }
@@ -1005,6 +1095,8 @@ public final class ChatViewModel {
         statusTask = nil
         sessionStateTask?.cancel()
         sessionStateTask = nil
+        summaryEntriesTask?.cancel()
+        summaryEntriesTask = nil
         emptyDebounceTask?.cancel()
         emptyDebounceTask = nil
         resumeTask?.cancel()

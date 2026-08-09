@@ -154,6 +154,18 @@ final class FakeTimelineService: TimelineService, @unchecked Sendable {
     private let statusPair = AsyncStream<SessionStatusUpdate>.makeStream()
     var statusContinuation: AsyncStream<SessionStatusUpdate>.Continuation { statusPair.continuation }
     func sessionStatus() -> AsyncStream<SessionStatusUpdate> { statusPair.stream }
+
+    /// Summary TOC entries `summaryEntriesStream()` yields once (then
+    /// finishes) — drives `ChatViewModel.summaryEntries` tests.
+    var summaryEntriesToEmit: [ConversationSummaryEntry] = []
+
+    func summaryEntriesStream() -> AsyncStream<[ConversationSummaryEntry]> {
+        let entries = summaryEntriesToEmit
+        return AsyncStream { continuation in
+            continuation.yield(entries)
+            continuation.finish()
+        }
+    }
 }
 
 final class ComposerViewModelTests: XCTestCase {

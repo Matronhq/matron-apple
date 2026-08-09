@@ -659,4 +659,45 @@ final class JournalStoreTests: XCTestCase {
             "permission: Allow writing to /etc?")
     }
 
+    // MARK: Summary TOC entries
+
+    private func summaryEvent(_ seq: Int64, convo: String = "c1") -> JournalEvent {
+        event(seq, convo: convo, type: "summary",
+              payload: ["toc": "Did thing \(seq)", "detail": "Detail \(seq)", "model": "gpt-5.6-luna"])
+    }
+
+    func testSummaryEventPopulatesSummaryEntryTable() throws {
+        let store = try makeStore()
+        _ = try store.applyJournal(event(1))
+        _ = try store.applyJournal(summaryEvent(2))
+        let entries = try store.summaryEntries(convoID: "c1")
+        XCTAssertEqual(entries.map(\.seq), [2])
+        XCTAssertEqual(entries[0].toc, "Did thing 2")
+        XCTAssertEqual(entries[0].detail, "Detail 2")
+    }
+
+    func testSummaryLandsViaBatchAndHistoryPaths() throws {
+        let store = try makeStore()
+        _ = try store.applyJournalBatch([event(1), summaryEvent(2)])
+        try store.insertHistory([summaryEvent(0)])                  // pagination backfill, older seq
+        XCTAssertEqual(try store.summaryEntries(convoID: "c1").map(\.seq), [2, 0]) // newest first
+    }
+
+    func testSummaryDoesNotTouchSnippetOrUnread() throws {
+        let store = try makeStore()
+        _ = try store.applyJournal(event(1))                        // text, sets snippet
+        let before = try store.conversations().first { $0.id == "c1" }
+        _ = try store.applyJournal(summaryEvent(2))
+        let after = try store.conversations().first { $0.id == "c1" }
+        XCTAssertEqual(after?.snippet, before?.snippet)
+        XCTAssertEqual(after?.unreadCount, before?.unreadCount)
+    }
+
+    func testWipeClearsSummaryEntries() throws {
+        let store = try makeStore()
+        _ = try store.applyJournal(summaryEvent(2))
+        try store.wipe()
+        XCTAssertEqual(try store.summaryEntries(convoID: "c1"), [])
+    }
+
 }

@@ -1,6 +1,26 @@
 import Foundation
 import MatronModels
 
+/// One TOC entry from a bridge summary pass, as consumed by the Chat layer.
+/// Mirrors the Journal module's `SummaryEntryRecord` but lives here so Chat
+/// doesn't have to depend on the Journal record type — `JournalTimelineService`
+/// maps store rows into this shape at the boundary.
+public struct ConversationSummaryEntry: Equatable, Sendable, Identifiable {
+    public let seq: Int64
+    public let toc: String
+    public let detail: String
+    public let date: Date
+
+    public init(seq: Int64, toc: String, detail: String, date: Date) {
+        self.seq = seq
+        self.toc = toc
+        self.detail = detail
+        self.date = date
+    }
+
+    public var id: Int64 { seq }
+}
+
 /// Per-room timeline access. One `TimelineService` per open room.
 ///
 /// `items()` is the read side: an `AsyncStream` of full snapshots, newest
@@ -95,6 +115,10 @@ public protocol TimelineService: Sendable {
     /// (which the staleness sweep can clear mid-turn); drives the floating
     /// stop button.
     func sessionState() -> AsyncStream<String>
+
+    /// TOC summary entries for this conversation, newest-first. Re-yields on
+    /// every change. Default: empty forever (fakes and non-journal backends).
+    func summaryEntriesStream() -> AsyncStream<[ConversationSummaryEntry]>
 }
 
 public extension TimelineService {
@@ -113,6 +137,12 @@ public extension TimelineService {
     /// Default: no session-state source, same immediately-finished shape
     /// as `sessionStatus()`.
     func sessionState() -> AsyncStream<String> {
+        AsyncStream { $0.finish() }
+    }
+
+    /// Default: no summary source, same immediately-finished shape as
+    /// `sessionStatus()`/`sessionState()`.
+    func summaryEntriesStream() -> AsyncStream<[ConversationSummaryEntry]> {
         AsyncStream { $0.finish() }
     }
 
