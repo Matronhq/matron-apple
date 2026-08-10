@@ -622,9 +622,15 @@ public final class ChatViewModel {
     /// in-flight jumps would busy-yield against each other's
     /// `paginateBackward()` calls on the MainActor with no ordering
     /// guarantee over which one's `pendingFocusID` write wins. Cancelling
-    /// the superseded task and checking `Task.isCancelled` at the top of
-    /// the paginate loop below makes the outcome deterministic: only the
-    /// most recent call's target is ever landed.
+    /// the superseded task makes the outcome deterministic — but only
+    /// because BOTH exits from the paginate loop below re-check
+    /// `Task.isCancelled`: the loop-top check for the common case where
+    /// cancellation lands mid-paginate, and a second check right after
+    /// the loop for the uncontended `break` (no growth and nothing else
+    /// in flight), which otherwise falls straight through to the
+    /// unconditional `pendingFocusID` write below with no cancellation
+    /// check in between. Only the most recent call's target is ever
+    /// landed.
     private var focusTask: Task<Void, Never>?
 
     private func performFocus(seq: Int64) async {
@@ -638,6 +644,10 @@ public final class ChatViewModel {
                 await Task.yield()
             }
         }
+        // Every exit from the loop above — including the uncontended
+        // `break` — must re-check: a superseded task that breaks out
+        // would otherwise land its fallback target over the newer call's.
+        if Task.isCancelled { return }
         let target = nearestMessageID(atOrBefore: seq) ?? oldestMessageID()
         guard let target else { return }
         ensureWindowContains(target)
