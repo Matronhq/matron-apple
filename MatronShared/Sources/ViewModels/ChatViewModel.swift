@@ -608,7 +608,34 @@ public final class ChatViewModel {
     /// contention and no movement — belt-and-braces exit in case the
     /// progress-or-latch guarantee above is ever violated).
     public func focus(seq: Int64) async {
+        focusTask?.cancel()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performFocus(seq: seq)
+        }
+        focusTask = task
+        await task.value
+    }
+
+    /// Backing task for `focus(seq:)` — see that method's doc comment for
+    /// why a second call must supersede rather than race the first: two
+    /// in-flight jumps would busy-yield against each other's
+    /// `paginateBackward()` calls on the MainActor with no ordering
+    /// guarantee over which one's `pendingFocusID` write wins. Cancelling
+    /// the superseded task makes the outcome deterministic — but only
+    /// because BOTH exits from the paginate loop below re-check
+    /// `Task.isCancelled`: the loop-top check for the common case where
+    /// cancellation lands mid-paginate, and a second check right after
+    /// the loop for the uncontended `break` (no growth and nothing else
+    /// in flight), which otherwise falls straight through to the
+    /// unconditional `pendingFocusID` write below with no cancellation
+    /// check in between. Only the most recent call's target is ever
+    /// landed.
+    private var focusTask: Task<Void, Never>?
+
+    private func performFocus(seq: Int64) async {
         while nearestMessageID(atOrBefore: seq) == nil && !reachedHistoryStart {
+            if Task.isCancelled { return }
             let beforeCount = items.count
             await paginateBackward()
             let madeProgress = items.count != beforeCount || reachedHistoryStart
@@ -617,6 +644,10 @@ public final class ChatViewModel {
                 await Task.yield()
             }
         }
+        // Every exit from the loop above — including the uncontended
+        // `break` — must re-check: a superseded task that breaks out
+        // would otherwise land its fallback target over the newer call's.
+        if Task.isCancelled { return }
         let target = nearestMessageID(atOrBefore: seq) ?? oldestMessageID()
         guard let target else { return }
         ensureWindowContains(target)
@@ -1102,6 +1133,8 @@ public final class ChatViewModel {
         resumeTask = nil
         historyRefillTask?.cancel()
         historyRefillTask = nil
+        focusTask?.cancel()
+        focusTask = nil
     }
 
     private var historyRefillTask: Task<Void, Never>?
@@ -1163,6 +1196,12 @@ public final class ChatViewModel {
             // enough for a snapshot to plausibly arrive.
             let deadline = Date().addingTimeInterval(Self.snapshotWaitTimeout)
             while items.count == beforeCount && Date() < deadline {
+                // A superseded focus jump (or a room switch) cancels us mid-wait:
+                // `try? await Task.sleep` would then return instantly and spin this
+                // poll on the MainActor until the deadline. Leave instead — a
+                // cancelled wait is no evidence about history depth, so it must not
+                // reach the no-growth accounting below either.
+                if Task.isCancelled { return }
                 try? await Task.sleep(nanoseconds: Self.snapshotPollInterval)
             }
             let grew = items.count > beforeCount

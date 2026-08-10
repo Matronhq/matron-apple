@@ -60,12 +60,48 @@ struct MacChatToolbar: ToolbarContent {
     /// context gauge so the action sits beside the number that motivates
     /// it (Dan, 2026-07-16: "so you don't have to type it").
     let onCompact: () -> Void
+    /// Presents the summaries TOC popover — the title cluster becomes a
+    /// button that flips this on. Owned by `MacChatView` (this struct
+    /// stays a plain `ToolbarContent` without the view model, so it's
+    /// still property-testable without rendering); defaults to an inert
+    /// constant binding so the existing title/status tests above don't
+    /// need to know about it.
+    let showSummaries: Binding<Bool>
+    /// Builds the popover's content lazily. `AnyView`-erased so this
+    /// struct doesn't need to import `MacSummariesPanel`'s dependencies —
+    /// `MacChatView` supplies the real closure; the default keeps every
+    /// other call site (and the existing tests) compiling unchanged.
+    let popoverContent: () -> AnyView
 
     /// One height for all three clusters so the system's content-hugging
     /// glass capsules come out equal and align as a row. Sized to the
     /// tallest content: three compact usage rows (3 × ~11pt lines +
     /// 2 × 2pt spacing ≈ 37pt).
     private static let clusterHeight: CGFloat = 38
+
+    /// Explicit init (not the synthesized memberwise one) — a stored
+    /// property's own default value is NOT exposed as a defaulted
+    /// parameter by Swift's memberwise synthesis; it drops the parameter
+    /// entirely instead. `showSummaries`/`popoverContent` need real
+    /// caller-settable defaults so the existing title/status tests and
+    /// `MacChatView`'s call site both keep compiling.
+    init(
+        title: String,
+        status: SessionStatus?,
+        stripViewModel: SubChatStripViewModel,
+        onOpenSubChat: @escaping (String) -> Void,
+        onCompact: @escaping () -> Void,
+        showSummaries: Binding<Bool> = .constant(false),
+        popoverContent: @escaping () -> AnyView = { AnyView(EmptyView()) }
+    ) {
+        self.title = title
+        self.status = status
+        self.stripViewModel = stripViewModel
+        self.onOpenSubChat = onOpenSubChat
+        self.onCompact = onCompact
+        self.showSummaries = showSummaries
+        self.popoverContent = popoverContent
+    }
 
     var body: some ToolbarContent {
         if status?.model != nil || status?.context != nil || status?.vitals != nil {
@@ -74,7 +110,20 @@ struct MacChatToolbar: ToolbarContent {
             }
         }
         ToolbarItem(placement: .principal) {
-            cluster { titleCluster }
+            cluster {
+                // Tappable title → summaries TOC popover (jump-to-point
+                // nav), same affordance as iOS's tappable title → sheet.
+                // `.buttonStyle(.plain)` is mandatory here (see header) —
+                // the default button style breaks the system glass
+                // capsule this cluster renders inside.
+                Button { showSummaries.wrappedValue = true } label: { titleCluster }
+                    .buttonStyle(.plain)
+                    .help("Show conversation summaries")
+                    .accessibilityHint("Shows conversation summaries")
+                    .popover(isPresented: showSummaries, arrowEdge: .bottom) {
+                        popoverContent()
+                    }
+            }
         }
         if let limits = status?.limits, !limits.isEmpty {
             ToolbarItem(placement: .primaryAction) {

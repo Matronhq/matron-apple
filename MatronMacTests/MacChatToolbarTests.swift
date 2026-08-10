@@ -66,6 +66,22 @@ final class MacChatToolbarTests: XCTestCase {
     }
 
 
+    /// The title cluster's tap target is a real binding, not a fire-and-
+    /// forget closure — flipping `showSummaries.wrappedValue` on the
+    /// struct must reach back to the caller's `@State` through the
+    /// binding, the same way `MacChatView` wires it to its popover.
+    func testToolbarCarriesSummariesBinding() {
+        let status = SessionStatus(model: "claude-fable-5")
+        var shown = false
+        let toolbar = MacChatToolbar(
+            title: "Chat", status: status,
+            stripViewModel: makeStripVM(), onOpenSubChat: { _ in }, onCompact: {},
+            showSummaries: Binding(get: { shown }, set: { shown = $0 }))
+        XCTAssertFalse(toolbar.showSummaries.wrappedValue)
+        toolbar.showSummaries.wrappedValue = true
+        XCTAssertTrue(shown)
+    }
+
     /// The sidebar-toggle button posts `.toggleSidebar` on the command
     /// bus. The toolbar tests the listener side; Task 14e tests the
     /// menu-bar `Button("Toggle Sidebar")` poster side. Verifying the
