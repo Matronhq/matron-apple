@@ -794,6 +794,42 @@ public final class JournalStore: @unchecked Sendable {
         }
     }
 
+    // MARK: Agent roster
+
+    /// Mirrors `GET /snapshot`'s `agents` list. Wholesale replace so a box
+    /// revoked server-side stops resolving here too. An EMPTY list is
+    /// ignored: a server predating the field sends nothing, and wiping the
+    /// roster would silently drop every chip.
+    public func replaceAgents(_ agents: [AgentDTO]) throws {
+        guard !agents.isEmpty else { return }
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM agent")
+            for a in agents {
+                try db.execute(sql: "INSERT INTO agent(id, name) VALUES(?, ?)",
+                               arguments: [a.id, a.name])
+            }
+        }
+    }
+
+    /// Applies one live `device_meta` rename. Upsert, not update: the rename
+    /// may name a box this device has not snapshotted yet.
+    public func renameAgent(id: Int64, name: String) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "INSERT INTO agent(id, name) VALUES(?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name",
+                arguments: [id, name])
+        }
+    }
+
+    /// id → name for every known box. The chat list joins against this to
+    /// label rows, and its COUNT is the "does this user have ≥2 boxes" gate.
+    public func agentNames() throws -> [Int64: String] {
+        try dbQueue.read { db in
+            let rows = try Row.fetchAll(db, sql: "SELECT id, name FROM agent")
+            return Dictionary(uniqueKeysWithValues: rows.map { ($0["id"] as Int64, $0["name"] as String) })
+        }
+    }
+
     /// One conversation by id, or nil when this device has never seen it.
     /// The store has `conversations()` (whole list, list-filtered) and
     /// `conversationExists(_:)` (a bare bool) but nothing that hands back a

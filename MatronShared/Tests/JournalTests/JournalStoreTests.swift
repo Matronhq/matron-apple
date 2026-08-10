@@ -730,4 +730,28 @@ final class JournalStoreTests: XCTestCase {
                                          payload: ["title": "Brand new", "agent_device_id": 11]))
         XCTAssertEqual(try store.conversation(id: "c3")?.agentDeviceID, 11)
     }
+
+    func testAgentRosterMirrorsSnapshotAndLiveRenames() throws {
+        let store = try makeStore()
+        XCTAssertTrue(try store.agentNames().isEmpty)
+
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-y"), AgentDTO(id: 9, name: "dev-z")])
+        XCTAssertEqual(try store.agentNames(), [7: "dev-y", 9: "dev-z"])
+
+        // Wholesale replace: a box revoked server-side disappears here too.
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-y")])
+        XCTAssertEqual(try store.agentNames(), [7: "dev-y"])
+
+        // An empty list is "this server doesn't say", not "you have no boxes".
+        try store.replaceAgents([])
+        XCTAssertEqual(try store.agentNames(), [7: "dev-y"])
+
+        // A live rename patches one row without a re-snapshot.
+        try store.renameAgent(id: 7, name: "dev-yellow")
+        XCTAssertEqual(try store.agentNames(), [7: "dev-yellow"])
+
+        // A rename for a box we have never seen inserts it.
+        try store.renameAgent(id: 12, name: "dev-new")
+        XCTAssertEqual(try store.agentNames()[12], "dev-new")
+    }
 }

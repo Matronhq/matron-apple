@@ -183,6 +183,10 @@ public enum ServerFrame: Equatable, Sendable {
     case error(code: String, ref: String?, requestID: String?, detail: String?)
     case snapshotRequired
     case unknownControl(op: String)
+    /// A device was renamed (`POST /devices/:id/rename`). Transient — not a
+    /// journal event, carries no seq. A client that misses it picks the name
+    /// up from the next snapshot's `agents` list.
+    case deviceMeta(id: Int64, name: String)
 
     /// Bridge timestamps are `Date.toISOString()` output (always fractional),
     /// but accept plain ISO too for robustness. ISO8601DateFormatter is
@@ -323,6 +327,10 @@ public enum ServerFrame: Equatable, Sendable {
                 resultData: resultData,
                 errorCode: error?["code"] as? String,
                 errorDetail: error?["detail"] as? String))
+        case "device_meta":
+            guard let id = (obj["device_id"] as? NSNumber)?.int64Value,
+                  let name = obj["name"] as? String else { return nil }
+            return .deviceMeta(id: id, name: name)
         case "control":
             guard let op = obj["op"] as? String else { return nil }
             switch op {
