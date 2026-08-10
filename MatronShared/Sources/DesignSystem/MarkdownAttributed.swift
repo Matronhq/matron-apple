@@ -214,7 +214,17 @@ enum MarkdownAttributed {
                 if !output.string.hasSuffix("\n") {
                     var separatorAttrs: [NSAttributedString.Key: Any] = [:]
                     if let previousSemantics {
-                        separatorAttrs[Self.semanticsKey] = previousSemantics
+                        // Block + identity ONLY — reusing the previous run's
+                        // full semantics would coalesce the separator into a
+                        // trailing styled/linked run at copy time, embedding
+                        // the newline inside the reconstructed delimiters
+                        // (`**docs\n**`) or minting a bogus newline link.
+                        separatorAttrs[Self.semanticsKey] = MarkdownRunSemantics(
+                            block: previousSemantics.block,
+                            blockIdentity: previousSemantics.blockIdentity,
+                            inline: [],
+                            link: nil
+                        )
                     }
                     output.append(NSAttributedString(string: "\n", attributes: separatorAttrs))
                 }

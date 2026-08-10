@@ -155,6 +155,26 @@ final class MarkdownCopyTests: XCTestCase {
         XCTAssertEqual(reconstruct("> quoted line"), "> quoted line")
     }
 
+    /// A block ENDING in styled text, followed by another block: the
+    /// synthesized separator "\n" must not inherit the trailing run's inline
+    /// flags, or the newline lands inside the delimiters (`**docs\n**`).
+    /// (Code-review finding, PR #127.)
+    func test_reconstruct_blockEndingInBold_beforeNextBlock() {
+        XCTAssertEqual(
+            reconstruct("Check the **docs**\n\nMore text."),
+            "Check the **docs**\n\nMore text."
+        )
+    }
+
+    /// Same shape for a trailing link: the separator must not coalesce into
+    /// the link run and mint a bogus `[\n](url)` second link.
+    func test_reconstruct_blockEndingInLink_beforeNextBlock() {
+        XCTAssertEqual(
+            reconstruct("See [docs](https://example.com)\n\nMore text."),
+            "See [docs](https://example.com)\n\nMore text."
+        )
+    }
+
     func test_reconstruct_link() {
         XCTAssertEqual(
             reconstruct("see [docs](https://example.com) now"),
