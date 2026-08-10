@@ -7,13 +7,13 @@ import MatronJournal
 private final class RecordingAnswerer: AgentChatAnswering, @unchecked Sendable {
     var error: Error?
     private(set) var calls: [(roomID: String, targetDeviceID: Int64,
-                              decision: AgentChatDecision, alwaysAllow: Bool)] = []
+                              decision: AgentChatDecision)] = []
     private let lock = NSLock()
 
     @discardableResult
     func answerAgentChat(roomID: String, targetDeviceID: Int64,
-                         decision: AgentChatDecision, alwaysAllow: Bool) async throws -> Bool {
-        lock.withLock { calls.append((roomID, targetDeviceID, decision, alwaysAllow)) }
+                         decision: AgentChatDecision) async throws -> Bool {
+        lock.withLock { calls.append((roomID, targetDeviceID, decision)) }
         if let error { throw error }
         return true
     }
@@ -41,21 +41,18 @@ final class ChatViewModelAgentChatTests: XCTestCase {
         let (vm, answerer) = makeViewModel()
         XCTAssertEqual(vm.agentChatState("11"), .idle)
 
-        await vm.answerAgentChat(eventID: "11", request: request,
-                                 decision: .approve, alwaysAllow: true)
+        await vm.answerAgentChat(eventID: "11", request: request, decision: .approve)
 
         XCTAssertEqual(answerer?.calls.count, 1)
         XCTAssertEqual(answerer?.calls[0].roomID, "room-1")
         XCTAssertEqual(answerer?.calls[0].targetDeviceID, 7)
         XCTAssertEqual(answerer?.calls[0].decision, .approve)
-        XCTAssertEqual(answerer?.calls[0].alwaysAllow, true)
         XCTAssertEqual(vm.agentChatState("11"), .answered(approved: true))
     }
 
     func test_denyRecordsTheDecline() async {
         let (vm, answerer) = makeViewModel()
-        await vm.answerAgentChat(eventID: "12", request: request,
-                                 decision: .deny, alwaysAllow: false)
+        await vm.answerAgentChat(eventID: "12", request: request, decision: .deny)
         XCTAssertEqual(answerer?.calls[0].decision, .deny)
         XCTAssertEqual(vm.agentChatState("12"), .answered(approved: false))
     }
@@ -67,8 +64,7 @@ final class ChatViewModelAgentChatTests: XCTestCase {
     func test_answersSurviveANewViewModelForTheSameRoom() async {
         let roomID = "persist-room"
         let (vm, _) = makeViewModel(roomID: roomID)
-        await vm.answerAgentChat(eventID: "13", request: request,
-                                 decision: .approve, alwaysAllow: false)
+        await vm.answerAgentChat(eventID: "13", request: request, decision: .approve)
 
         let reopened = ChatViewModel(roomID: roomID, timeline: FakeTimelineService(),
                                      media: FakeMediaService(), agentChat: RecordingAnswerer())
@@ -78,8 +74,8 @@ final class ChatViewModelAgentChatTests: XCTestCase {
 
     func test_answeringTwiceIsANoOp() async {
         let (vm, answerer) = makeViewModel()
-        await vm.answerAgentChat(eventID: "14", request: request, decision: .approve, alwaysAllow: false)
-        await vm.answerAgentChat(eventID: "14", request: request, decision: .deny, alwaysAllow: false)
+        await vm.answerAgentChat(eventID: "14", request: request, decision: .approve)
+        await vm.answerAgentChat(eventID: "14", request: request, decision: .deny)
         XCTAssertEqual(answerer?.calls.count, 1)
         XCTAssertEqual(vm.agentChatState("14"), .answered(approved: true))
     }
@@ -91,7 +87,7 @@ final class ChatViewModelAgentChatTests: XCTestCase {
         let (vm, answerer) = makeViewModel()
         answerer?.error = JournalAPIError.conflict
 
-        await vm.answerAgentChat(eventID: "15", request: request, decision: .approve, alwaysAllow: false)
+        await vm.answerAgentChat(eventID: "15", request: request, decision: .approve)
 
         XCTAssertEqual(vm.agentChatState("15"), .expired)
     }
@@ -102,7 +98,7 @@ final class ChatViewModelAgentChatTests: XCTestCase {
         let (vm, answerer) = makeViewModel()
         answerer?.error = JournalAPIError.transport("offline")
 
-        await vm.answerAgentChat(eventID: "16", request: request, decision: .approve, alwaysAllow: false)
+        await vm.answerAgentChat(eventID: "16", request: request, decision: .approve)
 
         guard case .failed(let message) = vm.agentChatState("16") else {
             return XCTFail("expected .failed, got \(vm.agentChatState("16"))")
@@ -110,7 +106,7 @@ final class ChatViewModelAgentChatTests: XCTestCase {
         XCTAssertTrue(message.contains("connection"))
 
         answerer?.error = nil
-        await vm.answerAgentChat(eventID: "16", request: request, decision: .approve, alwaysAllow: false)
+        await vm.answerAgentChat(eventID: "16", request: request, decision: .approve)
         XCTAssertEqual(vm.agentChatState("16"), .answered(approved: true))
     }
 
@@ -120,7 +116,7 @@ final class ChatViewModelAgentChatTests: XCTestCase {
     func test_withoutAnAnswererTheCardOffersNoButtons() async {
         let (vm, _) = makeViewModel(answerer: nil)
         XCTAssertEqual(vm.agentChatState("17"), .expired)
-        await vm.answerAgentChat(eventID: "17", request: request, decision: .approve, alwaysAllow: false)
+        await vm.answerAgentChat(eventID: "17", request: request, decision: .approve)
         XCTAssertEqual(vm.agentChatState("17"), .expired)
     }
 }

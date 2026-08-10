@@ -8,14 +8,10 @@ import MatronJournal
 /// the old path reached the wrong endpoint entirely.
 private final class FakeAgentChatAPI: AgentChatProviding, @unchecked Sendable {
     var pending: [AgentChatPendingDTO] = []
-    var allowances: [AgentChatAllowanceDTO] = []
     var pendingError: Error?
-    var allowancesError: Error?
     var answerError: Error?
-    var revokeError: Error?
     private(set) var answers: [(roomID: String, targetDeviceID: Int64,
-                                decision: AgentChatDecision, alwaysAllow: Bool)] = []
-    private(set) var revokes: [(from: Int64, target: Int64)] = []
+                                decision: AgentChatDecision)] = []
     private(set) var refreshCount = 0
 
     func agentChatPending() async throws -> [AgentChatPendingDTO] {
@@ -24,23 +20,12 @@ private final class FakeAgentChatAPI: AgentChatProviding, @unchecked Sendable {
         return pending
     }
 
-    func agentChatAllowances() async throws -> [AgentChatAllowanceDTO] {
-        if let pendingError { throw pendingError }
-        if let allowancesError { throw allowancesError }
-        return allowances
-    }
-
     @discardableResult
     func answerAgentChat(roomID: String, targetDeviceID: Int64,
-                         decision: AgentChatDecision, alwaysAllow: Bool) async throws -> Bool {
-        answers.append((roomID, targetDeviceID, decision, alwaysAllow))
+                         decision: AgentChatDecision) async throws -> Bool {
+        answers.append((roomID, targetDeviceID, decision))
         if let answerError { throw answerError }
         return true
-    }
-
-    func revokeAgentChatAllowance(fromDeviceID: Int64, targetDeviceID: Int64) async throws {
-        revokes.append((fromDeviceID, targetDeviceID))
-        if let revokeError { throw revokeError }
     }
 }
 
@@ -52,29 +37,22 @@ private func pendingRow(room: String = "room-1", target: Int64 = 7, initiator: I
         roomTitle: "dev-2 ↔ dev-3", createdAt: createdAt)
 }
 
-private func allowanceRow(from: Int64 = 4, target: Int64 = 7) -> AgentChatAllowanceDTO {
-    AgentChatAllowanceDTO(fromDeviceID: from, targetDeviceID: target,
-                          fromName: "dev-2", targetName: "dev-3", createdAt: 1_000)
-}
-
 @MainActor
 final class AgentChatViewModelTests: XCTestCase {
-    func test_refreshLoadsBothListsNewestFirst() async {
+    func test_refreshLoadsPendingNewestFirst() async {
         let api = FakeAgentChatAPI()
         api.pending = [pendingRow(room: "old", createdAt: 1), pendingRow(room: "new", createdAt: 9)]
-        api.allowances = [allowanceRow(from: 1), allowanceRow(from: 2)]
         let vm = AgentChatViewModel(api: api)
 
         await vm.refresh()
 
         XCTAssertEqual(vm.pending.map(\.roomID), ["new", "old"])
-        XCTAssertEqual(vm.allowances.count, 2)
         XCTAssertTrue(vm.isSupported)
         XCTAssertNil(vm.errorMessage)
     }
 
-    /// A journal that predates agent chat 404s the route. Two permanently
-    /// empty lists would read as "you have nothing pending", which is a
+    /// A journal that predates agent chat 404s the route. A permanently
+    /// empty list would read as "you have nothing pending", which is a
     /// different and misleading claim.
     func test_serverWithoutAgentChatIsReportedAsUnsupported_notAsEmpty() async {
         let api = FakeAgentChatAPI()
@@ -99,7 +77,6 @@ final class AgentChatViewModelTests: XCTestCase {
         XCTAssertEqual(api.answers[0].roomID, "room-9")
         XCTAssertEqual(api.answers[0].targetDeviceID, 12)
         XCTAssertEqual(api.answers[0].decision, .approve)
-        XCTAssertFalse(api.answers[0].alwaysAllow)
         XCTAssertEqual(api.refreshCount, 2, "the list must re-read after a decision")
     }
 
@@ -131,35 +108,6 @@ final class AgentChatViewModelTests: XCTestCase {
         XCTAssertNotNil(vm.errorMessage)
     }
 
-    func test_revokeSendsTheDirectedPairAndDropsTheRowLocallyFirst() async {
-        let api = FakeAgentChatAPI()
-        api.allowances = [allowanceRow(from: 4, target: 7)]
-        let vm = AgentChatViewModel(api: api)
-        await vm.refresh()
-        // The server has dropped it; a refetch that fails must not leave the
-        // revoked row on screen looking live.
-        api.allowances = []
-
-        await vm.revoke(vm.allowances[0])
-
-        XCTAssertEqual(api.revokes.count, 1)
-        XCTAssertEqual(api.revokes[0].from, 4)
-        XCTAssertEqual(api.revokes[0].target, 7)
-        XCTAssertTrue(vm.allowances.isEmpty)
-    }
-
-    func test_revokeFailureKeepsTheRowAndSaysSo() async {
-        let api = FakeAgentChatAPI()
-        api.allowances = [allowanceRow()]
-        let vm = AgentChatViewModel(api: api)
-        await vm.refresh()
-        api.revokeError = JournalAPIError.transport("offline")
-
-        await vm.revoke(vm.allowances[0])
-
-        XCTAssertNotNil(vm.errorMessage)
-    }
-
     /// A join request self-targets, which is the only thing that tells the
     /// two shapes apart in the pending list — there is no `request` field.
     func test_headlineDistinguishesJoinFromInvite() {
@@ -177,21 +125,19 @@ final class AgentChatViewModelTests: XCTestCase {
         XCTAssertEqual(row.requesterLabel, "Device 4")
     }
 
-    /// A partial failure must not leave one list fresh beside the other's
-    /// stale contents, next to an error saying the load failed.
-    func test_halfFailedRefreshLeavesBothListsAsTheyWere() async {
+    /// A failed refresh must leave the last good list standing rather than
+    /// clearing it beside an error saying the load failed.
+    func test_failedRefreshLeavesTheLastGoodListStanding() async {
         let api = FakeAgentChatAPI()
         api.pending = [pendingRow(room: "first")]
-        api.allowances = [allowanceRow()]
         let vm = AgentChatViewModel(api: api)
         await vm.refresh()
 
         api.pending = [pendingRow(room: "second")]
-        api.allowancesError = JournalAPIError.transport("offline")
+        api.pendingError = JournalAPIError.transport("offline")
         await vm.refresh()
 
-        XCTAssertEqual(vm.pending.map(\.roomID), ["first"], "the pending list must not have advanced alone")
-        XCTAssertEqual(vm.allowances.count, 1)
+        XCTAssertEqual(vm.pending.map(\.roomID), ["first"])
         XCTAssertNotNil(vm.errorMessage)
     }
 

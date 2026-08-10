@@ -825,8 +825,7 @@ public final class ChatViewModel {
     /// is not an error the user can act on, so it settles the card as
     /// expired rather than showing a failure they'd only retry.
     public func answerAgentChat(
-        eventID: String, request: AgentChatRequest,
-        decision: AgentChatDecision, alwaysAllow: Bool
+        eventID: String, request: AgentChatRequest, decision: AgentChatDecision
     ) async {
         guard let agentChat, agentChatAnswers[eventID] == nil else { return }
         if case .sending = agentChatState(eventID) { return }
@@ -834,7 +833,7 @@ public final class ChatViewModel {
         do {
             try await agentChat.answerAgentChat(
                 roomID: request.roomID, targetDeviceID: request.targetDeviceID,
-                decision: decision, alwaysAllow: alwaysAllow)
+                decision: decision)
             rememberAgentChatAnswer(eventID, decision.rawValue)
         } catch JournalAPIError.conflict {
             rememberAgentChatAnswer(eventID, "expired")

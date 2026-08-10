@@ -35,7 +35,7 @@ struct MacTimelineItemView: View {
     /// card read-only rather than offering buttons with nothing behind them.
     var agentChatState: ((String) -> AgentChatCardState)? = nil
     var onAnswerAgentChat: ((_ eventID: String, _ request: AgentChatRequest,
-                             _ approve: Bool, _ alwaysAllow: Bool) -> Void)? = nil
+                             _ approve: Bool) -> Void)? = nil
     /// The conversation this row belongs to — tags live-output sessions in
     /// the shared store so chat teardown can suspend only its own sockets
     /// (`suspendSessions(in:)`). `nil` keeps previews/tests compiling.
@@ -231,10 +231,8 @@ struct MacTimelineItemView: View {
                 AgentChatRequestCard(
                     request: request,
                     state: agentChatState?(eventID) ?? .expired,
-                    onApprove: { alwaysAllow in
-                        onAnswerAgentChat?(eventID, request, true, alwaysAllow)
-                    },
-                    onDeny: { onAnswerAgentChat?(eventID, request, false, false) }
+                    onApprove: { onAnswerAgentChat?(eventID, request, true) },
+                    onDeny: { onAnswerAgentChat?(eventID, request, false) }
                 )
                 .frame(maxWidth: 360, alignment: .leading)
                 Spacer(minLength: 0)

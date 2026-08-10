@@ -419,4 +419,18 @@ final class JournalAPITests: XCTestCase {
             XCTFail("expected transport error")
         } catch JournalAPIError.transport { /* expected */ }
     }
+
+    /// Standing consent is gone: the journal now rejects `always_allow` with a
+    /// 400, so an approval that carried it would break the primary action on
+    /// the consent card. The body must be exactly the three keys.
+    func testAnswerAgentChatSendsNoAlwaysAllow() async throws {
+        StubURLProtocol.responses = ["/agent-chat/answer": (200, #"{"delivered":true}"#)]
+        let api = makeAPI()
+
+        _ = try await api.answerAgentChat(roomID: "r1", targetDeviceID: 7, decision: .approve)
+
+        let body = try XCTUnwrap(StubURLProtocol.lastRequestBody)
+        let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(Set(obj.keys), ["room_id", "target_device_id", "decision"])
+    }
 }

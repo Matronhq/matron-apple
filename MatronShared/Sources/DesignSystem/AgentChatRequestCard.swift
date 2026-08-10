@@ -15,21 +15,15 @@ import MatronEvents
 public struct AgentChatRequestCard: View {
     public let request: AgentChatRequest
     public let state: AgentChatCardState
-    /// Carries the "always allow" switch, because approving with it on is
-    /// one decision, not two — and it is the only way to create a standing
-    /// allowance at all.
-    public let onApprove: (_ alwaysAllow: Bool) -> Void
+    /// Answers this one request. There is no standing consent to grant: the
+    /// next ask from the same pair gets its own card.
+    public let onApprove: () -> Void
     public let onDeny: () -> Void
-
-    /// Card-local: nothing outside needs to observe the switch, and keeping
-    /// it here means a card can't be handed a stale binding from a row that
-    /// has since scrolled away and been recycled.
-    @State private var alwaysAllow = false
 
     public init(
         request: AgentChatRequest,
         state: AgentChatCardState,
-        onApprove: @escaping (_ alwaysAllow: Bool) -> Void,
+        onApprove: @escaping () -> Void,
         onDeny: @escaping () -> Void
     ) {
         self.request = request
@@ -99,17 +93,10 @@ public struct AgentChatRequestCard: View {
     @ViewBuilder
     private var controls: some View {
         // The peer's own words, quoted above; below, only the user's choice.
-        Toggle(isOn: $alwaysAllow) {
-            Text("Always allow \(request.requesterLabel) to do this")
-                .font(.callout)
-        }
-        .toggleStyle(.switch)
-        .disabled(state == .sending)
-
         HStack(spacing: 8) {
             Button("Decline", action: onDeny)
                 .buttonStyle(.bordered)
-            Button("Approve") { onApprove(alwaysAllow) }
+            Button("Approve", action: onApprove)
                 .buttonStyle(.borderedProminent)
             if state == .sending {
                 ProgressView().controlSize(.small)
