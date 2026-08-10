@@ -95,5 +95,111 @@ final class MarkdownCopyTests: XCTestCase {
         XCTAssertFalse(a.isEqual(c))
         XCTAssertFalse(a.isEqual("not semantics"))
     }
+
+    // MARK: - Reconstruction
+
+    private func reconstruct(_ source: String) -> String {
+        let attributed = convert(source)
+        return MarkdownReconstruction.markdown(
+            from: attributed, in: NSRange(location: 0, length: attributed.length)
+        )
+    }
+
+    func test_reconstruct_paragraphsSeparatedByBlankLine() {
+        XCTAssertEqual(reconstruct("First one.\n\nSecond one."), "First one.\n\nSecond one.")
+    }
+
+    func test_reconstruct_inlineStyles() {
+        XCTAssertEqual(
+            reconstruct("a **bold** b *ital* c `code` d ~~gone~~"),
+            "a **bold** b *ital* c `code` d ~~gone~~"
+        )
+    }
+
+    func test_reconstruct_nestedBoldItalic_noBrokenDelimiters() {
+        let out = reconstruct("**bold *both* bold**")
+        XCTAssertFalse(out.contains("****"))
+        XCTAssertEqual(out, "**bold *both* bold**")
+    }
+
+    func test_reconstruct_codeBlockFencesAndNewlines() {
+        XCTAssertEqual(
+            reconstruct("```swift\nlet a = 1\nlet b = 2\n```"),
+            "```swift\nlet a = 1\nlet b = 2\n```"
+        )
+    }
+
+    func test_reconstruct_codeBlockBetweenParagraphs() {
+        XCTAssertEqual(
+            reconstruct("Before.\n\n```\nx\n```\n\nAfter."),
+            "Before.\n\n```\nx\n```\n\nAfter."
+        )
+    }
+
+    func test_reconstruct_unorderedList() {
+        XCTAssertEqual(
+            reconstruct("- one\n- two\n\nAfter."),
+            "- one\n- two\n\nAfter."
+        )
+    }
+
+    func test_reconstruct_orderedList() {
+        XCTAssertEqual(reconstruct("1. one\n2. two"), "1. one\n2. two")
+    }
+
+    func test_reconstruct_header() {
+        XCTAssertEqual(reconstruct("## Title\n\nBody."), "## Title\n\nBody.")
+    }
+
+    func test_reconstruct_blockQuote() {
+        XCTAssertEqual(reconstruct("> quoted line"), "> quoted line")
+    }
+
+    func test_reconstruct_link() {
+        XCTAssertEqual(
+            reconstruct("see [docs](https://example.com) now"),
+            "see [docs](https://example.com) now"
+        )
+    }
+
+    func test_reconstruct_partialRangeMidParagraph_plainFragment() {
+        let attributed = convert("hello plain world")
+        let range = (attributed.string as NSString).range(of: "plain")
+        XCTAssertEqual(
+            MarkdownReconstruction.markdown(from: attributed, in: range),
+            "plain"
+        )
+    }
+
+    func test_reconstruct_partialRange_listItemWithoutMarker_noSynthesizedMarker() {
+        let attributed = convert("- alpha bravo")
+        let range = (attributed.string as NSString).range(of: "bravo")
+        XCTAssertEqual(
+            MarkdownReconstruction.markdown(from: attributed, in: range),
+            "bravo"
+        )
+    }
+
+    func test_reconstruct_unannotatedString_identity() {
+        let plain = NSAttributedString(string: "raw\ntext, untouched")
+        XCTAssertEqual(
+            MarkdownReconstruction.markdown(
+                from: plain, in: NSRange(location: 0, length: plain.length)
+            ),
+            "raw\ntext, untouched"
+        )
+    }
+
+    /// Fixed-point: reconstructing the full range and re-rendering yields the
+    /// same rendered string (byte-identity with the source is the fast path's
+    /// job, not reconstruction's).
+    func test_reconstruct_fullMessage_fixedPoint() {
+        let source = "# H\n\npara **bold** and [l](https://e.com)\n\n- one\n- two\n\n```swift\nlet x = 1\n```\n\n> bye"
+        let rendered = convert(source)
+        let rebuilt = MarkdownReconstruction.markdown(
+            from: rendered, in: NSRange(location: 0, length: rendered.length)
+        )
+        XCTAssertEqual(convert(rebuilt).string, rendered.string)
+    }
 }
 #endif
