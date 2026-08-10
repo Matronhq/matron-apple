@@ -67,6 +67,10 @@ struct ChatView: View {
     /// view model — consumed by the rows-populated observer, which
     /// resolves it via `proxy.scrollTo`.
     @State private var pendingRestoreID: String?
+    /// The most recent summaries-TOC jump target. The 200ms re-assert
+    /// task compares against this so a superseded jump's re-assert
+    /// can't yank the viewport back to the old target.
+    @State private var latestFocusTarget: String?
     /// Debounced follow-tail self-heal scheduled when the bottom edge
     /// leaves the screen with no user gesture — see the schedule site
     /// in the geometry action.
@@ -535,15 +539,18 @@ struct ChatView: View {
             .onChange(of: viewModel.pendingFocusID) { _, target in
                 guard let target else { return }
                 isFollowingTail = false          // otherwise the tail-follow engine yanks the viewport back to the bottom
+                latestFocusTarget = target
                 viewModel.ensureWindowContains(target)
                 withAnimation(nil) { proxy.scrollTo(target, anchor: .top) }
                 viewModel.clearPendingFocus()
                 // Re-assert after the widened window's layout pass — same reason
                 // restoreScroll(to:via:) does: `isExtendingWindow` holds the
                 // size-change anchor at .bottom for 150ms while the prepend lands.
+                // Guarded on still being the newest jump: a superseded task's
+                // re-assert must not yank the viewport back to its old target.
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 200_000_000)
-                    guard !isFollowingTail else { return }
+                    guard !isFollowingTail, latestFocusTarget == target else { return }
                     proxy.scrollTo(target, anchor: .top)
                 }
             }
