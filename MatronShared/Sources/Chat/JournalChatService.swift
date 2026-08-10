@@ -53,7 +53,11 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
             }
             let consumer = Task {
                 for await records in latest {
-                    continuation.yield(records.map(Self.summary(from:)))
+                    // Re-read per emission, not per row: the roster is a
+                    // handful of rows and only changes when a snapshot or a
+                    // device_meta rename lands.
+                    let boxNames = (try? store.agentNames()) ?? [:]
+                    continuation.yield(records.map { Self.summary(from: $0, boxNames: boxNames) })
                     try? await Task.sleep(for: interval)
                 }
                 continuation.finish()
@@ -65,7 +69,9 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
         }
     }
 
-    static func summary(from record: ConversationRecord) -> ChatSummary {
+    /// `boxNames` is the id → name map of the user's agent boxes. The chip
+    /// gate lives here: fewer than two boxes means no chip on any row.
+    static func summary(from record: ConversationRecord, boxNames: [Int64: String]) -> ChatSummary {
         let activityMS = record.lastActivityTS ?? (record.createdAt > 0 ? record.createdAt : nil)
         return ChatSummary(
             id: record.id,
@@ -74,8 +80,25 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
             lastActivity: activityMS.map { Date(timeIntervalSince1970: Double($0) / 1000) },
             unreadCount: record.unreadCount,
             snippet: record.snippet,
-            parentConvoID: record.parentConvoID
+            parentConvoID: record.parentConvoID,
+            boxName: Self.boxName(for: record, boxNames: boxNames)
         )
+    }
+
+    /// The chip rule for a single conversation: named only when the user has
+    /// two or more boxes AND this conversation's box resolves. Pure, so it
+    /// is unit-testable without a live sync engine.
+    static func boxName(for record: ConversationRecord?, boxNames: [Int64: String]) -> String? {
+        guard boxNames.count >= 2, let id = record?.agentDeviceID else { return nil }
+        return boxNames[id]
+    }
+
+    /// The owning box's display name for one conversation, or `nil` when no
+    /// chip should show. Synchronous: both callers are view bodies reading a
+    /// handful of rows.
+    public func boxName(forConvoID convoID: String) -> String? {
+        Self.boxName(for: (try? store.conversation(id: convoID)) ?? nil,
+                     boxNames: (try? store.agentNames()) ?? [:])
     }
 
     static func childSummary(from record: ConversationRecord) -> SubChatSummary {

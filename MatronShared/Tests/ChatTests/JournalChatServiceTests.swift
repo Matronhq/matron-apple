@@ -140,6 +140,56 @@ final class JournalChatServiceTests: XCTestCase {
         } catch { }
     }
 
+    func testBoxNameOnlyResolvesWhenTheUserHasTwoOrMoreBoxes() throws {
+        // Records come from the store rather than a literal: their memberwise
+        // init is internal to MatronJournal, and going through the real
+        // snapshot path also proves agent_device_id survives a round trip.
+        let store = try makeStore()
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "c1", title: "Fix the parser", sessionState: "running",
+                            lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 7),
+            ConvoSummaryDTO(id: "c2", title: "No box", sessionState: "running",
+                            lastSeq: 1, snippet: "", createdAt: 1),
+            ConvoSummaryDTO(id: "c3", title: "Old", sessionState: "done",
+                            lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 999),
+        ], headSeq: 1)
+        let owned = try XCTUnwrap(store.conversation(id: "c1"))
+        let orphan = try XCTUnwrap(store.conversation(id: "c2"))
+        let stale = try XCTUnwrap(store.conversation(id: "c3"))
+
+        // One box: no chip anywhere — a single-box user has nothing to
+        // disambiguate and shouldn't pay for the clutter.
+        XCTAssertNil(JournalChatService.summary(from: owned, boxNames: [7: "dev-y"]).boxName)
+
+        // Two boxes: the owning box is named.
+        let two: [Int64: String] = [7: "dev-y", 9: "dev-z"]
+        XCTAssertEqual(JournalChatService.summary(from: owned, boxNames: two).boxName, "dev-y")
+        // …but a conversation with no recorded box still shows nothing.
+        XCTAssertNil(JournalChatService.summary(from: orphan, boxNames: two).boxName)
+        // …and an id that resolves to nothing (revoked box) shows nothing.
+        XCTAssertNil(JournalChatService.summary(from: stale, boxNames: two).boxName)
+    }
+
+    func testBoxNameForConvoUsesTheSameTwoBoxGate() throws {
+        let store = try makeStore()
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "c1", title: "Fix", sessionState: "running",
+                            lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 7),
+        ], headSeq: 1)
+        let service = makeService(store)
+
+        // One box: no chip, same gate as the list rows.
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-y")])
+        XCTAssertNil(service.boxName(forConvoID: "c1"))
+
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-y"), AgentDTO(id: 9, name: "dev-z")])
+        XCTAssertEqual(service.boxName(forConvoID: "c1"), "dev-y")
+
+        // A conversation this device has never synced goes quiet rather than
+        // guessing — the header simply omits the box line.
+        XCTAssertNil(service.boxName(forConvoID: "never-seen"))
+    }
+
 }
 
 /// Never connects — enough for list tests that only read the store.
