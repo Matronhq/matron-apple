@@ -490,7 +490,8 @@ struct MacChatListView: View {
                     return vmCache.subChatViewModels(
                         for: childID, parentConvoID: parent, deps: deps, session: session)
                 },
-                chatTitle: summary?.title ?? ""
+                chatTitle: summary?.title ?? "",
+                boxName: summary?.boxName
             )
             .id(id)
         } else {

@@ -93,14 +93,6 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
         return boxNames[id]
     }
 
-    /// The owning box's display name for one conversation, or `nil` when no
-    /// chip should show. Synchronous: both callers are view bodies reading a
-    /// handful of rows.
-    public func boxName(forConvoID convoID: String) -> String? {
-        Self.boxName(for: (try? store.conversation(id: convoID)) ?? nil,
-                     boxNames: (try? store.agentNames()) ?? [:])
-    }
-
     static func childSummary(from record: ConversationRecord) -> SubChatSummary {
         SubChatSummary(
             id: record.id,

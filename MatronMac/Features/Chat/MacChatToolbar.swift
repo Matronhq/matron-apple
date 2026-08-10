@@ -45,6 +45,11 @@ import MatronDesignSystem
 @MainActor
 struct MacChatToolbar: ToolbarContent {
     let title: String
+    /// Which agent box this session runs on, or `nil` when the user has
+    /// fewer than two boxes (resolved by `JournalChatService.boxName`).
+    /// Leads the subtitle: it answers "which machine am I talking to",
+    /// which outranks the path and the account.
+    let boxName: String?
     /// Last-known session status for the open convo — model + context
     /// gauge render in the leading capsule, usage bars in the trailing
     /// one. Nil (no status frame yet) renders the title alone.
@@ -87,6 +92,7 @@ struct MacChatToolbar: ToolbarContent {
     /// `MacChatView`'s call site both keep compiling.
     init(
         title: String,
+        boxName: String? = nil,
         status: SessionStatus?,
         stripViewModel: SubChatStripViewModel,
         onOpenSubChat: @escaping (String) -> Void,
@@ -95,6 +101,7 @@ struct MacChatToolbar: ToolbarContent {
         popoverContent: @escaping () -> AnyView = { AnyView(EmptyView()) }
     ) {
         self.title = title
+        self.boxName = boxName
         self.status = status
         self.stripViewModel = stripViewModel
         self.onOpenSubChat = onOpenSubChat
@@ -223,6 +230,9 @@ struct MacChatToolbar: ToolbarContent {
     /// format without rendering.
     var titleSubtitle: String? {
         var parts: [String] = []
+        if let boxName {
+            parts.append(boxName)
+        }
         if let workdir = status?.workdir {
             parts.append(UsageMetersFormat.homeAbbreviated(workdir))
         }

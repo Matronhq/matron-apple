@@ -170,25 +170,6 @@ final class JournalChatServiceTests: XCTestCase {
         XCTAssertNil(JournalChatService.summary(from: stale, boxNames: two).boxName)
     }
 
-    func testBoxNameForConvoUsesTheSameTwoBoxGate() throws {
-        let store = try makeStore()
-        try store.applyColdSnapshot([
-            ConvoSummaryDTO(id: "c1", title: "Fix", sessionState: "running",
-                            lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 7),
-        ], headSeq: 1)
-        let service = makeService(store)
-
-        // One box: no chip, same gate as the list rows.
-        try store.replaceAgents([AgentDTO(id: 7, name: "dev-y")])
-        XCTAssertNil(service.boxName(forConvoID: "c1"))
-
-        try store.replaceAgents([AgentDTO(id: 7, name: "dev-y"), AgentDTO(id: 9, name: "dev-z")])
-        XCTAssertEqual(service.boxName(forConvoID: "c1"), "dev-y")
-
-        // A conversation this device has never synced goes quiet rather than
-        // guessing — the header simply omits the box line.
-        XCTAssertNil(service.boxName(forConvoID: "never-seen"))
-    }
 
 }
 

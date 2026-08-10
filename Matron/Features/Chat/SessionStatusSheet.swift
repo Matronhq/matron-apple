@@ -11,6 +11,9 @@ import MatronDesignSystem
 /// open sheet would never refresh when the first status frame lands.
 struct SessionStatusSheet: View {
     let viewModel: ChatViewModel
+    /// The agent box this session runs on, or nil when the user has fewer
+    /// than two boxes (the chip gate — see `JournalChatService.boxName`).
+    var boxName: String? = nil
     @Environment(\.dismiss) private var dismiss
 
     private var status: SessionStatus? { viewModel.sessionStatus }
@@ -21,6 +24,7 @@ struct SessionStatusSheet: View {
     private var hasContent: Bool {
         status?.model != nil || status?.context != nil || !(status?.limits ?? []).isEmpty
             || status?.email != nil || status?.workdir != nil || status?.vitals != nil
+            || boxName != nil
     }
 
     var body: some View {
@@ -51,12 +55,18 @@ struct SessionStatusSheet: View {
                             UsageBarsView(limits: limits, scale: .regular)
                         }
                         if status.email != nil || status.model != nil
-                            || status.workdir != nil || status.vitals != nil {
+                            || status.workdir != nil || status.vitals != nil
+                            || boxName != nil {
                             // Session footer: the bridge machine's logged-in
                             // email, model, workdir (home-abbreviated — the
                             // BRIDGE machine's path) and host CPU/RAM, all
                             // quiet.
                             VStack(alignment: .leading, spacing: 2) {
+                                // Leads the block: "which machine am I
+                                // talking to" outranks the account and path.
+                                if let boxName {
+                                    Text(boxName)
+                                }
                                 if let email = status.email {
                                     Text(email)
                                 }

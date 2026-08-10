@@ -408,7 +408,8 @@ struct ChatListView: View {
                     viewModel: chatVM,
                     composerVM: composerVM,
                     stripViewModel: vmCache.stripViewModel(forParent: id, deps: deps, session: session),
-                    chatTitle: summary?.title ?? ""
+                    chatTitle: summary?.title ?? "",
+                    boxName: summary?.boxName
                 )
                 // Key the chat's identity to its room. `openChat` REPLACES
                 // the path ([A] → [B]), which keeps this destination's
