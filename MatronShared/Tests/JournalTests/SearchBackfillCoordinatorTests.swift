@@ -11,6 +11,10 @@ private actor InMemorySearchService: SearchService {
 
     private(set) var indexed: [String: Indexed] = [:]
     private(set) var progress: [String: Progress] = [:]
+    /// Size of every `indexBatch` call, in order — the coordinator must
+    /// index one BATCH per fetched page (one write transaction), never one
+    /// call per event (the 2026-08-10 8.6 GB disk-write exception).
+    private(set) var batchSizes: [Int] = []
 
     func seedProgress(roomID: String, oldestEventID: String?, complete: Bool) {
         progress[roomID] = Progress(indexedCount: 0, oldestEventID: oldestEventID, complete: complete)
@@ -18,6 +22,13 @@ private actor InMemorySearchService: SearchService {
 
     func index(roomID: String, eventID: String, sender: String, timestamp: Date, body: String) async throws {
         indexed[eventID] = Indexed(roomID: roomID, eventID: eventID, sender: sender, body: body)
+    }
+    func indexBatch(_ entries: [SearchIndexEntry]) async throws {
+        batchSizes.append(entries.count)
+        for entry in entries {
+            try await index(roomID: entry.roomID, eventID: entry.eventID,
+                            sender: entry.sender, timestamp: entry.timestamp, body: entry.body)
+        }
     }
     func remove(eventID: String) async throws { indexed[eventID] = nil }
     func query(_ text: String, limit: Int) async throws -> [SearchHit] { [] }
@@ -94,6 +105,9 @@ final class SearchBackfillCoordinatorTests: XCTestCase {
         // Walk order: head page first (nil), then strictly descending.
         let calls = await pager.calls
         XCTAssertEqual(calls.map(\.beforeSeq), [nil, 4, 2])
+        // One indexBatch (= one write transaction) per fetched page.
+        let batchSizes = await search.batchSizes
+        XCTAssertEqual(batchSizes, [2, 2, 1])
     }
 
     func test_completedConversation_isSkippedWithoutFetching() async throws {

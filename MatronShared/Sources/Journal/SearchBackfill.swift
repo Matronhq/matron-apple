@@ -94,11 +94,22 @@ public actor SearchBackfillCoordinator {
             // anyway so a misbehaving page can't rewind `oldest` (mirrors
             // `paginateBackward`'s belt-and-braces filter).
             let older = oldest.map { bound in events.filter { $0.seq < bound } } ?? events
-            for event in older {
-                guard let body = event.searchableBody else { continue }
-                try await search.index(roomID: event.convoID, eventID: String(event.seq),
-                                       sender: event.sender, timestamp: event.ts, body: body)
+            // ONE transaction per page, not one per event. The per-event
+            // `search.index` version fsync'd a write transaction per message
+            // and re-dirtied FTS b-tree interior pages for every commit —
+            // against a ~175 MB index that amplified to ~1 MB of WAL writes
+            // per MESSAGE, and the 2026-08-10 post-wipe sweep (2,179 rooms,
+            // ~200K messages) tripped macOS's disk-writes resource limit
+            // (8.6 GB dirtied in 12 minutes, 15 MB/s sustained). Batching a
+            // 200-event page into one commit amortises the tree churn the
+            // same way the catch-up replay path (`didApplyBatch`) already
+            // does.
+            let entries = older.compactMap { event -> SearchIndexEntry? in
+                guard let body = event.searchableBody else { return nil }
+                return SearchIndexEntry(roomID: event.convoID, eventID: String(event.seq),
+                                        sender: event.sender, timestamp: event.ts, body: body)
             }
+            try await search.indexBatch(entries)
             let pageOldest = older.map(\.seq).min()
             if let pageOldest { oldest = pageOldest }
             // A short page means history is exhausted. A full page that made
