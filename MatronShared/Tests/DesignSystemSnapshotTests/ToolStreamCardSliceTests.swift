@@ -40,4 +40,28 @@ final class ToolStreamCardSliceTests: XCTestCase {
         XCTAssertTrue(cut)
         XCTAssertEqual(text.count, ToolStreamCard.collapsedDisplayCapChars)
     }
+
+    func test_newlineOnlyAtSliceEnd_neverEmptiesTheSlice() {
+        // Bugbot (PR #130): a giant line whose ONLY newline lands at the very
+        // end of the suffix must not be trimmed into emptiness — the trim
+        // scan is bounded to the head of the slice.
+        let giant = String(repeating: "z", count: 3 * ToolStreamCard.collapsedDisplayCapChars) + "\n"
+        let (text, cut) = ToolStreamCard.collapsedSlice(of: giant)
+        XCTAssertTrue(cut)
+        XCTAssertGreaterThan(text.count, ToolStreamCard.collapsedDisplayCapChars / 2)
+    }
+
+    func test_lateNewline_isNotTrimmedThrough() {
+        // A newline beyond the 512-char scan window means the visible tail is
+        // one effectively-giant line; trimming through it would drop most of
+        // the pane's content, so it stays.
+        let cap = ToolStreamCard.collapsedDisplayCapChars
+        let text = String(repeating: "a", count: cap) + "\n" + String(repeating: "b", count: 600)
+        // Suffix = tail of the a-run + "\n" + 600 b's: the newline sits ~600
+        // chars from the END, i.e. past the head scan window.
+        let (shown, cut) = ToolStreamCard.collapsedSlice(of: text)
+        XCTAssertTrue(cut)
+        XCTAssertEqual(shown.count, cap)
+        XCTAssertTrue(shown.contains("\n"), "the late newline is kept, not trimmed through")
+    }
 }

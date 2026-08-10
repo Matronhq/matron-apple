@@ -81,9 +81,15 @@ public struct ToolStreamCard: View {
     static func collapsedSlice(of text: String) -> (text: Substring, cut: Bool) {
         guard text.count > collapsedDisplayCapChars else { return (text[...], false) }
         var shown = text.suffix(collapsedDisplayCapChars)
-        // Drop the first (almost certainly partial) line so the cut
-        // never opens mid-word or inside a split ANSI escape sequence.
-        if let newline = shown.firstIndex(of: "\n") {
+        // Drop the (almost certainly partial) first line so the cut never
+        // opens mid-word or inside a split ANSI escape sequence — but only
+        // when that line ends within the first few hundred characters.
+        // Terminal lines are short; a newline that far in means the tail is
+        // effectively one giant line, and trimming through it would throw
+        // away most (or, when the only newline is the final character, ALL)
+        // of the visible text (Bugbot, PR #130).
+        let scanEnd = shown.index(shown.startIndex, offsetBy: min(512, shown.count))
+        if let newline = shown[..<scanEnd].firstIndex(of: "\n") {
             shown = shown[shown.index(after: newline)...]
         }
         return (shown, true)
