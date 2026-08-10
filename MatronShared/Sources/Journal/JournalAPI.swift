@@ -425,6 +425,21 @@ public actor JournalAPI {
         _ = try await request(path: "/devices/\(id)/revoke", method: "POST", body: [:])
     }
 
+    /// Renames a device. Client tokens only (the server 403s an agent), and
+    /// 404 covers both "not yours" and "gone".
+    public func renameDevice(id: Int64, name: String) async throws -> DeviceDTO {
+        let obj = try await request(path: "/devices/\(id)/rename", method: "POST", body: ["name": name])
+        guard let d = obj["device"] as? [String: Any],
+              let deviceID = (d["device_id"] as? NSNumber)?.int64Value,
+              let newName = d["name"] as? String
+        else { throw JournalAPIError.transport("malformed rename response") }
+        // Partial DTO: the rename response carries only identity and the new
+        // name. Callers re-fetch the roster for the full row rather than
+        // trusting these zeros — see DevicesViewModel.rename.
+        return DeviceDTO(id: deviceID, kind: "", name: newName, createdAt: 0,
+                         cursor: 0, lag: 0, lastSeenAt: nil, isSelf: false)
+    }
+
     /// Previews a pairing code before approval. 404 = unknown, expired, or
     /// already approved (deliberately indistinguishable server-side).
     public func pairPreview(code: String) async throws -> PairPreview {

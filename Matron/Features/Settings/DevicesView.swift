@@ -9,6 +9,11 @@ import MatronViewModels
 struct DevicesView: View {
     @State private var viewModel: DevicesViewModel
     @State private var confirming: DeviceDTO?
+    /// The device whose rename alert is open, and the draft in its field.
+    /// Two pieces of state, not one: `.alert`'s TextField needs a binding
+    /// that survives the alert's own re-evaluations.
+    @State private var renaming: DeviceDTO?
+    @State private var draftName = ""
     @State private var showingAddAgent = false
     private let api: any DevicesProviding
 
@@ -63,6 +68,21 @@ struct DevicesView: View {
                 secondaryButton: .cancel()
             )
         }
+        .alert("Rename device", isPresented: Binding(
+            get: { renaming != nil },
+            set: { if !$0 { renaming = nil } }
+        )) {
+            TextField("Name", text: $draftName)
+            Button("Cancel", role: .cancel) { renaming = nil }
+            Button("Rename") {
+                if let device = renaming {
+                    Task { await viewModel.rename(device, to: draftName) }
+                }
+                renaming = nil
+            }
+        } message: {
+            Text("This name labels the box everywhere — in Devices and on the chip beside each conversation.")
+        }
     }
 
     private func row(_ device: DeviceDTO) -> some View {
@@ -94,7 +114,19 @@ struct DevicesView: View {
                 confirming = device
             }
         }
+        // Rename rides the LEADING edge so a full swipe can never reach the
+        // destructive revoke by muscle memory.
+        .swipeActions(edge: .leading) {
+            Button("Rename") {
+                draftName = device.name
+                renaming = device
+            }
+        }
         .contextMenu {
+            Button("Rename “\(device.name)”") {
+                draftName = device.name
+                renaming = device
+            }
             Button(device.isSelf ? "Sign Out This Device" : "Revoke “\(device.name)”",
                    role: .destructive) {
                 confirming = device

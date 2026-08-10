@@ -7,6 +7,7 @@ import MatronJournal
 public protocol DevicesProviding: Sendable {
     func devices() async throws -> [DeviceDTO]
     func revokeDevice(id: Int64) async throws
+    func renameDevice(id: Int64, name: String) async throws -> DeviceDTO
     func pairPreview(code: String) async throws -> PairPreview
     func pairApprove(code: String, agentName: String) async throws
 }
@@ -67,6 +68,38 @@ public final class DevicesViewModel {
             }
         } catch {
             errorMessage = "Couldn't revoke \(device.name) — \(Self.describe(error))"
+        }
+    }
+
+    /// Server-side cap on a device name, mirrored here so the field can
+    /// refuse before a round-trip.
+    public static let nameCap = 40
+
+    /// Name rules, mirrored from the server: non-empty after trimming, at
+    /// most `nameCap` characters. Returns nil when acceptable, else the
+    /// reason to show.
+    public static func validate(name: String) -> String? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return "Give the device a name." }
+        if trimmed.count > Self.nameCap { return "Names are at most \(Self.nameCap) characters." }
+        return nil
+    }
+
+    /// Renames `device`. The roster is re-fetched on success rather than
+    /// patched, so a name the server sanitised (control characters
+    /// flattened) is what the user ends up seeing.
+    public func rename(_ device: DeviceDTO, to name: String) async {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let problem = Self.validate(name: trimmed) {
+            errorMessage = problem
+            return
+        }
+        do {
+            _ = try await api.renameDevice(id: device.id, name: trimmed)
+            errorMessage = nil
+            await refresh()
+        } catch {
+            errorMessage = "Couldn't rename \(device.name) — \(Self.describe(error))"
         }
     }
 
