@@ -534,10 +534,18 @@ struct ChatView: View {
             // there's no "rows just populated" gate to wait on here.
             .onChange(of: viewModel.pendingFocusID) { _, target in
                 guard let target else { return }
-                isFollowingTail = false          // or the tail-follow engine yanks back to bottom
+                isFollowingTail = false          // otherwise the tail-follow engine yanks the viewport back to the bottom
                 viewModel.ensureWindowContains(target)
                 withAnimation(nil) { proxy.scrollTo(target, anchor: .top) }
                 viewModel.clearPendingFocus()
+                // Re-assert after the widened window's layout pass — same reason
+                // restoreScroll(to:via:) does: `isExtendingWindow` holds the
+                // size-change anchor at .bottom for 150ms while the prepend lands.
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                    guard !isFollowingTail else { return }
+                    proxy.scrollTo(target, anchor: .top)
+                }
             }
             // Discrete tail changes (a send's echo, a finalized reply, a
             // tool-output row — NOT streaming growth, which keeps the
@@ -665,6 +673,8 @@ struct ChatView: View {
                         .lineLimit(1)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(chatTitle)
+                .accessibilityHint("Shows conversation summaries")
             }
             // Sub-chat switcher — shown whenever this chat has ANY children
             // (running or finished). The running strip hides itself the

@@ -66,11 +66,6 @@ final class MacChatToolbarTests: XCTestCase {
     }
 
 
-    /// The sidebar-toggle button posts `.toggleSidebar` on the command
-    /// bus. The toolbar tests the listener side; Task 14e tests the
-    /// menu-bar `Button("Toggle Sidebar")` poster side. Verifying the
-    /// `Notification.Name` exists and is distinct keeps the contract
-    /// explicit before the menu item lands.
     /// The title cluster's tap target is a real binding, not a fire-and-
     /// forget closure — flipping `showSummaries.wrappedValue` on the
     /// struct must reach back to the caller's `@State` through the
@@ -87,6 +82,11 @@ final class MacChatToolbarTests: XCTestCase {
         XCTAssertTrue(shown)
     }
 
+    /// The sidebar-toggle button posts `.toggleSidebar` on the command
+    /// bus. The toolbar tests the listener side; Task 14e tests the
+    /// menu-bar `Button("Toggle Sidebar")` poster side. Verifying the
+    /// `Notification.Name` exists and is distinct keeps the contract
+    /// explicit before the menu item lands.
     func test_toggleSidebarNotificationName_isWired() {
         let name = Notification.Name.matronCommand(.toggleSidebar)
         XCTAssertEqual(name.rawValue, "chat.matron.command.toggleSidebar")

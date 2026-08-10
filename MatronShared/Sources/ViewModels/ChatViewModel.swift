@@ -608,7 +608,28 @@ public final class ChatViewModel {
     /// contention and no movement — belt-and-braces exit in case the
     /// progress-or-latch guarantee above is ever violated).
     public func focus(seq: Int64) async {
+        focusTask?.cancel()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performFocus(seq: seq)
+        }
+        focusTask = task
+        await task.value
+    }
+
+    /// Backing task for `focus(seq:)` — see that method's doc comment for
+    /// why a second call must supersede rather than race the first: two
+    /// in-flight jumps would busy-yield against each other's
+    /// `paginateBackward()` calls on the MainActor with no ordering
+    /// guarantee over which one's `pendingFocusID` write wins. Cancelling
+    /// the superseded task and checking `Task.isCancelled` at the top of
+    /// the paginate loop below makes the outcome deterministic: only the
+    /// most recent call's target is ever landed.
+    private var focusTask: Task<Void, Never>?
+
+    private func performFocus(seq: Int64) async {
         while nearestMessageID(atOrBefore: seq) == nil && !reachedHistoryStart {
+            if Task.isCancelled { return }
             let beforeCount = items.count
             await paginateBackward()
             let madeProgress = items.count != beforeCount || reachedHistoryStart
@@ -1103,6 +1124,8 @@ public final class ChatViewModel {
         resumeTask = nil
         historyRefillTask?.cancel()
         historyRefillTask = nil
+        focusTask?.cancel()
+        focusTask = nil
     }
 
     private var historyRefillTask: Task<Void, Never>?

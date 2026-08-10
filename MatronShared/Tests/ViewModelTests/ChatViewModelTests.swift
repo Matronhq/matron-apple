@@ -1686,4 +1686,24 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertTrue(finished, "focus(seq:) must bail rather than spin when pagination never progresses")
         XCTAssertEqual(vm.pendingFocusID, "300", "falls back to the oldest loaded row")
     }
+
+    /// Single-flight guard: a second `focus(seq:)` call must supersede an
+    /// in-flight first call rather than race it. Seq 150 needs two
+    /// `paginateBackward()` calls to load (exercising the while-loop this
+    /// test wants cancelled mid-flight); seq 320 is already in the
+    /// initial window, so its call resolves immediately once it gets the
+    /// MainActor. Without the `focusTask` single-flight guard, both calls
+    /// could independently write `pendingFocusID`, and whichever happened
+    /// to finish last — not whichever was requested last — would win.
+    @MainActor
+    func testFocusSingleFlight_secondCallSupersedesFirst() async {
+        let vm = await makeVMWithPagedHistory(
+            loaded: [300...340], olderPages: [[200...299], [100...199]]
+        )
+        let first = Task { await vm.focus(seq: 150) }
+        let second = Task { await vm.focus(seq: 320) }
+        await first.value
+        await second.value
+        XCTAssertEqual(vm.pendingFocusID, "320", "second call supersedes the first; exactly one pending focus survives")
+    }
 }

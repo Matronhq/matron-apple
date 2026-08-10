@@ -1,5 +1,6 @@
 import SwiftUI
 import MatronChat
+import MatronViewModels
 
 /// TOC popover content for the Mac title cluster (see `MacChatToolbar`):
 /// one row per bridge summary pass, newest first. Rows expand to the
@@ -17,6 +18,11 @@ import MatronChat
 /// invisible underneath (verified against this file's own recorded
 /// baselines before the switch). Same pattern `MacChatView`'s timeline
 /// already uses for exactly this reason.
+///
+/// `.background(.background)` (a flat fill) rather than letting the
+/// popover's own vibrancy show through is deliberate for the same
+/// headless-snapshot reason: real popover vibrancy composites against
+/// the live window stack, which the harness has none of.
 struct MacSummariesPanel: View {
     let entries: [ConversationSummaryEntry]
     let onSelect: (Int64) -> Void
@@ -54,33 +60,50 @@ struct MacSummariesPanel: View {
     }
 
     private func row(for entry: ConversationSummaryEntry) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(entry.toc)
-                Spacer()
-                if !entry.detail.isEmpty {
-                    Image(systemName: expandedSeq == entry.seq ? "chevron.up" : "chevron.down")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .onTapGesture { toggle(entry.seq) }
-                }
-            }
-            if expandedSeq == entry.seq, !entry.detail.isEmpty {
-                Text(entry.detail)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-            Text(entry.date, style: .date)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .contentShape(Rectangle())
-        .onTapGesture {
+        Button {
             onSelect(entry.seq)
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(entry.toc)
+                    Spacer()
+                    if !entry.detail.isEmpty {
+                        Button {
+                            toggle(entry.seq)
+                        } label: {
+                            Image(systemName: expandedSeq == entry.seq ? "chevron.up" : "chevron.down")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Show detail")
+                    }
+                }
+                if expandedSeq == entry.seq, !entry.detail.isEmpty {
+                    Text(entry.detail)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Text(entry.date, format: .dateTime.month().day().hour().minute())
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 
     private func toggle(_ seq: Int64) { expandedSeq = expandedSeq == seq ? nil : seq }
+}
+
+/// Reads `summaryEntries` in its OWN body so the popover stays
+/// observation-tracked — a value snapshot taken inside the `.popover`
+/// content closure never refreshes while the popover is open (see
+/// SessionStatusSheet.swift:9-11).
+struct MacSummariesPopoverContent: View {
+    let viewModel: ChatViewModel
+    let onSelect: (Int64) -> Void
+    var body: some View { MacSummariesPanel(entries: viewModel.summaryEntries, onSelect: onSelect) }
 }

@@ -549,10 +549,18 @@ struct MacChatView: View {
             // iOS `ChatView` for the twin.
             .onChange(of: viewModel.pendingFocusID) { _, target in
                 guard let target else { return }
-                isFollowingTail = false          // or the tail-follow engine yanks back to bottom
+                isFollowingTail = false          // otherwise the tail-follow engine yanks the viewport back to the bottom
                 viewModel.ensureWindowContains(target)
                 withAnimation(nil) { proxy.scrollTo(target, anchor: .top) }
                 viewModel.clearPendingFocus()
+                // Re-assert after the widened window's layout pass — same reason
+                // restoreScroll(to:via:) does: `isExtendingWindow` holds the
+                // size-change anchor at .bottom for 150ms while the prepend lands.
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                    guard !isFollowingTail else { return }
+                    proxy.scrollTo(target, anchor: .top)
+                }
             }
             // Discrete tail changes: own sends always return to the
             // bottom; while following, instant re-pin per new row. See
@@ -686,7 +694,7 @@ struct MacChatView: View {
                 onCompact: { Task { await viewModel.sendCommand("/compact") } },
                 showSummaries: $showSummaries,
                 popoverContent: {
-                    AnyView(MacSummariesPanel(entries: viewModel.summaryEntries) { seq in
+                    AnyView(MacSummariesPopoverContent(viewModel: viewModel) { seq in
                         showSummaries = false
                         Task { await viewModel.focus(seq: seq) }
                     })

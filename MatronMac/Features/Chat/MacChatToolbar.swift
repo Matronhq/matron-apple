@@ -118,6 +118,8 @@ struct MacChatToolbar: ToolbarContent {
                 // capsule this cluster renders inside.
                 Button { showSummaries.wrappedValue = true } label: { titleCluster }
                     .buttonStyle(.plain)
+                    .help("Show conversation summaries")
+                    .accessibilityHint("Shows conversation summaries")
                     .popover(isPresented: showSummaries, arrowEdge: .bottom) {
                         popoverContent()
                     }
