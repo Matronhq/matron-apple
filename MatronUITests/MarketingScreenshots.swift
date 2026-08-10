@@ -50,7 +50,9 @@ final class MarketingScreenshots: XCTestCase {
         try save("ios-02-agent-chat")
 
         // Back to the list, open the dark-mode convo for a diff-card shot.
-        app.navigationBars.buttons.matching(identifier: "Back").firstMatch.tap()
+        let back = app.navigationBars.buttons.matching(identifier: "Back").firstMatch
+        XCTAssertTrue(back.waitForExistence(timeout: 5), "back button never appeared — nav bar identifier may have changed")
+        back.tap()
         let darkMode = app.staticTexts["Dark mode for settings screen"]
         XCTAssertTrue(darkMode.waitForExistence(timeout: 10))
         darkMode.tap()

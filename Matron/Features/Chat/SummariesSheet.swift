@@ -20,38 +20,38 @@ struct SummariesSheet: View {
                         description: Text("They appear as the conversation grows."))
                 } else {
                     List(viewModel.summaryEntries) { entry in
-                        Button {
-                            dismiss()
-                            Task { await viewModel.focus(seq: entry.seq) }
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack(alignment: .firstTextBaseline) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Button {
+                                dismiss()
+                                Task { await viewModel.focus(seq: entry.seq) }
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
                                     Text(entry.toc)
-                                    Spacer()
-                                    if !entry.detail.isEmpty {
-                                        Button {
-                                            toggle(entry.seq)
-                                        } label: {
-                                            Image(systemName: expandedSeq == entry.seq ? "chevron.up" : "chevron.down")
-                                                .font(.caption2)
-                                                .foregroundStyle(.secondary)
-                                        }
-                                        .buttonStyle(.plain)
-                                        .accessibilityLabel("Show detail")
+                                    if expandedSeq == entry.seq, !entry.detail.isEmpty {
+                                        Text(entry.detail)
+                                            .font(.subheadline)
+                                            .foregroundStyle(.secondary)
                                     }
+                                    Text(entry.date, format: .dateTime.month().day().hour().minute())
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
                                 }
-                                if expandedSeq == entry.seq, !entry.detail.isEmpty {
-                                    Text(entry.detail)
-                                        .font(.subheadline)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            if !entry.detail.isEmpty {
+                                Button {
+                                    toggle(entry.seq)
+                                } label: {
+                                    Image(systemName: expandedSeq == entry.seq ? "chevron.up" : "chevron.down")
+                                        .font(.caption2)
                                         .foregroundStyle(.secondary)
                                 }
-                                Text(entry.date, format: .dateTime.month().day().hour().minute())
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(expandedSeq == entry.seq ? "Hide detail" : "Show detail")
                             }
-                            .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
                     }
                 }
             }

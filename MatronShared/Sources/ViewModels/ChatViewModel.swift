@@ -1187,6 +1187,12 @@ public final class ChatViewModel {
             // enough for a snapshot to plausibly arrive.
             let deadline = Date().addingTimeInterval(Self.snapshotWaitTimeout)
             while items.count == beforeCount && Date() < deadline {
+                // A superseded focus jump (or a room switch) cancels us mid-wait:
+                // `try? await Task.sleep` would then return instantly and spin this
+                // poll on the MainActor until the deadline. Leave instead — a
+                // cancelled wait is no evidence about history depth, so it must not
+                // reach the no-growth accounting below either.
+                if Task.isCancelled { return }
                 try? await Task.sleep(nanoseconds: Self.snapshotPollInterval)
             }
             let grew = items.count > beforeCount
