@@ -79,14 +79,21 @@ struct MacSummariesPanel: View {
             }
             .buttonStyle(.plain)
             if !entry.detail.isEmpty {
+                // Padding inside the label + matching negative padding outside
+                // inflates the clickable shape without moving the icon; as the
+                // later sibling the chevron wins hit-testing where the inflated
+                // area overlaps the jump button.
                 Button {
                     toggle(entry.seq)
                 } label: {
                     Image(systemName: expandedSeq == entry.seq ? "chevron.up" : "chevron.down")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                        .padding(12)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .padding(-12)
                 .accessibilityLabel(expandedSeq == entry.seq ? "Hide detail" : "Show detail")
             }
         }
