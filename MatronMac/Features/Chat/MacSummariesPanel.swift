@@ -69,7 +69,6 @@ struct MacSummariesPanel: View {
                     if expandedSeq == entry.seq, !entry.detail.isEmpty {
                         Text(entry.detail)
                             .font(.subheadline)
-                            .foregroundStyle(.secondary)
                     }
                     Text(entry.date, format: .dateTime.month().day().hour().minute())
                         .font(.caption2)
