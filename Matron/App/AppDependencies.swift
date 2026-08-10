@@ -280,7 +280,7 @@ final class AppDependencies {
     }
 
     /// Agent-chat consent surface: answering the cards inline in a chat, and
-    /// the Settings screen listing parked requests and standing allowances.
+    /// the Settings screen listing the parked ones.
     /// Same session-scoped `JournalAPI`; protocol slice for testability.
     func agentChatService(for session: UserSession) -> any AgentChatProviding {
         core(for: session).api

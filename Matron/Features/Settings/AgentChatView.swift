@@ -2,17 +2,14 @@ import SwiftUI
 import MatronJournal
 import MatronViewModels
 
-/// Settings → Agent Chats: requests still waiting on a decision, and the
-/// standing allowances that let future requests through without asking.
+/// Settings → Agent Chats: the requests still waiting on a decision.
 ///
 /// The consent card in a conversation is the primary surface; this screen is
-/// the two things a card can't be. A request that arrived while no client was
-/// connected has no card to tap, and an allowance granted with "always allow"
-/// is otherwise invisible and permanent — this is where it can be seen and
-/// taken back.
+/// the one thing a card can't be. A request that arrived while no client was
+/// connected has no card to tap, and would otherwise sit unanswered until it
+/// expired.
 struct AgentChatView: View {
     @State private var viewModel: AgentChatViewModel
-    @State private var confirmingRevoke: AgentChatAllowanceDTO?
 
     init(api: any AgentChatProviding) {
         _viewModel = State(initialValue: AgentChatViewModel(api: api))
@@ -35,10 +32,10 @@ struct AgentChatView: View {
                 }
             } else if !viewModel.hasLoaded && !viewModel.isLoading && viewModel.errorMessage != nil {
                 // The first load failed and nothing is in flight: the error
-                // above, with its retry, is the whole screen. Two spinners over
-                // sections that will never fill would claim we were still
+                // above, with its retry, is the whole screen. A spinner over a
+                // section that will never fill would claim we were still
                 // trying. (Before the first attempt there is no error yet, so
-                // the sections below still show their loading state.)
+                // the section below still shows its loading state.)
                 EmptyView()
             } else {
                 Section {
@@ -56,41 +53,13 @@ struct AgentChatView: View {
                 } header: {
                     Text("Waiting for you")
                 } footer: {
-                    Text("An agent asking to talk to another agent waits here until you decide. Unanswered requests expire after 24 hours.")
-                }
-
-                Section {
-                    if !viewModel.hasLoaded {
-                        ProgressView()
-                    } else if viewModel.allowances.isEmpty {
-                        Text("None — every request asks you first.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(viewModel.allowances) { allowance in
-                            allowanceRow(allowance)
-                        }
-                    }
-                } header: {
-                    Text("Always allowed")
-                } footer: {
-                    Text("These pairs skip the request entirely. Each one is one-way: allowing A to reach B says nothing about B reaching A.")
+                    Text("An agent asking to talk to another agent waits here until you decide. Every request asks — approving one says nothing about the next. Unanswered requests expire after 24 hours.")
                 }
             }
         }
         .navigationTitle("Agent Chats")
         .task { await viewModel.refresh() }
         .refreshable { await viewModel.refresh() }
-        .alert(item: $confirmingRevoke) { allowance in
-            Alert(
-                title: Text("Stop always allowing this?"),
-                message: Text("\(allowance.fromLabel) will have to ask you again before talking to \(allowance.targetLabel)."),
-                primaryButton: .destructive(Text("Stop Allowing")) {
-                    Task { await viewModel.revoke(allowance) }
-                },
-                secondaryButton: .cancel()
-            )
-        }
     }
 
     private func pendingRow(_ row: AgentChatPendingDTO) -> some View {
@@ -118,30 +87,9 @@ struct AgentChatView: View {
                     ProgressView().controlSize(.small)
                 }
             }
-            // "Always allow" is deliberately not offered here. It is a
-            // standing grant, and this screen shows asks stripped of the
-            // conversation they belong to — the consent card in the chat,
-            // where the surrounding context is visible, is the place to make
-            // a decision that outlives the one request.
         }
         .padding(.vertical, 4)
         .disabled(viewModel.busyIDs.contains(row.id))
-    }
-
-    private func allowanceRow(_ allowance: AgentChatAllowanceDTO) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("\(allowance.fromLabel) → \(allowance.targetLabel)")
-                .fontWeight(.medium)
-            Text("Can start a chat without asking")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .swipeActions(edge: .trailing) {
-            Button("Stop Allowing", role: .destructive) { confirmingRevoke = allowance }
-        }
-        .contextMenu {
-            Button("Stop Allowing", role: .destructive) { confirmingRevoke = allowance }
-        }
     }
 
     private func labelled(_ label: String, _ value: String) -> some View {

@@ -842,12 +842,11 @@ private struct MacTimelineListContent: View, Equatable {
                         isPromptAnswered: { viewModel.isPromptAnswered($0) },
                         answerSummary: { viewModel.answerSummary(forPrompt: $0) },
                         agentChatState: { viewModel.agentChatState($0) },
-                        onAnswerAgentChat: { eventID, request, approve, alwaysAllow in
+                        onAnswerAgentChat: { eventID, request, approve in
                             Task {
                                 await viewModel.answerAgentChat(
                                     eventID: eventID, request: request,
-                                    decision: approve ? .approve : .deny,
-                                    alwaysAllow: alwaysAllow)
+                                    decision: approve ? .approve : .deny)
                             }
                         },
                         convoID: viewModel.roomID

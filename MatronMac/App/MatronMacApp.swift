@@ -225,8 +225,7 @@ struct MatronMacApp: App {
         //   without retyping credentials (Task 6 of the QR device-link
         //   plan). Mac only shows codes — see `MacDeviceLinkView`.
         // - Agent Chats: requests from one agent to talk to another that are
-        //   still waiting on a decision, plus the standing allowances that
-        //   let future ones through without asking.
+        //   still waiting on a decision.
         Settings {
             Group {
                 if let session {

@@ -3,12 +3,11 @@ import MatronJournal
 
 /// The one call that resolves a consent card. Split out from
 /// `AgentChatProviding` because `ChatViewModel` answers cards inline in the
-/// timeline and has no business listing or revoking anything.
+/// timeline and has no business listing anything.
 public protocol AgentChatAnswering: Sendable {
     @discardableResult
     func answerAgentChat(
-        roomID: String, targetDeviceID: Int64,
-        decision: AgentChatDecision, alwaysAllow: Bool
+        roomID: String, targetDeviceID: Int64, decision: AgentChatDecision
     ) async throws -> Bool
 }
 
@@ -17,38 +16,34 @@ public protocol AgentChatAnswering: Sendable {
 /// as-is.
 public protocol AgentChatProviding: AgentChatAnswering {
     func agentChatPending() async throws -> [AgentChatPendingDTO]
-    func agentChatAllowances() async throws -> [AgentChatAllowanceDTO]
-    func revokeAgentChatAllowance(fromDeviceID: Int64, targetDeviceID: Int64) async throws
 }
 
 extension JournalAPI: AgentChatProviding {}
 
-/// Drives the Agent chats settings screen: requests still waiting on the
-/// user, and the standing allowances that let future requests through
-/// without asking.
+/// Drives the Agent chats settings screen: the requests still waiting on the
+/// user. Every ask waits for an answer — there is no standing consent to
+/// list beside them.
 ///
-/// Pull-based like `DevicesViewModel` — neither list is a journal event, so
+/// Pull-based like `DevicesViewModel` — the list is not a journal event, so
 /// callers `refresh()` on screen enter and the model re-fetches after every
 /// mutation.
 @Observable @MainActor
 public final class AgentChatViewModel {
     public private(set) var pending: [AgentChatPendingDTO] = []
-    public private(set) var allowances: [AgentChatAllowanceDTO] = []
     public private(set) var isLoading = false
     public private(set) var errorMessage: String?
-    /// Rows with a call in flight, keyed by `AgentChatPendingDTO.id` /
-    /// `AgentChatAllowanceDTO.id`, so one row's spinner doesn't disable the
-    /// whole screen.
+    /// Rows with a call in flight, keyed by `AgentChatPendingDTO.id`, so one
+    /// row's spinner doesn't disable the whole screen.
     public private(set) var busyIDs: Set<String> = []
 
     /// `false` on a server that predates the agent-chat endpoints, so the
-    /// screen can say so instead of showing two permanently empty lists.
+    /// screen can say so instead of showing a permanently empty list.
     public private(set) var isSupported = true
 
     /// `false` until the first successful load. The screens gate their
     /// "nothing here" copy on it: `refresh()` runs from `.task`, i.e. after
     /// the first frame, so an unguarded empty list tells the user they have no
-    /// pending requests a beat before their pending requests appear.
+    /// pending requests a beat before their pending requests arrive.
     public private(set) var hasLoaded = false
 
     private let api: any AgentChatProviding
@@ -61,25 +56,17 @@ public final class AgentChatViewModel {
         isLoading = true
         defer { isLoading = false }
         do {
-            // Both calls first, both assignments after: a partial failure must
-            // not leave one list fresh beside the other's stale contents, next
-            // to an error saying the load failed. Sequential rather than
-            // concurrent because two round trips on screen entry is nothing.
-            let freshPending = try await api.agentChatPending()
-            let freshAllowances = try await api.agentChatAllowances()
-            pending = freshPending.sorted { $0.createdAt > $1.createdAt }
-            allowances = freshAllowances.sorted { $0.createdAt > $1.createdAt }
+            pending = try await api.agentChatPending().sorted { $0.createdAt > $1.createdAt }
             hasLoaded = true
             isSupported = true
             errorMessage = nil
         } catch JournalAPIError.notFound {
             // No such route: this journal predates agent chat. Say so once
-            // rather than showing two permanently empty lists as if the user
+            // rather than showing a permanently empty list as if the user
             // simply had nothing pending.
             isSupported = false
             hasLoaded = true
             pending = []
-            allowances = []
             errorMessage = nil
         } catch {
             errorMessage = "Couldn't load agent chats — \(Self.describe(error))"
@@ -91,7 +78,7 @@ public final class AgentChatViewModel {
     /// device, or expired) — the decision the user wanted is either already
     /// made or moot, so drop the row rather than showing an error for
     /// something they cannot act on.
-    public func answer(_ row: AgentChatPendingDTO, decision: AgentChatDecision, alwaysAllow: Bool = false) async {
+    public func answer(_ row: AgentChatPendingDTO, decision: AgentChatDecision) async {
         guard !busyIDs.contains(row.id) else { return }
         busyIDs.insert(row.id)
         defer { busyIDs.remove(row.id) }
@@ -99,7 +86,7 @@ public final class AgentChatViewModel {
             do {
                 try await api.answerAgentChat(
                     roomID: row.roomID, targetDeviceID: row.targetDeviceID,
-                    decision: decision, alwaysAllow: alwaysAllow)
+                    decision: decision)
             } catch JournalAPIError.conflict {
                 // Already resolved elsewhere — fall through to the refresh.
             }
@@ -107,24 +94,6 @@ public final class AgentChatViewModel {
             await refresh()
         } catch {
             errorMessage = "Couldn't answer that request — \(Self.describe(error))"
-        }
-    }
-
-    /// Withdraws a standing allowance, so that pair has to ask again.
-    public func revoke(_ allowance: AgentChatAllowanceDTO) async {
-        guard !busyIDs.contains(allowance.id) else { return }
-        busyIDs.insert(allowance.id)
-        defer { busyIDs.remove(allowance.id) }
-        do {
-            try await api.revokeAgentChatAllowance(
-                fromDeviceID: allowance.fromDeviceID, targetDeviceID: allowance.targetDeviceID)
-            // Reflect it locally first: a failed refetch leaves `allowances`
-            // untouched and the revoked row would linger, looking live.
-            allowances.removeAll { $0.id == allowance.id }
-            errorMessage = nil
-            await refresh()
-        } catch {
-            errorMessage = "Couldn't revoke that allowance — \(Self.describe(error))"
         }
     }
 

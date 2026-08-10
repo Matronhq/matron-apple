@@ -47,10 +47,10 @@ struct TimelineItemView: View {
     /// renders the card read-only rather than offering buttons with nothing
     /// behind them.
     var agentChatState: ((String) -> AgentChatCardState)? = nil
-    /// Answers a consent card: approve (optionally always-allowing the pair)
-    /// or decline. Goes to `POST /agent-chat/answer`, not into the timeline.
+    /// Answers a consent card: approve or decline, for this request only.
+    /// Goes to `POST /agent-chat/answer`, not into the timeline.
     var onAnswerAgentChat: ((_ eventID: String, _ request: AgentChatRequest,
-                             _ approve: Bool, _ alwaysAllow: Bool) -> Void)? = nil
+                             _ approve: Bool) -> Void)? = nil
     /// The conversation this row belongs to — tags live-output sessions in
     /// the shared store so chat teardown can suspend only its own sockets
     /// (`suspendSessions(in:)`). `nil` keeps previews/tests compiling.
@@ -259,10 +259,8 @@ struct TimelineItemView: View {
                 AgentChatRequestCard(
                     request: request,
                     state: agentChatState?(eventID) ?? .expired,
-                    onApprove: { alwaysAllow in
-                        onAnswerAgentChat?(eventID, request, true, alwaysAllow)
-                    },
-                    onDeny: { onAnswerAgentChat?(eventID, request, false, false) }
+                    onApprove: { onAnswerAgentChat?(eventID, request, true) },
+                    onDeny: { onAnswerAgentChat?(eventID, request, false) }
                 )
                 .frame(maxWidth: 360, alignment: .leading)
                 Spacer(minLength: 0)
