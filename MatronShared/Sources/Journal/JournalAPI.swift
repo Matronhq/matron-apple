@@ -6,8 +6,24 @@ public struct LoginResponse: Equatable, Sendable {
     public let userID: Int64
 }
 
+/// One of the user's agent boxes, as listed by `GET /snapshot`. Just
+/// identity and label — the full device row (lag, cursor, last seen) is
+/// `DeviceDTO` from `GET /devices`.
+public struct AgentDTO: Equatable, Sendable {
+    public let id: Int64
+    public let name: String
+
+    public init(id: Int64, name: String) {
+        self.id = id
+        self.name = name
+    }
+}
+
 public struct SnapshotResponse: Equatable, Sendable {
     public let conversations: [ConvoSummaryDTO]
+    /// The user's agent boxes, id → name. Empty on a server predating the
+    /// field, which simply means no chips.
+    public let agents: [AgentDTO]
     public let seq: Int64
 }
 
@@ -283,10 +299,18 @@ public actor JournalAPI {
                 lastTS: (c["last_ts"] as? NSNumber)?.int64Value,
                 // null for a normal conversation, the parent's id for a
                 // subagent child. Absent on servers predating sub-chats.
-                parentConvoID: c["parent_convo_id"] as? String
+                parentConvoID: c["parent_convo_id"] as? String,
+                // Which box manages this conversation. Absent on older
+                // servers -> nil -> no chip.
+                agentDeviceID: (c["agent_device_id"] as? NSNumber)?.int64Value
             )
         }
-        return SnapshotResponse(conversations: conversations,
+        let agents = (obj["agents"] as? [[String: Any]] ?? []).compactMap { a -> AgentDTO? in
+            guard let id = (a["device_id"] as? NSNumber)?.int64Value,
+                  let name = a["name"] as? String else { return nil }
+            return AgentDTO(id: id, name: name)
+        }
+        return SnapshotResponse(conversations: conversations, agents: agents,
                                 seq: (obj["seq"] as? NSNumber)?.int64Value ?? 0)
     }
 

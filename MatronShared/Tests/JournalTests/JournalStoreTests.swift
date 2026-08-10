@@ -700,4 +700,34 @@ final class JournalStoreTests: XCTestCase {
         XCTAssertEqual(try store.summaryEntries(convoID: "c1"), [])
     }
 
+    func testSnapshotAndConvoMetaRecordTheOwningBox() throws {
+        let store = try makeStore()
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "c1", title: "Fix the parser", sessionState: "running",
+                            lastSeq: 5, snippet: "", createdAt: 1, agentDeviceID: 7),
+            ConvoSummaryDTO(id: "c2", title: "No box", sessionState: "running",
+                            lastSeq: 6, snippet: "", createdAt: 1),
+        ], headSeq: 6)
+
+        XCTAssertEqual(try store.conversation(id: "c1")?.agentDeviceID, 7)
+        XCTAssertNil(try store.conversation(id: "c2")?.agentDeviceID)
+
+        // A later snapshot that omits the field must not clear what we know.
+        try store.refreshSummaries([
+            ConvoSummaryDTO(id: "c1", title: "Fix the parser", sessionState: "running",
+                            lastSeq: 7, snippet: "", createdAt: 1),
+        ])
+        XCTAssertEqual(try store.conversation(id: "c1")?.agentDeviceID, 7)
+
+        // A live convo_meta teaches the linkage for a convo we have never seen.
+        _ = try store.applyJournal(event(8, convo: "c3", type: "convo_meta",
+                                         payload: ["title": "Brand new", "agent_device_id": 9]))
+        XCTAssertEqual(try store.conversation(id: "c3")?.agentDeviceID, 9)
+
+        // Re-pointing IS allowed: a session resumed on another box legitimately
+        // changes owner, unlike parent_convo_id which is immutable.
+        _ = try store.applyJournal(event(9, convo: "c3", type: "convo_meta",
+                                         payload: ["title": "Brand new", "agent_device_id": 11]))
+        XCTAssertEqual(try store.conversation(id: "c3")?.agentDeviceID, 11)
+    }
 }
