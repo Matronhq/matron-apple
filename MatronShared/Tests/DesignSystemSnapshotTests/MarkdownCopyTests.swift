@@ -201,5 +201,48 @@ final class MarkdownCopyTests: XCTestCase {
         )
         XCTAssertEqual(convert(rebuilt).string, rendered.string)
     }
+
+    // MARK: - Copy override
+
+    private func makeCopyView(_ source: String) -> MessageCopyTextView {
+        let view = MessageCopyTextView()
+        view.markdownSource = source
+        view.textStorage?.setAttributedString(MarkdownAttributed.attributedString(for: source))
+        return view
+    }
+
+    func test_copy_fullSelection_copiesRawSourceVerbatim() {
+        let source = "First **bold**.\n\nSecond with [l](https://e.com)."
+        let view = makeCopyView(source)
+        view.setSelectedRange(NSRange(location: 0, length: view.textStorage!.length))
+
+        view.copy(nil)
+
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), source)
+        XCTAssertNotNil(NSPasteboard.general.data(forType: .rtf))
+    }
+
+    func test_copy_partialSelection_reconstructsMarkdown() {
+        let view = makeCopyView("plain **bold** tail")
+        let full = view.textStorage!.string as NSString
+        // Select from "bold" through "tail" — excludes the plain prefix.
+        let start = full.range(of: "bold").location
+        view.setSelectedRange(NSRange(location: start, length: full.length - start))
+
+        view.copy(nil)
+
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), "**bold** tail")
+    }
+
+    func test_copy_emptySelection_doesNotClearPasteboard() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString("sentinel", forType: .string)
+        let view = makeCopyView("hello")
+        view.setSelectedRange(NSRange(location: 0, length: 0))
+
+        view.copy(nil)
+
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), "sentinel")
+    }
 }
 #endif
