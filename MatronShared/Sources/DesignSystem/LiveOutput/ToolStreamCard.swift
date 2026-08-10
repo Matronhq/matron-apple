@@ -64,12 +64,50 @@ public struct ToolStreamCard: View {
         .padding(.vertical, 6)
     }
 
-    /// Full re-parse per text change: the timeline caps display text at
-    /// 64 KiB (JournalTimelineMapper.toolStreamText), so a stateful
-    /// incremental parse isn't worth carrying UI-side state for.
+    /// How much of the stream tail a COLLAPSED pane renders. The timeline
+    /// caps delivered text at 64 KiB (JournalTimelineMapper.toolStreamText),
+    /// and re-parsing + re-laying-out all of it on every append is what a
+    /// live command's card cost the main thread several times a second —
+    /// while the collapsed pane is 76pt tall and shows ~5 lines. 4 KiB is
+    /// hundreds of terminal lines, far more than the pane can scroll into
+    /// view before the next append lands. Expanding renders the full tail.
+    static let collapsedDisplayCapChars = 4096
+
+    /// The slice of `text` a collapsed pane renders: the last
+    /// `collapsedDisplayCapChars` characters, opened at a line boundary.
+    /// `cut` reports whether anything was dropped (the caller shows the
+    /// truncation notice). Internal + static so tests can pin the cap
+    /// and the line-boundary contract without a snapshot.
+    static func collapsedSlice(of text: String) -> (text: Substring, cut: Bool) {
+        guard text.count > collapsedDisplayCapChars else { return (text[...], false) }
+        var shown = text.suffix(collapsedDisplayCapChars)
+        // Drop the (almost certainly partial) first line so the cut never
+        // opens mid-word or inside a split ANSI escape sequence — but only
+        // when that line ends within the first few hundred characters.
+        // Terminal lines are short; a newline that far in means the tail is
+        // effectively one giant line, and trimming through it would throw
+        // away most (or, when the only newline is the final character, ALL)
+        // of the visible text (Bugbot, PR #130).
+        let scanEnd = shown.index(shown.startIndex, offsetBy: min(512, shown.count))
+        if let newline = shown[..<scanEnd].firstIndex(of: "\n") {
+            shown = shown[shown.index(after: newline)...]
+        }
+        return (shown, true)
+    }
+
+    /// Full re-parse per text change: a stateful incremental parse isn't
+    /// worth carrying UI-side state for at these sizes (collapsed 4 KiB,
+    /// expanded 64 KiB max).
     private var rendered: AttributedString {
+        var shown = text[...]
+        var cut = headTruncated
+        if !expanded {
+            let sliced = Self.collapsedSlice(of: text)
+            shown = sliced.text
+            cut = cut || sliced.cut
+        }
         var out = AttributedString()
-        if headTruncated {
+        if cut {
             var notice = AttributedString("… earlier output truncated\n")
             // Fixed dim gray, not semantic .secondary: the pane's palette is
             // hard-coded dark in both app themes, so a semantic color would
@@ -78,7 +116,7 @@ public struct ToolStreamCard: View {
             out += notice
         }
         var parser = AnsiSGRParser()
-        out += parser.append(text)
+        out += parser.append(String(shown))
         return out
     }
 }

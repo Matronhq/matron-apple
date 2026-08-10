@@ -923,91 +923,145 @@ private struct TimelineListContent: View, Equatable {
             // `windowedRows`, NOT `rows`: the window bounds how many rows
             // this eager stack lays out (see `ChatViewModel.windowedRows`).
             ForEach(viewModel.windowedRows) { row in
-                switch row {
-                case .separator(let date):
-                    DateSeparator(date: date)
-                        .id(row.id)
-                case .message(let item):
-                    if let child = subtaskChild(for: item) {
-                        // Bridge subtask indicator → tappable card opening
-                        // the child sub-chat (`chatDestination` routes the
-                        // child id to `SubChatView`). Keeps the row's
-                        // `.id(item.id)` so scroll anchors are unaffected.
-                        Group {
-                            if let onOpenSubChat {
-                                Button {
-                                    onOpenSubChat(child.id)
-                                } label: {
-                                    SubtaskLinkCard(title: child.title, isRunning: child.isRunning)
-                                }
-                            } else {
-                                NavigationLink(value: child.id) {
-                                    SubtaskLinkCard(title: child.title, isRunning: child.isRunning)
-                                }
+                // Subtask-indicator resolution stays in THIS body (it reads
+                // `stripViewModel.children`, which must keep its observation
+                // tracking here); the resolved child participates in the row
+                // wrapper's `==` so the card re-renders when the child's
+                // running state flips.
+                let child: SubChatSummary? = {
+                    if case .message(let item) = row { return subtaskChild(for: item) }
+                    return nil
+                }()
+                // Same anchor ids as before the wrapper: ITEM id for message
+                // rows (scroll anchors, TOC jumps and restores all target the
+                // item id, not `TimelineRow.id`'s `msg:` form), row id for
+                // separators.
+                let anchorID: String = {
+                    if case .message(let item) = row { return item.id }
+                    return row.id
+                }()
+                TimelineRowView(
+                    row: row,
+                    subtaskChild: child,
+                    viewModel: viewModel,
+                    onOpenSubChat: onOpenSubChat,
+                    onPreview: onPreview
+                )
+                .equatable()
+                .id(anchorID)
+            }
+        }
+        .scrollTargetLayout()
+        .padding(.vertical)
+    }
+}
+
+/// One timeline row, fenced behind `Equatable` so a stream commit that
+/// reassigns `windowedRows` re-evaluates ONLY the rows whose value
+/// actually changed (normally just the streaming tail row). Without this
+/// gate every commit re-ran body + layout for the whole 120–185-row
+/// eager window — the closure properties below made the ForEach content
+/// never memcmp-equal, so SwiftUI rebuilt the full view list up to 4×/s
+/// during a live turn, pegging the main thread (Mac 2026-08-10 spike
+/// samples; the iOS twin has the identical structure). See
+/// `MacTimelineRowView` in `MacChatView.swift` for the full invalidation
+/// contract: `subtaskChild` is resolved in the parent and compared in
+/// `==`; ask-user / agent-chat / image state is `@Observable`-tracked
+/// inside this row's own body, so Observation bypasses the gate.
+///
+/// `onOpenSubChat` presence (nil vs wired) picks Button vs
+/// NavigationLink for subtask cards — it's fixed for a given screen
+/// (parent chat vs sub-chat pane), so `==` ignoring it is safe.
+private struct TimelineRowView: View, Equatable {
+    let row: TimelineRow
+    let subtaskChild: SubChatSummary?
+    let viewModel: ChatViewModel
+    let onOpenSubChat: ((String) -> Void)?
+    let onPreview: (ChatView.AttachmentPreview) -> Void
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.row == rhs.row && lhs.subtaskChild == rhs.subtaskChild
+            && lhs.viewModel === rhs.viewModel
+    }
+
+    var body: some View {
+        switch row {
+        case .separator(let date):
+            DateSeparator(date: date)
+        case .message(let item):
+            if let child = subtaskChild {
+                // Bridge subtask indicator → tappable card opening
+                // the child sub-chat (`chatDestination` routes the
+                // child id to `SubChatView`).
+                Group {
+                    if let onOpenSubChat {
+                        Button {
+                            onOpenSubChat(child.id)
+                        } label: {
+                            SubtaskLinkCard(title: child.title, isRunning: child.isRunning)
+                        }
+                    } else {
+                        NavigationLink(value: child.id) {
+                            SubtaskLinkCard(title: child.title, isRunning: child.isRunning)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal)
+            } else {
+                TimelineItemView(
+                    item: item,
+                    resolveImage: { viewModel.image(for: $0) },
+                    onRetry: { id in viewModel.retrySend(itemID: id) },
+                    onTapImage: { img in
+                        onPreview(.image(img))
+                    },
+                    onTapFile: { mxc, filename in
+                        Task {
+                            if let url = await viewModel.writeTempFile(
+                                mxcURL: mxc, filename: filename
+                            ) {
+                                onPreview(.file(url, filename: filename))
                             }
                         }
-                        .buttonStyle(.plain)
-                        .padding(.horizontal)
-                        .id(item.id)
-                    } else {
-                    TimelineItemView(
-                        item: item,
-                        resolveImage: { viewModel.image(for: $0) },
-                        onRetry: { id in viewModel.retrySend(itemID: id) },
-                        onTapImage: { img in
-                            onPreview(.image(img))
-                        },
-                        onTapFile: { mxc, filename in
-                            Task {
-                                if let url = await viewModel.writeTempFile(
-                                    mxcURL: mxc, filename: filename
-                                ) {
-                                    onPreview(.file(url, filename: filename))
-                                }
-                            }
-                        },
-                        askViewModel: { viewModel.askViewModel(forPrompt: $0) },
-                        isPromptAnswered: { viewModel.isPromptAnswered($0) },
-                        answerSummary: { viewModel.answerSummary(forPrompt: $0) },
-                        agentChatState: { viewModel.agentChatState($0) },
-                        onAnswerAgentChat: { eventID, request, approve in
-                            Task {
-                                await viewModel.answerAgentChat(
-                                    eventID: eventID, request: request,
-                                    decision: approve ? .approve : .deny)
-                            }
-                        },
-                        convoID: viewModel.roomID
-                    )
-                        .id(item.id)
-                        // No `.onAppear` history trigger here: row
-                        // materialization is not evidence the user
-                        // scrolled anywhere (an eager stack mounts every
-                        // row immediately), so window extension is driven
-                        // solely by the scroll-geometry near-top check in
-                        // `ChatView`.
-                        // Copy only (Dan, 2026-08-03: no Share / View
-                        // source on the phone). An empty builder result
-                        // (non-text rows) presents no menu at all.
-                        .contextMenu {
-                            if case .text(let body, _) = item.kind {
-                                Button {
-                                    // Use the cross-platform helper from
-                                    // MatronDesignSystem so iOS and Mac stay
-                                    // on a single Pasteboard surface
-                                    // (QA finding #3).
-                                    Pasteboard.copy(body)
-                                } label: {
-                                    Label("Copy", systemImage: "doc.on.doc")
-                                }
-                            }
+                    },
+                    askViewModel: { viewModel.askViewModel(forPrompt: $0) },
+                    isPromptAnswered: { viewModel.isPromptAnswered($0) },
+                    answerSummary: { viewModel.answerSummary(forPrompt: $0) },
+                    agentChatState: { viewModel.agentChatState($0) },
+                    onAnswerAgentChat: { eventID, request, approve in
+                        Task {
+                            await viewModel.answerAgentChat(
+                                eventID: eventID, request: request,
+                                decision: approve ? .approve : .deny)
+                        }
+                    },
+                    convoID: viewModel.roomID
+                )
+                // No `.onAppear` history trigger here: row
+                // materialization is not evidence the user
+                // scrolled anywhere (an eager stack mounts every
+                // row immediately), so window extension is driven
+                // solely by the scroll-geometry near-top check in
+                // `ChatView`.
+                // Copy only (Dan, 2026-08-03: no Share / View
+                // source on the phone). An empty builder result
+                // (non-text rows) presents no menu at all.
+                .contextMenu {
+                    if case .text(let body, _) = item.kind {
+                        Button {
+                            // Use the cross-platform helper from
+                            // MatronDesignSystem so iOS and Mac stay
+                            // on a single Pasteboard surface
+                            // (QA finding #3).
+                            Pasteboard.copy(body)
+                        } label: {
+                            Label("Copy", systemImage: "doc.on.doc")
                         }
                     }
                 }
             }
         }
-        .scrollTargetLayout()
-        .padding(.vertical)
     }
 }
 

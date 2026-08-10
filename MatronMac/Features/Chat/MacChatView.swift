@@ -834,86 +834,145 @@ private struct MacTimelineListContent: View, Equatable {
             // drift.
             // `windowedRows`, NOT `rows` — see `ChatViewModel.windowedRows`.
             ForEach(viewModel.windowedRows) { row in
-                switch row {
-                case .separator(let date):
-                    DateSeparator(date: date)
-                        .id(row.id)
-                case .message(let item):
-                    if let child = subtaskChild(for: item) {
-                        // Bridge subtask indicator → tappable card opening
-                        // the child sub-chat pane. Keeps the row's
-                        // `.id(item.id)` so scroll anchors are unaffected.
-                        Button {
-                            onOpenSubChat(child.id)
-                        } label: {
-                            SubtaskLinkCard(title: child.title, isRunning: child.isRunning)
+                // Subtask-indicator resolution stays in THIS body (it reads
+                // `stripViewModel.children`, which must keep its observation
+                // tracking here); the resolved child participates in the row
+                // wrapper's `==` so the card re-renders when the child's
+                // running state flips.
+                let child: SubChatSummary? = {
+                    if case .message(let item) = row { return subtaskChild(for: item) }
+                    return nil
+                }()
+                // Same anchor ids as before the wrapper: ITEM id for message
+                // rows (scroll anchors, TOC jumps and restores all target the
+                // item id, not `TimelineRow.id`'s `msg:` form), row id for
+                // separators.
+                let anchorID: String = {
+                    if case .message(let item) = row { return item.id }
+                    return row.id
+                }()
+                MacTimelineRowView(
+                    row: row,
+                    subtaskChild: child,
+                    viewModel: viewModel,
+                    onOpenSubChat: onOpenSubChat,
+                    onPreviewImage: onPreviewImage
+                )
+                .equatable()
+                .id(anchorID)
+            }
+        }
+        .scrollTargetLayout()
+        .padding(.vertical)
+    }
+}
+
+/// One timeline row, fenced behind `Equatable` so a stream commit that
+/// reassigns `windowedRows` re-evaluates ONLY the rows whose value
+/// actually changed (normally just the streaming tail row). Without this
+/// gate every commit re-ran body + layout for the whole 120–185-row
+/// eager window — the closure properties below made the ForEach content
+/// never memcmp-equal, so SwiftUI rebuilt the full view list up to 4×/s
+/// during a live turn, pegging the main thread (2026-08-10 spike
+/// samples: AttributeGraph update + makeViewList + sizeThatFits ~100%
+/// of a 3s sample; conversation switches and scrolls queued behind it).
+///
+/// `==` deliberately ignores the closures (fresh values every parent
+/// eval, stable behavior — they only capture `viewModel`, compared by
+/// reference). Row state that lives OUTSIDE `row` still updates through
+/// the two channels the gate preserves:
+/// - `subtaskChild` is resolved in the parent (where
+///   `stripViewModel.children` observation lives) and participates in
+///   `==`, so indicator cards re-render when the child appears/finishes.
+/// - ask-user / agent-chat / image-resolution state is read from
+///   `@Observable` view-model storage inside THIS row's body (via the
+///   closures), so Observation invalidates the row directly, bypassing
+///   the parent-driven equality gate.
+private struct MacTimelineRowView: View, Equatable {
+    let row: TimelineRow
+    let subtaskChild: SubChatSummary?
+    let viewModel: ChatViewModel
+    let onOpenSubChat: (String) -> Void
+    let onPreviewImage: (Image) -> Void
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.row == rhs.row && lhs.subtaskChild == rhs.subtaskChild
+            && lhs.viewModel === rhs.viewModel
+    }
+
+    var body: some View {
+        switch row {
+        case .separator(let date):
+            DateSeparator(date: date)
+        case .message(let item):
+            if let child = subtaskChild {
+                // Bridge subtask indicator → tappable card opening
+                // the child sub-chat pane.
+                Button {
+                    onOpenSubChat(child.id)
+                } label: {
+                    SubtaskLinkCard(title: child.title, isRunning: child.isRunning)
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal)
+            } else {
+                MacTimelineItemView(
+                    item: item,
+                    resolveImage: { viewModel.image(for: $0) },
+                    onRetry: { id in viewModel.retrySend(itemID: id) },
+                    onTapImage: { img in
+                        onPreviewImage(img)
+                    },
+                    onTapFile: { mxc, filename in
+                        Task {
+                            if let url = await viewModel.writeTempFile(
+                                mxcURL: mxc, filename: filename
+                            ) {
+                                // Hand off to the system —
+                                // QuickLook / the user's
+                                // chosen app handles the
+                                // open. Stays inside the
+                                // SwiftUI surface (no
+                                // need for a sheet on
+                                // Mac since the OS shell
+                                // owns the open path).
+                                await MainActor.run {
+                                    NSWorkspace.shared.open(url)
+                                }
+                            }
                         }
-                        .buttonStyle(.plain)
-                        .padding(.horizontal)
-                        .id(item.id)
-                    } else {
-                    MacTimelineItemView(
-                        item: item,
-                        resolveImage: { viewModel.image(for: $0) },
-                        onRetry: { id in viewModel.retrySend(itemID: id) },
-                        onTapImage: { img in
-                            onPreviewImage(img)
-                        },
-                        onTapFile: { mxc, filename in
-                            Task {
-                                if let url = await viewModel.writeTempFile(
-                                    mxcURL: mxc, filename: filename
-                                ) {
-                                    // Hand off to the system —
-                                    // QuickLook / the user's
-                                    // chosen app handles the
-                                    // open. Stays inside the
-                                    // SwiftUI surface (no
-                                    // need for a sheet on
-                                    // Mac since the OS shell
-                                    // owns the open path).
-                                    await MainActor.run {
-                                        NSWorkspace.shared.open(url)
-                                    }
-                                }
-                            }
-                        },
-                        askViewModel: { viewModel.askViewModel(forPrompt: $0) },
-                        isPromptAnswered: { viewModel.isPromptAnswered($0) },
-                        answerSummary: { viewModel.answerSummary(forPrompt: $0) },
-                        agentChatState: { viewModel.agentChatState($0) },
-                        onAnswerAgentChat: { eventID, request, approve in
-                            Task {
-                                await viewModel.answerAgentChat(
-                                    eventID: eventID, request: request,
-                                    decision: approve ? .approve : .deny)
-                            }
-                        },
-                        convoID: viewModel.roomID
-                    )
-                        .id(item.id)
-                        // No `.onAppear` history trigger — an eager stack
-                        // mounts every row immediately; the near-top
-                        // geometry check in `MacChatView` owns extension.
-                        // Copy only (Dan, 2026-08-03: no Share / View
-                        // source, same as the iOS long-press menu). An
-                        // empty builder result (non-text rows) presents
-                        // no menu at all.
-                        .contextMenu {
-                            if case .text(let body, _) = item.kind {
-                                Button {
-                                    Pasteboard.copy(body)
-                                } label: {
-                                    Label("Copy", systemImage: "doc.on.doc")
-                                }
-                            }
+                    },
+                    askViewModel: { viewModel.askViewModel(forPrompt: $0) },
+                    isPromptAnswered: { viewModel.isPromptAnswered($0) },
+                    answerSummary: { viewModel.answerSummary(forPrompt: $0) },
+                    agentChatState: { viewModel.agentChatState($0) },
+                    onAnswerAgentChat: { eventID, request, approve in
+                        Task {
+                            await viewModel.answerAgentChat(
+                                eventID: eventID, request: request,
+                                decision: approve ? .approve : .deny)
+                        }
+                    },
+                    convoID: viewModel.roomID
+                )
+                // No `.onAppear` history trigger — an eager stack
+                // mounts every row immediately; the near-top
+                // geometry check in `MacChatView` owns extension.
+                // Copy only (Dan, 2026-08-03: no Share / View
+                // source, same as the iOS long-press menu). An
+                // empty builder result (non-text rows) presents
+                // no menu at all.
+                .contextMenu {
+                    if case .text(let body, _) = item.kind {
+                        Button {
+                            Pasteboard.copy(body)
+                        } label: {
+                            Label("Copy", systemImage: "doc.on.doc")
                         }
                     }
                 }
             }
         }
-        .scrollTargetLayout()
-        .padding(.vertical)
     }
 }
 
