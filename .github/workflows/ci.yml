@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+# All three jobs only build and test a checkout — none comments on a PR,
+# uploads a release, or otherwise writes back. Declaring read-only here
+# covers every job at once (cla.yml sets its own, wider, permissions).
+permissions:
+  contents: read
+
 jobs:
   shared-package-tests:
     runs-on: macos-15
