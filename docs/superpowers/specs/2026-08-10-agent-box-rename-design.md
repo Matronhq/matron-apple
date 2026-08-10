@@ -70,8 +70,13 @@ Two disconnected naming systems today:
 
 ### 1.4 One-time healing migration (option B)
 
-A schema-version-gated migration (same mechanism as existing journal
-migrations) rewrites `conversations.title` once:
+A one-time migration rewrites `conversations.title`. The journal's existing
+migrations are all idempotent column-presence checks (`PRAGMA table_info`),
+which cannot gate a *data* rewrite — an ungated pattern strip would re-run
+on every boot and could eventually eat an organic title that happens to
+match. `PRAGMA user_version` is unused across the repo, so this migration
+claims version 1: it runs when `user_version < 1` and sets it to 1
+afterwards, in the same transaction. The rewrite:
 
 - Strip `^X:hh ` where `X` is 1–12 non-space chars and `hh` is exactly two
   `[0-9a-zA-Z]` chars — the fallback/Gemini form (`DEV-:a3 Fix the thing`;
