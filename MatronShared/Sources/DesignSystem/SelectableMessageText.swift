@@ -37,6 +37,47 @@ public struct SelectableMessageText: View {
     }
 }
 
+/// The message-body text view: `MouseTrackingRescueTextView`'s tracking-loop
+/// protections plus markdown-preserving copy. `copy(_:)` is the single seam —
+/// ⌘C, the Edit menu, and the context menu all route through it for a
+/// non-editable text view.
+final class MessageCopyTextView: MouseTrackingRescueTextView {
+    /// Raw markdown source of the rendered message. A selection covering the
+    /// whole storage copies this verbatim (perfect fidelity, matching the
+    /// message context menu's Copy); partial selections reconstruct via
+    /// `MarkdownReconstruction`.
+    var markdownSource: String = ""
+
+    override func copy(_ sender: Any?) {
+        let range = selectedRange()
+        // Deterministic no-op on empty selection — `super.copy` with no
+        // selection has unspecified behavior and must not clear the
+        // pasteboard.
+        guard range.length > 0, let storage = textStorage else { return }
+
+        let markdown: String
+        if range == NSRange(location: 0, length: storage.length), !markdownSource.isEmpty {
+            markdown = markdownSource
+        } else {
+            markdown = MarkdownReconstruction.markdown(from: storage, in: range)
+        }
+
+        // Plain text carries the markdown; RTF carries the rendered look so
+        // rich-text targets keep formatting.
+        let selected = storage.attributedSubstring(from: range)
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.declareTypes([.rtf, .string], owner: nil)
+        if let rtf = selected.rtf(
+            from: NSRange(location: 0, length: selected.length),
+            documentAttributes: [:]
+        ) {
+            pasteboard.setData(rtf, forType: .rtf)
+        }
+        pasteboard.setString(markdown, forType: .string)
+    }
+}
+
 /// `NSViewRepresentable` wrapping the non-editable, selectable `NSTextView`.
 private struct SelectableTextViewRepresentable: NSViewRepresentable {
     let source: String
@@ -50,10 +91,12 @@ private struct SelectableTextViewRepresentable: NSViewRepresentable {
         // A bare text view (no enclosing scroll view) laid out at full
         // content height. `drawsBackground = false` lets the message-bubble
         // chrome show through; `textContainerInset = .zero` keeps our own
-        // paragraph metrics authoritative. `MouseTrackingRescueTextView`,
-        // not plain `NSTextView` — message bubbles are exactly where the
+        // paragraph metrics authoritative. `MessageCopyTextView` layers
+        // markdown-preserving copy on `MouseTrackingRescueTextView` — the
+        // rescue base matters because message bubbles are exactly where the
         // 2026-08-02 tracking-loop wedge hit (see that class's doc).
-        let textView = MouseTrackingRescueTextView()
+        let textView = MessageCopyTextView()
+        textView.markdownSource = source
         textView.isEditable = false
         textView.isSelectable = true
         textView.drawsBackground = false
@@ -73,6 +116,7 @@ private struct SelectableTextViewRepresentable: NSViewRepresentable {
     }
 
     func updateNSView(_ textView: NSTextView, context: Context) {
+        (textView as? MessageCopyTextView)?.markdownSource = source
         // Only touch the storage when the content actually changed (streaming
         // deltas re-emit the same view). Avoids needless relayout churn.
         if textView.textStorage?.string != attributed.string

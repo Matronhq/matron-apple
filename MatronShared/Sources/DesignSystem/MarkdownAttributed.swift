@@ -69,6 +69,11 @@ enum MarkdownAttributed {
         return built
     }
 
+    /// Custom attribute carrying `MarkdownRunSemantics` for copy-time
+    /// markdown reconstruction (`MarkdownReconstruction`). Inert for layout —
+    /// it must never influence rendering or measured size.
+    static let semanticsKey = NSAttributedString.Key("matron.markdown.semantics")
+
     /// Bounded, thread-safe memo — mirrors `MarkdownText.contentCache`
     /// (countLimit 400, evicts under memory pressure).
     private static let cache: NSCache<NSString, NSAttributedString> = {
@@ -185,6 +190,13 @@ enum MarkdownAttributed {
         // spans several runs (e.g. inline code inside it) keeps one
         // consistent paragraph style across all of them.
         var isFirstBlock = true
+        // Copy-time semantics state: each block boundary bumps the identity so
+        // reconstruction can tell adjacent same-kind blocks (consecutive list
+        // items) apart; the boundary "\n" carries the semantics of the block
+        // it TERMINATES, so the identity changes exactly at the next block's
+        // first character.
+        var blockIdentity = 0
+        var previousSemantics: MarkdownRunSemantics?
 
         for run in attributed.runs {
             let intent = run.presentationIntent
@@ -200,29 +212,52 @@ enum MarkdownAttributed {
             // paragraph (Dan, 2026-07-16).
             if previousIntent != nil, intent != previousIntent {
                 if !output.string.hasSuffix("\n") {
-                    output.append(NSAttributedString(string: "\n"))
+                    var separatorAttrs: [NSAttributedString.Key: Any] = [:]
+                    if let previousSemantics {
+                        // Block + identity ONLY — reusing the previous run's
+                        // full semantics would coalesce the separator into a
+                        // trailing styled/linked run at copy time, embedding
+                        // the newline inside the reconstructed delimiters
+                        // (`**docs\n**`) or minting a bogus newline link.
+                        separatorAttrs[Self.semanticsKey] = MarkdownRunSemantics(
+                            block: previousSemantics.block,
+                            blockIdentity: previousSemantics.blockIdentity,
+                            inline: [],
+                            link: nil
+                        )
+                    }
+                    output.append(NSAttributedString(string: "\n", attributes: separatorAttrs))
                 }
+                blockIdentity += 1
                 isFirstBlock = false
             }
             if intent != previousIntent, let marker = block.marker {
-                output.append(NSAttributedString(
-                    string: marker,
-                    attributes: runAttributes(block: block, inline: [], link: nil, isFirstBlock: isFirstBlock)
-                ))
+                var markerAttrs = runAttributes(block: block, inline: [], link: nil, isFirstBlock: isFirstBlock)
+                markerAttrs[Self.semanticsKey] = MarkdownRunSemantics(
+                    block: block, blockIdentity: blockIdentity, inline: [], link: nil
+                )
+                output.append(NSAttributedString(string: marker, attributes: markerAttrs))
             }
             previousIntent = intent
 
+            let semantics = MarkdownRunSemantics(
+                block: block,
+                blockIdentity: blockIdentity,
+                inline: MarkdownInlineFlags(run.inlinePresentationIntent ?? []),
+                link: run.link
+            )
+            previousSemantics = semantics
+
             let text = String(attributed[run.range].characters)
             guard !text.isEmpty else { continue }
-            output.append(NSAttributedString(
-                string: text,
-                attributes: runAttributes(
-                    block: block,
-                    inline: run.inlinePresentationIntent ?? [],
-                    link: run.link,
-                    isFirstBlock: isFirstBlock
-                )
-            ))
+            var attrs = runAttributes(
+                block: block,
+                inline: run.inlinePresentationIntent ?? [],
+                link: run.link,
+                isFirstBlock: isFirstBlock
+            )
+            attrs[Self.semanticsKey] = semantics
+            output.append(NSAttributedString(string: text, attributes: attrs))
         }
 
         // Never end on a newline: a message whose LAST block is a fenced code
@@ -356,11 +391,15 @@ enum MarkdownAttributed {
 
 /// The subset of block-level markdown structure this converter renders,
 /// distilled from a run's `PresentationIntent`. Carries the derived font size,
-/// colour, weight, and (for lists) the marker to prepend.
-private enum BlockKind {
+/// colour, weight, and (for lists) the marker to prepend. Internal (not
+/// private) so `MarkdownRunSemantics`/`MarkdownReconstruction` can reuse the
+/// same classification at copy time.
+enum BlockKind: Hashable {
     case paragraph
     case header(level: Int)
-    case codeBlock
+    /// `language` is the fence's language hint — presentation ignores it, but
+    /// copy-time reconstruction restores it onto the fence.
+    case codeBlock(language: String?)
     case blockQuote
     /// `ordinal` is `nil` for unordered items (renders "• ") and the 1-based
     /// number for ordered items (renders "N. ").
@@ -383,8 +422,8 @@ private enum BlockKind {
             case .header(let level):
                 self = .header(level: level)
                 return
-            case .codeBlock:
-                self = .codeBlock
+            case .codeBlock(let languageHint):
+                self = .codeBlock(language: languageHint)
                 return
             case .blockQuote:
                 self = .blockQuote
@@ -450,6 +489,68 @@ private enum BlockKind {
         guard case .listItem(let ordinal) = self else { return nil }
         if let ordinal { return "\(ordinal). " }
         return "\u{2022} "
+    }
+}
+
+// MARK: - Copy-time semantics
+
+/// Inline-style flags for one rendered run, mirrored from
+/// `InlinePresentationIntent` at build time for copy-time reconstruction.
+struct MarkdownInlineFlags: OptionSet, Hashable {
+    let rawValue: Int
+    static let bold = MarkdownInlineFlags(rawValue: 1 << 0)
+    static let italic = MarkdownInlineFlags(rawValue: 1 << 1)
+    static let code = MarkdownInlineFlags(rawValue: 1 << 2)
+    static let strikethrough = MarkdownInlineFlags(rawValue: 1 << 3)
+
+    init(rawValue: Int) { self.rawValue = rawValue }
+
+    init(_ intent: InlinePresentationIntent) {
+        var flags: MarkdownInlineFlags = []
+        if intent.contains(.stronglyEmphasized) { flags.insert(.bold) }
+        if intent.contains(.emphasized) { flags.insert(.italic) }
+        if intent.contains(.code) { flags.insert(.code) }
+        if intent.contains(.strikethrough) { flags.insert(.strikethrough) }
+        self = flags
+    }
+}
+
+/// Inert semantic annotation applied to every run of the rendered string so
+/// `MarkdownReconstruction` can rebuild markdown from a selection. Never
+/// carries visual attributes — layout must be identical with or without it.
+/// Value equality (`isEqual`/`hash`) is load-bearing: `SelectableMessageText`
+/// skips storage updates when the rebuilt string `isEqual(to:)` the current
+/// one, and each build creates fresh semantics objects.
+final class MarkdownRunSemantics: NSObject {
+    let block: BlockKind
+    /// Increments at each block boundary so two adjacent blocks of the same
+    /// kind (consecutive list items) stay distinguishable.
+    let blockIdentity: Int
+    let inline: MarkdownInlineFlags
+    let link: URL?
+
+    init(block: BlockKind, blockIdentity: Int, inline: MarkdownInlineFlags, link: URL?) {
+        self.block = block
+        self.blockIdentity = blockIdentity
+        self.inline = inline
+        self.link = link
+    }
+
+    override func isEqual(_ object: Any?) -> Bool {
+        guard let other = object as? MarkdownRunSemantics else { return false }
+        return block == other.block
+            && blockIdentity == other.blockIdentity
+            && inline == other.inline
+            && link == other.link
+    }
+
+    override var hash: Int {
+        var hasher = Hasher()
+        hasher.combine(block)
+        hasher.combine(blockIdentity)
+        hasher.combine(inline)
+        hasher.combine(link)
+        return hasher.finalize()
     }
 }
 #endif
