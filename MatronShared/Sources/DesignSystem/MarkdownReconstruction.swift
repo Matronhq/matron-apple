@@ -39,13 +39,26 @@ enum MarkdownReconstruction {
         }
 
         var output = ""
+        // `previous` tracks the last block of the previous unit, so the
+        // separator rules keep working across a table (whose cells render as
+        // one unit, not one block each).
         var previous: Block?
-        for block in blocks {
-            if let previous {
-                output += separator(from: previous, to: block)
+        for unit in units(from: blocks) {
+            switch unit {
+            case .single(let block):
+                if let previous {
+                    output += separator(from: previous, to: block)
+                }
+                output += render(block)
+                previous = block
+            case .table(let cells):
+                guard let first = cells.first else { continue }
+                if let previous {
+                    output += separator(from: previous, to: first)
+                }
+                output += renderTable(cells)
+                previous = cells.last
             }
-            output += render(block)
-            previous = block
         }
         return output
     }
@@ -64,6 +77,31 @@ enum MarkdownReconstruction {
         let kind: BlockKind
         let identity: Int
         var segments: [Segment]
+    }
+
+    /// A table's cells render together (they rebuild one pipe table), so
+    /// blocks are grouped before rendering.
+    private enum RenderUnit {
+        case single(Block)
+        /// Consecutive `tableCell` blocks, in document order.
+        case table([Block])
+    }
+
+    private static func units(from blocks: [Block]) -> [RenderUnit] {
+        var units: [RenderUnit] = []
+        for block in blocks {
+            if case .tableCell = block.kind {
+                if case .table(var cells)? = units.last {
+                    cells.append(block)
+                    units[units.count - 1] = .table(cells)
+                } else {
+                    units.append(.table([block]))
+                }
+            } else {
+                units.append(.single(block))
+            }
+        }
+        return units
     }
 
     // MARK: - Block rendering
@@ -115,6 +153,53 @@ enum MarkdownReconstruction {
             break
         }
         return text
+    }
+
+    /// Pipe-table markdown from consecutive cell blocks. Cells join by `row`;
+    /// a header row is followed by the delimiter row rebuilt from the cells'
+    /// carried alignments (left is markdown's default and stays plain `---`).
+    /// Best-effort like the rest of this file: a selection that misses the
+    /// header just has no delimiter row, and missing cells are simply absent.
+    private static func renderTable(_ cells: [Block]) -> String {
+        var lines: [String] = []
+        var currentRow: Int?
+        var currentCells: [String] = []
+        var headerAlignments: [TableAlignment]?
+
+        func flushRow() {
+            guard !currentCells.isEmpty else { return }
+            lines.append("| " + currentCells.joined(separator: " | ") + " |")
+            if let alignments = headerAlignments {
+                let delimiters = alignments.map { alignment -> String in
+                    switch alignment {
+                    case .left: return "---"
+                    case .center: return ":---:"
+                    case .right: return "---:"
+                    }
+                }
+                lines.append("| " + delimiters.joined(separator: " | ") + " |")
+                headerAlignments = nil
+            }
+            currentCells = []
+        }
+
+        for cell in cells {
+            guard case .tableCell(let row, _, let isHeader, _, let alignments) = cell.kind else { continue }
+            if row != currentRow {
+                flushRow()
+                currentRow = row
+            }
+            // A cell's segments include its terminator newline (same block
+            // identity as the cell's text), so the trims here are what keep
+            // cell text on one line.
+            currentCells.append(
+                trimTrailingNewlines(inlineMarkdown(cell.segments))
+                    .trimmingCharacters(in: .whitespaces)
+            )
+            if isHeader { headerAlignments = alignments }
+        }
+        flushRow()
+        return lines.joined(separator: "\n")
     }
 
     private static func trimTrailingNewlines(_ text: String) -> String {

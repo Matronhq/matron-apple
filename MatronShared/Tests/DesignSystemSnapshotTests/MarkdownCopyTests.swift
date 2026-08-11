@@ -222,6 +222,44 @@ final class MarkdownCopyTests: XCTestCase {
         XCTAssertEqual(convert(rebuilt).string, rendered.string)
     }
 
+    // MARK: - Reconstruction: tables
+
+    func test_reconstruct_fullTable_roundTripsPipesAndAlignment() {
+        let source = """
+        | Repo | PR |
+        | :--- | ---: |
+        | bridge | **215** |
+        | apple | 133 |
+        """
+        let attributed = MarkdownAttributed.attributedString(for: source)
+        let rebuilt = MarkdownReconstruction.markdown(
+            from: attributed, in: NSRange(location: 0, length: attributed.length))
+        XCTAssertEqual(rebuilt, """
+        | Repo | PR |
+        | --- | ---: |
+        | bridge | **215** |
+        | apple | 133 |
+        """)
+    }
+
+    func test_reconstruct_tableBetweenParagraphs_blankLineSeparated() {
+        let source = "Before.\n\n| A | B |\n| --- | --- |\n| c | d |\n\nAfter."
+        let attributed = MarkdownAttributed.attributedString(for: source)
+        let rebuilt = MarkdownReconstruction.markdown(
+            from: attributed, in: NSRange(location: 0, length: attributed.length))
+        XCTAssertEqual(rebuilt, "Before.\n\n| A | B |\n| --- | --- |\n| c | d |\n\nAfter.")
+    }
+
+    func test_reconstruct_partialTableSelection_bestEffortRows() {
+        let source = "| A | B |\n| --- | --- |\n| cc | dd |\n| ee | ff |"
+        let attributed = MarkdownAttributed.attributedString(for: source)
+        // Select from "cc" to the end — body rows only, no header.
+        let start = (attributed.string as NSString).range(of: "cc").location
+        let rebuilt = MarkdownReconstruction.markdown(
+            from: attributed, in: NSRange(location: start, length: attributed.length - start))
+        XCTAssertEqual(rebuilt, "| cc | dd |\n| ee | ff |")
+    }
+
     // MARK: - Copy override
 
     private func makeCopyView(_ source: String) -> MessageCopyTextView {

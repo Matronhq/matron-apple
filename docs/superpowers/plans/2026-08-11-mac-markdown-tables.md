@@ -424,7 +424,7 @@ git commit -m "feat(mac): render markdown tables as NSTextTable in the timeline"
 - Consumes: `BlockKind.tableCell` semantics laid down by Tasks 1–2.
 - Produces: `MarkdownReconstruction.markdown(from:in:)` emits pipe tables for table selections.
 
-- [ ] **Step 1: Write the failing tests** (match the file's existing reconstruction-test style — build via `MarkdownAttributed.attributedString(for:)`, reconstruct the full range or a `range(of:)`-derived subrange):
+- [x] **Step 1: Write the failing tests** (match the file's existing reconstruction-test style — build via `MarkdownAttributed.attributedString(for:)`, reconstruct the full range or a `range(of:)`-derived subrange):
 
 ```swift
 func test_reconstruct_fullTable_roundTripsPipesAndAlignment() {
@@ -466,12 +466,12 @@ func test_reconstruct_partialTableSelection_bestEffortRows() {
 
 Alignment note for the first test: a `:---` (left) column reconstructs as plain `---` — left is the default; only `center`/`right` carry colons. The expected string above encodes that choice.
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `cd MatronShared && swift test --filter MarkdownCopyTests`
 Expected: new tests FAIL (cells currently render as bare paragraphs).
 
-- [ ] **Step 3: Implement.** In `MarkdownReconstruction.markdown(from:in:)`, group the collected `blocks` into render units before the output loop:
+- [x] **Step 3: Implement.** In `MarkdownReconstruction.markdown(from:in:)`, group the collected `blocks` into render units before the output loop:
 
 ```swift
 private enum RenderUnit {
@@ -548,12 +548,12 @@ Rework the output loop to walk units: `.single` renders via the existing `render
 
 Also: the table-cell terminator newline runs (separator `"\n"`s carrying `tableCell` semantics with `inline: []`) arrive as segments of their cell's block — `trimTrailingNewlines` + `.trimmingCharacters(in: .whitespaces)` in `renderTable` strips them from cell text, which is why cell text needs no other newline handling.
 
-- [ ] **Step 4: Run the target tests**
+- [x] **Step 4: Run the target tests**
 
 Run: `cd MatronShared && swift test --filter 'MarkdownCopyTests|MarkdownAttributedTests'`
 Expected: ALL pass (existing reconstruction tests unaffected — non-table sources produce only `.single` units and take the old path).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add MatronShared/Sources/DesignSystem/MarkdownReconstruction.swift MatronShared/Tests/DesignSystemSnapshotTests/MarkdownCopyTests.swift
