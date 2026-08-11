@@ -11,10 +11,14 @@ import MatronModels
 public struct AgentCapacityRowContent: View {
     let capacity: BoxCapacity?
     let pending: Bool
+    /// Frozen clock for the reset captions, so snapshots are deterministic
+    /// (same idiom as `UsageBarsView.fixedNow`); nil = now.
+    let fixedNow: Date?
 
-    public init(capacity: BoxCapacity?, pending: Bool) {
+    public init(capacity: BoxCapacity?, pending: Bool, fixedNow: Date? = nil) {
         self.capacity = capacity
         self.pending = pending
+        self.fixedNow = fixedNow
     }
 
     public var body: some View {
@@ -37,7 +41,7 @@ public struct AgentCapacityRowContent: View {
     }
 
     private func limitRow(_ line: LimitLine) -> some View {
-        let reset = BoxCapacity.resetText(line.resetsAt)
+        let reset = BoxCapacity.resetText(line.resetsAt, now: fixedNow ?? Date())
         return HStack(spacing: 4) {
             Text(line.label)
                 .foregroundStyle(.secondary)
