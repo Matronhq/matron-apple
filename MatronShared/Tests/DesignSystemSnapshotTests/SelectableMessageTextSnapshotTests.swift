@@ -83,6 +83,46 @@ final class SelectableMessageTextSnapshotTests: XCTestCase {
         )
     }
 
+    /// A table-bearing message must be on TextKit 1 from the first layout, and
+    /// the text view must still sit exactly where SwiftUI placed it. TextKit 2
+    /// can't lay out `NSTextTable`, and AppKit's own fallback only fires once
+    /// the view is in a window — the re-size that follows keeps the view's TOP
+    /// edge, so its origin walks off the frame and the first rows are clipped
+    /// (origin.y was 64 in a 131pt frame before the fix).
+    @MainActor
+    func test_tableMessage_usesTextKit1AndKeepsItsFrame() {
+        let source = """
+        | Repo | PR |
+        | :--- | ---: |
+        | bridge | 215 |
+        | apple | 133 |
+        """
+        let attributed = MarkdownAttributed.attributedString(for: source)
+        let measured = MarkdownAttributed.size(for: attributed, source: source, width: 420)
+
+        let host = NSHostingView(
+            rootView: SelectableMessageText(source)
+                .frame(width: measured.width, height: measured.height)
+        )
+        host.frame = NSRect(origin: .zero, size: measured)
+        let window = NSWindow(
+            contentRect: host.frame,
+            styleMask: .borderless, backing: .buffered, defer: false
+        )
+        window.contentView = host
+        window.orderFrontRegardless()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.3))
+        defer { window.orderOut(nil) }
+
+        guard let textView = firstTextView(in: host) else {
+            return XCTFail("no NSTextView in SelectableMessageText hierarchy")
+        }
+        XCTAssertNil(textView.textLayoutManager, "table messages must render through TextKit 1")
+        XCTAssertEqual(textView.frame.origin.y, 0, accuracy: 0.5,
+                       "text view moved off its frame: \(textView.frame) in \(host.frame)")
+        XCTAssertEqual(renderedTextHeight(of: textView), measured.height, accuracy: 2)
+    }
+
     /// Laid-out text height through whichever TextKit engine the view is
     /// actually using — asking `layoutManager` first would silently convert a
     /// TextKit 2 view to TextKit 1 and mask the mismatch under test.

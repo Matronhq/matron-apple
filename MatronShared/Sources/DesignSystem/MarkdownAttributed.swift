@@ -77,6 +77,28 @@ enum MarkdownAttributed {
         return built
     }
 
+    /// True when `attributed` carries TextKit table blocks.
+    ///
+    /// `SelectableMessageText` uses this to opt its text view into TextKit 1
+    /// BEFORE the first layout. AppKit falls back to TextKit 1 on its own when
+    /// it meets table blocks, but only once the view is in a window and only
+    /// mid-layout: the view then re-sizes to the (correct, smaller) TextKit 1
+    /// height keeping its TOP edge fixed, which moves its origin out from
+    /// under the frame SwiftUI placed it at — the message draws above its
+    /// bubble and the first rows are clipped.
+    static func containsTable(_ attributed: NSAttributedString) -> Bool {
+        var found = false
+        attributed.enumerateAttribute(
+            .paragraphStyle, in: NSRange(location: 0, length: attributed.length)
+        ) { value, _, stop in
+            if let style = value as? NSParagraphStyle, !style.textBlocks.isEmpty {
+                found = true
+                stop.pointee = true
+            }
+        }
+        return found
+    }
+
     /// Custom attribute carrying `MarkdownRunSemantics` for copy-time
     /// markdown reconstruction (`MarkdownReconstruction`). Inert for layout —
     /// it must never influence rendering or measured size.

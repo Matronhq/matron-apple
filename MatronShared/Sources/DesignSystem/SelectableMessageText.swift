@@ -111,18 +111,35 @@ private struct SelectableTextViewRepresentable: NSViewRepresentable {
         // Links are clickable but the body is not editable.
         textView.isAutomaticLinkDetectionEnabled = false
         textView.displaysLinkToolTips = true
+        useTextKit1IfTabled(textView)
         textView.textStorage?.setAttributedString(attributed)
         return textView
     }
 
     func updateNSView(_ textView: NSTextView, context: Context) {
         (textView as? MessageCopyTextView)?.markdownSource = source
+        useTextKit1IfTabled(textView)
         // Only touch the storage when the content actually changed (streaming
         // deltas re-emit the same view). Avoids needless relayout churn.
         if textView.textStorage?.string != attributed.string
             || !(textView.textStorage?.isEqual(to: attributed) ?? false) {
             textView.textStorage?.setAttributedString(attributed)
         }
+    }
+
+    /// Switches a table-bearing text view to TextKit 1 up front. Touching
+    /// `layoutManager` is the documented opt-out from TextKit 2, and it must
+    /// happen before the view lays out: left to itself AppKit only falls back
+    /// once the view is in a window, and the re-size that follows keeps the
+    /// view's top edge — shifting its origin off the frame SwiftUI gave it
+    /// (body drawn above the bubble, first rows clipped). TextKit 2 cannot lay
+    /// out `NSTextTable` at all, so a windowless host (snapshot tests) would
+    /// otherwise render a table's cells as loose stacked lines.
+    /// Messages without tables keep today's TextKit 2 path untouched.
+    private func useTextKit1IfTabled(_ textView: NSTextView) {
+        guard textView.textLayoutManager != nil,
+              MarkdownAttributed.containsTable(attributed) else { return }
+        _ = textView.layoutManager
     }
 
     /// Exact size for the proposed width. Measured via `MarkdownAttributed`'s
