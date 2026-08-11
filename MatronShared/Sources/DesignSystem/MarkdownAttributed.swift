@@ -322,7 +322,12 @@ enum MarkdownAttributed {
                     cellBlock.setWidth(tableBorderWidth, type: .absoluteValueType, for: .border)
                     cellBlock.setBorderColor(.separatorColor)
                     cellBlock.setWidth(tableCellPadding, type: .absoluteValueType, for: .padding)
-                    if isHeader { cellBlock.backgroundColor = .controlBackgroundColor }
+                    // A label-colour tint, not `controlBackgroundColor`: bot
+                    // bubbles are pure white in light mode (`matronBubbleBot`),
+                    // where `controlBackgroundColor` is ALSO white — the shade
+                    // must be an overlay that reads on either appearance's
+                    // bubble.
+                    if isHeader { cellBlock.backgroundColor = .labelColor.withAlphaComponent(0.05) }
                     currentRowBlocks[row, default: []].append(cellBlock)
                     previousCell = (row, column)
 
