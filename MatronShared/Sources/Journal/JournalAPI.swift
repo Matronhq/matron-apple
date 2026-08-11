@@ -99,6 +99,16 @@ public enum AgentChatDecision: String, Equatable, Sendable, Codable {
     case deny
 }
 
+/// The user's answer to an agent-spawn consent card. Mirrors the `decision`
+/// field of `POST /agent-spawn/answer`. Its own type rather than a shared one
+/// with `AgentChatDecision`: the two cards answer different endpoints with
+/// different keys, and a single enum would make it easy to hand one card's
+/// decision to the other's call.
+public enum AgentSpawnDecision: String, Equatable, Sendable, Codable {
+    case approve
+    case deny
+}
+
 /// One row of `GET /agent-chat/pending` — an agent's request to chat that is
 /// parked waiting on this user. The durable form of the consent card, for
 /// asks that arrived while no client was connected.
@@ -468,6 +478,25 @@ public actor JournalAPI {
                 "decision": decision.rawValue,
             ])
         return obj["delivered"] as? Bool ?? false
+    }
+
+    /// Answers one parked agent-spawn ask. The ONLY path that resolves a
+    /// spawn consent card — and it takes just the request id, because the
+    /// server keys the parked row on nothing else.
+    ///
+    /// The body is EXACTLY `{request_id, decision}`. There is no standing
+    /// consent to grant and never has been: the server rejects an
+    /// `always_allow` key with a 400 rather than ignoring it, so sending one
+    /// would break the card's primary action outright.
+    ///
+    /// Throws `.conflict` (409) if the row is no longer awaiting an answer
+    /// (already answered here or elsewhere, or 24h expired) and `.notFound`
+    /// (404) if the request isn't this user's. The resolution itself arrives
+    /// separately, as a `spawn_outcome` event in the journal.
+    public func answerAgentSpawn(requestID: String, decision: AgentSpawnDecision) async throws {
+        _ = try await request(
+            path: "/agent-spawn/answer", method: "POST",
+            body: ["request_id": requestID, "decision": decision.rawValue])
     }
 
     /// The journal defaults an absent topic/justification to `""` rather than

@@ -363,8 +363,16 @@ public final class ChatViewModel {
         var last: TimelineItem.ID?
         var lastIsOwn = false
         var nextActivityLabel: String?
+        var nextSpawnOutcomes: [String: SpawnOutcome] = [:]
         currentDayInterval = nil
         for item in items {
+            // Spawn resolutions are collected in this same pass — they are
+            // ordinary visible rows, so this is a capture, never a `continue`.
+            // Later rows win: a request resolves exactly once, but a replayed
+            // duplicate must not resurrect an earlier state.
+            if case .spawnOutcomeRow(_, let outcome) = item.kind {
+                nextSpawnOutcomes[outcome.requestID] = outcome
+            }
             // The trailing activity indicator renders as a fixed footer
             // (below the scrollable timeline, above the composer), NOT a
             // row: as a row it became the scroll anchor during every bot
@@ -408,6 +416,11 @@ public final class ChatViewModel {
             }
             nextRows.append(.message(item))
         }
+        // Assign only on a real change: every committed snapshot runs this
+        // pass, and an unconditional write would invalidate every spawn card
+        // on screen through `@Observable` several times a second during a
+        // streaming turn.
+        if nextSpawnOutcomes != spawnOutcomes { self.spawnOutcomes = nextSpawnOutcomes }
         self.rows = nextRows
         self.firstRenderableItemID = first
         self.lastRenderableItemID = last
@@ -821,12 +834,36 @@ public final class ChatViewModel {
     /// persisted: a send that was interrupted should come back answerable.
     private var agentChatTransientStates: [String: AgentChatCardState] = [:]
 
+    /// Answers agent-spawn consent cards. Optional for the same reason
+    /// `agentChat` is: a card with no answerer renders read-only rather than
+    /// offering buttons that would do nothing.
+    private let agentSpawn: (any AgentSpawnAnswering)?
+
+    /// Spawn resolutions derived from the timeline, keyed by `request_id`.
+    /// Rebuilt from `items` on every snapshot (`applyDerivedRecompute`).
+    ///
+    /// This is the whole point of the spawn card, and the one deliberate
+    /// divergence from agent-chat: a spawn resolution is a durable journal
+    /// event (`spawn_outcome`), so the answered state is READ, not
+    /// remembered. Nothing here is persisted — a fresh view model, a
+    /// relaunch, or another device all derive the same state from the same
+    /// rows.
+    public private(set) var spawnOutcomes: [String: SpawnOutcome] = [:]
+
+    /// Live per-card state while an answer call is in flight, has failed, or
+    /// was settled by a 409. In-memory only, by design: an interrupted send
+    /// must come back answerable, and a real resolution comes from the
+    /// timeline rather than from here.
+    private var agentSpawnTransientStates: [String: AgentSpawnCardState] = [:]
+
     public init(roomID: String, timeline: TimelineService, media: MediaService,
-                agentChat: (any AgentChatAnswering)? = nil) {
+                agentChat: (any AgentChatAnswering)? = nil,
+                agentSpawn: (any AgentSpawnAnswering)? = nil) {
         self.roomID = roomID
         self.timeline = timeline
         self.media = media
         self.agentChat = agentChat
+        self.agentSpawn = agentSpawn
         let stored = UserDefaults.standard.stringArray(forKey: "matron.answeredPrompts.\(roomID)") ?? []
         self.answeredPromptIDs = Set(stored)
         self.agentChatAnswers = UserDefaults.standard
@@ -877,6 +914,69 @@ public final class ChatViewModel {
         agentChatTransientStates.removeValue(forKey: eventID)
         agentChatAnswers[eventID] = value
         UserDefaults.standard.set(agentChatAnswers, forKey: agentChatAnswersDefaultsKey)
+    }
+
+    // MARK: Agent-spawn consent cards
+
+    /// Render state for one spawn consent card. Precedence, and the reason
+    /// for it:
+    ///
+    /// 1. A `spawn_outcome` row for this `request_id` — the server's own
+    ///    durable word on how the ask ended. It outranks everything: a card
+    ///    answered on another device, or expired by the sweep, is history
+    ///    here too, with no local bookkeeping involved.
+    /// 2. The in-flight transient (`.sending`, a `.failed` message, or the
+    ///    synthetic resolution a 409 settles the card with).
+    /// 3. `.idle` — answerable — when an answerer is wired; otherwise a
+    ///    read-only resolved rendering, the same convention the agent-chat
+    ///    card uses: show the card, but never buttons with nothing behind
+    ///    them.
+    public func agentSpawnState(_ eventID: String, request: AgentSpawnRequest) -> AgentSpawnCardState {
+        if let outcome = spawnOutcomes[request.requestID] { return .resolved(outcome) }
+        if let transient = agentSpawnTransientStates[eventID] { return transient }
+        return agentSpawn == nil ? .resolved(.expired(requestID: request.requestID)) : .idle
+    }
+
+    /// Answers a spawn consent card — the ONLY path that resolves one.
+    ///
+    /// Deliberately records nothing on success: the card settles when the
+    /// journal's `spawn_outcome` event lands, which is also what makes the
+    /// resolution honest. Approving is not "approved and done" — the child
+    /// still has to start, and until it does (or fails) the card stays in
+    /// `.sending`.
+    ///
+    /// A 409 means the row stopped awaiting an answer between the card being
+    /// drawn and the tap (answered on another device, or expired); that is
+    /// not something the user can act on, so it settles the card with a
+    /// synthetic expired resolution — in memory, replaced the moment the
+    /// real outcome syncs.
+    ///
+    /// Rethrows `CancellationError` (having dropped the in-flight state so
+    /// the card comes back answerable); every other error settles into the
+    /// card itself.
+    public func answerAgentSpawn(
+        eventID: String, request: AgentSpawnRequest, decision: AgentSpawnDecision
+    ) async throws {
+        guard let agentSpawn, spawnOutcomes[request.requestID] == nil else { return }
+        if case .sending = agentSpawnState(eventID, request: request) { return }
+        agentSpawnTransientStates[eventID] = .sending
+        do {
+            try await agentSpawn.answerAgentSpawn(requestID: request.requestID, decision: decision)
+        } catch is CancellationError {
+            agentSpawnTransientStates.removeValue(forKey: eventID)
+            throw CancellationError()
+        } catch JournalAPIError.conflict {
+            agentSpawnTransientStates[eventID] = .resolved(.expired(requestID: request.requestID))
+        } catch {
+            agentSpawnTransientStates[eventID] = .failed(Self.describeAgentSpawnError(error))
+        }
+    }
+
+    /// Same copy as the agent-chat card's: the failures are the same three
+    /// server conditions, and a user who meets both cards should not be told
+    /// the same thing two different ways.
+    static func describeAgentSpawnError(_ error: Error) -> String {
+        describeAgentChatError(error)
     }
 
     static func describeAgentChatError(_ error: Error) -> String {

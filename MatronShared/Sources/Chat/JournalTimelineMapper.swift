@@ -52,6 +52,12 @@ public enum JournalTimelineMapper {
             // parked row. The tap did nothing and the ask expired 24h later.
             if let request = AgentChatRequest.parse(payload: payload) {
                 kind = .agentChatRequest(eventID: String(event.seq), request)
+            } else if let spawn = AgentSpawnRequest.parse(payload: payload) {
+                // The agent-spawn card, same story: no `description`, no
+                // `options`, and an answer that leaves over HTTP. An
+                // unanswerable spawn payload falls through to the generic
+                // branch below rather than drawing buttons that would 400.
+                kind = .agentSpawnRequest(eventID: String(event.seq), spawn)
             } else {
                 let description = payload["description"] as? String ?? "Permission request"
                 let optionValues = (payload["options"] as? [String]) ?? ["Allow", "Deny"]
@@ -60,6 +66,17 @@ public enum JournalTimelineMapper {
                     kind: .choice(options: optionValues.map { AskUserEvent.Option(id: $0, label: $0) },
                                   allowOther: false),
                     expiresAt: nil, replyChannel: .buttonResponse))
+            }
+
+        case JournalEventType.spawnOutcome:
+            // How a spawn request ended. Server-minted and agent-visible
+            // (unlike the card), so it replays like any other row — which is
+            // exactly what lets the card derive its resolved state from the
+            // timeline instead of remembering an answer locally.
+            if let outcome = SpawnOutcome.parse(payload: payload) {
+                kind = .spawnOutcomeRow(eventID: String(event.seq), outcome)
+            } else {
+                kind = .unknown(eventType: event.type)
             }
 
         case JournalEventType.promptReply:

@@ -68,6 +68,19 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         /// locally that this card was answered — the answer produces no
         /// journal event to read that back from.
         case agentChatRequest(eventID: String, AgentChatRequest)
+        /// The journal's agent-spawn consent card — one agent asking to start
+        /// another. Its own case for the same reasons as
+        /// `.agentChatRequest`: the answer goes over HTTP
+        /// (`POST /agent-spawn/answer`), and who is asking, on which box, in
+        /// which folder, to run what are the whole decision. `eventID` is the
+        /// journal seq — used to key the in-flight state only; the RESOLVED
+        /// state comes from `.spawnOutcomeRow` below, not from local memory.
+        case agentSpawnRequest(eventID: String, AgentSpawnRequest)
+        /// A `spawn_outcome` event — how a spawn request ended, journalled by
+        /// the server into the requesting conversation. Renders as a modest
+        /// status row, and is what makes the consent card's resolved state
+        /// derivable rather than remembered: every device sees the same row.
+        case spawnOutcomeRow(eventID: String, SpawnOutcome)
         /// Transient typing / tool-use indicator (matron-journal `activity`
         /// ephemeral). Not persisted and not part of history — appended as a
         /// trailing overlay row while the agent is thinking or running a

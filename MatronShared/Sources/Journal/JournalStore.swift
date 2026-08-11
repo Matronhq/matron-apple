@@ -569,7 +569,24 @@ public final class JournalStore: @unchecked Sendable {
             // string for the same event. A snapshot and a live frame must
             // not render the same row two different ways.
             if payload["kind"] as? String == "agent_chat" { return "🤝 Agent chat request" }
+            // The agent-spawn card is the same shape from the other side —
+            // no `description` either, and the server gives it its own line.
+            if payload["kind"] as? String == "agent_spawn" { return "🤝 Agent spawn request" }
             return "permission: " + String((payload["description"] as? String ?? "").prefix(100))
+        case JournalEventType.spawnOutcome:
+            // A resolution retires the card's snippet, so the chat list stops
+            // advertising a settled ask. The strings are duplicated from
+            // `SpawnOutcome.displayLine` (MatronEvents) on purpose:
+            // MatronJournal is a leaf module and does not depend on
+            // MatronEvents — the shared authority is the server's snippetOf,
+            // and both copies are pinned to it by test.
+            switch payload["outcome"] as? String ?? "" {
+            case "started": return "🚀 Spawned session started"
+            case "declined": return "🚫 Spawn declined"
+            case "expired": return "⌛ Spawn request expired"
+            case "failed": return "❌ Spawn failed"
+            default: return "[\(type)]"
+            }
         default:
             if let s = payload["snippet"] as? String { return String(s.prefix(120)) }
             return "[\(type)]"
