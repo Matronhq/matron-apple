@@ -1,12 +1,16 @@
 import XCTest
 @testable import MatronViewModels
 @testable import MatronJournal
+import MatronModels
 
 /// Recording fake for the New-Chat RPC surface. Replies are scripted per
 /// method; `agentRequest` throws when `rpcError` is set.
 final class FakeAgentRPCProvider: AgentRPCProviding, @unchecked Sendable {
     var devicesResult: Result<[DeviceDTO], JournalAPIError> = .success([])
     var replies: [String: RPCReply] = [:]   // keyed by method
+    /// `recent_folders` replies scripted per device, for the roster fan-out
+    /// (takes precedence over `replies`).
+    var repliesByDevice: [Int64: RPCReply] = [:]
     var rpcError: RPCRequestError?
 
     private(set) var requests: [(method: String, agentDeviceID: Int64, params: [String: Any])] = []
@@ -17,6 +21,7 @@ final class FakeAgentRPCProvider: AgentRPCProviding, @unchecked Sendable {
         let params = (try? JSONSerialization.jsonObject(with: paramsData)) as? [String: Any] ?? [:]
         requests.append((method, agentDeviceID, params))
         if let rpcError { throw rpcError }
+        if method == "recent_folders", let scripted = repliesByDevice[agentDeviceID] { return scripted }
         return replies[method] ?? .failure(code: "unknown_method", detail: nil)
     }
 }
@@ -170,6 +175,71 @@ final class NewChatViewModelTests: XCTestCase {
         _ = await (first, second)
         XCTAssertEqual(fake.requests.filter { $0.method == "start" }.count, 1,
                        "start must never double-fire — the relay has no dedup")
+    }
+
+    // MARK: Roster capacity fan-out
+
+    func test_load_fansOutToConnectedAgentsOnly() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([
+            agent(1, name: "a", connected: true),
+            agent(2, name: "b", connected: true),
+            agent(3, name: "c", connected: false),
+        ])
+        fake.repliesByDevice[1] = .ok(resultData: Data(#"{"folders":[],"account":{"email":"pat@yearbook.com"},"activity":{"live_sessions":2}}"#.utf8))
+        fake.repliesByDevice[2] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
+        let vm = NewChatViewModel(api: fake)
+        await vm.load()
+        await vm.capacityFanOutForTesting?.value
+        let fanned = fake.requests.filter { $0.method == "recent_folders" }.map(\.agentDeviceID).sorted()
+        XCTAssertEqual(fanned, [1, 2], "offline agents are never queried")
+        XCTAssertEqual(vm.capacities[1]?.accountEmail, "pat@yearbook.com")
+        XCTAssertEqual(vm.capacities[1]?.liveSessions, 2)
+        XCTAssertEqual(vm.capacities[2], BoxCapacity(liveSessions: nil, limitLines: [], accountEmail: nil))
+        XCTAssertTrue(vm.capacityPending.isEmpty)
+    }
+
+    func test_fanOut_oneFailingBoxDegradesAlone() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(1, name: "a", connected: true), agent(2, name: "b", connected: true)])
+        fake.repliesByDevice[1] = .ok(resultData: Data(#"{"folders":[],"activity":{"live_sessions":1}}"#.utf8))
+        fake.repliesByDevice[2] = .failure(code: "agent_unreachable", detail: nil)
+        let vm = NewChatViewModel(api: fake)
+        await vm.load()
+        await vm.capacityFanOutForTesting?.value
+        XCTAssertEqual(vm.capacities[1]?.liveSessions, 1)
+        XCTAssertNil(vm.capacities[2], "failed box has no capacity entry")
+        XCTAssertTrue(vm.capacityPending.isEmpty, "failure still clears pending")
+    }
+
+    func test_select_usesFannedFoldersWithoutSecondRPC() async {
+        let fake = FakeAgentRPCProvider()
+        let agents = [agent(1, name: "a", connected: true), agent(2, name: "b", connected: true)]
+        fake.devicesResult = .success(agents)
+        fake.repliesByDevice[1] = .ok(resultData: Data(#"{"folders":[{"path":"/w/app","last_used":100}]}"#.utf8))
+        fake.repliesByDevice[2] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
+        let vm = NewChatViewModel(api: fake)
+        await vm.load()
+        await vm.capacityFanOutForTesting?.value
+        let callsBefore = fake.requests.filter { $0.method == "recent_folders" }.count
+        await vm.select(agent: agents[0])
+        XCTAssertEqual(vm.folders.map(\.path), ["/w/app"])
+        XCTAssertEqual(fake.requests.filter { $0.method == "recent_folders" }.count, callsBefore,
+                       "cached folder list — no second RPC")
+    }
+
+    func test_select_fallsBackToLiveRPCWhenFanOutFailed() async {
+        let fake = FakeAgentRPCProvider()
+        let agents = [agent(1, name: "a", connected: true), agent(2, name: "b", connected: true)]
+        fake.devicesResult = .success(agents)
+        fake.repliesByDevice[1] = .failure(code: "agent_unreachable", detail: nil)
+        fake.repliesByDevice[2] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
+        let vm = NewChatViewModel(api: fake)
+        await vm.load()
+        await vm.capacityFanOutForTesting?.value
+        fake.repliesByDevice[1] = .ok(resultData: Data(#"{"folders":[{"path":"/late","last_used":1}]}"#.utf8))
+        await vm.select(agent: agents[0])
+        XCTAssertEqual(vm.folders.map(\.path), ["/late"], "live RPC fallback after failed fan-out")
     }
 
     func test_selectAgent_fromRoster() async {
