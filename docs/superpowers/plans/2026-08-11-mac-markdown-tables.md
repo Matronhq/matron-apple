@@ -571,7 +571,7 @@ git commit -m "feat(mac): reconstruct pipe tables on copy from the timeline"
 **Interfaces:**
 - Consumes: everything above via the public `SelectableMessageText`.
 
-- [ ] **Step 1: Add the snapshot test** (mirror `test_richMessage`'s use of `assertVariants(of:named:)`):
+- [x] **Step 1: Add the snapshot test** (mirror `test_richMessage`'s use of `assertVariants(of:named:)`):
 
 ```swift
 func test_tableMessage() {
@@ -591,17 +591,17 @@ func test_tableMessage() {
 }
 ```
 
-- [ ] **Step 2: Record the baseline** — run WITHOUT the skip flag so the new test records, then re-run to verify it passes against its own baseline:
+- [x] **Step 2: Record the baseline** — run WITHOUT the skip flag so the new test records, then re-run to verify it passes against its own baseline:
 
 Run: `cd MatronShared && swift test --filter SelectableMessageTextSnapshotTests/test_tableMessage`
 Expected: first run records (fails with "recorded"), second run PASSES. Inspect the recorded PNG (open it) — it must show a bordered 3-column table with a shaded bold header row, a centered middle column, a right-aligned third column, a styled link, and normal paragraphs above and below. If the render is visibly wrong (e.g. no borders, cells stacked vertically), STOP and report — do not commit a wrong-looking baseline.
 
-- [ ] **Step 3: Full-suite verification**
+- [x] **Step 3: Full-suite verification**
 
 Run: `cd MatronShared && MATRON_SKIP_SNAPSHOT_TESTS=1 swift test`
 Expected: 0 failures, and the log's executed-test count is at or above the pre-change count (do NOT let a grep pipeline mask a build failure — read the tail of the output).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add MatronShared/Tests/DesignSystemSnapshotTests

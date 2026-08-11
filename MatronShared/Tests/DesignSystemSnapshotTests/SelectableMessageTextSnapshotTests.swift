@@ -27,6 +27,22 @@ final class SelectableMessageTextSnapshotTests: XCTestCase {
         assertVariants(of: view, named: "richMessage")
     }
 
+    func test_tableMessage() {
+        let view = SelectableMessageText("""
+        Release status:
+
+        | Repo | PR | State |
+        | :--- | :---: | ---: |
+        | bridge | [#215](https://example.com) | **merged** |
+        | apple | #133 | open |
+
+        Merge order doesn't matter.
+        """)
+        .frame(width: 420)
+        .padding()
+        assertVariants(of: view, named: "tableMessage")
+    }
+
     /// Regression under test (Dan, 2026-07-16): long plan-style messages with
     /// markdown headings rendered with a big dead band at the BOTTOM of the
     /// bubble. The bubble height comes from `MarkdownAttributed.size` — a
