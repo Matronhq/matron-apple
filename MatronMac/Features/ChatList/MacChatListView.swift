@@ -490,7 +490,22 @@ struct MacChatListView: View {
                     return vmCache.subChatViewModels(
                         for: childID, parentConvoID: parent, deps: deps, session: session)
                 },
-                chatTitle: summary?.title ?? ""
+                chatTitle: summary?.title ?? "",
+                // "Open" on a started spawn: select the spawned room in the
+                // sidebar. `prepareConversation` first, exactly as the New
+                // Chat sheet does before navigating to a freshly-started
+                // conversation — the room may have no journal frames yet,
+                // and the detail column needs a row to render.
+                onOpenConversation: { roomID in
+                    // `@MainActor in` explicitly: `chatDetail(for:)` is not
+                    // an isolated context, so an unannotated Task would
+                    // resume off the main thread after the await and write
+                    // `selectedSummaryID` from there.
+                    Task { @MainActor in
+                        await deps.prepareConversation(for: session, id: roomID)
+                        selectedSummaryID = roomID
+                    }
+                }
             )
             .id(id)
         } else {
@@ -532,7 +547,8 @@ final class ChatVMCache {
         let mediaSvc = deps.mediaService(for: session)
         let pair = (
             chat: ChatViewModel(roomID: roomID, timeline: timelineSvc, media: mediaSvc,
-                                agentChat: deps.agentChatService(for: session)),
+                                agentChat: deps.agentChatService(for: session),
+                                agentSpawn: deps.agentSpawnService(for: session)),
             composer: ComposerViewModel(roomID: roomID, timeline: timelineSvc, commands: BotCommandCatalog.claudeBridge)
         )
         entries[roomID] = pair

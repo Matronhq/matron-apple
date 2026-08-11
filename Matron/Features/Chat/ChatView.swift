@@ -35,6 +35,11 @@ struct ChatView: View {
     /// placeholder. `wasBackgrounded` filters out `.inactive`↔`.active`
     /// blips (notification centre, etc.) so only a real resume triggers it.
     @Environment(\.scenePhase) private var scenePhase
+    /// Deep-link target for the "Open" affordance on a started spawn — the
+    /// same stack the sub-chat links push onto.
+    @Environment(\.chatNavigationPath) private var navigationPath
+    @Environment(\.appDependencies) private var deps
+    @Environment(\.currentSession) private var session
     @State private var wasBackgrounded = false
     /// Sticky "following the live tail" mode. `true` from open-at-tail
     /// until the user *deliberately drags away* (gesture phases via
@@ -155,6 +160,13 @@ struct ChatView: View {
                 guard !isFollowingTail, visibleRows.gestureCount == gesture else { return }
                 proxy.scrollTo(pin, anchor: .top)
             }
+        }
+    }
+
+    /// "Open" on a started spawn — push the room the child talks in.
+    private func openSpawnedRoom(_ roomID: String) {
+        Task { @MainActor in
+            await pushSpawnedRoom(roomID, path: navigationPath, deps: deps, session: session)
         }
     }
 
@@ -299,6 +311,7 @@ struct ChatView: View {
                         viewModel: viewModel,
                         stripViewModel: stripViewModel,
                         onOpenSubChat: nil,
+                        onOpenSpawnRoom: openSpawnedRoom,
                         onPreview: { attachmentPreview = $0 }
                     )
                     .equatable()
@@ -887,6 +900,10 @@ private struct TimelineListContent: View, Equatable {
     /// a plain push there would make back walk through prior siblings
     /// rather than return to the parent.
     let onOpenSubChat: ((String) -> Void)?
+    /// Pushes a spawned room onto this screen's navigation stack — the
+    /// "Open" affordance on a started spawn. Fixed per screen, like
+    /// `onOpenSubChat`, so `==` ignoring it is safe.
+    let onOpenSpawnRoom: ((String) -> Void)?
     let onPreview: (ChatView.AttachmentPreview) -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -945,6 +962,7 @@ private struct TimelineListContent: View, Equatable {
                     subtaskChild: child,
                     viewModel: viewModel,
                     onOpenSubChat: onOpenSubChat,
+                    onOpenSpawnRoom: onOpenSpawnRoom,
                     onPreview: onPreview
                 )
                 .equatable()
@@ -977,6 +995,11 @@ private struct TimelineRowView: View, Equatable {
     let subtaskChild: SubChatSummary?
     let viewModel: ChatViewModel
     let onOpenSubChat: ((String) -> Void)?
+    /// Opens a spawned room from a consent card / outcome row. Fixed for a
+    /// given screen like `onOpenSubChat` (so `==` ignoring it is safe), and
+    /// `nil` where there is nowhere to navigate — the affordance is then
+    /// omitted rather than drawn dead.
+    let onOpenSpawnRoom: ((String) -> Void)?
     let onPreview: (ChatView.AttachmentPreview) -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -1036,6 +1059,18 @@ private struct TimelineRowView: View, Equatable {
                                 decision: approve ? .approve : .deny)
                         }
                     },
+                    agentSpawnState: { viewModel.agentSpawnState($0, request: $1) },
+                    onAnswerAgentSpawn: { eventID, request, approve in
+                        Task {
+                            // `try?`: the only error that escapes is
+                            // cancellation, which the view model has already
+                            // handled by dropping the in-flight state.
+                            try? await viewModel.answerAgentSpawn(
+                                eventID: eventID, request: request,
+                                decision: approve ? .approve : .deny)
+                        }
+                    },
+                    onOpenSpawnRoom: onOpenSpawnRoom,
                     convoID: viewModel.roomID
                 )
                 // No `.onAppear` history trigger here: row
@@ -1124,6 +1159,8 @@ struct SubChatView: View {
     let fallbackTitle: String
 
     @Environment(\.chatNavigationPath) private var navigationPath
+    @Environment(\.appDependencies) private var deps
+    @Environment(\.currentSession) private var session
     @State private var attachmentPreview: ChatView.AttachmentPreview?
     /// Captured only to install `HorizontalOverflowLock` — the sub-chat
     /// timeline must be as wiggle-proof as the parent's (ChatView).
@@ -1184,6 +1221,7 @@ struct SubChatView: View {
                             viewModel: viewModel,
                             stripViewModel: stripViewModel,
                             onOpenSubChat: switchTo,
+                            onOpenSpawnRoom: openSpawnedRoom,
                             onPreview: { attachmentPreview = $0 }
                         )
                         Color.clear
@@ -1301,6 +1339,34 @@ struct SubChatView: View {
         else { return }
         navigationPath.wrappedValue = newPath
     }
+
+    /// "Open" on a started spawn, from a sub-chat's timeline — the spawned
+    /// room is a top-level conversation, so this PUSHES rather than
+    /// replacing the way sibling switching does.
+    private func openSpawnedRoom(_ roomID: String) {
+        Task { @MainActor in
+            await pushSpawnedRoom(roomID, path: navigationPath, deps: deps, session: session)
+        }
+    }
+}
+
+/// Pushes a spawned room onto the chat navigation stack.
+///
+/// `prepareConversation` first, for the same reason the New Chat sheet does
+/// it before navigating to a freshly-started conversation: the room may have
+/// no journal frames yet, and `chatDestination` needs a conversation row to
+/// resolve — without the placeholder the push lands on nothing.
+///
+/// A repeat tap on a card already at the top of the stack is a no-op rather
+/// than a second push of the same room.
+@MainActor
+private func pushSpawnedRoom(_ roomID: String, path: Binding<[String]>?,
+                             deps: AppDependencies?, session: UserSession?) async {
+    if let deps, let session {
+        await deps.prepareConversation(for: session, id: roomID)
+    }
+    guard let path, path.wrappedValue.last != roomID else { return }
+    path.wrappedValue.append(roomID)
 }
 
 /// The sub-chat viewer's mini-header: title + running spinner, model +

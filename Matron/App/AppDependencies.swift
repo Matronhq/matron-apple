@@ -286,6 +286,13 @@ final class AppDependencies {
         core(for: session).api
     }
 
+    /// Agent-spawn consent surface: answering the cards inline in a chat.
+    /// No settings-screen twin — a spawn's resolution is journalled, so
+    /// there is no parked-row list to poll.
+    func agentSpawnService(for session: UserSession) -> any AgentSpawnAnswering {
+        core(for: session).api
+    }
+
     /// Show-QR surface (Settings → Link a Device). Same session-scoped
     /// `JournalAPI` as the devices surface; protocol slice for testability.
     func deviceLinkService(for session: UserSession) -> any DeviceLinking {

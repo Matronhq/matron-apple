@@ -36,6 +36,15 @@ struct MacTimelineItemView: View {
     var agentChatState: ((String) -> AgentChatCardState)? = nil
     var onAnswerAgentChat: ((_ eventID: String, _ request: AgentChatRequest,
                              _ approve: Bool) -> Void)? = nil
+    /// Agent-spawn consent card — mirrors the iOS surface. `nil` renders the
+    /// card read-only; the request rides along because the card's resolved
+    /// state is keyed on the journal's `request_id`, not the row's seq.
+    var agentSpawnState: ((_ eventID: String, _ request: AgentSpawnRequest)
+                          -> AgentSpawnCardState)? = nil
+    var onAnswerAgentSpawn: ((_ eventID: String, _ request: AgentSpawnRequest,
+                              _ approve: Bool) -> Void)? = nil
+    /// Opens the room a started spawn talks in — mirrors the iOS surface.
+    var onOpenSpawnRoom: ((String) -> Void)? = nil
     /// The conversation this row belongs to — tags live-output sessions in
     /// the shared store so chat teardown can suspend only its own sockets
     /// (`suspendSessions(in:)`). `nil` keeps previews/tests compiling.
@@ -241,6 +250,45 @@ struct MacTimelineItemView: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel(Self.accessibilityLabel(
                 for: item, body: "Agent chat request. \(request.headline)"))
+
+        case .agentSpawnRequest(let eventID, let request):
+            // Same inline treatment as iOS: the decision belongs beside the
+            // ask, and its answer leaves over HTTP, not into the timeline.
+            HStack {
+                AgentSpawnRequestCard(
+                    request: request,
+                    state: agentSpawnState?(eventID, request)
+                        ?? .resolved(.expired(requestID: request.requestID)),
+                    onApprove: { onAnswerAgentSpawn?(eventID, request, true) },
+                    onDeny: { onAnswerAgentSpawn?(eventID, request, false) },
+                    onOpen: onOpenSpawnRoom
+                )
+                .frame(maxWidth: 360, alignment: .leading)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(Self.accessibilityLabel(
+                for: item, body: "Agent spawn request. \(request.headline)"))
+
+        case .spawnOutcomeRow(_, let outcome):
+            // How a spawn ended — a modest status line, not a card (see the
+            // iOS twin). On `started` the only thing left to do is go there.
+            HStack(spacing: 8) {
+                Text(outcome.displayLine)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let roomID = outcome.openableRoomID, let onOpenSpawnRoom {
+                    Button("Open") { onOpenSpawnRoom(roomID) }
+                        .font(.caption)
+                        .buttonStyle(.borderless)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 2)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Self.accessibilityLabel(for: item, body: outcome.displayLine))
 
         case .askUserAnswer:
             // `chat.matron.button_response` answers are bookkeeping for

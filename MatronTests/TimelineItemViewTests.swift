@@ -1,6 +1,7 @@
 import XCTest
 import MatronChat
 import MatronDesignSystem
+import MatronEvents
 import MatronModels
 @testable import Matron
 
@@ -113,6 +114,31 @@ final class TimelineItemViewTests: XCTestCase {
             )
             XCTAssertTrue(TimelineItemView.shouldRender(item),
                           "content kind \(kind) must render")
+        }
+    }
+
+    /// The agent-spawn consent card and its resolution are both visible
+    /// rows: the card is the ask itself, and the outcome row is where a
+    /// started spawn offers a way into the room it created. Neither may
+    /// join the hidden-kinds list.
+    func test_shouldRender_returnsTrue_forSpawnKinds() {
+        let request = AgentSpawnRequest(
+            requestID: "spawn-1", fromDeviceID: 4, fromName: "dev-2",
+            targetDeviceID: 7, targetName: "dev-6",
+            workdir: "/srv/app", task: "Rebase and push")
+        let outcome = SpawnOutcome(requestID: "spawn-1", outcome: "started", roomID: "room-9")
+        let kinds: [TimelineItem.Kind] = [
+            .agentSpawnRequest(eventID: "11", request),
+            .spawnOutcomeRow(eventID: "12", outcome),
+        ]
+        for kind in kinds {
+            let item = TimelineItem(
+                id: "k", sender: "journal",
+                timestamp: Date(timeIntervalSince1970: 0),
+                kind: kind, isOwn: false, sendState: .sent
+            )
+            XCTAssertTrue(TimelineItemView.shouldRender(item),
+                          "spawn kind \(kind) must render")
         }
     }
 }
