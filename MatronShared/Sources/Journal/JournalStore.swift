@@ -575,11 +575,13 @@ public final class JournalStore: @unchecked Sendable {
             return "permission: " + String((payload["description"] as? String ?? "").prefix(100))
         case JournalEventType.spawnOutcome:
             // A resolution retires the card's snippet, so the chat list stops
-            // advertising a settled ask. The strings are duplicated from
-            // `SpawnOutcome.displayLine` (MatronEvents) on purpose:
-            // MatronJournal is a leaf module and does not depend on
-            // MatronEvents — the shared authority is the server's snippetOf,
-            // and both copies are pinned to it by test.
+            // advertising a settled ask. These are byte-exact mirrors of the
+            // server's snippetOf strings — bare, no error-code suffix — so a
+            // locally-derived snippet never disagrees with a server-minted
+            // snapshot one. Deliberately NOT `SpawnOutcome.displayLine`
+            // (MatronEvents), whose richer copy (" — errorCode" on failures)
+            // is for the timeline row only; MatronJournal is a leaf module
+            // and could not import it anyway. Pinned to the server by test.
             switch payload["outcome"] as? String ?? "" {
             case "started": return "🚀 Spawned session started"
             case "declined": return "🚫 Spawn declined"
