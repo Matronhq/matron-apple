@@ -359,6 +359,12 @@ enum MarkdownAttributed {
             style.paragraphSpacing = headerSpacingAfter
         case .paragraph:
             style.paragraphSpacing = paragraphSpacing
+        case .tableCell:
+            // Row height comes from the cell block's padding, not paragraph
+            // spacing. The style that actually carries the cell's
+            // `textBlocks` is built in `build(from:)`, where the table
+            // instance is known.
+            style.paragraphSpacing = 0
         }
         return style
     }
@@ -389,6 +395,21 @@ enum MarkdownAttributed {
 
 // MARK: - Block classification
 
+/// Column alignment of a parsed table, mirrored from
+/// `PresentationIntent.TableColumn.Alignment` so `BlockKind` stays
+/// self-contained (and Hashable) for copy-time semantics.
+enum TableAlignment: Hashable {
+    case left, center, right
+
+    init(_ column: PresentationIntent.TableColumn) {
+        switch column.alignment {
+        case .center: self = .center
+        case .right: self = .right
+        default: self = .left
+        }
+    }
+}
+
 /// The subset of block-level markdown structure this converter renders,
 /// distilled from a run's `PresentationIntent`. Carries the derived font size,
 /// colour, weight, and (for lists) the marker to prepend. Internal (not
@@ -404,6 +425,13 @@ enum BlockKind: Hashable {
     /// `ordinal` is `nil` for unordered items (renders "• ") and the 1-based
     /// number for ordered items (renders "N. ").
     case listItem(ordinal: Int?)
+    /// One table cell. `row` is 0-based with the header row as row 0 (Apple
+    /// reports `tableHeaderRow` for the header and 1-based `tableRow` for
+    /// body rows, so the numbering lines up naturally). `columnCount` and
+    /// `alignments` ride on every cell so copy-time reconstruction can
+    /// rebuild the delimiter row from any selected cell.
+    case tableCell(row: Int, column: Int, isHeader: Bool,
+                   columnCount: Int, alignments: [TableAlignment])
 
     init(_ intent: PresentationIntent?) {
         guard let components = intent?.components else {
@@ -416,6 +444,12 @@ enum BlockKind: Hashable {
         var listOrdinal: Int?
         var isOrdered = false
         var sawListItem = false
+        // A cell's table components arrive as siblings (cell + row + table),
+        // so they accumulate across the loop instead of returning early.
+        var cellColumn: Int?
+        var cellRow: Int?
+        var isHeaderRow = false
+        var tableColumns: [PresentationIntent.TableColumn]?
 
         for component in components {
             switch component.kind {
@@ -433,9 +467,30 @@ enum BlockKind: Hashable {
                 listOrdinal = ordinal
             case .orderedList:
                 isOrdered = true
+            case .tableCell(let columnIndex):
+                cellColumn = columnIndex
+            case .tableHeaderRow:
+                cellRow = 0
+                isHeaderRow = true
+            case .tableRow(let rowIndex):
+                cellRow = rowIndex
+            case .table(let columns):
+                tableColumns = columns
             default:
                 break
             }
+        }
+
+        // Resolved before the list fallback: a cell that lost any of its three
+        // components (defensive — the parser always emits all of them) stays a
+        // paragraph rather than rendering half a table.
+        if let cellColumn, let cellRow, let tableColumns {
+            self = .tableCell(
+                row: cellRow, column: cellColumn, isHeader: isHeaderRow,
+                columnCount: tableColumns.count,
+                alignments: tableColumns.map(TableAlignment.init)
+            )
+            return
         }
 
         if sawListItem {
@@ -463,9 +518,10 @@ enum BlockKind: Hashable {
         }
     }
 
-    /// Headers render bold.
+    /// Headers — and a table's header row — render bold.
     var isBold: Bool {
         if case .header = self { return true }
+        if case .tableCell(_, _, let isHeader, _, _) = self { return isHeader }
         return false
     }
 

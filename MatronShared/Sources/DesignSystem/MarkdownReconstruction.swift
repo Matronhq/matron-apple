@@ -109,7 +109,9 @@ enum MarkdownReconstruction {
             if text.hasPrefix("\u{2022} ") {
                 text = "- " + text.dropFirst(2)
             }
-        case .paragraph, .codeBlock:
+        case .paragraph, .codeBlock, .tableCell:
+            // Cells are re-joined into pipe rows by `renderTable`; a cell that
+            // reaches here on its own renders as its bare text.
             break
         }
         return text

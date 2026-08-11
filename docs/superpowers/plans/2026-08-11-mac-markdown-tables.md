@@ -33,7 +33,7 @@
 **Interfaces:**
 - Produces: `BlockKind.tableCell(row: Int, column: Int, isHeader: Bool, columnCount: Int, alignments: [TableAlignment])` and `enum TableAlignment: Hashable { case left, center, right }` — Task 2 renders it, Task 3 reconstructs from it.
 
-- [ ] **Step 1: Write the failing tests** (semantics annotations are the observable surface for classification):
+- [x] **Step 1: Write the failing tests** (semantics annotations are the observable surface for classification):
 
 ```swift
 // MARK: - Tables
@@ -69,12 +69,12 @@ func test_tableCell_classifiedWithRowColumnHeader() {
 }
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `cd MatronShared && swift test --filter MarkdownAttributedTests/test_tableCell_classifiedWithRowColumnHeader`
 Expected: FAIL — cells currently classify as `.paragraph`.
 
-- [ ] **Step 3: Implement.** Add to `MarkdownAttributed.swift`, near `BlockKind`:
+- [x] **Step 3: Implement.** Add to `MarkdownAttributed.swift`, near `BlockKind`:
 
 ```swift
 /// Column alignment of a parsed table, mirrored from
@@ -147,12 +147,12 @@ Update the derived properties so the switch stays exhaustive and header cells re
 - `fontSize`, `foreground`, `marker`, `isCodeBlock`: fall into the existing defaults (base size, label, nil, false) — verify no `switch` without a default breaks.
 - `paragraphStyle(for:)` in `MarkdownAttributed`: add a `.tableCell` case with `style.paragraphSpacing = 0` (the real cell style with `textBlocks` is built in Task 2; this keeps the function total).
 
-- [ ] **Step 4: Run the target tests**
+- [x] **Step 4: Run the target tests**
 
 Run: `cd MatronShared && swift test --filter 'MarkdownAttributedTests|MarkdownCopyTests'`
 Expected: new test PASSES; all existing tests still pass (table sources previously fell to `.paragraph` — nothing else asserted on them).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add MatronShared/Sources/DesignSystem/MarkdownAttributed.swift MatronShared/Tests/DesignSystemSnapshotTests/MarkdownAttributedTests.swift

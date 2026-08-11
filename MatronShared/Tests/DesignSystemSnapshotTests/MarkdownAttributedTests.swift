@@ -272,5 +272,37 @@ final class MarkdownAttributedTests: XCTestCase {
         let plain = measure("hi", width: 600)
         XCTAssertGreaterThan(bold.width, plain.width)
     }
+
+    // MARK: - Tables
+
+    private let tableSource = """
+    | Repo | PR |
+    | :--- | ---: |
+    | bridge | **215** |
+    | apple | 133 |
+    """
+
+    func test_tableCell_classifiedWithRowColumnHeader() {
+        let attributed = convert(tableSource)
+        let headAttrs = attributes(of: attributed, atFirst: "Repo")
+        let headSemantics = headAttrs[MarkdownAttributed.semanticsKey] as? MarkdownRunSemantics
+        guard case .tableCell(let row, let column, let isHeader, let columnCount, let alignments) = headSemantics?.block else {
+            return XCTFail("header cell not classified as tableCell: \(String(describing: headSemantics?.block))")
+        }
+        XCTAssertEqual(row, 0)
+        XCTAssertEqual(column, 0)
+        XCTAssertTrue(isHeader)
+        XCTAssertEqual(columnCount, 2)
+        XCTAssertEqual(alignments, [.left, .right])
+
+        let bodyAttrs = attributes(of: attributed, atFirst: "133")
+        let bodySemantics = bodyAttrs[MarkdownAttributed.semanticsKey] as? MarkdownRunSemantics
+        guard case .tableCell(let bRow, let bColumn, let bHeader, _, _) = bodySemantics?.block else {
+            return XCTFail("body cell not classified as tableCell")
+        }
+        XCTAssertEqual(bRow, 2)
+        XCTAssertEqual(bColumn, 1)
+        XCTAssertFalse(bHeader)
+    }
 }
 #endif
