@@ -53,6 +53,14 @@ enum MarkdownAttributed {
     private static let headerSpacingBefore: CGFloat = 10
     private static let headerSpacingAfter: CGFloat = 6
 
+    /// Table chrome: hairline cell borders, compact padding, and the bottom
+    /// margin the LAST row carries so the table clears the following block
+    /// (a margin on the NSTextTable itself is ignored by layout — spike,
+    /// 2026-08-11).
+    private static let tableBorderWidth: CGFloat = 0.5
+    private static let tableCellPadding: CGFloat = 4
+    private static let tableBottomMargin: CGFloat = 8
+
     // MARK: - Public API
 
     /// Converts markdown `source` to a display-ready `NSAttributedString`.
@@ -198,9 +206,38 @@ enum MarkdownAttributed {
         var blockIdentity = 0
         var previousSemantics: MarkdownRunSemantics?
 
+        // In-progress table state. One `NSTextTable` spans consecutive
+        // `tableCell` blocks; cell coordinates that step BACKWARD mean a new
+        // markdown table started back-to-back with the previous one.
+        // `rowBlocks` remembers each row's cell blocks because the last row —
+        // the one that carries the table's bottom margin — isn't knowable
+        // until the table ends.
+        var currentTable: NSTextTable?
+        var currentRowBlocks: [Int: [NSTextTableBlock]] = [:]
+        var currentCellStyle: NSMutableParagraphStyle?
+        var previousCell: (row: Int, column: Int)?
+
+        // Closes the open table, if any. Mutating the cell blocks after their
+        // runs were appended is safe: the paragraph styles hold references to
+        // the block objects, and layout reads them long after `build` returns.
+        func endTable() {
+            if let lastRow = currentRowBlocks.keys.max() {
+                for cellBlock in currentRowBlocks[lastRow] ?? [] {
+                    cellBlock.setWidth(
+                        tableBottomMargin, type: .absoluteValueType, for: .margin, edge: .maxY
+                    )
+                }
+            }
+            currentTable = nil
+            currentRowBlocks = [:]
+            currentCellStyle = nil
+            previousCell = nil
+        }
+
         for run in attributed.runs {
             let intent = run.presentationIntent
             let block = BlockKind(intent)
+            let isNewBlock = intent != previousIntent
 
             // Block boundary: a new `presentationIntent` identity means a new
             // block. Separate it from the previous block with a newline (the
@@ -210,7 +247,7 @@ enum MarkdownAttributed {
             // text keeps the parser's trailing "\n", and doubling it rendered
             // an empty code-styled line between the block and the next
             // paragraph (Dan, 2026-07-16).
-            if previousIntent != nil, intent != previousIntent {
+            if previousIntent != nil, isNewBlock {
                 if !output.string.hasSuffix("\n") {
                     var separatorAttrs: [NSAttributedString.Key: Any] = [:]
                     if let previousSemantics {
@@ -226,12 +263,59 @@ enum MarkdownAttributed {
                             link: nil
                         )
                     }
+                    // After a cell this newline is that cell's paragraph
+                    // TERMINATOR: TextKit only binds a paragraph to its table
+                    // block when the terminating newline carries the cell's
+                    // paragraph style too.
+                    if case .tableCell = previousSemantics?.block ?? .paragraph, let currentCellStyle {
+                        separatorAttrs[.paragraphStyle] = currentCellStyle
+                        separatorAttrs[.font] = font(size: baseFontSize)
+                    }
                     output.append(NSAttributedString(string: "\n", attributes: separatorAttrs))
                 }
                 blockIdentity += 1
                 isFirstBlock = false
             }
-            if intent != previousIntent, let marker = block.marker {
+            // Table bookkeeping is per BLOCK, not per run — a cell with inline
+            // styling arrives as several runs that must share one cell block.
+            if isNewBlock {
+                if case .tableCell(let row, let column, let isHeader, let columnCount, let alignments) = block {
+                    let table: NSTextTable
+                    let continues = previousCell.map { row > $0.row || (row == $0.row && column > $0.column) } ?? false
+                    if let open = currentTable, continues {
+                        table = open
+                    } else {
+                        endTable()
+                        table = NSTextTable()
+                        table.numberOfColumns = columnCount
+                        table.layoutAlgorithm = .automaticLayoutAlgorithm
+                        table.setContentWidth(100, type: .percentageValueType)
+                        currentTable = table
+                    }
+
+                    let cellBlock = NSTextTableBlock(
+                        table: table, startingRow: row, rowSpan: 1,
+                        startingColumn: column, columnSpan: 1
+                    )
+                    cellBlock.setWidth(tableBorderWidth, type: .absoluteValueType, for: .border)
+                    cellBlock.setBorderColor(.separatorColor)
+                    cellBlock.setWidth(tableCellPadding, type: .absoluteValueType, for: .padding)
+                    if isHeader { cellBlock.backgroundColor = .controlBackgroundColor }
+                    currentRowBlocks[row, default: []].append(cellBlock)
+                    previousCell = (row, column)
+
+                    let style = NSMutableParagraphStyle()
+                    style.textBlocks = [cellBlock]
+                    style.paragraphSpacing = 0
+                    if column < alignments.count {
+                        style.alignment = nsAlignment(alignments[column])
+                    }
+                    currentCellStyle = style
+                } else {
+                    endTable()
+                }
+            }
+            if isNewBlock, let marker = block.marker {
                 var markerAttrs = runAttributes(block: block, inline: [], link: nil, isFirstBlock: isFirstBlock)
                 markerAttrs[Self.semanticsKey] = MarkdownRunSemantics(
                     block: block, blockIdentity: blockIdentity, inline: [], link: nil
@@ -256,9 +340,35 @@ enum MarkdownAttributed {
                 link: run.link,
                 isFirstBlock: isFirstBlock
             )
+            // The cell's style carries its table block and column alignment;
+            // every run of the cell shares it.
+            if case .tableCell = block, let currentCellStyle {
+                attrs[.paragraphStyle] = currentCellStyle
+            }
             attrs[Self.semanticsKey] = semantics
             output.append(NSAttributedString(string: text, attributes: attrs))
         }
+
+        // A message ENDING in a table still needs its last cell's terminator,
+        // or that cell's paragraph never binds to its block and the row drops
+        // out of layout. Mirrors the block-boundary separator's attributes.
+        if case .tableCell = previousSemantics?.block ?? .paragraph,
+           let currentCellStyle, !output.string.hasSuffix("\n") {
+            var terminatorAttrs: [NSAttributedString.Key: Any] = [
+                .paragraphStyle: currentCellStyle,
+                .font: font(size: baseFontSize),
+            ]
+            if let previousSemantics {
+                terminatorAttrs[Self.semanticsKey] = MarkdownRunSemantics(
+                    block: previousSemantics.block,
+                    blockIdentity: previousSemantics.blockIdentity,
+                    inline: [],
+                    link: nil
+                )
+            }
+            output.append(NSAttributedString(string: "\n", attributes: terminatorAttrs))
+        }
+        endTable()
 
         // Never end on a newline: a message whose LAST block is a fenced code
         // block otherwise carries the parser's trailing "\n" into layout as
@@ -267,6 +377,10 @@ enum MarkdownAttributed {
         // end with a code block (Dan, 2026-07-16). Interior newlines are
         // untouched; only the string's tail is trimmed.
         while output.length > 0, output.string.hasSuffix("\n") {
+            let attrs = output.attributes(at: output.length - 1, effectiveRange: nil)
+            if let style = attrs[.paragraphStyle] as? NSParagraphStyle, !style.textBlocks.isEmpty {
+                break // table-cell terminator — structural, not dead space
+            }
             output.deleteCharacters(in: NSRange(location: output.length - 1, length: 1))
         }
 
@@ -367,6 +481,15 @@ enum MarkdownAttributed {
             style.paragraphSpacing = 0
         }
         return style
+    }
+
+    /// `NSTextAlignment` for a parsed column alignment.
+    private static func nsAlignment(_ alignment: TableAlignment) -> NSTextAlignment {
+        switch alignment {
+        case .left: return .left
+        case .center: return .center
+        case .right: return .right
+        }
     }
 
     /// Resolves an AppKit font for the requested traits. System font for body

@@ -171,7 +171,7 @@ git commit -m "feat(mac): classify markdown table cells in MarkdownAttributed"
 - Consumes: `BlockKind.tableCell` from Task 1.
 - Produces: rendered strings where every table-cell character's `.paragraphStyle` has `textBlocks == [NSTextTableBlock]` with correct geometry; header cells bold with cell background; the string for a table-terminated message ends in exactly one `"\n"`.
 
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
 
 ```swift
 private func tableBlock(
@@ -259,12 +259,12 @@ func test_size_tableSource_deterministicAndFillsWidth() {
 }
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `cd MatronShared && swift test --filter MarkdownAttributedTests`
 Expected: the new table tests FAIL (no textBlocks emitted yet); Task 1's classification test still passes.
 
-- [ ] **Step 3: Implement the table path in `build(from:)`.**
+- [x] **Step 3: Implement the table path in `build(from:)`.**
 
 Add styling constants next to the existing ones:
 
@@ -400,12 +400,12 @@ while output.length > 0, output.string.hasSuffix("\n") {
 }
 ```
 
-- [ ] **Step 4: Run the target tests**
+- [x] **Step 4: Run the target tests**
 
 Run: `cd MatronShared && swift test --filter 'MarkdownAttributedTests|MarkdownCopyTests'`
 Expected: ALL pass, including `test_output_neverEndsWithNewline` (non-table sources still trim fully) and the existing size tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add MatronShared/Sources/DesignSystem/MarkdownAttributed.swift MatronShared/Tests/DesignSystemSnapshotTests/MarkdownAttributedTests.swift

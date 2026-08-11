@@ -304,5 +304,89 @@ final class MarkdownAttributedTests: XCTestCase {
         XCTAssertEqual(bColumn, 1)
         XCTAssertFalse(bHeader)
     }
+
+    private func tableBlock(
+        _ attrs: [NSAttributedString.Key: Any],
+        file: StaticString = #filePath, line: UInt = #line
+    ) -> NSTextTableBlock? {
+        let style = attrs[.paragraphStyle] as? NSParagraphStyle
+        let block = style?.textBlocks.first as? NSTextTableBlock
+        if block == nil { XCTFail("no NSTextTableBlock on run", file: file, line: line) }
+        return block
+    }
+
+    func test_table_cellsCarryTableBlocks() {
+        let attributed = convert(tableSource)
+
+        guard let head = tableBlock(attributes(of: attributed, atFirst: "Repo")),
+              let body = tableBlock(attributes(of: attributed, atFirst: "133")) else { return }
+
+        XCTAssertEqual(head.table.numberOfColumns, 2)
+        XCTAssertEqual(head.startingRow, 0)
+        XCTAssertEqual(head.startingColumn, 0)
+        XCTAssertEqual(body.startingRow, 2)
+        XCTAssertEqual(body.startingColumn, 1)
+        // Same NSTextTable instance spans the whole table.
+        XCTAssertTrue(head.table === body.table)
+
+        // Header row: bold + cell background. Body row: neither.
+        let headFont = font(attributes(of: attributed, atFirst: "Repo"))
+        XCTAssertTrue(headFont.fontDescriptor.symbolicTraits.contains(.bold))
+        XCTAssertNotNil(head.backgroundColor)
+        let bodyFont = font(attributes(of: attributed, atFirst: "apple"))
+        XCTAssertFalse(bodyFont.fontDescriptor.symbolicTraits.contains(.bold))
+        XCTAssertNil(body.backgroundColor)
+    }
+
+    func test_table_columnAlignmentMapsToParagraphAlignment() {
+        let attributed = convert(tableSource) // columns are :--- and ---:
+        let left = attributes(of: attributed, atFirst: "bridge")[.paragraphStyle] as? NSParagraphStyle
+        let right = attributes(of: attributed, atFirst: "133")[.paragraphStyle] as? NSParagraphStyle
+        XCTAssertEqual(left?.alignment, .left)
+        XCTAssertEqual(right?.alignment, .right)
+    }
+
+    func test_table_lastRowCellsGetBottomMargin() {
+        let attributed = convert(tableSource + "\n\nAfter.")
+        guard let lastRow = tableBlock(attributes(of: attributed, atFirst: "apple")),
+              let firstRow = tableBlock(attributes(of: attributed, atFirst: "bridge")) else { return }
+        XCTAssertEqual(lastRow.width(for: .margin, edge: .maxY), 8)
+        XCTAssertEqual(firstRow.width(for: .margin, edge: .maxY), 0)
+    }
+
+    func test_messageEndingInTable_keepsSingleTerminatorNewline() {
+        let attributed = convert("Intro.\n\n" + tableSource)
+        XCTAssertTrue(attributed.string.hasSuffix("133\n"),
+                      "table cell terminator must survive the trailing trim: \(attributed.string.debugDescription)")
+        XCTAssertFalse(attributed.string.hasSuffix("\n\n"))
+        // The terminator itself is bound to the cell's table block.
+        let terminatorAttrs = attributed.attributes(at: attributed.length - 1, effectiveRange: nil)
+        XCTAssertNotNil((terminatorAttrs[.paragraphStyle] as? NSParagraphStyle)?.textBlocks.first)
+    }
+
+    func test_twoAdjacentTables_getSeparateTextTables() {
+        let two = tableSource + "\n\n" + "| X |\n| --- |\n| y |"
+        let attributed = convert(two)
+        guard let first = tableBlock(attributes(of: attributed, atFirst: "bridge")),
+              let second = tableBlock(attributes(of: attributed, atFirst: "y")) else { return }
+        XCTAssertFalse(first.table === second.table)
+        XCTAssertEqual(second.table.numberOfColumns, 1)
+    }
+
+    func test_inlineStylesInsideCells_keepAttributes() {
+        let attributed = convert(tableSource)
+        let bold = font(attributes(of: attributed, atFirst: "215"))
+        XCTAssertTrue(bold.fontDescriptor.symbolicTraits.contains(.bold))
+        // And still inside the table:
+        XCTAssertNotNil(tableBlock(attributes(of: attributed, atFirst: "215")))
+    }
+
+    func test_size_tableSource_deterministicAndFillsWidth() {
+        let attributed = convert(tableSource)
+        let a = MarkdownAttributed.size(for: attributed, source: tableSource, width: 400)
+        let b = MarkdownAttributed.size(for: attributed, source: tableSource, width: 400)
+        XCTAssertEqual(a, b)
+        XCTAssertGreaterThan(a.height, 0)
+    }
 }
 #endif
