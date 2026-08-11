@@ -26,7 +26,12 @@ intact — no view interleaving, no timeline layout changes.
 Spike-verified: an `NSTextTable`-backed attributed string lays out in the
 existing standalone TextKit-1 measurement stack (`NSLayoutManager` +
 `ensureLayout` + `usedRect`) and measures deterministically across repeated
-calls at multiple widths.
+calls at multiple widths. Also spike-verified: the live `NSTextView`
+(TextKit 2 by default) automatically falls back to TextKit 1 when its
+storage contains table blocks — `textLayoutManager` becomes nil at first
+layout — and the rendered height then matches the TK1 measurement exactly
+(132.0 == 132.0 in the spike). Messages containing a table therefore render
+wholly via TextKit 1; messages without tables keep today's TextKit 2 path.
 
 Rejected alternatives: interleaving SwiftUI grids between text segments
 (breaks single-drag selection — the reason this renderer exists — and
@@ -113,8 +118,11 @@ separates cells and bumps `blockIdentity` per cell. Table-specific handling:
 - Cell text: body size (`baseFontSize`), no paragraph spacing inside cells
   (`paragraphSpacing = 0` — row height comes from padding).
 - The table as a whole reads as one block: the block *after* a table gets
-  the normal `"\n"` separator, and the standard `paragraphSpacing` of the
-  last cell row provides the gap. A bubble containing a table spans the
+  the normal `"\n"` separator, and the gap below the table comes from an
+  8pt bottom **margin on the last row's cell blocks** (`setWidth(8, ...,
+  for: .margin, edge: .maxY)`). Spike-verified: a margin set on the
+  `NSTextTable` itself is ignored by layout; last-row cell margins measure
+  correctly (+8pt); cell `paragraphSpacing` only grows the cell interior. A bubble containing a table spans the
   available width (tables fill their container, like GitHub); that is
   accepted behaviour, not a bug.
 
