@@ -1,5 +1,6 @@
 #if os(macOS)
 import SwiftUI
+import MatronDesignSystem
 import MatronJournal
 import MatronModels
 import MatronViewModels
@@ -90,14 +91,28 @@ struct MacNewChatSheet: View {
                             .foregroundStyle(.secondary)
                             .frame(width: 22)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(agent.name.isEmpty ? "Unnamed agent" : agent.name)
-                                .fontWeight(.medium)
-                                .foregroundStyle(agent.connected ? .primary : .secondary)
+                            HStack(spacing: 6) {
+                                Text(agent.name.isEmpty ? "Unnamed agent" : agent.name)
+                                    .fontWeight(.medium)
+                                    .foregroundStyle(agent.connected ? .primary : .secondary)
+                                if let email = viewModel.capacities[agent.id]?.accountEmail {
+                                    Text(email)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                            }
                             Text(agent.connected
                                  ? "Connected"
                                  : "Offline · Last seen \(agent.lastSeenText())")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                            if agent.connected {
+                                AgentCapacityRowContent(
+                                    capacity: viewModel.capacities[agent.id],
+                                    pending: viewModel.capacityPending.contains(agent.id))
+                            }
                         }
                         Spacer()
                         if agent.connected {
@@ -112,7 +127,9 @@ struct MacNewChatSheet: View {
                 .disabled(!agent.connected)
             }
             .listStyle(.inset)
-            .frame(height: 200)
+            // Capacity makes the rows variable-height: grow with them up to
+            // a cap that keeps the sheet a sane size, then scroll.
+            .frame(minHeight: 200, maxHeight: 360)
             if !agents.contains(where: \.connected) {
                 Text("No agents connected — is the box awake?")
                     .font(.caption)
