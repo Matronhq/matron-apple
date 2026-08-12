@@ -43,4 +43,23 @@ final class BoxChipTests: XCTestCase {
         .padding(8)
         assertVariants(of: row, named: "BoxChip_colors")
     }
+
+    /// Every fixture name below hashes to a distinct palette index (0…9 in
+    /// order), so this baseline shows the entire palette — text legibility
+    /// over the tinted fill is reviewable for all ten hues in light, dark
+    /// and accessibility variants at once.
+    func testChipFullPaletteSnapshots() {
+        let names = ["dev-7", "romeo", "india", "charlie", "quebec",
+                     "delta", "lima", "alpha", "echo", "foxtrot"]
+        for (index, name) in names.enumerated() {
+            XCTAssertEqual(BoxChip.paletteIndex(for: name), index,
+                           "\(name) must pin palette index \(index)")
+        }
+        let grid = VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) { ForEach(names.prefix(5), id: \.self) { BoxChip($0) } }
+            HStack(spacing: 6) { ForEach(names.suffix(5), id: \.self) { BoxChip($0) } }
+        }
+        .padding(8)
+        assertVariants(of: grid, named: "BoxChip_palette")
+    }
 }
