@@ -44,6 +44,12 @@ final class BoxCapacityTests: XCTestCase {
         XCTAssertNil(c.liveSessions, "non-numeric live_sessions → nil")
     }
 
+    func test_parse_negativeLiveSessionsDropped() {
+        let c = BoxCapacity.parse(replyObject: obj(#"{"activity":{"live_sessions":-1}}"#))
+        XCTAssertNil(c.liveSessions, "a negative count is malformed — drop it, don't display it")
+        XCTAssertFalse(c.hasDisplayableData)
+    }
+
     func test_parse_percentClamped() {
         let c = BoxCapacity.parse(replyObject: obj(#"{"limits":{"lines":[{"id":"a","label":"A","percent":-5},{"id":"b","label":"B","percent":5000}]}}"#))
         XCTAssertEqual(c.limitLines.map(\.percent), [0, 999])

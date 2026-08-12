@@ -69,7 +69,11 @@ public struct BoxCapacity: Equatable, Sendable {
     /// already shows recent paths.
     public static func parse(replyObject: [String: Any]) -> BoxCapacity {
         let activity = replyObject["activity"] as? [String: Any]
+        // A negative count is malformed and would flip `hasDisplayableData`;
+        // drop it here rather than in `wholeNumber`, whose callers for
+        // `percent` clamp negatives instead.
         let liveSessions = wholeNumber(activity?["live_sessions"])
+            .flatMap { $0 >= 0 ? $0 : nil }
 
         let lines = ((replyObject["limits"] as? [String: Any])?["lines"] as? [[String: Any]]) ?? []
         let limitLines = lines.compactMap { line -> LimitLine? in
