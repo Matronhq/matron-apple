@@ -96,4 +96,39 @@ final class BoxCapacityTests: XCTestCase {
                        "later reset shows the date")
         XCTAssertNil(BoxCapacity.resetText(nil))
     }
+
+    // MARK: limitColumns(across:)
+
+    private func capacity(_ lines: [LimitLine]) -> BoxCapacity {
+        BoxCapacity(liveSessions: nil, limitLines: lines, accountEmail: nil)
+    }
+
+    func test_limitColumns_unionInFirstEncounterOrder() {
+        let a = capacity([
+            LimitLine(id: "session", label: "Current session", percent: 10, resetsAt: nil),
+            LimitLine(id: "week", label: "Current week (all models)", percent: 20, resetsAt: nil),
+        ])
+        let b = capacity([
+            LimitLine(id: "session", label: "Session (renamed)", percent: 30, resetsAt: nil),
+            LimitLine(id: "opus", label: "Current week (Opus)", percent: 40, resetsAt: nil),
+        ])
+        let columns = BoxCapacity.limitColumns(across: [a, b])
+        XCTAssertEqual(columns.map(\.id), ["session", "week", "opus"])
+        // Label comes from the first box that reported the line.
+        XCTAssertEqual(columns.map(\.label),
+                       ["Current session", "Current week (all models)", "Current week (Opus)"])
+    }
+
+    func test_limitColumns_duplicateIdsWithinOneBoxNotDuplicated() {
+        let a = capacity([
+            LimitLine(id: "session", label: "First", percent: 1, resetsAt: nil),
+            LimitLine(id: "session", label: "Second", percent: 2, resetsAt: nil),
+        ])
+        XCTAssertEqual(BoxCapacity.limitColumns(across: [a]).map(\.label), ["First"])
+    }
+
+    func test_limitColumns_emptyInEmptyOut() {
+        XCTAssertTrue(BoxCapacity.limitColumns(across: []).isEmpty)
+        XCTAssertTrue(BoxCapacity.limitColumns(across: [capacity([])]).isEmpty)
+    }
 }
