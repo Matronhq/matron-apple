@@ -40,10 +40,14 @@ struct MacNewChatSheet: View {
             listMaxHeight: min(max(windowSize.height * 0.6, 300), 650))
     }
 
-    init(deps: AppDependencies, session: UserSession, onCreated: @escaping (String) -> Void) {
+    private let layout: Layout
+
+    init(deps: AppDependencies, session: UserSession, windowSize: CGSize? = nil,
+         onCreated: @escaping (String) -> Void) {
         self.deps = deps
         self.session = session
         self.onCreated = onCreated
+        self.layout = Self.layout(for: windowSize)
         _viewModel = State(initialValue: NewChatViewModel(api: deps.agentRPCService(for: session)))
     }
 
@@ -73,7 +77,7 @@ struct MacNewChatSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 480)
+        .frame(width: layout.width)
         .task { await viewModel.load() }
         // Esc / window-close dismissal never touches the Cancel button;
         // anything that removes the sheet counts as abandoning the flow.
@@ -98,6 +102,13 @@ struct MacNewChatSheet: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, minHeight: 120)
         } else {
+            let columns = BoxCapacity.limitColumns(
+                across: agents.compactMap { viewModel.capacities[$0.id] })
+            // Header only when there is anything to head — a fleet of old
+            // bridges keeps today's plain, headerless picker.
+            if !viewModel.capacities.isEmpty || !viewModel.capacityPending.isEmpty {
+                MacAgentPickerHeader(columns: columns)
+            }
             List(agents) { agent in
                 Button {
                     Task { await viewModel.select(agent: agent) }
@@ -105,7 +116,8 @@ struct MacNewChatSheet: View {
                     MacAgentPickerRow(
                         agent: agent,
                         capacity: viewModel.capacities[agent.id],
-                        pending: viewModel.capacityPending.contains(agent.id))
+                        pending: viewModel.capacityPending.contains(agent.id),
+                        columns: columns)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -113,8 +125,8 @@ struct MacNewChatSheet: View {
             }
             .listStyle(.inset)
             // Capacity makes the rows variable-height: grow with them up to
-            // a cap that keeps the sheet a sane size, then scroll.
-            .frame(minHeight: 200, maxHeight: 360)
+            // the window-derived cap, then scroll.
+            .frame(minHeight: 200, maxHeight: layout.listMaxHeight)
             if !agents.contains(where: \.connected) {
                 Text("No agents connected — is the box awake?")
                     .font(.caption)
@@ -150,7 +162,7 @@ struct MacNewChatSheet: View {
             .disabled(viewModel.isStarting)
         }
         .listStyle(.inset)
-        .frame(height: 160)
+        .frame(minHeight: 160, maxHeight: layout.listMaxHeight)
         .overlay {
             if viewModel.folders.isEmpty && viewModel.foldersError == nil {
                 Text("No recent folders on \(agent.name).")
@@ -186,16 +198,25 @@ struct MacNewChatSheet: View {
     }
 }
 
-/// One machine row in the New Chat picker: name with the box's account
-/// email, the connection caption, and — for connected boxes — the capacity
-/// block. Split out of the sheet so a snapshot test can pin the real row
-/// against fixed state (the sheet itself would fire a live `.task` load).
+/// One machine row in the New Chat picker: the flexible box cell (icon,
+/// name + account email, connection caption) followed by fixed-width data
+/// cells — sessions, then one cell per fleet-wide usage column — so every
+/// row aligns under `MacAgentPickerHeader`. Split out of the sheet so a
+/// snapshot test can pin the real row against fixed state (the sheet
+/// itself would fire a live `.task` load).
 struct MacAgentPickerRow: View {
     let agent: DeviceDTO
     let capacity: BoxCapacity?
     let pending: Bool
-    /// Frozen clock for the capacity block's reset captions; nil = now.
+    /// Fleet-wide column set — same array for every row in the list.
+    let columns: [LimitColumn]
+    /// Frozen clock for the reset captions; nil = now.
     var fixedNow: Date?
+
+    /// Cell width contract shared with `MacAgentPickerHeader`.
+    static let sessionsCellWidth: CGFloat = 64
+    static let limitCellWidth: CGFloat = 108
+    static let chevronGutter: CGFloat = 12
 
     var body: some View {
         HStack(spacing: 10) {
@@ -220,18 +241,105 @@ struct MacAgentPickerRow: View {
                      : "Offline · Last seen \(agent.lastSeenText())")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            sessionsCell
+            ForEach(columns) { column in
+                limitCell(column)
+            }
+            Group {
                 if agent.connected {
-                    AgentCapacityRowContent(
-                        capacity: capacity, pending: pending, fixedNow: fixedNow)
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                } else {
+                    Color.clear
                 }
             }
-            Spacer()
-            if agent.connected {
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+            .frame(width: Self.chevronGutter)
+        }
+    }
+
+    /// "…" while the fan-out is in flight on a connected box; "—" for
+    /// offline boxes and old bridges that sent no capacity blocks.
+    private var placeholderText: String {
+        pending && agent.connected ? "…" : "—"
+    }
+
+    private var sessionsCell: some View {
+        Group {
+            if let live = capacity?.liveSessions {
+                Text("\(live)")
+                    .fontWeight(.medium)
+                    .monospacedDigit()
+            } else {
+                Text(placeholderText).foregroundStyle(.tertiary)
             }
         }
+        .font(.callout)
+        .frame(width: Self.sessionsCellWidth, alignment: .trailing)
+        .accessibilityLabel(sessionsAccessibilityLabel)
+    }
+
+    private var sessionsAccessibilityLabel: String {
+        guard let live = capacity?.liveSessions else { return "Sessions unknown" }
+        switch live {
+        case ...0: return "No active sessions"
+        case 1: return "1 active session"
+        default: return "\(live) active sessions"
+        }
+    }
+
+    private func limitCell(_ column: LimitColumn) -> some View {
+        let line = capacity?.limitLines.first { $0.id == column.id }
+        let reset = line.flatMap { BoxCapacity.resetText($0.resetsAt, now: fixedNow ?? Date()) }
+        return VStack(alignment: .trailing, spacing: 1) {
+            if let line {
+                Text("\(line.percent)%")
+                    .fontWeight(.medium)
+                    .monospacedDigit()
+                    .foregroundStyle(UsageMetersFormat.barColor(percent: line.percent))
+                if let reset {
+                    Text(reset)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            } else {
+                Text(placeholderText).foregroundStyle(.tertiary)
+            }
+        }
+        .font(.callout)
+        .frame(width: Self.limitCellWidth, alignment: .trailing)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            line.map { "\(column.label), \($0.percent) percent used" + (reset.map { ", \($0)" } ?? "") }
+                ?? "\(column.label), no data")
+    }
+}
+
+/// Column captions above the machine list, width-matched to the row cells.
+/// Rendered outside the `List` so it never scrolls away.
+struct MacAgentPickerHeader: View {
+    let columns: [LimitColumn]
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 10) {
+            Text("Machine")
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text("Sessions")
+                .frame(width: MacAgentPickerRow.sessionsCellWidth, alignment: .trailing)
+            ForEach(columns) { column in
+                Text(column.label)
+                    .multilineTextAlignment(.trailing)
+                    .lineLimit(2)
+                    .frame(width: MacAgentPickerRow.limitCellWidth, alignment: .trailing)
+            }
+            Color.clear.frame(width: MacAgentPickerRow.chevronGutter, height: 1)
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 10)
+        .accessibilityHidden(true)
     }
 }
 #endif

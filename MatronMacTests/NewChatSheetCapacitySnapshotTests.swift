@@ -30,23 +30,36 @@ final class NewChatSheetCapacitySnapshotTests: XCTestCase {
                           resetsAt: now.addingTimeInterval(4 * 86_400)),
             ],
             accountEmail: "pat@yearbook.com")
+        // Reports only one of the fleet's two lines — its other cell is "—".
+        let partial = BoxCapacity(
+            liveSessions: 0,
+            limitLines: [
+                LimitLine(id: "session", label: "Current session", percent: 92,
+                          resetsAt: now.addingTimeInterval(2 * 3600)),
+            ],
+            accountEmail: nil)
+        let columns = BoxCapacity.limitColumns(across: [full, partial])
 
         let view = VStack(alignment: .leading, spacing: 10) {
+            MacAgentPickerHeader(columns: columns)
             // 1. Everything the bridge can send.
             MacAgentPickerRow(agent: agent(1, "studio-mac", connected: true),
-                              capacity: full, pending: false, fixedNow: now)
-            // 2. Connected, capacity still in flight.
-            MacAgentPickerRow(agent: agent(2, "dev-2", connected: true),
-                              capacity: nil, pending: true, fixedNow: now)
-            // 3. Connected box on an old bridge — no capacity blocks at all.
-            MacAgentPickerRow(agent: agent(3, "old-bridge", connected: true),
-                              capacity: nil, pending: false, fixedNow: now)
-            // 4. Offline: unchanged by this feature.
-            MacAgentPickerRow(agent: agent(4, "sleeping-box", connected: false),
-                              capacity: nil, pending: false, fixedNow: now)
+                              capacity: full, pending: false, columns: columns, fixedNow: now)
+            // 2. Missing one fleet column → em-dash cell.
+            MacAgentPickerRow(agent: agent(2, "build-7", connected: true),
+                              capacity: partial, pending: false, columns: columns, fixedNow: now)
+            // 3. Connected, capacity still in flight.
+            MacAgentPickerRow(agent: agent(3, "dev-2", connected: true),
+                              capacity: nil, pending: true, columns: columns, fixedNow: now)
+            // 4. Connected box on an old bridge — no capacity blocks at all.
+            MacAgentPickerRow(agent: agent(4, "old-bridge", connected: true),
+                              capacity: nil, pending: false, columns: columns, fixedNow: now)
+            // 5. Offline: em-dash cells, caption unchanged.
+            MacAgentPickerRow(agent: agent(5, "sleeping-box", connected: false),
+                              capacity: nil, pending: false, columns: columns, fixedNow: now)
         }
         .padding(12)
-        .frame(width: 480)
+        .frame(width: 700)
         // Opaque, appearance-derived backdrop: `NSHostingView` has no window
         // here, so label colors resolve against the host app's appearance
         // while the snapshot canvas stays transparent — without this the

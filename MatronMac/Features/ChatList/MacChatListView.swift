@@ -284,7 +284,8 @@ struct MacChatListView: View {
             // previews / tests rendering when the environment isn't
             // populated.
             if let deps, let session {
-                MacNewChatSheet(deps: deps, session: session) { convoID in
+                MacNewChatSheet(deps: deps, session: session,
+                                windowSize: NSApp.keyWindow?.contentLayoutRect.size) { convoID in
                     showingNewChat = false
                     // Select the new chat; the newConversations auto-open
                     // (below) may deliver the same id when the convo_meta
