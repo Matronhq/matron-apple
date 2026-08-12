@@ -206,12 +206,22 @@ public final class NewChatViewModel {
         capacityFanOutForTesting?.cancel()
         capacityGeneration &+= 1
         let generation = capacityGeneration
-        capacityPending = Set(agentIDs)
+        let refreshing = Set(agentIDs)
+        capacityPending = refreshing
         // A reload re-asks every box, so last visit's folder lists are stale
         // from this moment: drop them rather than let `select(agent:)` serve
         // them before the new replies land — it falls back to a live
         // `recent_folders` when the cache is empty.
         folderCache.removeAll()
+        // Capacity, unlike folders, is deliberately stale-while-revalidate:
+        // the rows keep last-known numbers until the refresh answers, so
+        // coming back from the folder step doesn't collapse every three-line
+        // row to "Checking…" and grow it back a moment later. The honesty
+        // that buys is paid for at the other end — a leg that fails clears
+        // its entry (see `fetchCapacity`). Boxes this fan-out won't ask at
+        // all have nothing to revalidate with, so they go now: an offline
+        // box still renders the account email it reported last visit.
+        capacities = capacities.filter { refreshing.contains($0.key) }
         capacityFanOutForTesting = Task { [weak self] in
             await withTaskGroup(of: Void.self) { group in
                 for id in agentIDs {
@@ -222,8 +232,10 @@ public final class NewChatViewModel {
     }
 
     /// One box's fan-out leg. A failure, a timeout or an unparseable reply
-    /// all leave the row exactly as it was before (name + "Connected") —
-    /// capacity is a convenience, never a gate.
+    /// all leave the row at name + "Connected" — capacity is a convenience,
+    /// never a gate — which includes dropping anything this box told us on
+    /// an earlier visit: a box that just failed to answer is exactly the one
+    /// whose old numbers shouldn't be presented as live.
     private func fetchCapacity(agentID: Int64, generation: Int) async {
         let reply = try? await api.agentRequest(
             agentDeviceID: agentID, method: "recent_folders", paramsData: Data("{}".utf8))
@@ -233,7 +245,10 @@ public final class NewChatViewModel {
         capacityPending.remove(agentID)
         guard case .ok(let resultData) = reply,
               let obj = (try? JSONSerialization.jsonObject(with: resultData)) as? [String: Any]
-        else { return }
+        else {
+            capacities.removeValue(forKey: agentID)
+            return
+        }
         capacities[agentID] = BoxCapacity.parse(replyObject: obj)
         folderCache[agentID] = Self.parseFolders(resultData)
     }

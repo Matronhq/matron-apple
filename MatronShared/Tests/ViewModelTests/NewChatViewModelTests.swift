@@ -36,35 +36,80 @@ final class Gate: @unchecked Sendable {
 
 /// Recording fake for the New-Chat RPC surface. Replies are scripted per
 /// method; `agentRequest` throws when `rpcError` is set.
+///
+/// Every state access is lock-guarded because the roster fan-out calls
+/// `agentRequest` from several task-group children at once, off the main
+/// actor: an unsynchronised `requests.append` silently loses entries (it
+/// made `test_load_fansOutToConnectedAgentsOnly` fail roughly two runs in
+/// five, and TSan reports the access race).
 final class FakeAgentRPCProvider: AgentRPCProviding, @unchecked Sendable {
-    var devicesResult: Result<[DeviceDTO], JournalAPIError> = .success([])
-    var replies: [String: RPCReply] = [:]   // keyed by method
+    private let lock = NSLock()
+    private var _devicesResult: Result<[DeviceDTO], JournalAPIError> = .success([])
+    private var _replies: [String: RPCReply] = [:]
+    private var _repliesByDevice: [Int64: RPCReply] = [:]
+    private var _rpcError: RPCRequestError?
+    private var _gates: [Int64: Gate] = [:]
+    private var _arrivals: [Int64: Gate] = [:]
+    private var _requests: [(method: String, agentDeviceID: Int64, params: [String: Any])] = []
+
+    var devicesResult: Result<[DeviceDTO], JournalAPIError> {
+        get { lock.withLock { _devicesResult } }
+        set { lock.withLock { _devicesResult = newValue } }
+    }
+    /// Keyed by method.
+    var replies: [String: RPCReply] {
+        get { lock.withLock { _replies } }
+        set { lock.withLock { _replies = newValue } }
+    }
     /// `recent_folders` replies scripted per device, for the roster fan-out
     /// (takes precedence over `replies`).
-    var repliesByDevice: [Int64: RPCReply] = [:]
-    var rpcError: RPCRequestError?
+    var repliesByDevice: [Int64: RPCReply] {
+        get { lock.withLock { _repliesByDevice } }
+        set { lock.withLock { _repliesByDevice = newValue } }
+    }
+    var rpcError: RPCRequestError? {
+        get { lock.withLock { _rpcError } }
+        set { lock.withLock { _rpcError = newValue } }
+    }
     /// Parks the *next* `recent_folders` call for a device until the gate is
     /// opened; the reply is captured before parking, so re-scripting
     /// `repliesByDevice` meanwhile doesn't change what the parked leg
     /// eventually answers.
-    var gates: [Int64: Gate] = [:]
+    var gates: [Int64: Gate] {
+        get { lock.withLock { _gates } }
+        set { lock.withLock { _gates = newValue } }
+    }
     /// Opened when a gated call arrives, so a test can wait for the leg to
     /// actually be in flight instead of guessing at scheduling.
-    var arrivals: [Int64: Gate] = [:]
-
-    private(set) var requests: [(method: String, agentDeviceID: Int64, params: [String: Any])] = []
+    var arrivals: [Int64: Gate] {
+        get { lock.withLock { _arrivals } }
+        set { lock.withLock { _arrivals = newValue } }
+    }
+    var requests: [(method: String, agentDeviceID: Int64, params: [String: Any])] {
+        lock.withLock { _requests }
+    }
 
     func devices() async throws -> [DeviceDTO] { try devicesResult.get() }
 
     func agentRequest(agentDeviceID: Int64, method: String, paramsData: Data) async throws -> RPCReply {
         let params = (try? JSONSerialization.jsonObject(with: paramsData)) as? [String: Any] ?? [:]
-        requests.append((method, agentDeviceID, params))
-        if let rpcError { throw rpcError }
-        let reply = (method == "recent_folders" ? repliesByDevice[agentDeviceID] : nil)
-            ?? replies[method]
-            ?? .failure(code: "unknown_method", detail: nil)
-        if method == "recent_folders", let gate = gates.removeValue(forKey: agentDeviceID) {
-            arrivals[agentDeviceID]?.open()
+        let error = lock.withLock { () -> RPCRequestError? in
+            _requests.append((method, agentDeviceID, params))
+            return _rpcError
+        }
+        if let error { throw error }
+        let (reply, gate, arrival) = lock.withLock { () -> (RPCReply, Gate?, Gate?) in
+            let reply = (method == "recent_folders" ? _repliesByDevice[agentDeviceID] : nil)
+                ?? _replies[method]
+                ?? .failure(code: "unknown_method", detail: nil)
+            guard method == "recent_folders",
+                  let gate = _gates.removeValue(forKey: agentDeviceID) else { return (reply, nil, nil) }
+            return (reply, gate, _arrivals[agentDeviceID])
+        }
+        // Never hold the lock across the suspension — the test opens the
+        // gate from the main actor and would deadlock against it.
+        if let gate {
+            arrival?.open()
             await gate.wait()
         }
         return reply
@@ -285,6 +330,79 @@ final class NewChatViewModelTests: XCTestCase {
         fake.repliesByDevice[1] = .ok(resultData: Data(#"{"folders":[{"path":"/late","last_used":1}]}"#.utf8))
         await vm.select(agent: agents[0])
         XCTAssertEqual(vm.folders.map(\.path), ["/late"], "live RPC fallback after failed fan-out")
+    }
+
+    func test_reload_keepsLastKnownCapacityWhileTheRefreshIsInFlight() async {
+        let fake = FakeAgentRPCProvider()
+        let agents = [agent(1, name: "a", connected: true), agent(2, name: "b", connected: true)]
+        fake.devicesResult = .success(agents)
+        fake.repliesByDevice[1] = .ok(resultData: Data(#"{"folders":[],"activity":{"live_sessions":2},"account":{"email":"pat@yearbook.com"}}"#.utf8))
+        fake.repliesByDevice[2] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
+        let vm = NewChatViewModel(api: fake)
+        await vm.load()
+        await vm.capacityFanOutForTesting?.value
+
+        let gate = Gate(), arrived = Gate()
+        fake.gates[1] = gate
+        fake.arrivals[1] = arrived
+        await vm.backToAgents()
+        await arrived.wait()
+
+        // Stale-while-revalidate, on purpose: blanking the row to "Checking…"
+        // on every back-navigation would collapse a three-line row to one and
+        // grow it back a moment later.
+        XCTAssertEqual(vm.capacities[1]?.liveSessions, 2,
+                       "last-known capacity stays on the row while its refresh is in flight")
+        XCTAssertTrue(vm.capacityPending.contains(1))
+        gate.open()
+        await vm.capacityFanOutForTesting?.value
+    }
+
+    func test_reload_failedRefetchDropsTheStaleCapacity() async {
+        let fake = FakeAgentRPCProvider()
+        let agents = [agent(1, name: "a", connected: true), agent(2, name: "b", connected: true)]
+        fake.devicesResult = .success(agents)
+        fake.repliesByDevice[1] = .ok(resultData: Data(#"{"folders":[],"activity":{"live_sessions":2},"account":{"email":"pat@yearbook.com"}}"#.utf8))
+        fake.repliesByDevice[2] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
+        let vm = NewChatViewModel(api: fake)
+        await vm.load()
+        await vm.capacityFanOutForTesting?.value
+        XCTAssertNotNil(vm.capacities[1])
+
+        fake.repliesByDevice[1] = .failure(code: "agent_unreachable", detail: nil)
+        await vm.backToAgents()
+        await vm.capacityFanOutForTesting?.value
+
+        XCTAssertNil(vm.capacities[1],
+                     "a box that just failed to answer must not keep presenting last visit's numbers as live")
+        XCTAssertEqual(vm.capacities[2], BoxCapacity(liveSessions: nil, limitLines: [], accountEmail: nil),
+                       "the box that did answer is unaffected")
+    }
+
+    func test_reload_dropsCapacityForBoxesThatWentOffline() async {
+        let fake = FakeAgentRPCProvider()
+        // Three connected boxes so the reload still shows a roster — dropping
+        // to one would auto-skip straight to the folder step instead.
+        fake.devicesResult = .success([agent(1, name: "a", connected: true),
+                                       agent(2, name: "b", connected: true),
+                                       agent(3, name: "c", connected: true)])
+        fake.repliesByDevice[1] = .ok(resultData: Data(#"{"folders":[],"activity":{"live_sessions":2},"account":{"email":"pat@yearbook.com"}}"#.utf8))
+        fake.repliesByDevice[2] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
+        fake.repliesByDevice[3] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
+        let vm = NewChatViewModel(api: fake)
+        await vm.load()
+        await vm.capacityFanOutForTesting?.value
+
+        // Box 1 dropped off between visits, so no leg will ever refresh it —
+        // and the row's account email renders even when it's offline.
+        fake.devicesResult = .success([agent(1, name: "a", connected: false),
+                                       agent(2, name: "b", connected: true),
+                                       agent(3, name: "c", connected: true)])
+        await vm.backToAgents()
+        await vm.capacityFanOutForTesting?.value
+
+        XCTAssertNil(vm.capacities[1], "nothing will revalidate an offline box — drop what it told us last time")
+        XCTAssertNotNil(vm.capacities[2])
     }
 
     func test_reload_dropsCachedFoldersUntilTheNewFanOutAnswers() async {
