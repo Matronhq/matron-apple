@@ -27,11 +27,15 @@ Spike-verified: an `NSTextTable`-backed attributed string lays out in the
 existing standalone TextKit-1 measurement stack (`NSLayoutManager` +
 `ensureLayout` + `usedRect`) and measures deterministically across repeated
 calls at multiple widths. Also spike-verified: the live `NSTextView`
-(TextKit 2 by default) automatically falls back to TextKit 1 when its
-storage contains table blocks — `textLayoutManager` becomes nil at first
-layout — and the rendered height then matches the TK1 measurement exactly
-(132.0 == 132.0 in the spike). Messages containing a table therefore render
-wholly via TextKit 1; messages without tables keep today's TextKit 2 path.
+(TextKit 2 by default) will fall back to TextKit 1 on its own when its
+storage contains table blocks — `textLayoutManager` becomes nil — and the
+rendered height then matches the TK1 measurement exactly (132.0 == 132.0 in
+the spike). That automatic fallback is background behaviour only, not the
+path taken: it fires just once the view is in a window, and the re-layout it
+triggers keeps the view's top edge, shifting the view's origin off the frame
+SwiftUI gave it. `SelectableMessageText` therefore opts in explicitly, before
+first layout (see Scope). Messages containing a table render wholly via
+TextKit 1; messages without tables keep today's TextKit 2 path.
 
 Rejected alternatives: interleaving SwiftUI grids between text segments
 (breaks single-drag selection — the reason this renderer exists — and
@@ -44,10 +48,13 @@ Mac-only, all in `MatronShared`:
 
 - `Sources/DesignSystem/MarkdownAttributed.swift` — table conversion + styling
 - `Sources/DesignSystem/MarkdownReconstruction.swift` — copy-time pipe-table rebuild
+- `Sources/DesignSystem/SelectableMessageText.swift` — selects TextKit 1 for
+  table-bearing messages (`useTextKit1IfTabled`, called before the attributed
+  string is assigned in both `makeNSView` and `updateNSView`)
 - `Tests/DesignSystemSnapshotTests/` — unit + snapshot coverage
 
-No iOS, bridge, journal, or timeline-view changes. `SelectableMessageText`
-and `MacTimelineItemView` are untouched.
+No iOS, bridge, journal, or timeline-view changes. `MacTimelineItemView` is
+untouched.
 
 ## Design
 

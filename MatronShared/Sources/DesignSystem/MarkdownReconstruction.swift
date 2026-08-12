@@ -83,23 +83,32 @@ enum MarkdownReconstruction {
     /// blocks are grouped before rendering.
     private enum RenderUnit {
         case single(Block)
-        /// Consecutive `tableCell` blocks, in document order.
+        /// One table's `tableCell` blocks, in document order.
         case table([Block])
     }
 
+    /// Groups cells into tables on `BlockKind.tableCellContinues` — the same
+    /// rule the renderer uses to open a new `NSTextTable`. Adjacent tables
+    /// carry no separating block between them (the boundary newline is
+    /// annotated as the previous cell's), so consecutive-cell grouping alone
+    /// would fuse two rendered tables into one on copy.
     private static func units(from blocks: [Block]) -> [RenderUnit] {
         var units: [RenderUnit] = []
+        var previousCell: (row: Int, column: Int)?
         for block in blocks {
-            if case .tableCell = block.kind {
-                if case .table(var cells)? = units.last {
-                    cells.append(block)
-                    units[units.count - 1] = .table(cells)
-                } else {
-                    units.append(.table([block]))
-                }
-            } else {
+            guard case .tableCell(let row, let column, _, _, _) = block.kind else {
                 units.append(.single(block))
+                previousCell = nil
+                continue
             }
+            if case .table(var cells)? = units.last,
+               BlockKind.tableCellContinues((row, column), after: previousCell) {
+                cells.append(block)
+                units[units.count - 1] = .table(cells)
+            } else {
+                units.append(.table([block]))
+            }
+            previousCell = (row, column)
         }
         return units
     }
@@ -155,9 +164,10 @@ enum MarkdownReconstruction {
         return text
     }
 
-    /// Pipe-table markdown from consecutive cell blocks. Cells join by `row`;
-    /// a header row is followed by the delimiter row rebuilt from the cells'
-    /// carried alignments (left is markdown's default and stays plain `---`).
+    /// Pipe-table markdown from one table's cell blocks. Cells join by `row`;
+    /// a header row is followed by a delimiter row rebuilt from the alignments
+    /// carried by the header cells that were actually emitted (left is
+    /// markdown's default and stays plain `---`).
     /// Best-effort like the rest of this file: a selection that misses the
     /// header just has no delimiter row, and missing cells are simply absent.
     private static func renderTable(_ cells: [Block]) -> String {
@@ -184,7 +194,7 @@ enum MarkdownReconstruction {
         }
 
         for cell in cells {
-            guard case .tableCell(let row, _, let isHeader, _, let alignments) = cell.kind else { continue }
+            guard case .tableCell(let row, let column, let isHeader, _, let alignments) = cell.kind else { continue }
             if row != currentRow {
                 flushRow()
                 currentRow = row
@@ -196,7 +206,14 @@ enum MarkdownReconstruction {
                 trimTrailingNewlines(inlineMarkdown(cell.segments))
                     .trimmingCharacters(in: .whitespaces)
             )
-            if isHeader { headerAlignments = alignments }
+            // One delimiter per EMITTED header cell, not one per table column:
+            // a selection that clips the header row would otherwise produce a
+            // delimiter row wider than the header row it delimits. Out-of-range
+            // columns fall back to left, as the renderer does.
+            if isHeader {
+                let alignment = column < alignments.count ? alignments[column] : .left
+                headerAlignments = (headerAlignments ?? []) + [alignment]
+            }
         }
         flushRow()
         return lines.joined(separator: "\n")

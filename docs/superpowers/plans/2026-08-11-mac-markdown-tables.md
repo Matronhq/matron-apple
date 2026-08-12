@@ -4,7 +4,7 @@
 
 **Goal:** Render GFM pipe tables as real tables in the Mac timeline's selectable message renderer, with copy-time pipe-table reconstruction.
 
-**Architecture:** Extend `MarkdownAttributed` (Apple markdown parse → flat `NSAttributedString` in one `NSTextView`) with a `tableCell` block kind that emits TextKit `NSTextTable`/`NSTextTableBlock` paragraphs; extend `MarkdownReconstruction` to rebuild pipe tables from the new semantics. No view or timeline changes — the live `NSTextView` auto-falls-back to TextKit 1 for table-bearing strings and then matches the TK1 measurement exactly (spike-verified).
+**Architecture:** Extend `MarkdownAttributed` (Apple markdown parse → flat `NSAttributedString` in one `NSTextView`) with a `tableCell` block kind that emits TextKit `NSTextTable`/`NSTextTableBlock` paragraphs; extend `MarkdownReconstruction` to rebuild pipe tables from the new semantics. No timeline changes; the one view change is in `SelectableMessageText`, which calls `useTextKit1IfTabled` before assigning the attributed string so a table-bearing view is on TextKit 1 from its FIRST layout. Automatic fallback alone is not enough: AppKit only performs it once the view is in a window, and the re-layout that follows keeps the view's top edge, shifting its origin off the frame SwiftUI gave it (a windowless host — snapshot tests — never falls back at all). Once on TextKit 1 the rendered height matches the TK1 measurement exactly (spike-verified).
 
 **Tech Stack:** Swift / AppKit (TextKit 1 tables), XCTest + SnapshotTesting, SwiftPM (`MatronShared`).
 

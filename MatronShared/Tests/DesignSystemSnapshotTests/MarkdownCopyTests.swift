@@ -260,6 +260,33 @@ final class MarkdownCopyTests: XCTestCase {
         XCTAssertEqual(rebuilt, "| cc | dd |\n| ee | ff |")
     }
 
+    func test_reconstruct_adjacentTables_stayTwoTables() {
+        // Back-to-back tables: the renderer starts a second `NSTextTable` when
+        // cell coordinates step backward, so reconstruction must split there
+        // too — otherwise the copy is one table with a delimiter row wedged
+        // into the middle of its body.
+        let source = "| A | B |\n| --- | --- |\n| c | d |\n\n| X | Y |\n| --- | --- |\n| p | q |"
+        let attributed = MarkdownAttributed.attributedString(for: source)
+        let rebuilt = MarkdownReconstruction.markdown(
+            from: attributed, in: NSRange(location: 0, length: attributed.length))
+        XCTAssertEqual(
+            rebuilt,
+            "| A | B |\n| --- | --- |\n| c | d |\n\n| X | Y |\n| --- | --- |\n| p | q |"
+        )
+    }
+
+    func test_reconstruct_partialHeaderSelection_delimiterMatchesSelectedCells() {
+        // Only part of the header row is selected: the delimiter row must carry
+        // one entry per EMITTED header cell (and each one's own alignment), or
+        // the header and delimiter rows disagree and the output is not a table.
+        let source = "| A | B | C |\n| :--- | :---: | ---: |\n| 1 | 2 | 3 |"
+        let attributed = MarkdownAttributed.attributedString(for: source)
+        let start = (attributed.string as NSString).range(of: "B").location
+        let rebuilt = MarkdownReconstruction.markdown(
+            from: attributed, in: NSRange(location: start, length: attributed.length - start))
+        XCTAssertEqual(rebuilt, "| B | C |\n| :---: | ---: |\n| 1 | 2 | 3 |")
+    }
+
     // MARK: - Copy override
 
     private func makeCopyView(_ source: String) -> MessageCopyTextView {

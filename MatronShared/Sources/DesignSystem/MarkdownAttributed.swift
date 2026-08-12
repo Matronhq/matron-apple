@@ -303,7 +303,7 @@ enum MarkdownAttributed {
             if isNewBlock {
                 if case .tableCell(let row, let column, let isHeader, let columnCount, let alignments) = block {
                     let table: NSTextTable
-                    let continues = previousCell.map { row > $0.row || (row == $0.row && column > $0.column) } ?? false
+                    let continues = BlockKind.tableCellContinues((row, column), after: previousCell)
                     if let open = currentTable, continues {
                         table = open
                     } else {
@@ -666,6 +666,24 @@ enum BlockKind: Hashable {
         default:
             return MarkdownAttributed.baseFontSize
         }
+    }
+
+    /// Whether a cell at `cell` continues the table whose previous cell was at
+    /// `previous` (`nil` = no table open). Within one table cell coordinates
+    /// only ever ADVANCE, and every table starts at row 0 / column 0, so a
+    /// coordinate that steps backward is exactly the boundary between two
+    /// back-to-back markdown tables.
+    ///
+    /// Shared so the renderer (`NSTextTable` grouping) and copy-time
+    /// reconstruction (pipe-table grouping) split in the same places: when they
+    /// disagreed, copying across adjacent tables emitted one merged table with
+    /// a delimiter row wedged into its body.
+    static func tableCellContinues(
+        _ cell: (row: Int, column: Int), after previous: (row: Int, column: Int)?
+    ) -> Bool {
+        guard let previous else { return false }
+        return cell.row > previous.row
+            || (cell.row == previous.row && cell.column > previous.column)
     }
 
     /// Headers — and a table's header row — render bold.
