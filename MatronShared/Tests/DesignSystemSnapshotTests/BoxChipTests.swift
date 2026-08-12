@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 @testable import MatronDesignSystem
 
 final class BoxChipTests: XCTestCase {
@@ -30,5 +31,16 @@ final class BoxChipTests: XCTestCase {
         }
         // Distinct fixtures observed to land on distinct hues.
         XCTAssertNotEqual(BoxChip.paletteIndex(for: "eric"), BoxChip.paletteIndex(for: "build-7"))
+    }
+
+    /// Visual baseline: two chips whose fixture names land on different
+    /// palette hues, side by side, light/dark/axxxl.
+    func testChipColorSnapshots() {
+        let row = HStack(spacing: 6) {
+            BoxChip("eric")  // palette index 4 (teal)
+            BoxChip("greg")  // palette index 2 (orange)
+        }
+        .padding(8)
+        assertVariants(of: row, named: "BoxChip_colors")
     }
 }

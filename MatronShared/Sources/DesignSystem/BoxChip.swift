@@ -48,8 +48,8 @@ public struct BoxChip: View {
             .truncationMode(.tail)
             .padding(.horizontal, 6)
             .padding(.vertical, 1)
-            .background(Color.secondary.opacity(0.15), in: Capsule())
-            .foregroundStyle(.secondary)
+            .background(Self.tint(for: displayName).opacity(0.18), in: Capsule())
+            .foregroundStyle(Self.tint(for: displayName))
             .accessibilityLabel("Agent box \(displayName)")
     }
 }
