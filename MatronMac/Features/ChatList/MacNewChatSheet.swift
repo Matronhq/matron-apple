@@ -1,5 +1,6 @@
 #if os(macOS)
 import SwiftUI
+import MatronDesignSystem
 import MatronJournal
 import MatronModels
 import MatronViewModels
@@ -85,34 +86,19 @@ struct MacNewChatSheet: View {
                 Button {
                     Task { await viewModel.select(agent: agent) }
                 } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: agent.symbolName)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 22)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(agent.name.isEmpty ? "Unnamed agent" : agent.name)
-                                .fontWeight(.medium)
-                                .foregroundStyle(agent.connected ? .primary : .secondary)
-                            Text(agent.connected
-                                 ? "Connected"
-                                 : "Offline · Last seen \(agent.lastSeenText())")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if agent.connected {
-                            Image(systemName: "chevron.right")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                    .contentShape(Rectangle())
+                    MacAgentPickerRow(
+                        agent: agent,
+                        capacity: viewModel.capacities[agent.id],
+                        pending: viewModel.capacityPending.contains(agent.id))
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(!agent.connected)
             }
             .listStyle(.inset)
-            .frame(height: 200)
+            // Capacity makes the rows variable-height: grow with them up to
+            // a cap that keeps the sheet a sane size, then scroll.
+            .frame(minHeight: 200, maxHeight: 360)
             if !agents.contains(where: \.connected) {
                 Text("No agents connected — is the box awake?")
                     .font(.caption)
@@ -180,6 +166,55 @@ struct MacNewChatSheet: View {
             .foregroundStyle(.secondary)
         if let error = viewModel.errorMessage {
             Text(error).font(.callout).foregroundStyle(.red)
+        }
+    }
+}
+
+/// One machine row in the New Chat picker: name with the box's account
+/// email, the connection caption, and — for connected boxes — the capacity
+/// block. Split out of the sheet so a snapshot test can pin the real row
+/// against fixed state (the sheet itself would fire a live `.task` load).
+struct MacAgentPickerRow: View {
+    let agent: DeviceDTO
+    let capacity: BoxCapacity?
+    let pending: Bool
+    /// Frozen clock for the capacity block's reset captions; nil = now.
+    var fixedNow: Date?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: agent.symbolName)
+                .foregroundStyle(.secondary)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(agent.name.isEmpty ? "Unnamed agent" : agent.name)
+                        .fontWeight(.medium)
+                        .foregroundStyle(agent.connected ? .primary : .secondary)
+                    if let email = capacity?.accountEmail {
+                        Text(email)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+                Text(agent.connected
+                     ? "Connected"
+                     : "Offline · Last seen \(agent.lastSeenText())")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if agent.connected {
+                    AgentCapacityRowContent(
+                        capacity: capacity, pending: pending, fixedNow: fixedNow)
+                }
+            }
+            Spacer()
+            if agent.connected {
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
         }
     }
 }

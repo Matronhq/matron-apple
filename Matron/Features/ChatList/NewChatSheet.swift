@@ -1,4 +1,5 @@
 import SwiftUI
+import MatronDesignSystem
 import MatronJournal
 import MatronModels
 import MatronViewModels
@@ -88,13 +89,27 @@ struct NewChatSheet: View {
                             Image(systemName: agent.symbolName)
                                 .foregroundStyle(.secondary)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(agent.name.isEmpty ? "Unnamed agent" : agent.name)
-                                    .foregroundStyle(agent.connected ? .primary : .secondary)
+                                HStack(spacing: 6) {
+                                    Text(agent.name.isEmpty ? "Unnamed agent" : agent.name)
+                                        .foregroundStyle(agent.connected ? .primary : .secondary)
+                                    if let email = viewModel.capacities[agent.id]?.accountEmail {
+                                        Text(email)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    }
+                                }
                                 Text(agent.connected
                                      ? "Connected"
                                      : "Offline · Last seen \(agent.lastSeenText())")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                                if agent.connected {
+                                    AgentCapacityRowContent(
+                                        capacity: viewModel.capacities[agent.id],
+                                        pending: viewModel.capacityPending.contains(agent.id))
+                                }
                             }
                             Spacer()
                             if agent.connected {
