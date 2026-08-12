@@ -41,31 +41,58 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
             // conversations snapshot per frame — rendered raw, the chat
             // list visibly pops row by row. Coalesce: the first snapshot
             // goes out immediately (instant paint from the local mirror),
-            // then at most one per `interval`, always the newest —
-            // `bufferingNewest(1)` drops every intermediate snapshot that
-            // lands while the pacer sleeps.
-            let (latest, latestCont) = AsyncStream<[ConversationRecord]>.makeStream(bufferingPolicy: .bufferingNewest(1))
+            // then at most one per `interval`, always the newest. The
+            // signal stream is a one-slot doorbell (`bufferingNewest(1)`)
+            // over `inputs`, so every ring that lands while the pacer
+            // sleeps collapses into one wake-up on the newest state — and,
+            // unlike buffering the snapshots themselves, a conversations
+            // burst can never crowd out a pending roster change.
+            let inputs = SummaryInputs()
+            let (signal, signalCont) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
             let producer = Task {
                 for await records in store.conversationsStream() {
-                    latestCont.yield(records)
+                    inputs.setRecords(records)
+                    signalCont.yield(())
                 }
-                latestCont.finish()
+                signalCont.finish()
+            }
+            // The roster is its own observation because a GRDB observation
+            // only re-fires for the tables its fetch reads: a rename writes
+            // `agent`, which the conversations fetch never touches, so
+            // without this every open chip would keep the old label until
+            // some unrelated conversation write happened to re-fire the
+            // list. Roster-only, so it never `finish()`es the signal — the
+            // conversations stream ending is what ends the summaries.
+            let roster = Task {
+                for await names in store.agentNamesStream() {
+                    inputs.setBoxNames(names)
+                    signalCont.yield(())
+                }
             }
             let consumer = Task {
-                for await records in latest {
-                    continuation.yield(records.map(Self.summary(from:)))
+                for await _ in signal {
+                    guard let records = inputs.records else { continue }
+                    // The roster observation delivers its first value on a
+                    // main-queue hop, which may land after the first
+                    // conversations snapshot; read through so the very
+                    // first paint still carries its chips.
+                    let boxNames = inputs.boxNames ?? (try? store.agentNames()) ?? [:]
+                    continuation.yield(records.map { Self.summary(from: $0, boxNames: boxNames) })
                     try? await Task.sleep(for: interval)
                 }
                 continuation.finish()
             }
             continuation.onTermination = { _ in
                 producer.cancel()
+                roster.cancel()
                 consumer.cancel()
             }
         }
     }
 
-    static func summary(from record: ConversationRecord) -> ChatSummary {
+    /// `boxNames` is the id → name map of the user's agent boxes. The chip
+    /// gate lives here: fewer than two boxes means no chip on any row.
+    static func summary(from record: ConversationRecord, boxNames: [Int64: String]) -> ChatSummary {
         let activityMS = record.lastActivityTS ?? (record.createdAt > 0 ? record.createdAt : nil)
         return ChatSummary(
             id: record.id,
@@ -74,8 +101,17 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
             lastActivity: activityMS.map { Date(timeIntervalSince1970: Double($0) / 1000) },
             unreadCount: record.unreadCount,
             snippet: record.snippet,
-            parentConvoID: record.parentConvoID
+            parentConvoID: record.parentConvoID,
+            boxName: Self.boxName(for: record, boxNames: boxNames)
         )
+    }
+
+    /// The chip rule for a single conversation: named only when the user has
+    /// two or more boxes AND this conversation's box resolves. Pure, so it
+    /// is unit-testable without a live sync engine.
+    static func boxName(for record: ConversationRecord?, boxNames: [Int64: String]) -> String? {
+        guard boxNames.count >= 2, let id = record?.agentDeviceID else { return nil }
+        return boxNames[id]
     }
 
     static func childSummary(from record: ConversationRecord) -> SubChatSummary {
@@ -117,5 +153,33 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
 
     public func leave(roomID: String) async throws {
         try store.setHidden(true, convoID: roomID)
+    }
+}
+
+/// Latest value from each of the two observations feeding `chatSummaries()`,
+/// written by their producer tasks and read by the paced consumer. Holding
+/// the state here (rather than buffering it in the signal stream) is what
+/// lets the doorbell coalesce to one slot without a conversations burst
+/// dropping a roster change, or vice versa. `nil` means "hasn't delivered
+/// yet", which the consumer distinguishes from an empty roster.
+private final class SummaryInputs: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _records: [ConversationRecord]?
+    private var _boxNames: [Int64: String]?
+
+    var records: [ConversationRecord]? {
+        lock.withLock { _records }
+    }
+
+    var boxNames: [Int64: String]? {
+        lock.withLock { _boxNames }
+    }
+
+    func setRecords(_ records: [ConversationRecord]) {
+        lock.withLock { _records = records }
+    }
+
+    func setBoxNames(_ names: [Int64: String]) {
+        lock.withLock { _boxNames = names }
     }
 }

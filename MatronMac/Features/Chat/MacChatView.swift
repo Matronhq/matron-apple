@@ -223,6 +223,15 @@ struct MacChatView: View {
     @State private var showSummaries = false
 
     let chatTitle: String
+    /// Which agent box runs this session, or nil when the user has fewer
+    /// than two boxes. Threaded from the list's ChatSummary (same source as
+    /// the row chip) rather than re-resolved here, so header and row can
+    /// never disagree.
+    /// `var` with a default, not `let`: Swift's memberwise synthesis DROPS a
+    /// `let`'s default instead of exposing it as a defaulted parameter (see
+    /// MacChatToolbar's init comment), which would force every call site and
+    /// test to pass it.
+    var boxName: String? = nil
 
     /// Minimum detail width to show the child sub-chat pane BESIDE the
     /// parent timeline. Below this the child pane takes over the whole
@@ -703,6 +712,7 @@ struct MacChatView: View {
         .toolbar {
             MacChatToolbar(
                 title: chatTitle,
+                boxName: boxName,
                 status: viewModel.sessionStatus,
                 stripViewModel: stripViewModel,
                 onOpenSubChat: { openSubChatID = $0 },

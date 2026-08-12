@@ -380,4 +380,12 @@ final class WireModelsTests: XCTestCase {
         let brokenObj = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(broken.encoded().utf8)) as? [String: Any])
         XCTAssertEqual((brokenObj["params"] as? [String: Any])?.isEmpty, true)
     }
+
+    func testDecodesDeviceMetaRenameFrame() {
+        let frame = ServerFrame.decode(#"{"kind":"device_meta","device_id":7,"name":"dev-y"}"#)
+        XCTAssertEqual(frame, .deviceMeta(id: 7, name: "dev-y"))
+        // Malformed frames are skipped, not crashed on.
+        XCTAssertNil(ServerFrame.decode(#"{"kind":"device_meta","name":"dev-y"}"#))
+        XCTAssertNil(ServerFrame.decode(#"{"kind":"device_meta","device_id":7}"#))
+    }
 }

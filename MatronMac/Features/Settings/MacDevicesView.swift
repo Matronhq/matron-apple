@@ -11,6 +11,11 @@ import MatronViewModels
 struct MacDevicesView: View {
     @State private var viewModel: DevicesViewModel
     @State private var confirming: DeviceDTO?
+    /// The device whose rename alert is open, and the draft in its field.
+    /// Two pieces of state, not one: `.alert`'s TextField needs a binding
+    /// that survives the alert's own re-evaluations.
+    @State private var renaming: DeviceDTO?
+    @State private var draftName = ""
     @State private var showingAddAgent = false
     private let api: any DevicesProviding
 
@@ -22,7 +27,9 @@ struct MacDevicesView: View {
     var body: some View {
         VStack(spacing: 0) {
             List(viewModel.devices) { device in
-                DeviceRow(device: device) { confirming = device }
+                DeviceRow(device: device,
+                          onRevoke: { confirming = device },
+                          onRename: { draftName = device.name; renaming = device })
             }
             .overlay {
                 // Only claim "no devices" when the load actually succeeded —
@@ -69,12 +76,28 @@ struct MacDevicesView: View {
                 secondaryButton: .cancel()
             )
         }
+        .alert("Rename device", isPresented: Binding(
+            get: { renaming != nil },
+            set: { if !$0 { renaming = nil } }
+        )) {
+            TextField("Name", text: $draftName)
+            Button("Cancel", role: .cancel) { renaming = nil }
+            Button("Rename") {
+                if let device = renaming {
+                    Task { await viewModel.rename(device, to: draftName) }
+                }
+                renaming = nil
+            }
+        } message: {
+            Text("This name labels the box everywhere — in Devices and on the chip beside each conversation.")
+        }
     }
 }
 
 private struct DeviceRow: View {
     let device: DeviceDTO
     let onRevoke: () -> Void
+    let onRename: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
@@ -100,6 +123,8 @@ private struct DeviceRow: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            Button("Rename…", action: onRename)
+                .controlSize(.small)
             Button(device.isSelf ? "Sign Out…" : "Revoke…", action: onRevoke)
                 .controlSize(.small)
         }

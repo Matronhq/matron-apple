@@ -239,6 +239,10 @@ struct ChatView: View {
     }
 
     let chatTitle: String
+    /// Which agent box runs this session, or nil when the user has fewer
+    /// than two boxes. Threaded from the list's ChatSummary (same source as
+    /// the row chip) so header and row can never disagree.
+    var boxName: String? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -714,7 +718,7 @@ struct ChatView: View {
             }
         }
         .sheet(isPresented: $showSessionStatus) {
-            SessionStatusSheet(viewModel: viewModel)
+            SessionStatusSheet(viewModel: viewModel, boxName: boxName)
         }
         .sheet(isPresented: $showSummaries) {
             SummariesSheet(viewModel: viewModel)

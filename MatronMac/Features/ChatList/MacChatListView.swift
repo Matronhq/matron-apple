@@ -490,7 +490,8 @@ struct MacChatListView: View {
                     return vmCache.subChatViewModels(
                         for: childID, parentConvoID: parent, deps: deps, session: session)
                 },
-                chatTitle: summary?.title ?? ""
+                chatTitle: summary?.title ?? "",
+                boxName: summary?.boxName
             )
             .id(id)
         } else {
@@ -582,7 +583,15 @@ private struct MacChatRow: View {
     var body: some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(summary.title).font(.system(size: 14)).lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(summary.title).font(.system(size: 14)).lineLimit(1)
+                    // Which box owns this conversation. Nil unless the user
+                    // has two or more boxes — the gate lives in
+                    // JournalChatService, so this row just renders.
+                    if let boxName = summary.boxName {
+                        BoxChip(boxName)
+                    }
+                }
                 HStack(spacing: 4) {
                     // Snippet renders unconditionally with reserved space
                     // so row height stays fixed while messages stream in

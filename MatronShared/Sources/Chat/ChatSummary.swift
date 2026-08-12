@@ -22,6 +22,12 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
     /// summary consumer can defend in depth (no badges / notifications
     /// for children) alongside the server's own silence rule.
     public let parentConvoID: String?
+    /// Display name of the agent box that owns this conversation, or `nil`
+    /// when no chip should be shown — which covers all three of: the user
+    /// has fewer than two boxes (nothing to disambiguate), the conversation
+    /// has no recorded box, and the recorded box no longer exists. Resolving
+    /// the gate upstream keeps every row view a dumb renderer.
+    public let boxName: String?
 
     public init(
         id: String,
@@ -30,7 +36,8 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
         lastActivity: Date?,
         unreadCount: Int,
         snippet: String = "",
-        parentConvoID: String? = nil
+        parentConvoID: String? = nil,
+        boxName: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -39,6 +46,7 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
         self.unreadCount = unreadCount
         self.snippet = snippet
         self.parentConvoID = parentConvoID
+        self.boxName = boxName
     }
 }
 

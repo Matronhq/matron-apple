@@ -11,6 +11,9 @@ import MatronDesignSystem
 /// open sheet would never refresh when the first status frame lands.
 struct SessionStatusSheet: View {
     let viewModel: ChatViewModel
+    /// The agent box this session runs on, or nil when the user has fewer
+    /// than two boxes (the chip gate — see `JournalChatService.boxName`).
+    var boxName: String? = nil
     @Environment(\.dismiss) private var dismiss
 
     private var status: SessionStatus? { viewModel.sessionStatus }
@@ -21,14 +24,26 @@ struct SessionStatusSheet: View {
     private var hasContent: Bool {
         status?.model != nil || status?.context != nil || !(status?.limits ?? []).isEmpty
             || status?.email != nil || status?.workdir != nil || status?.vitals != nil
+            || boxName != nil
+    }
+
+    /// The footer's own gate. Split out because the box name is known from
+    /// the chat list, not the status frame: open the sheet before the first
+    /// `status` lands and the footer is the only thing there is to show.
+    private var hasFooter: Bool {
+        status?.email != nil || status?.model != nil
+            || status?.workdir != nil || status?.vitals != nil || boxName != nil
     }
 
     var body: some View {
         NavigationStack {
             Group {
-                if let status, hasContent {
+                // Gated on `hasContent` alone, not on a non-nil `status`:
+                // requiring a status frame here hid the box name behind
+                // "No usage data yet" until the first reply landed.
+                if hasContent {
                     VStack(alignment: .leading, spacing: 24) {
-                        if let context = status.context {
+                        if let context = status?.context {
                             HStack(spacing: 12) {
                                 ContextGaugeLabel(context: context)
                                 Spacer()
@@ -47,26 +62,30 @@ struct SessionStatusSheet: View {
                                 .controlSize(.small)
                             }
                         }
-                        if let limits = status.limits, !limits.isEmpty {
+                        if let limits = status?.limits, !limits.isEmpty {
                             UsageBarsView(limits: limits, scale: .regular)
                         }
-                        if status.email != nil || status.model != nil
-                            || status.workdir != nil || status.vitals != nil {
+                        if hasFooter {
                             // Session footer: the bridge machine's logged-in
                             // email, model, workdir (home-abbreviated — the
                             // BRIDGE machine's path) and host CPU/RAM, all
                             // quiet.
                             VStack(alignment: .leading, spacing: 2) {
-                                if let email = status.email {
+                                // Leads the block: "which machine am I
+                                // talking to" outranks the account and path.
+                                if let boxName {
+                                    Text(boxName)
+                                }
+                                if let email = status?.email {
                                     Text(email)
                                 }
-                                if let model = status.model {
+                                if let model = status?.model {
                                     Text(model)
                                 }
-                                if let workdir = status.workdir {
+                                if let workdir = status?.workdir {
                                     Text(UsageMetersFormat.homeAbbreviated(workdir))
                                 }
-                                if let vitals = status.vitals,
+                                if let vitals = status?.vitals,
                                    let line = UsageMetersFormat.vitalsLine(vitals) {
                                     Text(line)
                                         .accessibilityLabel("Bridge host: \(line)")

@@ -6,8 +6,24 @@ public struct LoginResponse: Equatable, Sendable {
     public let userID: Int64
 }
 
+/// One of the user's agent boxes, as listed by `GET /snapshot`. Just
+/// identity and label — the full device row (lag, cursor, last seen) is
+/// `DeviceDTO` from `GET /devices`.
+public struct AgentDTO: Equatable, Sendable {
+    public let id: Int64
+    public let name: String
+
+    public init(id: Int64, name: String) {
+        self.id = id
+        self.name = name
+    }
+}
+
 public struct SnapshotResponse: Equatable, Sendable {
     public let conversations: [ConvoSummaryDTO]
+    /// The user's agent boxes, id → name. Empty on a server predating the
+    /// field, which simply means no chips.
+    public let agents: [AgentDTO]
     public let seq: Int64
 }
 
@@ -283,10 +299,18 @@ public actor JournalAPI {
                 lastTS: (c["last_ts"] as? NSNumber)?.int64Value,
                 // null for a normal conversation, the parent's id for a
                 // subagent child. Absent on servers predating sub-chats.
-                parentConvoID: c["parent_convo_id"] as? String
+                parentConvoID: c["parent_convo_id"] as? String,
+                // Which box manages this conversation. Absent on older
+                // servers -> nil -> no chip.
+                agentDeviceID: (c["agent_device_id"] as? NSNumber)?.int64Value
             )
         }
-        return SnapshotResponse(conversations: conversations,
+        let agents = (obj["agents"] as? [[String: Any]] ?? []).compactMap { a -> AgentDTO? in
+            guard let id = (a["device_id"] as? NSNumber)?.int64Value,
+                  let name = a["name"] as? String else { return nil }
+            return AgentDTO(id: id, name: name)
+        }
+        return SnapshotResponse(conversations: conversations, agents: agents,
                                 seq: (obj["seq"] as? NSNumber)?.int64Value ?? 0)
     }
 
@@ -399,6 +423,21 @@ public actor JournalAPI {
     /// treat it as success.
     public func revokeDevice(id: Int64) async throws {
         _ = try await request(path: "/devices/\(id)/revoke", method: "POST", body: [:])
+    }
+
+    /// Renames a device. Client tokens only (the server 403s an agent), and
+    /// 404 covers both "not yours" and "gone".
+    public func renameDevice(id: Int64, name: String) async throws -> DeviceDTO {
+        let obj = try await request(path: "/devices/\(id)/rename", method: "POST", body: ["name": name])
+        guard let d = obj["device"] as? [String: Any],
+              let deviceID = (d["device_id"] as? NSNumber)?.int64Value,
+              let newName = d["name"] as? String
+        else { throw JournalAPIError.transport("malformed rename response") }
+        // Partial DTO: the rename response carries only identity and the new
+        // name. Callers re-fetch the roster for the full row rather than
+        // trusting these zeros — see DevicesViewModel.rename.
+        return DeviceDTO(id: deviceID, kind: "", name: newName, createdAt: 0,
+                         cursor: 0, lag: 0, lastSeenAt: nil, isSelf: false)
     }
 
     /// Previews a pairing code before approval. 404 = unknown, expired, or

@@ -408,7 +408,8 @@ struct ChatListView: View {
                     viewModel: chatVM,
                     composerVM: composerVM,
                     stripViewModel: vmCache.stripViewModel(forParent: id, deps: deps, session: session),
-                    chatTitle: summary?.title ?? ""
+                    chatTitle: summary?.title ?? "",
+                    boxName: summary?.boxName
                 )
                 // Key the chat's identity to its room. `openChat` REPLACES
                 // the path ([A] → [B]), which keeps this destination's
@@ -467,7 +468,15 @@ struct ChatRow: View {
     var body: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(summary.title).font(.body).lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(summary.title).font(.body).lineLimit(1)
+                    // Which box owns this conversation. Nil unless the user
+                    // has two or more boxes — the gate lives in
+                    // JournalChatService, so this row just renders.
+                    if let boxName = summary.boxName {
+                        BoxChip(boxName)
+                    }
+                }
                 // Rendered unconditionally with reserved space so every
                 // row has the same fixed height — snippets arriving /
                 // growing to a second line were resizing rows live as
