@@ -55,8 +55,8 @@ Both chat lists (iOS `ChatListView`, Mac `MacChatListView`) already render
   never silently change and re-shuffle everyone's colours.
 - Unit test: same name twice → same index (determinism), two differing
   names from the fixtures → observed distinct indices.
-- Re-record the `BoxChipTests` snapshots (light/dark/axxxl) with the
-  coloured rendering.
+- Add a `BoxChipTests` snapshot (light/dark/axxxl via `assertVariants`)
+  pinning the coloured rendering — the chip had no visual baseline before.
 
 ## Out of scope (YAGNI)
 
