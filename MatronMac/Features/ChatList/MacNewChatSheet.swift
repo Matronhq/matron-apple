@@ -24,6 +24,22 @@ struct MacNewChatSheet: View {
     /// late `.done` must not yank the user into a chat they abandoned.
     @State private var cancelled = false
 
+    /// Rigid sheet dimensions — Mac sheets ignore flexible frames, so the
+    /// size is computed once from the presenting window and frozen.
+    struct Layout: Equatable {
+        let width: CGFloat
+        let listMaxHeight: CGFloat
+    }
+
+    /// 70% of the window's width (480…880); lists get 60% of its height
+    /// (300…650). nil (previews/tests/no window) → the pre-adaptive sizes.
+    static func layout(for windowSize: CGSize?) -> Layout {
+        guard let windowSize else { return Layout(width: 480, listMaxHeight: 360) }
+        return Layout(
+            width: min(max(windowSize.width * 0.7, 480), 880),
+            listMaxHeight: min(max(windowSize.height * 0.6, 300), 650))
+    }
+
     init(deps: AppDependencies, session: UserSession, onCreated: @escaping (String) -> Void) {
         self.deps = deps
         self.session = session
