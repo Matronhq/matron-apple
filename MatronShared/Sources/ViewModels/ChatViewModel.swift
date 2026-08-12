@@ -764,7 +764,10 @@ public final class ChatViewModel {
     /// (QA finding #4). The value-type `LRUCache` lives directly on the
     /// view-model — `@MainActor` isolation gives us the required
     /// single-threaded mutating-get access without extra synchronisation.
-    private var resolvedImages: LRUCache<URL, Image> = LRUCache(limit: ChatViewModel.mediaCacheLimit)
+    /// Values are `SizedImage` (image + native pixel size) rather than a
+    /// bare `Image` because `Image` is opaque — the Mac fullscreen viewer
+    /// needs the bitmap's resolution to size its sheet without upscaling.
+    private var resolvedImages: LRUCache<URL, SizedImage> = LRUCache(limit: ChatViewModel.mediaCacheLimit)
     /// URLs whose fetch completed but the bytes failed to decode into a
     /// SwiftUI `Image`. Without this, `image(for:)` would loop forever:
     /// the call returns nil → `@Observable` re-renders → `image(for:)`
@@ -1284,12 +1287,12 @@ public final class ChatViewModel {
     /// same URL coalesce to a single in-flight request, and URLs whose
     /// fetch returned non-decodable bytes are remembered so we don't loop.
     public func image(for url: URL) -> Image? {
-        if let cached = resolvedImages[url] { return cached }
+        if let cached = resolvedImages[url] { return cached.image }
         if failedRequests.contains(url) { return nil }
         guard !inFlightRequests.contains(url) else { return nil }
         inFlightRequests.insert(url)
         Task { [weak self, media] in
-            let img = await media.swiftUIImage(for: url)
+            let img = await media.sizedImage(for: url)
             guard let self else { return }
             await MainActor.run {
                 if let img {
@@ -1351,7 +1354,14 @@ public final class ChatViewModel {
     /// accessor does promote it to MRU on the underlying LRU — the same
     /// behaviour `image(for:)` produces, so observation stays aligned
     /// with rendering.
-    public func resolvedImage(for url: URL) -> Image? { resolvedImages[url] }
+    public func resolvedImage(for url: URL) -> Image? { resolvedImages[url]?.image }
+
+    /// Native pixel size of an already-resolved image, or `nil` while the
+    /// fetch is still outstanding (or failed). Passive — never triggers a
+    /// fetch; callers pair it with `image(for:)`, which does. The Mac
+    /// fullscreen viewer uses this to open its sheet at the image's
+    /// natural on-screen size instead of a fixed small frame.
+    public func imagePixelSize(for url: URL) -> CGSize? { resolvedImages[url]?.pixelSize }
 
     /// Strip path-traversal and directory-separator components from a
     /// Matrix-event-attached filename. Inputs that reduce to an empty

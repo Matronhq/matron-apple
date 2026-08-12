@@ -21,8 +21,10 @@ struct MacTimelineItemView: View {
     /// `.failed(reason:)`. Mirrors the iOS surface — wired by
     /// `MacChatView` to `viewModel.retrySend(itemID:)`.
     var onRetry: ((String) -> Void)? = nil
-    /// Image-attachment tap handler — mirrors the iOS surface.
-    var onTapImage: ((Image) -> Void)? = nil
+    /// Image-attachment tap handler — mirrors the iOS surface, plus the
+    /// `mxc://` URL so the presenter can look up the bitmap's native
+    /// pixel size for the fullscreen sheet.
+    var onTapImage: ((URL, Image) -> Void)? = nil
     /// File-attachment tap handler — mirrors the iOS surface.
     /// `MacChatView` wires this through to a temp-file write +
     /// `NSWorkspace.shared.open(_:)`.
@@ -111,9 +113,10 @@ struct MacTimelineItemView: View {
                         // so the fullscreen viewer doesn't open with an
                         // empty `Image`.
                         onTap: {
-                            if let img = resolvedImage(for: url),
+                            if let url,
+                               let img = resolvedImage(for: url),
                                let onTapImage {
-                                onTapImage(img)
+                                onTapImage(url, img)
                             }
                         }
                     )
