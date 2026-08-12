@@ -824,10 +824,12 @@ public final class JournalStore: @unchecked Sendable {
     /// id → name for every known box. The chat list joins against this to
     /// label rows, and its COUNT is the "does this user have ≥2 boxes" gate.
     public func agentNames() throws -> [Int64: String] {
-        try dbQueue.read { db in
-            let rows = try Row.fetchAll(db, sql: "SELECT id, name FROM agent")
-            return Dictionary(uniqueKeysWithValues: rows.map { ($0["id"] as Int64, $0["name"] as String) })
-        }
+        try dbQueue.read(Self.agentNameMap)
+    }
+
+    private static func agentNameMap(_ db: Database) throws -> [Int64: String] {
+        let rows = try Row.fetchAll(db, sql: "SELECT id, name FROM agent")
+        return Dictionary(uniqueKeysWithValues: rows.map { ($0["id"] as Int64, $0["name"] as String) })
     }
 
     /// One conversation by id, or nil when this device has never seen it.
@@ -1034,6 +1036,16 @@ public final class JournalStore: @unchecked Sendable {
             return try records.map { try Self.applyReadTimeSnippetTTL($0, db: db, now: Date()) }
         }
         return Self.stream(observation, in: dbQueue)
+    }
+
+    /// Live id → name map of the user's agent boxes. Deliberately separate
+    /// from `conversationsStream()`: a GRDB observation only re-fires for
+    /// the tables its fetch actually reads, and the conversations fetch
+    /// never touches `agent` — so a `device_meta` rename landing mid-session
+    /// would otherwise leave every open chip on the old label until some
+    /// unrelated conversation write happened to re-fire the list.
+    public func agentNamesStream() -> AsyncStream<[Int64: String]> {
+        Self.stream(ValueObservation.tracking(Self.agentNameMap), in: dbQueue)
     }
 
     /// Live stream of a parent's subagent children (in creation order,

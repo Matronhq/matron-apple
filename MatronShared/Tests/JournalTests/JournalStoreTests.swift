@@ -754,4 +754,20 @@ final class JournalStoreTests: XCTestCase {
         try store.renameAgent(id: 12, name: "dev-new")
         XCTAssertEqual(try store.agentNames()[12], "dev-new")
     }
+
+    func testAgentNamesStreamRefiresOnRename() async throws {
+        // The roster needs an observation of its own: GRDB only re-fires an
+        // observation for the tables its fetch actually reads, and
+        // `conversationsStream()` never reads `agent` — so a `device_meta`
+        // rename has to reach chip labels through this stream instead.
+        let store = try makeStore()
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-y"), AgentDTO(id: 9, name: "dev-z")])
+        var iterator = store.agentNamesStream().makeAsyncIterator()
+        let initial = await iterator.next()
+        XCTAssertEqual(initial, [7: "dev-y", 9: "dev-z"])
+
+        try store.renameAgent(id: 7, name: "dev-yellow")
+        let renamed = await iterator.next()
+        XCTAssertEqual(renamed, [7: "dev-yellow", 9: "dev-z"])
+    }
 }
