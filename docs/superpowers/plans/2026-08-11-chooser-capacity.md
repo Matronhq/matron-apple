@@ -23,7 +23,7 @@
 ### Task 1: `BoxCapacity` parsing
 
 **Files:**
-- Create: `MatronShared/Sources/ViewModels/BoxCapacity.swift`
+- Create: `MatronShared/Sources/Models/BoxCapacity.swift`
 - Test: `MatronShared/Tests/ViewModelTests/BoxCapacityTests.swift`
 
 **Interfaces:**
@@ -55,7 +55,7 @@ public struct BoxCapacity: Equatable, Sendable {
 
 ```swift
 import XCTest
-@testable import MatronViewModels
+@testable import MatronModels
 
 final class BoxCapacityTests: XCTestCase {
     private func obj(_ json: String) -> [String: Any] {
@@ -204,7 +204,7 @@ Expected: "Executed 5 tests, with 0 failures".
 - [ ] **Step 5: Commit**
 
 ```bash
-git add MatronShared/Sources/ViewModels/BoxCapacity.swift MatronShared/Tests/ViewModelTests/BoxCapacityTests.swift
+git add MatronShared/Sources/Models/BoxCapacity.swift MatronShared/Tests/ViewModelTests/BoxCapacityTests.swift
 git commit -m "feat(new-chat): parse the recent_folders capacity blocks"
 ```
 
@@ -440,11 +440,11 @@ public enum UsagePercentColor {
 }
 ```
 
-`AgentCapacityRowContent.swift` (module imports per package layout — `MatronViewModels` for `BoxCapacity`):
+`AgentCapacityRowContent.swift` (module imports per package layout — `MatronModels` for `BoxCapacity`):
 
 ```swift
 import SwiftUI
-import MatronViewModels
+import MatronModels
 
 /// The capacity block under an agent's name in the New Chat chooser:
 /// active-session count and every usage-limit line, or a "Checking…"

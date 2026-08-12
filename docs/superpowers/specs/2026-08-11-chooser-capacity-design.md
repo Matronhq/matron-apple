@@ -60,7 +60,9 @@ replies land. Rules:
 
 ### Parsing
 
-New file `MatronShared/Sources/ViewModels/BoxCapacity.swift`:
+New file `MatronShared/Sources/Models/BoxCapacity.swift` (`MatronModels`, like
+`SessionStatus`, so the design-system row can see it without depending on
+the view models):
 
 ```swift
 struct LimitLine: Equatable, Sendable { id, label: String; percent: Int; resetsAt: Date? }
@@ -76,8 +78,9 @@ Parsed defensively field-by-field from the same reply JSON as the folders: a
 malformed or missing block degrades that block to nil/empty and never fails
 the folders parse. `last_hour` is parsed but **not displayed** (spawn-side
 detail; the folder step already shows recent paths). `percent` is clamped to
-0…999. `resets_at` (ISO-8601) parses via `ISO8601DateFormatter`; unparseable
-→ nil (line still shown, without a reset).
+0…999. `resets_at` (ISO-8601) parses in fractional-second and plain form
+alike, as `WireModels` does; unparseable → nil (line still shown, without a
+reset).
 
 ### Row UI (Mac `MacNewChatSheet`, iOS `NewChatSheet`)
 

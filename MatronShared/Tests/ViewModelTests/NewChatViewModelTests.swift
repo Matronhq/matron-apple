@@ -3,6 +3,37 @@ import XCTest
 @testable import MatronJournal
 import MatronModels
 
+/// One-shot async gate: `wait()` suspends until somebody calls `open()`,
+/// and stays open afterwards. Lets a test park one RPC leg mid-flight and
+/// decide exactly when it answers.
+final class Gate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if isOpen {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                waiters.append(continuation)
+                lock.unlock()
+            }
+        }
+    }
+
+    func open() {
+        lock.lock()
+        isOpen = true
+        let pending = waiters
+        waiters = []
+        lock.unlock()
+        pending.forEach { $0.resume() }
+    }
+}
+
 /// Recording fake for the New-Chat RPC surface. Replies are scripted per
 /// method; `agentRequest` throws when `rpcError` is set.
 final class FakeAgentRPCProvider: AgentRPCProviding, @unchecked Sendable {
@@ -12,6 +43,14 @@ final class FakeAgentRPCProvider: AgentRPCProviding, @unchecked Sendable {
     /// (takes precedence over `replies`).
     var repliesByDevice: [Int64: RPCReply] = [:]
     var rpcError: RPCRequestError?
+    /// Parks the *next* `recent_folders` call for a device until the gate is
+    /// opened; the reply is captured before parking, so re-scripting
+    /// `repliesByDevice` meanwhile doesn't change what the parked leg
+    /// eventually answers.
+    var gates: [Int64: Gate] = [:]
+    /// Opened when a gated call arrives, so a test can wait for the leg to
+    /// actually be in flight instead of guessing at scheduling.
+    var arrivals: [Int64: Gate] = [:]
 
     private(set) var requests: [(method: String, agentDeviceID: Int64, params: [String: Any])] = []
 
@@ -21,8 +60,14 @@ final class FakeAgentRPCProvider: AgentRPCProviding, @unchecked Sendable {
         let params = (try? JSONSerialization.jsonObject(with: paramsData)) as? [String: Any] ?? [:]
         requests.append((method, agentDeviceID, params))
         if let rpcError { throw rpcError }
-        if method == "recent_folders", let scripted = repliesByDevice[agentDeviceID] { return scripted }
-        return replies[method] ?? .failure(code: "unknown_method", detail: nil)
+        let reply = (method == "recent_folders" ? repliesByDevice[agentDeviceID] : nil)
+            ?? replies[method]
+            ?? .failure(code: "unknown_method", detail: nil)
+        if method == "recent_folders", let gate = gates.removeValue(forKey: agentDeviceID) {
+            arrivals[agentDeviceID]?.open()
+            await gate.wait()
+        }
+        return reply
     }
 }
 
@@ -240,6 +285,62 @@ final class NewChatViewModelTests: XCTestCase {
         fake.repliesByDevice[1] = .ok(resultData: Data(#"{"folders":[{"path":"/late","last_used":1}]}"#.utf8))
         await vm.select(agent: agents[0])
         XCTAssertEqual(vm.folders.map(\.path), ["/late"], "live RPC fallback after failed fan-out")
+    }
+
+    func test_reload_dropsCachedFoldersUntilTheNewFanOutAnswers() async {
+        let fake = FakeAgentRPCProvider()
+        let agents = [agent(1, name: "a", connected: true), agent(2, name: "b", connected: true)]
+        fake.devicesResult = .success(agents)
+        fake.repliesByDevice[1] = .ok(resultData: Data(#"{"folders":[{"path":"/old","last_used":1}]}"#.utf8))
+        fake.repliesByDevice[2] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
+        let vm = NewChatViewModel(api: fake)
+        await vm.load()
+        await vm.capacityFanOutForTesting?.value
+
+        // The box moved on between visits, and its second fan-out leg is
+        // still in flight when the user picks it.
+        fake.repliesByDevice[1] = .ok(resultData: Data(#"{"folders":[{"path":"/new","last_used":2}]}"#.utf8))
+        let gate = Gate(), arrived = Gate()
+        fake.gates[1] = gate
+        fake.arrivals[1] = arrived
+        await vm.backToAgents()
+        await arrived.wait()
+
+        await vm.select(agent: agents[0])
+        XCTAssertEqual(vm.folders.map(\.path), ["/new"],
+                       "a reload invalidates the folder cache — pick refetches instead of serving last visit's list")
+        gate.open()
+        await vm.capacityFanOutForTesting?.value
+    }
+
+    func test_reload_lateReplyFromSupersededFanOutIsIgnored() async {
+        let fake = FakeAgentRPCProvider()
+        let agents = [agent(1, name: "a", connected: true), agent(2, name: "b", connected: true)]
+        fake.devicesResult = .success(agents)
+        fake.repliesByDevice[1] = .ok(resultData: Data(#"{"folders":[{"path":"/stale","last_used":1}],"activity":{"live_sessions":9}}"#.utf8))
+        fake.repliesByDevice[2] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
+        let gate = Gate(), arrived = Gate()
+        fake.gates[1] = gate
+        fake.arrivals[1] = arrived
+        let vm = NewChatViewModel(api: fake)
+        await vm.load()
+        let supersededFanOut = vm.capacityFanOutForTesting
+        await arrived.wait()
+
+        // Second visit: box 1 answers straight away with fresh numbers.
+        fake.repliesByDevice[1] = .ok(resultData: Data(#"{"folders":[{"path":"/fresh","last_used":2}],"activity":{"live_sessions":1}}"#.utf8))
+        await vm.backToAgents()
+        await vm.capacityFanOutForTesting?.value
+        // Only now does the first visit's leg answer.
+        gate.open()
+        await supersededFanOut?.value
+
+        XCTAssertEqual(vm.capacities[1]?.liveSessions, 1,
+                       "a superseded leg must not overwrite the current generation's capacity")
+        XCTAssertTrue(vm.capacityPending.isEmpty)
+        await vm.select(agent: agents[0])
+        XCTAssertEqual(vm.folders.map(\.path), ["/fresh"],
+                       "nor its folder cache")
     }
 
     func test_selectAgent_fromRoster() async {

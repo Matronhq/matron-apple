@@ -49,17 +49,51 @@ final class BoxCapacityTests: XCTestCase {
         XCTAssertEqual(c.limitLines.map(\.percent), [0, 999])
     }
 
+    func test_parse_booleanAndFractionalNumbersAreMalformed() {
+        let c = BoxCapacity.parse(replyObject: obj(#"""
+        {"activity":{"live_sessions":true},
+         "limits":{"lines":[
+            {"id":"bool","label":"Boolean","percent":true},
+            {"id":"frac","label":"Fractional","percent":39.5},
+            {"id":"whole","label":"Whole","percent":40.0}]}}
+        """#))
+        XCTAssertNil(c.liveSessions, "JSON true bridges through NSNumber as 1 — reject it")
+        XCTAssertEqual(c.limitLines.map(\.id), ["whole"],
+                       "boolean and fractional percents drop the line rather than truncate")
+        XCTAssertEqual(c.limitLines[0].percent, 40, "an integral 40.0 is still a whole percent")
+    }
+
+    func test_parse_resetsAt_acceptsFractionalAndPlainISO() {
+        let c = BoxCapacity.parse(replyObject: obj(#"""
+        {"limits":{"lines":[
+            {"id":"frac","label":"Fractional","percent":1,"resets_at":"2026-08-12T10:00:00.123Z"},
+            {"id":"plain","label":"Plain","percent":2,"resets_at":"2026-08-12T10:00:00Z"},
+            {"id":"junk","label":"Junk","percent":3,"resets_at":"tomorrow"}]}}
+        """#))
+        XCTAssertEqual(c.limitLines.count, 3)
+        guard let fractional = c.limitLines[0].resetsAt, let plain = c.limitLines[1].resetsAt else {
+            return XCTFail("bridge timestamps carry milliseconds — both forms must parse")
+        }
+        XCTAssertEqual(fractional.timeIntervalSince1970, plain.timeIntervalSince1970 + 0.123,
+                       accuracy: 0.001)
+        XCTAssertNil(c.limitLines[2].resetsAt,
+                     "an unparseable resets_at drops the caption, not the line")
+    }
+
     func test_resetText_todayVsLater() {
+        // Fixed zone *and* locale: the caption's branch and its symbols both
+        // depend on them, so an unpinned formatter would read differently on
+        // a machine in another time zone or language.
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = TimeZone(identifier: "UTC")!
-        let now = Date(timeIntervalSince1970: 1_754_900_000) // 2026-08-11 UTC
+        cal.locale = Locale(identifier: "en_US_POSIX")
+        let now = Date(timeIntervalSince1970: 1_754_900_000) // 2026-08-11 08:13 UTC
         let today = now.addingTimeInterval(2 * 3600)
         let nextWeek = now.addingTimeInterval(4 * 86_400)
-        XCTAssertTrue(BoxCapacity.resetText(today, now: now, calendar: cal)!.hasPrefix("resets "))
-        XCTAssertFalse(BoxCapacity.resetText(today, now: now, calendar: cal)!.contains("Aug"),
+        XCTAssertEqual(BoxCapacity.resetText(today, now: now, calendar: cal), "resets 10:13 AM",
                        "same-day reset shows time only")
-        XCTAssertTrue(BoxCapacity.resetText(nextWeek, now: now, calendar: cal)!.contains("Aug"),
-                      "later reset shows the date")
+        XCTAssertEqual(BoxCapacity.resetText(nextWeek, now: now, calendar: cal), "resets Aug 15",
+                       "later reset shows the date")
         XCTAssertNil(BoxCapacity.resetText(nil))
     }
 }

@@ -101,6 +101,12 @@ public final class NewChatViewModel {
     /// `select(agent:)` render the folder step from cache instead of paying
     /// for a second round-trip to the same box.
     private var folderCache: [Int64: [RecentFolder]] = [:]
+    /// Bumped by every fan-out. Cancelling the previous task doesn't stop an
+    /// RPC that's already in flight from answering, so each leg carries the
+    /// generation it was started for and drops its reply if it's been
+    /// superseded — otherwise a late leg would clear the new generation's
+    /// pending row and overwrite its capacity and folder cache.
+    private var capacityGeneration = 0
 
     public init(api: any AgentRPCProviding) {
         self.api = api
@@ -198,11 +204,18 @@ public final class NewChatViewModel {
     /// screen — this only fills rows in, so failures stay silent.
     private func startCapacityFanOut(_ agentIDs: [Int64]) {
         capacityFanOutForTesting?.cancel()
+        capacityGeneration &+= 1
+        let generation = capacityGeneration
         capacityPending = Set(agentIDs)
+        // A reload re-asks every box, so last visit's folder lists are stale
+        // from this moment: drop them rather than let `select(agent:)` serve
+        // them before the new replies land — it falls back to a live
+        // `recent_folders` when the cache is empty.
+        folderCache.removeAll()
         capacityFanOutForTesting = Task { [weak self] in
             await withTaskGroup(of: Void.self) { group in
                 for id in agentIDs {
-                    group.addTask { await self?.fetchCapacity(agentID: id) }
+                    group.addTask { await self?.fetchCapacity(agentID: id, generation: generation) }
                 }
             }
         }
@@ -211,11 +224,14 @@ public final class NewChatViewModel {
     /// One box's fan-out leg. A failure, a timeout or an unparseable reply
     /// all leave the row exactly as it was before (name + "Connected") —
     /// capacity is a convenience, never a gate.
-    private func fetchCapacity(agentID: Int64) async {
-        defer { capacityPending.remove(agentID) }
-        guard let reply = try? await api.agentRequest(
-                agentDeviceID: agentID, method: "recent_folders", paramsData: Data("{}".utf8)),
-              case .ok(let resultData) = reply,
+    private func fetchCapacity(agentID: Int64, generation: Int) async {
+        let reply = try? await api.agentRequest(
+            agentDeviceID: agentID, method: "recent_folders", paramsData: Data("{}".utf8))
+        // Superseded by a newer fan-out while this leg was in flight: this
+        // answer describes a roster nobody is looking at any more.
+        guard generation == capacityGeneration else { return }
+        capacityPending.remove(agentID)
+        guard case .ok(let resultData) = reply,
               let obj = (try? JSONSerialization.jsonObject(with: resultData)) as? [String: Any]
         else { return }
         capacities[agentID] = BoxCapacity.parse(replyObject: obj)

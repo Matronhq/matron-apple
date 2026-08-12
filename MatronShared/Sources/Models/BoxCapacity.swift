@@ -47,16 +47,14 @@ public struct BoxCapacity: Equatable, Sendable {
     /// already shows recent paths.
     public static func parse(replyObject: [String: Any]) -> BoxCapacity {
         let activity = replyObject["activity"] as? [String: Any]
-        let liveSessions = (activity?["live_sessions"] as? NSNumber)?.intValue
+        let liveSessions = wholeNumber(activity?["live_sessions"])
 
         let lines = ((replyObject["limits"] as? [String: Any])?["lines"] as? [[String: Any]]) ?? []
         let limitLines = lines.compactMap { line -> LimitLine? in
             guard let id = line["id"] as? String, !id.isEmpty,
                   let label = line["label"] as? String, !label.isEmpty,
-                  let percent = (line["percent"] as? NSNumber)?.intValue else { return nil }
-            let resetsAt = (line["resets_at"] as? String).flatMap {
-                ISO8601DateFormatter().date(from: $0)
-            }
+                  let percent = wholeNumber(line["percent"]) else { return nil }
+            let resetsAt = (line["resets_at"] as? String).flatMap(parseISODate)
             return LimitLine(id: id, label: label,
                              percent: min(max(percent, 0), 999), resetsAt: resetsAt)
         }
@@ -64,6 +62,35 @@ public struct BoxCapacity: Equatable, Sendable {
         let email = (replyObject["account"] as? [String: Any])?["email"] as? String
         return BoxCapacity(liveSessions: liveSessions, limitLines: limitLines,
                            accountEmail: (email?.isEmpty == false) ? email : nil)
+    }
+
+    /// A JSON number that has to be a whole count. `JSONSerialization`
+    /// bridges `true` to an `NSNumber`, so a plain `intValue` would read a
+    /// Boolean as 1, and it silently truncates `39.5` to 39. Both are wire
+    /// contract violations — drop the field like every other malformed value
+    /// here rather than inventing a number for it.
+    static func wholeNumber(_ value: Any?) -> Int? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        let double = number.doubleValue
+        // Both fields are small counts; anything past Int32 is malformed too.
+        guard double.rounded() == double, abs(double) <= 2_147_483_647 else { return nil }
+        return number.intValue
+    }
+
+    /// Bridge timestamps come from `Date.toISOString()` (always fractional),
+    /// but plain ISO is accepted too — the same two-formatter rule
+    /// `WireModels` uses. `ISO8601DateFormatter` is thread-safe, so shared
+    /// statics are fine.
+    private static let isoFractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    private static let isoPlain = ISO8601DateFormatter()
+
+    static func parseISODate(_ raw: String) -> Date? {
+        isoFractional.date(from: raw) ?? isoPlain.date(from: raw)
     }
 
     /// Compact reset caption: "resets 11:59 PM" if the reset falls today in
@@ -75,6 +102,11 @@ public struct BoxCapacity: Equatable, Sendable {
         let formatter = DateFormatter()
         formatter.calendar = calendar
         formatter.timeZone = calendar.timeZone
+        // A fixed `dateFormat` still renders its symbols (AM/PM, "Aug") in
+        // the formatter's locale, so take that from the calendar too: a
+        // caller passing a fixed calendar gets a fixed caption, while the
+        // `.current` default keeps the user's own language.
+        formatter.locale = calendar.locale ?? .current
         // Same-day resets read best as a clock time; anything later as a date.
         formatter.dateFormat = calendar.isDate(date, inSameDayAs: now) ? "h:mm a" : "MMM d"
         return "resets \(formatter.string(from: date))"
