@@ -44,6 +44,12 @@ final class BoxCapacityTests: XCTestCase {
         XCTAssertNil(c.liveSessions, "non-numeric live_sessions → nil")
     }
 
+    func test_parse_negativeLiveSessionsDropped() {
+        let c = BoxCapacity.parse(replyObject: obj(#"{"activity":{"live_sessions":-1}}"#))
+        XCTAssertNil(c.liveSessions, "a negative count is malformed — drop it, don't display it")
+        XCTAssertFalse(c.hasDisplayableData)
+    }
+
     func test_parse_percentClamped() {
         let c = BoxCapacity.parse(replyObject: obj(#"{"limits":{"lines":[{"id":"a","label":"A","percent":-5},{"id":"b","label":"B","percent":5000}]}}"#))
         XCTAssertEqual(c.limitLines.map(\.percent), [0, 999])
@@ -95,5 +101,51 @@ final class BoxCapacityTests: XCTestCase {
         XCTAssertEqual(BoxCapacity.resetText(nextWeek, now: now, calendar: cal), "resets Aug 15",
                        "later reset shows the date")
         XCTAssertNil(BoxCapacity.resetText(nil))
+    }
+
+    // MARK: limitColumns(across:)
+
+    private func capacity(_ lines: [LimitLine]) -> BoxCapacity {
+        BoxCapacity(liveSessions: nil, limitLines: lines, accountEmail: nil)
+    }
+
+    func test_limitColumns_unionInFirstEncounterOrder() {
+        let a = capacity([
+            LimitLine(id: "session", label: "Current session", percent: 10, resetsAt: nil),
+            LimitLine(id: "week", label: "Current week (all models)", percent: 20, resetsAt: nil),
+        ])
+        let b = capacity([
+            LimitLine(id: "session", label: "Session (renamed)", percent: 30, resetsAt: nil),
+            LimitLine(id: "opus", label: "Current week (Opus)", percent: 40, resetsAt: nil),
+        ])
+        let columns = BoxCapacity.limitColumns(across: [a, b])
+        XCTAssertEqual(columns.map(\.id), ["session", "week", "opus"])
+        // Label comes from the first box that reported the line.
+        XCTAssertEqual(columns.map(\.label),
+                       ["Current session", "Current week (all models)", "Current week (Opus)"])
+    }
+
+    func test_limitColumns_duplicateIdsWithinOneBoxNotDuplicated() {
+        let a = capacity([
+            LimitLine(id: "session", label: "First", percent: 1, resetsAt: nil),
+            LimitLine(id: "session", label: "Second", percent: 2, resetsAt: nil),
+        ])
+        XCTAssertEqual(BoxCapacity.limitColumns(across: [a]).map(\.label), ["First"])
+    }
+
+    func test_hasDisplayableData_ignoresAccountEmail() {
+        XCTAssertFalse(BoxCapacity(liveSessions: nil, limitLines: [], accountEmail: nil)
+            .hasDisplayableData)
+        XCTAssertFalse(BoxCapacity(liveSessions: nil, limitLines: [], accountEmail: "a@b.c")
+            .hasDisplayableData, "email renders in the box cell, not the grid")
+        XCTAssertTrue(BoxCapacity(liveSessions: 0, limitLines: [], accountEmail: nil)
+            .hasDisplayableData)
+        XCTAssertTrue(capacity([LimitLine(id: "s", label: "S", percent: 1, resetsAt: nil)])
+            .hasDisplayableData)
+    }
+
+    func test_limitColumns_emptyInEmptyOut() {
+        XCTAssertTrue(BoxCapacity.limitColumns(across: []).isEmpty)
+        XCTAssertTrue(BoxCapacity.limitColumns(across: [capacity([])]).isEmpty)
     }
 }

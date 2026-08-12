@@ -467,10 +467,17 @@ final class NewChatViewModelTests: XCTestCase {
         fake.replies["recent_folders"] = foldersReply(#"{"folders":[]}"#)
         let vm = NewChatViewModel(api: fake)
         await vm.load()
+        // Drain the roster fan-out before selecting — its legs land in
+        // nondeterministic order, so nothing below may assert on `last`
+        // relative to them (this raced in CI for exactly that reason).
+        await vm.capacityFanOutForTesting?.value
         guard case let .agents(list) = vm.phase else { return XCTFail("expected agents phase") }
         await vm.select(agent: list[1])
         guard case let .folders(picked) = vm.phase else { return XCTFail("expected folders phase") }
         XCTAssertEqual(picked.id, list[1].id)
-        XCTAssertEqual(fake.requests.last?.agentDeviceID, list[1].id)
+        // The fan-out asked both boxes; select reuses the fanned folder
+        // cache, so picking one adds no third request.
+        XCTAssertEqual(Set(fake.requests.map(\.agentDeviceID)), [3, 4])
+        XCTAssertEqual(fake.requests.count, 2)
     }
 }

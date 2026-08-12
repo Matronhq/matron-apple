@@ -19,6 +19,19 @@ public struct LimitLine: Equatable, Sendable, Identifiable {
     }
 }
 
+/// One fleet-wide usage column in the Mac New Chat chooser: the union of
+/// every box's limit-line ids, so all rows align to the same columns even
+/// when an individual bridge reports fewer lines.
+public struct LimitColumn: Equatable, Sendable, Identifiable {
+    public let id: String
+    public let label: String
+
+    public init(id: String, label: String) {
+        self.id = id
+        self.label = label
+    }
+}
+
 /// The capacity blocks a bridge attaches to its `recent_folders` reply:
 /// live-session count, usage-limit lines, logged-in account. Every block is
 /// optional wire-side (an old bridge omits them all), so parsing degrades
@@ -41,13 +54,26 @@ public struct BoxCapacity: Equatable, Sendable {
         self.accountEmail = accountEmail
     }
 
+    /// True when this capacity carries anything the chooser grid can show.
+    /// Legacy bridges answer `recent_folders` without capacity blocks and
+    /// parse to an empty value — that entry must not summon the grid chrome
+    /// (header + placeholder cells). `accountEmail` doesn't count: it renders
+    /// in the box cell, not the grid.
+    public var hasDisplayableData: Bool {
+        liveSessions != nil || !limitLines.isEmpty
+    }
+
     /// Parses the capacity blocks out of a `recent_folders` reply object.
     /// Never throws; every block degrades independently. `activity.last_hour`
     /// is ignored on purpose — it's a spawn-side detail and the folder step
     /// already shows recent paths.
     public static func parse(replyObject: [String: Any]) -> BoxCapacity {
         let activity = replyObject["activity"] as? [String: Any]
+        // A negative count is malformed and would flip `hasDisplayableData`;
+        // drop it here rather than in `wholeNumber`, whose callers for
+        // `percent` clamp negatives instead.
         let liveSessions = wholeNumber(activity?["live_sessions"])
+            .flatMap { $0 >= 0 ? $0 : nil }
 
         let lines = ((replyObject["limits"] as? [String: Any])?["lines"] as? [[String: Any]]) ?? []
         let limitLines = lines.compactMap { line -> LimitLine? in
@@ -62,6 +88,21 @@ public struct BoxCapacity: Equatable, Sendable {
         let email = (replyObject["account"] as? [String: Any])?["email"] as? String
         return BoxCapacity(liveSessions: liveSessions, limitLines: limitLines,
                            accountEmail: (email?.isEmpty == false) ? email : nil)
+    }
+
+    /// Union of limit lines across a fleet, in first-encounter order — the
+    /// caller passes capacities in its display (sorted-agents) order, which
+    /// keeps the result deterministic. The label is the first one seen for
+    /// an id; bridges of one journal all derive labels the same way.
+    public static func limitColumns(across capacities: [BoxCapacity]) -> [LimitColumn] {
+        var seen = Set<String>()
+        var columns: [LimitColumn] = []
+        for capacity in capacities {
+            for line in capacity.limitLines where seen.insert(line.id).inserted {
+                columns.append(LimitColumn(id: line.id, label: line.label))
+            }
+        }
+        return columns
     }
 
     /// A JSON number that has to be a whole count. `JSONSerialization`
