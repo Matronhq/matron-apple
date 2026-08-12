@@ -54,6 +54,15 @@ public struct BoxCapacity: Equatable, Sendable {
         self.accountEmail = accountEmail
     }
 
+    /// True when this capacity carries anything the chooser grid can show.
+    /// Legacy bridges answer `recent_folders` without capacity blocks and
+    /// parse to an empty value — that entry must not summon the grid chrome
+    /// (header + placeholder cells). `accountEmail` doesn't count: it renders
+    /// in the box cell, not the grid.
+    public var hasDisplayableData: Bool {
+        liveSessions != nil || !limitLines.isEmpty
+    }
+
     /// Parses the capacity blocks out of a `recent_folders` reply object.
     /// Never throws; every block degrades independently. `activity.last_hour`
     /// is ignored on purpose — it's a spawn-side detail and the folder step

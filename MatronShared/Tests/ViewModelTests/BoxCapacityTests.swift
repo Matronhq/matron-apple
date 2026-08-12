@@ -127,6 +127,17 @@ final class BoxCapacityTests: XCTestCase {
         XCTAssertEqual(BoxCapacity.limitColumns(across: [a]).map(\.label), ["First"])
     }
 
+    func test_hasDisplayableData_ignoresAccountEmail() {
+        XCTAssertFalse(BoxCapacity(liveSessions: nil, limitLines: [], accountEmail: nil)
+            .hasDisplayableData)
+        XCTAssertFalse(BoxCapacity(liveSessions: nil, limitLines: [], accountEmail: "a@b.c")
+            .hasDisplayableData, "email renders in the box cell, not the grid")
+        XCTAssertTrue(BoxCapacity(liveSessions: 0, limitLines: [], accountEmail: nil)
+            .hasDisplayableData)
+        XCTAssertTrue(capacity([LimitLine(id: "s", label: "S", percent: 1, resetsAt: nil)])
+            .hasDisplayableData)
+    }
+
     func test_limitColumns_emptyInEmptyOut() {
         XCTAssertTrue(BoxCapacity.limitColumns(across: []).isEmpty)
         XCTAssertTrue(BoxCapacity.limitColumns(across: [capacity([])]).isEmpty)

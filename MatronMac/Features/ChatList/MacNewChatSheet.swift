@@ -40,14 +40,19 @@ struct MacNewChatSheet: View {
             listMaxHeight: min(max(windowSize.height * 0.6, 300), 650))
     }
 
-    private let layout: Layout
+    /// `@State`, not a plain `let`: the `.sheet` content builder re-runs on
+    /// every parent re-render while the sheet is open, and by then the key
+    /// window is the sheet itself — a stored property would be rebuilt from
+    /// the sheet's own size and collapse toward the 480×300 floors. State
+    /// keeps the value captured when the sheet first appeared.
+    @State private var layout: Layout
 
     init(deps: AppDependencies, session: UserSession, windowSize: CGSize? = nil,
          onCreated: @escaping (String) -> Void) {
         self.deps = deps
         self.session = session
         self.onCreated = onCreated
-        self.layout = Self.layout(for: windowSize)
+        _layout = State(initialValue: Self.layout(for: windowSize))
         _viewModel = State(initialValue: NewChatViewModel(api: deps.agentRPCService(for: session)))
     }
 
@@ -104,9 +109,13 @@ struct MacNewChatSheet: View {
         } else {
             let columns = BoxCapacity.limitColumns(
                 across: agents.compactMap { viewModel.capacities[$0.id] })
-            // Header only when there is anything to head — a fleet of old
-            // bridges keeps today's plain, headerless picker.
-            if !viewModel.capacities.isEmpty || !viewModel.capacityPending.isEmpty {
+            // Grid chrome only when there is real data to show (or a fan-out
+            // still in flight). Legacy bridges parse to EMPTY capacities, so
+            // a non-empty map alone proves nothing — an all-legacy fleet
+            // keeps today's plain, headerless picker.
+            let showGrid = !viewModel.capacityPending.isEmpty
+                || viewModel.capacities.values.contains(where: \.hasDisplayableData)
+            if showGrid {
                 MacAgentPickerHeader(columns: columns)
             }
             List(agents) { agent in
@@ -117,7 +126,8 @@ struct MacNewChatSheet: View {
                         agent: agent,
                         capacity: viewModel.capacities[agent.id],
                         pending: viewModel.capacityPending.contains(agent.id),
-                        columns: columns)
+                        columns: columns,
+                        showsCells: showGrid)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -210,6 +220,9 @@ struct MacAgentPickerRow: View {
     let pending: Bool
     /// Fleet-wide column set — same array for every row in the list.
     let columns: [LimitColumn]
+    /// False for an all-legacy fleet: no data cells at all, so the row
+    /// looks exactly like the pre-grid picker instead of a wall of dashes.
+    let showsCells: Bool
     /// Frozen clock for the reset captions; nil = now.
     var fixedNow: Date?
 
@@ -243,9 +256,11 @@ struct MacAgentPickerRow: View {
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            sessionsCell
-            ForEach(columns) { column in
-                limitCell(column)
+            if showsCells {
+                sessionsCell
+                ForEach(columns) { column in
+                    limitCell(column)
+                }
             }
             Group {
                 if agent.connected {

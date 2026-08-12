@@ -44,19 +44,19 @@ final class NewChatSheetCapacitySnapshotTests: XCTestCase {
             MacAgentPickerHeader(columns: columns)
             // 1. Everything the bridge can send.
             MacAgentPickerRow(agent: agent(1, "studio-mac", connected: true),
-                              capacity: full, pending: false, columns: columns, fixedNow: now)
+                              capacity: full, pending: false, columns: columns, showsCells: true, fixedNow: now)
             // 2. Missing one fleet column → em-dash cell.
             MacAgentPickerRow(agent: agent(2, "build-7", connected: true),
-                              capacity: partial, pending: false, columns: columns, fixedNow: now)
+                              capacity: partial, pending: false, columns: columns, showsCells: true, fixedNow: now)
             // 3. Connected, capacity still in flight.
             MacAgentPickerRow(agent: agent(3, "dev-2", connected: true),
-                              capacity: nil, pending: true, columns: columns, fixedNow: now)
+                              capacity: nil, pending: true, columns: columns, showsCells: true, fixedNow: now)
             // 4. Connected box on an old bridge — no capacity blocks at all.
             MacAgentPickerRow(agent: agent(4, "old-bridge", connected: true),
-                              capacity: nil, pending: false, columns: columns, fixedNow: now)
+                              capacity: nil, pending: false, columns: columns, showsCells: true, fixedNow: now)
             // 5. Offline: em-dash cells, caption unchanged.
             MacAgentPickerRow(agent: agent(5, "sleeping-box", connected: false),
-                              capacity: nil, pending: false, columns: columns, fixedNow: now)
+                              capacity: nil, pending: false, columns: columns, showsCells: true, fixedNow: now)
         }
         .padding(12)
         .frame(width: 700)
@@ -67,6 +67,27 @@ final class NewChatSheetCapacitySnapshotTests: XCTestCase {
         .background(Color(nsColor: .windowBackgroundColor))
 
         assertVariants(of: view, named: "MacNewChatAgentRows_states")
+    }
+
+    /// An all-legacy fleet: bridges answered `recent_folders` but sent no
+    /// capacity blocks, so their parsed capacity is EMPTY. No header, no
+    /// data cells — the picker must look exactly like the pre-grid one.
+    @MainActor
+    func testAgentPickerRowsLegacyFleet() {
+        let empty = BoxCapacity(liveSessions: nil, limitLines: [], accountEmail: nil)
+        let view = VStack(alignment: .leading, spacing: 10) {
+            MacAgentPickerRow(agent: agent(1, "old-a", connected: true),
+                              capacity: empty, pending: false, columns: [],
+                              showsCells: false, fixedNow: now)
+            MacAgentPickerRow(agent: agent(2, "old-b", connected: false),
+                              capacity: nil, pending: false, columns: [],
+                              showsCells: false, fixedNow: now)
+        }
+        .padding(12)
+        .frame(width: 480)
+        .background(Color(nsColor: .windowBackgroundColor))
+
+        assertVariants(of: view, named: "MacNewChatAgentRows_legacy")
     }
 }
 #endif
