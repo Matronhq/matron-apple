@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 /// Fullscreen image viewer presented from a chat attachment tap. iOS
 /// supports pinch-zoom + swipe-down-to-dismiss; Mac displays the
@@ -11,10 +14,21 @@ import SwiftUI
 /// into `MatronDesignSystem` for one sheet.
 public struct AttachmentFullscreenViewer: View {
     private let image: Image
+    /// Native bitmap size in pixels, when the call site knows it. Mac
+    /// uses it to open the sheet at the image's natural size instead of
+    /// a fixed 480pt minimum that shrank big photos and stretched small
+    /// bitmaps into pixelation. `nil` (iOS call sites, or an image whose
+    /// size never resolved) keeps the legacy flexible layout.
+    private let nativePixelSize: CGSize?
     private let onDismiss: () -> Void
 
-    public init(image: Image, onDismiss: @escaping () -> Void) {
+    public init(
+        image: Image,
+        nativePixelSize: CGSize? = nil,
+        onDismiss: @escaping () -> Void
+    ) {
         self.image = image
+        self.nativePixelSize = nativePixelSize
         self.onDismiss = onDismiss
     }
 
@@ -41,26 +55,125 @@ public struct AttachmentFullscreenViewer: View {
     // MARK: - Mac
 
     #if os(macOS)
+    /// Scale of the screen the sheet lands on — needed to translate the
+    /// bitmap's pixel size into the largest point size that doesn't
+    /// upscale (2x screen → half the pixels, in points).
+    @Environment(\.displayScale) private var displayScale
+
     @ViewBuilder
     private var macBody: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Spacer()
-                Button("Done") { onDismiss() }
-                    .keyboardShortcut(.cancelAction)
-                    .padding()
+        // Mac sheet sizing, probed empirically (2026-08-12): a sheet only
+        // adopts its content's size when the content is fully RIGID. Any
+        // flexibility (a `minWidth`/`minHeight` range, a bare `resizable`
+        // image) collapses the sheet to a small system default that gets
+        // proposed to the content — which is exactly the old "small and
+        // pixelated" bug. So when the bitmap's native size is known, the
+        // whole body takes an explicit width × height. macOS does NOT
+        // clamp sheets to the parent window, so the display size must be
+        // screen-bounded here.
+        if let displaySize = nativePixelSize.flatMap({
+            Self.imageDisplaySize(
+                pixelSize: $0,
+                displayScale: displayScale,
+                bound: Self.screenBound()
+            )
+        }) {
+            VStack(spacing: 0) {
+                doneRow.frame(height: Self.doneRowHeight)
+                image
+                    .resizable()
+                    // High interpolation for the big downscales (a 12MP
+                    // photo fit to ~1000pt) that alias visibly at the
+                    // default.
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .frame(width: displaySize.width, height: displaySize.height)
+                    // Fill whatever the min-size floor adds beyond the
+                    // image, keeping a small bitmap centred at 1:1 rather
+                    // than stretched.
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(Self.imagePadding)
             }
-            image
-                .resizable()
-                .scaledToFit()
-                .padding()
-            Spacer(minLength: 0)
+            .frame(
+                width: max(480, displaySize.width + Self.imagePadding * 2),
+                height: max(
+                    360,
+                    displaySize.height + Self.imagePadding * 2 + Self.doneRowHeight
+                )
+            )
+            .background(Color.black.opacity(0.85))
+            .accessibilityLabel("Image preview")
+        } else {
+            // Legacy flexible layout for call sites that can't supply a
+            // pixel size (never on Mac today, but the parameter is
+            // optional).
+            VStack(spacing: 0) {
+                doneRow
+                image
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .padding()
+                Spacer(minLength: 0)
+            }
+            .frame(minWidth: 480, minHeight: 360)
+            .background(Color.black.opacity(0.85))
+            .accessibilityLabel("Image preview")
         }
-        .frame(minWidth: 480, minHeight: 360)
-        .background(Color.black.opacity(0.85))
-        .accessibilityLabel("Image preview")
     }
+
+    @ViewBuilder
+    private var doneRow: some View {
+        HStack {
+            Spacer()
+            Button("Done") { onDismiss() }
+                .keyboardShortcut(.cancelAction)
+                .padding()
+        }
+    }
+
+    /// Largest display rect the image may occupy: 85% of the main
+    /// screen's visible frame, less the sheet chrome around the image.
+    /// Falls back to a conservative laptop-ish bound when no screen is
+    /// available (headless tests).
+    private static func screenBound() -> CGSize {
+        let visible = NSScreen.main?.visibleFrame.size
+            ?? CGSize(width: 1280, height: 800)
+        return CGSize(
+            width: visible.width * 0.85 - imagePadding * 2,
+            height: visible.height * 0.85 - imagePadding * 2 - doneRowHeight
+        )
+    }
+
+    /// Fixed height for the Done-button row. Fixed (not intrinsic) so the
+    /// sheet's total height can be computed exactly — the rigid frame is
+    /// what makes the sheet adopt the content size at all.
+    private static let doneRowHeight: CGFloat = 52
+    /// Padding around the image inside the sheet.
+    private static let imagePadding: CGFloat = 16
     #endif
+
+    /// Display size in points for a bitmap of `pixelSize` shown on a
+    /// screen of `displayScale`, bounded by `bound` (points): 1:1 pixels
+    /// when the image fits, aspect-fit downscale when it doesn't, never
+    /// an upscale. Returns `nil` for degenerate inputs (zero-area image
+    /// or bound), which callers treat as "fall back to flexible layout".
+    /// Platform-independent math, `static` for direct unit testing.
+    static func imageDisplaySize(
+        pixelSize: CGSize,
+        displayScale: CGFloat,
+        bound: CGSize
+    ) -> CGSize? {
+        guard pixelSize.width > 0, pixelSize.height > 0,
+              bound.width > 0, bound.height > 0 else { return nil }
+        let scale = displayScale > 0 ? displayScale : 1
+        let natural = CGSize(width: pixelSize.width / scale,
+                             height: pixelSize.height / scale)
+        let ratio = min(bound.width / natural.width,
+                        bound.height / natural.height, 1)
+        return CGSize(width: natural.width * ratio,
+                      height: natural.height * ratio)
+    }
 }
 
 #if !os(macOS)

@@ -743,6 +743,27 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(media.requested.count, 1, "multiple synchronous calls should coalesce")
     }
 
+    @MainActor
+    func test_imagePixelSize_availableOnceResolved() async {
+        // The Mac fullscreen viewer sizes its sheet from the bitmap's
+        // native pixel size; the VM must expose it alongside the cached
+        // `Image` (both come from the same decode).
+        let timeline = FakeTimelineService()
+        let media = FakeMediaService()
+        let url = URL(string: "mxc://example/abc")!
+        media.stubData[url] = Self.tinyPNG
+        let vm = ChatViewModel(roomID: "!r:s", timeline: timeline, media: media)
+
+        XCTAssertNil(vm.imagePixelSize(for: url), "unresolved URL has no size")
+        XCTAssertNil(vm.image(for: url))
+
+        let start = Date()
+        while vm.resolvedImage(for: url) == nil && Date().timeIntervalSince(start) < 2 {
+            await Task.yield()
+        }
+        XCTAssertEqual(vm.imagePixelSize(for: url), CGSize(width: 1, height: 1))
+    }
+
     /// 1×1 transparent PNG. Smallest valid PNG that decodes on both
     /// platforms. Embedded as bytes so the test target doesn't need a
     /// resource bundle.

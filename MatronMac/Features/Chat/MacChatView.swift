@@ -208,10 +208,13 @@ struct MacChatView: View {
 
     /// Identifiable wrapper around a SwiftUI `Image` so
     /// `.sheet(item:)` has something to key on. Per-present UUID so
-    /// two consecutive taps re-mount the sheet.
+    /// two consecutive taps re-mount the sheet. `pixelSize` lets the
+    /// viewer open the sheet at the image's natural size (nil → the
+    /// viewer's legacy flexible layout).
     fileprivate struct ImagePreview: Identifiable {
         let id = UUID()
         let image: Image
+        let pixelSize: CGSize?
     }
 
     /// Drives the summaries TOC popover — flipped on by the title cluster
@@ -379,7 +382,12 @@ struct MacChatView: View {
                         viewModel: viewModel,
                         stripViewModel: stripViewModel,
                         onOpenSubChat: { openSubChatID = $0 },
-                        onPreviewImage: { imagePreview = ImagePreview(image: $0) }
+                        onPreviewImage: { url, img in
+                            imagePreview = ImagePreview(
+                                image: img,
+                                pixelSize: viewModel.imagePixelSize(for: url)
+                            )
+                        }
                     )
                     .equatable()
                     // Inline typing indicator under the last bubble —
@@ -771,6 +779,7 @@ struct MacChatView: View {
         .sheet(item: $imagePreview) { preview in
             AttachmentFullscreenViewer(
                 image: preview.image,
+                nativePixelSize: preview.pixelSize,
                 onDismiss: { imagePreview = nil }
             )
         }
@@ -804,7 +813,9 @@ private struct MacTimelineListContent: View, Equatable {
     /// rows re-render as children appear/finish.
     let stripViewModel: SubChatStripViewModel
     let onOpenSubChat: (String) -> Void
-    let onPreviewImage: (Image) -> Void
+    /// Carries the tapped image's `mxc://` URL alongside the resolved
+    /// `Image` so the presenter can look up its native pixel size.
+    let onPreviewImage: (URL, Image) -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.viewModel === rhs.viewModel && lhs.stripViewModel === rhs.stripViewModel
@@ -893,7 +904,7 @@ private struct MacTimelineRowView: View, Equatable {
     let subtaskChild: SubChatSummary?
     let viewModel: ChatViewModel
     let onOpenSubChat: (String) -> Void
-    let onPreviewImage: (Image) -> Void
+    let onPreviewImage: (URL, Image) -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.row == rhs.row && lhs.subtaskChild == rhs.subtaskChild
@@ -920,8 +931,8 @@ private struct MacTimelineRowView: View, Equatable {
                     item: item,
                     resolveImage: { viewModel.image(for: $0) },
                     onRetry: { id in viewModel.retrySend(itemID: id) },
-                    onTapImage: { img in
-                        onPreviewImage(img)
+                    onTapImage: { url, img in
+                        onPreviewImage(url, img)
                     },
                     onTapFile: { mxc, filename in
                         Task {
@@ -1098,7 +1109,12 @@ struct MacSubChatPane: View {
                             viewModel: viewModel,
                             stripViewModel: stripViewModel,
                             onOpenSubChat: onOpenSibling,
-                            onPreviewImage: { imagePreview = MacSubChatImagePreview(image: $0) }
+                            onPreviewImage: { url, img in
+                                imagePreview = MacSubChatImagePreview(
+                                    image: img,
+                                    pixelSize: viewModel.imagePixelSize(for: url)
+                                )
+                            }
                         )
                         Color.clear
                             .frame(height: 1)
@@ -1181,7 +1197,11 @@ struct MacSubChatPane: View {
             LiveOutputSessionStore.shared.suspendSessions(in: childID)
         }
         .sheet(item: $imagePreview) { preview in
-            AttachmentFullscreenViewer(image: preview.image, onDismiss: { imagePreview = nil })
+            AttachmentFullscreenViewer(
+                image: preview.image,
+                nativePixelSize: preview.pixelSize,
+                onDismiss: { imagePreview = nil }
+            )
         }
     }
 }
@@ -1191,6 +1211,7 @@ struct MacSubChatPane: View {
 private struct MacSubChatImagePreview: Identifiable {
     let id = UUID()
     let image: Image
+    let pixelSize: CGSize?
 }
 
 /// The Mac sub-chat pane's mini-header: a close/back control, title +
