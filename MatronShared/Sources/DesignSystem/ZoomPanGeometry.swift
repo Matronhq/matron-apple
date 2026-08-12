@@ -32,12 +32,15 @@ struct ZoomPanGeometry: Equatable {
     }
 
     /// Multiplier for one keyboard zoom step (Mac ⌘+/⌘−). 1.5 needs
-    /// four presses to cross the whole 1…6 range — granular enough to
+    /// five presses to cross the whole 1…6 range — granular enough to
     /// aim, fast enough not to feel like cranking a winch.
     static let keyboardStep: CGFloat = 1.5
 
     /// One keyboard step in, clamped. Inverse of `steppedOut(from:)`
-    /// within the clamp range so repeated +/− can't drift.
+    /// while both scales stay inside the clamp range; at the boundaries
+    /// the clamp deliberately loses the remainder (6 → out → 4, like
+    /// every zoomable Mac app), which is why the round-trip test pins
+    /// an interior scale.
     static func steppedIn(from scale: CGFloat) -> CGFloat {
         clampedScale(scale * keyboardStep)
     }
