@@ -10,4 +10,25 @@ final class BoxChipTests: XCTestCase {
         XCTAssertEqual(chip.displayName, "a-very-long-box-name-that-will-not-fit")
         XCTAssertEqual(chip.lineLimit, 1)
     }
+
+    /// Pins name → palette index for fixed fixtures. If this test breaks,
+    /// the hash or palette changed and every user's colours re-shuffle —
+    /// that must never happen silently.
+    func testPaletteIndexIsPinned() {
+        XCTAssertEqual(BoxChip.paletteIndex(for: "eric"), 4)
+        XCTAssertEqual(BoxChip.paletteIndex(for: "dan-mac"), 4)
+        XCTAssertEqual(BoxChip.paletteIndex(for: "build-7"), 9)
+        XCTAssertEqual(BoxChip.paletteIndex(for: ""), 1)      // FNV offset basis % 10
+        XCTAssertEqual(BoxChip.paletteIndex(for: "🦊 box"), 1) // multi-byte UTF-8
+    }
+
+    func testPaletteIndexIsDeterministicAndInRange() {
+        for name in ["eric", "dan-mac", "build-7", "", "🦊 box", "a-very-long-box-name-that-will-not-fit"] {
+            let first = BoxChip.paletteIndex(for: name)
+            XCTAssertEqual(first, BoxChip.paletteIndex(for: name))
+            XCTAssertTrue((0..<BoxChip.palette.count).contains(first))
+        }
+        // Distinct fixtures observed to land on distinct hues.
+        XCTAssertNotEqual(BoxChip.paletteIndex(for: "eric"), BoxChip.paletteIndex(for: "build-7"))
+    }
 }
