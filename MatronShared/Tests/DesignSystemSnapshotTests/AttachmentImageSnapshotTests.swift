@@ -26,4 +26,12 @@ final class AttachmentFileSnapshotTests: XCTestCase {
             named: "unknownSize"
         )
     }
+
+    func test_downloading() {
+        assertVariants(
+            of: AttachmentFile(filename: "report.pdf", sizeBytes: 12_515_546, isLoading: true)
+                .frame(width: 320),
+            named: "downloading"
+        )
+    }
 }
