@@ -94,6 +94,11 @@ let package = Package(
                 // Phase 6 (Search): SearchViewModel drives both iOS and Mac
                 // search chrome and refers to SearchService / SearchHit.
                 "MatronSearch",
+                // Task 3 (media browser): MediaBrowserViewModel declares
+                // MediaBrowserStoreReading against JournalStore/JournalEvent
+                // directly — previously only reachable transitively via
+                // MatronChat, which is fragile if that path ever changes.
+                "MatronJournal",
             ],
             path: "Sources/ViewModels"
         ),
@@ -172,7 +177,7 @@ let package = Package(
         .testTarget(name: "StorageTests", dependencies: ["MatronStorage"], path: "Tests/StorageTests"),
         .testTarget(name: "AuthTests", dependencies: ["MatronAuth", "MatronModels", "MatronStorage", "MatronJournal"], path: "Tests/AuthTests"),
         .testTarget(name: "ChatTests", dependencies: ["MatronChat", "MatronEvents", "MatronJournal", "MatronModels", "MatronSync"], path: "Tests/ChatTests"),
-        .testTarget(name: "ViewModelTests", dependencies: ["MatronViewModels", "MatronAuth", "MatronChat", "MatronEvents", "MatronModels", "MatronStorage", "MatronSearch"], path: "Tests/ViewModelTests"),
+        .testTarget(name: "ViewModelTests", dependencies: ["MatronViewModels", "MatronAuth", "MatronChat", "MatronEvents", "MatronModels", "MatronStorage", "MatronSearch", "MatronJournal"], path: "Tests/ViewModelTests"),
         .testTarget(
             name: "DesignSystemSnapshotTests",
             dependencies: [

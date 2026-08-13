@@ -33,6 +33,43 @@ private final class FixedOutcomeMedia: MediaService, @unchecked Sendable {
     }
 }
 
+/// Media service whose `fetchOutcome` suspends until `release()` is called
+/// — mirrors FileAttachmentDownloadTests' `GatedMediaService`, adapted to
+/// gate `fetchOutcome` (not `image`) and to resume every waiter with the
+/// same fixed outcome, so concurrent `thumbnail(for:)` calls can be pinned
+/// mid-flight.
+private final class GatedOutcomeMedia: MediaService, @unchecked Sendable {
+    private let lock = NSLock()
+    private let outcome: MediaFetchOutcome
+    private var waiters: [CheckedContinuation<MediaFetchOutcome, Never>] = []
+    private var _requestCount = 0
+    /// Lock-protected read — callers may poll this concurrently with a
+    /// suspended `fetchOutcome`, which still holds the lock only for the
+    /// increment itself.
+    var requestCount: Int { lock.withLock { _requestCount } }
+
+    init(outcome: MediaFetchOutcome) { self.outcome = outcome }
+
+    func image(for mxc: URL) async -> Data? { nil }
+
+    func fetchOutcome(mxcURL: URL) async -> MediaFetchOutcome {
+        lock.withLock { _requestCount += 1 }
+        return await withCheckedContinuation { continuation in
+            lock.withLock { waiters.append(continuation) }
+        }
+    }
+
+    /// Releases every suspended fetch with the stubbed outcome.
+    func release() {
+        let (resumed, value): ([CheckedContinuation<MediaFetchOutcome, Never>], MediaFetchOutcome) =
+            lock.withLock {
+                defer { waiters.removeAll() }
+                return (waiters, outcome)
+            }
+        for waiter in resumed { waiter.resume(returning: value) }
+    }
+}
+
 final class MediaBrowserViewModelTests: XCTestCase {
     private let server = URL(string: "https://journal.example")!
 
@@ -148,6 +185,61 @@ final class MediaBrowserViewModelTests: XCTestCase {
         XCTAssertNotNil(first)
         _ = await vm.thumbnail(for: url)
         XCTAssertEqual(media.requestCount, 1, "second ask must hit the cache")
+    }
+
+    /// Settle-poll — mirrors FileAttachmentDownloadTests' `waitUntil`.
+    private func waitUntil(
+        _ condition: () -> Bool,
+        timeout: TimeInterval = 2
+    ) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+
+    @MainActor
+    func test_thumbnail_overlappingCalls_coalesceToOneFetch_data() async {
+        let png = Self.tinyPNG()
+        let media = GatedOutcomeMedia(outcome: .data(png))
+        let url = server.appendingPathComponent("media").appendingPathComponent("b1")
+        let vm = makeVM(store: FakeBrowserStore(), media: media)
+
+        let first = Task { await vm.thumbnail(for: url) }
+        let second = Task { await vm.thumbnail(for: url) }
+        await waitUntil { media.requestCount == 1 }
+        XCTAssertEqual(media.requestCount, 1, "second caller must join the in-flight fetch, not start a new one")
+
+        media.release()
+        let firstImage = await first.value
+        let secondImage = await second.value
+        XCTAssertNotNil(firstImage)
+        XCTAssertNotNil(secondImage)
+        XCTAssertEqual(media.requestCount, 1, "exactly one fetchOutcome call for two overlapping requests")
+    }
+
+    /// Pins the ordering fix: a joiner awaiting the SAME shared task as the
+    /// owner must not resume until the owner's `markExpired` side effect has
+    /// already applied — both callers see `.gone` consistently, never a
+    /// bare `nil` with `isUnavailable == false`.
+    @MainActor
+    func test_thumbnail_overlappingCalls_coalesceToOneFetch_notFound() async {
+        let media = GatedOutcomeMedia(outcome: .notFound)
+        let url = server.appendingPathComponent("media").appendingPathComponent("b1")
+        let vm = makeVM(store: FakeBrowserStore(), media: media)
+
+        let first = Task { await vm.thumbnail(for: url) }
+        let second = Task { await vm.thumbnail(for: url) }
+        await waitUntil { media.requestCount == 1 }
+        XCTAssertEqual(media.requestCount, 1, "second caller must join the in-flight fetch, not start a new one")
+
+        media.release()
+        let firstImage = await first.value
+        let secondImage = await second.value
+        XCTAssertNil(firstImage)
+        XCTAssertNil(secondImage)
+        XCTAssertTrue(vm.isUnavailable(url), "the side effect of the shared fetch must be visible to both awaiters")
+        XCTAssertEqual(media.requestCount, 1, "exactly one fetchOutcome call for two overlapping requests")
     }
 
     private static func tinyPNG() -> Data {

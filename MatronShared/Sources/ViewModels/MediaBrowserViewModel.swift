@@ -126,47 +126,54 @@ public final class MediaBrowserViewModel {
 
     private enum ThumbOutcome {
         case image(Image), gone, failed
-        var asImage: Image? { if case .image(let image) = self { return image }; return nil }
     }
 
     /// Fetch + downscale one grid thumbnail. A 404 is permanent (blob ids
     /// are immutable; the journal reaper deletes over-quota blobs) — the
     /// entry flips to expired and is never re-fetched. In-flight requests
-    /// coalesce (a single `fetchOutcome` call per fetch) so a grid redraw
-    /// doesn't restart downloads.
+    /// coalesce onto a SINGLE shared `Task` that both issues the one
+    /// `fetchOutcome` call and applies the cache/expire side effects itself
+    /// — a joiner's `await task.value` cannot resume until those side
+    /// effects have already run, so there is no window where a joiner
+    /// observes `.gone` as a plain `nil` with `isUnavailable == false`.
     public func thumbnail(for url: URL) async -> Image? {
         if let cached = thumbnails[url] { return cached }
         guard !unavailable.contains(url) else { return nil }
         if let running = inFlight[url] { return await running.value }
-        let task = Task<ThumbOutcome, Never> { [media] in
+        let task = Task<Image?, Never> { @MainActor [weak self, media] in
+            guard let self else { return nil }
+            let outcome: ThumbOutcome
             switch await media.fetchOutcome(mxcURL: url) {
             case .notFound:
-                return .gone
+                outcome = .gone
             case .failure:
-                return .failed
+                outcome = .failed
             case .data(let data):
                 if let image = Self.downscaled(data, maxPixel: Self.thumbnailMaxPixel) {
-                    return .image(image)
+                    outcome = .image(image)
+                } else {
+                    outcome = .failed
                 }
-                return .failed
             }
+            let result: Image?
+            switch outcome {
+            case .image(let image):
+                self.cacheThumbnail(image, for: url)
+                result = image
+            case .gone:
+                self.markExpired(url)
+                result = nil
+            case .failed:
+                result = nil
+            }
+            // Clear before returning: no `await` follows, so this happens
+            // atomically (on the serial MainActor) before any awaiter of
+            // `task.value` — owner or joiner — resumes.
+            self.inFlight[url] = nil
+            return result
         }
-        // Adapter task so concurrent callers await the same single fetch
-        // (one `fetchOutcome` call total) without repeating the
-        // cache/expire side effects below.
-        inFlight[url] = Task { await task.value.asImage }
-        let outcome = await task.value
-        inFlight[url] = nil
-        switch outcome {
-        case .image(let image):
-            cacheThumbnail(image, for: url)
-            return image
-        case .gone:
-            markExpired(url)
-            return nil
-        case .failed:
-            return nil
-        }
+        inFlight[url] = task
+        return await task.value
     }
 
     private func cacheThumbnail(_ image: Image, for url: URL) {
