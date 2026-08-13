@@ -29,6 +29,11 @@ struct MacTimelineItemView: View {
     /// `MacChatView` wires this through to a temp-file write +
     /// `NSWorkspace.shared.open(_:)`.
     var onTapFile: ((URL, String) -> Void)? = nil
+    /// Whether a file attachment's blob download is in flight — drives
+    /// the chip's spinner (`ChatViewModel.isDownloadingFile(_:)`).
+    /// Read inside the row body so Observation invalidates the row when
+    /// the flag flips. `nil` keeps previews/tests compiling.
+    var isDownloadingFile: ((URL) -> Bool)? = nil
     /// Inline ask-user — mirrors the iOS surface.
     var askViewModel: ((String) -> AskUserSheetViewModel?)? = nil
     var isPromptAnswered: ((String) -> Bool)? = nil
@@ -143,6 +148,7 @@ struct MacTimelineItemView: View {
                     AttachmentFile(
                         filename: filename,
                         sizeBytes: sizeBytes,
+                        isLoading: url.map { isDownloadingFile?($0) ?? false } ?? false,
                         onTap: {
                             if let url, let onTapFile {
                                 onTapFile(url, filename)

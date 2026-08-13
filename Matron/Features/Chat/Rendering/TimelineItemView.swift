@@ -36,6 +36,11 @@ struct TimelineItemView: View {
     /// temp file and present `ShareLink` (iOS) / `NSWorkspace.open`
     /// (Mac).
     var onTapFile: ((URL, String) -> Void)? = nil
+    /// Whether a file attachment's blob download is in flight — drives
+    /// the chip's spinner (`ChatViewModel.isDownloadingFile(_:)`).
+    /// Read inside the row body so Observation invalidates the row when
+    /// the flag flips. `nil` keeps previews/tests compiling.
+    var isDownloadingFile: ((URL) -> Bool)? = nil
     /// Inline ask-user: resolves the stable per-prompt `AskUserSheetViewModel`
     /// (nil for previews/tests without a `ChatViewModel`).
     var askViewModel: ((String) -> AskUserSheetViewModel?)? = nil
@@ -161,6 +166,7 @@ struct TimelineItemView: View {
                     AttachmentFile(
                         filename: filename,
                         sizeBytes: sizeBytes,
+                        isLoading: url.map { isDownloadingFile?($0) ?? false } ?? false,
                         // Tap handler — only fires if we have both a URL
                         // and a registered handler. Without the URL there's
                         // nothing to fetch (`.file(url: nil, …)` is a

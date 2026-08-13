@@ -788,6 +788,17 @@ public final class ChatViewModel {
     /// fire duplicate fetches on every SwiftUI re-render.
     private var inFlightRequests: Set<URL> = []
 
+    /// File-attachment URLs whose blob download is currently in flight.
+    /// `@Observable` state — the timeline's file chip reads it via
+    /// `isDownloadingFile(_:)` to draw a spinner, because a large PDF
+    /// takes double-digit seconds to pull through the journal server and
+    /// a tap with no visible reaction reads as a dead tap.
+    private var downloadingFiles: Set<URL> = []
+    /// Attachment URL → temp file already written by `writeTempFile`.
+    /// Re-opening an attachment must not re-download a multi-MB blob the
+    /// user just waited for.
+    private var fileTempURLs: [URL: URL] = [:]
+
     /// Event IDs of ask-user prompts the user has answered (or
     /// dismissed) on THIS device, persisted across launches under
     /// `matron.answeredPrompts.<roomID>` so push re-decryption /
@@ -1322,7 +1333,28 @@ public final class ChatViewModel {
     /// of a UUID. Files written here are *not* cleaned up — the OS
     /// reaps the temp directory between launches and the size cost
     /// is bounded by attachments the user has actively opened.
+    /// Whether a file attachment's blob download is currently in flight —
+    /// drives the timeline chip's spinner. `@Observable` re-evaluates the
+    /// row when `downloadingFiles` changes, so the spinner appears on tap
+    /// and clears when the open/preview fires.
+    public func isDownloadingFile(_ mxcURL: URL) -> Bool {
+        downloadingFiles.contains(mxcURL)
+    }
+
     public func writeTempFile(mxcURL: URL, filename: String) async -> URL? {
+        // Repeat open: serve the temp file written last time (the OS may
+        // have reaped it between launches — fall through and re-download
+        // if it's gone).
+        if let cached = fileTempURLs[mxcURL],
+           FileManager.default.fileExists(atPath: cached.path) {
+            return cached
+        }
+        // Re-tap while the (multi-second) download is still running: a
+        // no-op, not a second parallel download. The chip's spinner
+        // (driven by `isDownloadingFile`) is the "hold on" signal.
+        guard !downloadingFiles.contains(mxcURL) else { return nil }
+        downloadingFiles.insert(mxcURL)
+        defer { downloadingFiles.remove(mxcURL) }
         guard let data = await media.fetchBytes(mxcURL: mxcURL) else { return nil }
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("matron-attachments", isDirectory: true)
@@ -1340,6 +1372,7 @@ public final class ChatViewModel {
             let safeFilename = Self.sanitisedAttachmentFilename(filename)
             let dest = dir.appendingPathComponent(safeFilename)
             try data.write(to: dest, options: .atomic)
+            fileTempURLs[mxcURL] = dest
             return dest
         } catch {
             Self.logger.error("writeTempFile failed: \(error.localizedDescription, privacy: .public)")
