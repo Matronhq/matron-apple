@@ -1042,7 +1042,8 @@ private struct TimelineRowView: View, Equatable {
                                 decision: approve ? .approve : .deny)
                         }
                     },
-                    convoID: viewModel.roomID
+                    convoID: viewModel.roomID,
+                    hasMultipleSenders: viewModel.hasMultipleSenders
                 )
                 // No `.onAppear` history trigger here: row
                 // materialization is not evidence the user

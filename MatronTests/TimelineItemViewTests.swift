@@ -115,4 +115,35 @@ final class TimelineItemViewTests: XCTestCase {
                           "content kind \(kind) must render")
         }
     }
+
+    // MARK: - avatarSender
+
+    /// Own messages never get an avatar, even in a multi-sender room.
+    func test_avatarSender_ownMessage_isNil() {
+        let item = TimelineItem(
+            id: "1", sender: "dev-2", timestamp: .now,
+            kind: .text(body: "hi", formattedHTML: nil), isOwn: true, sendState: .sent
+        )
+        XCTAssertNil(TimelineItemView.avatarSender(for: item, hasMultipleSenders: true))
+    }
+
+    /// A 1:1 chat (single bot) must not show an avatar even on its
+    /// non-own messages — this is the "zero layout change" contract.
+    func test_avatarSender_singleSenderRoom_isNil() {
+        let item = TimelineItem(
+            id: "1", sender: "matron", timestamp: .now,
+            kind: .text(body: "hi", formattedHTML: nil), isOwn: false, sendState: .sent
+        )
+        XCTAssertNil(TimelineItemView.avatarSender(for: item, hasMultipleSenders: false))
+    }
+
+    /// The multi-agent case: non-own message in a room with >=2 distinct
+    /// senders gets the sender's name back for `MessageBubble`.
+    func test_avatarSender_multiSenderRoom_returnsSenderName() {
+        let item = TimelineItem(
+            id: "1", sender: "dev-2", timestamp: .now,
+            kind: .text(body: "hi", formattedHTML: nil), isOwn: false, sendState: .sent
+        )
+        XCTAssertEqual(TimelineItemView.avatarSender(for: item, hasMultipleSenders: true), "dev-2")
+    }
 }

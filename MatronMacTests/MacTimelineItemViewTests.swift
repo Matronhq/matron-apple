@@ -81,5 +81,31 @@ final class MacTimelineItemViewTests: XCTestCase {
                           "content kind \(kind) must render")
         }
     }
+
+    // MARK: - avatarSender (mirrors iOS TimelineItemViewTests)
+
+    func test_avatarSender_ownMessage_isNil() {
+        let item = TimelineItem(
+            id: "1", sender: "dev-2", timestamp: .now,
+            kind: .text(body: "hi", formattedHTML: nil), isOwn: true, sendState: .sent
+        )
+        XCTAssertNil(MacTimelineItemView.avatarSender(for: item, hasMultipleSenders: true))
+    }
+
+    func test_avatarSender_singleSenderRoom_isNil() {
+        let item = TimelineItem(
+            id: "1", sender: "matron", timestamp: .now,
+            kind: .text(body: "hi", formattedHTML: nil), isOwn: false, sendState: .sent
+        )
+        XCTAssertNil(MacTimelineItemView.avatarSender(for: item, hasMultipleSenders: false))
+    }
+
+    func test_avatarSender_multiSenderRoom_returnsSenderName() {
+        let item = TimelineItem(
+            id: "1", sender: "dev-2", timestamp: .now,
+            kind: .text(body: "hi", formattedHTML: nil), isOwn: false, sendState: .sent
+        )
+        XCTAssertEqual(MacTimelineItemView.avatarSender(for: item, hasMultipleSenders: true), "dev-2")
+    }
 }
 #endif

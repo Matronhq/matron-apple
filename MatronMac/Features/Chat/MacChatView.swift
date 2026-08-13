@@ -976,7 +976,8 @@ private struct MacTimelineRowView: View, Equatable {
                                 decision: approve ? .approve : .deny)
                         }
                     },
-                    convoID: viewModel.roomID
+                    convoID: viewModel.roomID,
+                    hasMultipleSenders: viewModel.hasMultipleSenders
                 )
                 // No `.onAppear` history trigger — an eager stack
                 // mounts every row immediately; the near-top
