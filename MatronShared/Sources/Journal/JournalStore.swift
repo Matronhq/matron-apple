@@ -761,6 +761,37 @@ public final class JournalStore: @unchecked Sendable {
         }
     }
 
+    /// `image`/`file` events for one conversation, newest first — the
+    /// media & links browser's Media and Files tabs. Reads the full local
+    /// history: the timeline's 120-row window cannot see older attachments.
+    public func attachmentEvents(convoID: String) throws -> [JournalEvent] {
+        try dbQueue.read { db in
+            try EventRecord
+                .filter(Column("convo_id") == convoID)
+                .filter([JournalEventType.image, JournalEventType.file].contains(Column("type")))
+                .order(Column("seq").desc)
+                .fetchAll(db)
+                .map(\.journalEvent)
+        }
+    }
+
+    /// `text` events that plausibly contain a URL, newest first — a cheap
+    /// SQL prefilter; precise extraction happens in Swift (`LinkExtractor`).
+    /// `payload` is a JSON BLOB, so CAST to TEXT before LIKE (SQLite's LIKE
+    /// is not defined over blobs).
+    public func linkCandidateEvents(convoID: String) throws -> [JournalEvent] {
+        try dbQueue.read { db in
+            try EventRecord
+                .fetchAll(db, sql: """
+                    SELECT * FROM event
+                    WHERE convo_id = ? AND type = 'text'
+                      AND CAST(payload AS TEXT) LIKE '%http%'
+                    ORDER BY seq DESC
+                    """, arguments: [convoID])
+                .map(\.journalEvent)
+        }
+    }
+
     /// TOC entries for one conversation, newest first — the summary rail's
     /// one-shot read.
     public func summaryEntries(convoID: String) throws -> [SummaryEntryRecord] {
