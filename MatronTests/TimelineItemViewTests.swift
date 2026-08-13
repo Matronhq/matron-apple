@@ -101,8 +101,8 @@ final class TimelineItemViewTests: XCTestCase {
     func test_shouldRender_returnsTrue_forContentKinds() {
         let kinds: [TimelineItem.Kind] = [
             .text(body: "hi", formattedHTML: nil),
-            .image(url: nil, caption: nil, sizeBytes: nil),
-            .file(url: nil, filename: "x.pdf", caption: nil, sizeBytes: nil),
+            .image(url: nil, caption: nil, sizeBytes: nil, expired: false),
+            .file(url: nil, filename: "x.pdf", caption: nil, sizeBytes: nil, expired: false),
             .unknown(eventType: "m.audio"),
         ]
         for kind in kinds {
