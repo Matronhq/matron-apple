@@ -11,7 +11,8 @@ final class MediaBrowserSnapshotTests: XCTestCase {
 
     private var mediaCells: [MediaBrowserView.MediaCell] {
         [
-            .init(id: 3, url: URL(string: "https://j.example/media/a"), expired: false),
+            .init(id: 4, url: URL(string: "https://j.example/media/a"), expired: false),
+            .init(id: 3, url: URL(string: "https://j.example/media/e"), expired: false, isLoading: true),
             .init(id: 2, url: URL(string: "https://j.example/media/b"), expired: false),
             .init(id: 1, url: nil, expired: true),
         ]

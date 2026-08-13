@@ -14,10 +14,16 @@ public struct MediaBrowserView: View {
         public let id: Int64
         public let url: URL?
         public let expired: Bool
-        public init(id: Int64, url: URL?, expired: Bool) {
+        /// Whether this cell's full-size image fetch is currently in
+        /// flight — mirrors `FileRow.isLoading`'s spinner. Defaults to
+        /// `false` so existing call sites (and snapshot fixtures) keep
+        /// compiling unchanged.
+        public let isLoading: Bool
+        public init(id: Int64, url: URL?, expired: Bool, isLoading: Bool = false) {
             self.id = id
             self.url = url
             self.expired = expired
+            self.isLoading = isLoading
         }
     }
 
@@ -193,7 +199,7 @@ private struct MediaThumbCell: View {
     @State private var image: Image?
 
     var body: some View {
-        Button(action: { if !cell.expired { onTap() } }) {
+        Button(action: { if !cell.expired && !cell.isLoading { onTap() } }) {
             ZStack {
                 Rectangle().fill(.quaternary)
                 if cell.expired {
@@ -210,13 +216,22 @@ private struct MediaThumbCell: View {
                         .font(.title2)
                         .foregroundStyle(.tertiary)
                 }
+                // While the full-size fetch is in flight, mirror
+                // AttachmentFile's spinner so a re-tap reads as "hold on"
+                // rather than a dead tap.
+                if cell.isLoading {
+                    Rectangle().fill(.black.opacity(0.35))
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.white)
+                }
             }
             .frame(minWidth: 110, minHeight: 110)
             .aspectRatio(1, contentMode: .fill)
             .clipped()
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(cell.expired ? "Image, expired" : "Image")
+        .accessibilityLabel(cell.expired ? "Image, expired" : (cell.isLoading ? "Image, loading" : "Image"))
         .task(id: cell.url) {
             guard !cell.expired, let url = cell.url, image == nil else { return }
             image = await thumbnail(url)

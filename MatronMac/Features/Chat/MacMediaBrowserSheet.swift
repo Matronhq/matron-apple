@@ -15,6 +15,12 @@ struct MacMediaBrowserSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: MediaBrowserViewModel?
     @State private var imagePreview: Preview?
+    /// Media URLs whose full-size fetch is currently in flight — guards
+    /// `openImage` against re-entrant taps stacking overlapping downloads,
+    /// and drives `MediaCell.isLoading`'s spinner. Kept local to the sheet
+    /// (not `ChatViewModel`) because the media browser owns its own
+    /// `MediaService` call, not the timeline's.
+    @State private var openingMedia: Set<URL> = []
 
     private struct Preview: Identifiable {
         let id = UUID()
@@ -23,38 +29,38 @@ struct MacMediaBrowserSheet: View {
     }
 
     var body: some View {
-        Group {
-            if let viewModel {
-                MediaBrowserView(
-                    media: viewModel.mediaItems.map {
-                        .init(id: $0.id, url: $0.url,
-                              expired: $0.expired || ($0.url.map(viewModel.isUnavailable) ?? false))
-                    },
-                    files: viewModel.fileItems.map {
-                        .init(id: $0.id, url: $0.url, name: $0.name,
-                              sizeBytes: $0.sizeBytes,
-                              expired: $0.expired || ($0.url.map(chatViewModel.isMediaUnavailable) ?? false),
-                              isLoading: $0.url.map(chatViewModel.isDownloadingFile) ?? false)
-                    },
-                    links: viewModel.links.map {
-                        .init(id: $0.id, url: $0.url, context: $0.context, date: $0.timestamp)
-                    },
-                    loadFailed: viewModel.loadFailed,
-                    thumbnail: { await viewModel.thumbnail(for: $0) },
-                    onMediaTap: { cell in openImage(cell) },
-                    onFileTap: { row in openFile(row) },
-                    onLinkTap: { NSWorkspace.shared.open($0.url) }
-                )
-            } else {
-                ProgressView()
+        VStack(spacing: 0) {
+            doneRow.frame(height: Self.doneRowHeight)
+            Group {
+                if let viewModel {
+                    MediaBrowserView(
+                        media: viewModel.mediaItems.map {
+                            .init(id: $0.id, url: $0.url,
+                                  expired: $0.expired || ($0.url.map(viewModel.isUnavailable) ?? false),
+                                  isLoading: $0.url.map(openingMedia.contains) ?? false)
+                        },
+                        files: viewModel.fileItems.map {
+                            .init(id: $0.id, url: $0.url, name: $0.name,
+                                  sizeBytes: $0.sizeBytes,
+                                  expired: $0.expired || ($0.url.map(chatViewModel.isMediaUnavailable) ?? false),
+                                  isLoading: $0.url.map(chatViewModel.isDownloadingFile) ?? false)
+                        },
+                        links: viewModel.links.map {
+                            .init(id: $0.id, url: $0.url, context: $0.context, date: $0.timestamp)
+                        },
+                        loadFailed: viewModel.loadFailed,
+                        thumbnail: { await viewModel.thumbnail(for: $0) },
+                        onMediaTap: { cell in openImage(cell) },
+                        onFileTap: { row in openFile(row) },
+                        onLinkTap: { NSWorkspace.shared.open($0.url) }
+                    )
+                } else {
+                    ProgressView()
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(width: 640, height: 520)   // rigid — Mac sheets ignore ideal sizes
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Done") { dismiss() }
-            }
-        }
         .task {
             guard viewModel == nil, let deps, let session else { return }
             let vm = MediaBrowserViewModel(
@@ -74,10 +80,30 @@ struct MacMediaBrowserSheet: View {
         }
     }
 
+    /// Sheet content is plain (not a `NavigationStack`), so a `.toolbar`
+    /// item never renders on macOS — Mac sheets are window-modal, so that
+    /// left the browser with no close affordance at all. In-content row
+    /// mirrors `AttachmentFullscreenViewer.doneRow` / `MacAddAgentSheet`;
+    /// `.cancelAction` also wires Esc.
+    @ViewBuilder
+    private var doneRow: some View {
+        HStack {
+            Spacer()
+            Button("Done") { dismiss() }
+                .keyboardShortcut(.cancelAction)
+                .padding()
+        }
+    }
+
+    private static let doneRowHeight: CGFloat = 52
+
     private func openImage(_ cell: MediaBrowserView.MediaCell) {
-        guard let url = cell.url, let deps, let session else { return }
+        guard let url = cell.url, let deps, let session,
+              !openingMedia.contains(url) else { return }
         let media = deps.mediaService(for: session)
+        openingMedia.insert(url)
         Task {
+            defer { openingMedia.remove(url) }
             if let sized = await media.sizedImage(for: url) {
                 imagePreview = Preview(image: sized.image, pixelSize: sized.pixelSize)
             }

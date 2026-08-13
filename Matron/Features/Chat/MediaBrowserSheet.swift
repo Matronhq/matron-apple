@@ -13,6 +13,13 @@ struct MediaBrowserSheet: View {
     @Environment(\.openURL) private var openURL
     @State private var viewModel: MediaBrowserViewModel?
     @State private var preview: Preview?
+    /// Media URLs whose full-size fetch is currently in flight — guards
+    /// `openImage` against re-entrant taps stacking overlapping downloads,
+    /// and drives `MediaCell.isLoading`'s spinner. Kept local to the sheet
+    /// (not `ChatViewModel`) because the media browser owns its own
+    /// `MediaService` call, not the timeline's. Mapping logic mirrors
+    /// `MacMediaBrowserSheet` token-for-token.
+    @State private var openingMedia: Set<URL> = []
 
     private enum Preview: Identifiable {
         case image(UUID, Image)
@@ -32,7 +39,8 @@ struct MediaBrowserSheet: View {
                     MediaBrowserView(
                         media: viewModel.mediaItems.map {
                             .init(id: $0.id, url: $0.url,
-                                  expired: $0.expired || ($0.url.map(viewModel.isUnavailable) ?? false))
+                                  expired: $0.expired || ($0.url.map(viewModel.isUnavailable) ?? false),
+                                  isLoading: $0.url.map(openingMedia.contains) ?? false)
                         },
                         files: viewModel.fileItems.map {
                             .init(id: $0.id, url: $0.url, name: $0.name,
@@ -102,9 +110,12 @@ struct MediaBrowserSheet: View {
     }
 
     private func openImage(_ cell: MediaBrowserView.MediaCell) {
-        guard let url = cell.url, let deps, let session else { return }
+        guard let url = cell.url, let deps, let session,
+              !openingMedia.contains(url) else { return }
         let media = deps.mediaService(for: session)
+        openingMedia.insert(url)
         Task {
+            defer { openingMedia.remove(url) }
             if let img = await media.swiftUIImage(for: url) {
                 preview = .image(UUID(), img)
             }
