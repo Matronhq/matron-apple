@@ -36,7 +36,7 @@ struct MacMediaBrowserSheet: View {
                     MediaBrowserView(
                         media: viewModel.mediaItems.map {
                             .init(id: $0.id, url: $0.url,
-                                  expired: $0.expired || ($0.url.map(viewModel.isUnavailable) ?? false),
+                                  expired: $0.expired || ($0.url.map { viewModel.isUnavailable($0) || chatViewModel.isMediaUnavailable($0) } ?? false),
                                   isLoading: $0.url.map(openingMedia.contains) ?? false)
                         },
                         files: viewModel.fileItems.map {
