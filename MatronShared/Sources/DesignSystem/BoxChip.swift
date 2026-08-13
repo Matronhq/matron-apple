@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 /// The agent box that owns a conversation, as a small capsule beside the
@@ -43,6 +44,59 @@ public struct BoxChip: View {
         return colorScheme == .dark
             ? base.mix(with: .white, by: 0.3)
             : base.mix(with: .black, by: 0.35)
+    }
+
+    /// Apple's documented light-mode sRGB for each `palette` entry, same
+    /// order — used only by `contrastingForeground(for:)` below to pick a
+    /// legible text colour; never rendered directly (the fill itself
+    /// always comes from `palette`/`tint(for:)`, so light/dark adaptation
+    /// of the fill is unaffected). Frozen alongside `palette` — if that
+    /// array is ever reordered or extended, this one must move with it.
+    static let paletteRGB: [(r: Double, g: Double, b: Double)] = [
+        (0, 122, 255),    // .blue
+        (52, 199, 89),    // .green
+        (255, 149, 0),    // .orange
+        (175, 82, 222),   // .purple
+        (48, 176, 199),   // .teal
+        (255, 45, 85),    // .pink
+        (88, 86, 214),    // .indigo
+        (162, 132, 94),   // .brown
+        (50, 173, 230),   // .cyan
+        (0, 199, 190),    // .mint
+    ]
+
+    /// WCAG relative luminance (linearized sRGB) of an 0–255 component
+    /// triple. Standard formula, see
+    /// https://www.w3.org/TR/WCAG21/#dfn-relative-luminance
+    static func relativeLuminance(_ rgb: (r: Double, g: Double, b: Double)) -> Double {
+        func linear(_ channel255: Double) -> Double {
+            let c = channel255 / 255
+            return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * linear(rgb.r) + 0.7152 * linear(rgb.g) + 0.0722 * linear(rgb.b)
+    }
+
+    /// WCAG-legible foreground for text drawn directly on this box's RAW
+    /// (full-opacity) fill — e.g. `SenderAvatar`'s initials circle.
+    ///
+    /// Distinct from `textTint` below: that answers "what colour reads
+    /// well NEXT TO a PALE, ~18%-opacity capsule that's mostly the page
+    /// background", so it's driven by the app's light/dark colorScheme.
+    /// A solid avatar circle's background luminance is fixed by the hue
+    /// ITSELF, not by colorScheme — green/orange/cyan/mint read as
+    /// "light" regardless of appearance — so this picks whichever of
+    /// `.white`/`.black` has the higher WCAG contrast ratio against the
+    /// specific hue. Most of the palette lands well clear of AA's 4.5:1
+    /// small-text threshold either way; `.blue`/`.purple`/`.indigo` are
+    /// the close calls, resolved by picking the objectively higher
+    /// ratio rather than eyeballing it. See
+    /// `BoxChipTests.testContrastingForegroundClearsWCAG_AA_forEveryPaletteEntry`
+    /// for the measured ratio per entry.
+    public static func contrastingForeground(for name: String) -> Color {
+        let luminance = relativeLuminance(paletteRGB[paletteIndex(for: name)])
+        let contrastWithWhite = (1.0 + 0.05) / (luminance + 0.05)
+        let contrastWithBlack = (luminance + 0.05) / (0.0 + 0.05)
+        return contrastWithBlack > contrastWithWhite ? .black : .white
     }
 
     /// FNV-1a (32-bit) over UTF-8, mod palette size. Explicitly not

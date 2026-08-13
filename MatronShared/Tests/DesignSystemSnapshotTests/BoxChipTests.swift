@@ -33,6 +33,53 @@ final class BoxChipTests: XCTestCase {
         XCTAssertNotEqual(BoxChip.paletteIndex(for: "eric"), BoxChip.paletteIndex(for: "build-7"))
     }
 
+    /// `contrastingForeground(for:)` (used by `SenderAvatar`'s initials,
+    /// drawn on the RAW full-opacity fill — unlike this chip's own
+    /// `textTint`, which is for text beside a pale ~18%-opacity capsule)
+    /// must clear WCAG AA (4.5:1) against every palette entry's raw hue.
+    /// Fixture names chosen so each pins a distinct index (mirrors
+    /// `testChipFullPaletteSnapshots`).
+    func testContrastingForegroundClearsWCAG_AA_forEveryPaletteEntry() {
+        let names = ["dev-7", "romeo", "india", "charlie", "quebec",
+                     "delta", "lima", "alpha", "echo", "foxtrot"]
+        for (index, name) in names.enumerated() {
+            XCTAssertEqual(BoxChip.paletteIndex(for: name), index,
+                           "\(name) must pin palette index \(index)")
+            let luminance = BoxChip.relativeLuminance(BoxChip.paletteRGB[index])
+            let contrastWithWhite = 1.05 / (luminance + 0.05)
+            let contrastWithBlack = (luminance + 0.05) / 0.05
+            let bestRatio = max(contrastWithWhite, contrastWithBlack)
+            XCTAssertGreaterThanOrEqual(bestRatio, 4.5,
+                "palette index \(index) can't clear WCAG AA (4.5:1) with either white or black text — best available is \(bestRatio)")
+
+            let fg = BoxChip.contrastingForeground(for: name)
+            let expected: Color = contrastWithBlack > contrastWithWhite ? .black : .white
+            XCTAssertEqual(fg, expected, "index \(index) must pick the higher-contrast option")
+        }
+    }
+
+    /// Deterministic per-name, matching `paletteIndex`'s own contract —
+    /// same name always resolves to the same foreground choice.
+    func testContrastingForegroundIsDeterministic() {
+        for name in ["eric", "dan-mac", "build-7", "", "🦊 box"] {
+            XCTAssertEqual(BoxChip.contrastingForeground(for: name), BoxChip.contrastingForeground(for: name))
+        }
+    }
+
+    /// Pins the two hues the review explicitly flagged as failing WCAG
+    /// with white text (≈2.5:1 cyan, ≈2.1:1 mint) — both must resolve to
+    /// black.
+    func testContrastingForeground_cyanAndMint_resolveToBlack() {
+        // "build-7" pins palette index 9 (mint); need a cyan (index 8)
+        // fixture too — reuse the full-palette fixture list's mapping.
+        let cyanFixture = "echo"    // index 8 per testChipFullPaletteSnapshots
+        let mintFixture = "foxtrot" // index 9
+        XCTAssertEqual(BoxChip.paletteIndex(for: cyanFixture), 8)
+        XCTAssertEqual(BoxChip.paletteIndex(for: mintFixture), 9)
+        XCTAssertEqual(BoxChip.contrastingForeground(for: cyanFixture), .black)
+        XCTAssertEqual(BoxChip.contrastingForeground(for: mintFixture), .black)
+    }
+
     /// Visual baseline: two chips whose fixture names land on different
     /// palette hues, side by side, light/dark/axxxl.
     func testChipColorSnapshots() {

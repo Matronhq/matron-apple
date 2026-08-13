@@ -10,6 +10,12 @@ import SwiftUI
 /// name→hue mapping the box chip uses — so a sender's avatar matches its
 /// box's colour in the chat list. No avatar images: initials + colour
 /// only (spec, 2026-08-13).
+///
+/// Initials foreground comes from `BoxChip.contrastingForeground(for:)`,
+/// not a hardcoded `.white` — the raw (full-opacity) fill spans light
+/// hues (green/orange/cyan/mint) where white text falls well short of
+/// WCAG AA at this font size; see that function's doc for why it picks
+/// per-hue rather than reusing `BoxChip`'s pale-fill `textTint`.
 public struct SenderAvatar: View {
     let name: String
 
@@ -24,7 +30,7 @@ public struct SenderAvatar: View {
     public var body: some View {
         Text(Self.initials(for: name))
             .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(.white)
+            .foregroundStyle(BoxChip.contrastingForeground(for: name))
             .frame(width: Self.diameter, height: Self.diameter)
             .background(BoxChip.tint(for: name), in: Circle())
             // The sender is already spoken in the bubble's own
