@@ -339,9 +339,13 @@ struct MacTimelineItemView: View {
     }
 
     /// Sender name for `MessageBubble`'s `sender:` param, or `nil` for no
-    /// avatar. Mirrors the iOS surface (`TimelineItemView.avatarSender(for:hasMultipleSenders:)`).
+    /// avatar. Mirrors the iOS surface (`TimelineItemView.avatarSender(for:hasMultipleSenders:)`),
+    /// including the `isEphemeralStreamingPlaceholder` exclusion — see
+    /// that property's doc on `TimelineItem` for why a raw `hasMultipleSenders`
+    /// check alone would draw a wrong-coloured avatar on the mid-turn
+    /// streaming echo row (Cursor Bugbot on PR #141).
     static func avatarSender(for item: TimelineItem, hasMultipleSenders: Bool) -> String? {
-        guard !item.isOwn, hasMultipleSenders else { return nil }
+        guard !item.isOwn, hasMultipleSenders, !item.isEphemeralStreamingPlaceholder else { return nil }
         return item.sender
     }
 

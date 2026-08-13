@@ -146,4 +146,19 @@ final class TimelineItemViewTests: XCTestCase {
         )
         XCTAssertEqual(TimelineItemView.avatarSender(for: item, hasMultipleSenders: true), "dev-2")
     }
+
+    /// Render-side twin of the `ChatViewModel.hasMultipleSenders`
+    /// ephemeral-row exclusion (Cursor Bugbot, PR #141): the mid-turn
+    /// streaming placeholder row ("eph:"-id, `.text` kind, hardcoded
+    /// sender "agent") must not get an avatar even when the room is
+    /// genuinely multi-sender — otherwise the in-flight bubble draws
+    /// the wrong-coloured circle and jumps to the real one once the
+    /// durable row lands.
+    func test_avatarSender_ephemeralStreamingPlaceholder_isNil_evenInMultiSenderRoom() {
+        let item = TimelineItem(
+            id: "eph:1", sender: "agent", timestamp: .now,
+            kind: .text(body: "partial reply…", formattedHTML: nil), isOwn: false, sendState: .sent
+        )
+        XCTAssertNil(TimelineItemView.avatarSender(for: item, hasMultipleSenders: true))
+    }
 }

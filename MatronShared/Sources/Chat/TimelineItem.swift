@@ -116,4 +116,23 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         self.sendState = sendState
         self.inReplyToEventID = inReplyToEventID
     }
+
+    /// True for the mid-turn streaming-reply placeholder row
+    /// (`JournalTimelineMapper.streamingItem`, id `"eph:<messageRef>"`).
+    /// It deliberately borrows the real `.text` Kind so it renders as an
+    /// ordinary bubble while a reply streams in, but it is NOT a durable
+    /// message — no real event ID, hardcoded `sender: "agent"` — and is
+    /// replaced by the durable row once the turn's journal event lands.
+    /// A `Kind` check alone (`.text`/`.image`/`.file`) can't tell this
+    /// row apart from a real one, since it uses `.text` on purpose.
+    ///
+    /// Single source of truth for the two places that need to tell the
+    /// difference and would otherwise drift: `ChatViewModel
+    /// .hasMultipleSenders` (must not count this row's "agent" as a
+    /// distinct sender) and `TimelineItemView`/`MacTimelineItemView
+    /// .avatarSender` (must not attribute a bubble to it either — the
+    /// render-side twin of the same bug, Cursor Bugbot on PR #141).
+    public var isEphemeralStreamingPlaceholder: Bool {
+        id.hasPrefix("eph:")
+    }
 }

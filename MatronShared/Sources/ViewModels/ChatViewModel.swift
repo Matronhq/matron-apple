@@ -427,17 +427,19 @@ public final class ChatViewModel {
             // NOT `.toolStreamLive`, `.stateChange`, tool cards, etc.
             // (already excluded above or below by kind). That alone still
             // isn't enough: the mid-turn streaming placeholder row
-            // (`JournalTimelineMapper.streamingItem`, id-prefixed "eph:")
-            // is ALSO a `.text` kind — it borrows the real message kind so
-            // it renders as a normal bubble while the reply streams in —
-            // but it hardcodes `sender: "agent"`, which is not the bot's
-            // real (displayName-resolved) sender. Left uncounted, a plain
-            // 1:1 chat (bot "matron" + its own streaming echo "agent")
-            // would spuriously register as multi-sender for the whole
-            // turn. Excluding the "eph:" id alongside the kind check is
-            // what actually delivers the "1:1 renders exactly as today"
-            // guarantee this flag exists for.
-            if !item.isOwn, !item.id.hasPrefix("eph:") {
+            // (`JournalTimelineMapper.streamingItem`) is ALSO a `.text`
+            // kind — it borrows the real message kind so it renders as a
+            // normal bubble while the reply streams in — but it hardcodes
+            // `sender: "agent"`, which is not the bot's real
+            // (displayName-resolved) sender. Left uncounted, a plain 1:1
+            // chat (bot "matron" + its own streaming echo "agent") would
+            // spuriously register as multi-sender for the whole turn.
+            // `TimelineItem.isEphemeralStreamingPlaceholder` is the single
+            // source of truth for this exclusion — `avatarSender(for:
+            // hasMultipleSenders:)` on both platform views needs the same
+            // check on the render side (Bugbot, PR #141) and must not
+            // drift from this one.
+            if !item.isOwn, !item.isEphemeralStreamingPlaceholder {
                 switch item.kind {
                 case .text, .image, .file:
                     nonOwnSenders.insert(item.sender)

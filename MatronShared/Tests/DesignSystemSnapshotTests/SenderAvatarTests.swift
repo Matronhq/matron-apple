@@ -37,6 +37,16 @@ final class SenderAvatarInitialsTests: XCTestCase {
     func testInitials_ignoresEmptySegments() {
         XCTAssertEqual(SenderAvatar.initials(for: "--dev--2"), "D2")
     }
+
+    /// `uppercased()` can EXPAND a character — German `ß` becomes `"SS"`
+    /// — so capping at 2 characters BEFORE uppercasing doesn't bound the
+    /// final string length. `"ß-a"` caps to the two letters "ß"/"a"
+    /// pre-uppercase, which then uppercase to 3 displayed characters
+    /// ("SSA") unless the cap is re-applied after (CodeRabbit, PR #141).
+    func testInitials_expandingUppercase_staysCappedAtTwoCharacters() {
+        XCTAssertEqual(SenderAvatar.initials(for: "ß-a"), "SS")
+        XCTAssertEqual(SenderAvatar.initials(for: "ß-a").count, 2)
+    }
 }
 
 final class SenderAvatarSnapshotTests: XCTestCase {

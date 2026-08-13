@@ -421,8 +421,18 @@ struct TimelineItemView: View {
     /// `item.sender` is already the clean display name by this point
     /// (`JournalTimelineMapper.displayName(fromSender:)` stripped the
     /// `agent:`/`user:` prefix), so no further processing is needed here.
+    ///
+    /// Also excludes the mid-turn streaming placeholder row
+    /// (`TimelineItem.isEphemeralStreamingPlaceholder`) even when
+    /// `hasMultipleSenders` is true — it hardcodes `sender: "agent"`,
+    /// which is not a real sender identity, so drawing an avatar for it
+    /// would flash the wrong-coloured circle on the in-flight bubble
+    /// before the durable row lands and it jumps to the real one
+    /// (Cursor Bugbot on PR #141 — the render-side twin of the
+    /// `hasMultipleSenders` count fix; both read the same
+    /// `TimelineItem` property so they can't drift apart again).
     static func avatarSender(for item: TimelineItem, hasMultipleSenders: Bool) -> String? {
-        guard !item.isOwn, hasMultipleSenders else { return nil }
+        guard !item.isOwn, hasMultipleSenders, !item.isEphemeralStreamingPlaceholder else { return nil }
         return item.sender
     }
 

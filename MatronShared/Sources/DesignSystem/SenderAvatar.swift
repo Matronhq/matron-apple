@@ -46,10 +46,17 @@ public struct SenderAvatar: View {
     /// `.`); a single-segment name (`mavis`) yields a single initial
     /// rather than padding to two. Pure and static so it's unit-testable
     /// without constructing the view.
+    ///
+    /// The two-character cap is applied AFTER uppercasing, not before:
+    /// `uppercased()` can EXPAND a character (German `ß` → `"SS"`), so
+    /// capping the letter count pre-uppercase doesn't bound the final
+    /// string length — `"ß-a"` would uppercase its two capped letters
+    /// ("ß", "a") to three displayed characters ("SSA") despite the
+    /// `prefix(2)` above (CodeRabbit, PR #141).
     public static func initials(for name: String) -> String {
         let separators = CharacterSet(charactersIn: "-_. ")
         let segments = name.components(separatedBy: separators).filter { !$0.isEmpty }
         let letters = segments.prefix(2).compactMap { $0.first }
-        return String(letters).uppercased()
+        return String(String(letters).uppercased().prefix(2))
     }
 }
