@@ -1752,4 +1752,80 @@ final class ChatViewModelTests: XCTestCase {
             vm.pendingFocusID, "320",
             "the cancelled first call's break-path fallback must not land over the second call's target")
     }
+
+    // MARK: - hasMultipleSenders
+
+    /// A 1:1 chat — everything from a single bot sender plus the user's
+    /// own messages — must NOT flip the flag. Own messages are excluded
+    /// from the distinct-sender count even though there's only one of
+    /// them here; the point is the single bot sender alone isn't enough.
+    @MainActor
+    func testHasMultipleSenders_singleNonOwnSender_isFalse() async {
+        let fake = FakeTimelineService()
+        fake.snapshotsToEmit = [[
+            TimelineItem(id: "1", sender: "matron", timestamp: .now,
+                         kind: .text(body: "hi", formattedHTML: nil), isOwn: false),
+            TimelineItem(id: "2", sender: "matron", timestamp: .now,
+                         kind: .text(body: "again", formattedHTML: nil), isOwn: false),
+            TimelineItem(id: "3", sender: "me", timestamp: .now,
+                         kind: .text(body: "ok", formattedHTML: nil), isOwn: true),
+        ]]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        await task.value
+
+        XCTAssertFalse(vm.hasMultipleSenders)
+    }
+
+    /// No messages at all — the degenerate 0-sender case must not crash
+    /// or false-positive.
+    @MainActor
+    func testHasMultipleSenders_noItems_isFalse() async {
+        let fake = FakeTimelineService()
+        fake.snapshotsToEmit = [[]]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        await task.value
+
+        XCTAssertFalse(vm.hasMultipleSenders)
+    }
+
+    /// The agent-chat case this whole feature exists for: two distinct
+    /// non-own senders (e.g. "dev-2" and "dan-mac" both replying) must
+    /// flip the flag.
+    @MainActor
+    func testHasMultipleSenders_twoDistinctNonOwnSenders_isTrue() async {
+        let fake = FakeTimelineService()
+        fake.snapshotsToEmit = [[
+            TimelineItem(id: "1", sender: "dev-2", timestamp: .now,
+                         kind: .text(body: "on it", formattedHTML: nil), isOwn: false),
+            TimelineItem(id: "2", sender: "dan-mac", timestamp: .now,
+                         kind: .text(body: "roger", formattedHTML: nil), isOwn: false),
+        ]]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        await task.value
+
+        XCTAssertTrue(vm.hasMultipleSenders)
+    }
+
+    /// Own messages must not count toward the distinct-sender total even
+    /// when their `sender` string differs from the single bot's — the
+    /// flag is specifically about attributing NON-own bubbles.
+    @MainActor
+    func testHasMultipleSenders_ownMessagesExcludedFromCount() async {
+        let fake = FakeTimelineService()
+        fake.snapshotsToEmit = [[
+            TimelineItem(id: "1", sender: "matron", timestamp: .now,
+                         kind: .text(body: "hi", formattedHTML: nil), isOwn: false),
+            TimelineItem(id: "2", sender: "dan", timestamp: .now,
+                         kind: .text(body: "hey", formattedHTML: nil), isOwn: true),
+        ]]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        await task.value
+
+        XCTAssertFalse(vm.hasMultipleSenders,
+                       "the own sender must not count toward the distinct non-own total")
+    }
 }

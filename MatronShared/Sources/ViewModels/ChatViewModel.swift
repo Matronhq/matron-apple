@@ -231,6 +231,28 @@ public final class ChatViewModel {
     /// comment there for why it must not be a scrollable row).
     public private(set) var activityLabel: String?
 
+    /// True when the loaded timeline carries messages from ≥2 distinct
+    /// NON-own senders — the agent-chat room signature ("dan-mac" and
+    /// "dev-2" both replying), as opposed to an ordinary 1:1 chat with
+    /// one bot. The two platform timeline views read this to decide
+    /// whether to pass `sender:` into `MessageBubble` at all — 1:1 chats
+    /// must render exactly as before (no avatar noise for "the bot").
+    /// Own messages never count, even toward a single-sender total,
+    /// because the flag is specifically about attributing NON-own
+    /// bubbles. Computed from `items` (not `rows`/`windowedRows`) so a
+    /// verdict doesn't depend on how much of the timeline happens to be
+    /// windowed for render. Early-exits on the second distinct sender —
+    /// cheap even for a long room since most rooms settle this in the
+    /// first couple of messages.
+    public var hasMultipleSenders: Bool {
+        var senders = Set<String>()
+        for item in items where !item.isOwn {
+            senders.insert(item.sender)
+            if senders.count >= 2 { return true }
+        }
+        return false
+    }
+
     /// Single mutation entry point for `items`. Updates the raw
     /// snapshot and the three derived caches atomically so a body
     /// re-eval that reads any combination of `items` / `rows` /
