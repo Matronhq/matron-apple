@@ -32,7 +32,7 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         /// bytes are permanently gone, so the UI shows "Expired" instead of
         /// offering a dead download. Only fresh syncs carry the flag — a
         /// client that synced the event before the reap discovers expiry via
-        /// the 404 on fetch (`ChatViewModel.isFileUnavailable`).
+        /// the 404 on fetch (`ChatViewModel.isMediaUnavailable`).
         case image(url: URL?, caption: String?, sizeBytes: Int64?, expired: Bool)
         case file(url: URL?, filename: String, caption: String?, sizeBytes: Int64?, expired: Bool)
         /// Member joins, name changes, profile updates — anything that's a

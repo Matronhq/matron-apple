@@ -90,6 +90,16 @@ public extension MediaService {
     /// it from the existing `image(for:)` bytes.
     func sizedImage(for mxc: URL) async -> SizedImage? {
         guard let data = await image(for: mxc) else { return nil }
+        return SizedImage.decode(data)
+    }
+}
+
+public extension SizedImage {
+    /// Decodes raw bytes into a `SizedImage`. Extracted from
+    /// `sizedImage(for:)` so callers that fetch through
+    /// `fetchOutcome(mxcURL:)` (which must see the 404, not just nil
+    /// bytes) can reuse the exact same decode.
+    static func decode(_ data: Data) -> SizedImage? {
         #if canImport(UIKit) && !os(macOS)
         guard let ui = UIImage(data: data) else { return nil }
         // `UIImage(data:)` always decodes at scale 1, but multiply anyway
