@@ -964,6 +964,7 @@ private struct MacTimelineRowView: View, Equatable {
                         }
                     },
                     isDownloadingFile: { viewModel.isDownloadingFile($0) },
+                    isFileUnavailable: { viewModel.isFileUnavailable($0) },
                     askViewModel: { viewModel.askViewModel(forPrompt: $0) },
                     isPromptAnswered: { viewModel.isPromptAnswered($0) },
                     answerSummary: { viewModel.answerSummary(forPrompt: $0) },

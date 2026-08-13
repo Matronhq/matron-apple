@@ -26,8 +26,15 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
 
     public enum Kind: Equatable, Sendable {
         case text(body: String, formattedHTML: String?)
-        case image(url: URL?, caption: String?, sizeBytes: Int64?)
-        case file(url: URL?, filename: String, caption: String?, sizeBytes: Int64?)
+        /// `expired`: the journal's media reaper deleted this attachment's
+        /// blob and tombstoned the event (`expired: true`, `blob_ref` null —
+        /// matron-journal#63). Name/size/caption survive for rendering; the
+        /// bytes are permanently gone, so the UI shows "Expired" instead of
+        /// offering a dead download. Only fresh syncs carry the flag — a
+        /// client that synced the event before the reap discovers expiry via
+        /// the 404 on fetch (`ChatViewModel.isFileUnavailable`).
+        case image(url: URL?, caption: String?, sizeBytes: Int64?, expired: Bool)
+        case file(url: URL?, filename: String, caption: String?, sizeBytes: Int64?, expired: Bool)
         /// Member joins, name changes, profile updates — anything that's a
         /// state event we still want to render as a small inline notice.
         case stateChange(text: String)

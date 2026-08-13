@@ -41,6 +41,10 @@ struct TimelineItemView: View {
     /// Read inside the row body so Observation invalidates the row when
     /// the flag flips. `nil` keeps previews/tests compiling.
     var isDownloadingFile: ((URL) -> Bool)? = nil
+    /// Whether a file attachment's blob came back 404 (reaped server-side)
+    /// — same closure pattern as `isDownloadingFile`, same Observation
+    /// invalidation channel.
+    var isFileUnavailable: ((URL) -> Bool)? = nil
     /// Inline ask-user: resolves the stable per-prompt `AskUserSheetViewModel`
     /// (nil for previews/tests without a `ChatViewModel`).
     var askViewModel: ((String) -> AskUserSheetViewModel?)? = nil
@@ -113,7 +117,7 @@ struct TimelineItemView: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: body))
 
-        case .image(let url, let caption, let sizeBytes):
+        case .image(let url, let caption, let sizeBytes, let expired):
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
                 timestamp: item.timestamp
@@ -126,7 +130,9 @@ struct TimelineItemView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     AttachmentImage(
                         image: resolvedImage(for: url),
-                        placeholder: "Image",
+                        // A reaped image never resolves — say so instead of
+                        // showing a forever-loading placeholder.
+                        placeholder: expired ? "Image expired" : "Image",
                         meta: caption == nil
                             ? sizeBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
                             : nil,
@@ -153,10 +159,12 @@ struct TimelineItemView: View {
             // (bugbot, PR #88).
             .accessibilityLabel(Self.accessibilityLabel(
                 for: item,
-                body: caption.flatMap { $0.isEmpty ? nil : $0 } ?? "Image attachment"))
+                body: caption.flatMap { $0.isEmpty ? nil : $0 }
+                    ?? (expired ? "Image attachment, expired" : "Image attachment")))
 
-        case .file(let url, let filename, let caption, let sizeBytes):
-            let isLoading = url.map { isDownloadingFile?($0) ?? false } ?? false
+        case .file(let url, let filename, let caption, let sizeBytes, let expired):
+            let isExpired = expired || (url.map { isFileUnavailable?($0) ?? false } ?? false)
+            let isLoading = !isExpired && (url.map { isDownloadingFile?($0) ?? false } ?? false)
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
                 timestamp: item.timestamp
@@ -168,6 +176,7 @@ struct TimelineItemView: View {
                         filename: filename,
                         sizeBytes: sizeBytes,
                         isLoading: isLoading,
+                        isExpired: isExpired,
                         // Tap handler — only fires if we have both a URL
                         // and a registered handler. Without the URL there's
                         // nothing to fetch (`.file(url: nil, …)` is a
@@ -192,9 +201,14 @@ struct TimelineItemView: View {
             .accessibilityLabel(Self.accessibilityLabel(
                 for: item,
                 body: {
-                    let base = isLoading
-                        ? "File attachment: \(filename), downloading"
-                        : "File attachment: \(filename)"
+                    let base: String
+                    if isExpired {
+                        base = "File attachment: \(filename), expired"
+                    } else if isLoading {
+                        base = "File attachment: \(filename), downloading"
+                    } else {
+                        base = "File attachment: \(filename)"
+                    }
                     return caption.flatMap { $0.isEmpty ? nil : "\(base). \($0)" } ?? base
                 }()))
 

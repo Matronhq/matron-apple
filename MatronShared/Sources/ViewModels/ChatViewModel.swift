@@ -799,6 +799,10 @@ public final class ChatViewModel {
     /// Re-opening an attachment must not re-download a multi-MB blob the
     /// user just waited for.
     private var fileTempURLs: [URL: URL] = [:]
+    /// Attachment URLs whose fetch returned a definitive 404 — reaped
+    /// server-side, permanently gone. Unbounded like `fileTempURLs`, and
+    /// bounded in practice by attachments the user has actually tapped.
+    private var unavailableFiles: Set<URL> = []
 
     /// Event IDs of ask-user prompts the user has answered (or
     /// dismissed) on THIS device, persisted across launches under
@@ -1342,7 +1346,21 @@ public final class ChatViewModel {
         downloadingFiles.contains(mxcURL)
     }
 
+    /// Whether a fetch for this attachment came back 404 — the blob was
+    /// reaped server-side (journal media reaper), which is permanent: blob
+    /// ids are immutable. Drives the chip's "Expired" state for events that
+    /// synced BEFORE the reap and so never carry the payload tombstone
+    /// (`TimelineItem.Kind`'s `expired`) — the 404 on tap is how an
+    /// already-synced client learns. Same row-invalidation channel as
+    /// `isDownloadingFile`.
+    public func isFileUnavailable(_ mxcURL: URL) -> Bool {
+        unavailableFiles.contains(mxcURL)
+    }
+
     public func writeTempFile(mxcURL: URL, filename: String) async -> URL? {
+        // Known-reaped blob: no request — the server already said 404 and
+        // ids never come back.
+        guard !unavailableFiles.contains(mxcURL) else { return nil }
         // Repeat open: serve the temp file written last time (the OS may
         // have reaped it between launches — fall through and re-download
         // if it's gone).
@@ -1356,7 +1374,18 @@ public final class ChatViewModel {
         guard !downloadingFiles.contains(mxcURL) else { return nil }
         downloadingFiles.insert(mxcURL)
         defer { downloadingFiles.remove(mxcURL) }
-        guard let data = await media.fetchBytes(mxcURL: mxcURL) else { return nil }
+        let data: Data
+        switch await media.fetchOutcome(mxcURL: mxcURL) {
+        case .data(let bytes):
+            data = bytes
+        case .notFound:
+            // Permanent: flip the chip to Expired and stop re-fetching.
+            unavailableFiles.insert(mxcURL)
+            return nil
+        case .failure:
+            // Transient (network/auth): stay silent and retryable.
+            return nil
+        }
         // Namespace by a digest of the attachment URL: distinct
         // attachments routinely share a display filename ("report.pdf"
         // from two rooms), and a shared flat directory would let the

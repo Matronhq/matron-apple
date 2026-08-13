@@ -14,6 +14,35 @@ public protocol MediaService: Sendable {
     /// not an `mxc://` URL or if the SDK cannot fetch it (network error,
     /// missing media, decryption failure).
     func image(for mxc: URL) async -> Data?
+
+    /// Like `fetchBytes(mxcURL:)` but distinguishes a definitive "this blob
+    /// no longer exists" (HTTP 404 — permanent: blob ids are immutable, and
+    /// the journal's media reaper deletes blobs for over-quota users) from a
+    /// transient failure worth retrying. A protocol requirement (with a
+    /// default) rather than extension-only so existentials dispatch to the
+    /// live service's override, not statically to the default.
+    func fetchOutcome(mxcURL: URL) async -> MediaFetchOutcome
+}
+
+/// Outcome of a media fetch where the caller needs to tell "gone forever"
+/// from "try again" — the file-attachment tap path uses `.notFound` to flip
+/// the chip to its Expired state.
+public enum MediaFetchOutcome: Sendable {
+    case data(Data)
+    /// The server definitively reports the blob missing (404). Permanent.
+    case notFound
+    /// Anything else — network error, auth failure, decode problem.
+    case failure
+}
+
+public extension MediaService {
+    /// Default: no status information available, so a nil byte result is a
+    /// plain (retryable) failure. Fakes and the SDK-backed service get this
+    /// for free; `JournalMediaService` overrides it to surface the 404.
+    func fetchOutcome(mxcURL: URL) async -> MediaFetchOutcome {
+        if let data = await image(for: mxcURL) { return .data(data) }
+        return .failure
+    }
 }
 
 public extension MediaService {
