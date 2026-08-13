@@ -30,6 +30,19 @@ final class MessageBubbleSnapshotTests: XCTestCase {
         assertVariants(of: view, named: "meBubble")
     }
 
+    /// Multi-sender rooms (agent-chat) pass `sender:` so a non-own bubble
+    /// gets a leading, bottom-aligned `SenderAvatar` outside the bubble
+    /// chrome. `.me` never carries one — `MessageBubble` only renders it
+    /// for `.bot` even if a caller passed `sender` by mistake.
+    func test_botBubble_withSender() {
+        let view = MessageBubble(style: .bot, timestamp: Self.sampleTime, sender: "dev-2") {
+            MarkdownText("Sure — let me check the code and get back to you on that.",
+                         theme: .matronMessage, lineSpacing: 4)
+        }
+        .frame(width: 320)
+        assertVariants(of: view, named: "botBubble_withSender")
+    }
+
     /// Column at phone width: guards that a long bot message extends to the
     /// same horizontal margin on the right as on the left (even margins).
     func test_column_evenMargins() {
