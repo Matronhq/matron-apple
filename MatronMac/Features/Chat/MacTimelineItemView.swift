@@ -138,6 +138,7 @@ struct MacTimelineItemView: View {
                 body: caption.flatMap { $0.isEmpty ? nil : $0 } ?? "Image attachment"))
 
         case .file(let url, let filename, let caption, let sizeBytes):
+            let isLoading = url.map { isDownloadingFile?($0) ?? false } ?? false
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
                 timestamp: item.timestamp
@@ -148,7 +149,7 @@ struct MacTimelineItemView: View {
                     AttachmentFile(
                         filename: filename,
                         sizeBytes: sizeBytes,
-                        isLoading: url.map { isDownloadingFile?($0) ?? false } ?? false,
+                        isLoading: isLoading,
                         onTap: {
                             if let url, let onTapFile {
                                 onTapFile(url, filename)
@@ -162,11 +163,18 @@ struct MacTimelineItemView: View {
             }
             .accessibilityElement(children: .combine)
             // The caption is visible message text now — VoiceOver must
-            // speak it too, not just the filename (bugbot, PR #88).
+            // speak it too, not just the filename (bugbot, PR #88). The
+            // combined element replaces the chip's own children, so the
+            // downloading state must be restated here or VoiceOver never
+            // hears it (CodeRabbit, PR #138).
             .accessibilityLabel(Self.accessibilityLabel(
                 for: item,
-                body: caption.flatMap { $0.isEmpty ? nil : "File attachment: \(filename). \($0)" }
-                    ?? "File attachment: \(filename)"))
+                body: {
+                    let base = isLoading
+                        ? "File attachment: \(filename), downloading"
+                        : "File attachment: \(filename)"
+                    return caption.flatMap { $0.isEmpty ? nil : "\(base). \($0)" } ?? base
+                }()))
 
         case .stateChange(let text):
             HStack {

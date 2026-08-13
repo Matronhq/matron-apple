@@ -36,6 +36,15 @@ private final class GatedMediaService: MediaService, @unchecked Sendable {
     }
 }
 
+/// Test-only `MediaService` serving distinct stubbed bytes per URL,
+/// without the gating — for tests where only the byte→path mapping
+/// matters, not in-flight observation.
+private final class DistinctBlobMediaService: MediaService, @unchecked Sendable {
+    private let blobs: [URL: Data]
+    init(blobs: [URL: Data]) { self.blobs = blobs }
+    func image(for mxc: URL) async -> Data? { blobs[mxc] }
+}
+
 /// Pins the file-attachment download contract on `ChatViewModel`:
 /// `writeTempFile` must expose an observable "downloading" flag while the
 /// (possibly multi-second) blob fetch is in flight, ignore re-taps for a
@@ -109,6 +118,31 @@ final class FileAttachmentDownloadTests: XCTestCase {
         let secondURL = await vm.writeTempFile(mxcURL: mxc, filename: "a.pdf")
         XCTAssertEqual(secondURL, firstURL, "second open must reuse the written temp file")
         XCTAssertEqual(media.requestCount, 1, "second open must not re-download the blob")
+    }
+
+    @MainActor
+    func test_writeTempFile_sameFilenameDifferentURLs_dontCollide() async throws {
+        // Two attachments can share a display filename ("report.pdf" from
+        // two rooms). The temp path must be unique per attachment or the
+        // second write clobbers the first and a later cache hit serves
+        // the wrong bytes (Bugbot, PR #138).
+        let urlA = URL(string: "https://journal.example/media/blob-a")!
+        let urlB = URL(string: "https://journal.example/media/blob-b")!
+        let media = DistinctBlobMediaService(blobs: [
+            urlA: Data("bytes-A".utf8),
+            urlB: Data("bytes-B".utf8),
+        ])
+        let vm = ChatViewModel(roomID: "!r:s", timeline: FakeTimelineService(), media: media)
+
+        let pathA = await vm.writeTempFile(mxcURL: urlA, filename: "report.pdf")
+        let pathB = await vm.writeTempFile(mxcURL: urlB, filename: "report.pdf")
+        let reopenedA = await vm.writeTempFile(mxcURL: urlA, filename: "report.pdf")
+
+        XCTAssertNotEqual(pathA, pathB, "same display name must not share a temp path")
+        XCTAssertEqual(reopenedA, pathA)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(reopenedA)), Data("bytes-A".utf8),
+                       "re-opening A after downloading B must serve A's bytes")
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(pathB)), Data("bytes-B".utf8))
     }
 
     @MainActor

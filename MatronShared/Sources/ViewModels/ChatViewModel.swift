@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SwiftUI
 import os
@@ -1356,8 +1357,18 @@ public final class ChatViewModel {
         downloadingFiles.insert(mxcURL)
         defer { downloadingFiles.remove(mxcURL) }
         guard let data = await media.fetchBytes(mxcURL: mxcURL) else { return nil }
+        // Namespace by a digest of the attachment URL: distinct
+        // attachments routinely share a display filename ("report.pdf"
+        // from two rooms), and a shared flat directory would let the
+        // second download clobber the first — after which the temp-file
+        // cache above serves the wrong attachment's bytes (Bugbot,
+        // PR #138). The human-friendly basename is preserved for the
+        // share/preview label; uniqueness lives in the parent directory.
+        let urlDigest = SHA256.hash(data: Data(mxcURL.absoluteString.utf8))
+            .prefix(8).map { String(format: "%02x", $0) }.joined()
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("matron-attachments", isDirectory: true)
+            .appendingPathComponent(urlDigest, isDirectory: true)
         do {
             try FileManager.default.createDirectory(
                 at: dir, withIntermediateDirectories: true
