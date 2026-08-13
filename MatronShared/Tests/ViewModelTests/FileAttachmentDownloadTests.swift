@@ -118,6 +118,17 @@ final class FileAttachmentDownloadTests: XCTestCase {
         let secondURL = await vm.writeTempFile(mxcURL: mxc, filename: "a.pdf")
         XCTAssertEqual(secondURL, firstURL, "second open must reuse the written temp file")
         XCTAssertEqual(media.requestCount, 1, "second open must not re-download the blob")
+
+        // The OS reaps the temp directory between launches — a cache entry
+        // whose file is gone must fall through to a fresh download, not
+        // return the dead path (CodeRabbit, PR #138).
+        try FileManager.default.removeItem(at: XCTUnwrap(firstURL))
+        let redownload = Task { await vm.writeTempFile(mxcURL: mxc, filename: "a.pdf") }
+        await waitUntil { media.requestCount == 2 }
+        XCTAssertEqual(media.requestCount, 2, "reaped temp file must trigger a re-download")
+        media.release()
+        let replacementURL = await redownload.value
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(replacementURL)), Data("pdf-bytes".utf8))
     }
 
     @MainActor
