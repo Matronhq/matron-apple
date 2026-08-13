@@ -36,6 +36,26 @@ private final class GatedMediaService: MediaService, @unchecked Sendable {
     }
 }
 
+/// Test-only `MediaService` whose fetch outcome is fixed — for pinning how
+/// `ChatViewModel` maps a permanent 404 (reaped blob) vs a transient
+/// failure into the unavailable-file state.
+private final class FixedOutcomeMediaService: MediaService, @unchecked Sendable {
+    private let lock = NSLock()
+    private let outcome: MediaFetchOutcome
+    private(set) var requestCount = 0
+
+    init(outcome: MediaFetchOutcome) { self.outcome = outcome }
+
+    // Unused after writeTempFile moved to fetchOutcome; kept minimal so the
+    // fake still satisfies the protocol's designated requirement.
+    func image(for mxc: URL) async -> Data? { nil }
+
+    func fetchOutcome(mxcURL: URL) async -> MediaFetchOutcome {
+        lock.withLock { requestCount += 1 }
+        return outcome
+    }
+}
+
 /// Test-only `MediaService` serving distinct stubbed bytes per URL,
 /// without the gating — for tests where only the byte→path mapping
 /// matters, not in-flight observation.
@@ -154,6 +174,66 @@ final class FileAttachmentDownloadTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: XCTUnwrap(reopenedA)), Data("bytes-A".utf8),
                        "re-opening A after downloading B must serve A's bytes")
         XCTAssertEqual(try Data(contentsOf: XCTUnwrap(pathB)), Data("bytes-B".utf8))
+    }
+
+    @MainActor
+    func test_writeTempFile_notFound_marksFileUnavailable_andStopsRefetching() async throws {
+        // A 404 means the blob was reaped server-side (journal media reaper)
+        // — permanent, since blob ids are immutable. The chip must flip to
+        // "Expired" (isMediaUnavailable) and later taps must not re-request.
+        let media = FixedOutcomeMediaService(outcome: .notFound)
+        let vm = ChatViewModel(roomID: "!r:s", timeline: FakeTimelineService(), media: media)
+        XCTAssertFalse(vm.isMediaUnavailable(mxc))
+
+        let url = await vm.writeTempFile(mxcURL: mxc, filename: "a.pdf")
+        XCTAssertNil(url)
+        XCTAssertTrue(vm.isMediaUnavailable(mxc), "404 must mark the file unavailable")
+        XCTAssertFalse(vm.isDownloadingFile(mxc))
+
+        let again = await vm.writeTempFile(mxcURL: mxc, filename: "a.pdf")
+        XCTAssertNil(again)
+        XCTAssertEqual(media.requestCount, 1, "a permanently-gone blob must not be re-fetched")
+    }
+
+    @MainActor
+    func test_imageFetch404_marksMediaUnavailable_andStopsRefetching() async throws {
+        // Images have their own resolution path (`image(for:)` → resolved/
+        // failed LRUs) — a reaped image must reach the Expired state through
+        // it, not just via the file tap path (Bugbot, PR #139).
+        let media = FixedOutcomeMediaService(outcome: .notFound)
+        let vm = ChatViewModel(roomID: "!r:s", timeline: FakeTimelineService(), media: media)
+
+        XCTAssertNil(vm.image(for: mxc))
+        await waitUntil { vm.isMediaUnavailable(self.mxc) }
+        XCTAssertTrue(vm.isMediaUnavailable(mxc), "image 404 must mark the URL unavailable")
+
+        XCTAssertNil(vm.image(for: mxc))
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(media.requestCount, 1, "a permanently-gone image must not be re-fetched")
+    }
+
+    @MainActor
+    func test_imageFetchTransientFailure_doesNotMarkMediaUnavailable() async throws {
+        let media = FixedOutcomeMediaService(outcome: .failure)
+        let vm = ChatViewModel(roomID: "!r:s", timeline: FakeTimelineService(), media: media)
+        XCTAssertNil(vm.image(for: mxc))
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertFalse(vm.isMediaUnavailable(mxc), "transient image failure must not read as expired")
+    }
+
+    @MainActor
+    func test_writeTempFile_transientFailure_doesNotMarkUnavailable() async throws {
+        // Network blips must stay retryable — only a definitive 404 flips
+        // the permanent state.
+        let media = FixedOutcomeMediaService(outcome: .failure)
+        let vm = ChatViewModel(roomID: "!r:s", timeline: FakeTimelineService(), media: media)
+
+        let url = await vm.writeTempFile(mxcURL: mxc, filename: "a.pdf")
+        XCTAssertNil(url)
+        XCTAssertFalse(vm.isMediaUnavailable(mxc), "transient failure must not read as expired")
+
+        _ = await vm.writeTempFile(mxcURL: mxc, filename: "a.pdf")
+        XCTAssertEqual(media.requestCount, 2, "retry after transient failure must re-fetch")
     }
 
     @MainActor

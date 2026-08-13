@@ -34,6 +34,10 @@ struct MacTimelineItemView: View {
     /// Read inside the row body so Observation invalidates the row when
     /// the flag flips. `nil` keeps previews/tests compiling.
     var isDownloadingFile: ((URL) -> Bool)? = nil
+    /// Whether a file attachment's blob came back 404 (reaped server-side)
+    /// — same closure pattern as `isDownloadingFile`, same Observation
+    /// invalidation channel.
+    var isMediaUnavailable: ((URL) -> Bool)? = nil
     /// Inline ask-user — mirrors the iOS surface.
     var askViewModel: ((String) -> AskUserSheetViewModel?)? = nil
     var isPromptAnswered: ((String) -> Bool)? = nil
@@ -94,7 +98,10 @@ struct MacTimelineItemView: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: body))
 
-        case .image(let url, let caption, let sizeBytes):
+        case .image(let url, let caption, let sizeBytes, let expired):
+            // Tombstone flag (fresh syncs) OR a 404 discovered at fetch time
+            // (already-synced clients never re-fetch the rewritten event).
+            let isExpired = expired || (url.map { isMediaUnavailable?($0) ?? false } ?? false)
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
                 timestamp: item.timestamp
@@ -108,7 +115,9 @@ struct MacTimelineItemView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     AttachmentImage(
                         image: resolvedImage(for: url),
-                        placeholder: "Image",
+                        // A reaped image never resolves — say so instead of
+                        // showing a forever-loading placeholder.
+                        placeholder: isExpired ? "Image expired" : "Image",
                         meta: caption == nil
                             ? sizeBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
                             : nil,
@@ -135,10 +144,18 @@ struct MacTimelineItemView: View {
             // become a blank VoiceOver body either (bugbot, PR #88).
             .accessibilityLabel(Self.accessibilityLabel(
                 for: item,
-                body: caption.flatMap { $0.isEmpty ? nil : $0 } ?? "Image attachment"))
+                body: {
+                    // The caption must not swallow the expired state — a
+                    // captioned expired image still needs VoiceOver to say
+                    // so (Bugbot, PR #139).
+                    let cap = caption.flatMap { $0.isEmpty ? nil : $0 }
+                    let base = isExpired ? "Image attachment, expired" : "Image attachment"
+                    return cap.map { isExpired ? "\(base). \($0)" : $0 } ?? base
+                }()))
 
-        case .file(let url, let filename, let caption, let sizeBytes):
-            let isLoading = url.map { isDownloadingFile?($0) ?? false } ?? false
+        case .file(let url, let filename, let caption, let sizeBytes, let expired):
+            let isExpired = expired || (url.map { isMediaUnavailable?($0) ?? false } ?? false)
+            let isLoading = !isExpired && (url.map { isDownloadingFile?($0) ?? false } ?? false)
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
                 timestamp: item.timestamp
@@ -150,6 +167,7 @@ struct MacTimelineItemView: View {
                         filename: filename,
                         sizeBytes: sizeBytes,
                         isLoading: isLoading,
+                        isExpired: isExpired,
                         onTap: {
                             if let url, let onTapFile {
                                 onTapFile(url, filename)
@@ -170,9 +188,14 @@ struct MacTimelineItemView: View {
             .accessibilityLabel(Self.accessibilityLabel(
                 for: item,
                 body: {
-                    let base = isLoading
-                        ? "File attachment: \(filename), downloading"
-                        : "File attachment: \(filename)"
+                    let base: String
+                    if isExpired {
+                        base = "File attachment: \(filename), expired"
+                    } else if isLoading {
+                        base = "File attachment: \(filename), downloading"
+                    } else {
+                        base = "File attachment: \(filename)"
+                    }
                     return caption.flatMap { $0.isEmpty ? nil : "\(base). \($0)" } ?? base
                 }()))
 

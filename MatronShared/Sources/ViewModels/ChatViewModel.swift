@@ -799,6 +799,11 @@ public final class ChatViewModel {
     /// Re-opening an attachment must not re-download a multi-MB blob the
     /// user just waited for.
     private var fileTempURLs: [URL: URL] = [:]
+    /// Media URLs (file OR image attachments) whose fetch returned a
+    /// definitive 404 — reaped server-side, permanently gone. Unbounded
+    /// like `fileTempURLs`, and bounded in practice by attachments the
+    /// user's session has actually tried to fetch.
+    private var unavailableMedia: Set<URL> = []
 
     /// Event IDs of ask-user prompts the user has answered (or
     /// dismissed) on THIS device, persisted across launches under
@@ -1300,15 +1305,26 @@ public final class ChatViewModel {
     /// fetch returned non-decodable bytes are remembered so we don't loop.
     public func image(for url: URL) -> Image? {
         if let cached = resolvedImages[url] { return cached.image }
+        if unavailableMedia.contains(url) { return nil }
         if failedRequests.contains(url) { return nil }
         guard !inFlightRequests.contains(url) else { return nil }
         inFlightRequests.insert(url)
         Task { [weak self, media] in
-            let img = await media.sizedImage(for: url)
+            // `fetchOutcome`, not `sizedImage(for:)` — a reaped image's 404
+            // must land in `unavailableMedia` (permanent, drives the
+            // "Image expired" placeholder) rather than the retry-bounded
+            // `failedRequests` LRU (Bugbot, PR #139).
+            let outcome = await media.fetchOutcome(mxcURL: url)
+            let img: SizedImage? = {
+                if case .data(let bytes) = outcome { return SizedImage.decode(bytes) }
+                return nil
+            }()
             guard let self else { return }
             await MainActor.run {
                 if let img {
                     self.resolvedImages[url] = img
+                } else if case .notFound = outcome {
+                    self.unavailableMedia.insert(url)
                 } else {
                     // `()` — only the key membership matters; `LRUCache`
                     // doesn't expose an insert-key-only API so the value
@@ -1342,7 +1358,21 @@ public final class ChatViewModel {
         downloadingFiles.contains(mxcURL)
     }
 
+    /// Whether a fetch for this attachment came back 404 — the blob was
+    /// reaped server-side (journal media reaper), which is permanent: blob
+    /// ids are immutable. Drives the chip's "Expired" state for events that
+    /// synced BEFORE the reap and so never carry the payload tombstone
+    /// (`TimelineItem.Kind`'s `expired`) — the 404 on tap is how an
+    /// already-synced client learns. Same row-invalidation channel as
+    /// `isDownloadingFile`.
+    public func isMediaUnavailable(_ mxcURL: URL) -> Bool {
+        unavailableMedia.contains(mxcURL)
+    }
+
     public func writeTempFile(mxcURL: URL, filename: String) async -> URL? {
+        // Known-reaped blob: no request — the server already said 404 and
+        // ids never come back.
+        guard !unavailableMedia.contains(mxcURL) else { return nil }
         // Repeat open: serve the temp file written last time (the OS may
         // have reaped it between launches — fall through and re-download
         // if it's gone).
@@ -1356,7 +1386,18 @@ public final class ChatViewModel {
         guard !downloadingFiles.contains(mxcURL) else { return nil }
         downloadingFiles.insert(mxcURL)
         defer { downloadingFiles.remove(mxcURL) }
-        guard let data = await media.fetchBytes(mxcURL: mxcURL) else { return nil }
+        let data: Data
+        switch await media.fetchOutcome(mxcURL: mxcURL) {
+        case .data(let bytes):
+            data = bytes
+        case .notFound:
+            // Permanent: flip the chip to Expired and stop re-fetching.
+            unavailableMedia.insert(mxcURL)
+            return nil
+        case .failure:
+            // Transient (network/auth): stay silent and retryable.
+            return nil
+        }
         // Namespace by a digest of the attachment URL: distinct
         // attachments routinely share a display filename ("report.pdf"
         // from two rooms), and a shared flat directory would let the
