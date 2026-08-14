@@ -222,6 +222,10 @@ struct MacChatView: View {
     /// (and by the system on outside-click dismissal).
     @State private var showSummaries = false
 
+    /// Drives the media, files & links browser sheet — flipped on by the
+    /// toolbar button in `MacChatToolbar`.
+    @State private var showMediaBrowser = false
+
     let chatTitle: String
     /// Which agent box runs this session, or nil when the user has fewer
     /// than two boxes. Threaded from the list's ChatSummary (same source as
@@ -723,7 +727,8 @@ struct MacChatView: View {
                         showSummaries = false
                         Task { await viewModel.focus(seq: seq) }
                     })
-                }
+                },
+                showMediaBrowser: $showMediaBrowser
             )
         }
         // Observation start/stop is hoisted to the outer view in `body` —
@@ -792,6 +797,9 @@ struct MacChatView: View {
                 nativePixelSize: preview.pixelSize,
                 onDismiss: { imagePreview = nil }
             )
+        }
+        .sheet(isPresented: $showMediaBrowser) {
+            MacMediaBrowserSheet(chatViewModel: viewModel)
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .background {

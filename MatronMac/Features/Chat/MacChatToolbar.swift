@@ -77,6 +77,8 @@ struct MacChatToolbar: ToolbarContent {
     /// `MacChatView` supplies the real closure; the default keeps every
     /// other call site (and the existing tests) compiling unchanged.
     let popoverContent: () -> AnyView
+    /// Presents the per-chat media & links browser sheet.
+    let showMediaBrowser: Binding<Bool>
 
     /// One height for all three clusters so the system's content-hugging
     /// glass capsules come out equal and align as a row. Sized to the
@@ -98,7 +100,8 @@ struct MacChatToolbar: ToolbarContent {
         onOpenSubChat: @escaping (String) -> Void,
         onCompact: @escaping () -> Void,
         showSummaries: Binding<Bool> = .constant(false),
-        popoverContent: @escaping () -> AnyView = { AnyView(EmptyView()) }
+        popoverContent: @escaping () -> AnyView = { AnyView(EmptyView()) },
+        showMediaBrowser: Binding<Bool> = .constant(false)
     ) {
         self.title = title
         self.boxName = boxName
@@ -108,6 +111,7 @@ struct MacChatToolbar: ToolbarContent {
         self.onCompact = onCompact
         self.showSummaries = showSummaries
         self.popoverContent = popoverContent
+        self.showMediaBrowser = showMediaBrowser
     }
 
     var body: some ToolbarContent {
@@ -136,6 +140,13 @@ struct MacChatToolbar: ToolbarContent {
             ToolbarItem(placement: .primaryAction) {
                 cluster { UsageBarsView(limits: limits, scale: .compact) }
             }
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button { showMediaBrowser.wrappedValue = true } label: {
+                Image(systemName: "photo.on.rectangle.angled")
+            }
+            .help("Media, files & links")
+            .accessibilityLabel("Media browser")
         }
         if !stripViewModel.children.isEmpty {
             ToolbarItem(placement: .primaryAction) {

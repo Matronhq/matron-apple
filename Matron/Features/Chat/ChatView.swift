@@ -220,6 +220,8 @@ struct ChatView: View {
     @State private var attachmentPreview: AttachmentPreview?
     /// ⓘ toolbar button → session-status sheet (context gauge + usage bars).
     @State private var showSessionStatus = false
+    /// Media/files/links toolbar button → the per-chat browser sheet.
+    @State private var showMediaBrowser = false
     /// Tappable title → summaries TOC sheet (jump-to-point navigation).
     @State private var showSummaries = false
     /// Sheet payload for fullscreen attachment previews. Identifiable
@@ -711,6 +713,12 @@ struct ChatView: View {
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
+                Button { showMediaBrowser = true } label: {
+                    Image(systemName: "photo.on.rectangle.angled")
+                }
+                .accessibilityLabel("Media, files and links")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 Button { showSessionStatus = true } label: {
                     Image(systemName: "info.circle")
                 }
@@ -719,6 +727,9 @@ struct ChatView: View {
         }
         .sheet(isPresented: $showSessionStatus) {
             SessionStatusSheet(viewModel: viewModel, boxName: boxName)
+        }
+        .sheet(isPresented: $showMediaBrowser) {
+            MediaBrowserSheet(chatViewModel: viewModel)
         }
         .sheet(isPresented: $showSummaries) {
             SummariesSheet(viewModel: viewModel)
