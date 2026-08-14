@@ -118,6 +118,13 @@ struct NewChatSheet: View {
                                     .foregroundStyle(.tertiary)
                             }
                         }
+                        // A List button's label inherits the accent tint,
+                        // so .primary/.secondary/.tertiary above would all
+                        // resolve to translucent blue — illegible on the
+                        // dark-mode card. Reset the hierarchy to the
+                        // neutral label colour (matches MacNewChatSheet,
+                        // which gets this via .buttonStyle(.plain)).
+                        .foregroundStyle(Color.primary)
                     }
                     .disabled(!agent.connected)
                 }
@@ -155,6 +162,8 @@ struct NewChatSheet: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
+                        // Same tint-inheritance reset as the agent rows.
+                        .foregroundStyle(Color.primary)
                     }
                     .disabled(viewModel.isStarting)
                 }
