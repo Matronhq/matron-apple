@@ -64,6 +64,11 @@ struct TimelineItemView: View {
     /// the shared store so chat teardown can suspend only its own sockets
     /// (`suspendSessions(in:)`). `nil` keeps previews/tests compiling.
     var convoID: String? = nil
+    /// `ChatViewModel.hasMultipleSenders` — whether this room has ≥2
+    /// distinct non-own senders. Gates `avatarSender(for:)`: default
+    /// `false` keeps every existing preview/test/1:1-chat call site
+    /// rendering exactly as before (no avatar).
+    var hasMultipleSenders: Bool = false
 
     var body: some View {
         // Note: `shouldRender(_:)` is the contract for "is this Kind
@@ -102,7 +107,8 @@ struct TimelineItemView: View {
         case .text(let body, _):
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
-                timestamp: item.timestamp
+                timestamp: item.timestamp,
+                sender: Self.avatarSender(for: item, hasMultipleSenders: hasMultipleSenders)
             ) {
                 // A streaming overlay row ("eph:<ref>") re-renders with a
                 // longer body on every commit — caching those parses would
@@ -123,7 +129,8 @@ struct TimelineItemView: View {
             let isExpired = expired || (url.map { isMediaUnavailable?($0) ?? false } ?? false)
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
-                timestamp: item.timestamp
+                timestamp: item.timestamp,
+                sender: Self.avatarSender(for: item, hasMultipleSenders: hasMultipleSenders)
             ) {
                 // The caption renders OUTSIDE AttachmentImage as a normal
                 // message body — it's the message, and the small gray
@@ -176,7 +183,8 @@ struct TimelineItemView: View {
             let isLoading = !isExpired && (url.map { isDownloadingFile?($0) ?? false } ?? false)
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
-                timestamp: item.timestamp
+                timestamp: item.timestamp,
+                sender: Self.avatarSender(for: item, hasMultipleSenders: hasMultipleSenders)
             ) {
                 // Caption outside the tappable chip, as a normal message
                 // body — see the `.image` case.
@@ -404,6 +412,28 @@ struct TimelineItemView: View {
             return false
         }
         return true
+    }
+
+    /// Sender name to pass into `MessageBubble`'s `sender:` param for this
+    /// row, or `nil` for no avatar. Own messages never get one; non-own
+    /// messages only get one in a multi-sender room
+    /// (`ChatViewModel.hasMultipleSenders`) — 1:1 chats render unchanged.
+    /// `item.sender` is already the clean display name by this point
+    /// (`JournalTimelineMapper.displayName(fromSender:)` stripped the
+    /// `agent:`/`user:` prefix), so no further processing is needed here.
+    ///
+    /// Also excludes the mid-turn streaming placeholder row
+    /// (`TimelineItem.isEphemeralStreamingPlaceholder`) even when
+    /// `hasMultipleSenders` is true — it hardcodes `sender: "agent"`,
+    /// which is not a real sender identity, so drawing an avatar for it
+    /// would flash the wrong-coloured circle on the in-flight bubble
+    /// before the durable row lands and it jumps to the real one
+    /// (Cursor Bugbot on PR #141 — the render-side twin of the
+    /// `hasMultipleSenders` count fix; both read the same
+    /// `TimelineItem` property so they can't drift apart again).
+    static func avatarSender(for item: TimelineItem, hasMultipleSenders: Bool) -> String? {
+        guard !item.isOwn, hasMultipleSenders, !item.isEphemeralStreamingPlaceholder else { return nil }
+        return item.sender
     }
 
     /// Phase 2 placeholder for member display names: take the local part of

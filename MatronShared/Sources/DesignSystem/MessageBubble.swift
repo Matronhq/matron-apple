@@ -34,15 +34,23 @@ public enum MessageBubbleMetrics {
 public struct MessageBubble<Content: View>: View {
     let style: MessageAuthorStyle
     let timestamp: Date?
+    /// Display name of the message's sender, or `nil` (the default) for
+    /// no avatar — zero layout change from before this parameter existed.
+    /// Callers pass this only in rooms with ≥2 distinct non-own senders
+    /// (`ChatViewModel.hasMultipleSenders`); own messages never pass one.
+    /// Ignored for `.me` bubbles regardless — see `body`.
+    let sender: String?
     let content: () -> Content
 
     public init(
         style: MessageAuthorStyle,
         timestamp: Date? = nil,
+        sender: String? = nil,
         @ViewBuilder content: @escaping () -> Content
     ) {
         self.style = style
         self.timestamp = timestamp
+        self.sender = sender
         self.content = content
     }
 
@@ -52,6 +60,34 @@ public struct MessageBubble<Content: View>: View {
     }
 
     public var body: some View {
+        // `sender` only ever renders for `.bot` — own messages never get
+        // an avatar even if a caller passed one by mistake (spec,
+        // 2026-08-13). The `nil`/`.me` path is IDENTICAL to the modifier
+        // chain before this parameter existed, so existing snapshot
+        // baselines are untouched.
+        if let sender, style == .bot {
+            HStack(alignment: .bottom, spacing: 6) {
+                SenderAvatar(sender)
+                bubbleChrome
+            }
+            .padding(.leading, style == .me ? 32 : 0)
+            .frame(maxWidth: .infinity, alignment: edge)
+            .padding(.horizontal)
+        } else {
+            bubbleChrome
+                // Own bubbles keep a minimum inset from the far edge so a
+                // long sent message never spans the full pane on narrow
+                // windows.
+                .padding(.leading, style == .me ? 32 : 0)
+                .frame(maxWidth: .infinity, alignment: edge)
+                .padding(.horizontal)
+        }
+    }
+
+    /// The bubble itself — chrome + content + timestamp, capped at the
+    /// readable width. Factored out so both the avatar'd and plain paths
+    /// share one definition (spec: "layout stays in one place").
+    private var bubbleChrome: some View {
         // Content + timestamp sit side by side on the SAME line:
         // `.lastTextBaseline` drops the time onto the baseline of the
         // message's last line, so a short message reads inline
@@ -83,10 +119,5 @@ public struct MessageBubble<Content: View>: View {
         // applied before it). The outer frame spans the row and pushes
         // the capped region to the author's edge.
         .frame(maxWidth: MessageBubbleMetrics.maxWidth, alignment: edge)
-        // Own bubbles keep a minimum inset from the far edge so a long
-        // sent message never spans the full pane on narrow windows.
-        .padding(.leading, style == .me ? 32 : 0)
-        .frame(maxWidth: .infinity, alignment: edge)
-        .padding(.horizontal)
     }
 }

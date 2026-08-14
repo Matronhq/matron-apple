@@ -51,6 +51,10 @@ struct MacTimelineItemView: View {
     /// the shared store so chat teardown can suspend only its own sockets
     /// (`suspendSessions(in:)`). `nil` keeps previews/tests compiling.
     var convoID: String? = nil
+    /// `ChatViewModel.hasMultipleSenders` — mirrors the iOS surface.
+    /// Default `false` keeps every existing preview/test/1:1-chat call
+    /// site rendering exactly as before (no avatar).
+    var hasMultipleSenders: Bool = false
 
     var body: some View {
         // See iOS `TimelineItemView.body` — `shouldRender` is dead
@@ -82,7 +86,8 @@ struct MacTimelineItemView: View {
         case .text(let body, _):
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
-                timestamp: item.timestamp
+                timestamp: item.timestamp,
+                sender: Self.avatarSender(for: item, hasMultipleSenders: hasMultipleSenders)
             ) {
                 // Mac renders message bodies through a single selectable
                 // NSTextView so a mouse drag can select across the whole
@@ -104,7 +109,8 @@ struct MacTimelineItemView: View {
             let isExpired = expired || (url.map { isMediaUnavailable?($0) ?? false } ?? false)
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
-                timestamp: item.timestamp
+                timestamp: item.timestamp,
+                sender: Self.avatarSender(for: item, hasMultipleSenders: hasMultipleSenders)
             ) {
                 // The caption renders OUTSIDE AttachmentImage as a normal
                 // message body — it's the message, and the small gray
@@ -158,7 +164,8 @@ struct MacTimelineItemView: View {
             let isLoading = !isExpired && (url.map { isDownloadingFile?($0) ?? false } ?? false)
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
-                timestamp: item.timestamp
+                timestamp: item.timestamp,
+                sender: Self.avatarSender(for: item, hasMultipleSenders: hasMultipleSenders)
             ) {
                 // Caption outside the tappable chip, as a normal message
                 // body — see the `.image` case.
@@ -329,6 +336,17 @@ struct MacTimelineItemView: View {
             return false
         }
         return true
+    }
+
+    /// Sender name for `MessageBubble`'s `sender:` param, or `nil` for no
+    /// avatar. Mirrors the iOS surface (`TimelineItemView.avatarSender(for:hasMultipleSenders:)`),
+    /// including the `isEphemeralStreamingPlaceholder` exclusion — see
+    /// that property's doc on `TimelineItem` for why a raw `hasMultipleSenders`
+    /// check alone would draw a wrong-coloured avatar on the mid-turn
+    /// streaming echo row (Cursor Bugbot on PR #141).
+    static func avatarSender(for item: TimelineItem, hasMultipleSenders: Bool) -> String? {
+        guard !item.isOwn, hasMultipleSenders, !item.isEphemeralStreamingPlaceholder else { return nil }
+        return item.sender
     }
 
     /// Phase 2 placeholder for member display names — strips the leading

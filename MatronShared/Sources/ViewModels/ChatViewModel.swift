@@ -231,6 +231,37 @@ public final class ChatViewModel {
     /// comment there for why it must not be a scrollable row).
     public private(set) var activityLabel: String?
 
+    /// True when the loaded timeline carries messages from ≥2 distinct
+    /// NON-own senders — the agent-chat room signature ("dan-mac" and
+    /// "dev-2" both replying), as opposed to an ordinary 1:1 chat with
+    /// one bot. The two platform timeline views read this to decide
+    /// whether to pass `sender:` into `MessageBubble` at all — 1:1 chats
+    /// must render exactly as before (no avatar noise for "the bot").
+    /// Own messages never count, even toward a single-sender total,
+    /// because the flag is specifically about attributing NON-own
+    /// bubbles.
+    ///
+    /// Restricted to the durable message kinds that ever render a
+    /// `MessageBubble` — `.text` / `.image` / `.file` — NOT a raw scan of
+    /// `items`. The synthetic rows the mapper synthesises mid-turn
+    /// (`streamingItem` / `activityItem` / `toolStreamItem`) hardcode
+    /// `sender: "agent"`, `isOwn: false`; counting them made an ordinary
+    /// 1:1 chat (bot "matron" + its own ephemeral "agent" row) register
+    /// as multi-sender for the whole turn, sprouting avatars that vanish
+    /// again once the turn settles. `.activityIndicator`, `.toolStreamLive`,
+    /// `.stateChange`, tool cards etc. are structurally excluded by the
+    /// kind check.
+    ///
+    /// Memoised in `applyDerivedRecompute()` (not a computed property) —
+    /// the platform timeline views read it once per row from
+    /// `TimelineRowView`/`MacTimelineRowView`'s `body`, and an O(N) scan
+    /// there is exactly the pattern that caused the 2026-08-05 scroll
+    /// regression documented above `rows`. Early-exits on the second
+    /// distinct sender within the single existing per-snapshot pass —
+    /// cheap even for a long room since most rooms settle this in the
+    /// first couple of messages.
+    public private(set) var hasMultipleSenders = false
+
     /// Single mutation entry point for `items`. Updates the raw
     /// snapshot and the three derived caches atomically so a body
     /// re-eval that reads any combination of `items` / `rows` /
@@ -364,6 +395,8 @@ public final class ChatViewModel {
         var last: TimelineItem.ID?
         var lastIsOwn = false
         var nextActivityLabel: String?
+        var nonOwnSenders = Set<String>()
+        var nextHasMultipleSenders = false
         currentDayInterval = nil
         for item in items {
             // The trailing activity indicator renders as a fixed footer
@@ -389,6 +422,32 @@ public final class ChatViewModel {
             // of the rows AND out of day bucketing, same reasoning as
             // the virtual stateChange filter above.
             if case .askUserAnswer = item.kind { continue }
+            // `hasMultipleSenders` only counts the durable message kinds
+            // that ever render an avatar (`.text` / `.image` / `.file`) —
+            // NOT `.toolStreamLive`, `.stateChange`, tool cards, etc.
+            // (already excluded above or below by kind). That alone still
+            // isn't enough: the mid-turn streaming placeholder row
+            // (`JournalTimelineMapper.streamingItem`) is ALSO a `.text`
+            // kind — it borrows the real message kind so it renders as a
+            // normal bubble while the reply streams in — but it hardcodes
+            // `sender: "agent"`, which is not the bot's real
+            // (displayName-resolved) sender. Left uncounted, a plain 1:1
+            // chat (bot "matron" + its own streaming echo "agent") would
+            // spuriously register as multi-sender for the whole turn.
+            // `TimelineItem.isEphemeralStreamingPlaceholder` is the single
+            // source of truth for this exclusion — `avatarSender(for:
+            // hasMultipleSenders:)` on both platform views needs the same
+            // check on the render side (Bugbot, PR #141) and must not
+            // drift from this one.
+            if !item.isOwn, !item.isEphemeralStreamingPlaceholder {
+                switch item.kind {
+                case .text, .image, .file:
+                    nonOwnSenders.insert(item.sender)
+                    if nonOwnSenders.count >= 2 { nextHasMultipleSenders = true }
+                default:
+                    break
+                }
+            }
             if first == nil { first = item.id }
             last = item.id
             lastIsOwn = item.isOwn
@@ -414,6 +473,7 @@ public final class ChatViewModel {
         self.lastRenderableItemID = last
         self.lastRenderableItemIsOwn = lastIsOwn
         self.activityLabel = nextActivityLabel
+        self.hasMultipleSenders = nextHasMultipleSenders
         self.rowAnchorIDsCache = nil
         recomputeWindow()
     }
