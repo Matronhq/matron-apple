@@ -42,6 +42,11 @@ final class FilePreviewSheetTests: XCTestCase {
         XCTAssertTrue(QuickLookPreview.canPreview(try fixture(named: "report.pdf")))
     }
 
+    func testOfficeDocumentsArePreviewable() throws {
+        XCTAssertTrue(QuickLookPreview.canPreview(try fixture(named: "notes.docx")))
+        XCTAssertTrue(QuickLookPreview.canPreview(try fixture(named: "sheet.xlsx")))
+    }
+
     func testUnknownBinaryFallsBackToShare() throws {
         XCTAssertFalse(QuickLookPreview.canPreview(try fixture(named: "blob.matrondat")))
     }
