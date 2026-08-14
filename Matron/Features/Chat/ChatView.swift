@@ -805,7 +805,8 @@ struct ChatView: View {
         // Fullscreen attachment preview. Presented from a tap on
         // either an `AttachmentImage` or `AttachmentFile` row;
         // payload selects between the pinch-zoom image viewer and
-        // the share-sheet wrapper for files. Dismissed by setting
+        // the file preview (QuickLook for playable/previewable types,
+        // share-only fallback otherwise). Dismissed by setting
         // `attachmentPreview = nil` (swipe-down on iOS, "Done"
         // button, or successful share).
         .sheet(item: $attachmentPreview) { preview in
@@ -816,7 +817,8 @@ struct ChatView: View {
                     onDismiss: { attachmentPreview = nil }
                 )
             case .file(_, let url, let filename):
-                fileShareSheet(url: url, filename: filename)
+                FilePreviewSheet(url: url, filename: filename,
+                                 onDone: { attachmentPreview = nil })
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
@@ -843,39 +845,6 @@ struct ChatView: View {
         .onChange(of: viewModel.rows.isEmpty) { _, isEmpty in
             chatViewLogger.breadcrumb("rows \(isEmpty ? "EMPTY — warm-up spinner over blank area" : "populated") (items=\(viewModel.items.count))")
         }
-    }
-
-    /// iOS file-share sheet body. Presents the filename + a system
-    /// `ShareLink` so the user can save / forward the attachment
-    /// without leaving the chat. Lifted into its own builder so the
-    /// `.sheet(item:)` switch above stays tight.
-    @ViewBuilder
-    private func fileShareSheet(url: URL, filename: String) -> some View {
-        VStack(spacing: 16) {
-            Image(systemName: "doc")
-                .font(.system(size: 56))
-                .foregroundStyle(.tint)
-                .padding(.top, 32)
-            Text(filename)
-                .font(.headline)
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal)
-            ShareLink(item: url) {
-                Label("Share", systemImage: "square.and.arrow.up")
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.accentColor)
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-            }
-            .padding(.horizontal)
-            Button("Done") { attachmentPreview = nil }
-                .padding(.top, 4)
-            Spacer()
-        }
-        .padding()
-        .presentationDetents([.medium])
     }
 
 }
@@ -1289,21 +1258,8 @@ struct SubChatView: View {
             case .image(_, let img):
                 AttachmentFullscreenViewer(image: img, onDismiss: { attachmentPreview = nil })
             case .file(_, let url, let filename):
-                VStack(spacing: 16) {
-                    Image(systemName: "doc").font(.system(size: 56)).foregroundStyle(.tint).padding(.top, 32)
-                    Text(filename).font(.headline).lineLimit(2).multilineTextAlignment(.center).padding(.horizontal)
-                    ShareLink(item: url) {
-                        Label("Share", systemImage: "square.and.arrow.up")
-                            .frame(maxWidth: .infinity).padding()
-                            .background(Color.accentColor).foregroundStyle(.white)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                    }
-                    .padding(.horizontal)
-                    Button("Done") { attachmentPreview = nil }.padding(.top, 4)
-                    Spacer()
-                }
-                .padding()
-                .presentationDetents([.medium])
+                FilePreviewSheet(url: url, filename: filename,
+                                 onDone: { attachmentPreview = nil })
             }
         }
     }
