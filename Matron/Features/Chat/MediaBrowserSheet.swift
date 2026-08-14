@@ -5,7 +5,7 @@ import MatronViewModels
 
 /// iOS presentation of the per-chat media & links browser. Mirrors
 /// MacMediaBrowserSheet: VM owned here, taps route to the pinch-zoom
-/// viewer / share sheet / openURL.
+/// viewer / file preview (QuickLook or share fallback) / openURL.
 struct MediaBrowserSheet: View {
     let chatViewModel: ChatViewModel
     @Environment(\.appDependencies) private var deps
@@ -79,32 +79,10 @@ struct MediaBrowserSheet: View {
             case .image(_, let img):
                 AttachmentFullscreenViewer(image: img, onDismiss: { preview = nil })
             case .file(_, let url, let filename):
-                // Mirrors ChatView.fileShareSheet(url:filename:) (private there).
-                VStack(spacing: 16) {
-                    Image(systemName: "doc")
-                        .font(.system(size: 56))
-                        .foregroundStyle(.tint)
-                        .padding(.top, 32)
-                    Text(filename)
-                        .font(.headline)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-                    ShareLink(item: url) {
-                        Label("Share", systemImage: "square.and.arrow.up")
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.accentColor)
-                            .foregroundStyle(.white)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                    }
-                    .padding(.horizontal)
-                    Button("Done") { preview = nil }
-                        .padding(.top, 4)
-                    Spacer()
-                }
-                .padding()
-                .presentationDetents([.medium])
+                // Same routing as the timeline (#143): QuickLook when it
+                // can preview the file, share-only fallback otherwise.
+                FilePreviewSheet(url: url, filename: filename,
+                                 onDone: { preview = nil })
             }
         }
     }
