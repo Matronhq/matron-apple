@@ -103,6 +103,29 @@ final class BoxCapacityTests: XCTestCase {
         XCTAssertNil(BoxCapacity.resetText(nil))
     }
 
+    func test_resetText_passedResetReadsReset_notAPastMomentAsUpcoming() {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC")!
+        cal.locale = Locale(identifier: "en_US_POSIX")
+        let now = Date(timeIntervalSince1970: 1_754_900_000)
+        // Earlier today AND a previous day: both used to format as if
+        // upcoming ("resets 5:30 PM" the day after the fact — the stale
+        // cache-line bug); both must read as already reset.
+        XCTAssertEqual(BoxCapacity.resetText(now.addingTimeInterval(-3600), now: now, calendar: cal),
+                       "reset")
+        XCTAssertEqual(BoxCapacity.resetText(now.addingTimeInterval(-2 * 86_400), now: now, calendar: cal),
+                       "reset")
+    }
+
+    func test_hasReset_pastTrue_futureAndUnknownFalse() {
+        let now = Date(timeIntervalSince1970: 1_754_900_000)
+        XCTAssertTrue(BoxCapacity.hasReset(now.addingTimeInterval(-1), now: now))
+        XCTAssertTrue(BoxCapacity.hasReset(now, now: now), "the boundary instant counts as reset")
+        XCTAssertFalse(BoxCapacity.hasReset(now.addingTimeInterval(60), now: now))
+        XCTAssertFalse(BoxCapacity.hasReset(nil, now: now),
+                       "no timestamp means no expiry claim — the line renders normally")
+    }
+
     // MARK: limitColumns(across:)
 
     private func capacity(_ lines: [LimitLine]) -> BoxCapacity {

@@ -41,14 +41,20 @@ public struct AgentCapacityRowContent: View {
     }
 
     private func limitRow(_ line: LimitLine) -> some View {
-        let reset = BoxCapacity.resetText(line.resetsAt, now: fixedNow ?? Date())
+        let now = fixedNow ?? Date()
+        let reset = BoxCapacity.resetText(line.resetsAt, now: now)
+        // A percent from before the line's own reset moment is stale —
+        // render it tertiary (with the "reset" caption) rather than in the
+        // usual green/orange/red, which would vouch for a dead number.
+        let expired = BoxCapacity.hasReset(line.resetsAt, now: now)
         return HStack(spacing: 4) {
             Text(line.label)
                 .foregroundStyle(.secondary)
             Text("\(line.percent)%")
                 .fontWeight(.medium)
                 .monospacedDigit()
-                .foregroundStyle(Self.percentColor(line.percent))
+                .foregroundStyle(expired ? AnyShapeStyle(.tertiary)
+                                         : AnyShapeStyle(Self.percentColor(line.percent)))
             if let reset {
                 Text("· \(reset)")
                     .foregroundStyle(.tertiary)
@@ -57,7 +63,9 @@ public struct AgentCapacityRowContent: View {
         .font(.caption)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
-            "\(line.label), \(line.percent) percent used" + (reset.map { ", \($0)" } ?? ""))
+            "\(line.label), \(line.percent) percent used"
+                + (expired ? " before the limit reset" : "")
+                + (reset.map { ", \($0)" } ?? ""))
     }
 
     /// "No active sessions" / "1 active session" / "N active sessions".

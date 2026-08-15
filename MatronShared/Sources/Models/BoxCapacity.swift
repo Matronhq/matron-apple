@@ -134,12 +134,25 @@ public struct BoxCapacity: Equatable, Sendable {
         isoFractional.date(from: raw) ?? isoPlain.date(from: raw)
     }
 
+    /// True when the line's reset moment is known and already behind `now`:
+    /// the limit has rolled over since the bridge cached this line, so the
+    /// percent on screen predates the reset. Callers de-emphasise the stale
+    /// number instead of presenting it as current.
+    public static func hasReset(_ date: Date?, now: Date = Date()) -> Bool {
+        guard let date else { return false }
+        return date <= now
+    }
+
     /// Compact reset caption: "resets 11:59 PM" if the reset falls today in
-    /// the given calendar, else "resets Aug 15". Nil `date` → nil, so the
-    /// caller drops the trailing text (the limit line still renders).
+    /// the given calendar, else "resets Aug 15". A reset already behind `now`
+    /// reads "reset" — showing a past moment as upcoming ("resets 5:30 PM"
+    /// the day after) is how stale cache lines used to masquerade as live.
+    /// Nil `date` → nil, so the caller drops the trailing text (the limit
+    /// line still renders).
     public static func resetText(_ date: Date?, now: Date = Date(),
                                 calendar: Calendar = .current) -> String? {
         guard let date else { return nil }
+        if date <= now { return "reset" }
         let formatter = DateFormatter()
         formatter.calendar = calendar
         formatter.timeZone = calendar.timeZone
