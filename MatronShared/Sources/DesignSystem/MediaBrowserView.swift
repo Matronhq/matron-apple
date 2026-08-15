@@ -65,12 +65,17 @@ public struct MediaBrowserView: View {
     let onMediaTap: (MediaCell) -> Void
     let onFileTap: (FileRow) -> Void
     let onLinkTap: (LinkRow) -> Void
-    @State private var tab: Tab
+    /// When the hosting sheet renders its own tab picker (Mac puts it in the
+    /// Done row), it passes the selection in and this view drops its built-in
+    /// picker; nil means self-contained (iOS).
+    let externalTab: Binding<Tab>?
+    @State private var internalTab: Tab
 
     public init(
         media: [MediaCell], files: [FileRow], links: [LinkRow],
         loadFailed: Bool = false,
         initialTab: Tab = .media,
+        tabSelection: Binding<Tab>? = nil,
         thumbnail: @escaping (URL) async -> Image? = { _ in nil },
         onMediaTap: @escaping (MediaCell) -> Void = { _ in },
         onFileTap: @escaping (FileRow) -> Void = { _ in },
@@ -80,21 +85,26 @@ public struct MediaBrowserView: View {
         self.files = files
         self.links = links
         self.loadFailed = loadFailed
+        self.externalTab = tabSelection
         self.thumbnail = thumbnail
         self.onMediaTap = onMediaTap
         self.onFileTap = onFileTap
         self.onLinkTap = onLinkTap
-        _tab = State(initialValue: initialTab)
+        _internalTab = State(initialValue: initialTab)
     }
+
+    private var tab: Tab { externalTab?.wrappedValue ?? internalTab }
 
     public var body: some View {
         VStack(spacing: 0) {
-            Picker("Tab", selection: $tab) {
-                ForEach(Tab.allCases) { tab in Text(tab.rawValue).tag(tab) }
+            if externalTab == nil {
+                Picker("Tab", selection: $internalTab) {
+                    ForEach(Tab.allCases) { tab in Text(tab.rawValue).tag(tab) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .padding()
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding()
             if loadFailed {
                 ContentUnavailableView("Couldn't load",
                                        systemImage: "exclamationmark.triangle")
