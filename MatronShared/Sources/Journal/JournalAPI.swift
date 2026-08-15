@@ -509,6 +509,22 @@ public actor JournalAPI {
         return obj["delivered"] as? Bool ?? false
     }
 
+    /// Answers one parked spawn ask. The ONLY path that resolves a spawn
+    /// consent card — a `prompt_reply` into the conversation never touches
+    /// the parked row (it dead-ends at the bridge, which has no open prompt).
+    ///
+    /// One answer, one request, same as agent chat: there is no standing
+    /// consent to grant. Throws `.conflict` if the row is no longer awaiting
+    /// an answer (already answered elsewhere, or 24h expired) and
+    /// `.notFound` if the request isn't this user's.
+    public func answerAgentSpawn(
+        requestID: String, decision: AgentChatDecision
+    ) async throws {
+        _ = try await request(
+            path: "/agent-spawn/answer", method: "POST",
+            body: ["request_id": requestID, "decision": decision.rawValue])
+    }
+
     /// The journal defaults an absent topic/justification to `""` rather than
     /// omitting the key, so "absent" and "empty" arrive identically.
     private static func nonEmpty(_ raw: Any?) -> String? {

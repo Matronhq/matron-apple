@@ -984,6 +984,14 @@ private struct MacTimelineRowView: View, Equatable {
                                 decision: approve ? .approve : .deny)
                         }
                     },
+                    agentSpawnState: { viewModel.agentSpawnState($0) },
+                    onAnswerAgentSpawn: { eventID, request, approve in
+                        Task {
+                            await viewModel.answerAgentSpawn(
+                                eventID: eventID, request: request,
+                                decision: approve ? .approve : .deny)
+                        }
+                    },
                     convoID: viewModel.roomID,
                     hasMultipleSenders: viewModel.hasMultipleSenders
                 )

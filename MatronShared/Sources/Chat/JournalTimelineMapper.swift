@@ -52,6 +52,13 @@ public enum JournalTimelineMapper {
             // parked row. The tap did nothing and the ask expired 24h later.
             if let request = AgentChatRequest.parse(payload: payload) {
                 kind = .agentChatRequest(eventID: String(event.seq), request)
+            } else if let spawn = AgentSpawnRequest.parse(payload: payload) {
+                // The spawn consent card, same story as the chat card above:
+                // in the generic branch it rendered as an anonymous
+                // "Permission request" whose buttons answered over
+                // `prompt_reply` — earning "Nothing to answer right now"
+                // from the bridge while the parked ask expired untouched.
+                kind = .agentSpawnRequest(eventID: String(event.seq), spawn)
             } else {
                 let description = payload["description"] as? String ?? "Permission request"
                 let optionValues = (payload["options"] as? [String]) ?? ["Allow", "Deny"]

@@ -607,6 +607,7 @@ public final class JournalStore: @unchecked Sendable {
             // string for the same event. A snapshot and a live frame must
             // not render the same row two different ways.
             if payload["kind"] as? String == "agent_chat" { return "🤝 Agent chat request" }
+            if payload["kind"] as? String == "agent_spawn" { return "🤝 Agent spawn request" }
             return "permission: " + String((payload["description"] as? String ?? "").prefix(100))
         default:
             if let s = payload["snippet"] as? String { return String(s.prefix(120)) }

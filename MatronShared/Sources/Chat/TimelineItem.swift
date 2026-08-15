@@ -75,6 +75,13 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         /// locally that this card was answered — the answer produces no
         /// journal event to read that back from.
         case agentChatRequest(eventID: String, AgentChatRequest)
+        /// The journal's spawn consent card — one agent asking to start a
+        /// session on another box. Its own case for the same reasons as
+        /// `.agentChatRequest`: the answer goes over HTTP
+        /// (`POST /agent-spawn/answer`), and what-would-run-where is the
+        /// whole point of the decision. Same locally-remembered answer,
+        /// keyed by `eventID`.
+        case agentSpawnRequest(eventID: String, AgentSpawnRequest)
         /// Transient typing / tool-use indicator (matron-journal `activity`
         /// ephemeral). Not persisted and not part of history — appended as a
         /// trailing overlay row while the agent is thinking or running a

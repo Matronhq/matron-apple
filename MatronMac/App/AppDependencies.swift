@@ -238,6 +238,12 @@ final class AppDependencies {
         core(for: session).api
     }
 
+    /// Spawn consent surface: answering the session-start cards inline in a
+    /// chat. Same session-scoped `JournalAPI`; protocol slice for testability.
+    func agentSpawnService(for session: UserSession) -> any AgentSpawnAnswering {
+        core(for: session).api
+    }
+
     /// Show-QR surface (Settings → Link a Device). Same session-scoped
     /// `JournalAPI` as the devices surface; protocol slice for testability.
     func deviceLinkService(for session: UserSession) -> any DeviceLinking {

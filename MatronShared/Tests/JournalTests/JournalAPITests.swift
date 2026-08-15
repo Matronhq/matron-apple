@@ -433,4 +433,20 @@ final class JournalAPITests: XCTestCase {
         let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
         XCTAssertEqual(Set(obj.keys), ["room_id", "target_device_id", "decision"])
     }
+
+    /// Same stance for the spawn answer: `/agent-spawn/answer` rejects
+    /// `always_allow` with a 400 (no standing consent exists for spawns),
+    /// so the body must be exactly the two keys the row is resolved on.
+    func testAnswerAgentSpawnSendsExactlyTheAnswerKey() async throws {
+        StubURLProtocol.responses = ["/agent-spawn/answer": (200, #"{"ok":true}"#)]
+        let api = makeAPI()
+
+        try await api.answerAgentSpawn(requestID: "spawn-1", decision: .deny)
+
+        let body = try XCTUnwrap(StubURLProtocol.lastRequestBody)
+        let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(Set(obj.keys), ["request_id", "decision"])
+        XCTAssertEqual(obj["request_id"] as? String, "spawn-1")
+        XCTAssertEqual(obj["decision"] as? String, "deny")
+    }
 }
