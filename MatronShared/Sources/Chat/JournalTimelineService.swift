@@ -594,6 +594,20 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         try await sendMedia(data, filename: filename, mimeType: mimeType, type: "image", caption: caption, progress: nil)
     }
 
+    public func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?,
+                          batch: AttachmentBatchTag?,
+                          progress: (@Sendable (Double) -> Void)?) async throws {
+        try await sendMedia(data, filename: filename, mimeType: mimeType, type: "image",
+                            caption: caption, batch: batch, progress: progress)
+    }
+
+    public func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?,
+                         batch: AttachmentBatchTag?,
+                         progress: (@Sendable (Double) -> Void)?) async throws {
+        try await sendMedia(data, filename: filename, mimeType: mimeType, type: "file",
+                            caption: caption, batch: batch, progress: progress)
+    }
+
     public func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {
         try await sendMedia(data, filename: filename, mimeType: mimeType, type: "file", caption: caption, progress: nil)
     }
@@ -616,12 +630,13 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
     /// blob ref.
     private func sendMedia(
         _ data: Data, filename: String, mimeType: String, type: String, caption: String?,
+        batch: AttachmentBatchTag? = nil,
         progress: (@Sendable (Double) -> Void)?
     ) async throws {
         let blobRef = try await api.uploadMedia(data, contentType: mimeType, progress: progress)
         try await engine.sendOp(.sendMedia(convoID: convoID, type: type, blobRef: blobRef,
                                            name: filename, contentType: mimeType,
-                                           size: data.count, caption: caption,
+                                           size: data.count, caption: caption, batch: batch,
                                            localID: UUID().uuidString))
     }
 

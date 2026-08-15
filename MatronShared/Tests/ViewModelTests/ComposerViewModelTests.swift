@@ -106,6 +106,9 @@ final class FakeTimelineService: TimelineService, @unchecked Sendable {
     /// pins that the composer reaches the progress-capable protocol
     /// requirement (dynamic dispatch), not the drop-the-handler default.
     var mediaSendsWithProgressHandler: [Bool] = []
+    /// Batch tag per media send (nil for untagged sends) — pins that the
+    /// composer stamps multi-attachment sends and leaves singles untagged.
+    var mediaSendBatchTags: [AttachmentBatchTag?] = []
     func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?,
                    progress: (@Sendable (Double) -> Void)?) async throws {
         mediaSendsWithProgressHandler.append(progress != nil)
@@ -117,6 +120,20 @@ final class FakeTimelineService: TimelineService, @unchecked Sendable {
         mediaSendsWithProgressHandler.append(progress != nil)
         progress?(0.5)
         try await sendFile(data, filename: filename, mimeType: mimeType, caption: caption)
+    }
+    func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?,
+                   batch: AttachmentBatchTag?,
+                   progress: (@Sendable (Double) -> Void)?) async throws {
+        mediaSendBatchTags.append(batch)
+        try await sendImage(data, filename: filename, mimeType: mimeType, caption: caption,
+                            progress: progress)
+    }
+    func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?,
+                  batch: AttachmentBatchTag?,
+                  progress: (@Sendable (Double) -> Void)?) async throws {
+        mediaSendBatchTags.append(batch)
+        try await sendFile(data, filename: filename, mimeType: mimeType, caption: caption,
+                           progress: progress)
     }
     func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {
         if sendDelayNanos > 0 { try? await Task.sleep(nanoseconds: sendDelayNanos) }
@@ -566,6 +583,42 @@ final class ComposerViewModelTests: XCTestCase {
         XCTAssertEqual(fake.sentImages.map(\.filename), ["a.png", "b.png"], "order must be preserved")
         XCTAssertEqual(fake.sentImages.first?.caption, "compare these")
         XCTAssertNil(fake.sentImages.last?.caption)
+    }
+
+    /// A multi-attachment send stamps every upload with the same batch id
+    /// and its 1-based place, so the bridge can gather the frames back into
+    /// the one message the user wrote instead of injecting the first image
+    /// and busy-queueing the rest.
+    @MainActor
+    func test_send_withSeveralAttachments_stampsOneSharedBatchTag() async throws {
+        let first = try makeTempFile(named: "a.png")
+        let second = try makeTempFile(named: "b.png")
+        let third = try makeTempFile(named: "c.png")
+        let fake = FakeTimelineService()
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
+        await vm.attachFiles([first, second, third])
+
+        await vm.send()
+
+        let tags = fake.mediaSendBatchTags.compactMap { $0 }
+        XCTAssertEqual(tags.count, 3, "every attachment of a batch send must carry the tag")
+        XCTAssertEqual(Set(tags.map(\.id)).count, 1, "one send = one batch id")
+        XCTAssertEqual(tags.map(\.index), [1, 2, 3])
+        XCTAssertEqual(tags.map(\.total), [3, 3, 3])
+    }
+
+    /// A single attachment goes untagged — its frame must stay
+    /// byte-identical to what an older bridge already understands.
+    @MainActor
+    func test_send_withOneAttachment_carriesNoBatchTag() async throws {
+        let url = try makeTempFile(named: "shot.png")
+        let fake = FakeTimelineService()
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
+        await vm.attachFiles([url])
+
+        await vm.send()
+
+        XCTAssertEqual(fake.mediaSendBatchTags, [nil])
     }
 
     /// Text with nothing attached still behaves exactly as it always did.
