@@ -306,14 +306,19 @@ struct MacAgentPickerRow: View {
     }
 
     private func limitCell(_ column: LimitColumn) -> some View {
+        let now = fixedNow ?? Date()
         let line = capacity?.limitLines.first { $0.id == column.id }
-        let reset = line.flatMap { BoxCapacity.resetText($0.resetsAt, now: fixedNow ?? Date()) }
+        let reset = line.flatMap { BoxCapacity.resetText($0.resetsAt, now: now) }
+        // Same stale-percent rule as AgentCapacityRowContent: a percent from
+        // before its own reset moment renders tertiary, not green/red.
+        let expired = line.map { BoxCapacity.hasReset($0.resetsAt, now: now) } ?? false
         return VStack(alignment: .trailing, spacing: 1) {
             if let line {
                 Text("\(line.percent)%")
                     .fontWeight(.medium)
                     .monospacedDigit()
-                    .foregroundStyle(UsageMetersFormat.barColor(percent: line.percent))
+                    .foregroundStyle(expired ? AnyShapeStyle(.tertiary)
+                                             : AnyShapeStyle(UsageMetersFormat.barColor(percent: line.percent)))
                 if let reset {
                     Text(reset)
                         .font(.caption2)
@@ -327,8 +332,11 @@ struct MacAgentPickerRow: View {
         .frame(width: Self.limitCellWidth, alignment: .trailing)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
-            line.map { "\(column.label), \($0.percent) percent used" + (reset.map { ", \($0)" } ?? "") }
-                ?? "\(column.label), no data")
+            line.map {
+                "\(column.label), \($0.percent) percent used"
+                    + (expired ? " before the limit reset" : "")
+                    + (reset.map { ", \($0)" } ?? "")
+            } ?? "\(column.label), no data")
     }
 }
 
