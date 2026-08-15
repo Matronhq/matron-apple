@@ -78,4 +78,27 @@ final class AgentSpawnRequestTests: XCTestCase {
         emptyID["request_id"] = ""
         XCTAssertNil(AgentSpawnRequest.parse(payload: emptyID), "empty request_id")
     }
+
+    /// Whitespace-only required fields are as unanswerable as missing ones —
+    /// the card must fall back, not render blank rows over live buttons.
+    func test_rejectsWhitespaceOnlyRequiredFields() {
+        for field in ["request_id", "workdir", "task"] {
+            var payload = spawnPayload
+            payload[field] = "  \n "
+            XCTAssertNil(AgentSpawnRequest.parse(payload: payload), "whitespace-only \(field)")
+        }
+    }
+
+    /// JSON booleans and fractionals bridge to NSNumber too — `true` must
+    /// not become device id 1, and 9.5 must not truncate to device 9.
+    func test_rejectsNonIntegralDeviceIDs() {
+        for field in ["from_device_id", "target_device_id"] {
+            var boolPayload = spawnPayload
+            boolPayload[field] = true
+            XCTAssertNil(AgentSpawnRequest.parse(payload: boolPayload), "boolean \(field)")
+            var fractionalPayload = spawnPayload
+            fractionalPayload[field] = 9.5
+            XCTAssertNil(AgentSpawnRequest.parse(payload: fractionalPayload), "fractional \(field)")
+        }
+    }
 }

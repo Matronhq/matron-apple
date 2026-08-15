@@ -62,11 +62,11 @@ public struct AgentSpawnRequest: Equatable, Sendable {
     /// worse, approve something the user couldn't see.
     public static func parse(payload: [String: Any]) -> AgentSpawnRequest? {
         guard payload["kind"] as? String == "agent_spawn",
-              let requestID = payload["request_id"] as? String, !requestID.isEmpty,
-              let from = (payload["from_device_id"] as? NSNumber)?.int64Value,
-              let target = (payload["target_device_id"] as? NSNumber)?.int64Value,
-              let workdir = payload["workdir"] as? String, !workdir.isEmpty,
-              let task = payload["task"] as? String, !task.isEmpty
+              let requestID = requiredText(payload["request_id"]),
+              let from = integral(payload["from_device_id"]),
+              let target = integral(payload["target_device_id"]),
+              let workdir = requiredText(payload["workdir"]),
+              let task = requiredText(payload["task"])
         else { return nil }
         return AgentSpawnRequest(
             requestID: requestID,
@@ -90,6 +90,24 @@ public struct AgentSpawnRequest: Equatable, Sendable {
         guard let s = raw as? String else { return nil }
         let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// A required text field: trimmed, and whitespace-only rejected — a
+    /// card whose answer key or facts are blank is unanswerable, so it
+    /// falls back rather than rendering an empty row.
+    private static func requiredText(_ raw: Any?) -> String? {
+        nonEmpty(raw)
+    }
+
+    /// A device id must be an integral JSON number. JSON booleans bridge to
+    /// `NSNumber` too — `true` must not become device id 1 — and a
+    /// fractional value must not silently truncate to a different device.
+    private static func integral(_ raw: Any?) -> Int64? {
+        guard let n = raw as? NSNumber,
+              CFGetTypeID(n) != CFBooleanGetTypeID(),
+              !CFNumberIsFloatType(n)
+        else { return nil }
+        return n.int64Value
     }
 
     /// The name to show for the requester, falling back to the device id
