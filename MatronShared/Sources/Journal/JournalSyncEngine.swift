@@ -297,7 +297,7 @@ public actor JournalSyncEngine {
         try await connection.send(op)
         // A media send occupies a rejection-FIFO slot like any other
         // `op:"send"` — see `mediaSendsThisConnection`.
-        if case let .sendMedia(_, _, blobRef, _, _, _, _, localID) = op {
+        if case let .sendMedia(_, _, blobRef, _, _, _, _, _, localID) = op {
             mediaSendsThisConnection[localID] = blobRef
             sendOrderThisConnection.append(localID)
         }

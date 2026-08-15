@@ -365,10 +365,11 @@ public final class ComposerViewModel {
     /// first.
     ///
     /// The caption goes on ONE attachment because the bridge injects each
-    /// media event as its own prompt: repeating it would make claude read
-    /// the same sentence once per photo. First rather than last matches
-    /// every other chat client, and means claude has the context before it
-    /// sees the pictures.
+    /// media event as its own prompt (or, when the frames carry a batch
+    /// tag, folds them into one prompt — either way a repeated caption
+    /// would make claude read the same sentence once per photo). First
+    /// rather than last matches every other chat client, and means claude
+    /// has the context before it sees the pictures.
     ///
     /// Stops at the first failure instead of pressing on. The attachments
     /// left behind are the ones the user chose to send together, and
@@ -377,8 +378,18 @@ public final class ComposerViewModel {
     private func sendAttachments(_ attachments: [StagedAttachment], caption: String) async throws {
         var captionDelivered = false
         defer { uploadProgress = nil }
+        // One batch id for the whole send, but only when there IS a batch:
+        // a single attachment goes untagged, so its journal frame is
+        // byte-identical to what an older bridge already understands. The
+        // bridge uses the tag to gather these sequential uploads back into
+        // the one message the user wrote, instead of starting a turn on the
+        // first image and busy-queueing the rest.
+        let batchID = attachments.count > 1 ? UUID().uuidString : nil
         for (index, attachment) in attachments.enumerated() {
             let itemCaption = (index == 0 && !caption.isEmpty) ? caption : nil
+            let batch = batchID.map {
+                AttachmentBatchTag(id: $0, index: index + 1, total: attachments.count)
+            }
             uploadProgress = UploadProgress(
                 filename: attachment.filename, index: index + 1,
                 count: attachments.count, fraction: 0)
@@ -404,13 +415,13 @@ public final class ComposerViewModel {
                     try await timeline.sendImage(
                         data, filename: attachment.filename,
                         mimeType: attachment.mimeType, caption: itemCaption,
-                        progress: onProgress
+                        batch: batch, progress: onProgress
                     )
                 } else {
                     try await timeline.sendFile(
                         data, filename: attachment.filename,
                         mimeType: attachment.mimeType, caption: itemCaption,
-                        progress: onProgress
+                        batch: batch, progress: onProgress
                     )
                 }
             } catch {
