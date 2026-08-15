@@ -246,6 +246,21 @@ struct ChatView: View {
     /// the row chip) so header and row can never disagree.
     var boxName: String? = nil
 
+    /// "box · ~/workdir" for the small line under the nav title. Either part
+    /// can be missing (single-box users get no box name; the workdir only
+    /// arrives with the first session-status frame) — show what's known,
+    /// nil hides the line entirely. Static so the composition is unit-testable
+    /// without rendering (see ChatViewBindingTests).
+    static func contextLine(boxName: String?, workdir: String?) -> String? {
+        let path = workdir.map(UsageMetersFormat.homeAbbreviated)
+        let parts = [boxName, path].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private var chatContextLine: String? {
+        Self.contextLine(boxName: boxName, workdir: viewModel.sessionStatus?.workdir)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // QA finding #10: surface upstream stream failures (e.g.
@@ -679,50 +694,64 @@ struct ChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             // Tappable title → summaries TOC sheet (jump-to-point nav).
+            // Under it, "box · ~/workdir" in small text — which machine and
+            // folder this session lives on, readable without opening the
+            // info sheet (Dan, 2026-08-16). Box comes from the list summary
+            // (same gate as the row chip); the path arrives with the first
+            // session-status frame, home-abbreviated like the info sheet.
             ToolbarItem(placement: .principal) {
                 Button { showSummaries = true } label: {
-                    Text(chatTitle)
-                        .font(.headline)
-                        .lineLimit(1)
+                    VStack(spacing: 1) {
+                        Text(chatTitle)
+                            .font(.headline)
+                            .lineLimit(1)
+                        if let context = chatContextLine {
+                            Text(context)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(chatTitle)
+                .accessibilityValue(chatContextLine ?? "")
                 .accessibilityHint("Shows conversation summaries")
             }
-            // Sub-chat switcher — shown whenever this chat has ANY children
-            // (running or finished). The running strip hides itself the
-            // moment the last subagent finishes, so without this the only
-            // way back into a finished sub-chat is its timeline card; this
-            // is the permanent entry point (Dan, 2026-07-15).
-            if !stripViewModel.children.isEmpty {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        ForEach(stripViewModel.children) { child in
-                            NavigationLink(value: child.id) {
-                                Label(
-                                    child.title,
-                                    systemImage: child.isRunning
-                                        ? "circle.dashed" : "checkmark.circle"
-                                )
+            // One ellipsis menu instead of a row of icon buttons — three
+            // trailing icons squeezed the principal title down to a few
+            // characters (Dan, 2026-08-16). Sub-chats stay a submenu shown
+            // whenever this chat has ANY children (running or finished):
+            // the running strip hides itself the moment the last subagent
+            // finishes, so without this the only way back into a finished
+            // sub-chat is its timeline card (Dan, 2026-07-15).
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    if !stripViewModel.children.isEmpty {
+                        Menu {
+                            ForEach(stripViewModel.children) { child in
+                                NavigationLink(value: child.id) {
+                                    Label(
+                                        child.title,
+                                        systemImage: child.isRunning
+                                            ? "circle.dashed" : "checkmark.circle"
+                                    )
+                                }
                             }
+                        } label: {
+                            Label("Subagents", systemImage: "arrow.triangle.branch")
                         }
-                    } label: {
-                        Image(systemName: "arrow.triangle.branch")
                     }
-                    .accessibilityLabel("Subagents")
+                    Button { showMediaBrowser = true } label: {
+                        Label("Media, Files & Links", systemImage: "photo.on.rectangle.angled")
+                    }
+                    Button { showSessionStatus = true } label: {
+                        Label("Session Info", systemImage: "info.circle")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
                 }
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { showMediaBrowser = true } label: {
-                    Image(systemName: "photo.on.rectangle.angled")
-                }
-                .accessibilityLabel("Media, files and links")
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { showSessionStatus = true } label: {
-                    Image(systemName: "info.circle")
-                }
-                .accessibilityLabel("Session status")
+                .accessibilityLabel("Chat options")
             }
         }
         .sheet(isPresented: $showSessionStatus) {

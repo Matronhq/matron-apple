@@ -100,6 +100,21 @@ final class ChatViewBindingTests: XCTestCase {
         XCTAssertEqual(view.chatTitle, "Demo")
     }
 
+    // The "box · ~/workdir" line under the nav title. Either part can be
+    // missing — single-box users get no box name (the chip gate resolves
+    // upstream), and the workdir only arrives with the first session-status
+    // frame — so the line shows what's known and hides entirely when
+    // nothing is.
+    func test_contextLine_composesBoxAndAbbreviatedWorkdir() {
+        XCTAssertEqual(
+            ChatView.contextLine(boxName: "mac-mini", workdir: "/Users/dan/Dev/matron-apple"),
+            "mac-mini · ~/Dev/matron-apple"
+        )
+        XCTAssertEqual(ChatView.contextLine(boxName: "mac-mini", workdir: nil), "mac-mini")
+        XCTAssertEqual(ChatView.contextLine(boxName: nil, workdir: "/home/dan/apps/web"), "~/apps/web")
+        XCTAssertNil(ChatView.contextLine(boxName: nil, workdir: nil))
+    }
+
     @MainActor
     func test_lastItemID_changesAcrossSnapshots_evenWhenCountIsConstant() async throws {
         // Round-3 bugbot finding #5: `ChatView`'s scroll-to-bottom keys on
