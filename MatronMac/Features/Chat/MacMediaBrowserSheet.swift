@@ -21,6 +21,7 @@ struct MacMediaBrowserSheet: View {
     /// (not `ChatViewModel`) because the media browser owns its own
     /// `MediaService` call, not the timeline's.
     @State private var openingMedia: Set<URL> = []
+    @State private var tab: MediaBrowserView.Tab = .media
 
     private struct Preview: Identifiable {
         let id = UUID()
@@ -49,6 +50,7 @@ struct MacMediaBrowserSheet: View {
                             .init(id: $0.id, url: $0.url, context: $0.context, date: $0.timestamp)
                         },
                         loadFailed: viewModel.loadFailed,
+                        tabSelection: $tab,
                         thumbnail: { await viewModel.thumbnail(for: $0) },
                         onMediaTap: { cell in openImage(cell) },
                         onFileTap: { row in openFile(row) },
@@ -83,15 +85,27 @@ struct MacMediaBrowserSheet: View {
     /// Sheet content is plain (not a `NavigationStack`), so a `.toolbar`
     /// item never renders on macOS — Mac sheets are window-modal, so that
     /// left the browser with no close affordance at all. In-content row
-    /// mirrors `AttachmentFullscreenViewer.doneRow` / `MacAddAgentSheet`;
-    /// `.cancelAction` also wires Esc.
+    /// Done trailing (mirrors `AttachmentFullscreenViewer.doneRow` /
+    /// `MacAddAgentSheet`; `.cancelAction` also wires Esc) with the tab
+    /// picker centred in the same row — the sheet owns the picker so the
+    /// browser body doesn't add a second header row.
     @ViewBuilder
     private var doneRow: some View {
-        HStack {
-            Spacer()
-            Button("Done") { dismiss() }
-                .keyboardShortcut(.cancelAction)
-                .padding()
+        ZStack {
+            Picker("Tab", selection: $tab) {
+                ForEach(MediaBrowserView.Tab.allCases) { tab in
+                    Text(tab.rawValue).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .padding()
+            }
         }
     }
 
