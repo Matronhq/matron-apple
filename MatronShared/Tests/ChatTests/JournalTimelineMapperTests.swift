@@ -482,4 +482,39 @@ final class JournalTimelineMapperTests: XCTestCase {
         }
     }
 
+    // MARK: Spawn consent card
+
+    /// Same regression as the agent-chat card, one card kind later: the
+    /// spawn ask (journal `spawn_request` park path) has no `description`/
+    /// `options` either, so the generic branch rendered it as an anonymous
+    /// "Permission request" whose Allow/Deny answered over `prompt_reply` —
+    /// earning "Nothing to answer right now" from the bridge while the
+    /// parked ask expired untouched.
+    func testAgentSpawnPermissionRequestMapsToItsOwnKind() throws {
+        let item = try XCTUnwrap(map(event(15, type: "permission_request", payload: [
+            "kind": "agent_spawn", "request_id": "spawn-1",
+            "from_device_id": 4, "from_name": "dan-mac",
+            "target_device_id": 9, "target_name": "dev-2",
+            "workdir": "~/yearbook-app", "task": "run the failing spec",
+            "topic": "ci triage",
+        ])))
+        guard case .agentSpawnRequest(let eventID, let request) = item.kind else {
+            return XCTFail("expected .agentSpawnRequest, got \(item.kind)")
+        }
+        XCTAssertEqual(eventID, "15")
+        XCTAssertEqual(request.requestID, "spawn-1")
+        XCTAssertEqual(request.targetName, "dev-2")
+        XCTAssertEqual(request.workdir, "~/yearbook-app")
+    }
+
+    func testUnanswerableAgentSpawnPayloadFallsBackToTheGenericCard() throws {
+        let item = try XCTUnwrap(map(event(16, type: "permission_request", payload: [
+            "kind": "agent_spawn", "from_device_id": 4, "target_device_id": 9,
+            "workdir": "~/x", "task": "y",
+        ])))
+        guard case .askUser = item.kind else {
+            return XCTFail("expected the generic fallback, got \(item.kind)")
+        }
+    }
+
 }

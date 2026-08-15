@@ -47,6 +47,10 @@ struct MacTimelineItemView: View {
     var agentChatState: ((String) -> AgentChatCardState)? = nil
     var onAnswerAgentChat: ((_ eventID: String, _ request: AgentChatRequest,
                              _ approve: Bool) -> Void)? = nil
+    /// Same pair for spawn consent cards (`POST /agent-spawn/answer`).
+    var agentSpawnState: ((String) -> AgentChatCardState)? = nil
+    var onAnswerAgentSpawn: ((_ eventID: String, _ request: AgentSpawnRequest,
+                              _ approve: Bool) -> Void)? = nil
     /// The conversation this row belongs to — tags live-output sessions in
     /// the shared store so chat teardown can suspend only its own sockets
     /// (`suspendSessions(in:)`). `nil` keeps previews/tests compiling.
@@ -288,6 +292,22 @@ struct MacTimelineItemView: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel(Self.accessibilityLabel(
                 for: item, body: "Agent chat request. \(request.headline)"))
+
+        case .agentSpawnRequest(let eventID, let request):
+            HStack {
+                AgentSpawnRequestCard(
+                    request: request,
+                    state: agentSpawnState?(eventID) ?? .expired,
+                    onApprove: { onAnswerAgentSpawn?(eventID, request, true) },
+                    onDeny: { onAnswerAgentSpawn?(eventID, request, false) }
+                )
+                .frame(maxWidth: 360, alignment: .leading)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(Self.accessibilityLabel(
+                for: item, body: "New session request. \(request.headline)"))
 
         case .askUserAnswer:
             // `chat.matron.button_response` answers are bookkeeping for

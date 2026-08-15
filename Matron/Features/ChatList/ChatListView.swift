@@ -557,7 +557,8 @@ final class ChatVMCache {
         let mediaSvc = deps.mediaService(for: session)
         let pair = (
             chat: ChatViewModel(roomID: roomID, timeline: timelineSvc, media: mediaSvc,
-                                agentChat: deps.agentChatService(for: session)),
+                                agentChat: deps.agentChatService(for: session),
+                                agentSpawn: deps.agentSpawnService(for: session)),
             composer: ComposerViewModel(roomID: roomID, timeline: timelineSvc, commands: BotCommandCatalog.claudeBridge)
         )
         entries[roomID] = pair

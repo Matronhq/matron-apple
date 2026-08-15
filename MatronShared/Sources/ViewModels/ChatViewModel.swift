@@ -883,6 +883,10 @@ public final class ChatViewModel {
     /// would do nothing — the exact failure this whole change exists to fix.
     private let agentChat: (any AgentChatAnswering)?
 
+    /// Answers spawn consent cards, same optionality and stance as
+    /// `agentChat` above.
+    private let agentSpawn: (any AgentSpawnAnswering)?
+
     /// Consent cards answered on THIS device, keyed by journal seq, with the
     /// decision made. Persisted under `matron.agentChatAnswers.<roomID>`.
     ///
@@ -902,11 +906,13 @@ public final class ChatViewModel {
     private var agentChatTransientStates: [String: AgentChatCardState] = [:]
 
     public init(roomID: String, timeline: TimelineService, media: MediaService,
-                agentChat: (any AgentChatAnswering)? = nil) {
+                agentChat: (any AgentChatAnswering)? = nil,
+                agentSpawn: (any AgentSpawnAnswering)? = nil) {
         self.roomID = roomID
         self.timeline = timeline
         self.media = media
         self.agentChat = agentChat
+        self.agentSpawn = agentSpawn
         let stored = UserDefaults.standard.stringArray(forKey: "matron.answeredPrompts.\(roomID)") ?? []
         self.answeredPromptIDs = Set(stored)
         self.agentChatAnswers = UserDefaults.standard
@@ -945,6 +951,46 @@ public final class ChatViewModel {
             try await agentChat.answerAgentChat(
                 roomID: request.roomID, targetDeviceID: request.targetDeviceID,
                 decision: decision)
+            rememberAgentChatAnswer(eventID, decision.rawValue)
+        } catch JournalAPIError.conflict {
+            rememberAgentChatAnswer(eventID, "expired")
+        } catch {
+            agentChatTransientStates[eventID] = .failed(Self.describeAgentChatError(error))
+        }
+    }
+
+    // MARK: Spawn consent cards
+
+    /// Render state for one spawn consent card. Shares the chat cards'
+    /// remembered-answer store: both are keyed by journal seq, which is
+    /// unique across the conversation, so the two families can never collide
+    /// — and a device that answered either kind remembers it the same way.
+    public func agentSpawnState(_ eventID: String) -> AgentChatCardState {
+        if let decision = agentChatAnswers[eventID] {
+            if decision == "expired" { return .expired }
+            return .answered(approved: decision == AgentChatDecision.approve.rawValue)
+        }
+        if let transient = agentChatTransientStates[eventID] { return transient }
+        return agentSpawn == nil ? .expired : .idle
+    }
+
+    /// Answers a spawn consent card. The ONLY path that resolves one — the
+    /// generic prompt buttons used to answer over `prompt_reply`, which
+    /// never reaches the parked row (the bridge answered "Nothing to answer
+    /// right now" and the ask expired 24h later).
+    ///
+    /// Same 409 stance as `answerAgentChat`: the row stopped awaiting an
+    /// answer between draw and tap, which the user cannot act on — settle
+    /// the card as expired rather than inviting a retry.
+    public func answerAgentSpawn(
+        eventID: String, request: AgentSpawnRequest, decision: AgentChatDecision
+    ) async {
+        guard let agentSpawn, agentChatAnswers[eventID] == nil else { return }
+        if case .sending = agentSpawnState(eventID) { return }
+        agentChatTransientStates[eventID] = .sending
+        do {
+            try await agentSpawn.answerAgentSpawn(
+                requestID: request.requestID, decision: decision)
             rememberAgentChatAnswer(eventID, decision.rawValue)
         } catch JournalAPIError.conflict {
             rememberAgentChatAnswer(eventID, "expired")

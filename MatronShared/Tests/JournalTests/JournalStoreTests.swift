@@ -652,6 +652,17 @@ final class JournalStoreTests: XCTestCase {
             "🤝 Agent chat request")
     }
 
+    /// Same server-agreement pin for the spawn consent card (`snippetOf`
+    /// returns this exact string for `kind: "agent_spawn"`).
+    func testAgentSpawnCardSnippetMatchesTheServer() {
+        XCTAssertEqual(
+            JournalStore.snippet(type: "permission_request", payload: [
+                "kind": "agent_spawn", "request_id": "spawn-1",
+                "from_name": "dan-mac",
+            ]),
+            "🤝 Agent spawn request")
+    }
+
     func testOtherPermissionRequestsKeepTheDescriptionSnippet() {
         XCTAssertEqual(
             JournalStore.snippet(type: "permission_request",
