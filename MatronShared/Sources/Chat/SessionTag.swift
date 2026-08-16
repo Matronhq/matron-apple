@@ -77,7 +77,12 @@ public enum SessionTag {
     }
 
     private static func firstAlphanumeric(_ s: String) -> String? {
-        s.first(where: { $0.isLetter || $0.isNumber }).map { String($0).uppercased() }
+        s.first(where: { $0.isLetter || $0.isNumber }).map {
+            // Uppercasing can EXPAND some letters (ß → SS); the tag is one
+            // character by contract, so keep the original when it does.
+            let uppercased = String($0).uppercased()
+            return uppercased.count == 1 ? uppercased : String($0)
+        }
     }
 
     /// Case-insensitive longest common prefix, returned at the length it

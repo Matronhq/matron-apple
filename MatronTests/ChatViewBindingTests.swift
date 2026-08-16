@@ -115,6 +115,34 @@ final class ChatViewBindingTests: XCTestCase {
         XCTAssertNil(ChatView.contextLine(boxName: nil, workdir: nil))
     }
 
+    // The visible header leads with the styled `A:bc` / `A↔B:bc` tag, so
+    // VoiceOver's label must spell the same information out — box name(s)
+    // and session short ahead of the clean title, with the room marker
+    // dropped exactly where the visible composition drops it.
+    func test_accessibilityTitle_spellsOutTheVisibleTag() {
+        XCTAssertEqual(
+            ChatView.accessibilityTitle(
+                chatTitle: "css token migration",
+                boxName: "dev-y", sessionShort: "b5", roomBoxNames: []
+            ),
+            "dev-y, session b5, css token migration"
+        )
+        XCTAssertEqual(
+            ChatView.accessibilityTitle(
+                chatTitle: "🔗 mac ↔ dev-z",
+                boxName: "dev-y", sessionShort: "ab", roomBoxNames: ["dev-y", "dev-z"]
+            ),
+            "dev-y and dev-z, session ab, mac ↔ dev-z"
+        )
+        XCTAssertEqual(
+            ChatView.accessibilityTitle(
+                chatTitle: "plain title",
+                boxName: nil, sessionShort: nil, roomBoxNames: []
+            ),
+            "plain title"
+        )
+    }
+
     @MainActor
     func test_lastItemID_changesAcrossSnapshots_evenWhenCountIsConstant() async throws {
         // Round-3 bugbot finding #5: `ChatView`'s scroll-to-bottom keys on

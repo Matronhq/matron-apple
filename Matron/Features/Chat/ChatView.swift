@@ -250,11 +250,25 @@ struct ChatView: View {
     /// title in the principal item so the in-chat header matches the row.
     var sessionShort: String? = nil
     var boxShort: String? = nil
+    /// Multi-agent room participants (ChatSummary.roomBoxNames /
+    /// .roomBoxShorts, parallel arrays), threaded like the halves above so
+    /// a room's header shows the same colored `A↔B` tag as its row.
+    var roomBoxNames: [String] = []
+    var roomBoxShorts: [String] = []
 
     @Environment(\.colorScheme) private var colorScheme
 
-    /// `A:bc Title` as one Text — same composition as ChatRow's titleLine.
+    /// `A:bc Title` (or `A↔B:bc Title` for a multi-agent room) as one Text
+    /// — same composition and fallbacks as ChatRow's titleLine.
     private var titleText: Text {
+        if let tag = SessionTagText.room(
+            letters: roomBoxShorts,
+            names: roomBoxNames,
+            sessionShort: sessionShort,
+            colorScheme: colorScheme
+        ) {
+            return tag + Text(" ") + Text(SessionTag.titleBesideRoomTag(chatTitle))
+        }
         guard let tag = SessionTagText.run(
             boxLetter: boxShort,
             boxName: boxName,
@@ -262,6 +276,29 @@ struct ChatView: View {
             colorScheme: colorScheme
         ) else { return Text(chatTitle) }
         return tag + Text(" ") + Text(chatTitle)
+    }
+
+    /// What VoiceOver reads for the principal title: the visible tag's
+    /// meaning spelled out (box names, session short), not just the clean
+    /// title — sighted users see the `A:bc` tag, so the label must carry
+    /// it too. Static for unit-testability (ChatViewBindingTests).
+    static func accessibilityTitle(
+        chatTitle: String,
+        boxName: String?,
+        sessionShort: String?,
+        roomBoxNames: [String]
+    ) -> String {
+        var parts: [String] = []
+        if roomBoxNames.count >= 2 {
+            parts.append(roomBoxNames.joined(separator: " and "))
+        } else if let boxName {
+            parts.append(boxName)
+        }
+        if let sessionShort {
+            parts.append("session \(sessionShort)")
+        }
+        parts.append(SessionTag.titleBesideRoomTag(chatTitle))
+        return parts.joined(separator: ", ")
     }
 
     /// "box · ~/workdir" for the small line under the nav title. Either part
@@ -736,7 +773,12 @@ struct ChatView: View {
                     }
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(chatTitle)
+                .accessibilityLabel(Self.accessibilityTitle(
+                    chatTitle: chatTitle,
+                    boxName: boxName,
+                    sessionShort: sessionShort,
+                    roomBoxNames: roomBoxNames
+                ))
                 .accessibilityValue(chatContextLine ?? "")
                 .accessibilityHint("Shows conversation summaries")
             }

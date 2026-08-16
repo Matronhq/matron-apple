@@ -411,7 +411,9 @@ struct ChatListView: View {
                     chatTitle: summary?.title ?? "",
                     boxName: summary?.boxName,
                     sessionShort: summary?.sessionShort,
-                    boxShort: summary?.boxShort
+                    boxShort: summary?.boxShort,
+                    roomBoxNames: summary?.roomBoxNames ?? [],
+                    roomBoxShorts: summary?.roomBoxShorts ?? []
                 )
                 // Key the chat's identity to its room. `openChat` REPLACES
                 // the path ([A] → [B]), which keeps this destination's

@@ -83,6 +83,14 @@ final class SessionTagTests: XCTestCase {
         XCTAssertEqual(letters[2], "Z")
     }
 
+    func testAnExpandingUppercaseMappingStaysOneCharacter() {
+        // `ß`.uppercased() is "SS" — the tag is one character by contract,
+        // so an expanding mapping keeps the original letter instead.
+        let letters = SessionTag.boxLetters(for: [1: "box-ß", 2: "box-z"])
+        XCTAssertEqual(letters[1], "ß")
+        XCTAssertEqual(letters[2], "Z")
+    }
+
     func testSingleBoxKeepsItsInitial() {
         XCTAssertEqual(SessionTag.boxLetters(for: [1: "mac-mini"]), [1: "M"])
     }
