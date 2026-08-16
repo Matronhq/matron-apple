@@ -55,6 +55,23 @@ final class SessionTagTests: XCTestCase {
         XCTAssertEqual(SessionTag.titleBesideRoomTag("mac ↔ dev-z"), "mac ↔ dev-z")
     }
 
+    func testSplitTitlePeelsAShortBehindTheSpawnMarker() {
+        // Spawned-session titles (bridge #227): `🐣 [ab] <task>`. The short
+        // is styled into the tag; the 🐣 stays with the visible title so a
+        // spawned chat reads as one at a glance — it is never dropped the
+        // way the room marker is beside a room tag.
+        let (short, title) = SessionTag.splitTitle("🐣 [f0] port the flaky auth tests")
+        XCTAssertEqual(short, "f0")
+        XCTAssertEqual(title, "🐣 port the flaky auth tests")
+        XCTAssertEqual(SessionTag.titleBesideRoomTag(title), title,
+                       "only the room marker drops beside a tag — 🐣 stays")
+
+        // A 🐣 title with no short behind it comes back untouched.
+        let (none, plain) = SessionTag.splitTitle("🐣 no short here")
+        XCTAssertNil(none)
+        XCTAssertEqual(plain, "🐣 no short here")
+    }
+
     // MARK: boxLetters — one distinguishing letter per box
 
     func testLettersStripTheCommonPrefix() {

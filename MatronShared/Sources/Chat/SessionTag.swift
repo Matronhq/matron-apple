@@ -21,19 +21,25 @@ public enum SessionTag {
     /// title (`🔗 [ab] mac ↔ dev-z`, matron-bridge#225).
     static let roomMarker = "🔗 "
 
+    /// The bridge's markers that may lead a title ahead of the short:
+    /// 🔗 = multi-agent room (#225), 🐣 = session another agent spawned
+    /// (matron-bridge#227). Both stay with the visible title; only the
+    /// room marker is ever dropped, and only beside a rendered room tag.
+    static let titleMarkers = [roomMarker, "🐣 "]
+
     /// Peels the bridge's `[bc] ` session-short prefix off a published
     /// title. Returns the short (without brackets) and the remaining title.
     /// Titles without the prefix come back unchanged with a nil short —
     /// including bracketed text that isn't a short (wrong length, spaces,
     /// no trailing separator), which stays part of the visible title.
-    /// Agent-chat room titles carry the short BEHIND the 🔗 room marker;
-    /// the short is peeled from there and the marker stays with the title,
-    /// so a room keeps its 🔗 even for users who get no styled tag.
+    /// Room and spawned-session titles carry the short BEHIND their emoji
+    /// marker; the short is peeled from there and the marker stays with the
+    /// title, so the meaning survives even for users who get no styled tag.
     public static func splitTitle(_ raw: String) -> (sessionShort: String?, title: String) {
-        if raw.hasPrefix(roomMarker) {
-            let (short, rest) = splitTitle(String(raw.dropFirst(roomMarker.count)))
+        if let marker = titleMarkers.first(where: { raw.hasPrefix($0) }) {
+            let (short, rest) = splitTitle(String(raw.dropFirst(marker.count)))
             guard short != nil else { return (nil, raw) }
-            return (short, roomMarker + rest)
+            return (short, marker + rest)
         }
         guard raw.hasPrefix("["),
               let close = raw.firstIndex(of: "]") else { return (nil, raw) }
