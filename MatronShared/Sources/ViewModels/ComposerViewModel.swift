@@ -384,12 +384,23 @@ public final class ComposerViewModel {
         // bridge uses the tag to gather these sequential uploads back into
         // the one message the user wrote, instead of starting a turn on the
         // first image and busy-queueing the rest.
-        let batchID = attachments.count > 1 ? UUID().uuidString : nil
-        for (index, attachment) in attachments.enumerated() {
+        //
+        // An attachment that failed out of an earlier send arrives here
+        // already carrying its tag (stamped in the catch below) and keeps
+        // it verbatim. Fresh tags are minted only across the untagged
+        // attachments, so a retry neither re-brands the members of the old
+        // batch nor takes a place in a new one.
+        let untagged = attachments.filter { $0.batchTag == nil }
+        let freshBatchID = untagged.count > 1 ? UUID().uuidString : nil
+        var freshIndex = 0
+        let plan: [(attachment: StagedAttachment, batch: AttachmentBatchTag?)] = attachments.map {
+            if let carried = $0.batchTag { return ($0, carried) }
+            guard let freshBatchID else { return ($0, nil) }
+            freshIndex += 1
+            return ($0, AttachmentBatchTag(id: freshBatchID, index: freshIndex, total: untagged.count))
+        }
+        for (index, (attachment, batch)) in plan.enumerated() {
             let itemCaption = (index == 0 && !caption.isEmpty) ? caption : nil
-            let batch = batchID.map {
-                AttachmentBatchTag(id: $0, index: index + 1, total: attachments.count)
-            }
             uploadProgress = UploadProgress(
                 filename: attachment.filename, index: index + 1,
                 count: attachments.count, fraction: 0)
@@ -425,9 +436,23 @@ public final class ComposerViewModel {
                     )
                 }
             } catch {
+                // Each unsent attachment goes back to the tray stamped with
+                // the tag its frame was about to carry, so the retry
+                // re-emits it under the ORIGINAL batch_id/index/total. The
+                // bridge gathers frames by batch id: under the original id
+                // a retried frame either deposits into the still-open
+                // gather — completing the batch — or, if the batch already
+                // finalized without it, gets routed down the immediate
+                // per-frame path. A freshly minted id could do neither: the
+                // frame would wait forever for siblings that already went
+                // out, and the user's one message would arrive fractured.
                 throw AttachmentSendFailure(
                     underlying: error,
-                    unsent: Array(attachments[index...]),
+                    unsent: plan[index...].map { attachment, batch in
+                        var kept = attachment
+                        kept.batchTag = batch
+                        return kept
+                    },
                     captionDelivered: captionDelivered
                 )
             }
