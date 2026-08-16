@@ -32,9 +32,15 @@ struct MacSearchResultsView: View {
             if !viewModel.messageHits.isEmpty {
                 Section("Messages") {
                     ForEach(viewModel.messageHits) { hit in
+                        let line = viewModel.hitTitle(for: hit.roomID)
                         SearchResultRow(
                             hit: hit,
-                            chatTitle: viewModel.chatTitle(for: hit.roomID),
+                            chatTitle: line.title,
+                            sessionShort: line.sessionShort,
+                            boxLetter: line.boxLetter,
+                            boxName: line.boxName,
+                            roomBoxNames: line.roomBoxNames,
+                            roomBoxShorts: line.roomBoxShorts,
                             onTap: { onSelectMessage(hit) }
                         )
                     }
