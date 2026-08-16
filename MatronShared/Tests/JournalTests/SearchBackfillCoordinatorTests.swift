@@ -16,8 +16,18 @@ private actor InMemorySearchService: SearchService {
     /// call per event (the 2026-08-10 8.6 GB disk-write exception).
     private(set) var batchSizes: [Int] = []
 
+    /// One-shot hook, awaited after the next `indexBatch` commits — the
+    /// interleaving point for the reset-vs-progress race tests (rows landed,
+    /// bookkeeping write still ahead). Consumed on first fire so a retry
+    /// sweep in the same test runs unhooked.
+    private var afterIndexBatch: (@Sendable () async -> Void)?
+
     func seedProgress(roomID: String, oldestEventID: String?, complete: Bool) {
         progress[roomID] = Progress(indexedCount: 0, oldestEventID: oldestEventID, complete: complete)
+    }
+
+    func setAfterNextIndexBatch(_ hook: @escaping @Sendable () async -> Void) {
+        afterIndexBatch = hook
     }
 
     func index(roomID: String, eventID: String, sender: String, timestamp: Date, body: String) async throws {
@@ -28,6 +38,10 @@ private actor InMemorySearchService: SearchService {
         for entry in entries {
             try await index(roomID: entry.roomID, eventID: entry.eventID,
                             sender: entry.sender, timestamp: entry.timestamp, body: entry.body)
+        }
+        if let hook = afterIndexBatch {
+            afterIndexBatch = nil
+            await hook()
         }
     }
     func remove(eventID: String) async throws { indexed[eventID] = nil }
@@ -65,6 +79,13 @@ private actor ScriptedPager {
         let eligible = events.filter { $0.convoID == convoID && (beforeSeq == nil || $0.seq < beforeSeq!) }
         return Array(eligible.suffix(limit))
     }
+}
+
+/// Late-binding handle so a `fetchPage` closure (or a search-fake hook) can
+/// drive the coordinator it is itself a dependency of. Set exactly once,
+/// before the sweep starts, then only read — hence `@unchecked Sendable`.
+private final class CoordinatorBox: @unchecked Sendable {
+    var coordinator: SearchBackfillCoordinator?
 }
 
 private func makeEvent(seq: Int64, convoID: String = "c1", type: String = JournalEventType.text,
@@ -152,6 +173,92 @@ final class SearchBackfillCoordinatorTests: XCTestCase {
         let indexed = await search.indexed
         XCTAssertEqual(Set(indexed.keys), Set(["1", "2", "3"]),
                        "events applied while the index was shut must end up indexed")
+    }
+
+    // The cold-start race (ported fix — matron-android #41): the engine's
+    // snapshot re-bootstrap resets the backfill bookkeeping while a sweep may
+    // be mid-batch. Routed through `reset()`, the coordinator's epoch guard
+    // must drop the in-flight batch's writes — committing them would
+    // resurrect the very bookkeeping the reset cleared (worst case
+    // re-marking the room complete, so every later sweep skips the head-side
+    // hole the reset exists to expose) — and the next sweep must re-walk
+    // from scratch.
+
+    func test_resetInterleavedMidBatch_dropsWritesAndStopsTheSweep() async throws {
+        let search = InMemorySearchService()
+        let events = (1...3).map { makeEvent(seq: Int64($0), payload: ["body": "msg \($0)"]) }
+        let pager = ScriptedPager(events: events)
+        let box = CoordinatorBox()
+        let coordinator = SearchBackfillCoordinator(
+            search: search,
+            fetchPage: { convoID, beforeSeq, limit in
+                let page = try await pager.page(convoID: convoID, beforeSeq: beforeSeq, limit: limit)
+                // Interleave the reset at the batch's widest suspension
+                // point: the page is fetched, none of its writes committed.
+                if await pager.calls.count == 1 { await box.coordinator?.reset() }
+                return page
+            },
+            pageSize: 10, throttle: .zero
+        )
+        box.coordinator = coordinator
+
+        let firstPass = await coordinator.run(convoIDs: ["c1", "c2"])
+
+        XCTAssertFalse(firstPass, "an interleaved reset must fail the sweep so the caller retries")
+        let indexedAfterReset = await search.indexed
+        XCTAssertTrue(indexedAfterReset.isEmpty, "the in-flight batch's rows must be dropped")
+        let progressAfterReset = await search.progress
+        XCTAssertTrue(progressAfterReset.isEmpty,
+                      "no bookkeeping may survive the reset — a resurrected row would make later sweeps skip the room")
+        let callsAfterReset = await pager.calls
+        XCTAssertEqual(callsAfterReset.map(\.convoID), ["c1"],
+                       "the sweep must stop, not roll on to c2 against pre-reset assumptions")
+
+        let secondPass = await coordinator.run(convoIDs: ["c1"])
+
+        XCTAssertTrue(secondPass)
+        let indexed = await search.indexed
+        XCTAssertEqual(Set(indexed.keys), Set(["1", "2", "3"]),
+                       "the retry sweep must re-index everything from scratch")
+        let progress = await search.progress["c1"]
+        XCTAssertEqual(progress?.complete, true)
+        let calls = await pager.calls
+        XCTAssertEqual(calls.map(\.beforeSeq), [nil, nil], "the re-walk must start from the newest page")
+    }
+
+    func test_resetAfterRowsCommitted_stillDropsTheBookkeepingWrite() async throws {
+        let search = InMemorySearchService()
+        let events = (1...5).map { makeEvent(seq: Int64($0), payload: ["body": "msg \($0)"]) }
+        let pager = ScriptedPager(events: events)
+        let box = CoordinatorBox()
+        let coordinator = makeCoordinator(search: search, pager: pager)
+        box.coordinator = coordinator
+        // One suspension later than the test above: page 1's rows have
+        // committed, its `recordBackfillProgress` has not.
+        await search.setAfterNextIndexBatch { await box.coordinator?.reset() }
+
+        let firstPass = await coordinator.run(convoIDs: ["c1"])
+
+        XCTAssertFalse(firstPass)
+        // The rows may stay (`resetBackfill` deliberately preserves indexed
+        // messages, and re-indexing is idempotent) — the progress row is the
+        // dangerous write, and it must be dropped.
+        let progressAfterReset = await search.progress
+        XCTAssertTrue(progressAfterReset.isEmpty,
+                      "the batch's progress write carries the pre-reset watermark and must not land")
+
+        let secondPass = await coordinator.run(convoIDs: ["c1"])
+
+        XCTAssertTrue(secondPass)
+        let indexed = await search.indexed
+        XCTAssertEqual(Set(indexed.keys), Set(["1", "2", "3", "4", "5"]))
+        let progress = await search.progress["c1"]
+        XCTAssertEqual(progress?.complete, true)
+        XCTAssertEqual(progress?.oldestEventID, "1")
+        // The retry ignored page 1's dropped watermark: head page first,
+        // then strictly descending.
+        let calls = await pager.calls
+        XCTAssertEqual(calls.map(\.beforeSeq), [nil, nil, 4, 2])
     }
 
     func test_resume_startsFromRecordedOldest() async throws {

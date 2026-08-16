@@ -129,7 +129,7 @@ final class AppDependencies {
             ownSender: "user:\(session.userID)", search: search
         )
         let core = JournalCore(api: api, store: store, engine: engine)
-        core.backfillTask = Self.startBackfill(search: search, api: api, store: store)
+        core.backfillTask = Self.startBackfill(search: search, api: api, store: store, engine: engine)
         cores[session.userID] = core
         return core
     }
@@ -155,13 +155,19 @@ final class AppDependencies {
     /// no caller here passes `true` — the parameter is carried purely to keep
     /// the two copies textually identical.
     static func startBackfill(search: SearchService?, api: JournalAPI, store: JournalStore,
-                              resetBookkeepingFirst: Bool = false) -> Task<Void, Never>? {
+                              engine: JournalSyncEngine, resetBookkeepingFirst: Bool = false) -> Task<Void, Never>? {
         guard let search else { return nil }
         let coordinator = SearchBackfillCoordinator(search: search) { convoID, beforeSeq, limit in
             try await api.messages(convoID: convoID, beforeSeq: beforeSeq, limit: limit)
         }
         return Task(priority: .utility) {
-            if resetBookkeepingFirst { try? await search.resetBackfill() }
+            // Attach before anything else: from the moment a walk can exist,
+            // the engine's cold-start bookkeeping reset must route through
+            // this coordinator's epoch guard rather than race the walk by
+            // hitting the SearchService directly (see
+            // SearchBackfillCoordinator.reset).
+            await engine.attachBackfillCoordinator(coordinator)
+            if resetBookkeepingFirst { await coordinator.reset() }
             // Let the initial connect + catch-up replay land before adding
             // background request load.
             try? await Task.sleep(for: .seconds(10))

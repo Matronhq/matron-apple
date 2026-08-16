@@ -63,6 +63,13 @@ public actor JournalSyncEngine {
     /// `var`, not `let`, purely so `attachSearch(_:)` can fill it in later —
     /// see there. Only ever goes nil → non-nil.
     private var search: (any SearchService)?
+    /// Owner of the search-history backfill walk, when the host wired one up
+    /// (`AppDependencies.startBackfill`). Held so `coldStartIfNeeded()` can
+    /// route its bookkeeping reset through the coordinator's epoch guard
+    /// instead of racing an in-flight walk by hitting the SearchService
+    /// directly. Same late-attach shape as `search`; only ever goes
+    /// nil → non-nil.
+    private var backfill: SearchBackfillCoordinator?
     private let backoffBaseSeconds: Double
 
     private var runTask: Task<Void, Never>?
@@ -176,6 +183,18 @@ public actor JournalSyncEngine {
     /// Whether an index is currently attached. Lets the owner decide whether a
     /// core still needs `attachSearch(_:)` without tracking that separately.
     public var hasSearch: Bool { search != nil }
+
+    /// Hands the engine the session's backfill coordinator (built after the
+    /// engine, in `startBackfill`). Once attached, `coldStartIfNeeded()`
+    /// resets backfill bookkeeping through the coordinator, whose epoch
+    /// guard keeps a walk suspended mid-batch from committing after the
+    /// reset and resurrecting the bookkeeping it cleared (see
+    /// `SearchBackfillCoordinator.reset`). No-op once set, mirroring
+    /// `attachSearch(_:)`: there is one coordinator per session.
+    public func attachBackfillCoordinator(_ coordinator: SearchBackfillCoordinator) {
+        guard backfill == nil else { return }
+        backfill = coordinator
+    }
 
     // MARK: Lifecycle
 
@@ -1080,7 +1099,18 @@ public actor JournalSyncEngine {
         // bookkeeping (messages stay indexed) so the backfill sweep re-walks
         // every conversation from its head. Best-effort: a failed reset just
         // leaves search coverage where it was.
-        if let search { try? await search.resetBackfill() }
+        //
+        // Routed through the coordinator when one is attached: a direct
+        // `search.resetBackfill()` races an in-flight walk, whose next
+        // `recordBackfillProgress` would resurrect the very bookkeeping this
+        // clears (see SearchBackfillCoordinator.reset). The direct call is
+        // the no-coordinator fallback only — with no walker there is nothing
+        // to race.
+        if let backfill {
+            await backfill.reset()
+        } else if let search {
+            try? await search.resetBackfill()
+        }
     }
 
     private func backoff() async {

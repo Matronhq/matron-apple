@@ -48,7 +48,16 @@ public actor SearchBackfillCoordinator {
     private let fetchPage: FetchPage
     private let pageSize: Int
     private let throttle: Duration
+    /// Bumped by `reset()`. A walk captures it per conversation and drops
+    /// its writes once it has moved — see `reset()` for why actor isolation
+    /// alone cannot provide that ordering.
+    private var generation = 0
     private static let logger = os.Logger(subsystem: "chat.matron", category: "search-backfill")
+
+    /// Thrown mid-walk when `reset()` moved the generation; `run` catches it
+    /// and stops the sweep so the caller retries against the cleared
+    /// bookkeeping.
+    private struct GenerationMoved: Error {}
 
     public init(search: any SearchService, fetchPage: @escaping FetchPage,
                 pageSize: Int = 200, throttle: Duration = .milliseconds(100)) {
@@ -56,6 +65,31 @@ public actor SearchBackfillCoordinator {
         self.fetchPage = fetchPage
         self.pageSize = pageSize
         self.throttle = throttle
+    }
+
+    /// Clears the search store's backfill bookkeeping AND invalidates any
+    /// walk in flight. This is the only safe way to reset while a sweep may
+    /// be running: calling `search.resetBackfill()` directly (as
+    /// `coldStartIfNeeded` once did) races the walk — a batch suspended in
+    /// `fetchPage` commits its `recordBackfillProgress` after the delete,
+    /// resurrecting the watermark/complete flag the reset just cleared, and
+    /// every later sweep then skips exactly the head-side range the reset
+    /// exists to re-walk.
+    ///
+    /// Actor isolation alone cannot give that ordering: the walk suspends at
+    /// every await and the actor is reentrant there, so a reset CAN land
+    /// mid-batch. Hence the epoch — the generation moves BEFORE the delete,
+    /// so a batch that captured the old value fails its write-time check.
+    /// The second bump covers a batch that started during the delete and
+    /// read bookkeeping the delete had not committed yet: its resume point
+    /// is equally void. A dropped sweep is cheap (`run` returns `false` and
+    /// the caller's retry loop re-walks from the cleared bookkeeping).
+    /// Best-effort like the direct call was: a failed delete leaves search
+    /// coverage where it was.
+    public func reset() async {
+        generation &+= 1
+        try? await search.resetBackfill()
+        generation &+= 1
     }
 
     /// Sweeps `convoIDs` serially. Returns `true` when every conversation is
@@ -71,6 +105,11 @@ public actor SearchBackfillCoordinator {
                 try await backfill(convoID: convoID)
             } catch is CancellationError {
                 return false
+            } catch is GenerationMoved {
+                // reset() invalidated the sweep mid-flight: the remaining
+                // conversations would walk against pre-reset bookkeeping
+                // too. Stop; the caller's retry re-sweeps from scratch.
+                return false
             } catch {
                 // Transient by assumption (the sweep retries): record and move on.
                 allComplete = false
@@ -81,6 +120,9 @@ public actor SearchBackfillCoordinator {
     }
 
     private func backfill(convoID: String) async throws {
+        // Everything below is premised on bookkeeping as of this epoch;
+        // `reset()` moving it voids the premise (see there).
+        let epoch = generation
         if try await search.backfillComplete(roomID: convoID) { return }
         // Resume point: the oldest seq a previous walk reached. `nil` starts
         // at the newest page — those events are usually live-indexed already,
@@ -109,6 +151,13 @@ public actor SearchBackfillCoordinator {
                 return SearchIndexEntry(roomID: event.convoID, eventID: String(event.seq),
                                         sender: event.sender, timestamp: event.ts, body: body)
             }
+            // Write-time epoch check: `fetchPage` is a seconds-wide
+            // suspension and the actor is reentrant there, so a `reset()`
+            // can land mid-batch. Committing this page afterwards would
+            // re-insert bookkeeping the reset deleted — worst case
+            // re-marking the room complete, hiding the very head-side hole
+            // the reset exists to expose — so the batch is dropped instead.
+            guard generation == epoch else { throw GenerationMoved() }
             try await search.indexBatch(entries)
             let pageOldest = older.map(\.seq).min()
             if let pageOldest { oldest = pageOldest }
@@ -117,6 +166,10 @@ public actor SearchBackfillCoordinator {
             // terminating (as complete) beats looping on it forever.
             let exhausted = events.count < pageSize || pageOldest == nil
             let indexedCount = try await search.eventCount(roomID: convoID)
+            // Re-checked after `indexBatch`/`eventCount` suspended again:
+            // the progress row is the dangerous write — it carries the
+            // pre-reset watermark/complete flag.
+            guard generation == epoch else { throw GenerationMoved() }
             try await search.recordBackfillProgress(
                 roomID: convoID, indexedCount: indexedCount,
                 oldestEventID: oldest.map(String.init), complete: exhausted)
