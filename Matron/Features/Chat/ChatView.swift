@@ -710,6 +710,10 @@ struct ChatView: View {
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
+                                // Middle-truncate like the Mac toolbar's
+                                // subtitle: the tail of a path is the part
+                                // worth keeping.
+                                .truncationMode(.middle)
                         }
                     }
                 }
@@ -727,8 +731,14 @@ struct ChatView: View {
             // sub-chat is its timeline card (Dan, 2026-07-15).
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
+                    // Flat section, not a nested submenu: NavigationLink
+                    // inside a single-level toolbar Menu is the pattern
+                    // that already shipped here — one level deeper is a
+                    // known SwiftUI no-op-tap failure mode (Bugbot, PR
+                    // #150), and it would sever the only route back into
+                    // finished sub-chats.
                     if !stripViewModel.children.isEmpty {
-                        Menu {
+                        Section("Subagents") {
                             ForEach(stripViewModel.children) { child in
                                 NavigationLink(value: child.id) {
                                     Label(
@@ -738,8 +748,6 @@ struct ChatView: View {
                                     )
                                 }
                             }
-                        } label: {
-                            Label("Subagents", systemImage: "arrow.triangle.branch")
                         }
                     }
                     Button { showMediaBrowser = true } label: {
