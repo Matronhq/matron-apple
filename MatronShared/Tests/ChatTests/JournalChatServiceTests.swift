@@ -175,13 +175,13 @@ final class JournalChatServiceTests: XCTestCase {
         // through the real snapshot path into the record the summary reads.
         let store = try makeStore()
         try store.applyColdSnapshot([
-            ConvoSummaryDTO(id: "room", title: "🔗 [ab] mac ↔ dev-z", sessionState: "waiting",
+            ConvoSummaryDTO(id: "room", title: "↔️ [ab] mac ↔ dev-z", sessionState: "waiting",
                             lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 7,
                             participants: [7, 9]),
-            ConvoSummaryDTO(id: "local", title: "🔗 [cd] mac ↔ mac", sessionState: "waiting",
+            ConvoSummaryDTO(id: "local", title: "↔️ [cd] mac ↔ mac", sessionState: "waiting",
                             lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 7,
                             participants: [7]),
-            ConvoSummaryDTO(id: "ghost", title: "🔗 [ef] mac ↔ gone", sessionState: "waiting",
+            ConvoSummaryDTO(id: "ghost", title: "↔️ [ef] mac ↔ gone", sessionState: "waiting",
                             lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 7,
                             participants: [7, 999]),
         ], headSeq: 1)
@@ -193,12 +193,12 @@ final class JournalChatServiceTests: XCTestCase {
 
         // A genuine multi-box room tags every box — names for the hue,
         // letters for the glyphs, journal order — and the room short comes
-        // off the `🔗 [ab] ` title prefix with the marker kept.
+        // off the `↔️ [ab] ` title prefix with the marker kept.
         let multi = JournalChatService.summary(from: room, boxNames: two, boxLetters: letters)
         XCTAssertEqual(multi.roomBoxNames, ["dev-y", "dev-z"])
         XCTAssertEqual(multi.roomBoxShorts, ["Y", "Z"])
         XCTAssertEqual(multi.sessionShort, "ab")
-        XCTAssertEqual(multi.title, "🔗 mac ↔ dev-z")
+        XCTAssertEqual(multi.title, "↔️ mac ↔ dev-z")
 
         // Single-box user: same gate as the single-box tag — no letters.
         let gated = JournalChatService.summary(from: room, boxNames: [7: "dev-y"])
