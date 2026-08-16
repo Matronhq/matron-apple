@@ -28,18 +28,23 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
     /// has no recorded box, and the recorded box no longer exists. Resolving
     /// the gate upstream keeps every row view a dumb renderer.
     public let boxName: String?
+    /// Two characters of the session/room id, peeled off the title's
+    /// `[bc] ` (or `🔗 [bc] `) prefix (SessionTag.splitTitle). `title` is
+    /// always the CLEAN remainder — rows compose the styled tag from this
+    /// instead.
+    public let sessionShort: String?
+    /// The box's one-letter display tag (SessionTag.boxLetters), gated
+    /// exactly like `boxName`: nil unless the user has two or more boxes.
+    public let boxShort: String?
     /// Every participating box of a multi-agent room, resolved and deduped
     /// upstream (JournalChatService), or empty when this is not a known
     /// multi-box room. Two or more entries by construction — a room whose
-    /// members collapse to one box falls back to the single `boxName` chip.
+    /// members collapse to one box falls back to the single-box tag.
     public let roomBoxNames: [String]
-
-    /// What the row actually renders: the full tag strip for a multi-agent
-    /// room, else the single owning box, else nothing. Rows just iterate —
-    /// every gate already resolved upstream.
-    public var chips: [String] {
-        roomBoxNames.count >= 2 ? roomBoxNames : (boxName.map { [$0] } ?? [])
-    }
+    /// One display letter per `roomBoxNames` entry (parallel arrays, same
+    /// order) — what the colored `A↔B` room tag actually prints. The name
+    /// array carries the hue, this one the glyphs.
+    public let roomBoxShorts: [String]
 
     public init(
         id: String,
@@ -50,7 +55,10 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
         snippet: String = "",
         parentConvoID: String? = nil,
         boxName: String? = nil,
-        roomBoxNames: [String] = []
+        sessionShort: String? = nil,
+        boxShort: String? = nil,
+        roomBoxNames: [String] = [],
+        roomBoxShorts: [String] = []
     ) {
         self.id = id
         self.title = title
@@ -60,7 +68,10 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
         self.snippet = snippet
         self.parentConvoID = parentConvoID
         self.boxName = boxName
+        self.sessionShort = sessionShort
+        self.boxShort = boxShort
         self.roomBoxNames = roomBoxNames
+        self.roomBoxShorts = roomBoxShorts
     }
 }
 

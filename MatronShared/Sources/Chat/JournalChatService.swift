@@ -77,7 +77,10 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
                     // conversations snapshot; read through so the very
                     // first paint still carries its chips.
                     let boxNames = inputs.boxNames ?? (try? store.agentNames()) ?? [:]
-                    continuation.yield(records.map { Self.summary(from: $0, boxNames: boxNames) })
+                    // Derived once per snapshot, not per row — the letters
+                    // depend on the whole name set (common-prefix strip).
+                    let boxLetters = SessionTag.boxLetters(for: boxNames)
+                    continuation.yield(records.map { Self.summary(from: $0, boxNames: boxNames, boxLetters: boxLetters) })
                     try? await Task.sleep(for: interval)
                 }
                 continuation.finish()
@@ -92,18 +95,29 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
 
     /// `boxNames` is the id → name map of the user's agent boxes. The chip
     /// gate lives here: fewer than two boxes means no chip on any row.
-    static func summary(from record: ConversationRecord, boxNames: [Int64: String]) -> ChatSummary {
+    static func summary(from record: ConversationRecord, boxNames: [Int64: String], boxLetters: [Int64: String] = [:]) -> ChatSummary {
         let activityMS = record.lastActivityTS ?? (record.createdAt > 0 ? record.createdAt : nil)
+        // The bridge bakes a `[bc] ` session short into earned titles —
+        // peel it off so rows show the clean title and restyle the short
+        // as part of the leading `A:bc` tag.
+        let (sessionShort, cleanTitle) = SessionTag.splitTitle(record.title)
+        let boxName = Self.boxName(for: record, boxNames: boxNames)
+        let roomTags = Self.roomTags(for: record, boxNames: boxNames, boxLetters: boxLetters)
         return ChatSummary(
             id: record.id,
-            title: record.title.isEmpty ? record.id : record.title,
+            title: cleanTitle.isEmpty ? record.id : cleanTitle,
             bot: BotIdentity(matrixID: "agent:claude", displayName: "Claude", avatarURL: nil),
             lastActivity: activityMS.map { Date(timeIntervalSince1970: Double($0) / 1000) },
             unreadCount: record.unreadCount,
             snippet: record.snippet,
             parentConvoID: record.parentConvoID,
-            boxName: Self.boxName(for: record, boxNames: boxNames),
-            roomBoxNames: Self.roomBoxNames(for: record, boxNames: boxNames)
+            boxName: boxName,
+            sessionShort: sessionShort,
+            // Same gate as the chip: a letter only means something when
+            // there is more than one box to tell apart.
+            boxShort: boxName != nil ? record.agentDeviceID.flatMap { boxLetters[$0] } : nil,
+            roomBoxNames: roomTags.map(\.name),
+            roomBoxShorts: roomTags.map(\.letter)
         )
     }
 
@@ -115,21 +129,26 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
         return boxNames[id]
     }
 
-    /// The tag strip for a multi-agent room: every participant id resolved
-    /// to a box name, deduped in journal order. Same two-box gate as
-    /// `boxName(for:)` — one box means nothing to disambiguate. Empty
-    /// unless at least two DISTINCT boxes resolve (a local room's two ends
-    /// share one box, and a participant whose device was revoked resolves
-    /// to nothing), so rows can fall back to the single owner chip.
-    static func roomBoxNames(for record: ConversationRecord?, boxNames: [Int64: String]) -> [String] {
+    /// The tag for a multi-agent room: every participant id resolved to its
+    /// box name AND display letter, deduped by name in journal order. Same
+    /// two-box gate as `boxName(for:)` — one box means nothing to
+    /// disambiguate. Empty unless at least two DISTINCT boxes resolve (a
+    /// local room's two ends share one box, and a participant whose device
+    /// was revoked resolves to nothing), so rows can fall back to the
+    /// single-box tag.
+    static func roomTags(
+        for record: ConversationRecord?,
+        boxNames: [Int64: String],
+        boxLetters: [Int64: String]
+    ) -> [(name: String, letter: String)] {
         guard boxNames.count >= 2, let ids = record?.participantIDs, ids.count >= 2 else { return [] }
         var seen = Set<String>()
-        var names: [String] = []
+        var tags: [(name: String, letter: String)] = []
         for id in ids {
             guard let name = boxNames[id], seen.insert(name).inserted else { continue }
-            names.append(name)
+            tags.append((name: name, letter: boxLetters[id] ?? "?"))
         }
-        return names.count >= 2 ? names : []
+        return tags.count >= 2 ? tags : []
     }
 
     static func childSummary(from record: ConversationRecord) -> SubChatSummary {

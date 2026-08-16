@@ -245,6 +245,24 @@ struct ChatView: View {
     /// than two boxes. Threaded from the list's ChatSummary (same source as
     /// the row chip) so header and row can never disagree.
     var boxName: String? = nil
+    /// The `A:bc` tag halves, threaded from the list summary like `boxName`
+    /// (see ChatSummary.sessionShort / .boxShort). Composed ahead of the
+    /// title in the principal item so the in-chat header matches the row.
+    var sessionShort: String? = nil
+    var boxShort: String? = nil
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// `A:bc Title` as one Text — same composition as ChatRow's titleLine.
+    private var titleText: Text {
+        guard let tag = SessionTagText.run(
+            boxLetter: boxShort,
+            boxName: boxName,
+            sessionShort: sessionShort,
+            colorScheme: colorScheme
+        ) else { return Text(chatTitle) }
+        return tag + Text(" ") + Text(chatTitle)
+    }
 
     /// "box · ~/workdir" for the small line under the nav title. Either part
     /// can be missing (single-box users get no box name; the workdir only
@@ -702,7 +720,7 @@ struct ChatView: View {
             ToolbarItem(placement: .principal) {
                 Button { showSummaries = true } label: {
                     VStack(spacing: 1) {
-                        Text(chatTitle)
+                        titleText
                             .font(.headline)
                             .lineLimit(1)
                         if let context = chatContextLine {
