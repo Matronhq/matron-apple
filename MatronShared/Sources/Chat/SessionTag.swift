@@ -63,6 +63,29 @@ public enum SessionTag {
         return String(title.dropFirst(marker.count))
     }
 
+    /// The plain-text spellings of the visible session tag, for search
+    /// matching: the bare short (`b5`) plus the rendered letters:short
+    /// form — `Y:b5` for a single box, `Y↔Z:ab` for a room pair, `Y,Z,W:ab`
+    /// beyond (`SessionTagText`'s glyph order exactly, so what renders is
+    /// what matches). Empty when there is no session short: a bare box
+    /// letter renders as a tag too, but one letter matching every chat on
+    /// its box would be noise, not search.
+    public static func searchSpellings(
+        boxLetter: String?,
+        sessionShort: String?,
+        roomBoxShorts: [String]
+    ) -> [String] {
+        guard let sessionShort else { return [] }
+        var spellings = [sessionShort]
+        if roomBoxShorts.count >= 2 {
+            let letters = roomBoxShorts.joined(separator: roomBoxShorts.count == 2 ? "↔" : ",")
+            spellings.append("\(letters):\(sessionShort)")
+        } else if let boxLetter {
+            spellings.append("\(boxLetter):\(sessionShort)")
+        }
+        return spellings
+    }
+
     /// One display letter per box, derived from the box names: strip the
     /// prefix common to ALL names, then take the first letter/digit of what
     /// remains, uppercased. `dev-y` / `dev-z` therefore come out as `Y` and

@@ -13,6 +13,10 @@ import SwiftUI
 /// Either half may be missing: single-box users have no letter (same gate
 /// as `BoxChip`), seed titles and pre-#224 conversations have no session
 /// short. `nil` when there is nothing to show at all.
+///
+/// `SessionTag.searchSpellings` (MatronChat — this module can't see it) is
+/// the plain-text mirror of these runs, so chat search matches what the
+/// rows render. Changing a separator glyph here means changing it there.
 public enum SessionTagText {
     public static func run(
         boxLetter: String?,
