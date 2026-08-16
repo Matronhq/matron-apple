@@ -288,17 +288,9 @@ struct ChatView: View {
         sessionShort: String?,
         roomBoxNames: [String]
     ) -> String {
-        var parts: [String] = []
-        if roomBoxNames.count >= 2 {
-            parts.append(roomBoxNames.joined(separator: " and "))
-        } else if let boxName {
-            parts.append(boxName)
-        }
-        if let sessionShort {
-            parts.append("session \(sessionShort)")
-        }
-        parts.append(SessionTag.titleBesideRoomTag(chatTitle))
-        return parts.joined(separator: ", ")
+        SessionTag.accessibilityTitle(
+            chatTitle: chatTitle, boxName: boxName,
+            sessionShort: sessionShort, roomBoxNames: roomBoxNames)
     }
 
     /// "box · ~/workdir" for the small line under the nav title. Either part

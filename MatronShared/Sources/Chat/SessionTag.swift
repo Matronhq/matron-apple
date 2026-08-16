@@ -70,19 +70,50 @@ public enum SessionTag {
     /// unrelated names keep their initials (`mac-mini` / `dev-3` → `M` /
     /// `D`). A name that IS the common prefix (`dev` next to `dev-2`) falls
     /// back to its own initial. Deterministic — same names, same letters,
-    /// every platform — and renaming a box (already supported) is how you
-    /// change its letter. Collisions are tolerated: the letter is an aid,
+    /// every platform. Collisions are tolerated: the letter is an aid,
     /// the color and session short still disambiguate.
-    public static func boxLetters(for names: [Int64: String]) -> [Int64: String] {
+    ///
+    /// `overrides` (Settings → Devices → Tag Character, stored by
+    /// `BoxLetterOverrides`) replace the derived letter per box AFTER
+    /// derivation, so one override never shifts what the other boxes get
+    /// from the common-prefix strip.
+    public static func boxLetters(
+        for names: [Int64: String],
+        overrides: [Int64: String] = [:]
+    ) -> [Int64: String] {
         guard !names.isEmpty else { return [:] }
         let values = Array(names.values)
         let prefix = values.count >= 2 ? commonPrefix(of: values) : ""
         var letters: [Int64: String] = [:]
         for (id, name) in names {
             let remainder = String(name.dropFirst(prefix.count))
-            letters[id] = firstAlphanumeric(remainder) ?? firstAlphanumeric(name) ?? "?"
+            letters[id] = overrides[id]
+                ?? firstAlphanumeric(remainder) ?? firstAlphanumeric(name) ?? "?"
         }
         return letters
+    }
+
+    /// What VoiceOver reads for a tagged chat title: the visible tag's
+    /// meaning spelled out (box names, session short), then the clean
+    /// title. Shared by the iOS and Mac chat headers so the two platforms
+    /// can never drift.
+    public static func accessibilityTitle(
+        chatTitle: String,
+        boxName: String?,
+        sessionShort: String?,
+        roomBoxNames: [String]
+    ) -> String {
+        var parts: [String] = []
+        if roomBoxNames.count >= 2 {
+            parts.append(roomBoxNames.joined(separator: " and "))
+        } else if let boxName {
+            parts.append(boxName)
+        }
+        if let sessionShort {
+            parts.append("session \(sessionShort)")
+        }
+        parts.append(titleBesideRoomTag(chatTitle))
+        return parts.joined(separator: ", ")
     }
 
     private static func firstAlphanumeric(_ s: String) -> String? {

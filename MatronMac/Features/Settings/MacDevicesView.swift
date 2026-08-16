@@ -1,5 +1,6 @@
 #if os(macOS)
 import SwiftUI
+import MatronChat
 import MatronJournal
 import MatronViewModels
 
@@ -16,6 +17,10 @@ struct MacDevicesView: View {
     /// that survives the alert's own re-evaluations.
     @State private var renaming: DeviceDTO?
     @State private var draftName = ""
+    /// The agent box whose tag-character alert is open, and its draft —
+    /// same two-piece pattern as `renaming`.
+    @State private var letterEditing: DeviceDTO?
+    @State private var draftLetter = ""
     @State private var showingAddAgent = false
     private let api: any DevicesProviding
 
@@ -29,7 +34,11 @@ struct MacDevicesView: View {
             List(viewModel.devices) { device in
                 DeviceRow(device: device,
                           onRevoke: { confirming = device },
-                          onRename: { draftName = device.name; renaming = device })
+                          onRename: { draftName = device.name; renaming = device },
+                          onSetLetter: {
+                              draftLetter = BoxLetterOverrides.letter(for: device.id) ?? ""
+                              letterEditing = device
+                          })
             }
             .overlay {
                 // Only claim "no devices" when the load actually succeeded —
@@ -91,6 +100,23 @@ struct MacDevicesView: View {
         } message: {
             Text("This name labels the box everywhere — in Devices and on the chip beside each conversation.")
         }
+        .alert("Tag character", isPresented: Binding(
+            get: { letterEditing != nil },
+            set: { if !$0 { letterEditing = nil } }
+        )) {
+            TextField("Automatic", text: $draftLetter)
+            Button("Cancel", role: .cancel) { letterEditing = nil }
+            Button("Save") {
+                if let device = letterEditing {
+                    // A blank draft clears the override — sanitize maps
+                    // empty to nil, which means "back to automatic".
+                    BoxLetterOverrides.set(draftLetter, for: device.id)
+                }
+                letterEditing = nil
+            }
+        } message: {
+            Text("One character shown before chat titles to identify this machine. Leave empty to derive it from the box name.")
+        }
     }
 }
 
@@ -98,6 +124,9 @@ private struct DeviceRow: View {
     let device: DeviceDTO
     let onRevoke: () -> Void
     let onRename: () -> Void
+    /// Opens the tag-character editor — agent boxes only; the tag fronts
+    /// chat titles and clients have no box letter.
+    let onSetLetter: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
@@ -123,6 +152,11 @@ private struct DeviceRow: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            if device.kind == "agent" {
+                Button("Tag…", action: onSetLetter)
+                    .controlSize(.small)
+                    .help("Choose the character shown before this machine's chat titles")
+            }
             Button("Rename…", action: onRename)
                 .controlSize(.small)
             Button(device.isSelf ? "Sign Out…" : "Revoke…", action: onRevoke)
