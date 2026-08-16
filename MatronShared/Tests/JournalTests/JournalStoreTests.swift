@@ -781,4 +781,57 @@ final class JournalStoreTests: XCTestCase {
         let renamed = await iterator.next()
         XCTAssertEqual(renamed, [7: "dev-yellow", 9: "dev-z"])
     }
+
+    // MARK: Room participants (multi-agent room tags)
+
+    func testParticipantsRoundTripAndAbsentNeverClears() throws {
+        let store = try makeStore()
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "room", title: "🔗 [ab] a ↔ b", sessionState: "waiting",
+                            lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 7,
+                            participants: [7, 9]),
+            ConvoSummaryDTO(id: "solo", title: "solo", sessionState: "running",
+                            lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 7),
+        ], headSeq: 1)
+        XCTAssertEqual(try store.conversation(id: "room")?.participantIDs, [7, 9])
+        XCTAssertEqual(try store.conversation(id: "solo")?.participantIDs, [],
+                       "no key on the wire decodes as no membership, not a crash")
+
+        // A refresh that omits the key must not clear a stored membership —
+        // a dissolved room's snapshot omits it, and the last-known tags are
+        // still the right tags (same absent-never-clears discipline as
+        // agent_device_id)…
+        try store.refreshSummaries([
+            ConvoSummaryDTO(id: "room", title: "🔗 [ab] a ↔ b", sessionState: "done",
+                            lastSeq: 1, snippet: "", createdAt: 1),
+        ])
+        XCTAssertEqual(try store.conversation(id: "room")?.participantIDs, [7, 9])
+
+        // …while a present array replaces wholesale, growth and shrink alike.
+        try store.refreshSummaries([
+            ConvoSummaryDTO(id: "room", title: "🔗 [ab] a ↔ b", sessionState: "waiting",
+                            lastSeq: 1, snippet: "", createdAt: 1, participants: [7, 9, 12]),
+        ])
+        XCTAssertEqual(try store.conversation(id: "room")?.participantIDs, [7, 9, 12])
+    }
+
+    func testParticipantsLearnedLiveFromConvoMeta() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, convo: "room", type: "convo_meta", payload: ["title": "🔗 room"]))
+        XCTAssertEqual(try store.conversation(id: "room")?.participantIDs, [])
+
+        // The journal's membership fan is a participants-only convo_meta —
+        // it must set the array without touching the title…
+        try store.applyJournal(event(2, convo: "room", type: "convo_meta", payload: ["participants": [7, 9]]))
+        XCTAssertEqual(try store.conversation(id: "room")?.participantIDs, [7, 9])
+        XCTAssertEqual(try store.conversation(id: "room")?.title, "🔗 room")
+
+        // …a later rename meta without the key leaves membership alone…
+        try store.applyJournal(event(3, convo: "room", type: "convo_meta", payload: ["title": "renamed"]))
+        XCTAssertEqual(try store.conversation(id: "room")?.participantIDs, [7, 9])
+
+        // …and a departure shrinks it wholesale.
+        try store.applyJournal(event(4, convo: "room", type: "convo_meta", payload: ["participants": [7]]))
+        XCTAssertEqual(try store.conversation(id: "room")?.participantIDs, [7])
+    }
 }

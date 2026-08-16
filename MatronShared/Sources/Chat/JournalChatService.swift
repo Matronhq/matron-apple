@@ -102,7 +102,8 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
             unreadCount: record.unreadCount,
             snippet: record.snippet,
             parentConvoID: record.parentConvoID,
-            boxName: Self.boxName(for: record, boxNames: boxNames)
+            boxName: Self.boxName(for: record, boxNames: boxNames),
+            roomBoxNames: Self.roomBoxNames(for: record, boxNames: boxNames)
         )
     }
 
@@ -112,6 +113,23 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
     static func boxName(for record: ConversationRecord?, boxNames: [Int64: String]) -> String? {
         guard boxNames.count >= 2, let id = record?.agentDeviceID else { return nil }
         return boxNames[id]
+    }
+
+    /// The tag strip for a multi-agent room: every participant id resolved
+    /// to a box name, deduped in journal order. Same two-box gate as
+    /// `boxName(for:)` — one box means nothing to disambiguate. Empty
+    /// unless at least two DISTINCT boxes resolve (a local room's two ends
+    /// share one box, and a participant whose device was revoked resolves
+    /// to nothing), so rows can fall back to the single owner chip.
+    static func roomBoxNames(for record: ConversationRecord?, boxNames: [Int64: String]) -> [String] {
+        guard boxNames.count >= 2, let ids = record?.participantIDs, ids.count >= 2 else { return [] }
+        var seen = Set<String>()
+        var names: [String] = []
+        for id in ids {
+            guard let name = boxNames[id], seen.insert(name).inserted else { continue }
+            names.append(name)
+        }
+        return names.count >= 2 ? names : []
     }
 
     static func childSummary(from record: ConversationRecord) -> SubChatSummary {

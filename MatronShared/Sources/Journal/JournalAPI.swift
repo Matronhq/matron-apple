@@ -302,7 +302,10 @@ public actor JournalAPI {
                 parentConvoID: c["parent_convo_id"] as? String,
                 // Which box manages this conversation. Absent on older
                 // servers -> nil -> no chip.
-                agentDeviceID: (c["agent_device_id"] as? NSNumber)?.int64Value
+                agentDeviceID: (c["agent_device_id"] as? NSNumber)?.int64Value,
+                // Multi-agent room membership (owner + joined). Absent for
+                // solo conversations and on older servers -> nil.
+                participants: (c["participants"] as? [NSNumber]).map { $0.map(\.int64Value) }
             )
         }
         let agents = (obj["agents"] as? [[String: Any]] ?? []).compactMap { a -> AgentDTO? in

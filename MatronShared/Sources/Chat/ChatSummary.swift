@@ -28,6 +28,18 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
     /// has no recorded box, and the recorded box no longer exists. Resolving
     /// the gate upstream keeps every row view a dumb renderer.
     public let boxName: String?
+    /// Every participating box of a multi-agent room, resolved and deduped
+    /// upstream (JournalChatService), or empty when this is not a known
+    /// multi-box room. Two or more entries by construction — a room whose
+    /// members collapse to one box falls back to the single `boxName` chip.
+    public let roomBoxNames: [String]
+
+    /// What the row actually renders: the full tag strip for a multi-agent
+    /// room, else the single owning box, else nothing. Rows just iterate —
+    /// every gate already resolved upstream.
+    public var chips: [String] {
+        roomBoxNames.count >= 2 ? roomBoxNames : (boxName.map { [$0] } ?? [])
+    }
 
     public init(
         id: String,
@@ -37,7 +49,8 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
         unreadCount: Int,
         snippet: String = "",
         parentConvoID: String? = nil,
-        boxName: String? = nil
+        boxName: String? = nil,
+        roomBoxNames: [String] = []
     ) {
         self.id = id
         self.title = title
@@ -47,6 +60,7 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
         self.snippet = snippet
         self.parentConvoID = parentConvoID
         self.boxName = boxName
+        self.roomBoxNames = roomBoxNames
     }
 }
 
