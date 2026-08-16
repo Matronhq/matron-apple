@@ -222,6 +222,9 @@ struct ChatView: View {
     @State private var showSessionStatus = false
     /// Media/files/links toolbar button → the per-chat browser sheet.
     @State private var showMediaBrowser = false
+    /// Set by the info sheet's media link; consumed in its `onDismiss` to
+    /// present the browser once the sheet slot is free.
+    @State private var pendingMediaOpen = false
     /// Tappable title → summaries TOC sheet (jump-to-point navigation).
     @State private var showSummaries = false
     /// Sheet payload for fullscreen attachment previews. Identifiable
@@ -774,48 +777,54 @@ struct ChatView: View {
                 .accessibilityValue(chatContextLine ?? "")
                 .accessibilityHint("Shows conversation summaries")
             }
-            // One ellipsis menu instead of a row of icon buttons — three
-            // trailing icons squeezed the principal title down to a few
-            // characters (Dan, 2026-08-16). Sub-chats stay a submenu shown
-            // whenever this chat has ANY children (running or finished):
-            // the running strip hides itself the moment the last subagent
+            // Back to a single ⓘ (Dan, 2026-08-16 — the ellipsis read as
+            // "menu of stuff", the info sheet IS the chat's utility
+            // surface): it opens `SessionStatusSheet`, which now carries
+            // the media-browser link. Sub-chats keep their own toolbar
+            // menu, shown only when this chat has ANY children (running
+            // or finished) — same conditional as the Mac toolbar. The
+            // running strip hides itself the moment the last subagent
             // finishes, so without this the only way back into a finished
-            // sub-chat is its timeline card (Dan, 2026-07-15).
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    // Flat section, not a nested submenu: NavigationLink
-                    // inside a single-level toolbar Menu is the pattern
-                    // that already shipped here — one level deeper is a
-                    // known SwiftUI no-op-tap failure mode (Bugbot, PR
-                    // #150), and it would sever the only route back into
-                    // finished sub-chats.
-                    if !stripViewModel.children.isEmpty {
-                        Section("Subagents") {
-                            ForEach(stripViewModel.children) { child in
-                                NavigationLink(value: child.id) {
-                                    Label(
-                                        child.title,
-                                        systemImage: child.isRunning
-                                            ? "circle.dashed" : "checkmark.circle"
-                                    )
-                                }
+            // sub-chat is its timeline card (Dan, 2026-07-15); it cannot
+            // move into the sheet because the links are value-based
+            // `NavigationLink`s that need the parent stack, not the
+            // sheet's own.
+            if !stripViewModel.children.isEmpty {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        ForEach(stripViewModel.children) { child in
+                            NavigationLink(value: child.id) {
+                                Label(
+                                    child.title,
+                                    systemImage: child.isRunning
+                                        ? "circle.dashed" : "checkmark.circle"
+                                )
                             }
                         }
+                    } label: {
+                        Image(systemName: "arrow.triangle.branch")
                     }
-                    Button { showMediaBrowser = true } label: {
-                        Label("Media, Files & Links", systemImage: "photo.on.rectangle.angled")
-                    }
-                    Button { showSessionStatus = true } label: {
-                        Label("Session Info", systemImage: "info.circle")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
+                    .accessibilityLabel("Subagents")
                 }
-                .accessibilityLabel("Chat options")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showSessionStatus = true } label: {
+                    Image(systemName: "info.circle")
+                }
+                .accessibilityLabel("Session info")
             }
         }
-        .sheet(isPresented: $showSessionStatus) {
-            SessionStatusSheet(viewModel: viewModel, boxName: boxName)
+        .sheet(isPresented: $showSessionStatus, onDismiss: {
+            // Present the media browser only after the info sheet is fully
+            // gone — flipping it while the sheet is still up is a silent
+            // no-op (one sheet per presenter).
+            if pendingMediaOpen {
+                pendingMediaOpen = false
+                showMediaBrowser = true
+            }
+        }) {
+            SessionStatusSheet(viewModel: viewModel, boxName: boxName,
+                               onOpenMedia: { pendingMediaOpen = true })
         }
         .sheet(isPresented: $showMediaBrowser) {
             MediaBrowserSheet(chatViewModel: viewModel)
