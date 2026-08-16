@@ -84,6 +84,36 @@ final class SearchViewModelTests: XCTestCase {
         XCTAssertEqual(vm.chatTitle(for: "!1:s"), "Auth fix", "renamed title resolves to the new value")
     }
 
+    /// The search rows carry the same colored tag as the chat list — the
+    /// resolver hands the row the tag halves plus a title with the room
+    /// marker dropped exactly when a room tag will render in its place.
+    @MainActor
+    func test_hitTitle_carriesTagHalvesAndDropsRoomMarkerBesideTag() {
+        let claude = BotIdentity(matrixID: "@claude:s", displayName: "Claude", avatarURL: nil)
+        let solo = ChatSummary(id: "!1:s", title: "Auth bug", bot: claude,
+                               lastActivity: nil, unreadCount: 0,
+                               boxName: "dev-y", sessionShort: "b5", boxShort: "Y")
+        let room = ChatSummary(id: "!2:s", title: "↔️ mac ↔ dev-z", bot: claude,
+                               lastActivity: nil, unreadCount: 0,
+                               sessionShort: "ab",
+                               roomBoxNames: ["dev-y", "dev-z"], roomBoxShorts: ["Y", "Z"])
+        let vm = SearchViewModel(search: FakeSearchService(), allChats: [solo, room])
+
+        let tagged = vm.hitTitle(for: "!1:s")
+        XCTAssertEqual(tagged.title, "Auth bug")
+        XCTAssertEqual(tagged.sessionShort, "b5")
+        XCTAssertEqual(tagged.boxLetter, "Y")
+        XCTAssertEqual(tagged.boxName, "dev-y")
+
+        let roomLine = vm.hitTitle(for: "!2:s")
+        XCTAssertEqual(roomLine.title, "mac ↔ dev-z", "marker drops beside a rendered room tag")
+        XCTAssertEqual(roomLine.roomBoxShorts, ["Y", "Z"])
+
+        let unknown = vm.hitTitle(for: "!gone:s")
+        XCTAssertEqual(unknown.title, "!gone:s")
+        XCTAssertNil(unknown.boxLetter)
+    }
+
     /// Task 11 (journal rewire): `SearchViewModel` no longer tracks backfill
     /// progress (`applyBackfillProgress`/`observeBackfill` were dropped
     /// along with the Matrix-SDK-only backfill machinery), so the empty

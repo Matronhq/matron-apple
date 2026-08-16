@@ -134,6 +134,15 @@ final class ChatViewBindingTests: XCTestCase {
             ),
             "dev-y and dev-z, session ab, mac ↔ dev-z"
         )
+        // A single-box user sees no room tag, so the visible header keeps
+        // the room marker — VoiceOver must match it (CodeRabbit, PR #154).
+        XCTAssertEqual(
+            ChatView.accessibilityTitle(
+                chatTitle: "↔️ mac ↔ dev-z",
+                boxName: nil, sessionShort: "ab", roomBoxNames: []
+            ),
+            "session ab, ↔️ mac ↔ dev-z"
+        )
         XCTAssertEqual(
             ChatView.accessibilityTitle(
                 chatTitle: "plain title",

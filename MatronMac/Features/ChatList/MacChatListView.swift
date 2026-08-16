@@ -492,7 +492,11 @@ struct MacChatListView: View {
                         for: childID, parentConvoID: parent, deps: deps, session: session)
                 },
                 chatTitle: summary?.title ?? "",
-                boxName: summary?.boxName
+                boxName: summary?.boxName,
+                sessionShort: summary?.sessionShort,
+                boxShort: summary?.boxShort,
+                roomBoxNames: summary?.roomBoxNames ?? [],
+                roomBoxShorts: summary?.roomBoxShorts ?? []
             )
             .id(id)
         } else {

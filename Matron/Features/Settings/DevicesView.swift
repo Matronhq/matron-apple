@@ -1,4 +1,5 @@
 import SwiftUI
+import MatronChat
 import MatronJournal
 import MatronViewModels
 
@@ -14,6 +15,11 @@ struct DevicesView: View {
     /// that survives the alert's own re-evaluations.
     @State private var renaming: DeviceDTO?
     @State private var draftName = ""
+    /// The agent box whose tag-character alert is open, and its draft —
+    /// same two-piece pattern as `renaming` (the alert's TextField needs a
+    /// binding that survives the alert's own re-evaluations).
+    @State private var letterEditing: DeviceDTO?
+    @State private var draftLetter = ""
     @State private var showingAddAgent = false
     private let api: any DevicesProviding
 
@@ -83,6 +89,23 @@ struct DevicesView: View {
         } message: {
             Text("This name labels the box everywhere — in Devices and on the chip beside each conversation.")
         }
+        .alert("Tag character", isPresented: Binding(
+            get: { letterEditing != nil },
+            set: { if !$0 { letterEditing = nil } }
+        )) {
+            TextField("Automatic", text: $draftLetter)
+            Button("Cancel", role: .cancel) { letterEditing = nil }
+            Button("Save") {
+                if let device = letterEditing {
+                    // A blank draft clears the override — sanitize maps
+                    // empty to nil, which means "back to automatic".
+                    BoxLetterOverrides.set(draftLetter, for: device.id)
+                }
+                letterEditing = nil
+            }
+        } message: {
+            Text("One character shown before chat titles to identify this machine. Leave empty to derive it from the box name.")
+        }
     }
 
     private func row(_ device: DeviceDTO) -> some View {
@@ -104,7 +127,7 @@ struct DevicesView: View {
                             .foregroundStyle(Color.accentColor)
                     }
                 }
-                Text("\(device.kind.capitalized) · Last seen \(device.lastSeenText()) · \(device.lagText)")
+                Text(caption(for: device))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -127,10 +150,27 @@ struct DevicesView: View {
                 draftName = device.name
                 renaming = device
             }
+            if device.kind == "agent" {
+                Button("Set Tag Character…") {
+                    draftLetter = BoxLetterOverrides.letter(for: device.id) ?? ""
+                    letterEditing = device
+                }
+            }
             Button(device.isSelf ? "Sign Out This Device" : "Revoke “\(device.name)”",
                    role: .destructive) {
                 confirming = device
             }
         }
+    }
+
+    /// The row's detail line; an agent box with a tag-character override
+    /// shows it here, so the setting is discoverable and its current value
+    /// visible without opening the editor.
+    private func caption(for device: DeviceDTO) -> String {
+        var caption = "\(device.kind.capitalized) · Last seen \(device.lastSeenText()) · \(device.lagText)"
+        if device.kind == "agent", let letter = BoxLetterOverrides.letter(for: device.id) {
+            caption += " · Tag \(letter)"
+        }
+        return caption
     }
 }

@@ -14,6 +14,13 @@ struct SessionStatusSheet: View {
     /// The agent box this session runs on, or nil when the user has fewer
     /// than two boxes (the chip gate — see `JournalChatService.boxName`).
     var boxName: String? = nil
+    /// Ride-along to the media browser: the ⓘ sheet is the chat's one
+    /// utility surface now (the toolbar is back to a single info button —
+    /// Dan, 2026-08-16), so the media panel opens from here. The closure
+    /// only FLAGS the intent; `ChatView` presents the browser from its
+    /// `onDismiss`, because presenting a second sheet while this one is
+    /// still up is a silent no-op.
+    var onOpenMedia: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
 
     private var status: SessionStatus? { viewModel.sessionStatus }
@@ -37,6 +44,30 @@ struct SessionStatusSheet: View {
 
     var body: some View {
         NavigationStack {
+            VStack(alignment: .leading, spacing: 0) {
+                // Above the gauge/usage content and OUTSIDE the
+                // `hasContent` gate — the media browser is reachable even
+                // before the first status frame lands.
+                if onOpenMedia != nil {
+                    Button {
+                        onOpenMedia?()
+                        dismiss()
+                    } label: {
+                        Label("Media, Files & Links", systemImage: "photo.on.rectangle.angled")
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 16)
+                }
+                sheetContent
+            }
+            .navigationTitle("Session")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .presentationDetents([.medium])
+    }
+
+    @ViewBuilder
+    private var sheetContent: some View {
             Group {
                 // Gated on `hasContent` alone, not on a non-nil `status`:
                 // requiring a status frame here hid the box name behind
@@ -106,9 +137,5 @@ struct SessionStatusSheet: View {
                     )
                 }
             }
-            .navigationTitle("Session")
-            .navigationBarTitleDisplayMode(.inline)
-        }
-        .presentationDetents([.medium])
     }
 }

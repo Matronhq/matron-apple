@@ -50,6 +50,15 @@ struct MacChatToolbar: ToolbarContent {
     /// Leads the subtitle: it answers "which machine am I talking to",
     /// which outranks the path and the account.
     let boxName: String?
+    /// The title with the colored `A:bc` (or `A↔B:bc` room) tag composed
+    /// ahead of it, ready-made by `MacChatView` — a `ToolbarContent` is not
+    /// a View, so the environment the tag's colors need lives with the
+    /// caller. Nil falls back to the plain `title`.
+    let styledTitle: Text?
+    /// VoiceOver's reading of the visible tag + title (box names, session
+    /// short spelled out — `SessionTag.accessibilityTitle`). Nil reads the
+    /// plain title.
+    let accessibilityTitle: String?
     /// Last-known session status for the open convo — model + context
     /// gauge render in the leading capsule, usage bars in the trailing
     /// one. Nil (no status frame yet) renders the title alone.
@@ -95,6 +104,8 @@ struct MacChatToolbar: ToolbarContent {
     init(
         title: String,
         boxName: String? = nil,
+        styledTitle: Text? = nil,
+        accessibilityTitle: String? = nil,
         status: SessionStatus?,
         stripViewModel: SubChatStripViewModel,
         onOpenSubChat: @escaping (String) -> Void,
@@ -105,6 +116,8 @@ struct MacChatToolbar: ToolbarContent {
     ) {
         self.title = title
         self.boxName = boxName
+        self.styledTitle = styledTitle
+        self.accessibilityTitle = accessibilityTitle
         self.status = status
         self.stripViewModel = stripViewModel
         self.onOpenSubChat = onOpenSubChat
@@ -130,6 +143,7 @@ struct MacChatToolbar: ToolbarContent {
                 Button { showSummaries.wrappedValue = true } label: { titleCluster }
                     .buttonStyle(.plain)
                     .help("Show conversation summaries")
+                    .accessibilityLabel(accessibilityTitle ?? title)
                     .accessibilityHint("Shows conversation summaries")
                     .popover(isPresented: showSummaries, arrowEdge: .bottom) {
                         popoverContent()
@@ -223,7 +237,7 @@ struct MacChatToolbar: ToolbarContent {
         // machine's path) and the logged-in account email ride under the
         // title on one quiet line when the status frame carries them.
         VStack(spacing: 0) {
-            Text(title)
+            (styledTitle ?? Text(title))
                 .font(.headline)
                 .lineLimit(1)
                 .truncationMode(.tail)

@@ -236,6 +236,37 @@ struct MacChatView: View {
     /// MacChatToolbar's init comment), which would force every call site and
     /// test to pass it.
     var boxName: String? = nil
+    /// The `A:bc` tag halves and room participants, threaded from the list
+    /// summary like `boxName` (see ChatSummary) — the header composes the
+    /// same colored tag as the sidebar row, iOS-header parity.
+    var sessionShort: String? = nil
+    var boxShort: String? = nil
+    var roomBoxNames: [String] = []
+    var roomBoxShorts: [String] = []
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// `A:bc Title` (or `A↔B:bc Title` for a multi-agent room) as one Text
+    /// — same composition and fallbacks as MacChatRow's titleLine and the
+    /// iOS header. Composed here, in a real View with a live environment,
+    /// and handed to the toolbar ready-made.
+    private var styledTitle: Text? {
+        if let tag = SessionTagText.room(
+            letters: roomBoxShorts,
+            names: roomBoxNames,
+            sessionShort: sessionShort,
+            colorScheme: colorScheme
+        ) {
+            return tag + Text(" ") + Text(SessionTag.titleBesideRoomTag(chatTitle))
+        }
+        guard let tag = SessionTagText.run(
+            boxLetter: boxShort,
+            boxName: boxName,
+            sessionShort: sessionShort,
+            colorScheme: colorScheme
+        ) else { return nil }
+        return tag + Text(" ") + Text(chatTitle)
+    }
 
     /// Minimum detail width to show the child sub-chat pane BESIDE the
     /// parent timeline. Below this the child pane takes over the whole
@@ -717,6 +748,10 @@ struct MacChatView: View {
             MacChatToolbar(
                 title: chatTitle,
                 boxName: boxName,
+                styledTitle: styledTitle,
+                accessibilityTitle: SessionTag.accessibilityTitle(
+                    chatTitle: chatTitle, boxName: boxName,
+                    sessionShort: sessionShort, roomBoxNames: roomBoxNames),
                 status: viewModel.sessionStatus,
                 stripViewModel: stripViewModel,
                 onOpenSubChat: { openSubChatID = $0 },

@@ -69,6 +69,14 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
                     signalCont.yield(())
                 }
             }
+            // A tag-character override (Settings → Devices) writes only
+            // UserDefaults — no journal record, no GRDB re-fire — so its
+            // change notification rings the same doorbell to re-derive.
+            let overridesWatch = Task {
+                for await _ in NotificationCenter.default.notifications(named: BoxLetterOverrides.didChange) {
+                    signalCont.yield(())
+                }
+            }
             let consumer = Task {
                 for await _ in signal {
                     guard let records = inputs.records else { continue }
@@ -79,7 +87,8 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
                     let boxNames = inputs.boxNames ?? (try? store.agentNames()) ?? [:]
                     // Derived once per snapshot, not per row — the letters
                     // depend on the whole name set (common-prefix strip).
-                    let boxLetters = SessionTag.boxLetters(for: boxNames)
+                    let boxLetters = SessionTag.boxLetters(
+                        for: boxNames, overrides: BoxLetterOverrides.all())
                     continuation.yield(records.map { Self.summary(from: $0, boxNames: boxNames, boxLetters: boxLetters) })
                     try? await Task.sleep(for: interval)
                 }
@@ -88,6 +97,7 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
             continuation.onTermination = { _ in
                 producer.cancel()
                 roster.cancel()
+                overridesWatch.cancel()
                 consumer.cancel()
             }
         }
