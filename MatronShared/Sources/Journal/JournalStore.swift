@@ -249,6 +249,25 @@ public final class JournalStore: @unchecked Sendable {
         } else {
             dbQueue = try DatabaseQueue()
         }
+        try Self.migrator().migrate(dbQueue)
+        // Boot-time TTL sweep, mirroring the server's expire-logs job
+        // (matron-journal docs/protocol.md Retention): a cached live_log
+        // snippet must not outlive the 24h TTL just because this device
+        // never re-synced the row. Best-effort — a failed sweep must not
+        // block opening the store (the mapper's render-time TTL guard keeps
+        // the DISPLAY correct either way; the sweep is what cleans the disk).
+        do {
+            try purgeExpiredToolOutputSnippets()
+        } catch {
+            Self.logger.error("tool-output TTL sweep failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// The full schema migration chain. Static (rather than inline in
+    /// `init`) so tests can freeze a database at an intermediate version
+    /// with `migrate(_:upTo:)` and prove a later migration's work against
+    /// real pre-upgrade state.
+    static func migrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
         migrator.registerMigration("v1") { db in
             try db.create(table: "conversation") { t in
@@ -339,18 +358,29 @@ public final class JournalStore: @unchecked Sendable {
                 t.add(column: "participants", .text)
             }
         }
-        try migrator.migrate(dbQueue)
-        // Boot-time TTL sweep, mirroring the server's expire-logs job
-        // (matron-journal docs/protocol.md Retention): a cached live_log
-        // snippet must not outlive the 24h TTL just because this device
-        // never re-synced the row. Best-effort — a failed sweep must not
-        // block opening the store (the mapper's render-time TTL guard keeps
-        // the DISPLAY correct either way; the sweep is what cleans the disk).
-        do {
-            try purgeExpiredToolOutputSnippets()
-        } catch {
-            Self.logger.error("tool-output TTL sweep failed: \(error.localizedDescription, privacy: .public)")
+        // v7: backfill summary_entry from `summary` events already in the
+        // local mirror. v4 created the table but only the live apply path
+        // ever filled it, so a device that had synced history before
+        // upgrading showed an empty TOC for every existing conversation
+        // until a from-scratch re-sync. Runs as its own version (not folded
+        // into v4) so installs that already ran v4 get backfilled too. Same
+        // conversion and insert as the live path (`SummaryEntryRecord(event:)`
+        // + insert-or-ignore), so backfilled rows are indistinguishable from
+        // live-ingested ones and rows the live path already wrote win.
+        // Payloads that don't decode to a TOC entry are skipped, exactly as
+        // live ingest skips them. (`event` and `summary_entry` are still at
+        // their v1/v4 shapes when v7 runs, so using the record types here is
+        // safe.)
+        migrator.registerMigration("v7") { db in
+            let rows = try EventRecord
+                .filter(Column("type") == JournalEventType.summary)
+                .fetchAll(db)
+            for row in rows {
+                guard let entry = SummaryEntryRecord(event: row.journalEvent) else { continue }
+                try entry.insert(db, onConflict: .ignore)
+            }
         }
+        return migrator
     }
 
     // MARK: Tool-output TTL
