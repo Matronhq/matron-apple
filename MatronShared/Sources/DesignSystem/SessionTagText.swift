@@ -59,4 +59,27 @@ public enum SessionTagText {
         guard let short = sessionShort else { return tag }
         return tag + Text(":\(short)").foregroundStyle(.secondary)
     }
+
+    /// The full title line: room tag first, single-box tag second, bare
+    /// title last — one composition shared by every place a tagged title
+    /// renders (list rows, chat headers, search results), so the fallback
+    /// order can't drift between them. `title` arrives ready to sit beside
+    /// whatever tag renders (callers drop the room marker only when they
+    /// pass ≥2 room participants — `SessionTag.titleBesideRoomTag`).
+    public static func titleLine(
+        title: String,
+        boxLetter: String?,
+        boxName: String?,
+        sessionShort: String?,
+        roomBoxNames: [String] = [],
+        roomBoxShorts: [String] = [],
+        colorScheme: ColorScheme
+    ) -> Text {
+        let tag = room(letters: roomBoxShorts, names: roomBoxNames,
+                       sessionShort: sessionShort, colorScheme: colorScheme)
+            ?? run(boxLetter: boxLetter, boxName: boxName,
+                   sessionShort: sessionShort, colorScheme: colorScheme)
+        guard let tag else { return Text(title) }
+        return tag + Text(" ") + Text(title)
+    }
 }

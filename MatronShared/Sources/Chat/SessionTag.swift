@@ -112,7 +112,10 @@ public enum SessionTag {
         if let sessionShort {
             parts.append("session \(sessionShort)")
         }
-        parts.append(titleBesideRoomTag(chatTitle))
+        // Marker discipline mirrors the visible title: the room marker
+        // drops only when a room tag renders (≥2 named participants) —
+        // a single-box user's header keeps it, so VoiceOver must too.
+        parts.append(roomBoxNames.count >= 2 ? titleBesideRoomTag(chatTitle) : chatTitle)
         return parts.joined(separator: ", ")
     }
 

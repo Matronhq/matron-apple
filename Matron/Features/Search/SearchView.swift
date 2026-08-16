@@ -20,14 +20,22 @@ struct SearchView: View {
     /// so previews / tests that don't track the list keep compiling.
     var liveChats: [ChatSummary] = []
 
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
         List {
             if !viewModel.chatHits.isEmpty {
                 Section("Chats") {
                     ForEach(viewModel.chatHits) { chat in
+                        let line = viewModel.hitTitle(for: chat.id)
                         Button { onSelectChat(chat) } label: {
                             VStack(alignment: .leading) {
-                                Text(chat.title)
+                                SessionTagText.titleLine(
+                                    title: line.title, boxLetter: line.boxLetter,
+                                    boxName: line.boxName, sessionShort: line.sessionShort,
+                                    roomBoxNames: line.roomBoxNames,
+                                    roomBoxShorts: line.roomBoxShorts,
+                                    colorScheme: colorScheme)
                                 Text(chat.bot.displayName).font(.caption).foregroundStyle(.secondary)
                             }
                         }

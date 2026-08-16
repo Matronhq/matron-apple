@@ -33,14 +33,10 @@ public struct SearchResultRow: View {
 
     /// Same composition and fallbacks as the chat-list rows' titleLine.
     private var titleLine: Text {
-        let tag = SessionTagText.room(
-            letters: roomBoxShorts, names: roomBoxNames,
-            sessionShort: sessionShort, colorScheme: colorScheme)
-            ?? SessionTagText.run(
-                boxLetter: boxLetter, boxName: boxName,
-                sessionShort: sessionShort, colorScheme: colorScheme)
-        guard let tag else { return Text(chatTitle) }
-        return tag + Text(" ") + Text(chatTitle)
+        SessionTagText.titleLine(
+            title: chatTitle, boxLetter: boxLetter, boxName: boxName,
+            sessionShort: sessionShort, roomBoxNames: roomBoxNames,
+            roomBoxShorts: roomBoxShorts, colorScheme: colorScheme)
     }
 
     public var body: some View {
