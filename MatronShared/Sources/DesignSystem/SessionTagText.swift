@@ -2,10 +2,13 @@ import SwiftUI
 
 /// Builds the styled `A:bc ` run that leads a chat title: the box letter in
 /// the box's chip hue (so the eye can match rows to machines by color at
-/// the START of the scan), the `:bc` session short in secondary. Returned
-/// as a `Text` so callers concatenate it with the title and the whole line
-/// truncates as one — a separate view would ellipsize the title while the
-/// tag kept its own layout box.
+/// the START of the scan), the `:bc` session short in primary — Dan reads
+/// the short constantly, so it matches the title's weight; only the
+/// colon/separator punctuation stays secondary (Dan, 2026-08-16: "duller
+/// than the chat title but should be closer to it"). Returned as a `Text`
+/// so callers concatenate it with the title and the whole line truncates
+/// as one — a separate view would ellipsize the title while the tag kept
+/// its own layout box.
 ///
 /// Either half may be missing: single-box users have no letter (same gate
 /// as `BoxChip`), seed titles and pre-#224 conversations have no session
@@ -21,8 +24,10 @@ public enum SessionTagText {
         let letter = boxLetter.map {
             Text($0).foregroundStyle(tint).fontWeight(.semibold)
         }
-        let short = sessionShort.map {
-            Text(boxLetter != nil ? ":\($0)" : $0).foregroundStyle(.secondary)
+        let short = sessionShort.map { s -> Text in
+            let glyphs = Text(s).foregroundStyle(.primary)
+            guard boxLetter != nil else { return glyphs }
+            return Text(":").foregroundStyle(.secondary) + glyphs
         }
         switch (letter, short) {
         case (nil, nil): return nil
@@ -34,7 +39,7 @@ public enum SessionTagText {
 
     /// The multi-agent room variant: one letter per participating box, each
     /// in its own box's hue — `A↔B` for a pair, `A,B,C` beyond — then the
-    /// 2-char room short in secondary, same as the single-box tag.
+    /// 2-char room short in primary, same as the single-box tag.
     /// `letters` and `names` are parallel arrays (`ChatSummary.roomBoxShorts`
     /// / `roomBoxNames`): letters are the glyphs, names carry the hue.
     /// `nil` unless at least two boxes arrive — the gates upstream mean a
@@ -57,7 +62,8 @@ public enum SessionTagText {
         }
         guard let tag = run else { return nil }
         guard let short = sessionShort else { return tag }
-        return tag + Text(":\(short)").foregroundStyle(.secondary)
+        return tag + Text(":").foregroundStyle(.secondary)
+            + Text(short).foregroundStyle(.primary)
     }
 
     /// The full title line: room tag first, single-box tag second, bare
