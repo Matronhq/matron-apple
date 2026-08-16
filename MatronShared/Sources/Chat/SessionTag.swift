@@ -17,15 +17,17 @@ import Foundation
 ///   stays consistent with the chips everywhere else.
 public enum SessionTag {
 
-    /// The bridge's multi-agent room marker, leading every agent-chat room
-    /// title (`🔗 [ab] mac ↔ dev-z`, matron-bridge#225).
-    static let roomMarker = "🔗 "
+    /// The bridge's multi-agent room markers, leading every agent-chat room
+    /// title (`↔️ [ab] mac ↔ dev-z`, matron-bridge#225/#228). 🔗 is the
+    /// legacy marker rooms minted before #228 still carry — titles are only
+    /// rewritten on rename, so both must parse indefinitely.
+    static let roomMarkers = ["↔️ ", "🔗 "]
 
     /// The bridge's markers that may lead a title ahead of the short:
-    /// 🔗 = multi-agent room (#225), 🐣 = session another agent spawned
-    /// (matron-bridge#227). Both stay with the visible title; only the
-    /// room marker is ever dropped, and only beside a rendered room tag.
-    static let titleMarkers = [roomMarker, "🐣 "]
+    /// ↔️/🔗 = multi-agent room (#225), 🐣 = session another agent spawned
+    /// (matron-bridge#227). All stay with the visible title; only a room
+    /// marker is ever dropped, and only beside a rendered room tag.
+    static let titleMarkers = roomMarkers + ["🐣 "]
 
     /// Peels the bridge's `[bc] ` session-short prefix off a published
     /// title. Returns the short (without brackets) and the remaining title.
@@ -53,11 +55,12 @@ public enum SessionTag {
     }
 
     /// The title to render NEXT TO a colored `A↔B` room tag: the tag
-    /// already says "multi-agent room", so the bridge's 🔗 marker is
+    /// already says "multi-agent room", so the bridge's room marker is
     /// dropped. Rows that show no room tag (single-box users, unresolved
     /// participants) keep the marker.
     public static func titleBesideRoomTag(_ title: String) -> String {
-        title.hasPrefix(roomMarker) ? String(title.dropFirst(roomMarker.count)) : title
+        guard let marker = roomMarkers.first(where: { title.hasPrefix($0) }) else { return title }
+        return String(title.dropFirst(marker.count))
     }
 
     /// One display letter per box, derived from the box names: strip the

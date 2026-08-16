@@ -36,21 +36,30 @@ final class SessionTagTests: XCTestCase {
         XCTAssertEqual(title, "[ok] do the thing")
     }
 
-    func testSplitTitlePeelsARoomShortBehindTheLinkMarker() {
-        // Agent-chat room titles (bridge #225): the room short sits BEHIND
-        // the 🔗 marker, which stays with the title — a single-box user
-        // gets no styled tag but must keep the room marker.
+    func testSplitTitlePeelsARoomShortBehindTheRoomMarker() {
+        // Agent-chat room titles (bridge #225/#228): the room short sits
+        // BEHIND the ↔️ marker, which stays with the title — a single-box
+        // user gets no styled tag but must keep the room marker.
+        let (short, title) = SessionTag.splitTitle("↔️ [ab] mac ↔ dev-z — ci triage")
+        XCTAssertEqual(short, "ab")
+        XCTAssertEqual(title, "↔️ mac ↔ dev-z — ci triage")
+
+        // A room title with no short behind the marker comes back untouched.
+        let (none, plain) = SessionTag.splitTitle("↔️ mac ↔ dev-z")
+        XCTAssertNil(none)
+        XCTAssertEqual(plain, "↔️ mac ↔ dev-z")
+    }
+
+    func testSplitTitleStillPeelsTheLegacyLinkMarker() {
+        // Rooms minted before bridge #228 carry 🔗 forever — titles only
+        // rewrite on rename, so the legacy marker must keep parsing.
         let (short, title) = SessionTag.splitTitle("🔗 [ab] mac ↔ dev-z — ci triage")
         XCTAssertEqual(short, "ab")
         XCTAssertEqual(title, "🔗 mac ↔ dev-z — ci triage")
-
-        // A 🔗 title with no short behind it comes back untouched.
-        let (none, plain) = SessionTag.splitTitle("🔗 mac ↔ dev-z")
-        XCTAssertNil(none)
-        XCTAssertEqual(plain, "🔗 mac ↔ dev-z")
     }
 
-    func testTitleBesideRoomTagDropsTheMarker() {
+    func testTitleBesideRoomTagDropsEitherMarker() {
+        XCTAssertEqual(SessionTag.titleBesideRoomTag("↔️ mac ↔ dev-z"), "mac ↔ dev-z")
         XCTAssertEqual(SessionTag.titleBesideRoomTag("🔗 mac ↔ dev-z"), "mac ↔ dev-z")
         XCTAssertEqual(SessionTag.titleBesideRoomTag("mac ↔ dev-z"), "mac ↔ dev-z")
     }
