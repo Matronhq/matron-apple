@@ -123,7 +123,14 @@ public actor SearchBackfillCoordinator {
         // Everything below is premised on bookkeeping as of this epoch;
         // `reset()` moving it voids the premise (see there).
         let epoch = generation
-        if try await search.backfillComplete(roomID: convoID) { return }
+        let complete = try await search.backfillComplete(roomID: convoID)
+        // The complete read is an await like any other: a reset() landing
+        // inside it voids the answer. Returning "done" on the stale true
+        // would be the one epoch escape left — no write to guard, but `run`
+        // reports the sweep complete and the just-cleared room waits for
+        // the next idle retry instead of re-walking now.
+        guard generation == epoch else { throw GenerationMoved() }
+        if complete { return }
         // Resume point: the oldest seq a previous walk reached. `nil` starts
         // at the newest page — those events are usually live-indexed already,
         // but re-indexing is idempotent and the head page is what anchors the

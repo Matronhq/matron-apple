@@ -30,6 +30,16 @@ private actor InMemorySearchService: SearchService {
         afterIndexBatch = hook
     }
 
+    /// One-shot hook, awaited after the next `backfillComplete` computes its
+    /// answer — the interleaving point for the stale-"done" race test (the
+    /// answer fixed, the coordinator not yet resumed with it). Consumed on
+    /// first fire like `afterIndexBatch`.
+    private var afterBackfillComplete: (@Sendable () async -> Void)?
+
+    func setAfterNextBackfillComplete(_ hook: @escaping @Sendable () async -> Void) {
+        afterBackfillComplete = hook
+    }
+
     func index(roomID: String, eventID: String, sender: String, timestamp: Date, body: String) async throws {
         indexed[eventID] = Indexed(roomID: roomID, eventID: eventID, sender: sender, body: body)
     }
@@ -50,7 +60,14 @@ private actor InMemorySearchService: SearchService {
     func recordBackfillProgress(roomID: String, indexedCount: Int, oldestEventID: String?, complete: Bool) async throws {
         progress[roomID] = Progress(indexedCount: indexedCount, oldestEventID: oldestEventID, complete: complete)
     }
-    func backfillComplete(roomID: String) async throws -> Bool { progress[roomID]?.complete ?? false }
+    func backfillComplete(roomID: String) async throws -> Bool {
+        let complete = progress[roomID]?.complete ?? false
+        if let hook = afterBackfillComplete {
+            afterBackfillComplete = nil
+            await hook()
+        }
+        return complete
+    }
     func backfillOldestEventID(roomID: String) async throws -> String? { progress[roomID]?.oldestEventID }
     func resetBackfill() async throws { progress = [:] }
     func eventCount(roomID: String) async throws -> Int { indexed.values.filter { $0.roomID == roomID }.count }
@@ -259,6 +276,38 @@ final class SearchBackfillCoordinatorTests: XCTestCase {
         // then strictly descending.
         let calls = await pager.calls
         XCTAssertEqual(calls.map(\.beforeSeq), [nil, nil, 4, 2])
+    }
+
+    func test_resetInterleavedWithTheCompleteRead_failsTheSweepInsteadOfTrustingStaleDone() async throws {
+        let search = InMemorySearchService()
+        // The room LOOKS done — pre-reset bookkeeping says complete. A reset
+        // landing inside the complete read voids exactly that answer:
+        // early-returning on the stale true would report the sweep complete
+        // and leave the just-cleared room waiting for the next idle retry
+        // (the one epoch escape with no write to guard).
+        await search.seedProgress(roomID: "c1", oldestEventID: "1", complete: true)
+        let events = (1...3).map { makeEvent(seq: Int64($0), payload: ["body": "msg \($0)"]) }
+        let pager = ScriptedPager(events: events)
+        let box = CoordinatorBox()
+        let coordinator = makeCoordinator(search: search, pager: pager)
+        box.coordinator = coordinator
+        await search.setAfterNextBackfillComplete { await box.coordinator?.reset() }
+
+        let firstPass = await coordinator.run(convoIDs: ["c1"])
+
+        XCTAssertFalse(firstPass,
+                       "a stale \"complete\" must fail the sweep, not report the cleared room as done")
+        let callsAfterReset = await pager.calls
+        XCTAssertTrue(callsAfterReset.isEmpty, "nothing may page against pre-reset bookkeeping")
+
+        let secondPass = await coordinator.run(convoIDs: ["c1"])
+
+        XCTAssertTrue(secondPass)
+        let indexed = await search.indexed
+        XCTAssertEqual(Set(indexed.keys), Set(["1", "2", "3"]),
+                       "the retry must actually re-walk the room the stale answer called done")
+        let progress = await search.progress["c1"]
+        XCTAssertEqual(progress?.complete, true)
     }
 
     func test_resume_startsFromRecordedOldest() async throws {
