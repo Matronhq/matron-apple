@@ -582,21 +582,38 @@ private struct MacChatRow: View {
     let summary: ChatSummary
     @State private var isHovered = false
 
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// `A:bc Title` as ONE Text — colored box letter + session short at
+    /// the START of the eye scan, replacing the trailing BoxChip capsule
+    /// (same composition as the iOS ChatRow; halves gated upstream in
+    /// JournalChatService).
+    private var titleLine: Text {
+        // Multi-agent rooms lead with every participating box as a colored
+        // letter (`A↔B`, `A,B,C`); the tag already says "room", so the
+        // bridge's 🔗 title marker is dropped beside it (same composition
+        // as the iOS ChatRow).
+        if let tag = SessionTagText.room(
+            letters: summary.roomBoxShorts,
+            names: summary.roomBoxNames,
+            sessionShort: summary.sessionShort,
+            colorScheme: colorScheme
+        ) {
+            return tag + Text(" ") + Text(SessionTag.titleBesideRoomTag(summary.title))
+        }
+        guard let tag = SessionTagText.run(
+            boxLetter: summary.boxShort,
+            boxName: summary.boxName,
+            sessionShort: summary.sessionShort,
+            colorScheme: colorScheme
+        ) else { return Text(summary.title) }
+        return tag + Text(" ") + Text(summary.title)
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(summary.title).font(.system(size: 14)).lineLimit(1)
-                    // Which box(es) this conversation involves: every
-                    // participant of a multi-agent room, else the single
-                    // owning box. Empty unless the user has two or more
-                    // boxes — every gate lives in JournalChatService, so
-                    // this row just renders. Names are deduped upstream,
-                    // safe as ForEach ids.
-                    ForEach(summary.chips, id: \.self) { name in
-                        BoxChip(name)
-                    }
-                }
+                titleLine.font(.system(size: 14)).lineLimit(1)
                 HStack(spacing: 4) {
                     // Snippet renders unconditionally with reserved space
                     // so row height stays fixed while messages stream in

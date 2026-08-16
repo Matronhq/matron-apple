@@ -409,7 +409,11 @@ struct ChatListView: View {
                     composerVM: composerVM,
                     stripViewModel: vmCache.stripViewModel(forParent: id, deps: deps, session: session),
                     chatTitle: summary?.title ?? "",
-                    boxName: summary?.boxName
+                    boxName: summary?.boxName,
+                    sessionShort: summary?.sessionShort,
+                    boxShort: summary?.boxShort,
+                    roomBoxNames: summary?.roomBoxNames ?? [],
+                    roomBoxShorts: summary?.roomBoxShorts ?? []
                 )
                 // Key the chat's identity to its room. `openChat` REPLACES
                 // the path ([A] → [B]), which keeps this destination's
@@ -465,21 +469,40 @@ struct ChatListView: View {
 struct ChatRow: View {
     let summary: ChatSummary
 
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// `A:bc Title` as ONE Text so the tag leads the eye scan (colored box
+    /// letter + session short — the trailing BoxChip capsule this replaces
+    /// put the machine at the END and cost a capsule of width) and the
+    /// whole line truncates together. Tag halves are gated upstream
+    /// (JournalChatService): no letter for single-box users, no short for
+    /// titles the bridge never prefixed.
+    private var titleLine: Text {
+        // A multi-agent room leads with every participating box as a
+        // colored letter (`A↔B`, `A,B,C`); the tag already says "room", so
+        // the bridge's 🔗 title marker is dropped beside it. Falls through
+        // to the single-box `A:bc` tag, then to the bare title.
+        if let tag = SessionTagText.room(
+            letters: summary.roomBoxShorts,
+            names: summary.roomBoxNames,
+            sessionShort: summary.sessionShort,
+            colorScheme: colorScheme
+        ) {
+            return tag + Text(" ") + Text(SessionTag.titleBesideRoomTag(summary.title))
+        }
+        guard let tag = SessionTagText.run(
+            boxLetter: summary.boxShort,
+            boxName: summary.boxName,
+            sessionShort: summary.sessionShort,
+            colorScheme: colorScheme
+        ) else { return Text(summary.title) }
+        return tag + Text(" ") + Text(summary.title)
+    }
+
     var body: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(summary.title).font(.body).lineLimit(1)
-                    // Which box(es) this conversation involves: every
-                    // participant of a multi-agent room, else the single
-                    // owning box. Empty unless the user has two or more
-                    // boxes — every gate lives in JournalChatService, so
-                    // this row just renders. Names are deduped upstream,
-                    // safe as ForEach ids.
-                    ForEach(summary.chips, id: \.self) { name in
-                        BoxChip(name)
-                    }
-                }
+                titleLine.font(.body).lineLimit(1)
                 // Rendered unconditionally with reserved space so every
                 // row has the same fixed height — snippets arriving /
                 // growing to a second line were resizing rows live as
