@@ -170,6 +170,48 @@ final class JournalChatServiceTests: XCTestCase {
         XCTAssertNil(JournalChatService.summary(from: stale, boxNames: two).boxName)
     }
 
+    func testRoomBoxNamesTagEveryParticipatingBox() throws {
+        // Same store-backed setup as the boxName test: participants round-trip
+        // through the real snapshot path into the record the summary reads.
+        let store = try makeStore()
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "room", title: "🔗 [ab] mac ↔ dev-z", sessionState: "waiting",
+                            lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 7,
+                            participants: [7, 9]),
+            ConvoSummaryDTO(id: "local", title: "🔗 [cd] mac ↔ mac", sessionState: "waiting",
+                            lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 7,
+                            participants: [7]),
+            ConvoSummaryDTO(id: "ghost", title: "🔗 [ef] mac ↔ gone", sessionState: "waiting",
+                            lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 7,
+                            participants: [7, 999]),
+        ], headSeq: 1)
+        let room = try XCTUnwrap(store.conversation(id: "room"))
+        let local = try XCTUnwrap(store.conversation(id: "local"))
+        let ghost = try XCTUnwrap(store.conversation(id: "ghost"))
+        let two: [Int64: String] = [7: "dev-y", 9: "dev-z"]
+
+        // A genuine multi-box room tags every box, journal order, and the
+        // row-facing `chips` renders exactly that strip.
+        let multi = JournalChatService.summary(from: room, boxNames: two)
+        XCTAssertEqual(multi.roomBoxNames, ["dev-y", "dev-z"])
+        XCTAssertEqual(multi.chips, ["dev-y", "dev-z"])
+
+        // Single-box user: same gate as the owner chip — no tags at all.
+        XCTAssertEqual(JournalChatService.summary(from: room, boxNames: [7: "dev-y"]).chips, [])
+
+        // A local room's two ends share one box: fall back to the single
+        // owner chip rather than a redundant one-entry "strip".
+        let solo = JournalChatService.summary(from: local, boxNames: two)
+        XCTAssertEqual(solo.roomBoxNames, [])
+        XCTAssertEqual(solo.chips, ["dev-y"])
+
+        // A participant whose box was revoked resolves to nothing — with
+        // only one name left the strip collapses to the owner-chip fallback.
+        let revoked = JournalChatService.summary(from: ghost, boxNames: two)
+        XCTAssertEqual(revoked.roomBoxNames, [])
+        XCTAssertEqual(revoked.chips, ["dev-y"])
+    }
+
     func testRenamingABoxRelabelsAnOpenChatList() async throws {
         // Renaming from Settings is a REST call; it comes back down the
         // socket as `device_meta`, which writes the `agent` table and

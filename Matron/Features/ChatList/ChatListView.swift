@@ -470,11 +470,14 @@ struct ChatRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(summary.title).font(.body).lineLimit(1)
-                    // Which box owns this conversation. Nil unless the user
-                    // has two or more boxes — the gate lives in
-                    // JournalChatService, so this row just renders.
-                    if let boxName = summary.boxName {
-                        BoxChip(boxName)
+                    // Which box(es) this conversation involves: every
+                    // participant of a multi-agent room, else the single
+                    // owning box. Empty unless the user has two or more
+                    // boxes — every gate lives in JournalChatService, so
+                    // this row just renders. Names are deduped upstream,
+                    // safe as ForEach ids.
+                    ForEach(summary.chips, id: \.self) { name in
+                        BoxChip(name)
                     }
                 }
                 // Rendered unconditionally with reserved space so every

@@ -26,8 +26,14 @@ public struct ConvoSummaryDTO: Equatable, Sendable {
     /// `parentConvoID` this is mutable — resuming a session on another box
     /// legitimately repoints it.
     public let agentDeviceID: Int64?
+    /// Every agent box in a multi-agent room (the journal's recorded owner
+    /// plus joined participants), or `nil` when the server omits the key —
+    /// a solo conversation, a dissolved room, or a server predating the
+    /// field. Absent never clears a stored set (same discipline as
+    /// `agentDeviceID`); present replaces it wholesale.
+    public let participants: [Int64]?
 
-    public init(id: String, title: String, sessionState: String, lastSeq: Int64, snippet: String, createdAt: Int64, lastTS: Int64? = nil, parentConvoID: String? = nil, agentDeviceID: Int64? = nil) {
+    public init(id: String, title: String, sessionState: String, lastSeq: Int64, snippet: String, createdAt: Int64, lastTS: Int64? = nil, parentConvoID: String? = nil, agentDeviceID: Int64? = nil, participants: [Int64]? = nil) {
         self.id = id
         self.title = title
         self.sessionState = sessionState
@@ -37,6 +43,7 @@ public struct ConvoSummaryDTO: Equatable, Sendable {
         self.lastTS = lastTS
         self.parentConvoID = parentConvoID
         self.agentDeviceID = agentDeviceID
+        self.participants = participants
     }
 }
 
@@ -62,9 +69,29 @@ public struct ConversationRecord: Codable, FetchableRecord, PersistableRecord, E
     /// The agent box that manages this conversation. Drives the box chip in
     /// the chat list and header. Mutable (see `ConvoSummaryDTO`).
     public var agentDeviceID: Int64?
+    /// JSON-encoded `[Int64]` of every box in a multi-agent room (owner +
+    /// joined participants, journal-ordered), else `nil`. Stored as text so
+    /// the column stays a plain additive migration; read through
+    /// `participantIDs`. Replaced wholesale when the wire sends the key,
+    /// untouched when it doesn't (see `ConvoSummaryDTO.participants`).
+    public var participants: String?
+
+    /// Decoded `participants`. Empty for anything that is not a known
+    /// multi-agent room (nil column, or a value that fails to decode).
+    public var participantIDs: [Int64] {
+        guard let participants,
+              let ids = try? JSONDecoder().decode([Int64].self, from: Data(participants.utf8))
+        else { return [] }
+        return ids
+    }
+
+    static func encodeParticipants(_ ids: [Int64]) -> String? {
+        guard let data = try? JSONEncoder().encode(ids) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
 
     enum CodingKeys: String, CodingKey {
-        case id, title, snippet, muted, hidden
+        case id, title, snippet, muted, hidden, participants
         case sessionState = "session_state"
         case lastSeq = "last_seq"
         case createdAt = "created_at"
@@ -302,6 +329,16 @@ public final class JournalStore: @unchecked Sendable {
                 t.column("name", .text).notNull()
             }
         }
+        // v6: multi-agent room membership (spec: multi-agent room tags).
+        // JSON `[Int64]` of the journal's owner + joined participant device
+        // ids, NULL for everything that is not a room. Additive like v5:
+        // existing rows keep NULL and chip as before until the next
+        // snapshot / membership convo_meta fills them in.
+        migrator.registerMigration("v6") { db in
+            try db.alter(table: "conversation") { t in
+                t.add(column: "participants", .text)
+            }
+        }
         try migrator.migrate(dbQueue)
         // Boot-time TTL sweep, mirroring the server's expire-logs job
         // (matron-journal docs/protocol.md Retention): a cached live_log
@@ -413,6 +450,12 @@ public final class JournalStore: @unchecked Sendable {
             if let box = c.agentDeviceID {
                 existing.agentDeviceID = box
             }
+            // Same absent-never-clears rule: only a present membership array
+            // replaces the stored one (a dissolved room's snapshot omits the
+            // key, and the last-known chips are still the right tags).
+            if let parts = c.participants {
+                existing.participants = ConversationRecord.encodeParticipants(parts)
+            }
             if c.lastSeq > existing.lastSeq {
                 existing.lastSeq = c.lastSeq
                 existing.snippet = c.snippet
@@ -433,7 +476,8 @@ public final class JournalStore: @unchecked Sendable {
                 lastActivityTS: c.lastTS, muted: false, hidden: false,
                 readUpToSeq: resetLocalState ? c.lastSeq : 0,
                 unreadCount: 0, parentConvoID: c.parentConvoID,
-                agentDeviceID: c.agentDeviceID
+                agentDeviceID: c.agentDeviceID,
+                participants: c.participants.flatMap(ConversationRecord.encodeParticipants)
             ).insert(db)
         }
     }
@@ -550,6 +594,13 @@ public final class JournalStore: @unchecked Sendable {
                 // session resumed on another box changes owner.
                 if let box = (payload["agent_device_id"] as? NSNumber)?.int64Value {
                     convo.agentDeviceID = box
+                }
+                // Room membership, learned live so a room re-chips the
+                // moment an agent joins or leaves (the journal fans a
+                // membership-only convo_meta). Present replaces wholesale;
+                // absent (a plain rename meta) leaves the stored set alone.
+                if let parts = payload["participants"] as? [NSNumber] {
+                    convo.participants = ConversationRecord.encodeParticipants(parts.map(\.int64Value))
                 }
             } else if event.type == JournalEventType.sessionStatus {
                 if let state = payload["state"] as? String { convo.sessionState = state }
