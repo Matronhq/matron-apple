@@ -107,6 +107,9 @@ struct MacNewChatSheet: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, minHeight: 120)
         } else {
+            // Offline boxes are seeded from the capacity cache, so their
+            // cached lines join the union too — otherwise a fleet whose only
+            // reporting box is asleep would show a grid with no columns.
             let columns = BoxCapacity.limitColumns(
                 across: agents.compactMap { viewModel.capacities[$0.id] })
             // Grid chrome only when there is real data to show (or a fan-out
@@ -127,7 +130,8 @@ struct MacNewChatSheet: View {
                         capacity: viewModel.capacities[agent.id],
                         pending: viewModel.capacityPending.contains(agent.id),
                         columns: columns,
-                        showsCells: showGrid)
+                        showsCells: showGrid,
+                        freshness: viewModel.capacityFreshness(for: agent.id))
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -223,7 +227,10 @@ struct MacAgentPickerRow: View {
     /// False for an all-legacy fleet: no data cells at all, so the row
     /// looks exactly like the pre-grid picker instead of a wall of dashes.
     let showsCells: Bool
-    /// Frozen clock for the reset captions; nil = now.
+    /// Live numbers, or last-known ones for a box the host has put to sleep.
+    /// Defaulted so the row reads as live unless a caller says otherwise.
+    var freshness: AgentCapacityFreshness = .live
+    /// Frozen clock for the reset and age captions; nil = now.
     var fixedNow: Date?
 
     /// Cell width contract shared with `MacAgentPickerHeader`.
@@ -254,6 +261,13 @@ struct MacAgentPickerRow: View {
                      : "Offline · Last seen \(agent.lastSeenText())")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                // The data cells are numbers only, so the age of a sleeping
+                // box's numbers is captioned here, once per row.
+                if let age = freshness.ageText(now: fixedNow ?? Date()) {
+                    Text(age)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             if showsCells {
@@ -281,9 +295,15 @@ struct MacAgentPickerRow: View {
         pending && agent.connected ? "…" : "—"
     }
 
+    /// Cached blocks show no count at all — a sleeping box runs nothing, so
+    /// its last count would be false rather than merely old.
+    private var shownSessions: Int? {
+        AgentCapacityRowContent.shownSessions(capacity, freshness: freshness)
+    }
+
     private var sessionsCell: some View {
         Group {
-            if let live = capacity?.liveSessions {
+            if let live = shownSessions {
                 Text("\(live)")
                     .fontWeight(.medium)
                     .monospacedDigit()
@@ -297,7 +317,7 @@ struct MacAgentPickerRow: View {
     }
 
     private var sessionsAccessibilityLabel: String {
-        guard let live = capacity?.liveSessions else { return "Sessions unknown" }
+        guard let live = shownSessions else { return "Sessions unknown" }
         switch live {
         case ...0: return "No active sessions"
         case 1: return "1 active session"
@@ -309,16 +329,18 @@ struct MacAgentPickerRow: View {
         let now = fixedNow ?? Date()
         let line = capacity?.limitLines.first { $0.id == column.id }
         let reset = line.flatMap { BoxCapacity.resetText($0.resetsAt, now: now) }
-        // Same stale-percent rule as AgentCapacityRowContent: a percent from
-        // before its own reset moment renders tertiary, not green/red.
         let expired = line.map { BoxCapacity.hasReset($0.resetsAt, now: now) } ?? false
         return VStack(alignment: .trailing, spacing: 1) {
             if let line {
                 Text("\(line.percent)%")
                     .fontWeight(.medium)
                     .monospacedDigit()
-                    .foregroundStyle(expired ? AnyShapeStyle(.tertiary)
-                                             : AnyShapeStyle(UsageMetersFormat.barColor(percent: line.percent)))
+                    // Same emphasis rule as the stacked iOS block, from the
+                    // same helper: expired lines and cached blocks both lose
+                    // the threshold tint.
+                    .foregroundStyle(AgentCapacityRowContent
+                        .percentEmphasis(line.percent, expired: expired, freshness: freshness)
+                        .shapeStyle)
                 if let reset {
                     Text(reset)
                         .font(.caption2)
@@ -333,9 +355,9 @@ struct MacAgentPickerRow: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
             line.map {
-                "\(column.label), \($0.percent) percent used"
-                    + (expired ? " before the limit reset" : "")
-                    + (reset.map { ", \($0)" } ?? "")
+                AgentCapacityRowContent.limitAccessibilityLabel(
+                    label: column.label, percent: $0.percent, expired: expired,
+                    resetText: reset, freshness: freshness)
             } ?? "\(column.label), no data")
     }
 }
