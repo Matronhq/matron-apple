@@ -74,6 +74,9 @@ struct AddAgentSheet: View {
                 TextField("Agent name (e.g. dev-7)", text: $viewModel.agentName)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
+                TextField("Tag character (optional, e.g. 7)", text: $viewModel.tagCharacter)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     Button("Approve") { Task { await viewModel.approve() } }
                         .bold()
@@ -82,7 +85,7 @@ struct AddAgentSheet: View {
                                   || (viewModel.expiresAt.map { $0 <= context.date } ?? false))
                 }
             } footer: {
-                Text(viewModel.duplicateNameWarning ?? "Convention: the box's short hostname. The name can't be changed later.")
+                Text(viewModel.duplicateNameWarning ?? "Convention: the box's short hostname. The name can't be changed later. The tag is the one character shown before this box's chat titles on all your devices — leave it empty to derive one from the name; you can change it later in Devices.")
                     .foregroundStyle(viewModel.duplicateNameWarning == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
             }
         }

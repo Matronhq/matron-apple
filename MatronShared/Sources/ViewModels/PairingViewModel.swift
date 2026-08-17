@@ -44,6 +44,13 @@ public final class PairingViewModel {
         }
     }
 
+    /// Optional roster tag character — the letter shown beside this box's
+    /// chats on every device. Empty means automatic (derived from the
+    /// name); only the first grapheme of whatever is typed is sent. Set at
+    /// pairing so colleagues enrolling dev-a/dev-b get a/b from day one;
+    /// changeable later in Settings → Devices, unlike the name.
+    public var tagCharacter: String = ""
+
     public private(set) var phase: Phase = .enterCode
     public private(set) var errorMessage: String?
     /// True while an approve round-trip is in flight — reentrant taps are
@@ -141,7 +148,8 @@ public final class PairingViewModel {
             return
         }
         do {
-            try await api.pairApprove(code: code, agentName: name)
+            try await api.pairApprove(code: code, agentName: name,
+                                      tagChar: DevicesViewModel.tagChar(fromDraft: tagCharacter))
         } catch JournalAPIError.conflict {
             errorMessage = "This code was already approved."
             return

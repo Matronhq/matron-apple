@@ -19,15 +19,21 @@ final class BoxLetterOverridesTests: XCTestCase {
         super.tearDown()
     }
 
-    func testSetReadClearRoundTrip() {
-        BoxLetterOverrides.set("q", for: 7, in: defaults)
-        XCTAssertEqual(BoxLetterOverrides.letter(for: 7, from: defaults), "q")
-        XCTAssertEqual(BoxLetterOverrides.all(from: defaults), [7: "q"])
+    /// Seeds the legacy dictionary the way the pre-sync app wrote it.
+    private func seedLegacy(_ overrides: [Int64: String]) {
+        defaults.set(Dictionary(uniqueKeysWithValues: overrides.map { (String($0.key), $0.value) }),
+                     forKey: BoxLetterOverrides.defaultsKey)
+    }
 
-        // Blank means "back to automatic": the override is removed, and the
-        // last removal drops the whole defaults key.
-        BoxLetterOverrides.set("  ", for: 7, in: defaults)
-        XCTAssertNil(BoxLetterOverrides.letter(for: 7, from: defaults))
+    func testAllReadsLegacyEntriesAndRemoveDropsKeyWithLastOne() {
+        seedLegacy([7: "q", 9: "z"])
+        XCTAssertEqual(BoxLetterOverrides.all(from: defaults), [7: "q", 9: "z"])
+
+        BoxLetterOverrides.remove(id: 7, from: defaults)
+        XCTAssertEqual(BoxLetterOverrides.all(from: defaults), [9: "z"])
+        // The last removal drops the whole defaults key — a migrated
+        // install carries no residue.
+        BoxLetterOverrides.remove(id: 9, from: defaults)
         XCTAssertNil(defaults.object(forKey: BoxLetterOverrides.defaultsKey))
     }
 
@@ -38,12 +44,6 @@ final class BoxLetterOverridesTests: XCTestCase {
         XCTAssertEqual(BoxLetterOverrides.sanitize("🦊box"), "🦊")
         XCTAssertNil(BoxLetterOverrides.sanitize("   "))
         XCTAssertNil(BoxLetterOverrides.sanitize(""))
-    }
-
-    func testSetPostsTheChangeNotification() {
-        let posted = expectation(forNotification: BoxLetterOverrides.didChange, object: nil)
-        BoxLetterOverrides.set("x", for: 1, in: defaults)
-        wait(for: [posted], timeout: 1)
     }
 
     func testOverrideReplacesTheDerivedLetterWithoutShiftingOthers() {
@@ -57,5 +57,45 @@ final class BoxLetterOverridesTests: XCTestCase {
         // An override for a box not in the roster changes nothing.
         XCTAssertEqual(SessionTag.boxLetters(for: names, overrides: [99: "Q"]),
                        [1: "Y", 2: "Z"])
+    }
+
+    // MARK: Migration
+
+    func testMigrationPushesUntaggedBoxesAndClearsEntries() async {
+        seedLegacy([7: "q", 9: "z"])
+        nonisolated(unsafe) var pushed: [(Int64, String)] = []
+        // Box 7 has no journal tag → pushed. Box 9 already has one → the
+        // journal value wins, the relic is dropped without a push.
+        await BoxLetterMigration.run(defaults: defaults,
+                                     serverTags: [7: nil, 9: "b"]) { id, letter in
+            pushed.append((id, letter))
+        }
+        XCTAssertEqual(pushed.count, 1)
+        XCTAssertEqual(pushed.first?.0, 7)
+        XCTAssertEqual(pushed.first?.1, "q")
+        XCTAssertNil(defaults.object(forKey: BoxLetterOverrides.defaultsKey),
+                     "every entry resolved — the key must be gone")
+    }
+
+    func testMigrationDropsEntriesForRevokedBoxesWithoutPushing() async {
+        seedLegacy([42: "x"])
+        nonisolated(unsafe) var pushes = 0
+        // Box 42 is absent from serverTags entirely (revoked): no push, but
+        // the dead entry still clears.
+        await BoxLetterMigration.run(defaults: defaults, serverTags: [7: nil]) { _, _ in
+            pushes += 1
+        }
+        XCTAssertEqual(pushes, 0)
+        XCTAssertNil(defaults.object(forKey: BoxLetterOverrides.defaultsKey))
+    }
+
+    func testMigrationKeepsEntryWhenPushFailsSoNextLaunchRetries() async {
+        seedLegacy([7: "q"])
+        struct Offline: Error {}
+        await BoxLetterMigration.run(defaults: defaults, serverTags: [7: nil]) { _, _ in
+            throw Offline()
+        }
+        XCTAssertEqual(BoxLetterOverrides.all(from: defaults), [7: "q"],
+                       "a failed push must leave the entry for the next launch")
     }
 }

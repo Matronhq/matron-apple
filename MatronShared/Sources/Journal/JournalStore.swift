@@ -339,6 +339,14 @@ public final class JournalStore: @unchecked Sendable {
                 t.add(column: "participants", .text)
             }
         }
+        // v7: journal-held roster tag characters (spec: box tag characters).
+        // Mirrors the server's `tag_char` per agent box; NULL = automatic.
+        // Additive like v5 — rows fill in from the next snapshot.
+        migrator.registerMigration("v7") { db in
+            try db.alter(table: "agent") { t in
+                t.add(column: "tag_char", .text)
+            }
+        }
         try migrator.migrate(dbQueue)
         // Boot-time TTL sweep, mirroring the server's expire-logs job
         // (matron-journal docs/protocol.md Retention): a cached live_log
@@ -888,19 +896,25 @@ public final class JournalStore: @unchecked Sendable {
         try dbQueue.write { db in
             try db.execute(sql: "DELETE FROM agent")
             for a in agents {
-                try db.execute(sql: "INSERT INTO agent(id, name) VALUES(?, ?)",
-                               arguments: [a.id, a.name])
+                try db.execute(sql: "INSERT INTO agent(id, name, tag_char) VALUES(?, ?, ?)",
+                               arguments: [a.id, a.name, a.tagChar])
             }
         }
     }
 
-    /// Applies one live `device_meta` rename. Upsert, not update: the rename
-    /// may name a box this device has not snapshotted yet.
-    public func renameAgent(id: Int64, name: String) throws {
+    /// Applies one live `device_meta` frame. Upsert, not update: the frame
+    /// may name a box this device has not snapshotted yet. Both halves are
+    /// written — the server always sends the device's full current meta,
+    /// so a nil `tagChar` genuinely means "no tag" (cleared, or a server
+    /// predating tags, where no tag exists to lose).
+    public func applyDeviceMeta(id: Int64, name: String, tagChar: String?) throws {
         try dbQueue.write { db in
             try db.execute(
-                sql: "INSERT INTO agent(id, name) VALUES(?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name",
-                arguments: [id, name])
+                sql: """
+                    INSERT INTO agent(id, name, tag_char) VALUES(?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET name = excluded.name, tag_char = excluded.tag_char
+                    """,
+                arguments: [id, name, tagChar])
         }
     }
 
@@ -913,6 +927,18 @@ public final class JournalStore: @unchecked Sendable {
     private static func agentNameMap(_ db: Database) throws -> [Int64: String] {
         let rows = try Row.fetchAll(db, sql: "SELECT id, name FROM agent")
         return Dictionary(uniqueKeysWithValues: rows.map { ($0["id"] as Int64, $0["name"] as String) })
+    }
+
+    /// id → tag character for every box that has one. The journal-held
+    /// override map `SessionTag.boxLetters` applies after derivation —
+    /// boxes without a row here get the automatic letter.
+    public func agentTagChars() throws -> [Int64: String] {
+        try dbQueue.read(Self.agentTagCharMap)
+    }
+
+    private static func agentTagCharMap(_ db: Database) throws -> [Int64: String] {
+        let rows = try Row.fetchAll(db, sql: "SELECT id, tag_char FROM agent WHERE tag_char IS NOT NULL")
+        return Dictionary(uniqueKeysWithValues: rows.map { ($0["id"] as Int64, $0["tag_char"] as String) })
     }
 
     /// One conversation by id, or nil when this device has never seen it.
@@ -1129,6 +1155,17 @@ public final class JournalStore: @unchecked Sendable {
     /// unrelated conversation write happened to re-fire the list.
     public func agentNamesStream() -> AsyncStream<[Int64: String]> {
         Self.stream(ValueObservation.tracking(Self.agentNameMap), in: dbQueue)
+    }
+
+    /// Live (names, tagChars) of the user's agent boxes — one observation,
+    /// one re-fire, because the chat list needs the two maps in lockstep:
+    /// letters are derived from the whole name set and then overridden by
+    /// the tags, so delivering them separately could paint one update with
+    /// a name set and tag map from different instants.
+    public func agentRosterStream() -> AsyncStream<(names: [Int64: String], tagChars: [Int64: String])> {
+        Self.stream(ValueObservation.tracking { db in
+            (names: try Self.agentNameMap(db), tagChars: try Self.agentTagCharMap(db))
+        }, in: dbQueue)
     }
 
     /// Live stream of a parent's subagent children (in creation order,

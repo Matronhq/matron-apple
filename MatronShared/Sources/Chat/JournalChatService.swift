@@ -64,16 +64,8 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
             // list. Roster-only, so it never `finish()`es the signal — the
             // conversations stream ending is what ends the summaries.
             let roster = Task {
-                for await names in store.agentNamesStream() {
-                    inputs.setBoxNames(names)
-                    signalCont.yield(())
-                }
-            }
-            // A tag-character override (Settings → Devices) writes only
-            // UserDefaults — no journal record, no GRDB re-fire — so its
-            // change notification rings the same doorbell to re-derive.
-            let overridesWatch = Task {
-                for await _ in NotificationCenter.default.notifications(named: BoxLetterOverrides.didChange) {
+                for await roster in store.agentRosterStream() {
+                    inputs.setBoxRoster(names: roster.names, tagChars: roster.tagChars)
                     signalCont.yield(())
                 }
             }
@@ -87,8 +79,11 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
                     let boxNames = inputs.boxNames ?? (try? store.agentNames()) ?? [:]
                     // Derived once per snapshot, not per row — the letters
                     // depend on the whole name set (common-prefix strip).
+                    // Overrides are the journal-held tag characters, so the
+                    // same letter shows on every one of the user's devices.
                     let boxLetters = SessionTag.boxLetters(
-                        for: boxNames, overrides: BoxLetterOverrides.all())
+                        for: boxNames,
+                        overrides: inputs.boxTagChars ?? (try? store.agentTagChars()) ?? [:])
                     continuation.yield(records.map { Self.summary(from: $0, boxNames: boxNames, boxLetters: boxLetters) })
                     try? await Task.sleep(for: interval)
                 }
@@ -97,7 +92,6 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
             continuation.onTermination = { _ in
                 producer.cancel()
                 roster.cancel()
-                overridesWatch.cancel()
                 consumer.cancel()
             }
         }
@@ -213,6 +207,7 @@ private final class SummaryInputs: @unchecked Sendable {
     private let lock = NSLock()
     private var _records: [ConversationRecord]?
     private var _boxNames: [Int64: String]?
+    private var _boxTagChars: [Int64: String]?
 
     var records: [ConversationRecord]? {
         lock.withLock { _records }
@@ -222,11 +217,21 @@ private final class SummaryInputs: @unchecked Sendable {
         lock.withLock { _boxNames }
     }
 
+    var boxTagChars: [Int64: String]? {
+        lock.withLock { _boxTagChars }
+    }
+
     func setRecords(_ records: [ConversationRecord]) {
         lock.withLock { _records = records }
     }
 
-    func setBoxNames(_ names: [Int64: String]) {
-        lock.withLock { _boxNames = names }
+    /// One setter for both roster maps — they arrive from one observation
+    /// and must be read in lockstep (letters derive from the name set, then
+    /// the tags override).
+    func setBoxRoster(names: [Int64: String], tagChars: [Int64: String]) {
+        lock.withLock {
+            _boxNames = names
+            _boxTagChars = tagChars
+        }
     }
 }

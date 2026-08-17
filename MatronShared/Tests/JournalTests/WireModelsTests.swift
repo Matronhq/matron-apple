@@ -412,8 +412,13 @@ final class WireModelsTests: XCTestCase {
     }
 
     func testDecodesDeviceMetaRenameFrame() {
+        // A server predating tags (or a JSON null) both land as nil.
         let frame = ServerFrame.decode(#"{"kind":"device_meta","device_id":7,"name":"dev-y"}"#)
-        XCTAssertEqual(frame, .deviceMeta(id: 7, name: "dev-y"))
+        XCTAssertEqual(frame, .deviceMeta(id: 7, name: "dev-y", tagChar: nil))
+        let nullTag = ServerFrame.decode(#"{"kind":"device_meta","device_id":7,"name":"dev-y","tag_char":null}"#)
+        XCTAssertEqual(nullTag, .deviceMeta(id: 7, name: "dev-y", tagChar: nil))
+        let tagged = ServerFrame.decode(#"{"kind":"device_meta","device_id":7,"name":"dev-y","tag_char":"y"}"#)
+        XCTAssertEqual(tagged, .deviceMeta(id: 7, name: "dev-y", tagChar: "y"))
         // Malformed frames are skipped, not crashed on.
         XCTAssertNil(ServerFrame.decode(#"{"kind":"device_meta","name":"dev-y"}"#))
         XCTAssertNil(ServerFrame.decode(#"{"kind":"device_meta","device_id":7}"#))

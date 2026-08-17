@@ -1,4 +1,5 @@
 import Foundation
+import MatronChat
 import MatronJournal
 
 /// The devices/pairing slice of `JournalAPI`, extracted so view models can
@@ -8,8 +9,9 @@ public protocol DevicesProviding: Sendable {
     func devices() async throws -> [DeviceDTO]
     func revokeDevice(id: Int64) async throws
     func renameDevice(id: Int64, name: String) async throws -> DeviceDTO
+    func setDeviceTag(id: Int64, tagChar: String?) async throws
     func pairPreview(code: String) async throws -> PairPreview
-    func pairApprove(code: String, agentName: String) async throws
+    func pairApprove(code: String, agentName: String, tagChar: String?) async throws
 }
 
 extension JournalAPI: DevicesProviding {}
@@ -103,6 +105,26 @@ public final class DevicesViewModel {
         }
     }
 
+    /// The client-side mirror of the server's tag sieve: trim, then keep
+    /// only the first grapheme. Empty means "clear back to automatic",
+    /// which the API expresses as nil.
+    public static func tagChar(fromDraft draft: String) -> String? {
+        draft.trimmingCharacters(in: .whitespacesAndNewlines).first.map(String.init)
+    }
+
+    /// Sets or clears `device`'s roster tag character — journal-held, so
+    /// the letter changes on every one of the user's devices at once.
+    /// Re-fetches like `rename` so the row shows what the server stored.
+    public func setTag(_ device: DeviceDTO, toDraft draft: String) async {
+        do {
+            try await api.setDeviceTag(id: device.id, tagChar: Self.tagChar(fromDraft: draft))
+            errorMessage = nil
+            await refresh()
+        } catch {
+            errorMessage = "Couldn't set the tag for \(device.name) — \(Self.describe(error))"
+        }
+    }
+
     static func sorted(_ devices: [DeviceDTO]) -> [DeviceDTO] {
         devices.sorted { a, b in
             let aClient = a.kind == "client", bClient = b.kind == "client"
@@ -137,5 +159,32 @@ extension DeviceDTO {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
         return formatter.localizedString(for: date, relativeTo: now)
+    }
+}
+
+extension BoxLetterMigration {
+    /// App-start entry point for the legacy push-up: a device-local letter
+    /// dictionary from before tags were journal-held moves to the server
+    /// once, then vanishes. Returns nil (no task at all) for the common
+    /// case — an install with no legacy overrides — so every later launch
+    /// costs one UserDefaults read. Failures leave entries in place; the
+    /// next launch retries.
+    public static func runIfNeeded(
+        api: any DevicesProviding,
+        defaults: UserDefaults = .standard
+    ) -> Task<Void, Never>? {
+        guard !BoxLetterOverrides.all(from: defaults).isEmpty else { return nil }
+        return Task(priority: .utility) {
+            // The roster read is the freshness guard: a box that already
+            // has a journal-held tag keeps it (the journal value is newer
+            // by construction — this migration only runs while the local
+            // relic exists). Unreachable server → retry next launch.
+            guard let devices = try? await api.devices() else { return }
+            let serverTags = Dictionary(uniqueKeysWithValues:
+                devices.filter { $0.kind == "agent" }.map { ($0.id, $0.tagChar) })
+            await run(defaults: defaults, serverTags: serverTags) { id, letter in
+                try await api.setDeviceTag(id: id, tagChar: letter)
+            }
+        }
     }
 }

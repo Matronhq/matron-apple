@@ -96,11 +96,15 @@ final class PairingViewModelTests: XCTestCase {
         vm.codeInput = "ktnm-3vq8"
         await waitUntil(vm.phase != .enterCode)
         vm.agentName = "dev-7"
+        // The optional tag rides the approve: first grapheme only, so the
+        // minted box is born with its letter.
+        vm.tagCharacter = " 7x "
         await vm.approve()
         await waitUntil(vm.phase == .success(agentName: "dev-7"))
         XCTAssertEqual(vm.phase, .success(agentName: "dev-7"))
         XCTAssertEqual(fake.approvals.count, 1)
         XCTAssertEqual(fake.approvals[0].code, "KTNM3VQ8")
+        XCTAssertEqual(fake.approvals[0].tagChar, "7")
         XCTAssertGreaterThanOrEqual(fake.devicesCalls, 3, "snapshot + at least two polls")
     }
 

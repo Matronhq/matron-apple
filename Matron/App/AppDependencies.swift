@@ -181,6 +181,10 @@ final class AppDependencies {
         )
         let core = JournalCore(api: api, store: store, engine: engine)
         core.backfillTask = Self.startBackfill(search: search, api: api, store: store)
+        // One-time: box tag letters chosen before they were journal-held
+        // move up to the server so they show on every device. A Task keeps
+        // itself alive; nil (no legacy overrides) is the steady state.
+        _ = BoxLetterMigration.runIfNeeded(api: api)
         cores[session.userID] = core
         return core
     }

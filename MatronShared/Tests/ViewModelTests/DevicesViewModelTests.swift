@@ -38,8 +38,9 @@ final class FakeDevicesProvider: DevicesProviding, @unchecked Sendable {
     private(set) var devicesCalls = 0
     private(set) var revokedIDs: [Int64] = []
     private(set) var renamed: [(id: Int64, name: String)] = []
+    private(set) var tagged: [(id: Int64, tagChar: String?)] = []
     private(set) var previewedCodes: [String] = []
-    private(set) var approvals: [(code: String, name: String)] = []
+    private(set) var approvals: [(code: String, name: String, tagChar: String?)] = []
 
     func renameDevice(id: Int64, name: String) async throws -> DeviceDTO {
         renamed.append((id, name))
@@ -80,13 +81,30 @@ final class FakeDevicesProvider: DevicesProviding, @unchecked Sendable {
         return try previewResult.get()
     }
 
-    func pairApprove(code: String, agentName: String) async throws {
-        approvals.append((code, agentName))
+    func pairApprove(code: String, agentName: String, tagChar: String?) async throws {
+        approvals.append((code, agentName, tagChar))
         if holdApprove {
             await withCheckedContinuation { approveContinuations.append($0) }
         }
         if approveDelay > .zero { try? await Task.sleep(for: approveDelay) }
         if let approveError { throw approveError }
+    }
+
+    var tagError: JournalAPIError?
+
+    func setDeviceTag(id: Int64, tagChar: String?) async throws {
+        tagged.append((id, tagChar))
+        if let tagError { throw tagError }
+        // Echo the roster forward with the new tag, like renameDevice does.
+        rosters = rosters.map { roster in
+            roster.map { d in
+                d.id == id
+                    ? DeviceDTO(id: d.id, kind: d.kind, name: d.name, createdAt: d.createdAt,
+                                cursor: d.cursor, lag: d.lag, lastSeenAt: d.lastSeenAt,
+                                isSelf: d.isSelf, connected: d.connected, tagChar: tagChar)
+                    : d
+            }
+        }
     }
 }
 
@@ -198,7 +216,10 @@ final class DevicesViewModelTests: XCTestCase {
                 throw JournalAPIError.transport("offline")
             }
             func pairPreview(code: String) async throws -> PairPreview { throw JournalAPIError.notFound }
-            func pairApprove(code: String, agentName: String) async throws {}
+            func pairApprove(code: String, agentName: String, tagChar: String?) async throws {}
+            func setDeviceTag(id: Int64, tagChar: String?) async throws {
+                throw JournalAPIError.transport("offline")
+            }
         }
         let vm = DevicesViewModel(api: Failing(), onSelfRevoked: {})
         await vm.refresh()
@@ -233,5 +254,39 @@ final class DevicesViewModelTests: XCTestCase {
         XCTAssertNotNil(DevicesViewModel.validate(name: ""))
         XCTAssertNotNil(DevicesViewModel.validate(name: "   "))
         XCTAssertNotNil(DevicesViewModel.validate(name: String(repeating: "y", count: 41)))
+    }
+
+    func test_setTag_sendsFirstGraphemeNilForBlank_andSurfacesFailures() async {
+        let fake = FakeDevicesProvider()
+        fake.rosters = [[DeviceDTO(id: 7, kind: "agent", name: "dev-9", createdAt: 1,
+                                   cursor: 0, lag: 0, lastSeenAt: nil, isSelf: false)]]
+        let vm = DevicesViewModel(api: fake, onSelfRevoked: {})
+        await vm.refresh()
+
+        // Only the first grapheme of the draft travels; the roster refresh
+        // shows the stored value.
+        await vm.setTag(vm.devices[0], toDraft: " 🦊x ")
+        XCTAssertEqual(fake.tagged.map(\.id), [7])
+        XCTAssertEqual(fake.tagged.map(\.tagChar), ["🦊"])
+        XCTAssertEqual(vm.devices.first?.tagChar, "🦊")
+        XCTAssertNil(vm.errorMessage)
+
+        // A blank draft clears: nil on the wire = back to automatic.
+        await vm.setTag(vm.devices[0], toDraft: "   ")
+        XCTAssertEqual(fake.tagged.last?.tagChar, nil as String?)
+        XCTAssertNil(vm.devices.first?.tagChar)
+
+        // A server refusal leaves the roster alone and explains itself.
+        fake.tagError = .forbidden
+        await vm.setTag(vm.devices[0], toDraft: "z")
+        XCTAssertNil(vm.devices.first?.tagChar)
+        XCTAssertEqual(vm.errorMessage?.contains("dev-9"), true)
+    }
+
+    func test_tagCharFromDraft_keepsOneGraphemeMapsBlankToNil() {
+        XCTAssertEqual(DevicesViewModel.tagChar(fromDraft: " mz "), "m")
+        XCTAssertEqual(DevicesViewModel.tagChar(fromDraft: "👩‍💻x"), "👩‍💻")
+        XCTAssertNil(DevicesViewModel.tagChar(fromDraft: ""))
+        XCTAssertNil(DevicesViewModel.tagChar(fromDraft: "   "))
     }
 }

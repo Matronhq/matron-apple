@@ -183,10 +183,13 @@ public enum ServerFrame: Equatable, Sendable {
     case error(code: String, ref: String?, requestID: String?, detail: String?)
     case snapshotRequired
     case unknownControl(op: String)
-    /// A device was renamed (`POST /devices/:id/rename`). Transient — not a
-    /// journal event, carries no seq. A client that misses it picks the name
-    /// up from the next snapshot's `agents` list.
-    case deviceMeta(id: Int64, name: String)
+    /// A device's meta changed (`POST /devices/:id/rename` or `/tag`). The
+    /// frame carries the device's full current meta — a rename repeats the
+    /// standing tag character and vice versa. Transient — not a journal
+    /// event, carries no seq. A client that misses it picks both up from
+    /// the next snapshot's `agents` list. `tagChar` nil = automatic (also
+    /// what a server predating tags sends, which is the same thing there).
+    case deviceMeta(id: Int64, name: String, tagChar: String?)
 
     /// Bridge timestamps are `Date.toISOString()` output (always fractional),
     /// but accept plain ISO too for robustness. ISO8601DateFormatter is
@@ -330,7 +333,7 @@ public enum ServerFrame: Equatable, Sendable {
         case "device_meta":
             guard let id = (obj["device_id"] as? NSNumber)?.int64Value,
                   let name = obj["name"] as? String else { return nil }
-            return .deviceMeta(id: id, name: name)
+            return .deviceMeta(id: id, name: name, tagChar: obj["tag_char"] as? String)
         case "control":
             guard let op = obj["op"] as? String else { return nil }
             switch op {

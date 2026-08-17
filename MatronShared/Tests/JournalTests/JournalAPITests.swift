@@ -301,6 +301,31 @@ final class JournalAPITests: XCTestCase {
         let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
         XCTAssertEqual(obj["pair_code"] as? String, "KTNM3VQ8")
         XCTAssertEqual(obj["agent_name"] as? String, "dev-7")
+        // No tag chosen → the key is absent entirely, not null: an older
+        // server must never see a field it doesn't know.
+        XCTAssertNil(obj["tag_char"])
+
+        try await api.pairApprove(code: "KTNM3VQ8", agentName: "dev-7", tagChar: "7")
+        let tagged = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: XCTUnwrap(StubURLProtocol.lastRequestBody)) as? [String: Any])
+        XCTAssertEqual(tagged["tag_char"] as? String, "7")
+    }
+
+    func testSetDeviceTagSendsValueAndNullForClear() async throws {
+        StubURLProtocol.responses = ["/devices/7/tag": (200, #"{"ok":true,"device":{"device_id":7,"name":"dev-a","tag_char":"a"}}"#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        try await api.setDeviceTag(id: 7, tagChar: "a")
+        var obj = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: XCTUnwrap(StubURLProtocol.lastRequestBody)) as? [String: Any])
+        XCTAssertEqual(obj["tag_char"] as? String, "a")
+
+        // Clearing sends an explicit JSON null — the server 400s an absent
+        // key so that "clear" is always said out loud.
+        try await api.setDeviceTag(id: 7, tagChar: nil)
+        obj = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: XCTUnwrap(StubURLProtocol.lastRequestBody)) as? [String: Any])
+        XCTAssertTrue(obj["tag_char"] is NSNull)
     }
 
     func testPairApproveMapsConflict() async throws {

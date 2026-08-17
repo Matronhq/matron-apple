@@ -758,12 +758,44 @@ final class JournalStoreTests: XCTestCase {
         XCTAssertEqual(try store.agentNames(), [7: "dev-y"])
 
         // A live rename patches one row without a re-snapshot.
-        try store.renameAgent(id: 7, name: "dev-yellow")
+        try store.applyDeviceMeta(id: 7, name: "dev-yellow", tagChar: nil)
         XCTAssertEqual(try store.agentNames(), [7: "dev-yellow"])
 
         // A rename for a box we have never seen inserts it.
-        try store.renameAgent(id: 12, name: "dev-new")
+        try store.applyDeviceMeta(id: 12, name: "dev-new", tagChar: nil)
         XCTAssertEqual(try store.agentNames()[12], "dev-new")
+    }
+
+    func testAgentTagCharsMirrorSnapshotAndLiveMeta() throws {
+        let store = try makeStore()
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-a", tagChar: "a"),
+                                 AgentDTO(id: 9, name: "dev-b")])
+        // Only boxes WITH a tag appear — the map is the override layer, not
+        // the roster.
+        XCTAssertEqual(try store.agentTagChars(), [7: "a"])
+
+        // A live device_meta sets, changes, and clears; a nil genuinely
+        // means "no tag" because the server always sends full meta.
+        try store.applyDeviceMeta(id: 9, name: "dev-b", tagChar: "b")
+        XCTAssertEqual(try store.agentTagChars(), [7: "a", 9: "b"])
+        try store.applyDeviceMeta(id: 7, name: "dev-a", tagChar: nil)
+        XCTAssertEqual(try store.agentTagChars(), [9: "b"])
+    }
+
+    func testAgentRosterStreamDeliversNamesAndTagsInLockstep() async throws {
+        let store = try makeStore()
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-a", tagChar: "a")])
+        var iterator = store.agentRosterStream().makeAsyncIterator()
+        let initial = await iterator.next()
+        XCTAssertEqual(initial?.names, [7: "dev-a"])
+        XCTAssertEqual(initial?.tagChars, [7: "a"])
+
+        // One write, one re-fire, both maps current — a tag change must
+        // never paint with a stale name set or vice versa.
+        try store.applyDeviceMeta(id: 7, name: "dev-alpha", tagChar: "α")
+        let updated = await iterator.next()
+        XCTAssertEqual(updated?.names, [7: "dev-alpha"])
+        XCTAssertEqual(updated?.tagChars, [7: "α"])
     }
 
     func testAgentNamesStreamRefiresOnRename() async throws {
@@ -777,7 +809,7 @@ final class JournalStoreTests: XCTestCase {
         let initial = await iterator.next()
         XCTAssertEqual(initial, [7: "dev-y", 9: "dev-z"])
 
-        try store.renameAgent(id: 7, name: "dev-yellow")
+        try store.applyDeviceMeta(id: 7, name: "dev-yellow", tagChar: nil)
         let renamed = await iterator.next()
         XCTAssertEqual(renamed, [7: "dev-yellow", 9: "dev-z"])
     }
