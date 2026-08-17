@@ -57,11 +57,29 @@ public struct AgentCapacityRowContent: View {
         }
     }
 
-    /// Whether there is anything to show at all. Guards the age caption in
-    /// particular: on its own it would be a disclaimer under a row that
-    /// discloses nothing (a legacy bridge sent no capacity blocks).
+    /// Whether this block renders anything. The cached case also counts the
+    /// account email, which lives on the *name* line outside this view: an
+    /// email-only entry still needs the block to appear, because the caption
+    /// is the only thing that says how old that email is.
     private func hasContent(_ capacity: BoxCapacity) -> Bool {
-        Self.sessionsLine(capacity, freshness: freshness) != nil || !capacity.limitLines.isEmpty
+        Self.sessionsLine(capacity, freshness: freshness) != nil
+            || !capacity.limitLines.isEmpty
+            || Self.hasCachedContent(capacity, freshness: freshness)
+    }
+
+    /// Whether a row is showing cached numbers that actually disclose
+    /// something, and so has earned its age caption.
+    ///
+    /// The two callers gate opposite ways round without it: this view hides
+    /// the caption behind its own content check, while the Mac row draws the
+    /// caption beside grid cells it doesn't own. A legacy bridge persists an
+    /// EMPTY capacity, so "there is a cached entry" is not the same question
+    /// as "there is something cached to disclaim" — and the dropped session
+    /// count can't earn a caption either, since it never reaches the screen.
+    public static func hasCachedContent(_ capacity: BoxCapacity?,
+                                        freshness: AgentCapacityFreshness) -> Bool {
+        guard freshness.isStale, let capacity else { return false }
+        return !capacity.limitLines.isEmpty || capacity.accountEmail != nil
     }
 
     private func limitRow(_ line: LimitLine) -> some View {

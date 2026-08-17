@@ -72,6 +72,46 @@ final class AgentCapacityRowContentTests: XCTestCase {
                        .deemphasised)
     }
 
+    // MARK: What a cached row actually discloses
+
+    /// The account email renders on the name line, outside this block, so it
+    /// counts as content: an email-only cached entry must still summon the
+    /// caption that says how old it is.
+    func test_hasCachedContent_countsAnEmailOnlyEntry() {
+        let capacity = BoxCapacity(liveSessions: nil, limitLines: [], accountEmail: "pat@yearbook.com")
+        XCTAssertTrue(AgentCapacityRowContent.hasCachedContent(capacity, freshness: cached()))
+    }
+
+    func test_hasCachedContent_countsLimitLines() {
+        let capacity = BoxCapacity(
+            liveSessions: nil,
+            limitLines: [LimitLine(id: "session", label: "Current session", percent: 39, resetsAt: nil)],
+            accountEmail: nil)
+        XCTAssertTrue(AgentCapacityRowContent.hasCachedContent(capacity, freshness: cached()))
+    }
+
+    /// A legacy bridge answered `recent_folders` with no capacity blocks at
+    /// all, so the persisted entry is empty. Its row discloses nothing —
+    /// a lone "offline · as of 2h ago" under it would disclaim thin air.
+    func test_hasCachedContent_rejectsAnEmptyPersistedEntry() {
+        let capacity = BoxCapacity(liveSessions: nil, limitLines: [], accountEmail: nil)
+        XCTAssertFalse(AgentCapacityRowContent.hasCachedContent(capacity, freshness: cached()))
+    }
+
+    /// A cached session count is dropped, so it can't be the thing that earns
+    /// a row its caption either.
+    func test_hasCachedContent_ignoresTheDroppedSessionCount() {
+        let capacity = BoxCapacity(liveSessions: 4, limitLines: [], accountEmail: nil)
+        XCTAssertFalse(AgentCapacityRowContent.hasCachedContent(capacity, freshness: cached()))
+    }
+
+    func test_hasCachedContent_isFalseForLiveRowsAndMissingCapacity() {
+        let capacity = BoxCapacity(liveSessions: nil, limitLines: [], accountEmail: "pat@yearbook.com")
+        XCTAssertFalse(AgentCapacityRowContent.hasCachedContent(capacity, freshness: .live),
+                       "a live row has nothing to disclaim")
+        XCTAssertFalse(AgentCapacityRowContent.hasCachedContent(nil, freshness: cached()))
+    }
+
     // MARK: Accessibility
 
     func test_limitAccessibilityLabel_liveCopyIsUnchanged() {

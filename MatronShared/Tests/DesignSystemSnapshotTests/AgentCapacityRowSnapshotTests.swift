@@ -56,7 +56,24 @@ final class AgentCapacityRowSnapshotTests: XCTestCase {
             AgentCapacityRowContent(capacity: capacity(expiredWeek: true), pending: false,
                                     freshness: .offline(capturedAt: now.addingTimeInterval(-5 * 3600)),
                                     fixedNow: now)
-            // 4. Connected, reply still in flight.
+            // 4. Asleep, and all the bridge ever reported was the account.
+            //    The email renders on the name line above (outside this
+            //    view), so the block is the caption alone — without it the
+            //    stale email would sit there with nothing dating it.
+            AgentCapacityRowContent(
+                capacity: BoxCapacity(liveSessions: nil, limitLines: [],
+                                      accountEmail: "pat@yearbook.com"),
+                pending: false,
+                freshness: .offline(capturedAt: now.addingTimeInterval(-30 * 60)),
+                fixedNow: now)
+            // 5. Asleep on a legacy bridge: the persisted capacity is EMPTY,
+            //    so nothing renders — not even a disclaimer.
+            AgentCapacityRowContent(
+                capacity: BoxCapacity(liveSessions: nil, limitLines: [], accountEmail: nil),
+                pending: false,
+                freshness: .offline(capturedAt: now.addingTimeInterval(-30 * 60)),
+                fixedNow: now)
+            // 6. Connected, reply still in flight.
             AgentCapacityRowContent(capacity: nil, pending: true, freshness: .live, fixedNow: now)
         }
         .padding(12)

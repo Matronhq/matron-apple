@@ -123,6 +123,29 @@ final class NewChatViewModelOfflineCapacityTests: XCTestCase {
         XCTAssertEqual(vm.capacityFreshness(for: 3), .live, "and it carries no age caption either")
     }
 
+    /// The cut-off is inclusive: an entry captured exactly `maxCachedCapacityAge`
+    /// ago is still shown, so the rule has one boundary rather than a
+    /// one-second hole that only shows up as a flaky row.
+    func test_load_seedsAnEntryExactlyAtTheAgeLimit() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(1, name: "a", connected: true),
+                                       agent(2, name: "b", connected: true),
+                                       agent(3, name: "borderline", connected: false)])
+        fake.repliesByDevice[1] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
+        fake.repliesByDevice[2] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
+        let limit = NewChatViewModel.maxCachedCapacityAge
+        let cache = InMemoryBoxCapacityCache([
+            3: CachedBoxCapacity(capacity: capacity(percent: 39),
+                                 capturedAt: now.addingTimeInterval(-limit)),
+        ])
+
+        let vm = makeViewModel(fake, cache: cache)
+        await vm.load()
+        await vm.capacityFanOutForTesting?.value
+
+        XCTAssertNotNil(vm.capacities[3], "exactly at the limit is still inside it")
+    }
+
     func test_load_prunesCachedBoxesThatLeftTheRoster() async {
         let fake = FakeAgentRPCProvider()
         fake.devicesResult = .success([agent(1, name: "a", connected: true),

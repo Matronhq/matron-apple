@@ -28,7 +28,9 @@ struct NewChatSheet: View {
         self.deps = deps
         self.session = session
         self.onCreated = onCreated
-        _viewModel = State(initialValue: NewChatViewModel(api: deps.agentRPCService(for: session)))
+        _viewModel = State(initialValue: NewChatViewModel(
+            api: deps.agentRPCService(for: session),
+            capacityCache: deps.boxCapacityCache(for: session)))
     }
 
     var body: some View {

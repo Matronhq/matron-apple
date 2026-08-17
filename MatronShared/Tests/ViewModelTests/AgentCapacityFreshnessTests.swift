@@ -23,6 +23,19 @@ final class AgentCapacityFreshnessTests: XCTestCase {
         XCTAssertEqual(freshness.ageText(now: now, locale: english), "offline · as of 2h ago")
     }
 
+    /// Clock skew between the box's journal and this device can stamp a
+    /// capture at or ahead of now. "as of in 3 hr" — and the formatter's
+    /// "in 0s" for a dead heat — would read as promises about the future
+    /// rather than disclaimers about the past.
+    func test_offline_neverCaptionsACaptureAsAhead() {
+        for skew in [3 * 3600.0, 0] {
+            let freshness = AgentCapacityFreshness.offline(capturedAt: now.addingTimeInterval(skew))
+            let caption = freshness.ageText(now: now, locale: english)
+            XCTAssertEqual(caption, "offline · as of just now")
+            XCTAssertFalse(caption?.contains(" in ") ?? true, "never phrased as a future moment")
+        }
+    }
+
     /// Abbreviated units, the same style the recent-folder rows use — the
     /// caption sits under a name line, not on its own.
     func test_offline_usesAbbreviatedUnits() {

@@ -43,21 +43,39 @@ public protocol BoxCapacityCaching: AnyObject {
 /// `RecentStartFolders` does; production always uses the standard domain.
 @MainActor
 public final class UserDefaultsBoxCapacityCache: BoxCapacityCaching {
-    /// App-global key: one blob holds every box.
-    static let defaultsKey = "newChat.boxCapacityCache"
+    /// One blob per account. Namespacing by user id is not optional
+    /// bookkeeping: agent device ids are only unique **within a journal**, so
+    /// two accounts on the same device both allocate boxes 1, 2, 3. A shared
+    /// key would render account A's account email and quota on account B's
+    /// box of the same number — the separation `signOut()` already enforces
+    /// by wiping the store, the outbox and the search index, which is why it
+    /// removes this key too.
+    /// `nonisolated` so the init and `removeAll(for:)` can both reach it.
+    nonisolated static func defaultsKey(for userID: String) -> String {
+        "newChat.boxCapacityCache.\(userID)"
+    }
 
     private let defaults: UserDefaults
+    private let key: String
 
-    /// `nonisolated` so it can be evaluated as a default argument for
-    /// `NewChatViewModel.init` at a nonisolated call site — the init only
-    /// captures the injected (immutable) `defaults` reference; every read and
-    /// write of the blob stays main-actor-isolated.
-    public nonisolated init(defaults: UserDefaults = .standard) {
+    /// `nonisolated` so a SwiftUI view's init can build one at a nonisolated
+    /// call site — this only captures the injected (immutable) `defaults`
+    /// reference; every read and write of the blob stays main-actor-isolated.
+    public nonisolated init(userID: String, defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        self.key = Self.defaultsKey(for: userID)
+    }
+
+    /// Drops one account's cache, leaving every other account's alone.
+    /// `nonisolated` because `signOut()` runs its teardown off the main
+    /// actor; `UserDefaults` is thread-safe.
+    public nonisolated static func removeAll(for userID: String,
+                                             defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: defaultsKey(for: userID))
     }
 
     public func loadAll() -> [Int64: CachedBoxCapacity] {
-        guard let data = defaults.data(forKey: Self.defaultsKey),
+        guard let data = defaults.data(forKey: key),
               let payload = try? JSONDecoder().decode(Payload.self, from: data),
               payload.version == Payload.currentVersion else { return [:] }
         // `uniquingKeysWith` rather than `uniqueKeysWithValues`: a corrupt
@@ -81,7 +99,7 @@ public final class UserDefaultsBoxCapacityCache: BoxCapacityCaching {
         let boxes = entries.map { Payload.Box(id: $0.key, entry: $0.value) }.sorted { $0.id < $1.id }
         guard let data = try? JSONEncoder().encode(Payload(version: Payload.currentVersion, boxes: boxes))
         else { return }
-        defaults.set(data, forKey: Self.defaultsKey)
+        defaults.set(data, forKey: key)
     }
 
     /// The on-disk shape, deliberately its own type rather than a `Codable`

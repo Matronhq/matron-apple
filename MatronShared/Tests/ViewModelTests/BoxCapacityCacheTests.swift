@@ -57,8 +57,8 @@ final class BoxCapacityCacheTests: XCTestCase {
     }
 
     @MainActor
-    private func makeCache() -> UserDefaultsBoxCapacityCache {
-        UserDefaultsBoxCapacityCache(defaults: defaults)
+    private func makeCache(userID: String = "@pat:matron.chat") -> UserDefaultsBoxCapacityCache {
+        UserDefaultsBoxCapacityCache(userID: userID, defaults: defaults)
     }
 
     private func fullCapacity() -> BoxCapacity {
@@ -125,8 +125,45 @@ final class BoxCapacityCacheTests: XCTestCase {
     func test_persistsAcrossCacheInstances_viaSharedDefaults() {
         makeCache().save(fullCapacity(), for: 7, at: capturedAt)
         // A fresh cache over the same suite — the app-relaunch case.
-        let reopened = UserDefaultsBoxCapacityCache(defaults: defaults)
+        let reopened = UserDefaultsBoxCapacityCache(userID: "@pat:matron.chat", defaults: defaults)
         XCTAssertEqual(reopened.loadAll()[7]?.capacity, fullCapacity())
+    }
+
+    // MARK: Per-journal scoping
+
+    /// Device ids are only unique within a journal, so two accounts on the
+    /// same device both allocate box 1, 2, 3. Sharing one blob would show
+    /// account B the quota and email of account A's box of the same number —
+    /// the separation `signOut()` enforces for the store, outbox and search
+    /// index has to hold here too.
+    @MainActor
+    func test_entriesAreScopedToTheirUser() {
+        let pat = makeCache(userID: "@pat:matron.chat")
+        let sam = makeCache(userID: "@sam:matron.chat")
+
+        pat.save(fullCapacity(), for: 1, at: capturedAt)
+
+        XCTAssertNil(sam.loadAll()[1], "another account's box 1 is not this account's box 1")
+        sam.save(BoxCapacity(liveSessions: 0, limitLines: [], accountEmail: "sam@yearbook.com"),
+                 for: 1, at: capturedAt)
+        XCTAssertEqual(pat.loadAll()[1]?.capacity.accountEmail, "pat@yearbook.com",
+                       "and writing one must not clobber the other")
+        XCTAssertEqual(sam.loadAll()[1]?.capacity.accountEmail, "sam@yearbook.com")
+    }
+
+    /// `signOut()` calls this so the next account on the device inherits
+    /// nothing, matching the store/outbox/search wipes it already performs.
+    @MainActor
+    func test_removeAll_dropsOnlyThatUsersEntries() {
+        let pat = makeCache(userID: "@pat:matron.chat")
+        let sam = makeCache(userID: "@sam:matron.chat")
+        pat.save(fullCapacity(), for: 1, at: capturedAt)
+        sam.save(fullCapacity(), for: 1, at: capturedAt)
+
+        UserDefaultsBoxCapacityCache.removeAll(for: "@pat:matron.chat", defaults: defaults)
+
+        XCTAssertTrue(pat.loadAll().isEmpty)
+        XCTAssertNotNil(sam.loadAll()[1], "signing one account out leaves the other's cache alone")
     }
 
     @MainActor
@@ -136,7 +173,8 @@ final class BoxCapacityCacheTests: XCTestCase {
         // A payload written by a future (or corrupt) build. The chooser is
         // display-only, so an unreadable cache costs a quieter row — never a
         // crash or a failed load.
-        defaults.set(Data("not json".utf8), forKey: UserDefaultsBoxCapacityCache.defaultsKey)
+        defaults.set(Data("not json".utf8),
+                     forKey: UserDefaultsBoxCapacityCache.defaultsKey(for: "@pat:matron.chat"))
 
         XCTAssertTrue(cache.loadAll().isEmpty)
         // And it recovers: the next save rewrites the whole payload.

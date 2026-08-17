@@ -122,7 +122,9 @@ public final class NewChatViewModel {
     private var capacityGeneration = 0
 
     public init(api: any AgentRPCProviding,
-                capacityCache: any BoxCapacityCaching = UserDefaultsBoxCapacityCache(),
+                // Not defaulted: the cache is namespaced per account, and a
+                // convenient default here would be a silent app-global one.
+                capacityCache: any BoxCapacityCaching,
                 now: @escaping @Sendable () -> Date = Date.init) {
         self.api = api
         self.capacityCache = capacityCache
@@ -314,6 +316,11 @@ public final class NewChatViewModel {
         }
         let capacity = BoxCapacity.parse(replyObject: obj)
         capacities[agentID] = capacity
+        // These numbers came off the wire, so the row must not carry an age
+        // caption for them. Unreachable today (a box is either fanned out to
+        // or seeded, never both) but the two maps have to agree, and this is
+        // the one place `capacities` is written from a live reply.
+        capacityCapturedAt.removeValue(forKey: agentID)
         folderCache[agentID] = Self.parseFolders(resultData)
         capacityCache.save(capacity, for: agentID, at: now())
     }

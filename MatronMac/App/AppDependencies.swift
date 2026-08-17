@@ -258,6 +258,15 @@ final class AppDependencies {
         return JournalAgentRPCService(api: core.api, engine: core.engine)
     }
 
+    /// New Chat surface: last-known per-box capacity, so a box the host has
+    /// suspended can still show the quota it had. Namespaced by user id like
+    /// the journal store file — agent device ids are only unique within a
+    /// journal, so an app-global cache would show one account another's
+    /// numbers. `signOut()` removes the account's key alongside the wipes.
+    func boxCapacityCache(for session: UserSession) -> any BoxCapacityCaching {
+        UserDefaultsBoxCapacityCache(userID: session.userID)
+    }
+
     /// Placeholder conversation row so navigating to a just-started
     /// conversation holds even when the `start` answer beats the convo's
     /// first journal frame (the real convo_meta overwrites it).
@@ -308,6 +317,8 @@ final class AppDependencies {
     /// new session). Mirrors iOS `AppDependencies.signOut()`.
     func signOut() {
         let oldCores = Array(cores.values)
+        // Keyed by user id, captured before `cores.removeAll()` below.
+        let oldUserIDs = Array(cores.keys)
         // Chain onto any previous teardown: `sign out A → re-login →
         // sign out B` overwrote `teardownTask` while A's endSync/wipe on
         // A's cores might still be running, and `awaitPendingTeardown()`
@@ -340,6 +351,12 @@ final class AppDependencies {
             // Inside the awaited teardown so a new session's indexing can't
             // interleave with the wipe (bugbot "Search wipe races indexing").
             try? await search?.wipe()
+            // Same data-separation contract: agent device ids repeat across
+            // journals, so the next account on this device must not inherit
+            // the last one's box capacities (account email included).
+            for userID in oldUserIDs {
+                UserDefaultsBoxCapacityCache.removeAll(for: userID)
+            }
         }
         cores.removeAll()
         mediaServices.removeAll()

@@ -31,6 +31,22 @@ struct MacNewChatSheet: View {
         let listMaxHeight: CGFloat
     }
 
+    /// Whether the picker heads a "Sessions" column at all.
+    ///
+    /// Fleet-wide and driven by what the rows can actually render: a legacy
+    /// bridge parses to an EMPTY capacity, and a sleeping box's cached count
+    /// is dropped on purpose (it runs nothing), so either can leave a heading
+    /// over a column of em-dashes. An all-asleep fleet is the normal state
+    /// now that the host suspends idle boxes, so this is the common path, not
+    /// an edge case. A pending fan-out keeps the column: its "…" placeholders
+    /// need somewhere to sit.
+    static func showsSessions(_ rows: [(capacity: BoxCapacity?, freshness: AgentCapacityFreshness)],
+                              pending: Bool) -> Bool {
+        pending || rows.contains {
+            AgentCapacityRowContent.shownSessions($0.capacity, freshness: $0.freshness) != nil
+        }
+    }
+
     /// 70% of the window's width (480…880); lists get 60% of its height
     /// (300…650). nil (previews/tests/no window) → the pre-adaptive sizes.
     static func layout(for windowSize: CGSize?) -> Layout {
@@ -53,7 +69,9 @@ struct MacNewChatSheet: View {
         self.session = session
         self.onCreated = onCreated
         _layout = State(initialValue: Self.layout(for: windowSize))
-        _viewModel = State(initialValue: NewChatViewModel(api: deps.agentRPCService(for: session)))
+        _viewModel = State(initialValue: NewChatViewModel(
+            api: deps.agentRPCService(for: session),
+            capacityCache: deps.boxCapacityCache(for: session)))
     }
 
     var body: some View {
@@ -112,14 +130,18 @@ struct MacNewChatSheet: View {
             // reporting box is asleep would show a grid with no columns.
             let columns = BoxCapacity.limitColumns(
                 across: agents.compactMap { viewModel.capacities[$0.id] })
-            // Grid chrome only when there is real data to show (or a fan-out
-            // still in flight). Legacy bridges parse to EMPTY capacities, so
-            // a non-empty map alone proves nothing — an all-legacy fleet
-            // keeps today's plain, headerless picker.
-            let showGrid = !viewModel.capacityPending.isEmpty
-                || viewModel.capacities.values.contains(where: \.hasDisplayableData)
+            // Grid chrome follows what the rows can actually render, not what
+            // the capacities happen to contain. Two ways those differ: a
+            // legacy bridge parses to an EMPTY capacity, and a sleeping box's
+            // cached session count is dropped — so an all-asleep fleet (the
+            // normal state, since the host suspends idle boxes) would
+            // otherwise head a "Sessions" column of nothing but em-dashes.
+            let showsSessions = Self.showsSessions(
+                agents.map { (viewModel.capacities[$0.id], viewModel.capacityFreshness(for: $0.id)) },
+                pending: !viewModel.capacityPending.isEmpty)
+            let showGrid = showsSessions || !columns.isEmpty
             if showGrid {
-                MacAgentPickerHeader(columns: columns)
+                MacAgentPickerHeader(columns: columns, showsSessions: showsSessions)
             }
             List(agents) { agent in
                 Button {
@@ -131,6 +153,7 @@ struct MacNewChatSheet: View {
                         pending: viewModel.capacityPending.contains(agent.id),
                         columns: columns,
                         showsCells: showGrid,
+                        showsSessions: showsSessions,
                         freshness: viewModel.capacityFreshness(for: agent.id))
                         .contentShape(Rectangle())
                 }
@@ -227,9 +250,14 @@ struct MacAgentPickerRow: View {
     /// False for an all-legacy fleet: no data cells at all, so the row
     /// looks exactly like the pre-grid picker instead of a wall of dashes.
     let showsCells: Bool
+    /// False when no row in the fleet can render a session count — an
+    /// all-asleep fleet drops the column rather than heading a wall of
+    /// em-dashes. Fleet-wide, so every row agrees with the header.
+    let showsSessions: Bool
     /// Live numbers, or last-known ones for a box the host has put to sleep.
-    /// Defaulted so the row reads as live unless a caller says otherwise.
-    var freshness: AgentCapacityFreshness = .live
+    /// Deliberately NOT defaulted: a `.live` default silently renders cached
+    /// numbers as current, which is the one thing this type exists to stop.
+    let freshness: AgentCapacityFreshness
     /// Frozen clock for the reset and age captions; nil = now.
     var fixedNow: Date?
 
@@ -262,8 +290,12 @@ struct MacAgentPickerRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 // The data cells are numbers only, so the age of a sleeping
-                // box's numbers is captioned here, once per row.
-                if let age = freshness.ageText(now: fixedNow ?? Date()) {
+                // box's numbers is captioned here, once per row — but only
+                // when the row actually discloses something cached. A legacy
+                // bridge persists an EMPTY capacity, and a bare disclaimer
+                // under a row showing nothing disclaims thin air.
+                if AgentCapacityRowContent.hasCachedContent(capacity, freshness: freshness),
+                   let age = freshness.ageText(now: fixedNow ?? Date()) {
                     Text(age)
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
@@ -271,7 +303,9 @@ struct MacAgentPickerRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             if showsCells {
-                sessionsCell
+                if showsSessions {
+                    sessionsCell
+                }
                 ForEach(columns) { column in
                     limitCell(column)
                 }
@@ -366,13 +400,17 @@ struct MacAgentPickerRow: View {
 /// Rendered outside the `List` so it never scrolls away.
 struct MacAgentPickerHeader: View {
     let columns: [LimitColumn]
+    /// Matches the rows: no "Sessions" heading when no row can fill it.
+    let showsSessions: Bool
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 10) {
             Text("Machine")
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Text("Sessions")
-                .frame(width: MacAgentPickerRow.sessionsCellWidth, alignment: .trailing)
+            if showsSessions {
+                Text("Sessions")
+                    .frame(width: MacAgentPickerRow.sessionsCellWidth, alignment: .trailing)
+            }
             ForEach(columns) { column in
                 Text(column.label)
                     .multilineTextAlignment(.trailing)

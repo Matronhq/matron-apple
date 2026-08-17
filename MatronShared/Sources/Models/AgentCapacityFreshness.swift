@@ -32,6 +32,12 @@ public enum AgentCapacityFreshness: Equatable, Sendable {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
         formatter.locale = locale
+        // Clock skew between the box's journal and this device can stamp a
+        // capture at or ahead of now. Spelled out rather than handed to the
+        // formatter, which renders a zero interval as "in 0s": both that and
+        // "as of in 3 hr" read as promises about the future, and this caption
+        // exists only to disclaim the past.
+        guard capturedAt < now else { return "offline · as of just now" }
         return "offline · as of \(formatter.localizedString(for: capturedAt, relativeTo: now))"
     }
 }
