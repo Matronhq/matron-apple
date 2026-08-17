@@ -1,5 +1,6 @@
 import XCTest
 import SwiftUI
+import MatronJournal
 import MatronModels
 @testable import MatronDesignSystem
 
@@ -114,6 +115,40 @@ final class UsageMetersFormatTests: XCTestCase {
         // A blank string is as unknown as an absent one — the bridge never
         // guesses, and neither does the renderer.
         XCTAssertEqual(UsageMetersFormat.modelLine(model: "opus", effort: "   "), "opus")
+    }
+
+    /// End-to-end for the tri-state contract: a frame carrying an explicit
+    /// null effort takes the rendered line back to the bare model — what
+    /// both `SessionStatusSheet` and `MacChatToolbar` put on screen, since
+    /// both build their line here.
+    func testEffortClearReturnsTheRenderedLineToTheBareModel() {
+        func line(_ status: SessionStatus) -> String {
+            UsageMetersFormat.modelLine(model: status.model ?? "", effort: status.effort)
+        }
+        var status = SessionStatus()
+
+        guard case let .sessionStatus(tracked)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"model":"opus","effort":"xhigh"}}"#) else {
+            return XCTFail("expected a status frame carrying an effort")
+        }
+        status.apply(tracked)
+        XCTAssertEqual(line(status), "opus · xhigh")
+
+        // A frame that says nothing about effort leaves the line alone.
+        guard case let .sessionStatus(quiet)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"context":{"tokens":100,"window":1000,"pct":10}}}"#) else {
+            return XCTFail("expected a status frame with no effort key")
+        }
+        status.apply(quiet)
+        XCTAssertEqual(line(status), "opus · xhigh", "an absent effort must not blank the line")
+
+        guard case let .sessionStatus(cleared)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"effort":null}}"#) else {
+            return XCTFail("expected a status frame clearing the effort")
+        }
+        status.apply(cleared)
+        XCTAssertEqual(line(status), "opus",
+                       "the effort disappears entirely — no separator, no reserved space")
     }
 
 }

@@ -289,7 +289,7 @@ final class WireModelsTests: XCTestCase {
         guard case let .sessionStatus(update)? = ServerFrame.decode(text) else {
             return XCTFail("expected sessionStatus frame")
         }
-        XCTAssertEqual(update.effort, "high")
+        XCTAssertEqual(update.effort, .set("high"))
         XCTAssertEqual(update.modelOptions, [
             SessionStatus.Option(value: "opus", label: "Opus"),
             SessionStatus.Option(value: "sonnet", label: "Sonnet"),
@@ -313,7 +313,7 @@ final class WireModelsTests: XCTestCase {
         }
         XCTAssertNil(absent.modelOptions, "an omitted list is absent, not empty")
         XCTAssertNil(absent.effortLevels)
-        XCTAssertNil(absent.effort, "the bridge never guesses an effort level")
+        XCTAssertNil(absent.effort, "an omitted effort says nothing — a Codex session, or an older bridge")
 
         guard case let (empty)? = ServerFrame.decode(
             #"{"kind":"ephemeral","convo_id":"c1","status":{"model_options":[],"effort_levels":[]}}"#),
@@ -330,6 +330,39 @@ final class WireModelsTests: XCTestCase {
             return XCTFail("expected sessionStatus frame with a malformed option")
         }
         XCTAssertEqual(mixed.modelOptions?.map(\.value), ["opus"])
+    }
+
+    /// `effort` is the one tri-state field on the frame. A missing key and
+    /// a JSON null mean different things and must decode differently:
+    /// missing is silence (Codex, or a bridge that predates the field),
+    /// null is the bridge saying it is no longer tracking a level.
+    func testDecodeSessionStatusEffortIsTriState() throws {
+        guard case let .sessionStatus(tracked)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"effort":"xhigh"}}"#) else {
+            return XCTFail("expected sessionStatus frame with a tracked effort")
+        }
+        XCTAssertEqual(tracked.effort, .set("xhigh"))
+
+        guard case let .sessionStatus(cleared)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"model":"opus","effort":null}}"#) else {
+            return XCTFail("expected sessionStatus frame with a null effort")
+        }
+        XCTAssertEqual(cleared.effort, .cleared, "an explicit null is a clear, not an absence")
+        XCTAssertEqual(cleared.model, "opus", "the rest of the frame decodes as usual")
+
+        guard case let .sessionStatus(omitted)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"model":"gpt-5"}}"#) else {
+            return XCTFail("expected sessionStatus frame with no effort key")
+        }
+        XCTAssertNil(omitted.effort, "a missing key is silence — it must not decode as a clear")
+
+        // A number, a bool, an object: none of them are a level, and none
+        // of them are the bridge saying it stopped tracking. Say nothing.
+        guard case let .sessionStatus(junk)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"effort":7}}"#) else {
+            return XCTFail("expected sessionStatus frame with a malformed effort")
+        }
+        XCTAssertNil(junk.effort)
     }
 
     func testDecodeSessionStatusCarriesTaskRefForChild() throws {

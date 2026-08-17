@@ -309,6 +309,20 @@ public enum ServerFrame: Equatable, Sendable {
                         return SessionStatus.Option(value: value, label: entry["label"] as? String)
                     }
                 }
+                // Effort is tri-state, and JSONSerialization is what makes
+                // the three distinguishable: a missing key subscripts to
+                // nil, a JSON null to NSNull. Folding null into nil here
+                // would leave the app showing a level the bridge has
+                // disowned (it republishes the null on every frame while
+                // untracked, so this is the only signal that arrives).
+                // Anything that is neither a string nor null is not a
+                // statement about effort — say nothing.
+                let effort: SessionStatusUpdate.Effort?
+                switch status["effort"] {
+                case let level as String: effort = .set(level)
+                case is NSNull: effort = .cleared
+                default: effort = nil
+                }
                 return .sessionStatus(SessionStatusUpdate(
                     convoID: convoID, model: status["model"] as? String,
                     context: context, limits: limits,
@@ -322,7 +336,7 @@ public enum ServerFrame: Equatable, Sendable {
                     vitals: vitals,
                     modelOptions: options("model_options"),
                     effortLevels: options("effort_levels"),
-                    effort: status["effort"] as? String))
+                    effort: effort))
             }
             guard let ref = obj["message_ref"] as? String else { return nil }
             return .ephemeral(EphemeralUpdate(

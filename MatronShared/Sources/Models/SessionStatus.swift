@@ -96,11 +96,10 @@ public struct SessionStatus: Equatable, Sendable {
     /// Effort levels this session accepts — `/effort`'s suggestions. Same
     /// absent-versus-empty rule as `modelOptions`.
     public var effortLevels: [Option]?
-    /// The session's current effort level, when the bridge knows it. The
-    /// bridge tracks this optimistically (nothing reads it back off the
-    /// TUI) and publishes nothing rather than a guess, so absent is the
-    /// normal state until the user sets effort through Matron. Renderers
-    /// show nothing at all when it's absent.
+    /// The session's current effort level, or nil when nothing is tracking
+    /// one. The bridge tracks this optimistically (nothing reads it back
+    /// off the TUI) and never guesses; a restart or resume drops it back to
+    /// nil. Renderers show nothing at all when it's nil.
     public var effort: String?
 
     public init(model: String? = nil, context: Context? = nil, limits: [Limit]? = nil, email: String? = nil, taskRef: String? = nil, workdir: String? = nil, vitals: Vitals? = nil, modelOptions: [Option]? = nil, effortLevels: [Option]? = nil, effort: String? = nil) {
@@ -131,7 +130,14 @@ public struct SessionStatus: Equatable, Sendable {
         // is silence.
         if let modelOptions = update.modelOptions { self.modelOptions = modelOptions }
         if let effortLevels = update.effortLevels { self.effortLevels = effortLevels }
-        if let effort = update.effort { self.effort = effort }
+        // Effort is the one tri-state field: `nil` is silence and changes
+        // nothing, `.cleared` is the bridge disowning the level it was
+        // tracking, and only `.set` writes one.
+        switch update.effort {
+        case .set(let level): self.effort = level
+        case .cleared: self.effort = nil
+        case nil: break
+        }
     }
 }
 
@@ -156,13 +162,34 @@ public struct SessionStatusUpdate: Equatable, Sendable {
     /// field — distinct from an empty array, which the decoder preserves.
     public let modelOptions: [SessionStatus.Option]?
     public let effortLevels: [SessionStatus.Option]?
-    /// Current effort level. `nil` when the bridge doesn't know it.
-    public let effort: String?
+
+    /// A frame's statement about the session's effort level. The field is
+    /// tri-state on the wire, and the three states are genuinely different:
+    ///
+    /// - a string — the bridge is tracking this level (`.set`);
+    /// - an explicit JSON null — the bridge is tracking none, republished
+    ///   on every frame while unknown so a dropped clear can't strand a
+    ///   stale level in a client (`.cleared`);
+    /// - the key absent — the frame says nothing, which is what a Codex
+    ///   session (no effort concept) and any pre-tri-state bridge send.
+    ///
+    /// Absence is the only one that leaves a held value standing, so a
+    /// decoder that folds null into absence would keep showing a level the
+    /// bridge has disowned. `nil` here is absence; null decodes to
+    /// `.cleared`.
+    public enum Effort: Equatable, Sendable {
+        case set(String)
+        case cleared
+    }
+
+    /// This frame's statement about the effort level (see `Effort`). `nil`
+    /// when the frame carries no `effort` key at all.
+    public let effort: Effort?
 
     /// No parameter defaults, deliberately: every constructor names every
     /// field, so merge sites (SessionStatus.apply, the sync engine's
     /// replay cache) can't silently drop a newly added one.
-    public init(convoID: String, model: String?, context: SessionStatus.Context?, limits: [SessionStatus.Limit]?, email: String?, taskRef: String?, workdir: String?, vitals: SessionStatus.Vitals?, modelOptions: [SessionStatus.Option]?, effortLevels: [SessionStatus.Option]?, effort: String?) {
+    public init(convoID: String, model: String?, context: SessionStatus.Context?, limits: [SessionStatus.Limit]?, email: String?, taskRef: String?, workdir: String?, vitals: SessionStatus.Vitals?, modelOptions: [SessionStatus.Option]?, effortLevels: [SessionStatus.Option]?, effort: Effort?) {
         self.convoID = convoID
         self.model = model
         self.context = context

@@ -183,6 +183,10 @@ let package = Package(
             dependencies: [
                 "MatronDesignSystem",
                 "MatronEvents",
+                // Lets a rendering test start from a raw wire frame, so the
+                // status contract is pinned all the way to the line on
+                // screen rather than at the model's edge.
+                "MatronJournal",
                 "MatronModels",
                 .product(name: "SnapshotTesting", package: "swift-snapshot-testing"),
             ],

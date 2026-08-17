@@ -997,6 +997,12 @@ public actor JournalSyncEngine {
                                 vitals: update.vitals ?? held.vitals,
                                 modelOptions: update.modelOptions ?? held.modelOptions,
                                 effortLevels: update.effortLevels ?? held.effortLevels,
+                                // `.cleared` is a value, not nil, so this
+                                // `??` carries the clear into the cache
+                                // rather than skipping it as an absent
+                                // field — a client attaching after a
+                                // restart must not be replayed the level
+                                // the bridge just disowned.
                                 effort: update.effort ?? held.effort
                             )
                         } else {

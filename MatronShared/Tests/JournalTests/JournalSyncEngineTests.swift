@@ -185,6 +185,32 @@ final class JournalSyncEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    /// The replay cache merges field-by-field, so it has to honour the
+    /// effort clear the same way `SessionStatus.apply` does: a null effort
+    /// must overwrite the tracked level in the cache, not be treated as an
+    /// absent field and skipped. Otherwise a client attaching after a
+    /// restart is replayed the stale level the bridge just disowned.
+    func testSessionStatusReplayCacheHonorsEffortClear() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        // Both frames land before anyone subscribes — the cache is all
+        // that carries them.
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","status":{"model":"opus","effort":"xhigh"}}"#)
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","status":{"effort":null}}"#)
+        try await Task.sleep(for: .milliseconds(50))
+        var iterator = engine.sessionStatus(convoID: "c1").makeAsyncIterator()
+        let replayed = await iterator.next()
+        XCTAssertEqual(replayed?.effort, .cleared,
+                       "the cached frame must carry the clear, not the level it replaced")
+        XCTAssertEqual(replayed?.model, "opus",
+                       "the clear must not disturb the other fields the cache holds")
+        await engine.endSync()
+    }
+
     /// A cached frame for one convo must never leak to a subscriber for a
     /// different convo — the replay path reuses per-convo filtering, not a
     /// single global "last frame".

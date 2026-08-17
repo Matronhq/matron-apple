@@ -76,7 +76,7 @@ final class SessionStatusTests: XCTestCase {
             taskRef: nil, workdir: nil, vitals: nil,
             modelOptions: [SessionStatus.Option(value: "opus", label: "Opus")],
             effortLevels: [SessionStatus.Option(value: "high", label: "High")],
-            effort: "high"))
+            effort: .set("high")))
         XCTAssertEqual(status.modelOptions?.map(\.value), ["opus"])
         XCTAssertEqual(status.effortLevels?.map(\.value), ["high"])
         XCTAssertEqual(status.effort, "high")
@@ -106,7 +106,74 @@ final class SessionStatusTests: XCTestCase {
         status.apply(SessionStatusUpdate(
             convoID: "c1", model: nil, context: nil, limits: nil, email: nil,
             taskRef: nil, workdir: nil, vitals: nil,
-            modelOptions: nil, effortLevels: nil, effort: "max"))
+            modelOptions: nil, effortLevels: nil, effort: .set("max")))
         XCTAssertEqual(status.effort, "max")
+    }
+
+    /// Effort is tri-state, unlike every other field: the bridge publishes
+    /// an explicit null while it isn't tracking a level (on every frame, so
+    /// a dropped clear can't strand a stale value), and that null is a
+    /// statement — it clears. Absence stays silence, which is what an older
+    /// bridge and a Codex session both send.
+    func testApplyTreatsEffortAsTriState() {
+        var status = SessionStatus()
+
+        status.apply(SessionStatusUpdate(
+            convoID: "c1", model: nil, context: nil, limits: nil, email: nil,
+            taskRef: nil, workdir: nil, vitals: nil,
+            modelOptions: nil, effortLevels: nil, effort: .set("xhigh")))
+        XCTAssertEqual(status.effort, "xhigh")
+
+        // Absent: an older bridge, a Codex session, or a partial frame —
+        // none of them are saying the level changed.
+        status.apply(SessionStatusUpdate(
+            convoID: "c1", model: nil, context: nil, limits: nil, email: nil,
+            taskRef: nil, workdir: nil, vitals: nil,
+            modelOptions: nil, effortLevels: nil, effort: nil))
+        XCTAssertEqual(status.effort, "xhigh", "an absent effort must leave the tracked level standing")
+
+        // Explicit null: the bridge stopped tracking (a restart or resume),
+        // and the app must stop claiming to know.
+        status.apply(SessionStatusUpdate(
+            convoID: "c1", model: nil, context: nil, limits: nil, email: nil,
+            taskRef: nil, workdir: nil, vitals: nil,
+            modelOptions: nil, effortLevels: nil, effort: .cleared))
+        XCTAssertNil(status.effort, "an explicit null clears the tracked level")
+
+        // Clearing what was never set is a no-op, not a crash.
+        status.apply(SessionStatusUpdate(
+            convoID: "c1", model: nil, context: nil, limits: nil, email: nil,
+            taskRef: nil, workdir: nil, vitals: nil,
+            modelOptions: nil, effortLevels: nil, effort: .cleared))
+        XCTAssertNil(status.effort)
+
+        // And the bridge can start tracking again afterwards.
+        status.apply(SessionStatusUpdate(
+            convoID: "c1", model: nil, context: nil, limits: nil, email: nil,
+            taskRef: nil, workdir: nil, vitals: nil,
+            modelOptions: nil, effortLevels: nil, effort: .set("low")))
+        XCTAssertEqual(status.effort, "low")
+    }
+
+    /// The lists are NOT tri-state: they never need clearing (an agent with
+    /// nothing to offer sends `[]`), so a null carries no meaning for them
+    /// and must not be mistaken for one.
+    func testOptionListsStayPlainlyStickyAcrossAnEffortClear() {
+        var status = SessionStatus()
+        status.apply(SessionStatusUpdate(
+            convoID: "c1", model: nil, context: nil, limits: nil, email: nil,
+            taskRef: nil, workdir: nil, vitals: nil,
+            modelOptions: [SessionStatus.Option(value: "opus", label: "Opus")],
+            effortLevels: [SessionStatus.Option(value: "low", label: "Low")],
+            effort: .set("low")))
+
+        status.apply(SessionStatusUpdate(
+            convoID: "c1", model: nil, context: nil, limits: nil, email: nil,
+            taskRef: nil, workdir: nil, vitals: nil,
+            modelOptions: nil, effortLevels: nil, effort: .cleared))
+        XCTAssertNil(status.effort)
+        XCTAssertEqual(status.modelOptions?.map(\.value), ["opus"],
+                       "clearing the level must not clear what the session still offers")
+        XCTAssertEqual(status.effortLevels?.map(\.value), ["low"])
     }
 }
