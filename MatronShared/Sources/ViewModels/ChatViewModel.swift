@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SwiftUI
 import os
@@ -230,6 +231,37 @@ public final class ChatViewModel {
     /// comment there for why it must not be a scrollable row).
     public private(set) var activityLabel: String?
 
+    /// True when the loaded timeline carries messages from ≥2 distinct
+    /// NON-own senders — the agent-chat room signature ("dan-mac" and
+    /// "dev-2" both replying), as opposed to an ordinary 1:1 chat with
+    /// one bot. The two platform timeline views read this to decide
+    /// whether to pass `sender:` into `MessageBubble` at all — 1:1 chats
+    /// must render exactly as before (no avatar noise for "the bot").
+    /// Own messages never count, even toward a single-sender total,
+    /// because the flag is specifically about attributing NON-own
+    /// bubbles.
+    ///
+    /// Restricted to the durable message kinds that ever render a
+    /// `MessageBubble` — `.text` / `.image` / `.file` — NOT a raw scan of
+    /// `items`. The synthetic rows the mapper synthesises mid-turn
+    /// (`streamingItem` / `activityItem` / `toolStreamItem`) hardcode
+    /// `sender: "agent"`, `isOwn: false`; counting them made an ordinary
+    /// 1:1 chat (bot "matron" + its own ephemeral "agent" row) register
+    /// as multi-sender for the whole turn, sprouting avatars that vanish
+    /// again once the turn settles. `.activityIndicator`, `.toolStreamLive`,
+    /// `.stateChange`, tool cards etc. are structurally excluded by the
+    /// kind check.
+    ///
+    /// Memoised in `applyDerivedRecompute()` (not a computed property) —
+    /// the platform timeline views read it once per row from
+    /// `TimelineRowView`/`MacTimelineRowView`'s `body`, and an O(N) scan
+    /// there is exactly the pattern that caused the 2026-08-05 scroll
+    /// regression documented above `rows`. Early-exits on the second
+    /// distinct sender within the single existing per-snapshot pass —
+    /// cheap even for a long room since most rooms settle this in the
+    /// first couple of messages.
+    public private(set) var hasMultipleSenders = false
+
     /// Single mutation entry point for `items`. Updates the raw
     /// snapshot and the three derived caches atomically so a body
     /// re-eval that reads any combination of `items` / `rows` /
@@ -364,6 +396,8 @@ public final class ChatViewModel {
         var lastIsOwn = false
         var nextActivityLabel: String?
         var nextSpawnOutcomes: [String: SpawnOutcome] = [:]
+        var nonOwnSenders = Set<String>()
+        var nextHasMultipleSenders = false
         currentDayInterval = nil
         for item in items {
             // Spawn resolutions are collected in this same pass — they are
@@ -396,6 +430,32 @@ public final class ChatViewModel {
             // of the rows AND out of day bucketing, same reasoning as
             // the virtual stateChange filter above.
             if case .askUserAnswer = item.kind { continue }
+            // `hasMultipleSenders` only counts the durable message kinds
+            // that ever render an avatar (`.text` / `.image` / `.file`) —
+            // NOT `.toolStreamLive`, `.stateChange`, tool cards, etc.
+            // (already excluded above or below by kind). That alone still
+            // isn't enough: the mid-turn streaming placeholder row
+            // (`JournalTimelineMapper.streamingItem`) is ALSO a `.text`
+            // kind — it borrows the real message kind so it renders as a
+            // normal bubble while the reply streams in — but it hardcodes
+            // `sender: "agent"`, which is not the bot's real
+            // (displayName-resolved) sender. Left uncounted, a plain 1:1
+            // chat (bot "matron" + its own streaming echo "agent") would
+            // spuriously register as multi-sender for the whole turn.
+            // `TimelineItem.isEphemeralStreamingPlaceholder` is the single
+            // source of truth for this exclusion — `avatarSender(for:
+            // hasMultipleSenders:)` on both platform views needs the same
+            // check on the render side (Bugbot, PR #141) and must not
+            // drift from this one.
+            if !item.isOwn, !item.isEphemeralStreamingPlaceholder {
+                switch item.kind {
+                case .text, .image, .file:
+                    nonOwnSenders.insert(item.sender)
+                    if nonOwnSenders.count >= 2 { nextHasMultipleSenders = true }
+                default:
+                    break
+                }
+            }
             if first == nil { first = item.id }
             last = item.id
             lastIsOwn = item.isOwn
@@ -426,6 +486,7 @@ public final class ChatViewModel {
         self.lastRenderableItemID = last
         self.lastRenderableItemIsOwn = lastIsOwn
         self.activityLabel = nextActivityLabel
+        self.hasMultipleSenders = nextHasMultipleSenders
         self.rowAnchorIDsCache = nil
         recomputeWindow()
     }
@@ -777,7 +838,10 @@ public final class ChatViewModel {
     /// (QA finding #4). The value-type `LRUCache` lives directly on the
     /// view-model — `@MainActor` isolation gives us the required
     /// single-threaded mutating-get access without extra synchronisation.
-    private var resolvedImages: LRUCache<URL, Image> = LRUCache(limit: ChatViewModel.mediaCacheLimit)
+    /// Values are `SizedImage` (image + native pixel size) rather than a
+    /// bare `Image` because `Image` is opaque — the Mac fullscreen viewer
+    /// needs the bitmap's resolution to size its sheet without upscaling.
+    private var resolvedImages: LRUCache<URL, SizedImage> = LRUCache(limit: ChatViewModel.mediaCacheLimit)
     /// URLs whose fetch completed but the bytes failed to decode into a
     /// SwiftUI `Image`. Without this, `image(for:)` would loop forever:
     /// the call returns nil → `@Observable` re-renders → `image(for:)`
@@ -797,6 +861,22 @@ public final class ChatViewModel {
     /// Tracks `mxc://` URLs with a request already in flight so we don't
     /// fire duplicate fetches on every SwiftUI re-render.
     private var inFlightRequests: Set<URL> = []
+
+    /// File-attachment URLs whose blob download is currently in flight.
+    /// `@Observable` state — the timeline's file chip reads it via
+    /// `isDownloadingFile(_:)` to draw a spinner, because a large PDF
+    /// takes double-digit seconds to pull through the journal server and
+    /// a tap with no visible reaction reads as a dead tap.
+    private var downloadingFiles: Set<URL> = []
+    /// Attachment URL → temp file already written by `writeTempFile`.
+    /// Re-opening an attachment must not re-download a multi-MB blob the
+    /// user just waited for.
+    private var fileTempURLs: [URL: URL] = [:]
+    /// Media URLs (file OR image attachments) whose fetch returned a
+    /// definitive 404 — reaped server-side, permanently gone. Unbounded
+    /// like `fileTempURLs`, and bounded in practice by attachments the
+    /// user's session has actually tried to fetch.
+    private var unavailableMedia: Set<URL> = []
 
     /// Event IDs of ask-user prompts the user has answered (or
     /// dismissed) on THIS device, persisted across launches under
@@ -1384,16 +1464,27 @@ public final class ChatViewModel {
     /// same URL coalesce to a single in-flight request, and URLs whose
     /// fetch returned non-decodable bytes are remembered so we don't loop.
     public func image(for url: URL) -> Image? {
-        if let cached = resolvedImages[url] { return cached }
+        if let cached = resolvedImages[url] { return cached.image }
+        if unavailableMedia.contains(url) { return nil }
         if failedRequests.contains(url) { return nil }
         guard !inFlightRequests.contains(url) else { return nil }
         inFlightRequests.insert(url)
         Task { [weak self, media] in
-            let img = await media.swiftUIImage(for: url)
+            // `fetchOutcome`, not `sizedImage(for:)` — a reaped image's 404
+            // must land in `unavailableMedia` (permanent, drives the
+            // "Image expired" placeholder) rather than the retry-bounded
+            // `failedRequests` LRU (Bugbot, PR #139).
+            let outcome = await media.fetchOutcome(mxcURL: url)
+            let img: SizedImage? = {
+                if case .data(let bytes) = outcome { return SizedImage.decode(bytes) }
+                return nil
+            }()
             guard let self else { return }
             await MainActor.run {
                 if let img {
                     self.resolvedImages[url] = img
+                } else if case .notFound = outcome {
+                    self.unavailableMedia.insert(url)
                 } else {
                     // `()` — only the key membership matters; `LRUCache`
                     // doesn't expose an insert-key-only API so the value
@@ -1419,10 +1510,66 @@ public final class ChatViewModel {
     /// of a UUID. Files written here are *not* cleaned up — the OS
     /// reaps the temp directory between launches and the size cost
     /// is bounded by attachments the user has actively opened.
+    /// Whether a file attachment's blob download is currently in flight —
+    /// drives the timeline chip's spinner. `@Observable` re-evaluates the
+    /// row when `downloadingFiles` changes, so the spinner appears on tap
+    /// and clears when the open/preview fires.
+    public func isDownloadingFile(_ mxcURL: URL) -> Bool {
+        downloadingFiles.contains(mxcURL)
+    }
+
+    /// Whether a fetch for this attachment came back 404 — the blob was
+    /// reaped server-side (journal media reaper), which is permanent: blob
+    /// ids are immutable. Drives the chip's "Expired" state for events that
+    /// synced BEFORE the reap and so never carry the payload tombstone
+    /// (`TimelineItem.Kind`'s `expired`) — the 404 on tap is how an
+    /// already-synced client learns. Same row-invalidation channel as
+    /// `isDownloadingFile`.
+    public func isMediaUnavailable(_ mxcURL: URL) -> Bool {
+        unavailableMedia.contains(mxcURL)
+    }
+
     public func writeTempFile(mxcURL: URL, filename: String) async -> URL? {
-        guard let data = await media.fetchBytes(mxcURL: mxcURL) else { return nil }
+        // Known-reaped blob: no request — the server already said 404 and
+        // ids never come back.
+        guard !unavailableMedia.contains(mxcURL) else { return nil }
+        // Repeat open: serve the temp file written last time (the OS may
+        // have reaped it between launches — fall through and re-download
+        // if it's gone).
+        if let cached = fileTempURLs[mxcURL],
+           FileManager.default.fileExists(atPath: cached.path) {
+            return cached
+        }
+        // Re-tap while the (multi-second) download is still running: a
+        // no-op, not a second parallel download. The chip's spinner
+        // (driven by `isDownloadingFile`) is the "hold on" signal.
+        guard !downloadingFiles.contains(mxcURL) else { return nil }
+        downloadingFiles.insert(mxcURL)
+        defer { downloadingFiles.remove(mxcURL) }
+        let data: Data
+        switch await media.fetchOutcome(mxcURL: mxcURL) {
+        case .data(let bytes):
+            data = bytes
+        case .notFound:
+            // Permanent: flip the chip to Expired and stop re-fetching.
+            unavailableMedia.insert(mxcURL)
+            return nil
+        case .failure:
+            // Transient (network/auth): stay silent and retryable.
+            return nil
+        }
+        // Namespace by a digest of the attachment URL: distinct
+        // attachments routinely share a display filename ("report.pdf"
+        // from two rooms), and a shared flat directory would let the
+        // second download clobber the first — after which the temp-file
+        // cache above serves the wrong attachment's bytes (Bugbot,
+        // PR #138). The human-friendly basename is preserved for the
+        // share/preview label; uniqueness lives in the parent directory.
+        let urlDigest = SHA256.hash(data: Data(mxcURL.absoluteString.utf8))
+            .prefix(8).map { String(format: "%02x", $0) }.joined()
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("matron-attachments", isDirectory: true)
+            .appendingPathComponent(urlDigest, isDirectory: true)
         do {
             try FileManager.default.createDirectory(
                 at: dir, withIntermediateDirectories: true
@@ -1437,6 +1584,7 @@ public final class ChatViewModel {
             let safeFilename = Self.sanitisedAttachmentFilename(filename)
             let dest = dir.appendingPathComponent(safeFilename)
             try data.write(to: dest, options: .atomic)
+            fileTempURLs[mxcURL] = dest
             return dest
         } catch {
             Self.logger.error("writeTempFile failed: \(error.localizedDescription, privacy: .public)")
@@ -1451,7 +1599,14 @@ public final class ChatViewModel {
     /// accessor does promote it to MRU on the underlying LRU — the same
     /// behaviour `image(for:)` produces, so observation stays aligned
     /// with rendering.
-    public func resolvedImage(for url: URL) -> Image? { resolvedImages[url] }
+    public func resolvedImage(for url: URL) -> Image? { resolvedImages[url]?.image }
+
+    /// Native pixel size of an already-resolved image, or `nil` while the
+    /// fetch is still outstanding (or failed). Passive — never triggers a
+    /// fetch; callers pair it with `image(for:)`, which does. The Mac
+    /// fullscreen viewer uses this to open its sheet at the image's
+    /// natural on-screen size instead of a fixed small frame.
+    public func imagePixelSize(for url: URL) -> CGSize? { resolvedImages[url]?.pixelSize }
 
     /// Strip path-traversal and directory-separator components from a
     /// Matrix-event-attached filename. Inputs that reduce to an empty

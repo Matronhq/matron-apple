@@ -138,4 +138,27 @@ final class ZoomPanGeometryTests: XCTestCase {
         XCTAssertEqual(result.scale, 2)
         XCTAssertEqual(result.offset, .zero, "no measured content means no pan range")
     }
+
+    // MARK: - Keyboard zoom steps (Mac ⌘+/⌘−)
+
+    func test_zoomSteps_multiplyAndClamp() {
+        XCTAssertEqual(ZoomPanGeometry.steppedIn(from: 1), 1.5)
+        XCTAssertEqual(ZoomPanGeometry.steppedIn(from: 5),
+                       ZoomPanGeometry.maxScale,
+                       "stepping past max clamps to max")
+        XCTAssertEqual(ZoomPanGeometry.steppedOut(from: 1.5), 1)
+        XCTAssertEqual(ZoomPanGeometry.steppedOut(from: 1.2),
+                       ZoomPanGeometry.minScale,
+                       "stepping below fit clamps to fit")
+    }
+
+    func test_zoomSteps_roundTripReturnsToStart() {
+        // In then out lands exactly back on the starting scale (within
+        // clamp range) so repeated ⌘+/⌘− can't drift.
+        let scale: CGFloat = 2
+        XCTAssertEqual(
+            ZoomPanGeometry.steppedOut(from: ZoomPanGeometry.steppedIn(from: scale)),
+            scale, accuracy: 0.0001
+        )
+    }
 }

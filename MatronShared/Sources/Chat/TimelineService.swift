@@ -84,6 +84,21 @@ public protocol TimelineService: Sendable {
     func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?,
                   progress: (@Sendable (Double) -> Void)?) async throws
 
+    /// Batch-tagged variants, used by the composer when one send carries
+    /// several attachments. `batch` marks each upload's place in that send
+    /// so the journal bridge can gather the frames back into one prompt
+    /// (`AttachmentBatchTag`). Protocol requirements for the same dispatch
+    /// reason as the progress pair; the extension defaults drop the tag and
+    /// forward, so fakes and transports without batch delivery (where each
+    /// attachment simply arrives as its own message, today's behavior)
+    /// compile unchanged.
+    func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?,
+                   batch: AttachmentBatchTag?,
+                   progress: (@Sendable (Double) -> Void)?) async throws
+    func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?,
+                  batch: AttachmentBatchTag?,
+                  progress: (@Sendable (Double) -> Void)?) async throws
+
     /// Asks the SDK to paginate older history. UI subscribes via `items()`.
     /// Returns `true` if the SDK has reached the start of the room's
     /// history (further calls would be no-ops); `false` otherwise. The
@@ -160,5 +175,22 @@ public extension TimelineService {
     func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?,
                   progress: (@Sendable (Double) -> Void)?) async throws {
         try await sendFile(data, filename: filename, mimeType: mimeType, caption: caption)
+    }
+
+    /// Defaults: drop the batch tag and forward to the progress sends — a
+    /// transport without batch delivery still sends every attachment, each
+    /// as its own message.
+    func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?,
+                   batch: AttachmentBatchTag?,
+                   progress: (@Sendable (Double) -> Void)?) async throws {
+        try await sendImage(data, filename: filename, mimeType: mimeType, caption: caption,
+                            progress: progress)
+    }
+
+    func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?,
+                  batch: AttachmentBatchTag?,
+                  progress: (@Sendable (Double) -> Void)?) async throws {
+        try await sendFile(data, filename: filename, mimeType: mimeType, caption: caption,
+                           progress: progress)
     }
 }

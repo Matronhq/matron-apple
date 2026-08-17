@@ -27,6 +27,22 @@ final class SelectableMessageTextSnapshotTests: XCTestCase {
         assertVariants(of: view, named: "richMessage")
     }
 
+    func test_tableMessage() {
+        let view = SelectableMessageText("""
+        Release status:
+
+        | Repo | PR | State |
+        | :--- | :---: | ---: |
+        | bridge | [#215](https://example.com) | **merged** |
+        | apple | #133 | open |
+
+        Merge order doesn't matter.
+        """)
+        .frame(width: 420)
+        .padding()
+        assertVariants(of: view, named: "tableMessage")
+    }
+
     /// Regression under test (Dan, 2026-07-16): long plan-style messages with
     /// markdown headings rendered with a big dead band at the BOTTOM of the
     /// bubble. The bubble height comes from `MarkdownAttributed.size` — a
@@ -81,6 +97,46 @@ final class SelectableMessageTextSnapshotTests: XCTestCase {
             rendered, measured.height, accuracy: 2,
             "the live text view must fill the measured height — a shortfall is dead space at the bubble bottom (measured: \(measured.height), rendered: \(rendered))"
         )
+    }
+
+    /// A table-bearing message must be on TextKit 1 from the first layout, and
+    /// the text view must still sit exactly where SwiftUI placed it. TextKit 2
+    /// can't lay out `NSTextTable`, and AppKit's own fallback only fires once
+    /// the view is in a window — the re-size that follows keeps the view's TOP
+    /// edge, so its origin walks off the frame and the first rows are clipped
+    /// (origin.y was 64 in a 131pt frame before the fix).
+    @MainActor
+    func test_tableMessage_usesTextKit1AndKeepsItsFrame() {
+        let source = """
+        | Repo | PR |
+        | :--- | ---: |
+        | bridge | 215 |
+        | apple | 133 |
+        """
+        let attributed = MarkdownAttributed.attributedString(for: source)
+        let measured = MarkdownAttributed.size(for: attributed, source: source, width: 420)
+
+        let host = NSHostingView(
+            rootView: SelectableMessageText(source)
+                .frame(width: measured.width, height: measured.height)
+        )
+        host.frame = NSRect(origin: .zero, size: measured)
+        let window = NSWindow(
+            contentRect: host.frame,
+            styleMask: .borderless, backing: .buffered, defer: false
+        )
+        window.contentView = host
+        window.orderFrontRegardless()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.3))
+        defer { window.orderOut(nil) }
+
+        guard let textView = firstTextView(in: host) else {
+            return XCTFail("no NSTextView in SelectableMessageText hierarchy")
+        }
+        XCTAssertNil(textView.textLayoutManager, "table messages must render through TextKit 1")
+        XCTAssertEqual(textView.frame.origin.y, 0, accuracy: 0.5,
+                       "text view moved off its frame: \(textView.frame) in \(host.frame)")
+        XCTAssertEqual(renderedTextHeight(of: textView), measured.height, accuracy: 2)
     }
 
     /// Laid-out text height through whichever TextKit engine the view is

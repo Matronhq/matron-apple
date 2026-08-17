@@ -21,12 +21,23 @@ struct MacTimelineItemView: View {
     /// `.failed(reason:)`. Mirrors the iOS surface — wired by
     /// `MacChatView` to `viewModel.retrySend(itemID:)`.
     var onRetry: ((String) -> Void)? = nil
-    /// Image-attachment tap handler — mirrors the iOS surface.
-    var onTapImage: ((Image) -> Void)? = nil
+    /// Image-attachment tap handler — mirrors the iOS surface, plus the
+    /// `mxc://` URL so the presenter can look up the bitmap's native
+    /// pixel size for the fullscreen sheet.
+    var onTapImage: ((URL, Image) -> Void)? = nil
     /// File-attachment tap handler — mirrors the iOS surface.
     /// `MacChatView` wires this through to a temp-file write +
     /// `NSWorkspace.shared.open(_:)`.
     var onTapFile: ((URL, String) -> Void)? = nil
+    /// Whether a file attachment's blob download is in flight — drives
+    /// the chip's spinner (`ChatViewModel.isDownloadingFile(_:)`).
+    /// Read inside the row body so Observation invalidates the row when
+    /// the flag flips. `nil` keeps previews/tests compiling.
+    var isDownloadingFile: ((URL) -> Bool)? = nil
+    /// Whether a file attachment's blob came back 404 (reaped server-side)
+    /// — same closure pattern as `isDownloadingFile`, same Observation
+    /// invalidation channel.
+    var isMediaUnavailable: ((URL) -> Bool)? = nil
     /// Inline ask-user — mirrors the iOS surface.
     var askViewModel: ((String) -> AskUserSheetViewModel?)? = nil
     var isPromptAnswered: ((String) -> Bool)? = nil
@@ -49,6 +60,10 @@ struct MacTimelineItemView: View {
     /// the shared store so chat teardown can suspend only its own sockets
     /// (`suspendSessions(in:)`). `nil` keeps previews/tests compiling.
     var convoID: String? = nil
+    /// `ChatViewModel.hasMultipleSenders` — mirrors the iOS surface.
+    /// Default `false` keeps every existing preview/test/1:1-chat call
+    /// site rendering exactly as before (no avatar).
+    var hasMultipleSenders: Bool = false
 
     var body: some View {
         // See iOS `TimelineItemView.body` — `shouldRender` is dead
@@ -80,7 +95,8 @@ struct MacTimelineItemView: View {
         case .text(let body, _):
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
-                timestamp: item.timestamp
+                timestamp: item.timestamp,
+                sender: Self.avatarSender(for: item, hasMultipleSenders: hasMultipleSenders)
             ) {
                 // Mac renders message bodies through a single selectable
                 // NSTextView so a mouse drag can select across the whole
@@ -96,10 +112,14 @@ struct MacTimelineItemView: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: body))
 
-        case .image(let url, let caption, let sizeBytes):
+        case .image(let url, let caption, let sizeBytes, let expired):
+            // Tombstone flag (fresh syncs) OR a 404 discovered at fetch time
+            // (already-synced clients never re-fetch the rewritten event).
+            let isExpired = expired || (url.map { isMediaUnavailable?($0) ?? false } ?? false)
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
-                timestamp: item.timestamp
+                timestamp: item.timestamp,
+                sender: Self.avatarSender(for: item, hasMultipleSenders: hasMultipleSenders)
             ) {
                 // The caption renders OUTSIDE AttachmentImage as a normal
                 // message body — it's the message, and the small gray
@@ -110,7 +130,9 @@ struct MacTimelineItemView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     AttachmentImage(
                         image: resolvedImage(for: url),
-                        placeholder: "Image",
+                        // A reaped image never resolves — say so instead of
+                        // showing a forever-loading placeholder.
+                        placeholder: isExpired ? "Image expired" : "Image",
                         meta: caption == nil
                             ? sizeBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
                             : nil,
@@ -120,9 +142,10 @@ struct MacTimelineItemView: View {
                         // so the fullscreen viewer doesn't open with an
                         // empty `Image`.
                         onTap: {
-                            if let img = resolvedImage(for: url),
+                            if let url,
+                               let img = resolvedImage(for: url),
                                let onTapImage {
-                                onTapImage(img)
+                                onTapImage(url, img)
                             }
                         }
                     )
@@ -136,12 +159,22 @@ struct MacTimelineItemView: View {
             // become a blank VoiceOver body either (bugbot, PR #88).
             .accessibilityLabel(Self.accessibilityLabel(
                 for: item,
-                body: caption.flatMap { $0.isEmpty ? nil : $0 } ?? "Image attachment"))
+                body: {
+                    // The caption must not swallow the expired state — a
+                    // captioned expired image still needs VoiceOver to say
+                    // so (Bugbot, PR #139).
+                    let cap = caption.flatMap { $0.isEmpty ? nil : $0 }
+                    let base = isExpired ? "Image attachment, expired" : "Image attachment"
+                    return cap.map { isExpired ? "\(base). \($0)" : $0 } ?? base
+                }()))
 
-        case .file(let url, let filename, let caption, let sizeBytes):
+        case .file(let url, let filename, let caption, let sizeBytes, let expired):
+            let isExpired = expired || (url.map { isMediaUnavailable?($0) ?? false } ?? false)
+            let isLoading = !isExpired && (url.map { isDownloadingFile?($0) ?? false } ?? false)
             MessageBubble(
                 style: item.isOwn ? .me : .bot,
-                timestamp: item.timestamp
+                timestamp: item.timestamp,
+                sender: Self.avatarSender(for: item, hasMultipleSenders: hasMultipleSenders)
             ) {
                 // Caption outside the tappable chip, as a normal message
                 // body — see the `.image` case.
@@ -149,6 +182,8 @@ struct MacTimelineItemView: View {
                     AttachmentFile(
                         filename: filename,
                         sizeBytes: sizeBytes,
+                        isLoading: isLoading,
+                        isExpired: isExpired,
                         onTap: {
                             if let url, let onTapFile {
                                 onTapFile(url, filename)
@@ -162,11 +197,23 @@ struct MacTimelineItemView: View {
             }
             .accessibilityElement(children: .combine)
             // The caption is visible message text now — VoiceOver must
-            // speak it too, not just the filename (bugbot, PR #88).
+            // speak it too, not just the filename (bugbot, PR #88). The
+            // combined element replaces the chip's own children, so the
+            // downloading state must be restated here or VoiceOver never
+            // hears it (CodeRabbit, PR #138).
             .accessibilityLabel(Self.accessibilityLabel(
                 for: item,
-                body: caption.flatMap { $0.isEmpty ? nil : "File attachment: \(filename). \($0)" }
-                    ?? "File attachment: \(filename)"))
+                body: {
+                    let base: String
+                    if isExpired {
+                        base = "File attachment: \(filename), expired"
+                    } else if isLoading {
+                        base = "File attachment: \(filename), downloading"
+                    } else {
+                        base = "File attachment: \(filename)"
+                    }
+                    return caption.flatMap { $0.isEmpty ? nil : "\(base). \($0)" } ?? base
+                }()))
 
         case .stateChange(let text):
             HStack {
@@ -337,6 +384,17 @@ struct MacTimelineItemView: View {
             return false
         }
         return true
+    }
+
+    /// Sender name for `MessageBubble`'s `sender:` param, or `nil` for no
+    /// avatar. Mirrors the iOS surface (`TimelineItemView.avatarSender(for:hasMultipleSenders:)`),
+    /// including the `isEphemeralStreamingPlaceholder` exclusion — see
+    /// that property's doc on `TimelineItem` for why a raw `hasMultipleSenders`
+    /// check alone would draw a wrong-coloured avatar on the mid-turn
+    /// streaming echo row (Cursor Bugbot on PR #141).
+    static func avatarSender(for item: TimelineItem, hasMultipleSenders: Bool) -> String? {
+        guard !item.isOwn, hasMultipleSenders, !item.isEphemeralStreamingPlaceholder else { return nil }
+        return item.sender
     }
 
     /// Phase 2 placeholder for member display names — strips the leading

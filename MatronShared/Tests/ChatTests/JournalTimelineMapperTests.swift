@@ -256,7 +256,7 @@ final class JournalTimelineMapperTests: XCTestCase {
     func testImageBuildsMediaURL() throws {
         let item = try XCTUnwrap(map(event(8, type: "image",
                                            payload: ["blob_ref": "b123", "content_type": "image/png"])))
-        guard case .image(let url, _, _) = item.kind else { return XCTFail() }
+        guard case .image(let url, _, _, _) = item.kind else { return XCTFail() }
         XCTAssertEqual(url?.absoluteString, "https://chat.example.com/media/b123")
     }
 
@@ -347,7 +347,7 @@ final class JournalTimelineMapperTests: XCTestCase {
             "content_type": "application/pdf", "size": 1234,
         ]))
 
-        guard case let .file(_, filename, _, sizeBytes)? = item?.kind else {
+        guard case let .file(_, filename, _, sizeBytes, _)? = item?.kind else {
             return XCTFail("expected a file item, got \(String(describing: item?.kind))")
         }
         XCTAssertEqual(filename, "quarterly-report.pdf")
@@ -359,7 +359,7 @@ final class JournalTimelineMapperTests: XCTestCase {
     func testFileEventWithoutANameFallsBackToAPlaceholder() throws {
         let item = map(event(1, type: "file", payload: ["blob_ref": "b1"]))
 
-        guard case let .file(_, filename, _, _)? = item?.kind else {
+        guard case let .file(_, filename, _, _, _)? = item?.kind else {
             return XCTFail("expected a file item")
         }
         XCTAssertEqual(filename, "file")
@@ -371,7 +371,7 @@ final class JournalTimelineMapperTests: XCTestCase {
             "content_type": "image/png", "caption": "what breed is this?",
         ]))
 
-        guard case let .image(url, caption, _)? = item?.kind else {
+        guard case let .image(url, caption, _, _)? = item?.kind else {
             return XCTFail("expected an image item")
         }
         XCTAssertEqual(caption, "what breed is this?")
@@ -385,10 +385,49 @@ final class JournalTimelineMapperTests: XCTestCase {
             "blob_ref": "b3", "name": "contract.pdf", "caption": "review this before Friday",
         ]))
 
-        guard case let .file(_, _, caption, _)? = item?.kind else {
+        guard case let .file(_, _, caption, _, _)? = item?.kind else {
             return XCTFail("expected a file item")
         }
         XCTAssertEqual(caption, "review this before Friday")
+    }
+
+    /// A reaped attachment (journal media reaper, matron-journal#63)
+    /// arrives tombstoned: blob_ref null + expired:true, with name/size/
+    /// caption intact — the kind must carry the flag so the chip can say
+    /// "Expired" instead of offering a dead download.
+    func testExpiredFileTombstoneMapsWithExpiredFlag() throws {
+        let item = map(event(1, type: "file", payload: [
+            "blob_ref": NSNull(), "name": "old.pdf", "size": 1234, "expired": true,
+        ]))
+        guard case let .file(url, filename, _, sizeBytes, expired)? = item?.kind else {
+            return XCTFail("expected a file item")
+        }
+        XCTAssertNil(url)
+        XCTAssertEqual(filename, "old.pdf")
+        XCTAssertEqual(sizeBytes, 1234)
+        XCTAssertTrue(expired)
+    }
+
+    func testExpiredImageTombstoneMapsWithExpiredFlag() throws {
+        let item = map(event(1, type: "image", payload: [
+            "blob_ref": NSNull(), "caption": "old shot", "expired": true,
+        ]))
+        guard case let .image(url, caption, _, expired)? = item?.kind else {
+            return XCTFail("expected an image item")
+        }
+        XCTAssertNil(url)
+        XCTAssertEqual(caption, "old shot")
+        XCTAssertTrue(expired)
+    }
+
+    /// Live attachments must not read as expired — the flag defaults false
+    /// when the payload carries none.
+    func testLiveAttachmentIsNotExpired() throws {
+        let item = map(event(1, type: "file", payload: ["blob_ref": "b1", "name": "a.pdf"]))
+        guard case let .file(_, _, _, _, expired)? = item?.kind else {
+            return XCTFail("expected a file item")
+        }
+        XCTAssertFalse(expired)
     }
 
     // MARK: Agent-chat consent card

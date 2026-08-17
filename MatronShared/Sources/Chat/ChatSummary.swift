@@ -22,6 +22,29 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
     /// summary consumer can defend in depth (no badges / notifications
     /// for children) alongside the server's own silence rule.
     public let parentConvoID: String?
+    /// Display name of the agent box that owns this conversation, or `nil`
+    /// when no chip should be shown — which covers all three of: the user
+    /// has fewer than two boxes (nothing to disambiguate), the conversation
+    /// has no recorded box, and the recorded box no longer exists. Resolving
+    /// the gate upstream keeps every row view a dumb renderer.
+    public let boxName: String?
+    /// Two characters of the session/room id, peeled off the title's
+    /// `[bc] ` (or `🔗 [bc] `) prefix (SessionTag.splitTitle). `title` is
+    /// always the CLEAN remainder — rows compose the styled tag from this
+    /// instead.
+    public let sessionShort: String?
+    /// The box's one-letter display tag (SessionTag.boxLetters), gated
+    /// exactly like `boxName`: nil unless the user has two or more boxes.
+    public let boxShort: String?
+    /// Every participating box of a multi-agent room, resolved and deduped
+    /// upstream (JournalChatService), or empty when this is not a known
+    /// multi-box room. Two or more entries by construction — a room whose
+    /// members collapse to one box falls back to the single-box tag.
+    public let roomBoxNames: [String]
+    /// One display letter per `roomBoxNames` entry (parallel arrays, same
+    /// order) — what the colored `A↔B` room tag actually prints. The name
+    /// array carries the hue, this one the glyphs.
+    public let roomBoxShorts: [String]
 
     public init(
         id: String,
@@ -30,7 +53,12 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
         lastActivity: Date?,
         unreadCount: Int,
         snippet: String = "",
-        parentConvoID: String? = nil
+        parentConvoID: String? = nil,
+        boxName: String? = nil,
+        sessionShort: String? = nil,
+        boxShort: String? = nil,
+        roomBoxNames: [String] = [],
+        roomBoxShorts: [String] = []
     ) {
         self.id = id
         self.title = title
@@ -39,6 +67,11 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
         self.unreadCount = unreadCount
         self.snippet = snippet
         self.parentConvoID = parentConvoID
+        self.boxName = boxName
+        self.sessionShort = sessionShort
+        self.boxShort = boxShort
+        self.roomBoxNames = roomBoxNames
+        self.roomBoxShorts = roomBoxShorts
     }
 }
 

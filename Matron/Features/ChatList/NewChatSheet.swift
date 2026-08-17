@@ -1,4 +1,5 @@
 import SwiftUI
+import MatronDesignSystem
 import MatronJournal
 import MatronModels
 import MatronViewModels
@@ -88,13 +89,27 @@ struct NewChatSheet: View {
                             Image(systemName: agent.symbolName)
                                 .foregroundStyle(.secondary)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(agent.name.isEmpty ? "Unnamed agent" : agent.name)
-                                    .foregroundStyle(agent.connected ? .primary : .secondary)
+                                HStack(spacing: 6) {
+                                    Text(agent.name.isEmpty ? "Unnamed agent" : agent.name)
+                                        .foregroundStyle(agent.connected ? .primary : .secondary)
+                                    if let email = viewModel.capacities[agent.id]?.accountEmail {
+                                        Text(email)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    }
+                                }
                                 Text(agent.connected
                                      ? "Connected"
                                      : "Offline · Last seen \(agent.lastSeenText())")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                                if agent.connected {
+                                    AgentCapacityRowContent(
+                                        capacity: viewModel.capacities[agent.id],
+                                        pending: viewModel.capacityPending.contains(agent.id))
+                                }
                             }
                             Spacer()
                             if agent.connected {
@@ -103,6 +118,13 @@ struct NewChatSheet: View {
                                     .foregroundStyle(.tertiary)
                             }
                         }
+                        // A List button's label inherits the accent tint,
+                        // so .primary/.secondary/.tertiary above would all
+                        // resolve to translucent blue — illegible on the
+                        // dark-mode card. Reset the hierarchy to the
+                        // neutral label colour (matches MacNewChatSheet,
+                        // which gets this via .buttonStyle(.plain)).
+                        .foregroundStyle(Color.primary)
                     }
                     .disabled(!agent.connected)
                 }
@@ -140,6 +162,8 @@ struct NewChatSheet: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
+                        // Same tint-inheritance reset as the agent rows.
+                        .foregroundStyle(Color.primary)
                     }
                     .disabled(viewModel.isStarting)
                 }

@@ -1,5 +1,6 @@
 import Foundation
 import MatronJournal
+import MatronModels
 
 /// The RPC slice New Chat needs, extracted so the view model tests against
 /// a fake. The app adapter wraps `JournalAPI.devices()` and
@@ -86,8 +87,26 @@ public final class NewChatViewModel {
     public private(set) var isStarting = false
     public var customPath = ""
     public var browserEnabled = false
+    /// Per-box capacity blocks, filled by the roster fan-out as replies
+    /// land. Display-only: a missing entry just means a quieter row, never
+    /// an unpickable one.
+    public private(set) var capacities: [Int64: BoxCapacity] = [:]
+    /// Boxes whose fan-out reply hasn't landed yet ("Checking…" rows).
+    public private(set) var capacityPending: Set<Int64> = []
+    /// The in-flight fan-out task; tests await it for determinism.
+    public private(set) var capacityFanOutForTesting: Task<Void, Never>?
 
     private let api: any AgentRPCProviding
+    /// Folder lists learned by the fan-out, keyed by device — lets
+    /// `select(agent:)` render the folder step from cache instead of paying
+    /// for a second round-trip to the same box.
+    private var folderCache: [Int64: [RecentFolder]] = [:]
+    /// Bumped by every fan-out. Cancelling the previous task doesn't stop an
+    /// RPC that's already in flight from answering, so each leg carries the
+    /// generation it was started for and drops its reply if it's been
+    /// superseded — otherwise a late leg would clear the new generation's
+    /// pending row and overwrite its capacity and folder cache.
+    private var capacityGeneration = 0
 
     public init(api: any AgentRPCProviding) {
         self.api = api
@@ -98,9 +117,12 @@ public final class NewChatViewModel {
             let agents = try await api.devices().filter { $0.kind == "agent" }
             let connected = agents.filter(\.connected)
             if connected.count == 1 {
+                // Auto-skip: the folder step fetches this box's reply itself,
+                // and no picker row is ever shown — nothing to fan out for.
                 await select(agent: connected[0])
             } else {
                 phase = .agents(Self.sorted(agents))
+                startCapacityFanOut(connected.map(\.id))
             }
         } catch {
             phase = .agents([])
@@ -112,6 +134,12 @@ public final class NewChatViewModel {
         phase = .folders(agent: agent)
         folders = []
         foldersError = nil
+        // The roster fan-out already asked this box for its folders — render
+        // them instantly rather than paying for the same round-trip twice.
+        if let cached = folderCache[agent.id] {
+            folders = cached
+            return
+        }
         do {
             let reply = try await api.agentRequest(
                 agentDeviceID: agent.id, method: "recent_folders", paramsData: Data("{}".utf8))
@@ -166,6 +194,63 @@ public final class NewChatViewModel {
     /// roster was shown — the auto-skip case has nowhere to go back to).
     public func backToAgents() async {
         await load()
+    }
+
+    // MARK: Capacity fan-out
+
+    /// Asks every connected box for its `recent_folders` in parallel (2–5
+    /// boxes in practice) so the roster rows can show load, quota and
+    /// account while the user is still choosing. The roster is already on
+    /// screen — this only fills rows in, so failures stay silent.
+    private func startCapacityFanOut(_ agentIDs: [Int64]) {
+        capacityFanOutForTesting?.cancel()
+        capacityGeneration &+= 1
+        let generation = capacityGeneration
+        let refreshing = Set(agentIDs)
+        capacityPending = refreshing
+        // A reload re-asks every box, so last visit's folder lists are stale
+        // from this moment: drop them rather than let `select(agent:)` serve
+        // them before the new replies land — it falls back to a live
+        // `recent_folders` when the cache is empty.
+        folderCache.removeAll()
+        // Capacity, unlike folders, is deliberately stale-while-revalidate:
+        // the rows keep last-known numbers until the refresh answers, so
+        // coming back from the folder step doesn't collapse every three-line
+        // row to "Checking…" and grow it back a moment later. The honesty
+        // that buys is paid for at the other end — a leg that fails clears
+        // its entry (see `fetchCapacity`). Boxes this fan-out won't ask at
+        // all have nothing to revalidate with, so they go now: an offline
+        // box still renders the account email it reported last visit.
+        capacities = capacities.filter { refreshing.contains($0.key) }
+        capacityFanOutForTesting = Task { [weak self] in
+            await withTaskGroup(of: Void.self) { group in
+                for id in agentIDs {
+                    group.addTask { await self?.fetchCapacity(agentID: id, generation: generation) }
+                }
+            }
+        }
+    }
+
+    /// One box's fan-out leg. A failure, a timeout or an unparseable reply
+    /// all leave the row at name + "Connected" — capacity is a convenience,
+    /// never a gate — which includes dropping anything this box told us on
+    /// an earlier visit: a box that just failed to answer is exactly the one
+    /// whose old numbers shouldn't be presented as live.
+    private func fetchCapacity(agentID: Int64, generation: Int) async {
+        let reply = try? await api.agentRequest(
+            agentDeviceID: agentID, method: "recent_folders", paramsData: Data("{}".utf8))
+        // Superseded by a newer fan-out while this leg was in flight: this
+        // answer describes a roster nobody is looking at any more.
+        guard generation == capacityGeneration else { return }
+        capacityPending.remove(agentID)
+        guard case .ok(let resultData) = reply,
+              let obj = (try? JSONSerialization.jsonObject(with: resultData)) as? [String: Any]
+        else {
+            capacities.removeValue(forKey: agentID)
+            return
+        }
+        capacities[agentID] = BoxCapacity.parse(replyObject: obj)
+        folderCache[agentID] = Self.parseFolders(resultData)
     }
 
     // MARK: Helpers

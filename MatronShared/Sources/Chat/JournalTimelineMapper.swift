@@ -98,8 +98,11 @@ public enum JournalTimelineMapper {
             }
             let size = (payload["size"] as? NSNumber)?.int64Value
             let caption = payload["caption"] as? String
+            // Reaper tombstone (matron-journal#63): blob deleted server-side,
+            // payload rewritten in place with `expired: true`.
+            let expired = (payload["expired"] as? Bool) ?? false
             if event.type == JournalEventType.image {
-                kind = .image(url: url, caption: caption, sizeBytes: size)
+                kind = .image(url: url, caption: caption, sizeBytes: size, expired: expired)
             } else {
                 // `name`, not `filename`: that's the key the media-send
                 // contract defines, and what both producers actually emit
@@ -109,7 +112,7 @@ public enum JournalTimelineMapper {
                 // timeline rendered as a generic "file" no matter what it
                 // was really called.
                 kind = .file(url: url, filename: payload["name"] as? String ?? "file",
-                             caption: caption, sizeBytes: size)
+                             caption: caption, sizeBytes: size, expired: expired)
             }
 
         default:

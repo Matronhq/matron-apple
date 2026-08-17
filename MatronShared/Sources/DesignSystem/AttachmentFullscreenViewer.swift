@@ -1,20 +1,34 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 /// Fullscreen image viewer presented from a chat attachment tap. iOS
-/// supports pinch-zoom + swipe-down-to-dismiss; Mac displays the
-/// resolved `Image` with a "Done" button (Mac doesn't have the touch
-/// gestures, and adding click-and-drag pan would diverge from the
-/// platform's native QuickLook conventions).
+/// supports pinch-zoom + swipe-down-to-dismiss; Mac opens a sheet sized
+/// to the image's native resolution with Preview.app-style interactions
+/// (trackpad pinch, drag-pan while zoomed, double-click, ⌘+/⌘−/⌘0) and
+/// a "Done" button — see `MacZoomableImage`.
 ///
 /// The `Image` is taken pre-resolved (via `ChatViewModel.image(for:)`)
 /// so the viewer stays a leaf View — avoids dragging `MediaService`
 /// into `MatronDesignSystem` for one sheet.
 public struct AttachmentFullscreenViewer: View {
     private let image: Image
+    /// Native bitmap size in pixels, when the call site knows it. Mac
+    /// uses it to open the sheet at the image's natural size instead of
+    /// a fixed 480pt minimum that shrank big photos and stretched small
+    /// bitmaps into pixelation. `nil` (iOS call sites, or an image whose
+    /// size never resolved) keeps the legacy flexible layout.
+    private let nativePixelSize: CGSize?
     private let onDismiss: () -> Void
 
-    public init(image: Image, onDismiss: @escaping () -> Void) {
+    public init(
+        image: Image,
+        nativePixelSize: CGSize? = nil,
+        onDismiss: @escaping () -> Void
+    ) {
         self.image = image
+        self.nativePixelSize = nativePixelSize
         self.onDismiss = onDismiss
     }
 
@@ -41,27 +55,278 @@ public struct AttachmentFullscreenViewer: View {
     // MARK: - Mac
 
     #if os(macOS)
+    /// Scale of the screen the sheet lands on — needed to translate the
+    /// bitmap's pixel size into the largest point size that doesn't
+    /// upscale (2x screen → half the pixels, in points).
+    @Environment(\.displayScale) private var displayScale
+
     @ViewBuilder
     private var macBody: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Spacer()
-                Button("Done") { onDismiss() }
-                    .keyboardShortcut(.cancelAction)
-                    .padding()
+        // Mac sheet sizing, probed empirically (2026-08-12): a sheet only
+        // adopts its content's size when the content is fully RIGID. Any
+        // flexibility (a `minWidth`/`minHeight` range, a bare `resizable`
+        // image) collapses the sheet to a small system default that gets
+        // proposed to the content — which is exactly the old "small and
+        // pixelated" bug. So when the bitmap's native size is known, the
+        // whole body takes an explicit width × height. macOS does NOT
+        // clamp sheets to the parent window, so the display size must be
+        // screen-bounded here.
+        if let displaySize = nativePixelSize.flatMap({
+            Self.imageDisplaySize(
+                pixelSize: $0,
+                displayScale: displayScale,
+                bound: Self.screenBound()
+            )
+        }) {
+            VStack(spacing: 0) {
+                doneRow.frame(height: Self.doneRowHeight)
+                MacZoomableImage(image: image, displaySize: displaySize)
+                    // Fill whatever the min-size floor adds beyond the
+                    // image, keeping a small bitmap centred at 1:1 rather
+                    // than stretched.
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(Self.imagePadding)
             }
-            image
-                .resizable()
-                .scaledToFit()
-                .padding()
-            Spacer(minLength: 0)
+            .frame(
+                width: max(480, displaySize.width + Self.imagePadding * 2),
+                height: max(
+                    360,
+                    displaySize.height + Self.imagePadding * 2 + Self.doneRowHeight
+                )
+            )
+            .background(Color.black.opacity(0.85))
+            .accessibilityLabel("Image preview")
+        } else {
+            // Legacy flexible layout for call sites that can't supply a
+            // pixel size (never on Mac today, but the parameter is
+            // optional).
+            VStack(spacing: 0) {
+                doneRow
+                image
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .padding()
+                Spacer(minLength: 0)
+            }
+            .frame(minWidth: 480, minHeight: 360)
+            .background(Color.black.opacity(0.85))
+            .accessibilityLabel("Image preview")
         }
-        .frame(minWidth: 480, minHeight: 360)
-        .background(Color.black.opacity(0.85))
-        .accessibilityLabel("Image preview")
     }
+
+    @ViewBuilder
+    private var doneRow: some View {
+        HStack {
+            Spacer()
+            Button("Done") { onDismiss() }
+                .keyboardShortcut(.cancelAction)
+                .padding()
+        }
+    }
+
+    /// Largest display rect the image may occupy: 85% of the main
+    /// screen's visible frame, less the sheet chrome around the image.
+    /// Falls back to a conservative laptop-ish bound when no screen is
+    /// available (headless tests).
+    private static func screenBound() -> CGSize {
+        let visible = NSScreen.main?.visibleFrame.size
+            ?? CGSize(width: 1280, height: 800)
+        return CGSize(
+            width: visible.width * 0.85 - imagePadding * 2,
+            height: visible.height * 0.85 - imagePadding * 2 - doneRowHeight
+        )
+    }
+
+    /// Fixed height for the Done-button row. Fixed (not intrinsic) so the
+    /// sheet's total height can be computed exactly — the rigid frame is
+    /// what makes the sheet adopt the content size at all.
+    private static let doneRowHeight: CGFloat = 52
+    /// Padding around the image inside the sheet.
+    private static let imagePadding: CGFloat = 16
     #endif
+
+    /// Display size in points for a bitmap of `pixelSize` shown on a
+    /// screen of `displayScale`, bounded by `bound` (points): 1:1 pixels
+    /// when the image fits, aspect-fit downscale when it doesn't, never
+    /// an upscale. Returns `nil` for degenerate inputs (zero-area image
+    /// or bound), which callers treat as "fall back to flexible layout".
+    /// Platform-independent math, `static` for direct unit testing.
+    static func imageDisplaySize(
+        pixelSize: CGSize,
+        displayScale: CGFloat,
+        bound: CGSize
+    ) -> CGSize? {
+        guard pixelSize.width > 0, pixelSize.height > 0,
+              bound.width > 0, bound.height > 0 else { return nil }
+        let scale = displayScale > 0 ? displayScale : 1
+        let natural = CGSize(width: pixelSize.width / scale,
+                             height: pixelSize.height / scale)
+        let ratio = min(bound.width / natural.width,
+                        bound.height / natural.height, 1)
+        return CGSize(width: natural.width * ratio,
+                      height: natural.height * ratio)
+    }
 }
+
+#if os(macOS)
+/// Mac twin of the iOS `FullscreenImageBody` gestures, minus the
+/// swipe-to-dismiss (Done/Esc own dismissal on Mac): trackpad pinch zooms
+/// about the pointer, drag pans while zoomed, double-click toggles fit ↔
+/// `doubleTapScale`, and ⌘+/⌘−/⌘0 step centred for mouse-only and
+/// keyboard users. All the zoom/pan math is the shared `ZoomPanGeometry`;
+/// unlike iOS there is no measurement preference — the Mac sheet already
+/// knows the image's exact laid-out size (`displaySize`), which is both
+/// the content and the container (the sheet was sized to the image).
+///
+/// Zoomed content stays inside the image's own rect via `.clipped()` —
+/// the sheet keeps its opening size; zooming changes what's visible
+/// within it, matching Preview.app rather than growing the window.
+private struct MacZoomableImage: View {
+    let image: Image
+    let displaySize: CGSize
+
+    /// Live values, updated continuously during a gesture.
+    @State private var scale: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    /// Values as of the last gesture end — gestures report cumulative
+    /// deltas from their own start, so they compose against these (see
+    /// the iOS twin).
+    @State private var committedScale: CGFloat = 1
+    @State private var committedOffset: CGSize = .zero
+
+    private var geometry: ZoomPanGeometry {
+        ZoomPanGeometry(containerSize: displaySize, contentSize: displaySize)
+    }
+
+    private var isZoomed: Bool { committedScale > ZoomPanGeometry.minScale }
+
+    var body: some View {
+        image
+            .resizable()
+            // High interpolation for the big downscales (a 12MP photo fit
+            // to ~1000pt) that alias visibly at the default.
+            .interpolation(.high)
+            .scaledToFit()
+            .frame(width: displaySize.width, height: displaySize.height)
+            .scaleEffect(scale)
+            .offset(offset)
+            .frame(width: displaySize.width, height: displaySize.height)
+            .clipped()
+            // Whole rect responds, not just the bitmap's opaque pixels.
+            .contentShape(Rectangle())
+            .gesture(magnification)
+            .simultaneousGesture(drag)
+            .simultaneousGesture(doubleClick)
+            .background(keyboardZoomButtons)
+    }
+
+    private var magnification: some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                let result = geometry.zoom(
+                    to: committedScale * value.magnification,
+                    around: value.startLocation,
+                    from: committedOffset,
+                    at: committedScale
+                )
+                scale = result.scale
+                offset = result.offset
+            }
+            .onEnded { _ in commit() }
+    }
+
+    private var drag: some Gesture {
+        DragGesture()
+            .onChanged { value in
+                // Only pans — at fit scale there's nothing to pan to, and
+                // Mac has no swipe-to-dismiss.
+                guard isZoomed else { return }
+                offset = geometry.clamped(
+                    offset: CGSize(
+                        width: committedOffset.width + value.translation.width,
+                        height: committedOffset.height + value.translation.height
+                    ),
+                    at: scale
+                )
+            }
+            .onEnded { _ in
+                if isZoomed { committedOffset = offset }
+            }
+    }
+
+    private var doubleClick: some Gesture {
+        SpatialTapGesture(count: 2)
+            .onEnded { value in
+                let target = isZoomed
+                    ? ZoomPanGeometry.minScale
+                    : ZoomPanGeometry.doubleTapScale
+                animate(to: geometry.zoom(
+                    to: target, around: value.location,
+                    from: committedOffset, at: committedScale
+                ))
+            }
+    }
+
+    /// Hidden buttons carrying the keyboard shortcuts — SwiftUI routes
+    /// `keyboardShortcut` through the responder chain even at zero
+    /// opacity. ⌘= doubles for ⌘+ (unshifted key on US layouts, the pair
+    /// every Mac app binds together).
+    private var keyboardZoomButtons: some View {
+        Group {
+            Button("Zoom In") { animate(to: centredZoom(ZoomPanGeometry.steppedIn(from: committedScale))) }
+                .keyboardShortcut("=", modifiers: .command)
+            Button("Zoom In") { animate(to: centredZoom(ZoomPanGeometry.steppedIn(from: committedScale))) }
+                .keyboardShortcut("+", modifiers: .command)
+            Button("Zoom Out") { animate(to: centredZoom(ZoomPanGeometry.steppedOut(from: committedScale))) }
+                .keyboardShortcut("-", modifiers: .command)
+            Button("Zoom to Fit") { animate(to: centredZoom(ZoomPanGeometry.minScale)) }
+                .keyboardShortcut("0", modifiers: .command)
+        }
+        .opacity(0)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private func centredZoom(_ target: CGFloat) -> (scale: CGFloat, offset: CGSize) {
+        geometry.zoom(
+            to: target,
+            around: CGPoint(x: displaySize.width / 2, y: displaySize.height / 2),
+            from: committedOffset,
+            at: committedScale
+        )
+    }
+
+    private func animate(to result: (scale: CGFloat, offset: CGSize)) {
+        withAnimation(.easeOut(duration: 0.2)) {
+            scale = result.scale
+            offset = result.offset
+        }
+        committedScale = result.scale
+        committedOffset = result.offset
+    }
+
+    /// Settles the live values after a pinch — releasing at or below fit
+    /// scale springs back to a centred, unzoomed image (see the iOS twin).
+    private func commit() {
+        if scale <= ZoomPanGeometry.minScale {
+            withAnimation(.easeOut(duration: 0.2)) {
+                scale = ZoomPanGeometry.minScale
+                offset = .zero
+            }
+            committedScale = ZoomPanGeometry.minScale
+            committedOffset = .zero
+        } else {
+            committedScale = scale
+            let settled = geometry.clamped(offset: offset, at: scale)
+            if settled != offset {
+                withAnimation(.easeOut(duration: 0.2)) { offset = settled }
+            }
+            committedOffset = settled
+        }
+    }
+}
+#endif
 
 #if !os(macOS)
 /// Measures the image's laid-out (aspect-fitted) rect, which is what the

@@ -297,7 +297,7 @@ public actor JournalSyncEngine {
         try await connection.send(op)
         // A media send occupies a rejection-FIFO slot like any other
         // `op:"send"` — see `mediaSendsThisConnection`.
-        if case let .sendMedia(_, _, blobRef, _, _, _, _, localID) = op {
+        if case let .sendMedia(_, _, blobRef, _, _, _, _, _, localID) = op {
             mediaSendsThisConnection[localID] = blobRef
             sendOrderThisConnection.append(localID)
         }
@@ -598,6 +598,7 @@ public actor JournalSyncEngine {
         guard let snapshot = try? await api.snapshot() else { return }
         guard epoch == storeEpoch else { return } // store wiped mid-flight; stale
         try? store.refreshSummaries(snapshot.conversations)
+        try? store.replaceAgents(snapshot.agents)
     }
 
     public nonisolated func stateStream() -> AsyncStream<SyncConnectionState> {
@@ -1012,6 +1013,11 @@ public actor JournalSyncEngine {
                         } else if ref == "send" {
                             handleSendRejected(code: code, detail: detail)
                         }
+                    case .deviceMeta(let id, let name):
+                        // A device was renamed elsewhere — patch the local
+                        // roster so open chat lists relabel their chips
+                        // without waiting for the next snapshot.
+                        try? store.renameAgent(id: id, name: name)
                     case .helloOK, .unknownControl:
                         break // post-hello control frames are advisory
                     }
@@ -1066,6 +1072,7 @@ public actor JournalSyncEngine {
         guard store.cursor == 0, (try? store.conversations().isEmpty) != false else { return }
         let snapshot = try await api.snapshot()
         try store.applyColdSnapshot(snapshot.conversations, headSeq: snapshot.seq)
+        try store.replaceAgents(snapshot.agents)
         // A cold bootstrap means the replay gap (if any) was unbridgeable —
         // events between the search index's last look at each conversation
         // and the snapshot head were never live-indexed, so any persisted

@@ -45,6 +45,20 @@ import MatronDesignSystem
 @MainActor
 struct MacChatToolbar: ToolbarContent {
     let title: String
+    /// Which agent box this session runs on, or `nil` when the user has
+    /// fewer than two boxes (resolved by `JournalChatService.boxName`).
+    /// Leads the subtitle: it answers "which machine am I talking to",
+    /// which outranks the path and the account.
+    let boxName: String?
+    /// The title with the colored `A:bc` (or `A↔B:bc` room) tag composed
+    /// ahead of it, ready-made by `MacChatView` — a `ToolbarContent` is not
+    /// a View, so the environment the tag's colors need lives with the
+    /// caller. Nil falls back to the plain `title`.
+    let styledTitle: Text?
+    /// VoiceOver's reading of the visible tag + title (box names, session
+    /// short spelled out — `SessionTag.accessibilityTitle`). Nil reads the
+    /// plain title.
+    let accessibilityTitle: String?
     /// Last-known session status for the open convo — model + context
     /// gauge render in the leading capsule, usage bars in the trailing
     /// one. Nil (no status frame yet) renders the title alone.
@@ -72,6 +86,8 @@ struct MacChatToolbar: ToolbarContent {
     /// `MacChatView` supplies the real closure; the default keeps every
     /// other call site (and the existing tests) compiling unchanged.
     let popoverContent: () -> AnyView
+    /// Presents the per-chat media & links browser sheet.
+    let showMediaBrowser: Binding<Bool>
 
     /// One height for all three clusters so the system's content-hugging
     /// glass capsules come out equal and align as a row. Sized to the
@@ -87,20 +103,28 @@ struct MacChatToolbar: ToolbarContent {
     /// `MacChatView`'s call site both keep compiling.
     init(
         title: String,
+        boxName: String? = nil,
+        styledTitle: Text? = nil,
+        accessibilityTitle: String? = nil,
         status: SessionStatus?,
         stripViewModel: SubChatStripViewModel,
         onOpenSubChat: @escaping (String) -> Void,
         onCompact: @escaping () -> Void,
         showSummaries: Binding<Bool> = .constant(false),
-        popoverContent: @escaping () -> AnyView = { AnyView(EmptyView()) }
+        popoverContent: @escaping () -> AnyView = { AnyView(EmptyView()) },
+        showMediaBrowser: Binding<Bool> = .constant(false)
     ) {
         self.title = title
+        self.boxName = boxName
+        self.styledTitle = styledTitle
+        self.accessibilityTitle = accessibilityTitle
         self.status = status
         self.stripViewModel = stripViewModel
         self.onOpenSubChat = onOpenSubChat
         self.onCompact = onCompact
         self.showSummaries = showSummaries
         self.popoverContent = popoverContent
+        self.showMediaBrowser = showMediaBrowser
     }
 
     var body: some ToolbarContent {
@@ -119,6 +143,7 @@ struct MacChatToolbar: ToolbarContent {
                 Button { showSummaries.wrappedValue = true } label: { titleCluster }
                     .buttonStyle(.plain)
                     .help("Show conversation summaries")
+                    .accessibilityLabel(accessibilityTitle ?? title)
                     .accessibilityHint("Shows conversation summaries")
                     .popover(isPresented: showSummaries, arrowEdge: .bottom) {
                         popoverContent()
@@ -129,6 +154,13 @@ struct MacChatToolbar: ToolbarContent {
             ToolbarItem(placement: .primaryAction) {
                 cluster { UsageBarsView(limits: limits, scale: .compact) }
             }
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button { showMediaBrowser.wrappedValue = true } label: {
+                Image(systemName: "photo.on.rectangle.angled")
+            }
+            .help("Media, files & links")
+            .accessibilityLabel("Media browser")
         }
         if !stripViewModel.children.isEmpty {
             ToolbarItem(placement: .primaryAction) {
@@ -205,7 +237,7 @@ struct MacChatToolbar: ToolbarContent {
         // machine's path) and the logged-in account email ride under the
         // title on one quiet line when the status frame carries them.
         VStack(spacing: 0) {
-            Text(title)
+            (styledTitle ?? Text(title))
                 .font(.headline)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -223,6 +255,9 @@ struct MacChatToolbar: ToolbarContent {
     /// format without rendering.
     var titleSubtitle: String? {
         var parts: [String] = []
+        if let boxName {
+            parts.append(boxName)
+        }
         if let workdir = status?.workdir {
             parts.append(UsageMetersFormat.homeAbbreviated(workdir))
         }

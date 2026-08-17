@@ -20,8 +20,20 @@ public struct ConvoSummaryDTO: Equatable, Sendable {
     /// conversation). Immutable server-side — a snapshot row that omits it
     /// (older server) must not clear a linkage learned live via convo_meta.
     public let parentConvoID: String?
+    /// Which agent box (journal device id) currently manages this
+    /// conversation, or `nil` when the server has never recorded one (a row
+    /// predating the column, or a server predating this field). Unlike
+    /// `parentConvoID` this is mutable — resuming a session on another box
+    /// legitimately repoints it.
+    public let agentDeviceID: Int64?
+    /// Every agent box in a multi-agent room (the journal's recorded owner
+    /// plus joined participants), or `nil` when the server omits the key —
+    /// a solo conversation, a dissolved room, or a server predating the
+    /// field. Absent never clears a stored set (same discipline as
+    /// `agentDeviceID`); present replaces it wholesale.
+    public let participants: [Int64]?
 
-    public init(id: String, title: String, sessionState: String, lastSeq: Int64, snippet: String, createdAt: Int64, lastTS: Int64? = nil, parentConvoID: String? = nil) {
+    public init(id: String, title: String, sessionState: String, lastSeq: Int64, snippet: String, createdAt: Int64, lastTS: Int64? = nil, parentConvoID: String? = nil, agentDeviceID: Int64? = nil, participants: [Int64]? = nil) {
         self.id = id
         self.title = title
         self.sessionState = sessionState
@@ -30,6 +42,8 @@ public struct ConvoSummaryDTO: Equatable, Sendable {
         self.createdAt = createdAt
         self.lastTS = lastTS
         self.parentConvoID = parentConvoID
+        self.agentDeviceID = agentDeviceID
+        self.participants = participants
     }
 }
 
@@ -52,9 +66,32 @@ public struct ConversationRecord: Codable, FetchableRecord, PersistableRecord, E
     /// immutable). Drives the chat-list filter (`parent_convo_id IS NULL`)
     /// and `children(of:)`.
     public var parentConvoID: String?
+    /// The agent box that manages this conversation. Drives the box chip in
+    /// the chat list and header. Mutable (see `ConvoSummaryDTO`).
+    public var agentDeviceID: Int64?
+    /// JSON-encoded `[Int64]` of every box in a multi-agent room (owner +
+    /// joined participants, journal-ordered), else `nil`. Stored as text so
+    /// the column stays a plain additive migration; read through
+    /// `participantIDs`. Replaced wholesale when the wire sends the key,
+    /// untouched when it doesn't (see `ConvoSummaryDTO.participants`).
+    public var participants: String?
+
+    /// Decoded `participants`. Empty for anything that is not a known
+    /// multi-agent room (nil column, or a value that fails to decode).
+    public var participantIDs: [Int64] {
+        guard let participants,
+              let ids = try? JSONDecoder().decode([Int64].self, from: Data(participants.utf8))
+        else { return [] }
+        return ids
+    }
+
+    static func encodeParticipants(_ ids: [Int64]) -> String? {
+        guard let data = try? JSONEncoder().encode(ids) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
 
     enum CodingKeys: String, CodingKey {
-        case id, title, snippet, muted, hidden
+        case id, title, snippet, muted, hidden, participants
         case sessionState = "session_state"
         case lastSeq = "last_seq"
         case createdAt = "created_at"
@@ -62,6 +99,7 @@ public struct ConversationRecord: Codable, FetchableRecord, PersistableRecord, E
         case readUpToSeq = "read_up_to_seq"
         case unreadCount = "unread_count"
         case parentConvoID = "parent_convo_id"
+        case agentDeviceID = "agent_device_id"
     }
 }
 
@@ -277,6 +315,30 @@ public final class JournalStore: @unchecked Sendable {
                 t.primaryKey(["convo_id", "seq"])
             }
         }
+        // v5: agent-box attribution (spec: agent box rename). `agent` is the
+        // id -> name mirror of the server's `agents` snapshot list; the
+        // conversation column names which of those boxes owns the row.
+        // Additive: existing rows keep NULL and simply render no chip until
+        // the next snapshot fills them in.
+        migrator.registerMigration("v5") { db in
+            try db.alter(table: "conversation") { t in
+                t.add(column: "agent_device_id", .integer)
+            }
+            try db.create(table: "agent") { t in
+                t.column("id", .integer).primaryKey()
+                t.column("name", .text).notNull()
+            }
+        }
+        // v6: multi-agent room membership (spec: multi-agent room tags).
+        // JSON `[Int64]` of the journal's owner + joined participant device
+        // ids, NULL for everything that is not a room. Additive like v5:
+        // existing rows keep NULL and chip as before until the next
+        // snapshot / membership convo_meta fills them in.
+        migrator.registerMigration("v6") { db in
+            try db.alter(table: "conversation") { t in
+                t.add(column: "participants", .text)
+            }
+        }
         try migrator.migrate(dbQueue)
         // Boot-time TTL sweep, mirroring the server's expire-logs job
         // (matron-journal docs/protocol.md Retention): a cached live_log
@@ -382,6 +444,18 @@ public final class JournalStore: @unchecked Sendable {
             if existing.parentConvoID == nil, let parent = c.parentConvoID {
                 existing.parentConvoID = parent
             }
+            // Absent means "this server/row doesn't say", never "clear it" —
+            // same discipline as parent_convo_id. Unlike parent, a PRESENT
+            // value always wins: ownership legitimately moves between boxes.
+            if let box = c.agentDeviceID {
+                existing.agentDeviceID = box
+            }
+            // Same absent-never-clears rule: only a present membership array
+            // replaces the stored one (a dissolved room's snapshot omits the
+            // key, and the last-known chips are still the right tags).
+            if let parts = c.participants {
+                existing.participants = ConversationRecord.encodeParticipants(parts)
+            }
             if c.lastSeq > existing.lastSeq {
                 existing.lastSeq = c.lastSeq
                 existing.snippet = c.snippet
@@ -401,7 +475,9 @@ public final class JournalStore: @unchecked Sendable {
                 lastSeq: c.lastSeq, snippet: c.snippet, createdAt: c.createdAt,
                 lastActivityTS: c.lastTS, muted: false, hidden: false,
                 readUpToSeq: resetLocalState ? c.lastSeq : 0,
-                unreadCount: 0, parentConvoID: c.parentConvoID
+                unreadCount: 0, parentConvoID: c.parentConvoID,
+                agentDeviceID: c.agentDeviceID,
+                participants: c.participants.flatMap(ConversationRecord.encodeParticipants)
             ).insert(db)
         }
     }
@@ -512,6 +588,19 @@ public final class JournalStore: @unchecked Sendable {
                 if convo.parentConvoID == nil,
                    let parent = payload["parent_convo_id"] as? String, !parent.isEmpty {
                     convo.parentConvoID = parent
+                }
+                // Which box owns this conversation, learned live so a
+                // brand-new convo chips immediately. Re-pointed freely: a
+                // session resumed on another box changes owner.
+                if let box = (payload["agent_device_id"] as? NSNumber)?.int64Value {
+                    convo.agentDeviceID = box
+                }
+                // Room membership, learned live so a room re-chips the
+                // moment an agent joins or leaves (the journal fans a
+                // membership-only convo_meta). Present replaces wholesale;
+                // absent (a plain rename meta) leaves the stored set alone.
+                if let parts = payload["participants"] as? [NSNumber] {
+                    convo.participants = ConversationRecord.encodeParticipants(parts.map(\.int64Value))
                 }
             } else if event.type == JournalEventType.sessionStatus {
                 if let state = payload["state"] as? String { convo.sessionState = state }
@@ -742,6 +831,37 @@ public final class JournalStore: @unchecked Sendable {
         }
     }
 
+    /// `image`/`file` events for one conversation, newest first — the
+    /// media & links browser's Media and Files tabs. Reads the full local
+    /// history: the timeline's 120-row window cannot see older attachments.
+    public func attachmentEvents(convoID: String) throws -> [JournalEvent] {
+        try dbQueue.read { db in
+            try EventRecord
+                .filter(Column("convo_id") == convoID)
+                .filter([JournalEventType.image, JournalEventType.file].contains(Column("type")))
+                .order(Column("seq").desc)
+                .fetchAll(db)
+                .map(\.journalEvent)
+        }
+    }
+
+    /// `text` events that plausibly contain a URL, newest first — a cheap
+    /// SQL prefilter; precise extraction happens in Swift (`LinkExtractor`).
+    /// `payload` is a JSON BLOB, so CAST to TEXT before LIKE (SQLite's LIKE
+    /// is not defined over blobs).
+    public func linkCandidateEvents(convoID: String) throws -> [JournalEvent] {
+        try dbQueue.read { db in
+            try EventRecord
+                .fetchAll(db, sql: """
+                    SELECT * FROM event
+                    WHERE convo_id = ? AND type = 'text'
+                      AND CAST(payload AS TEXT) LIKE '%http%'
+                    ORDER BY seq DESC
+                    """, arguments: [convoID])
+                .map(\.journalEvent)
+        }
+    }
+
     /// TOC entries for one conversation, newest first — the summary rail's
     /// one-shot read.
     public func summaryEntries(convoID: String) throws -> [SummaryEntryRecord] {
@@ -772,6 +892,54 @@ public final class JournalStore: @unchecked Sendable {
                 lastActivityTS: ms, muted: false, hidden: false,
                 readUpToSeq: 0, unreadCount: 0, parentConvoID: nil
             ).insert(db)
+        }
+    }
+
+    // MARK: Agent roster
+
+    /// Mirrors `GET /snapshot`'s `agents` list. Wholesale replace so a box
+    /// revoked server-side stops resolving here too. An EMPTY list is
+    /// ignored: a server predating the field sends nothing, and wiping the
+    /// roster would silently drop every chip.
+    public func replaceAgents(_ agents: [AgentDTO]) throws {
+        guard !agents.isEmpty else { return }
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM agent")
+            for a in agents {
+                try db.execute(sql: "INSERT INTO agent(id, name) VALUES(?, ?)",
+                               arguments: [a.id, a.name])
+            }
+        }
+    }
+
+    /// Applies one live `device_meta` rename. Upsert, not update: the rename
+    /// may name a box this device has not snapshotted yet.
+    public func renameAgent(id: Int64, name: String) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "INSERT INTO agent(id, name) VALUES(?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name",
+                arguments: [id, name])
+        }
+    }
+
+    /// id → name for every known box. The chat list joins against this to
+    /// label rows, and its COUNT is the "does this user have ≥2 boxes" gate.
+    public func agentNames() throws -> [Int64: String] {
+        try dbQueue.read(Self.agentNameMap)
+    }
+
+    private static func agentNameMap(_ db: Database) throws -> [Int64: String] {
+        let rows = try Row.fetchAll(db, sql: "SELECT id, name FROM agent")
+        return Dictionary(uniqueKeysWithValues: rows.map { ($0["id"] as Int64, $0["name"] as String) })
+    }
+
+    /// One conversation by id, or nil when this device has never seen it.
+    /// The store has `conversations()` (whole list, list-filtered) and
+    /// `conversationExists(_:)` (a bare bool) but nothing that hands back a
+    /// single row — which the box-name resolver needs.
+    public func conversation(id: String) throws -> ConversationRecord? {
+        try dbQueue.read { db in
+            try ConversationRecord.fetchOne(db, key: id)
         }
     }
 
@@ -969,6 +1137,16 @@ public final class JournalStore: @unchecked Sendable {
             return try records.map { try Self.applyReadTimeSnippetTTL($0, db: db, now: Date()) }
         }
         return Self.stream(observation, in: dbQueue)
+    }
+
+    /// Live id → name map of the user's agent boxes. Deliberately separate
+    /// from `conversationsStream()`: a GRDB observation only re-fires for
+    /// the tables its fetch actually reads, and the conversations fetch
+    /// never touches `agent` — so a `device_meta` rename landing mid-session
+    /// would otherwise leave every open chip on the old label until some
+    /// unrelated conversation write happened to re-fire the list.
+    public func agentNamesStream() -> AsyncStream<[Int64: String]> {
+        Self.stream(ValueObservation.tracking(Self.agentNameMap), in: dbQueue)
     }
 
     /// Live stream of a parent's subagent children (in creation order,

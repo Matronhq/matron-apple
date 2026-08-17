@@ -232,6 +232,11 @@ struct ChatView: View {
     @State private var attachmentPreview: AttachmentPreview?
     /// ⓘ toolbar button → session-status sheet (context gauge + usage bars).
     @State private var showSessionStatus = false
+    /// Media/files/links toolbar button → the per-chat browser sheet.
+    @State private var showMediaBrowser = false
+    /// Set by the info sheet's media link; consumed in its `onDismiss` to
+    /// present the browser once the sheet slot is free.
+    @State private var pendingMediaOpen = false
     /// Tappable title → summaries TOC sheet (jump-to-point navigation).
     @State private var showSummaries = false
     /// Sheet payload for fullscreen attachment previews. Identifiable
@@ -251,6 +256,72 @@ struct ChatView: View {
     }
 
     let chatTitle: String
+    /// Which agent box runs this session, or nil when the user has fewer
+    /// than two boxes. Threaded from the list's ChatSummary (same source as
+    /// the row chip) so header and row can never disagree.
+    var boxName: String? = nil
+    /// The `A:bc` tag halves, threaded from the list summary like `boxName`
+    /// (see ChatSummary.sessionShort / .boxShort). Composed ahead of the
+    /// title in the principal item so the in-chat header matches the row.
+    var sessionShort: String? = nil
+    var boxShort: String? = nil
+    /// Multi-agent room participants (ChatSummary.roomBoxNames /
+    /// .roomBoxShorts, parallel arrays), threaded like the halves above so
+    /// a room's header shows the same colored `A↔B` tag as its row.
+    var roomBoxNames: [String] = []
+    var roomBoxShorts: [String] = []
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// `A:bc Title` (or `A↔B:bc Title` for a multi-agent room) as one Text
+    /// — same composition and fallbacks as ChatRow's titleLine.
+    private var titleText: Text {
+        if let tag = SessionTagText.room(
+            letters: roomBoxShorts,
+            names: roomBoxNames,
+            sessionShort: sessionShort,
+            colorScheme: colorScheme
+        ) {
+            return tag + Text(" ") + Text(SessionTag.titleBesideRoomTag(chatTitle))
+        }
+        guard let tag = SessionTagText.run(
+            boxLetter: boxShort,
+            boxName: boxName,
+            sessionShort: sessionShort,
+            colorScheme: colorScheme
+        ) else { return Text(chatTitle) }
+        return tag + Text(" ") + Text(chatTitle)
+    }
+
+    /// What VoiceOver reads for the principal title: the visible tag's
+    /// meaning spelled out (box names, session short), not just the clean
+    /// title — sighted users see the `A:bc` tag, so the label must carry
+    /// it too. Static for unit-testability (ChatViewBindingTests).
+    static func accessibilityTitle(
+        chatTitle: String,
+        boxName: String?,
+        sessionShort: String?,
+        roomBoxNames: [String]
+    ) -> String {
+        SessionTag.accessibilityTitle(
+            chatTitle: chatTitle, boxName: boxName,
+            sessionShort: sessionShort, roomBoxNames: roomBoxNames)
+    }
+
+    /// "box · ~/workdir" for the small line under the nav title. Either part
+    /// can be missing (single-box users get no box name; the workdir only
+    /// arrives with the first session-status frame) — show what's known,
+    /// nil hides the line entirely. Static so the composition is unit-testable
+    /// without rendering (see ChatViewBindingTests).
+    static func contextLine(boxName: String?, workdir: String?) -> String? {
+        let path = workdir.map(UsageMetersFormat.homeAbbreviated)
+        let parts = [boxName, path].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private var chatContextLine: String? {
+        Self.contextLine(boxName: boxName, workdir: viewModel.sessionStatus?.workdir)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -686,21 +757,51 @@ struct ChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             // Tappable title → summaries TOC sheet (jump-to-point nav).
+            // Under it, "box · ~/workdir" in small text — which machine and
+            // folder this session lives on, readable without opening the
+            // info sheet (Dan, 2026-08-16). Box comes from the list summary
+            // (same gate as the row chip); the path arrives with the first
+            // session-status frame, home-abbreviated like the info sheet.
             ToolbarItem(placement: .principal) {
                 Button { showSummaries = true } label: {
-                    Text(chatTitle)
-                        .font(.headline)
-                        .lineLimit(1)
+                    VStack(spacing: 1) {
+                        titleText
+                            .font(.headline)
+                            .lineLimit(1)
+                        if let context = chatContextLine {
+                            Text(context)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                // Middle-truncate like the Mac toolbar's
+                                // subtitle: the tail of a path is the part
+                                // worth keeping.
+                                .truncationMode(.middle)
+                        }
+                    }
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(chatTitle)
+                .accessibilityLabel(Self.accessibilityTitle(
+                    chatTitle: chatTitle,
+                    boxName: boxName,
+                    sessionShort: sessionShort,
+                    roomBoxNames: roomBoxNames
+                ))
+                .accessibilityValue(chatContextLine ?? "")
                 .accessibilityHint("Shows conversation summaries")
             }
-            // Sub-chat switcher — shown whenever this chat has ANY children
-            // (running or finished). The running strip hides itself the
-            // moment the last subagent finishes, so without this the only
-            // way back into a finished sub-chat is its timeline card; this
-            // is the permanent entry point (Dan, 2026-07-15).
+            // Back to a single ⓘ (Dan, 2026-08-16 — the ellipsis read as
+            // "menu of stuff", the info sheet IS the chat's utility
+            // surface): it opens `SessionStatusSheet`, which now carries
+            // the media-browser link. Sub-chats keep their own toolbar
+            // menu, shown only when this chat has ANY children (running
+            // or finished) — same conditional as the Mac toolbar. The
+            // running strip hides itself the moment the last subagent
+            // finishes, so without this the only way back into a finished
+            // sub-chat is its timeline card (Dan, 2026-07-15); it cannot
+            // move into the sheet because the links are value-based
+            // `NavigationLink`s that need the parent stack, not the
+            // sheet's own.
             if !stripViewModel.children.isEmpty {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -723,11 +824,23 @@ struct ChatView: View {
                 Button { showSessionStatus = true } label: {
                     Image(systemName: "info.circle")
                 }
-                .accessibilityLabel("Session status")
+                .accessibilityLabel("Session info")
             }
         }
-        .sheet(isPresented: $showSessionStatus) {
-            SessionStatusSheet(viewModel: viewModel)
+        .sheet(isPresented: $showSessionStatus, onDismiss: {
+            // Present the media browser only after the info sheet is fully
+            // gone — flipping it while the sheet is still up is a silent
+            // no-op (one sheet per presenter).
+            if pendingMediaOpen {
+                pendingMediaOpen = false
+                showMediaBrowser = true
+            }
+        }) {
+            SessionStatusSheet(viewModel: viewModel, boxName: boxName,
+                               onOpenMedia: { pendingMediaOpen = true })
+        }
+        .sheet(isPresented: $showMediaBrowser) {
+            MediaBrowserSheet(chatViewModel: viewModel)
         }
         .sheet(isPresented: $showSummaries) {
             SummariesSheet(viewModel: viewModel)
@@ -803,7 +916,8 @@ struct ChatView: View {
         // Fullscreen attachment preview. Presented from a tap on
         // either an `AttachmentImage` or `AttachmentFile` row;
         // payload selects between the pinch-zoom image viewer and
-        // the share-sheet wrapper for files. Dismissed by setting
+        // the file preview (QuickLook for playable/previewable types,
+        // share-only fallback otherwise). Dismissed by setting
         // `attachmentPreview = nil` (swipe-down on iOS, "Done"
         // button, or successful share).
         .sheet(item: $attachmentPreview) { preview in
@@ -814,7 +928,8 @@ struct ChatView: View {
                     onDismiss: { attachmentPreview = nil }
                 )
             case .file(_, let url, let filename):
-                fileShareSheet(url: url, filename: filename)
+                FilePreviewSheet(url: url, filename: filename,
+                                 onDone: { attachmentPreview = nil })
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
@@ -841,39 +956,6 @@ struct ChatView: View {
         .onChange(of: viewModel.rows.isEmpty) { _, isEmpty in
             chatViewLogger.breadcrumb("rows \(isEmpty ? "EMPTY — warm-up spinner over blank area" : "populated") (items=\(viewModel.items.count))")
         }
-    }
-
-    /// iOS file-share sheet body. Presents the filename + a system
-    /// `ShareLink` so the user can save / forward the attachment
-    /// without leaving the chat. Lifted into its own builder so the
-    /// `.sheet(item:)` switch above stays tight.
-    @ViewBuilder
-    private func fileShareSheet(url: URL, filename: String) -> some View {
-        VStack(spacing: 16) {
-            Image(systemName: "doc")
-                .font(.system(size: 56))
-                .foregroundStyle(.tint)
-                .padding(.top, 32)
-            Text(filename)
-                .font(.headline)
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal)
-            ShareLink(item: url) {
-                Label("Share", systemImage: "square.and.arrow.up")
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.accentColor)
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-            }
-            .padding(.horizontal)
-            Button("Done") { attachmentPreview = nil }
-                .padding(.top, 4)
-            Spacer()
-        }
-        .padding()
-        .presentationDetents([.medium])
     }
 
 }
@@ -1048,6 +1130,8 @@ private struct TimelineRowView: View, Equatable {
                             }
                         }
                     },
+                    isDownloadingFile: { viewModel.isDownloadingFile($0) },
+                    isMediaUnavailable: { viewModel.isMediaUnavailable($0) },
                     askViewModel: { viewModel.askViewModel(forPrompt: $0) },
                     isPromptAnswered: { viewModel.isPromptAnswered($0) },
                     answerSummary: { viewModel.answerSummary(forPrompt: $0) },
@@ -1071,7 +1155,8 @@ private struct TimelineRowView: View, Equatable {
                         }
                     },
                     onOpenSpawnRoom: onOpenSpawnRoom,
-                    convoID: viewModel.roomID
+                    convoID: viewModel.roomID,
+                    hasMultipleSenders: viewModel.hasMultipleSenders
                 )
                 // No `.onAppear` history trigger here: row
                 // materialization is not evidence the user
@@ -1309,21 +1394,8 @@ struct SubChatView: View {
             case .image(_, let img):
                 AttachmentFullscreenViewer(image: img, onDismiss: { attachmentPreview = nil })
             case .file(_, let url, let filename):
-                VStack(spacing: 16) {
-                    Image(systemName: "doc").font(.system(size: 56)).foregroundStyle(.tint).padding(.top, 32)
-                    Text(filename).font(.headline).lineLimit(2).multilineTextAlignment(.center).padding(.horizontal)
-                    ShareLink(item: url) {
-                        Label("Share", systemImage: "square.and.arrow.up")
-                            .frame(maxWidth: .infinity).padding()
-                            .background(Color.accentColor).foregroundStyle(.white)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                    }
-                    .padding(.horizontal)
-                    Button("Done") { attachmentPreview = nil }.padding(.top, 4)
-                    Spacer()
-                }
-                .padding()
-                .presentationDetents([.medium])
+                FilePreviewSheet(url: url, filename: filename,
+                                 onDone: { attachmentPreview = nil })
             }
         }
     }

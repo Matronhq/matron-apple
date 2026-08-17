@@ -12,27 +12,58 @@ import SwiftUI
 public struct AttachmentFile: View {
     let filename: String
     let sizeBytes: Int64?
+    let isLoading: Bool
+    let isExpired: Bool
     let onTap: (() -> Void)?
 
     public init(
         filename: String,
         sizeBytes: Int64?,
+        isLoading: Bool = false,
+        isExpired: Bool = false,
         onTap: (() -> Void)? = nil
     ) {
         self.filename = filename
         self.sizeBytes = sizeBytes
+        self.isLoading = isLoading
+        self.isExpired = isExpired
         self.onTap = onTap
     }
 
     public var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "doc")
-                .font(.title2)
-                .foregroundStyle(.tint)
-                .frame(width: 32, height: 32)
+            // While the blob download runs, the doc icon becomes a
+            // spinner — a large attachment takes double-digit seconds to
+            // pull through the journal server, and a tap with no visible
+            // reaction reads as a dead tap. The frame matches the icon's
+            // so the chip doesn't reflow when the state flips.
+            Group {
+                if isExpired {
+                    // The blob was reaped server-side (journal media
+                    // reaper) — permanently gone, nothing to download.
+                    Image(systemName: "doc.badge.clock")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                } else if isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "doc")
+                        .font(.title2)
+                        .foregroundStyle(.tint)
+                }
+            }
+            .frame(width: 32, height: 32)
             VStack(alignment: .leading, spacing: 2) {
                 Text(filename).font(.callout).lineLimit(1)
-                if let sizeBytes {
+                    .foregroundStyle(isExpired ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+                if isExpired {
+                    Text("Expired")
+                        .font(.caption2).foregroundStyle(.secondary)
+                } else if isLoading {
+                    Text("Downloading…")
+                        .font(.caption2).foregroundStyle(.secondary)
+                } else if let sizeBytes {
                     Text(ByteCountFormatter.string(fromByteCount: sizeBytes, countStyle: .file))
                         .font(.caption2).foregroundStyle(.secondary)
                 }
@@ -45,6 +76,9 @@ public struct AttachmentFile: View {
         // break the Mac build.
         .background(Color.matronCodeBg)
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .onTapGesture { onTap?() }
+        // No tap affordance on an expired chip — there is nothing to fetch,
+        // and a silent no-op tap is the exact bug this chip family exists
+        // to avoid (PR #138).
+        .onTapGesture { if !isExpired { onTap?() } }
     }
 }

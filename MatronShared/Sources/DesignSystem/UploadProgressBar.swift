@@ -19,12 +19,18 @@ public struct UploadProgressBar: View {
         HStack(spacing: 8) {
             ProgressView(value: min(max(fraction, 0), 1))
                 .progressViewStyle(.linear)
+            // Middle truncation, NOT `.fixedSize()`: a single-attachment
+            // label carries the filename, and pasted photos get UUID temp
+            // names wider than the screen — fixedSize made the row (and the
+            // whole chat column) stretch past the display edge for the
+            // duration of the upload. Truncating the middle keeps both the
+            // extension and the trailing percent visible.
             Text("\(label) \(Int((min(max(fraction, 0), 1)) * 100))%")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
                 .lineLimit(1)
-                .fixedSize()
+                .truncationMode(.middle)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)

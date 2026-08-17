@@ -26,4 +26,23 @@ final class AttachmentFileSnapshotTests: XCTestCase {
             named: "unknownSize"
         )
     }
+
+    func test_downloading() {
+        assertVariants(
+            of: AttachmentFile(filename: "report.pdf", sizeBytes: 12_515_546, isLoading: true)
+                .frame(width: 320),
+            named: "downloading"
+        )
+    }
+
+    func test_expired() {
+        // Reaped server-side (journal media reaper): dimmed, "Expired"
+        // subtitle, no tap affordance. Size is deliberately still known —
+        // the tombstone keeps name/size/caption.
+        assertVariants(
+            of: AttachmentFile(filename: "report.pdf", sizeBytes: 12_515_546, isExpired: true)
+                .frame(width: 320),
+            named: "expired"
+        )
+    }
 }

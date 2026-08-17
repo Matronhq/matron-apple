@@ -9,6 +9,7 @@ final class FakeDevicesProvider: DevicesProviding, @unchecked Sendable {
     var rosters: [[DeviceDTO]] = [[]]
     var devicesError: JournalAPIError?
     var revokeError: JournalAPIError?
+    var renameError: JournalAPIError?
     var previewResult: Result<PairPreview, JournalAPIError> = .failure(.notFound)
     var approveError: JournalAPIError?
     /// Per-call latency, for tests that need a request suspended while the
@@ -36,8 +37,28 @@ final class FakeDevicesProvider: DevicesProviding, @unchecked Sendable {
 
     private(set) var devicesCalls = 0
     private(set) var revokedIDs: [Int64] = []
+    private(set) var renamed: [(id: Int64, name: String)] = []
     private(set) var previewedCodes: [String] = []
     private(set) var approvals: [(code: String, name: String)] = []
+
+    func renameDevice(id: Int64, name: String) async throws -> DeviceDTO {
+        renamed.append((id, name))
+        if let renameError { throw renameError }
+        // Echo the roster forward with the new name, so the view model's
+        // post-rename refresh sees what a real server would return.
+        rosters = rosters.map { roster in
+            roster.map { d in
+                d.id == id
+                    ? DeviceDTO(id: d.id, kind: d.kind, name: name, createdAt: d.createdAt,
+                                cursor: d.cursor, lag: d.lag, lastSeenAt: d.lastSeenAt,
+                                isSelf: d.isSelf, connected: d.connected)
+                    : d
+            }
+        }
+        return rosters[0].first { $0.id == id }
+            ?? DeviceDTO(id: id, kind: "", name: name, createdAt: 0, cursor: 0, lag: 0,
+                         lastSeenAt: nil, isSelf: false)
+    }
 
     func devices() async throws -> [DeviceDTO] {
         devicesCalls += 1
@@ -173,6 +194,9 @@ final class DevicesViewModelTests: XCTestCase {
         struct Failing: DevicesProviding {
             func devices() async throws -> [DeviceDTO] { throw JournalAPIError.transport("offline") }
             func revokeDevice(id: Int64) async throws {}
+            func renameDevice(id: Int64, name: String) async throws -> DeviceDTO {
+                throw JournalAPIError.transport("offline")
+            }
             func pairPreview(code: String) async throws -> PairPreview { throw JournalAPIError.notFound }
             func pairApprove(code: String, agentName: String) async throws {}
         }
@@ -180,5 +204,34 @@ final class DevicesViewModelTests: XCTestCase {
         await vm.refresh()
         XCTAssertNotNil(vm.errorMessage)
         XCTAssertFalse(vm.isLoading)
+    }
+
+    func test_rename_updatesTheRosterAndSurfacesFailures() async {
+        let fake = FakeDevicesProvider()
+        fake.rosters = [[DeviceDTO(id: 7, kind: "agent", name: "dev-9", createdAt: 1,
+                                   cursor: 0, lag: 0, lastSeenAt: nil, isSelf: false)]]
+        let vm = DevicesViewModel(api: fake, onSelfRevoked: {})
+        await vm.refresh()
+
+        await vm.rename(vm.devices[0], to: "dev-y")
+        XCTAssertEqual(fake.renamed.map(\.id), [7])
+        XCTAssertEqual(fake.renamed.map(\.name), ["dev-y"])
+        XCTAssertEqual(vm.devices.first?.name, "dev-y")
+        XCTAssertNil(vm.errorMessage)
+
+        // A server refusal leaves the roster alone and explains itself.
+        fake.renameError = .forbidden
+        await vm.rename(vm.devices[0], to: "dev-z")
+        XCTAssertEqual(vm.devices.first?.name, "dev-y")
+        XCTAssertEqual(vm.errorMessage?.contains("dev-y"), true)
+    }
+
+    func test_validateName_matchesTheServerRules() {
+        // Mirrors the journal's own check so the user gets told before a 400.
+        XCTAssertNil(DevicesViewModel.validate(name: "dev-y"))
+        XCTAssertNil(DevicesViewModel.validate(name: String(repeating: "y", count: 40)))
+        XCTAssertNotNil(DevicesViewModel.validate(name: ""))
+        XCTAssertNotNil(DevicesViewModel.validate(name: "   "))
+        XCTAssertNotNil(DevicesViewModel.validate(name: String(repeating: "y", count: 41)))
     }
 }

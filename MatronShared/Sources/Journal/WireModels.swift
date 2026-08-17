@@ -191,6 +191,10 @@ public enum ServerFrame: Equatable, Sendable {
     case error(code: String, ref: String?, requestID: String?, detail: String?)
     case snapshotRequired
     case unknownControl(op: String)
+    /// A device was renamed (`POST /devices/:id/rename`). Transient — not a
+    /// journal event, carries no seq. A client that misses it picks the name
+    /// up from the next snapshot's `agents` list.
+    case deviceMeta(id: Int64, name: String)
 
     /// Bridge timestamps are `Date.toISOString()` output (always fractional),
     /// but accept plain ISO too for robustness. ISO8601DateFormatter is
@@ -331,6 +335,10 @@ public enum ServerFrame: Equatable, Sendable {
                 resultData: resultData,
                 errorCode: error?["code"] as? String,
                 errorDetail: error?["detail"] as? String))
+        case "device_meta":
+            guard let id = (obj["device_id"] as? NSNumber)?.int64Value,
+                  let name = obj["name"] as? String else { return nil }
+            return .deviceMeta(id: id, name: name)
         case "control":
             guard let op = obj["op"] as? String else { return nil }
             switch op {
@@ -366,9 +374,13 @@ public enum ClientOp: Equatable, Sendable {
     /// bridge reads it back off the journal frame and hands it to claude
     /// above the upload annotation, making the picture and the sentence
     /// about it a single prompt.
+    /// `batch` marks this attachment as one of several sent together from
+    /// one composer message (same opaque-payload trick as `caption`): the
+    /// bridge gathers frames sharing a `batch_id` and injects them as ONE
+    /// prompt instead of starting a turn on the first and queueing the rest.
     case sendMedia(convoID: String, type: String, blobRef: String,
                    name: String, contentType: String, size: Int,
-                   caption: String?, localID: String)
+                   caption: String?, batch: AttachmentBatchTag?, localID: String)
     case promptReply(convoID: String, targetSeq: Int64, choice: String?, text: String?)
     case readMarker(convoID: String, upToSeq: Int64)
     case ack(cursor: Int64)
@@ -386,7 +398,7 @@ public enum ClientOp: Equatable, Sendable {
         case let .send(convoID, body, localID):
             obj = ["op": "send", "convo_id": convoID, "type": "text",
                    "payload": ["body": body], "local_id": localID]
-        case let .sendMedia(convoID, type, blobRef, name, contentType, size, caption, localID):
+        case let .sendMedia(convoID, type, blobRef, name, contentType, size, caption, batch, localID):
             var payload: [String: Any] = ["blob_ref": blobRef, "name": name,
                                           "content_type": contentType, "size": NSNumber(value: size)]
             // Absent rather than null for a captionless send: the bridge and
@@ -394,6 +406,13 @@ public enum ClientOp: Equatable, Sendable {
             // and an explicit NSNull would have to be special-cased in two
             // languages to mean the same thing.
             if let caption, !caption.isEmpty { payload["caption"] = caption }
+            // Same absent-when-single rule: a lone attachment carries no
+            // batch keys, so an older bridge sees byte-identical frames.
+            if let batch {
+                payload["batch_id"] = batch.id
+                payload["batch_index"] = NSNumber(value: batch.index)
+                payload["batch_total"] = NSNumber(value: batch.total)
+            }
             obj = ["op": "send", "convo_id": convoID, "type": type, "blob_ref": blobRef,
                    "payload": payload, "local_id": localID]
         case let .promptReply(convoID, targetSeq, choice, text):

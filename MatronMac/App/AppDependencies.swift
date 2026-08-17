@@ -214,6 +214,12 @@ final class AppDependencies {
         return service
     }
 
+    /// The session's journal store, for read-only feature queries (media
+    /// browser). Same instance the sync engine writes.
+    func journalStore(for session: UserSession) -> JournalStore {
+        core(for: session).store
+    }
+
     func pushService(for session: UserSession) -> any PushService {
         JournalPushService(api: core(for: session).api, environment: pushEnvironment)
     }

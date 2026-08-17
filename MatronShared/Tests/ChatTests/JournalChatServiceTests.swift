@@ -140,6 +140,127 @@ final class JournalChatServiceTests: XCTestCase {
         } catch { }
     }
 
+    func testBoxNameOnlyResolvesWhenTheUserHasTwoOrMoreBoxes() throws {
+        // Records come from the store rather than a literal: their memberwise
+        // init is internal to MatronJournal, and going through the real
+        // snapshot path also proves agent_device_id survives a round trip.
+        let store = try makeStore()
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "c1", title: "Fix the parser", sessionState: "running",
+                            lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 7),
+            ConvoSummaryDTO(id: "c2", title: "No box", sessionState: "running",
+                            lastSeq: 1, snippet: "", createdAt: 1),
+            ConvoSummaryDTO(id: "c3", title: "Old", sessionState: "done",
+                            lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 999),
+        ], headSeq: 1)
+        let owned = try XCTUnwrap(store.conversation(id: "c1"))
+        let orphan = try XCTUnwrap(store.conversation(id: "c2"))
+        let stale = try XCTUnwrap(store.conversation(id: "c3"))
+
+        // One box: no chip anywhere — a single-box user has nothing to
+        // disambiguate and shouldn't pay for the clutter.
+        XCTAssertNil(JournalChatService.summary(from: owned, boxNames: [7: "dev-y"]).boxName)
+
+        // Two boxes: the owning box is named.
+        let two: [Int64: String] = [7: "dev-y", 9: "dev-z"]
+        XCTAssertEqual(JournalChatService.summary(from: owned, boxNames: two).boxName, "dev-y")
+        // …but a conversation with no recorded box still shows nothing.
+        XCTAssertNil(JournalChatService.summary(from: orphan, boxNames: two).boxName)
+        // …and an id that resolves to nothing (revoked box) shows nothing.
+        XCTAssertNil(JournalChatService.summary(from: stale, boxNames: two).boxName)
+    }
+
+    func testRoomBoxNamesTagEveryParticipatingBox() throws {
+        // Same store-backed setup as the boxName test: participants round-trip
+        // through the real snapshot path into the record the summary reads.
+        let store = try makeStore()
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "room", title: "↔️ [ab] mac ↔ dev-z", sessionState: "waiting",
+                            lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 7,
+                            participants: [7, 9]),
+            ConvoSummaryDTO(id: "local", title: "↔️ [cd] mac ↔ mac", sessionState: "waiting",
+                            lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 7,
+                            participants: [7]),
+            ConvoSummaryDTO(id: "ghost", title: "↔️ [ef] mac ↔ gone", sessionState: "waiting",
+                            lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 7,
+                            participants: [7, 999]),
+        ], headSeq: 1)
+        let room = try XCTUnwrap(store.conversation(id: "room"))
+        let local = try XCTUnwrap(store.conversation(id: "local"))
+        let ghost = try XCTUnwrap(store.conversation(id: "ghost"))
+        let two: [Int64: String] = [7: "dev-y", 9: "dev-z"]
+        let letters = SessionTag.boxLetters(for: two)
+
+        // A genuine multi-box room tags every box — names for the hue,
+        // letters for the glyphs, journal order — and the room short comes
+        // off the `↔️ [ab] ` title prefix with the marker kept.
+        let multi = JournalChatService.summary(from: room, boxNames: two, boxLetters: letters)
+        XCTAssertEqual(multi.roomBoxNames, ["dev-y", "dev-z"])
+        XCTAssertEqual(multi.roomBoxShorts, ["Y", "Z"])
+        XCTAssertEqual(multi.sessionShort, "ab")
+        XCTAssertEqual(multi.title, "↔️ mac ↔ dev-z")
+
+        // Single-box user: same gate as the single-box tag — no letters.
+        let gated = JournalChatService.summary(from: room, boxNames: [7: "dev-y"])
+        XCTAssertEqual(gated.roomBoxNames, [])
+        XCTAssertNil(gated.boxName)
+
+        // A local room's two ends share one box: fall back to the single
+        // owning-box tag rather than a redundant one-entry "pair".
+        let solo = JournalChatService.summary(from: local, boxNames: two, boxLetters: letters)
+        XCTAssertEqual(solo.roomBoxNames, [])
+        XCTAssertEqual(solo.boxName, "dev-y")
+        XCTAssertEqual(solo.boxShort, "Y")
+
+        // A participant whose box was revoked resolves to nothing — with
+        // only one name left the room tag collapses to the same fallback.
+        let revoked = JournalChatService.summary(from: ghost, boxNames: two, boxLetters: letters)
+        XCTAssertEqual(revoked.roomBoxNames, [])
+        XCTAssertEqual(revoked.boxName, "dev-y")
+    }
+
+    func testRenamingABoxRelabelsAnOpenChatList() async throws {
+        // Renaming from Settings is a REST call; it comes back down the
+        // socket as `device_meta`, which writes the `agent` table and
+        // nothing else. `conversationsStream()`'s observation reads only
+        // `conversation`, so summaries used to keep the OLD chip label
+        // until unrelated conversation activity happened to re-fire it.
+        let store = try makeStore()
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "c1", title: "Fix the parser", sessionState: "running",
+                            lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 7),
+        ], headSeq: 1)
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-y"), AgentDTO(id: 9, name: "dev-z")])
+        let service = makeService(store, coalesceInterval: .milliseconds(10))
+
+        let labels = Task { () -> [String?] in
+            var seen: [String?] = []
+            for try await summaries in service.chatSummaries() {
+                let label = summaries.first?.boxName
+                if seen.last != label { seen.append(label) }
+                if label == "dev-yellow" { break }
+            }
+            return seen
+        }
+        // Let the first snapshot (and its "dev-y" chip) land before the
+        // rename: the roster observation delivers its current value on
+        // subscribe, so renaming too early would be indistinguishable from
+        // a stream that never re-fires.
+        try await Task.sleep(for: .milliseconds(150))
+        try store.renameAgent(id: 7, name: "dev-yellow")
+
+        // Watchdog rather than a plain await: the regression makes the
+        // stream go permanently quiet, and cancelling ends the `for await`
+        // so the suite reports the labels it DID see instead of hanging.
+        let watchdog = Task {
+            try await Task.sleep(for: .seconds(3))
+            labels.cancel()
+        }
+        let observed = try await labels.value
+        watchdog.cancel()
+        XCTAssertEqual(observed, ["dev-y", "dev-yellow"],
+                       "an `agent` rename must re-emit summaries with the new chip label")
+    }
 }
 
 /// Never connects — enough for list tests that only read the store.

@@ -46,6 +46,34 @@ public final class SearchViewModel {
         allChats.first(where: { $0.id == roomID })?.title ?? roomID
     }
 
+    /// Row-ready pieces of a search hit's title line: the colored `A:bc`
+    /// tag halves plus the title to sit beside them, resolved HERE so the
+    /// iOS and Mac call sites compose identically (the row itself lives in
+    /// the design system, which by design knows nothing of ChatSummary or
+    /// the bridge's title markers).
+    public struct HitTitle {
+        public let title: String
+        public let sessionShort: String?
+        public let boxLetter: String?
+        public let boxName: String?
+        public let roomBoxNames: [String]
+        public let roomBoxShorts: [String]
+    }
+
+    public func hitTitle(for roomID: String) -> HitTitle {
+        guard let chat = allChats.first(where: { $0.id == roomID }) else {
+            return HitTitle(title: roomID, sessionShort: nil, boxLetter: nil,
+                            boxName: nil, roomBoxNames: [], roomBoxShorts: [])
+        }
+        // Same marker discipline as the list rows: the room marker drops
+        // only when a room tag will actually render in its place.
+        let title = chat.roomBoxNames.count >= 2
+            ? SessionTag.titleBesideRoomTag(chat.title) : chat.title
+        return HitTitle(title: title, sessionShort: chat.sessionShort,
+                        boxLetter: chat.boxShort, boxName: chat.boxName,
+                        roomBoxNames: chat.roomBoxNames, roomBoxShorts: chat.roomBoxShorts)
+    }
+
     /// Text to display when the query has no chat or message hits.
     public var emptyResultsMessage: String {
         "No results."

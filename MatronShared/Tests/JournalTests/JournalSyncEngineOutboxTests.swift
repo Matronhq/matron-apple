@@ -30,7 +30,7 @@ final class JournalSyncEngineOutboxTests: XCTestCase {
 
     private func mediaOp(blobRef: String, localID: String) -> ClientOp {
         .sendMedia(convoID: "c1", type: "image", blobRef: blobRef, name: "x.png",
-                   contentType: "image/png", size: 3, caption: nil, localID: localID)
+                   contentType: "image/png", size: 3, caption: nil, batch: nil, localID: localID)
     }
 
     private func makeEngine(

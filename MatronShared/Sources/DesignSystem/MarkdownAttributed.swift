@@ -53,6 +53,14 @@ enum MarkdownAttributed {
     private static let headerSpacingBefore: CGFloat = 10
     private static let headerSpacingAfter: CGFloat = 6
 
+    /// Table chrome: hairline cell borders, compact padding, and the bottom
+    /// margin the LAST row carries so the table clears the following block
+    /// (a margin on the NSTextTable itself is ignored by layout — spike,
+    /// 2026-08-11).
+    private static let tableBorderWidth: CGFloat = 0.5
+    private static let tableCellPadding: CGFloat = 4
+    private static let tableBottomMargin: CGFloat = 8
+
     // MARK: - Public API
 
     /// Converts markdown `source` to a display-ready `NSAttributedString`.
@@ -67,6 +75,28 @@ enum MarkdownAttributed {
         let built = build(from: source)
         cache.setObject(built, forKey: key)
         return built
+    }
+
+    /// True when `attributed` carries TextKit table blocks.
+    ///
+    /// `SelectableMessageText` uses this to opt its text view into TextKit 1
+    /// BEFORE the first layout. AppKit falls back to TextKit 1 on its own when
+    /// it meets table blocks, but only once the view is in a window and only
+    /// mid-layout: the view then re-sizes to the (correct, smaller) TextKit 1
+    /// height keeping its TOP edge fixed, which moves its origin out from
+    /// under the frame SwiftUI placed it at — the message draws above its
+    /// bubble and the first rows are clipped.
+    static func containsTable(_ attributed: NSAttributedString) -> Bool {
+        var found = false
+        attributed.enumerateAttribute(
+            .paragraphStyle, in: NSRange(location: 0, length: attributed.length)
+        ) { value, _, stop in
+            if let style = value as? NSParagraphStyle, !style.textBlocks.isEmpty {
+                found = true
+                stop.pointee = true
+            }
+        }
+        return found
     }
 
     /// Custom attribute carrying `MarkdownRunSemantics` for copy-time
@@ -198,9 +228,38 @@ enum MarkdownAttributed {
         var blockIdentity = 0
         var previousSemantics: MarkdownRunSemantics?
 
+        // In-progress table state. One `NSTextTable` spans consecutive
+        // `tableCell` blocks; cell coordinates that step BACKWARD mean a new
+        // markdown table started back-to-back with the previous one.
+        // `rowBlocks` remembers each row's cell blocks because the last row —
+        // the one that carries the table's bottom margin — isn't knowable
+        // until the table ends.
+        var currentTable: NSTextTable?
+        var currentRowBlocks: [Int: [NSTextTableBlock]] = [:]
+        var currentCellStyle: NSMutableParagraphStyle?
+        var previousCell: (row: Int, column: Int)?
+
+        // Closes the open table, if any. Mutating the cell blocks after their
+        // runs were appended is safe: the paragraph styles hold references to
+        // the block objects, and layout reads them long after `build` returns.
+        func endTable() {
+            if let lastRow = currentRowBlocks.keys.max() {
+                for cellBlock in currentRowBlocks[lastRow] ?? [] {
+                    cellBlock.setWidth(
+                        tableBottomMargin, type: .absoluteValueType, for: .margin, edge: .maxY
+                    )
+                }
+            }
+            currentTable = nil
+            currentRowBlocks = [:]
+            currentCellStyle = nil
+            previousCell = nil
+        }
+
         for run in attributed.runs {
             let intent = run.presentationIntent
             let block = BlockKind(intent)
+            let isNewBlock = intent != previousIntent
 
             // Block boundary: a new `presentationIntent` identity means a new
             // block. Separate it from the previous block with a newline (the
@@ -210,7 +269,7 @@ enum MarkdownAttributed {
             // text keeps the parser's trailing "\n", and doubling it rendered
             // an empty code-styled line between the block and the next
             // paragraph (Dan, 2026-07-16).
-            if previousIntent != nil, intent != previousIntent {
+            if previousIntent != nil, isNewBlock {
                 if !output.string.hasSuffix("\n") {
                     var separatorAttrs: [NSAttributedString.Key: Any] = [:]
                     if let previousSemantics {
@@ -226,12 +285,64 @@ enum MarkdownAttributed {
                             link: nil
                         )
                     }
+                    // After a cell this newline is that cell's paragraph
+                    // TERMINATOR: TextKit only binds a paragraph to its table
+                    // block when the terminating newline carries the cell's
+                    // paragraph style too.
+                    if case .tableCell = previousSemantics?.block ?? .paragraph, let currentCellStyle {
+                        separatorAttrs[.paragraphStyle] = currentCellStyle
+                        separatorAttrs[.font] = font(size: baseFontSize)
+                    }
                     output.append(NSAttributedString(string: "\n", attributes: separatorAttrs))
                 }
                 blockIdentity += 1
                 isFirstBlock = false
             }
-            if intent != previousIntent, let marker = block.marker {
+            // Table bookkeeping is per BLOCK, not per run — a cell with inline
+            // styling arrives as several runs that must share one cell block.
+            if isNewBlock {
+                if case .tableCell(let row, let column, let isHeader, let columnCount, let alignments) = block {
+                    let table: NSTextTable
+                    let continues = BlockKind.tableCellContinues((row, column), after: previousCell)
+                    if let open = currentTable, continues {
+                        table = open
+                    } else {
+                        endTable()
+                        table = NSTextTable()
+                        table.numberOfColumns = columnCount
+                        table.layoutAlgorithm = .automaticLayoutAlgorithm
+                        table.setContentWidth(100, type: .percentageValueType)
+                        currentTable = table
+                    }
+
+                    let cellBlock = NSTextTableBlock(
+                        table: table, startingRow: row, rowSpan: 1,
+                        startingColumn: column, columnSpan: 1
+                    )
+                    cellBlock.setWidth(tableBorderWidth, type: .absoluteValueType, for: .border)
+                    cellBlock.setBorderColor(.separatorColor)
+                    cellBlock.setWidth(tableCellPadding, type: .absoluteValueType, for: .padding)
+                    // A label-colour tint, not `controlBackgroundColor`: bot
+                    // bubbles are pure white in light mode (`matronBubbleBot`),
+                    // where `controlBackgroundColor` is ALSO white — the shade
+                    // must be an overlay that reads on either appearance's
+                    // bubble.
+                    if isHeader { cellBlock.backgroundColor = .labelColor.withAlphaComponent(0.05) }
+                    currentRowBlocks[row, default: []].append(cellBlock)
+                    previousCell = (row, column)
+
+                    let style = NSMutableParagraphStyle()
+                    style.textBlocks = [cellBlock]
+                    style.paragraphSpacing = 0
+                    if column < alignments.count {
+                        style.alignment = nsAlignment(alignments[column])
+                    }
+                    currentCellStyle = style
+                } else {
+                    endTable()
+                }
+            }
+            if isNewBlock, let marker = block.marker {
                 var markerAttrs = runAttributes(block: block, inline: [], link: nil, isFirstBlock: isFirstBlock)
                 markerAttrs[Self.semanticsKey] = MarkdownRunSemantics(
                     block: block, blockIdentity: blockIdentity, inline: [], link: nil
@@ -256,9 +367,35 @@ enum MarkdownAttributed {
                 link: run.link,
                 isFirstBlock: isFirstBlock
             )
+            // The cell's style carries its table block and column alignment;
+            // every run of the cell shares it.
+            if case .tableCell = block, let currentCellStyle {
+                attrs[.paragraphStyle] = currentCellStyle
+            }
             attrs[Self.semanticsKey] = semantics
             output.append(NSAttributedString(string: text, attributes: attrs))
         }
+
+        // A message ENDING in a table still needs its last cell's terminator,
+        // or that cell's paragraph never binds to its block and the row drops
+        // out of layout. Mirrors the block-boundary separator's attributes.
+        if case .tableCell = previousSemantics?.block ?? .paragraph,
+           let currentCellStyle, !output.string.hasSuffix("\n") {
+            var terminatorAttrs: [NSAttributedString.Key: Any] = [
+                .paragraphStyle: currentCellStyle,
+                .font: font(size: baseFontSize),
+            ]
+            if let previousSemantics {
+                terminatorAttrs[Self.semanticsKey] = MarkdownRunSemantics(
+                    block: previousSemantics.block,
+                    blockIdentity: previousSemantics.blockIdentity,
+                    inline: [],
+                    link: nil
+                )
+            }
+            output.append(NSAttributedString(string: "\n", attributes: terminatorAttrs))
+        }
+        endTable()
 
         // Never end on a newline: a message whose LAST block is a fenced code
         // block otherwise carries the parser's trailing "\n" into layout as
@@ -267,6 +404,10 @@ enum MarkdownAttributed {
         // end with a code block (Dan, 2026-07-16). Interior newlines are
         // untouched; only the string's tail is trimmed.
         while output.length > 0, output.string.hasSuffix("\n") {
+            let attrs = output.attributes(at: output.length - 1, effectiveRange: nil)
+            if let style = attrs[.paragraphStyle] as? NSParagraphStyle, !style.textBlocks.isEmpty {
+                break // table-cell terminator — structural, not dead space
+            }
             output.deleteCharacters(in: NSRange(location: output.length - 1, length: 1))
         }
 
@@ -359,8 +500,23 @@ enum MarkdownAttributed {
             style.paragraphSpacing = headerSpacingAfter
         case .paragraph:
             style.paragraphSpacing = paragraphSpacing
+        case .tableCell:
+            // Row height comes from the cell block's padding, not paragraph
+            // spacing. The style that actually carries the cell's
+            // `textBlocks` is built in `build(from:)`, where the table
+            // instance is known.
+            style.paragraphSpacing = 0
         }
         return style
+    }
+
+    /// `NSTextAlignment` for a parsed column alignment.
+    private static func nsAlignment(_ alignment: TableAlignment) -> NSTextAlignment {
+        switch alignment {
+        case .left: return .left
+        case .center: return .center
+        case .right: return .right
+        }
     }
 
     /// Resolves an AppKit font for the requested traits. System font for body
@@ -389,6 +545,21 @@ enum MarkdownAttributed {
 
 // MARK: - Block classification
 
+/// Column alignment of a parsed table, mirrored from
+/// `PresentationIntent.TableColumn.Alignment` so `BlockKind` stays
+/// self-contained (and Hashable) for copy-time semantics.
+enum TableAlignment: Hashable {
+    case left, center, right
+
+    init(_ column: PresentationIntent.TableColumn) {
+        switch column.alignment {
+        case .center: self = .center
+        case .right: self = .right
+        default: self = .left
+        }
+    }
+}
+
 /// The subset of block-level markdown structure this converter renders,
 /// distilled from a run's `PresentationIntent`. Carries the derived font size,
 /// colour, weight, and (for lists) the marker to prepend. Internal (not
@@ -404,6 +575,13 @@ enum BlockKind: Hashable {
     /// `ordinal` is `nil` for unordered items (renders "• ") and the 1-based
     /// number for ordered items (renders "N. ").
     case listItem(ordinal: Int?)
+    /// One table cell. `row` is 0-based with the header row as row 0 (Apple
+    /// reports `tableHeaderRow` for the header and 1-based `tableRow` for
+    /// body rows, so the numbering lines up naturally). `columnCount` and
+    /// `alignments` ride on every cell so copy-time reconstruction can
+    /// rebuild the delimiter row from any selected cell.
+    case tableCell(row: Int, column: Int, isHeader: Bool,
+                   columnCount: Int, alignments: [TableAlignment])
 
     init(_ intent: PresentationIntent?) {
         guard let components = intent?.components else {
@@ -416,6 +594,12 @@ enum BlockKind: Hashable {
         var listOrdinal: Int?
         var isOrdered = false
         var sawListItem = false
+        // A cell's table components arrive as siblings (cell + row + table),
+        // so they accumulate across the loop instead of returning early.
+        var cellColumn: Int?
+        var cellRow: Int?
+        var isHeaderRow = false
+        var tableColumns: [PresentationIntent.TableColumn]?
 
         for component in components {
             switch component.kind {
@@ -433,9 +617,30 @@ enum BlockKind: Hashable {
                 listOrdinal = ordinal
             case .orderedList:
                 isOrdered = true
+            case .tableCell(let columnIndex):
+                cellColumn = columnIndex
+            case .tableHeaderRow:
+                cellRow = 0
+                isHeaderRow = true
+            case .tableRow(let rowIndex):
+                cellRow = rowIndex
+            case .table(let columns):
+                tableColumns = columns
             default:
                 break
             }
+        }
+
+        // Resolved before the list fallback: a cell that lost any of its three
+        // components (defensive — the parser always emits all of them) stays a
+        // paragraph rather than rendering half a table.
+        if let cellColumn, let cellRow, let tableColumns {
+            self = .tableCell(
+                row: cellRow, column: cellColumn, isHeader: isHeaderRow,
+                columnCount: tableColumns.count,
+                alignments: tableColumns.map(TableAlignment.init)
+            )
+            return
         }
 
         if sawListItem {
@@ -463,9 +668,28 @@ enum BlockKind: Hashable {
         }
     }
 
-    /// Headers render bold.
+    /// Whether a cell at `cell` continues the table whose previous cell was at
+    /// `previous` (`nil` = no table open). Within one table cell coordinates
+    /// only ever ADVANCE, and every table starts at row 0 / column 0, so a
+    /// coordinate that steps backward is exactly the boundary between two
+    /// back-to-back markdown tables.
+    ///
+    /// Shared so the renderer (`NSTextTable` grouping) and copy-time
+    /// reconstruction (pipe-table grouping) split in the same places: when they
+    /// disagreed, copying across adjacent tables emitted one merged table with
+    /// a delimiter row wedged into its body.
+    static func tableCellContinues(
+        _ cell: (row: Int, column: Int), after previous: (row: Int, column: Int)?
+    ) -> Bool {
+        guard let previous else { return false }
+        return cell.row > previous.row
+            || (cell.row == previous.row && cell.column > previous.column)
+    }
+
+    /// Headers — and a table's header row — render bold.
     var isBold: Bool {
         if case .header = self { return true }
+        if case .tableCell(_, _, let isHeader, _, _) = self { return isHeader }
         return false
     }
 

@@ -91,5 +91,26 @@ final class MacChatToolbarTests: XCTestCase {
         let name = Notification.Name.matronCommand(.toggleSidebar)
         XCTAssertEqual(name.rawValue, "chat.matron.command.toggleSidebar")
     }
+
+    /// The box name leads the subtitle — "which machine am I talking to"
+    /// outranks the path and the account. Nil (fewer than two boxes) leaves
+    /// the line exactly as it was.
+    func testTitleSubtitleLeadsWithTheBoxName() {
+        let toolbar = MacChatToolbar(
+            title: "Fix the parser", boxName: "dev-y",
+            status: SessionStatus(email: "dan@example.com", workdir: "/Users/dan/proj"),
+            stripViewModel: makeStripVM(), onOpenSubChat: { _ in }, onCompact: {})
+        XCTAssertEqual(toolbar.titleSubtitle, "dev-y · ~/proj · dan@example.com")
+
+        let boxOnly = MacChatToolbar(
+            title: "Fix the parser", boxName: "dev-y", status: nil,
+            stripViewModel: makeStripVM(), onOpenSubChat: { _ in }, onCompact: {})
+        XCTAssertEqual(boxOnly.titleSubtitle, "dev-y")
+
+        let none = MacChatToolbar(
+            title: "Fix the parser", boxName: nil, status: nil,
+            stripViewModel: makeStripVM(), onOpenSubChat: { _ in }, onCompact: {})
+        XCTAssertNil(none.titleSubtitle)
+    }
 }
 #endif

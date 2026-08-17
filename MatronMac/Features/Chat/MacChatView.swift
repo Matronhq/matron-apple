@@ -208,10 +208,13 @@ struct MacChatView: View {
 
     /// Identifiable wrapper around a SwiftUI `Image` so
     /// `.sheet(item:)` has something to key on. Per-present UUID so
-    /// two consecutive taps re-mount the sheet.
+    /// two consecutive taps re-mount the sheet. `pixelSize` lets the
+    /// viewer open the sheet at the image's natural size (nil → the
+    /// viewer's legacy flexible layout).
     fileprivate struct ImagePreview: Identifiable {
         let id = UUID()
         let image: Image
+        let pixelSize: CGSize?
     }
 
     /// Drives the summaries TOC popover — flipped on by the title cluster
@@ -219,7 +222,51 @@ struct MacChatView: View {
     /// (and by the system on outside-click dismissal).
     @State private var showSummaries = false
 
+    /// Drives the media, files & links browser sheet — flipped on by the
+    /// toolbar button in `MacChatToolbar`.
+    @State private var showMediaBrowser = false
+
     let chatTitle: String
+    /// Which agent box runs this session, or nil when the user has fewer
+    /// than two boxes. Threaded from the list's ChatSummary (same source as
+    /// the row chip) rather than re-resolved here, so header and row can
+    /// never disagree.
+    /// `var` with a default, not `let`: Swift's memberwise synthesis DROPS a
+    /// `let`'s default instead of exposing it as a defaulted parameter (see
+    /// MacChatToolbar's init comment), which would force every call site and
+    /// test to pass it.
+    var boxName: String? = nil
+    /// The `A:bc` tag halves and room participants, threaded from the list
+    /// summary like `boxName` (see ChatSummary) — the header composes the
+    /// same colored tag as the sidebar row, iOS-header parity.
+    var sessionShort: String? = nil
+    var boxShort: String? = nil
+    var roomBoxNames: [String] = []
+    var roomBoxShorts: [String] = []
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// `A:bc Title` (or `A↔B:bc Title` for a multi-agent room) as one Text
+    /// — same composition and fallbacks as MacChatRow's titleLine and the
+    /// iOS header. Composed here, in a real View with a live environment,
+    /// and handed to the toolbar ready-made.
+    private var styledTitle: Text? {
+        if let tag = SessionTagText.room(
+            letters: roomBoxShorts,
+            names: roomBoxNames,
+            sessionShort: sessionShort,
+            colorScheme: colorScheme
+        ) {
+            return tag + Text(" ") + Text(SessionTag.titleBesideRoomTag(chatTitle))
+        }
+        guard let tag = SessionTagText.run(
+            boxLetter: boxShort,
+            boxName: boxName,
+            sessionShort: sessionShort,
+            colorScheme: colorScheme
+        ) else { return nil }
+        return tag + Text(" ") + Text(chatTitle)
+    }
 
     /// Selects a top-level conversation in the sidebar — the "Open"
     /// affordance on a started spawn. A spawned room is NOT a sub-chat, so
@@ -388,7 +435,12 @@ struct MacChatView: View {
                         stripViewModel: stripViewModel,
                         onOpenSubChat: { openSubChatID = $0 },
                         onOpenSpawnRoom: onOpenConversation,
-                        onPreviewImage: { imagePreview = ImagePreview(image: $0) }
+                        onPreviewImage: { url, img in
+                            imagePreview = ImagePreview(
+                                image: img,
+                                pixelSize: viewModel.imagePixelSize(for: url)
+                            )
+                        }
                     )
                     .equatable()
                     // Inline typing indicator under the last bubble —
@@ -704,6 +756,11 @@ struct MacChatView: View {
         .toolbar {
             MacChatToolbar(
                 title: chatTitle,
+                boxName: boxName,
+                styledTitle: styledTitle,
+                accessibilityTitle: SessionTag.accessibilityTitle(
+                    chatTitle: chatTitle, boxName: boxName,
+                    sessionShort: sessionShort, roomBoxNames: roomBoxNames),
                 status: viewModel.sessionStatus,
                 stripViewModel: stripViewModel,
                 onOpenSubChat: { openSubChatID = $0 },
@@ -714,7 +771,8 @@ struct MacChatView: View {
                         showSummaries = false
                         Task { await viewModel.focus(seq: seq) }
                     })
-                }
+                },
+                showMediaBrowser: $showMediaBrowser
             )
         }
         // Observation start/stop is hoisted to the outer view in `body` —
@@ -780,8 +838,12 @@ struct MacChatView: View {
         .sheet(item: $imagePreview) { preview in
             AttachmentFullscreenViewer(
                 image: preview.image,
+                nativePixelSize: preview.pixelSize,
                 onDismiss: { imagePreview = nil }
             )
+        }
+        .sheet(isPresented: $showMediaBrowser) {
+            MacMediaBrowserSheet(chatViewModel: viewModel)
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .background {
@@ -817,7 +879,9 @@ private struct MacTimelineListContent: View, Equatable {
     /// `onOpenSubChat` (so `==` ignoring it is safe), and `nil` where there
     /// is nowhere to navigate — the affordance is then omitted, not dead.
     let onOpenSpawnRoom: ((String) -> Void)?
-    let onPreviewImage: (Image) -> Void
+    /// Carries the tapped image's `mxc://` URL alongside the resolved
+    /// `Image` so the presenter can look up its native pixel size.
+    let onPreviewImage: (URL, Image) -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.viewModel === rhs.viewModel && lhs.stripViewModel === rhs.stripViewModel
@@ -911,7 +975,7 @@ private struct MacTimelineRowView: View, Equatable {
     /// so it changes the sidebar selection rather than opening a child pane.
     /// `nil` where there is nowhere to navigate.
     let onOpenSpawnRoom: ((String) -> Void)?
-    let onPreviewImage: (Image) -> Void
+    let onPreviewImage: (URL, Image) -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.row == rhs.row && lhs.subtaskChild == rhs.subtaskChild
@@ -938,8 +1002,8 @@ private struct MacTimelineRowView: View, Equatable {
                     item: item,
                     resolveImage: { viewModel.image(for: $0) },
                     onRetry: { id in viewModel.retrySend(itemID: id) },
-                    onTapImage: { img in
-                        onPreviewImage(img)
+                    onTapImage: { url, img in
+                        onPreviewImage(url, img)
                     },
                     onTapFile: { mxc, filename in
                         Task {
@@ -960,6 +1024,8 @@ private struct MacTimelineRowView: View, Equatable {
                             }
                         }
                     },
+                    isDownloadingFile: { viewModel.isDownloadingFile($0) },
+                    isMediaUnavailable: { viewModel.isMediaUnavailable($0) },
                     askViewModel: { viewModel.askViewModel(forPrompt: $0) },
                     isPromptAnswered: { viewModel.isPromptAnswered($0) },
                     answerSummary: { viewModel.answerSummary(forPrompt: $0) },
@@ -983,7 +1049,8 @@ private struct MacTimelineRowView: View, Equatable {
                         }
                     },
                     onOpenSpawnRoom: onOpenSpawnRoom,
-                    convoID: viewModel.roomID
+                    convoID: viewModel.roomID,
+                    hasMultipleSenders: viewModel.hasMultipleSenders
                 )
                 // No `.onAppear` history trigger — an eager stack
                 // mounts every row immediately; the near-top
@@ -1132,7 +1199,12 @@ struct MacSubChatPane: View {
                             stripViewModel: stripViewModel,
                             onOpenSubChat: onOpenSibling,
                             onOpenSpawnRoom: onOpenSpawnRoom,
-                            onPreviewImage: { imagePreview = MacSubChatImagePreview(image: $0) }
+                            onPreviewImage: { url, img in
+                                imagePreview = MacSubChatImagePreview(
+                                    image: img,
+                                    pixelSize: viewModel.imagePixelSize(for: url)
+                                )
+                            }
                         )
                         Color.clear
                             .frame(height: 1)
@@ -1215,7 +1287,11 @@ struct MacSubChatPane: View {
             LiveOutputSessionStore.shared.suspendSessions(in: childID)
         }
         .sheet(item: $imagePreview) { preview in
-            AttachmentFullscreenViewer(image: preview.image, onDismiss: { imagePreview = nil })
+            AttachmentFullscreenViewer(
+                image: preview.image,
+                nativePixelSize: preview.pixelSize,
+                onDismiss: { imagePreview = nil }
+            )
         }
     }
 }
@@ -1225,6 +1301,7 @@ struct MacSubChatPane: View {
 private struct MacSubChatImagePreview: Identifiable {
     let id = UUID()
     let image: Image
+    let pixelSize: CGSize?
 }
 
 /// The Mac sub-chat pane's mini-header: a close/back control, title +

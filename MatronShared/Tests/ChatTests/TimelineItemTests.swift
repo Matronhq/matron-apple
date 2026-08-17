@@ -11,7 +11,7 @@ final class TimelineItemTests: XCTestCase {
 
     func test_differentKinds_areInequal() {
         let a = TimelineItem.Kind.text(body: "hi", formattedHTML: nil)
-        let b = TimelineItem.Kind.file(url: nil, filename: "x", caption: nil, sizeBytes: nil)
+        let b = TimelineItem.Kind.file(url: nil, filename: "x", caption: nil, sizeBytes: nil, expired: false)
         XCTAssertNotEqual(a, b)
     }
 

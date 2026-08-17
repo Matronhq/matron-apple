@@ -140,7 +140,7 @@ final class WireModelsTests: XCTestCase {
 
         let media = try obj(.sendMedia(convoID: "c1", type: "image", blobRef: "b9",
                                        name: "cat.png", contentType: "image/png", size: 42,
-                                       caption: nil, localID: "L2"))
+                                       caption: nil, batch: nil, localID: "L2"))
         XCTAssertEqual(media["op"] as? String, "send")
         XCTAssertEqual(media["type"] as? String, "image")
         XCTAssertEqual(media["blob_ref"] as? String, "b9")
@@ -182,10 +182,40 @@ final class WireModelsTests: XCTestCase {
     func testEncodeSendMediaCarriesTheCaptionInsideThePayload() throws {
         let media = try encodedObject(.sendMedia(convoID: "c1", type: "image", blobRef: "b9",
                                                   name: "cat.png", contentType: "image/png", size: 42,
-                                                  caption: "what breed is this?", localID: "L2"))
+                                                  caption: "what breed is this?", batch: nil, localID: "L2"))
 
         let payload = try XCTUnwrap(media["payload"] as? [String: Any])
         XCTAssertEqual(payload["caption"] as? String, "what breed is this?")
+    }
+
+    /// The batch tag rides inside `payload` for the same reason the caption
+    /// does — that's the only part of a media send the server stores
+    /// verbatim and replays to the bridge, which gathers frames sharing a
+    /// `batch_id` into one prompt.
+    func testEncodeSendMediaCarriesTheBatchTagInsideThePayload() throws {
+        let media = try encodedObject(.sendMedia(convoID: "c1", type: "image", blobRef: "b9",
+                                                  name: "cat.png", contentType: "image/png", size: 42,
+                                                  caption: nil,
+                                                  batch: AttachmentBatchTag(id: "B7", index: 2, total: 3),
+                                                  localID: "L2"))
+
+        let payload = try XCTUnwrap(media["payload"] as? [String: Any])
+        XCTAssertEqual(payload["batch_id"] as? String, "B7")
+        XCTAssertEqual(payload["batch_index"] as? Int, 2)
+        XCTAssertEqual(payload["batch_total"] as? Int, 3)
+    }
+
+    /// An untagged send omits the batch keys entirely — a lone attachment's
+    /// frame stays byte-identical to what an older bridge understands.
+    func testEncodeSendMediaOmitsBatchKeysWhenUntagged() throws {
+        let media = try encodedObject(.sendMedia(convoID: "c1", type: "image", blobRef: "b9",
+                                                  name: "cat.png", contentType: "image/png", size: 42,
+                                                  caption: nil, batch: nil, localID: "L2"))
+
+        let payload = try XCTUnwrap(media["payload"] as? [String: Any])
+        XCTAssertNil(payload["batch_id"])
+        XCTAssertNil(payload["batch_index"])
+        XCTAssertNil(payload["batch_total"])
     }
 
     /// An empty caption is the same as no caption — an attachment sent from
@@ -193,7 +223,7 @@ final class WireModelsTests: XCTestCase {
     func testEncodeSendMediaTreatsAnEmptyCaptionAsAbsent() throws {
         let media = try encodedObject(.sendMedia(convoID: "c1", type: "image", blobRef: "b9",
                                                   name: "cat.png", contentType: "image/png", size: 42,
-                                                  caption: "", localID: "L2"))
+                                                  caption: "", batch: nil, localID: "L2"))
 
         let payload = try XCTUnwrap(media["payload"] as? [String: Any])
         XCTAssertNil(payload["caption"])
@@ -379,5 +409,13 @@ final class WireModelsTests: XCTestCase {
                                            method: "recent_folders", paramsData: Data("junk".utf8))
         let brokenObj = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(broken.encoded().utf8)) as? [String: Any])
         XCTAssertEqual((brokenObj["params"] as? [String: Any])?.isEmpty, true)
+    }
+
+    func testDecodesDeviceMetaRenameFrame() {
+        let frame = ServerFrame.decode(#"{"kind":"device_meta","device_id":7,"name":"dev-y"}"#)
+        XCTAssertEqual(frame, .deviceMeta(id: 7, name: "dev-y"))
+        // Malformed frames are skipped, not crashed on.
+        XCTAssertNil(ServerFrame.decode(#"{"kind":"device_meta","name":"dev-y"}"#))
+        XCTAssertNil(ServerFrame.decode(#"{"kind":"device_meta","device_id":7}"#))
     }
 }

@@ -26,8 +26,15 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
 
     public enum Kind: Equatable, Sendable {
         case text(body: String, formattedHTML: String?)
-        case image(url: URL?, caption: String?, sizeBytes: Int64?)
-        case file(url: URL?, filename: String, caption: String?, sizeBytes: Int64?)
+        /// `expired`: the journal's media reaper deleted this attachment's
+        /// blob and tombstoned the event (`expired: true`, `blob_ref` null —
+        /// matron-journal#63). Name/size/caption survive for rendering; the
+        /// bytes are permanently gone, so the UI shows "Expired" instead of
+        /// offering a dead download. Only fresh syncs carry the flag — a
+        /// client that synced the event before the reap discovers expiry via
+        /// the 404 on fetch (`ChatViewModel.isMediaUnavailable`).
+        case image(url: URL?, caption: String?, sizeBytes: Int64?, expired: Bool)
+        case file(url: URL?, filename: String, caption: String?, sizeBytes: Int64?, expired: Bool)
         /// Member joins, name changes, profile updates — anything that's a
         /// state event we still want to render as a small inline notice.
         case stateChange(text: String)
@@ -121,5 +128,24 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         self.isOwn = isOwn
         self.sendState = sendState
         self.inReplyToEventID = inReplyToEventID
+    }
+
+    /// True for the mid-turn streaming-reply placeholder row
+    /// (`JournalTimelineMapper.streamingItem`, id `"eph:<messageRef>"`).
+    /// It deliberately borrows the real `.text` Kind so it renders as an
+    /// ordinary bubble while a reply streams in, but it is NOT a durable
+    /// message — no real event ID, hardcoded `sender: "agent"` — and is
+    /// replaced by the durable row once the turn's journal event lands.
+    /// A `Kind` check alone (`.text`/`.image`/`.file`) can't tell this
+    /// row apart from a real one, since it uses `.text` on purpose.
+    ///
+    /// Single source of truth for the two places that need to tell the
+    /// difference and would otherwise drift: `ChatViewModel
+    /// .hasMultipleSenders` (must not count this row's "agent" as a
+    /// distinct sender) and `TimelineItemView`/`MacTimelineItemView
+    /// .avatarSender` (must not attribute a bubble to it either — the
+    /// render-side twin of the same bug, Cursor Bugbot on PR #141).
+    public var isEphemeralStreamingPlaceholder: Bool {
+        id.hasPrefix("eph:")
     }
 }
