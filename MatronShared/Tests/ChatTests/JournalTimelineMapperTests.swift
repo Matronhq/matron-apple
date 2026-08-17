@@ -472,13 +472,15 @@ final class JournalTimelineMapperTests: XCTestCase {
     }
 
     /// A card whose payload is missing something the answer call needs is
-    /// unanswerable — better a generic card than buttons that would 400.
-    func testUnanswerableAgentChatPayloadFallsBackToTheGenericCard() throws {
+    /// unanswerable — and its answer channel is HTTP, not `prompt_reply`, so
+    /// the generic card's Allow/Deny would be dead buttons. It renders as an
+    /// inert notice instead.
+    func testUnanswerableAgentChatPayloadRendersAsAnInertNotice() throws {
         let item = try XCTUnwrap(map(event(14, type: "permission_request", payload: [
             "kind": "agent_chat", "request": "invite", "from_device_id": 4,
         ])))
-        guard case .askUser = item.kind else {
-            return XCTFail("expected the generic fallback, got \(item.kind)")
+        guard case .stateChange = item.kind else {
+            return XCTFail("expected the inert notice, got \(item.kind)")
         }
     }
 
@@ -518,15 +520,19 @@ final class JournalTimelineMapperTests: XCTestCase {
         }
     }
 
-    /// Unanswerable (no `request_id`) — the generic card is right, buttons
-    /// that would 400 are not.
-    func testUnanswerableAgentSpawnPayloadFallsBackToTheGenericCard() throws {
+    /// Unanswerable (no `request_id`) — the spawn flow answers over
+    /// `POST /agent-spawn/answer`, never `prompt_reply`, so the generic
+    /// card's Allow/Deny would be dead buttons until the ask expired. An
+    /// inert notice carrying the headline is right; buttons that go nowhere
+    /// are not.
+    func testUnanswerableAgentSpawnPayloadRendersAsAnInertNotice() throws {
         let item = try XCTUnwrap(map(event(24, type: "permission_request", payload: [
             "kind": "agent_spawn", "task": "Rebase and push",
         ])))
-        guard case .askUser = item.kind else {
-            return XCTFail("expected the generic fallback, got \(item.kind)")
+        guard case .stateChange(let text) = item.kind else {
+            return XCTFail("expected the inert notice, got \(item.kind)")
         }
+        XCTAssertTrue(text.contains("Rebase and push"))
     }
 
     // MARK: Spawn outcome

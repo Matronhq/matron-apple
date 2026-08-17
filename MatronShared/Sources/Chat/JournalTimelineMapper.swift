@@ -54,10 +54,25 @@ public enum JournalTimelineMapper {
                 kind = .agentChatRequest(eventID: String(event.seq), request)
             } else if let spawn = AgentSpawnRequest.parse(payload: payload) {
                 // The agent-spawn card, same story: no `description`, no
-                // `options`, and an answer that leaves over HTTP. An
-                // unanswerable spawn payload falls through to the generic
-                // branch below rather than drawing buttons that would 400.
+                // `options`, and an answer that leaves over HTTP.
                 kind = .agentSpawnRequest(eventID: String(event.seq), spawn)
+            } else if let consentKind = payload["kind"] as? String,
+                      consentKind == "agent_spawn" || consentKind == "agent_chat" {
+                // A consent-kind payload the parser rejected (malformed —
+                // e.g. no request_id). It answers over HTTP
+                // (`POST /agent-spawn/answer` / `/agent-chat/answer`), never
+                // `prompt_reply`, so the generic branch below would draw
+                // Allow/Deny wired to a channel nothing reads — dead taps
+                // until the ask expires. Render an inert notice instead,
+                // matching android; web renders the spawn card read-only.
+                let headline = (payload["topic"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                    ?? (payload["task"] as? String).flatMap {
+                        let first = $0.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? ""
+                        return first.isEmpty ? nil : first
+                    }
+                let notice = headline.map { "Agent request that can't be answered here: \($0)" }
+                    ?? "Agent request that can't be answered here"
+                kind = .stateChange(text: notice)
             } else {
                 let description = payload["description"] as? String ?? "Permission request"
                 let optionValues = (payload["options"] as? [String]) ?? ["Allow", "Deny"]
