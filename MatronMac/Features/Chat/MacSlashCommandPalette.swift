@@ -1,6 +1,7 @@
 import SwiftUI
 import MatronDesignSystem
 import MatronModels
+import MatronViewModels
 
 /// Mac-side mirror of `Matron/Features/Chat/Composer/SlashCommandPalette`,
 /// extended with Mac affordances the iOS palette doesn't need: a keyboard
@@ -16,15 +17,16 @@ import MatronModels
 /// empty pane over the conversation for short lists.
 struct MacSlashCommandPalette: View {
     let commands: [BotCommand]
-    /// Recent-folder suggestions for `/start` / `/workdir` completion. When
-    /// non-empty, the palette shows folder rows instead of commands (the
-    /// two modes are mutually exclusive upstream, but folders win here).
-    let folders: [String]
+    /// Argument/folder suggestions for a fully-typed command. When
+    /// non-empty, the palette shows suggestion rows instead of commands
+    /// (the two modes are mutually exclusive upstream, but suggestions
+    /// win here).
+    let suggestions: [PaletteSuggestion]
     /// Keyboard-highlighted row index (`ComposerViewModel.paletteSelection`),
     /// or `nil` when the arrow keys haven't picked a row.
     let selection: Int?
     let onSelect: (BotCommand) -> Void
-    let onSelectFolder: (String) -> Void
+    let onSelectSuggestion: (PaletteSuggestion) -> Void
 
     /// Measured height of the row stack — drives shrink-to-fit.
     @State private var contentHeight: CGFloat = 0
@@ -34,12 +36,12 @@ struct MacSlashCommandPalette: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    if !folders.isEmpty {
-                        ForEach(Array(folders.enumerated()), id: \.element) { index, folder in
+                    if !suggestions.isEmpty {
+                        ForEach(Array(suggestions.enumerated()), id: \.element) { index, suggestion in
                             PaletteRow(index: index, isSelected: index == selection) {
-                                onSelectFolder(folder)
+                                onSelectSuggestion(suggestion)
                             } label: {
-                                folderRow(for: folder)
+                                suggestionRow(for: suggestion)
                             }
                             Divider()
                         }
@@ -72,6 +74,33 @@ struct MacSlashCommandPalette: View {
         // The panel floats over timeline content, so it needs elevation
         // the stacked-in-layout version didn't.
         .shadow(color: .black.opacity(0.18), radius: 10, y: 3)
+    }
+
+    @ViewBuilder
+    private func suggestionRow(for suggestion: PaletteSuggestion) -> some View {
+        switch suggestion {
+        case .folder(let path): folderRow(for: path)
+        case .argument(let argument): argumentRow(for: argument)
+        }
+    }
+
+    private func argumentRow(for argument: ArgSuggestion) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(argument.displayLabel)
+                    .font(.system(.body, design: .monospaced))
+                    .bold()
+                if let summary = argument.summary {
+                    Text(summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
     }
 
     private func folderRow(for path: String) -> some View {

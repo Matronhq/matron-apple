@@ -116,10 +116,10 @@ struct MacComposerView: View {
                 if viewModel.showPalette {
                     MacSlashCommandPalette(
                         commands: viewModel.filteredCommands,
-                        folders: viewModel.folderSuggestions,
+                        suggestions: viewModel.paletteSuggestions,
                         selection: viewModel.paletteSelection,
                         onSelect: { cmd in viewModel.selectCommand(cmd) },
-                        onSelectFolder: { folder in viewModel.selectFolder(folder) }
+                        onSelectSuggestion: { suggestion in viewModel.selectSuggestion(suggestion) }
                     )
                     .padding(.horizontal)
                 }

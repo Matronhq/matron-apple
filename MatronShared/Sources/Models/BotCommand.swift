@@ -1,5 +1,32 @@
 import Foundation
 
+/// One selectable argument for a slash command — a flag (`--browser`) or an
+/// enumerated value (`interactive`). Static entries cover values that are
+/// part of the command's grammar; session-derived entries (model aliases,
+/// effort levels) arrive in a later phase via the bridge's status frame
+/// (see docs/superpowers/specs/2026-08-10-composer-argument-suggestions-design.md).
+public struct ArgSuggestion: Equatable, Hashable, Sendable {
+    /// Inserted verbatim into the composer: `--browser`, `claude`, `cancel`.
+    public let value: String
+    /// Shown instead of `value` when they differ (e.g. "X-High" for `xhigh`).
+    public let label: String?
+    /// One-line description, same role as `BotCommand.summary`.
+    public let summary: String?
+
+    public init(value: String, label: String? = nil, summary: String? = nil) {
+        self.value = value
+        self.label = label
+        self.summary = summary
+    }
+
+    /// What the palette row displays.
+    public var displayLabel: String { label ?? value }
+
+    /// Flags (`--x`) compose, so several can ride one command line; plain
+    /// values fill a single slot. The resolver keys re-offering off this.
+    public var isFlag: Bool { value.hasPrefix("--") }
+}
+
 /// A slash-command entry surfaced in the composer's slash palette.
 ///
 /// The catalog is local — driven by a static list per bot kind — because
@@ -13,36 +40,79 @@ public struct BotCommand: Equatable, Hashable, Sendable {
     /// Optional argument hint, e.g. `[workdir]` or `<path>`. Rendered in the
     /// palette next to the trigger.
     public let argHint: String?
+    /// Statically-known argument completions, offered by the palette once
+    /// the command is typed in full. Empty for free-text arguments.
+    public let argSuggestions: [ArgSuggestion]
 
-    public init(trigger: String, summary: String, argHint: String? = nil) {
+    public init(
+        trigger: String,
+        summary: String,
+        argHint: String? = nil,
+        argSuggestions: [ArgSuggestion] = []
+    ) {
         self.trigger = trigger
         self.summary = summary
         self.argHint = argHint
+        self.argSuggestions = argSuggestions
     }
 }
 
 /// Static slash-command catalogs per bot kind, plus a small filter helper
 /// used by the composer's slash palette.
 public enum BotCommandCatalog {
+    /// The agent-picker flags every session-creating command accepts.
+    /// Summaries match the bridge's /help text.
+    private static let agentFlags = [
+        ArgSuggestion(value: "--claude", summary: "Use the Claude agent"),
+        ArgSuggestion(value: "--codex", summary: "Use the Codex agent"),
+    ]
+
+    /// Claude-only session extra; ~400M of headless Chrome, so opt-in.
+    private static let browserFlag = ArgSuggestion(
+        value: "--browser", summary: "Add browser tools (chrome-devtools MCP)")
+
     /// Static catalog for the Claude bridge. In Phase 5+ this becomes
     /// config-driven (per-bot, served by the bridge or its provisioner).
     public static let claudeBridge: [BotCommand] = [
         // Sessions
-        BotCommand(trigger: "/start", summary: "Start a new session", argHint: "[workdir]"),
+        BotCommand(trigger: "/start", summary: "Start a new session",
+                   argHint: "[--claude|--codex] [--browser] [workdir]",
+                   argSuggestions: agentFlags + [browserFlag]),
         BotCommand(trigger: "/stop", summary: "Stop the current session"),
-        BotCommand(trigger: "/restart", summary: "Stop and immediately resume the session"),
-        BotCommand(trigger: "/resume", summary: "Resume a previous session", argHint: "[n|id]"),
-        BotCommand(trigger: "/sessions", summary: "List past sessions"),
-        BotCommand(trigger: "/workdir", summary: "Start a session in a different directory", argHint: "<path>"),
+        BotCommand(trigger: "/restart", summary: "Stop and immediately resume the session",
+                   argHint: "[--force] [--browser]",
+                   argSuggestions: [
+                       ArgSuggestion(value: "--force", summary: "Restart immediately, even mid-turn"),
+                       browserFlag,
+                   ]),
+        BotCommand(trigger: "/resume", summary: "Resume a previous session",
+                   argHint: "[--claude|--codex] [n|id]",
+                   argSuggestions: agentFlags),
+        BotCommand(trigger: "/sessions", summary: "List past sessions",
+                   argHint: "[--claude|--codex]",
+                   argSuggestions: agentFlags),
+        BotCommand(trigger: "/workdir", summary: "Start a session in a different directory",
+                   argHint: "[--claude|--codex] <path>",
+                   argSuggestions: agentFlags),
         // Info
         BotCommand(trigger: "/status", summary: "Show current session info"),
         BotCommand(trigger: "/agent", summary: "Show the current agent"),
-        BotCommand(trigger: "/switch", summary: "Hand this conversation to the other coding agent", argHint: "<claude|codex>"),
+        BotCommand(trigger: "/switch", summary: "Hand this conversation to the other coding agent",
+                   argHint: "<claude|codex>",
+                   argSuggestions: [
+                       ArgSuggestion(value: "claude", summary: "Hand over to Claude"),
+                       ArgSuggestion(value: "codex", summary: "Hand over to Codex"),
+                   ]),
         BotCommand(trigger: "/working", summary: "Toggle tool call visibility"),
         BotCommand(trigger: "/mcp", summary: "Show MCP server status"),
         BotCommand(trigger: "/model", summary: "Show current model"),
         BotCommand(trigger: "/effort", summary: "Show or set effort level", argHint: "[level]"),
-        BotCommand(trigger: "/mode", summary: "Show or switch interactive vs print", argHint: "[interactive|print]"),
+        BotCommand(trigger: "/mode", summary: "Show or switch interactive vs print",
+                   argHint: "[interactive|print]",
+                   argSuggestions: [
+                       ArgSuggestion(value: "interactive", summary: "Interactive TUI mode"),
+                       ArgSuggestion(value: "print", summary: "Non-interactive print mode"),
+                   ]),
         BotCommand(trigger: "/cost", summary: "Show session cost"),
         BotCommand(trigger: "/usage", summary: "Show token usage"),
         BotCommand(trigger: "/limits", summary: "Show subscription usage limits"),
@@ -54,7 +124,11 @@ public enum BotCommandCatalog {
         BotCommand(trigger: "/login", summary: "Log in to your Anthropic account"),
         BotCommand(trigger: "/logout", summary: "Log out of your Anthropic account"),
         // Misc
-        BotCommand(trigger: "/timer", summary: "Send a message to this chat later", argHint: "<duration> <message>"),
+        BotCommand(trigger: "/timer", summary: "Send a message to this chat later",
+                   argHint: "<duration> <message> | cancel <id|all>",
+                   argSuggestions: [
+                       ArgSuggestion(value: "cancel", summary: "Cancel a pending timer"),
+                   ]),
         // The rescue keystrokes are bang-only on the bridge: a typed "/esc"
         // is NOT intercepted — it falls through as a TUI slash passthrough
         // and lands in the agent's terminal as a junk command. The palette
@@ -75,6 +149,49 @@ public enum BotCommandCatalog {
         return commands.filter { cmd in
             let trigger = String(cmd.trigger.lowercased().drop(while: { $0 == "/" || $0 == "!" }))
             return trigger.hasPrefix(normalized)
+        }
+    }
+
+    /// Resolves the argument suggestions for a raw composer input: the
+    /// matched command's static suggestions, filtered by the trailing
+    /// partial token. Empty unless the input is a fully-typed command
+    /// (either `/` or `!` prefix) followed by whitespace.
+    ///
+    /// Flags compose, so a flag stays offered until it's on the line;
+    /// plain values fill a single slot and are only offered while no
+    /// argument token is down yet (`/switch claude codex` is junk the
+    /// palette must not build). A suggestion identical to the partial
+    /// offers nothing — same rule as folder completion, so the palette
+    /// doesn't linger over a completed flag.
+    public static func argSuggestions(for input: String, in commands: [BotCommand]) -> [ArgSuggestion] {
+        let leading = Substring(input.drop(while: { $0 == " " || $0 == "\t" }))
+        guard let first = leading.first, first == "/" || first == "!" else { return [] }
+        let body = leading.dropFirst()
+        // The command must be complete: whitespace after its token.
+        guard let commandEnd = body.firstIndex(where: { $0.isWhitespace }) else { return [] }
+        let name = body[body.startIndex..<commandEnd].lowercased()
+        guard let command = commands.first(where: {
+            $0.trigger.lowercased().drop(while: { $0 == "/" || $0 == "!" }) == name
+        }) else { return [] }
+
+        // Trailing partial = everything after the last whitespace (empty
+        // when the input ends mid-separator); earlier tokens are complete.
+        let args = body[commandEnd...]
+        let partialStart = args.lastIndex(where: { $0.isWhitespace })
+            .map(args.index(after:)) ?? args.startIndex
+        let partial = args[partialStart...].lowercased()
+        let earlier = Set(args[..<partialStart]
+            .split(whereSeparator: { $0.isWhitespace })
+            .map { $0.lowercased() })
+
+        return command.argSuggestions.filter { suggestion in
+            let value = suggestion.value.lowercased()
+            if suggestion.isFlag {
+                if earlier.contains(value) { return false }
+            } else if !earlier.isEmpty {
+                return false
+            }
+            return value.hasPrefix(partial) && value != partial
         }
     }
 }
