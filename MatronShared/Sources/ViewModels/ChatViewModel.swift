@@ -1675,8 +1675,30 @@ public final class ChatViewModel {
             guard case .askUser(let id, let evt) = item.kind else { continue }
             if answeredPromptIDs.contains(id) { continue }
             if answeredInTimeline.contains(id) { continue }
+            if queuedReleaseAnswer(for: evt) != nil { continue }
             if let expiresAt = evt.expiresAt, Date.now >= expiresAt { continue }
             return AskUserPromptContext(id: id, event: evt)
+        }
+        return nil
+    }
+
+    /// The bridge's durable resolution for a busy-queue card, or `nil`
+    /// while the card is still live. The mapper hides each
+    /// `queued_release` prompt_reply as an answer row keyed
+    /// `"qr:<prompt_id>"`; matching is by the card's own
+    /// `queuedReleasePromptID`, NOT by seq — a "Send all now" tap on one
+    /// card flushes the whole queue and the bridge emits one release per
+    /// sent card, which is how the sibling cards' dead buttons retire.
+    /// Deliberately not `isOwn`-gated: releases are bridge-authored
+    /// facts about the queue (sent / cancelled / expired), not another
+    /// user's answer, and the card must resolve for everyone.
+    private func queuedReleaseAnswer(for event: AskUserEvent) -> [String]? {
+        guard let releasePromptID = event.queuedReleasePromptID else { return nil }
+        let key = "qr:\(releasePromptID)"
+        for item in items {
+            if case .askUserAnswer(let promptID, let values) = item.kind, promptID == key {
+                return values
+            }
         }
         return nil
     }
@@ -1744,6 +1766,9 @@ public final class ChatViewModel {
                 return true
             }
         }
+        if let evt = askEvent(forPrompt: eventID), queuedReleaseAnswer(for: evt) != nil {
+            return true
+        }
         return false
     }
 
@@ -1805,6 +1830,15 @@ public final class ChatViewModel {
         }
         for item in items where item.isOwn && item.inReplyToEventID == promptEventID {
             if case .text(let body, _) = item.kind { return body }
+        }
+        // Release-resolved queue card: name the action via the card's own
+        // option labels ("⚡ Send all now"). An `expired` release matches
+        // no option and shows the generic resolved state — "You chose:
+        // expired" would be a lie, nobody chose anything.
+        if let evt = askEvent(forPrompt: promptEventID),
+           let values = queuedReleaseAnswer(for: evt),
+           values != ["expired"] {
+            return mapValuesToLabels(values, promptEventID: promptEventID)
         }
         return nil
     }

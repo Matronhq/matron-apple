@@ -95,6 +95,19 @@ public enum JournalTimelineMapper {
             }
 
         case JournalEventType.promptReply:
+            // A bridge-authored queued_release resolution: prompt_id +
+            // action, no target_seq and no choice. Hide it as an answer
+            // row namespaced by the bridge prompt id ("qr:pr_…") so a
+            // flush retires every sent card's buttons on every device —
+            // the generic branches below would render it as an empty
+            // text bubble and resolve nothing.
+            if (payload["kind"] as? String) == "queued_release",
+               let releasePromptID = payload["prompt_id"] as? String,
+               let action = payload["action"] as? String {
+                kind = .askUserAnswer(promptEventID: "qr:\(releasePromptID)",
+                                      selectedValues: [action])
+                break
+            }
             let target = (payload["target_seq"] as? NSNumber)?.int64Value
             inReplyTo = target.map(String.init)
             if let choice = payload["choice"] as? String {
@@ -229,9 +242,15 @@ public enum JournalTimelineMapper {
         } else {
             kind = .choice(options: options, allowOther: allowsFreeText)
         }
+        // Busy-queue cards carry the bridge-owned prompt id their durable
+        // release frames will later name — see the promptReply branch.
+        let queuedReleasePromptID = (payload["kind"] as? String) == "queued_release"
+            ? payload["prompt_id"] as? String
+            : nil
         return AskUserEvent(
             prompt: question, kind: kind, expiresAt: nil,
-            replyChannel: options.isEmpty ? .textReply : .buttonResponse)
+            replyChannel: options.isEmpty ? .textReply : .buttonResponse,
+            queuedReleasePromptID: queuedReleasePromptID)
     }
 
     public static func streamingItem(messageRef: String, text: String, convoTS: Date) -> TimelineItem {

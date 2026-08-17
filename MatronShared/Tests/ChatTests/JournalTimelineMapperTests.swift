@@ -253,6 +253,52 @@ final class JournalTimelineMapperTests: XCTestCase {
         XCTAssertNil(item.inReplyToEventID)
     }
 
+    // MARK: - queued_release (bridge busy-queue cards)
+
+    func testQueuedReleasePromptCarriesItsPromptID() throws {
+        let item = try XCTUnwrap(map(event(20, type: "prompt", payload: [
+            "kind": "queued_release",
+            "prompt_id": "pr_abc",
+            "question": "Send all 2 queued messages now, or cancel this one?",
+            "options": [
+                ["id": "send", "label": "⚡ Send all now", "value": "send"],
+                ["id": "cancel", "label": "✕ Cancel this", "value": "cancel"],
+            ],
+            "mode": "pick_one",
+        ])))
+        guard case .askUser(_, let ask) = item.kind else { return XCTFail() }
+        XCTAssertEqual(ask.queuedReleasePromptID, "pr_abc",
+                       "the card must remember its bridge prompt id so releases can find it")
+    }
+
+    func testOrdinaryPromptHasNoQueuedReleasePromptID() throws {
+        let item = try XCTUnwrap(map(event(3, type: "prompt", payload: [
+            "question": "Deploy?",
+            "options": [["id": "y", "label": "Yes"]],
+        ])))
+        guard case .askUser(_, let ask) = item.kind else { return XCTFail() }
+        XCTAssertNil(ask.queuedReleasePromptID)
+    }
+
+    /// The bridge's durable release frame carries prompt_id + action but no
+    /// target_seq and no choice — it must hide as a namespaced answer row
+    /// (retiring the card's buttons on every device), not render as an
+    /// empty text bubble.
+    func testQueuedReleaseReplyHidesAsNamespacedAnswer() throws {
+        let item = try XCTUnwrap(map(event(21, type: "prompt_reply", sender: "agent:bridge",
+                                           payload: [
+                                               "kind": "queued_release",
+                                               "prompt_id": "pr_abc",
+                                               "action": "send",
+                                               "released": ["pr_abc::0"],
+                                           ])))
+        guard case .askUserAnswer(let promptID, let values) = item.kind else {
+            return XCTFail("expected hidden answer row, got \(item.kind)")
+        }
+        XCTAssertEqual(promptID, "qr:pr_abc")
+        XCTAssertEqual(values, ["send"])
+    }
+
     func testImageBuildsMediaURL() throws {
         let item = try XCTUnwrap(map(event(8, type: "image",
                                            payload: ["blob_ref": "b123", "content_type": "image/png"])))
