@@ -289,4 +289,22 @@ final class DevicesViewModelTests: XCTestCase {
         XCTAssertNil(DevicesViewModel.tagChar(fromDraft: ""))
         XCTAssertNil(DevicesViewModel.tagChar(fromDraft: "   "))
     }
+
+    func test_tagCharFromDraft_sievesOverlongAndInvisibleClustersToNil() {
+        // A Character is a grapheme cluster, not one code point: a Zalgo
+        // combining stack or a long ZWJ chain is "one character" that
+        // renders many glyphs wide — over 16 scalars sieves to nil (clear).
+        XCTAssertNil(DevicesViewModel.tagChar(fromDraft: "a" + String(repeating: "\u{0301}", count: 60)))
+        // 9 women + 8 ZWJs = 17 scalars, one over the bound.
+        XCTAssertNil(DevicesViewModel.tagChar(
+            fromDraft: Array(repeating: "👩", count: 9).joined(separator: "\u{200D}")))
+        // A real compound emoji stays under the bound and survives whole.
+        XCTAssertEqual(DevicesViewModel.tagChar(fromDraft: "👨‍👩‍👧‍👦"), "👨‍👩‍👧‍👦")
+        // Invisible lead clusters (soft hyphen, RLO, LRI) would be a
+        // non-nil tag rendering as nothing — suppressing the derived
+        // letter with no visible explanation. They sieve to nil too.
+        XCTAssertNil(DevicesViewModel.tagChar(fromDraft: "\u{00AD}q"))
+        XCTAssertNil(DevicesViewModel.tagChar(fromDraft: "\u{202E}abc"))
+        XCTAssertNil(DevicesViewModel.tagChar(fromDraft: "\u{2066}abc"))
+    }
 }

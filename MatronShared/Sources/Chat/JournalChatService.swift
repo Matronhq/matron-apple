@@ -75,15 +75,18 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
                     // The roster observation delivers its first value on a
                     // main-queue hop, which may land after the first
                     // conversations snapshot; read through so the very
-                    // first paint still carries its chips.
-                    let boxNames = inputs.boxNames ?? (try? store.agentNames()) ?? [:]
+                    // first paint still carries its chips. One read for
+                    // both maps — names and tags from the same instant.
+                    let roster = inputs.boxRoster
+                        ?? (names: (try? store.agentNames()) ?? [:],
+                            tagChars: (try? store.agentTagChars()) ?? [:])
+                    let boxNames = roster.names
                     // Derived once per snapshot, not per row — the letters
                     // depend on the whole name set (common-prefix strip).
                     // Overrides are the journal-held tag characters, so the
                     // same letter shows on every one of the user's devices.
                     let boxLetters = SessionTag.boxLetters(
-                        for: boxNames,
-                        overrides: inputs.boxTagChars ?? (try? store.agentTagChars()) ?? [:])
+                        for: boxNames, overrides: roster.tagChars)
                     continuation.yield(records.map { Self.summary(from: $0, boxNames: boxNames, boxLetters: boxLetters) })
                     try? await Task.sleep(for: interval)
                 }
@@ -213,12 +216,12 @@ private final class SummaryInputs: @unchecked Sendable {
         lock.withLock { _records }
     }
 
-    var boxNames: [Int64: String]? {
-        lock.withLock { _boxNames }
-    }
-
-    var boxTagChars: [Int64: String]? {
-        lock.withLock { _boxTagChars }
+    /// Both roster maps under ONE lock acquisition — reading them through
+    /// separate accessors would let the roster task write between the two
+    /// reads, pairing an old name set with new tags (the exact tearing the
+    /// combined observation exists to prevent).
+    var boxRoster: (names: [Int64: String], tagChars: [Int64: String])? {
+        lock.withLock { _boxNames.map { ($0, _boxTagChars ?? [:]) } }
     }
 
     func setRecords(_ records: [ConversationRecord]) {

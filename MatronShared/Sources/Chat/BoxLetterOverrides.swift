@@ -53,9 +53,18 @@ public enum BoxLetterMigration {
 
     /// `serverTags` is the journal's current view (from `GET /devices`) —
     /// a box that already has a journal-held tag wins over the local relic,
-    /// which is dropped without pushing: the journal value is the one the
-    /// user chose most recently, on whichever device. Overrides for ids the
-    /// server no longer knows (revoked boxes) are dropped the same way.
+    /// which is dropped without pushing. Overrides for ids the server no
+    /// longer knows (revoked boxes) are dropped the same way.
+    ///
+    /// Known one-shot edges, accepted rather than engineered around:
+    /// - A server nil can also mean "explicitly cleared on another device
+    ///   after the sync feature shipped" — a pre-migration install that
+    ///   only launches later will push its old letter back up once. The
+    ///   user re-clears and it never recurs (the relic is gone).
+    /// - The migrating launch itself can have its push overwritten locally
+    ///   by an in-flight snapshot issued before the push (`replaceAgents`
+    ///   rewrites the whole `agent` table). The journal row is correct, so
+    ///   the letter shows from the next reconnect.
     public static func run(
         defaults: UserDefaults = .standard,
         serverTags: [Int64: String?],

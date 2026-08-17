@@ -107,9 +107,25 @@ public final class DevicesViewModel {
 
     /// The client-side mirror of the server's tag sieve: trim, then keep
     /// only the first grapheme. Empty means "clear back to automatic",
-    /// which the API expresses as nil.
+    /// which the API expresses as nil. Two extra bounds match the server:
+    /// a Character is a grapheme cluster, not one code point, so a Zalgo
+    /// combining stack or a ZWJ chain over 16 scalars sieves to nil; and a
+    /// cluster of only format/control/space scalars (soft hyphen, RLO) is
+    /// a non-nil tag that renders as NOTHING — it would suppress the
+    /// derived letter on every device with no visible explanation, so it
+    /// sieves to nil too. The server enforces the same bounds; mirroring
+    /// them here keeps the drafted value honest before it is sent.
     public static func tagChar(fromDraft draft: String) -> String? {
-        draft.trimmingCharacters(in: .whitespacesAndNewlines).first.map(String.init)
+        guard let first = draft.trimmingCharacters(in: .whitespacesAndNewlines).first else { return nil }
+        let tag = String(first)
+        guard tag.unicodeScalars.count <= 16 else { return nil }
+        let visible = tag.unicodeScalars.contains { scalar in
+            switch scalar.properties.generalCategory {
+            case .format, .control, .spaceSeparator: return false
+            default: return true
+            }
+        }
+        return visible ? tag : nil
     }
 
     /// Sets or clears `device`'s roster tag character — journal-held, so
