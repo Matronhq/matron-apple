@@ -1,5 +1,8 @@
 import Foundation
 import AVFoundation
+#if os(iOS)
+import UIKit
+#endif
 
 /// Records a short voice note to a temporary AAC `.m4a` file for sending as
 /// an `audio/*` attachment. Works on both iOS and macOS (the base
@@ -31,6 +34,10 @@ public final class VoiceRecorder {
 
     private let requestPermission: () async -> Bool
     private let makeRecorder: (URL) throws -> AudioRecording
+    /// `true` while capture is live, `false` once it ends — keeps the screen
+    /// from auto-locking mid-recording (locking suspends the app and kills
+    /// the capture). Injectable so tests can observe the claim/release pair.
+    private let setKeepScreenAwake: (Bool) -> Void
     private var recorder: AudioRecording?
     private var fileURL: URL?
     private var startedAt: Date?
@@ -50,14 +57,17 @@ public final class VoiceRecorder {
     /// machine with a fake recorder and a granted-permission stub. The
     /// public `init()` wires the real AVFoundation implementations.
     init(requestPermission: @escaping () async -> Bool,
-         makeRecorder: @escaping (URL) throws -> AudioRecording) {
+         makeRecorder: @escaping (URL) throws -> AudioRecording,
+         setKeepScreenAwake: @escaping (Bool) -> Void = { _ in }) {
         self.requestPermission = requestPermission
         self.makeRecorder = makeRecorder
+        self.setKeepScreenAwake = setKeepScreenAwake
     }
 
     public convenience init() {
         self.init(requestPermission: VoiceRecorder.requestSystemPermission,
-                  makeRecorder: VoiceRecorder.makeSystemRecorder)
+                  makeRecorder: VoiceRecorder.makeSystemRecorder,
+                  setKeepScreenAwake: VoiceRecorder.setSystemKeepScreenAwake)
     }
 
     /// Requests microphone permission (once), then starts recording to a
@@ -94,6 +104,7 @@ public final class VoiceRecorder {
             let started = Date()
             self.startedAt = started
             state = .recording(start: started)
+            setKeepScreenAwake(true)
         } catch {
             // The session was already activated above — a failed recorder
             // construction or start must not leave it captured, nor leave an
@@ -114,6 +125,7 @@ public final class VoiceRecorder {
         self.fileURL = nil
         self.startedAt = nil
         state = .finished
+        setKeepScreenAwake(false)
         deactivateSession()
         return (fileURL, duration)
     }
@@ -128,6 +140,7 @@ public final class VoiceRecorder {
         fileURL = nil
         startedAt = nil
         state = .idle
+        setKeepScreenAwake(false)
         deactivateSession()
     }
 
@@ -141,6 +154,15 @@ public final class VoiceRecorder {
 
     private static func requestSystemPermission() async -> Bool {
         await AVAudioApplication.requestRecordPermission()
+    }
+
+    /// While recording, the device must not auto-lock: locking suspends the
+    /// app mid-capture and the note is cut short. macOS has no idle-lock
+    /// equivalent that interrupts capture, so this is iOS-only.
+    private static func setSystemKeepScreenAwake(_ keepAwake: Bool) {
+        #if os(iOS)
+        UIApplication.shared.isIdleTimerDisabled = keepAwake
+        #endif
     }
 
     private static func makeSystemRecorder(url: URL) throws -> AudioRecording {

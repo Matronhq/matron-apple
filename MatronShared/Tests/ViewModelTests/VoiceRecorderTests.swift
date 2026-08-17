@@ -150,6 +150,52 @@ final class VoiceRecorderTests: XCTestCase {
     }
 
     @MainActor
+    func test_start_disablesIdleTimerWhileRecording() async throws {
+        var keepAwakeCalls: [Bool] = []
+        let rec = VoiceRecorder(requestPermission: { true },
+                                makeRecorder: { _ in FakeAudioRecorder() },
+                                setKeepScreenAwake: { keepAwakeCalls.append($0) })
+        try await rec.start()
+        XCTAssertEqual(keepAwakeCalls, [true])
+    }
+
+    @MainActor
+    func test_stop_reenablesIdleTimer() async throws {
+        var keepAwakeCalls: [Bool] = []
+        let rec = VoiceRecorder(requestPermission: { true },
+                                makeRecorder: { _ in FakeAudioRecorder() },
+                                setKeepScreenAwake: { keepAwakeCalls.append($0) })
+        try await rec.start()
+        _ = rec.stop()
+        XCTAssertEqual(keepAwakeCalls, [true, false])
+    }
+
+    @MainActor
+    func test_cancel_reenablesIdleTimer() async throws {
+        var keepAwakeCalls: [Bool] = []
+        let rec = VoiceRecorder(requestPermission: { true },
+                                makeRecorder: { _ in FakeAudioRecorder() },
+                                setKeepScreenAwake: { keepAwakeCalls.append($0) })
+        try await rec.start()
+        rec.cancel()
+        XCTAssertEqual(keepAwakeCalls, [true, false])
+    }
+
+    @MainActor
+    func test_start_recordFailure_neverDisablesIdleTimer() async {
+        // The screen-awake claim must only be taken once capture is truly
+        // running — a failed record() start must not leave the idle timer off.
+        let fake = FakeAudioRecorder()
+        fake.recordReturn = false
+        var keepAwakeCalls: [Bool] = []
+        let rec = VoiceRecorder(requestPermission: { true },
+                                makeRecorder: { _ in fake },
+                                setKeepScreenAwake: { keepAwakeCalls.append($0) })
+        try? await rec.start()
+        XCTAssertEqual(keepAwakeCalls, [])
+    }
+
+    @MainActor
     func test_start_recordFailure_staysIdleAndRecoverable() async {
         // AVAudioRecorder.record() returning false must surface
         // `.recordFailed`, leave the state machine .idle, and not poison a
