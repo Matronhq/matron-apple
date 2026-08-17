@@ -53,12 +53,26 @@ public enum JournalTimelineMapper {
             if let request = AgentChatRequest.parse(payload: payload) {
                 kind = .agentChatRequest(eventID: String(event.seq), request)
             } else if let spawn = AgentSpawnRequest.parse(payload: payload) {
-                // The spawn consent card, same story as the chat card above:
-                // in the generic branch it rendered as an anonymous
-                // "Permission request" whose buttons answered over
-                // `prompt_reply` — earning "Nothing to answer right now"
-                // from the bridge while the parked ask expired untouched.
+                // The agent-spawn card, same story: no `description`, no
+                // `options`, and an answer that leaves over HTTP.
                 kind = .agentSpawnRequest(eventID: String(event.seq), spawn)
+            } else if let consentKind = payload["kind"] as? String,
+                      consentKind == "agent_spawn" || consentKind == "agent_chat" {
+                // A consent-kind payload the parser rejected (malformed —
+                // e.g. no request_id). It answers over HTTP
+                // (`POST /agent-spawn/answer` / `/agent-chat/answer`), never
+                // `prompt_reply`, so the generic branch below would draw
+                // Allow/Deny wired to a channel nothing reads — dead taps
+                // until the ask expires. Render an inert notice instead,
+                // matching android; web renders the spawn card read-only.
+                let headline = (payload["topic"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                    ?? (payload["task"] as? String).flatMap {
+                        let first = $0.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? ""
+                        return first.isEmpty ? nil : first
+                    }
+                let notice = headline.map { "Agent request that can't be answered here: \($0)" }
+                    ?? "Agent request that can't be answered here"
+                kind = .stateChange(text: notice)
             } else {
                 let description = payload["description"] as? String ?? "Permission request"
                 let optionValues = (payload["options"] as? [String]) ?? ["Allow", "Deny"]
@@ -67,6 +81,17 @@ public enum JournalTimelineMapper {
                     kind: .choice(options: optionValues.map { AskUserEvent.Option(id: $0, label: $0) },
                                   allowOther: false),
                     expiresAt: nil, replyChannel: .buttonResponse))
+            }
+
+        case JournalEventType.spawnOutcome:
+            // How a spawn request ended. Server-minted and agent-visible
+            // (unlike the card), so it replays like any other row — which is
+            // exactly what lets the card derive its resolved state from the
+            // timeline instead of remembering an answer locally.
+            if let outcome = SpawnOutcome.parse(payload: payload) {
+                kind = .spawnOutcomeRow(eventID: String(event.seq), outcome)
+            } else {
+                kind = .unknown(eventType: event.type)
             }
 
         case JournalEventType.promptReply:

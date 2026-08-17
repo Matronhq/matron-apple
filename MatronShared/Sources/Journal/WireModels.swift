@@ -19,6 +19,10 @@ public enum JournalEventType {
     /// updates the conversation row and is skipped in the timeline.
     public static let convoMeta = "convo_meta"
     public static let summary = "summary"
+    /// How an agent-spawn consent card ended (matron-journal
+    /// `emitSpawnOutcome`). Server-minted, agent-visible, and durable — the
+    /// row the spawn card derives its resolved state from.
+    public static let spawnOutcome = "spawn_outcome"
 
     /// Infix in a subagent child's convo id: `<parent>:sub:<agentId>`
     /// (mirrors the bridge's `CHILD_CONVO_INFIX`, lib/subagent-convos.js).
@@ -31,6 +35,10 @@ public enum JournalEventType {
     /// mirrors the server's MESSAGE_TYPES (src/journal.js).
     public static let messageTypes: Set<String> = [
         text, toolOutput, diff, prompt, permissionRequest, file, image,
+        // `spawn_outcome` joins the server's MESSAGE_TYPES: a resolution has
+        // to retire the card's "🤝 Agent spawn request" snippet, or the
+        // chat-list row keeps advertising a settled ask forever.
+        spawnOutcome,
     ]
 }
 

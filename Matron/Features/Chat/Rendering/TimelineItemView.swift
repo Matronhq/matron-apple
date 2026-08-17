@@ -60,10 +60,20 @@ struct TimelineItemView: View {
     /// Goes to `POST /agent-chat/answer`, not into the timeline.
     var onAnswerAgentChat: ((_ eventID: String, _ request: AgentChatRequest,
                              _ approve: Bool) -> Void)? = nil
-    /// Same pair for spawn consent cards (`POST /agent-spawn/answer`).
-    var agentSpawnState: ((String) -> AgentChatCardState)? = nil
+    /// Render state for an agent-spawn consent card. `nil` (previews, tests)
+    /// renders the card read-only, exactly as `agentChatState` does. Takes
+    /// the request too: the card's resolved state is keyed on the journal's
+    /// `request_id`, not on the row's seq.
+    var agentSpawnState: ((_ eventID: String, _ request: AgentSpawnRequest)
+                          -> AgentSpawnCardState)? = nil
+    /// Answers a spawn consent card: approve or decline, for this request
+    /// only. Goes to `POST /agent-spawn/answer`, not into the timeline.
     var onAnswerAgentSpawn: ((_ eventID: String, _ request: AgentSpawnRequest,
                               _ approve: Bool) -> Void)? = nil
+    /// Opens the room a started spawn talks in. `nil` where there is nowhere
+    /// to navigate — the Open affordance is then omitted rather than drawn
+    /// dead.
+    var onOpenSpawnRoom: ((String) -> Void)? = nil
     /// The conversation this row belongs to — tags live-output sessions in
     /// the shared store so chat teardown can suspend only its own sockets
     /// (`suspendSessions(in:)`). `nil` keeps previews/tests compiling.
@@ -323,9 +333,13 @@ struct TimelineItemView: View {
             HStack {
                 AgentSpawnRequestCard(
                     request: request,
-                    state: agentSpawnState?(eventID) ?? .expired,
+                    // No state resolver (previews, tests) → read-only, the
+                    // same convention the agent-chat card uses.
+                    state: agentSpawnState?(eventID, request)
+                        ?? .resolved(.expired(requestID: request.requestID)),
                     onApprove: { onAnswerAgentSpawn?(eventID, request, true) },
-                    onDeny: { onAnswerAgentSpawn?(eventID, request, false) }
+                    onDeny: { onAnswerAgentSpawn?(eventID, request, false) },
+                    onOpen: onOpenSpawnRoom
                 )
                 .frame(maxWidth: 360, alignment: .leading)
                 Spacer(minLength: 0)
@@ -333,7 +347,27 @@ struct TimelineItemView: View {
             .padding(.horizontal)
             .accessibilityElement(children: .contain)
             .accessibilityLabel(Self.accessibilityLabel(
-                for: item, body: "New session request. \(request.headline)"))
+                for: item, body: "Agent spawn request. \(request.headline)"))
+
+        case .spawnOutcomeRow(_, let outcome):
+            // How a spawn ended — a modest status line, not a card: the
+            // decision it reports was already made, and on `started` the
+            // only thing left to do is go there.
+            HStack(spacing: 8) {
+                Text(outcome.displayLine)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let roomID = outcome.openableRoomID, let onOpenSpawnRoom {
+                    Button("Open") { onOpenSpawnRoom(roomID) }
+                        .font(.caption)
+                        .buttonStyle(.borderless)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 2)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Self.accessibilityLabel(for: item, body: outcome.displayLine))
 
         case .askUserAnswer:
             // `chat.matron.button_response` answers are bookkeeping for

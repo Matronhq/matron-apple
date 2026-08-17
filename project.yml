@@ -322,6 +322,10 @@ targets:
         product: MatronModels
       - package: MatronShared
         product: MatronViewModels
+      # TimelineItemViewTests builds the agent-spawn `TimelineItem.Kind`
+      # payloads, which are MatronEvents value types.
+      - package: MatronShared
+        product: MatronEvents
 
   MatronMacTests:
     type: bundle.unit-test

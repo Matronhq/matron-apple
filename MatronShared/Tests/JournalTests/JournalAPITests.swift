@@ -434,19 +434,38 @@ final class JournalAPITests: XCTestCase {
         XCTAssertEqual(Set(obj.keys), ["room_id", "target_device_id", "decision"])
     }
 
-    /// Same stance for the spawn answer: `/agent-spawn/answer` rejects
-    /// `always_allow` with a 400 (no standing consent exists for spawns),
-    /// so the body must be exactly the two keys the row is resolved on.
-    func testAnswerAgentSpawnSendsExactlyTheAnswerKey() async throws {
+    /// Same rule on the spawn endpoint, and it is stricter there: the server
+    /// rejects ANY `always_allow` key with a 400 rather than ignoring it, so
+    /// an extra key would break the card's primary action outright. The body
+    /// must be exactly the two keys.
+    func testAnswerAgentSpawnSendsExactlyRequestIDAndDecision() async throws {
         StubURLProtocol.responses = ["/agent-spawn/answer": (200, #"{"ok":true}"#)]
         let api = makeAPI()
 
-        try await api.answerAgentSpawn(requestID: "spawn-1", decision: .deny)
+        try await api.answerAgentSpawn(requestID: "spawn-1", decision: .approve)
 
         let body = try XCTUnwrap(StubURLProtocol.lastRequestBody)
         let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
         XCTAssertEqual(Set(obj.keys), ["request_id", "decision"])
         XCTAssertEqual(obj["request_id"] as? String, "spawn-1")
-        XCTAssertEqual(obj["decision"] as? String, "deny")
+        XCTAssertEqual(obj["decision"] as? String, "approve")
+    }
+
+    /// 409 = the row stopped awaiting an answer (decided elsewhere, or
+    /// expired); 404 = it isn't this user's request. The view model settles
+    /// the card differently for each, so the mapping has to survive.
+    func testAnswerAgentSpawnMapsConflictAndNotFound() async throws {
+        let api = makeAPI()
+        StubURLProtocol.responses = ["/agent-spawn/answer": (409, #"{"error":"conflict"}"#)]
+        do {
+            try await api.answerAgentSpawn(requestID: "spawn-1", decision: .approve)
+            XCTFail("expected .conflict")
+        } catch JournalAPIError.conflict { /* expected */ }
+
+        StubURLProtocol.responses = ["/agent-spawn/answer": (404, #"{"error":"not_found"}"#)]
+        do {
+            try await api.answerAgentSpawn(requestID: "spawn-1", decision: .deny)
+            XCTFail("expected .notFound")
+        } catch JournalAPIError.notFound { /* expected */ }
     }
 }

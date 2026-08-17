@@ -496,7 +496,22 @@ struct MacChatListView: View {
                 sessionShort: summary?.sessionShort,
                 boxShort: summary?.boxShort,
                 roomBoxNames: summary?.roomBoxNames ?? [],
-                roomBoxShorts: summary?.roomBoxShorts ?? []
+                roomBoxShorts: summary?.roomBoxShorts ?? [],
+                // "Open" on a started spawn: select the spawned room in the
+                // sidebar. `prepareConversation` first, exactly as the New
+                // Chat sheet does before navigating to a freshly-started
+                // conversation — the room may have no journal frames yet,
+                // and the detail column needs a row to render.
+                onOpenConversation: { roomID in
+                    // `@MainActor in` explicitly: `chatDetail(for:)` is not
+                    // an isolated context, so an unannotated Task would
+                    // resume off the main thread after the await and write
+                    // `selectedSummaryID` from there.
+                    Task { @MainActor in
+                        await deps.prepareConversation(for: session, id: roomID)
+                        selectedSummaryID = roomID
+                    }
+                }
             )
             .id(id)
         } else {

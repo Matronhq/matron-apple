@@ -652,15 +652,44 @@ final class JournalStoreTests: XCTestCase {
             "🤝 Agent chat request")
     }
 
-    /// Same server-agreement pin for the spawn consent card (`snippetOf`
-    /// returns this exact string for `kind: "agent_spawn"`).
+    /// Same disagreement, same fix, for the spawn card — its payload carries
+    /// no `description` either.
     func testAgentSpawnCardSnippetMatchesTheServer() {
         XCTAssertEqual(
             JournalStore.snippet(type: "permission_request", payload: [
                 "kind": "agent_spawn", "request_id": "spawn-1",
-                "from_name": "dan-mac",
+                "task": "Rebase and push", "from_name": "dev-2",
             ]),
             "🤝 Agent spawn request")
+    }
+
+    /// A resolution has to retire the card's snippet, or the chat-list row
+    /// keeps advertising a settled ask forever. Strings pinned to the
+    /// server's own snippetOf (matron-journal src/journal.js).
+    func testSpawnOutcomeSnippetsMatchTheServer() {
+        let expected = [
+            "started": "🚀 Spawned session started",
+            "declined": "🚫 Spawn declined",
+            "expired": "⌛ Spawn request expired",
+            "failed": "❌ Spawn failed",
+        ]
+        for (outcome, line) in expected {
+            XCTAssertEqual(
+                JournalStore.snippet(type: "spawn_outcome",
+                                     payload: ["request_id": "s", "outcome": outcome]),
+                line)
+        }
+        XCTAssertEqual(
+            JournalStore.snippet(type: "spawn_outcome",
+                                 payload: ["request_id": "s", "outcome": "conscripted"]),
+            "[spawn_outcome]",
+            "an outcome this build doesn't know renders as the server's placeholder")
+    }
+
+    /// `spawn_outcome` joins the server's MESSAGE_TYPES — it sets the
+    /// conversation snippet and bumps unread like the card it retires.
+    func testSpawnOutcomeIsAMessageType() {
+        XCTAssertTrue(JournalEventType.messageTypes.contains(JournalEventType.spawnOutcome))
     }
 
     func testOtherPermissionRequestsKeepTheDescriptionSnippet() {

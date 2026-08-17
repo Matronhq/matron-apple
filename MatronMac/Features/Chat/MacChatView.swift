@@ -268,6 +268,12 @@ struct MacChatView: View {
         return tag + Text(" ") + Text(chatTitle)
     }
 
+    /// Selects a top-level conversation in the sidebar — the "Open"
+    /// affordance on a started spawn. A spawned room is NOT a sub-chat, so
+    /// it changes the selection rather than opening the child pane. `nil`
+    /// (previews, tests) omits the affordance rather than drawing it dead.
+    var onOpenConversation: ((String) -> Void)? = nil
+
     /// Minimum detail width to show the child sub-chat pane BESIDE the
     /// parent timeline. Below this the child pane takes over the whole
     /// detail area with a back chevron (spec §5). Floor is 800 — the sum of
@@ -289,7 +295,8 @@ struct MacChatView: View {
                             viewModel: childVM, stripViewModel: parentStrip,
                             childID: childID, showsBackChevron: false,
                             onClose: { openSubChatID = nil },
-                            onOpenSibling: { openSubChatID = $0 }
+                            onOpenSibling: { openSubChatID = $0 },
+                            onOpenSpawnRoom: onOpenConversation
                         )
                         // Key the pane's identity to the child: switching
                         // siblings keeps the same structural position, and
@@ -307,7 +314,8 @@ struct MacChatView: View {
                         viewModel: childVM, stripViewModel: parentStrip,
                         childID: childID, showsBackChevron: true,
                         onClose: { openSubChatID = nil },
-                        onOpenSibling: { openSubChatID = $0 }
+                        onOpenSibling: { openSubChatID = $0 },
+                        onOpenSpawnRoom: onOpenConversation
                     )
                     // See the side-by-side branch: identity per child so a
                     // sibling switch re-runs `.task` and starts the new VM.
@@ -426,6 +434,7 @@ struct MacChatView: View {
                         viewModel: viewModel,
                         stripViewModel: stripViewModel,
                         onOpenSubChat: { openSubChatID = $0 },
+                        onOpenSpawnRoom: onOpenConversation,
                         onPreviewImage: { url, img in
                             imagePreview = ImagePreview(
                                 image: img,
@@ -866,6 +875,10 @@ private struct MacTimelineListContent: View, Equatable {
     /// rows re-render as children appear/finish.
     let stripViewModel: SubChatStripViewModel
     let onOpenSubChat: (String) -> Void
+    /// Opens the room a started spawn talks in. Fixed per screen like
+    /// `onOpenSubChat` (so `==` ignoring it is safe), and `nil` where there
+    /// is nowhere to navigate — the affordance is then omitted, not dead.
+    let onOpenSpawnRoom: ((String) -> Void)?
     /// Carries the tapped image's `mxc://` URL alongside the resolved
     /// `Image` so the presenter can look up its native pixel size.
     let onPreviewImage: (URL, Image) -> Void
@@ -920,6 +933,7 @@ private struct MacTimelineListContent: View, Equatable {
                     subtaskChild: child,
                     viewModel: viewModel,
                     onOpenSubChat: onOpenSubChat,
+                    onOpenSpawnRoom: onOpenSpawnRoom,
                     onPreviewImage: onPreviewImage
                 )
                 .equatable()
@@ -957,6 +971,10 @@ private struct MacTimelineRowView: View, Equatable {
     let subtaskChild: SubChatSummary?
     let viewModel: ChatViewModel
     let onOpenSubChat: (String) -> Void
+    /// Selects the room a started spawn talks in — a top-level conversation,
+    /// so it changes the sidebar selection rather than opening a child pane.
+    /// `nil` where there is nowhere to navigate.
+    let onOpenSpawnRoom: ((String) -> Void)?
     let onPreviewImage: (URL, Image) -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -1019,14 +1037,18 @@ private struct MacTimelineRowView: View, Equatable {
                                 decision: approve ? .approve : .deny)
                         }
                     },
-                    agentSpawnState: { viewModel.agentSpawnState($0) },
+                    agentSpawnState: { viewModel.agentSpawnState($0, request: $1) },
                     onAnswerAgentSpawn: { eventID, request, approve in
                         Task {
-                            await viewModel.answerAgentSpawn(
+                            // `try?`: the only error that escapes is
+                            // cancellation, which the view model has already
+                            // handled by dropping the in-flight state.
+                            try? await viewModel.answerAgentSpawn(
                                 eventID: eventID, request: request,
                                 decision: approve ? .approve : .deny)
                         }
                     },
+                    onOpenSpawnRoom: onOpenSpawnRoom,
                     convoID: viewModel.roomID,
                     hasMultipleSenders: viewModel.hasMultipleSenders
                 )
@@ -1112,6 +1134,9 @@ struct MacSubChatPane: View {
     let showsBackChevron: Bool
     let onClose: () -> Void
     let onOpenSibling: (String) -> Void
+    /// A spawned room opened from THIS pane's timeline is a top-level
+    /// conversation, not a sibling — it changes the sidebar selection.
+    var onOpenSpawnRoom: ((String) -> Void)? = nil
 
     @State private var imagePreview: MacSubChatImagePreview?
     @State private var startedGeneration = 0
@@ -1173,6 +1198,7 @@ struct MacSubChatPane: View {
                             viewModel: viewModel,
                             stripViewModel: stripViewModel,
                             onOpenSubChat: onOpenSibling,
+                            onOpenSpawnRoom: onOpenSpawnRoom,
                             onPreviewImage: { url, img in
                                 imagePreview = MacSubChatImagePreview(
                                     image: img,

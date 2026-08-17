@@ -472,49 +472,93 @@ final class JournalTimelineMapperTests: XCTestCase {
     }
 
     /// A card whose payload is missing something the answer call needs is
-    /// unanswerable — better a generic card than buttons that would 400.
-    func testUnanswerableAgentChatPayloadFallsBackToTheGenericCard() throws {
+    /// unanswerable — and its answer channel is HTTP, not `prompt_reply`, so
+    /// the generic card's Allow/Deny would be dead buttons. It renders as an
+    /// inert notice instead.
+    func testUnanswerableAgentChatPayloadRendersAsAnInertNotice() throws {
         let item = try XCTUnwrap(map(event(14, type: "permission_request", payload: [
             "kind": "agent_chat", "request": "invite", "from_device_id": 4,
         ])))
-        guard case .askUser = item.kind else {
-            return XCTFail("expected the generic fallback, got \(item.kind)")
+        guard case .stateChange = item.kind else {
+            return XCTFail("expected the inert notice, got \(item.kind)")
         }
     }
 
-    // MARK: Spawn consent card
+    // MARK: Agent-spawn consent card
 
-    /// Same regression as the agent-chat card, one card kind later: the
-    /// spawn ask (journal `spawn_request` park path) has no `description`/
-    /// `options` either, so the generic branch rendered it as an anonymous
-    /// "Permission request" whose Allow/Deny answered over `prompt_reply` —
-    /// earning "Nothing to answer right now" from the bridge while the
-    /// parked ask expired untouched.
     func testAgentSpawnPermissionRequestMapsToItsOwnKind() throws {
-        let item = try XCTUnwrap(map(event(15, type: "permission_request", payload: [
+        let item = try XCTUnwrap(map(event(21, type: "permission_request", payload: [
             "kind": "agent_spawn", "request_id": "spawn-1",
-            "from_device_id": 4, "from_name": "dan-mac",
-            "target_device_id": 9, "target_name": "dev-2",
-            "workdir": "~/yearbook-app", "task": "run the failing spec",
-            "topic": "ci triage",
+            "from_device_id": 4, "from_name": "dev-2",
+            "from_convo_id": "68385da9", "from_convo_title": "Syncing bridge services",
+            "target_device_id": 7, "target_name": "dev-6",
+            "workdir": "/srv/app", "task": "Rebase and push", "topic": "spawn wiring",
         ])))
         guard case .agentSpawnRequest(let eventID, let request) = item.kind else {
             return XCTFail("expected .agentSpawnRequest, got \(item.kind)")
         }
-        XCTAssertEqual(eventID, "15")
+        XCTAssertEqual(eventID, "21", "the journal seq, as a string")
         XCTAssertEqual(request.requestID, "spawn-1")
-        XCTAssertEqual(request.targetName, "dev-2")
-        XCTAssertEqual(request.workdir, "~/yearbook-app")
+        XCTAssertEqual(request.task, "Rebase and push")
     }
 
-    func testUnanswerableAgentSpawnPayloadFallsBackToTheGenericCard() throws {
-        let item = try XCTUnwrap(map(event(16, type: "permission_request", payload: [
-            "kind": "agent_spawn", "from_device_id": 4, "target_device_id": 9,
-            "workdir": "~/x", "task": "y",
+    /// The two consent cards share an event type and are told apart by
+    /// `kind` alone — neither parser may claim the other's payload.
+    func testAgentChatAndAgentSpawnCardsDoNotClaimEachOther() throws {
+        let chat = try XCTUnwrap(map(event(22, type: "permission_request", payload: [
+            "kind": "agent_chat", "request": "invite", "room_id": "r",
+            "from_device_id": 4, "target_device_id": 7,
         ])))
-        guard case .askUser = item.kind else {
-            return XCTFail("expected the generic fallback, got \(item.kind)")
+        guard case .agentChatRequest = chat.kind else {
+            return XCTFail("expected .agentChatRequest, got \(chat.kind)")
+        }
+        let spawn = try XCTUnwrap(map(event(23, type: "permission_request", payload: [
+            "kind": "agent_spawn", "request_id": "spawn-2", "task": "do a thing",
+        ])))
+        guard case .agentSpawnRequest = spawn.kind else {
+            return XCTFail("expected .agentSpawnRequest, got \(spawn.kind)")
         }
     }
 
+    /// Unanswerable (no `request_id`) — the spawn flow answers over
+    /// `POST /agent-spawn/answer`, never `prompt_reply`, so the generic
+    /// card's Allow/Deny would be dead buttons until the ask expired. An
+    /// inert notice carrying the headline is right; buttons that go nowhere
+    /// are not.
+    func testUnanswerableAgentSpawnPayloadRendersAsAnInertNotice() throws {
+        let item = try XCTUnwrap(map(event(24, type: "permission_request", payload: [
+            "kind": "agent_spawn", "task": "Rebase and push",
+        ])))
+        guard case .stateChange(let text) = item.kind else {
+            return XCTFail("expected the inert notice, got \(item.kind)")
+        }
+        XCTAssertTrue(text.contains("Rebase and push"))
+    }
+
+    // MARK: Spawn outcome
+
+    func testSpawnOutcomeMapsToItsOwnRow() throws {
+        let item = try XCTUnwrap(map(event(25, type: "spawn_outcome", sender: "journal", payload: [
+            "request_id": "spawn-1", "outcome": "started",
+            "room_id": "room-9", "child_convo_id": "convo-9",
+        ])))
+        guard case .spawnOutcomeRow(let eventID, let outcome) = item.kind else {
+            return XCTFail("expected .spawnOutcomeRow, got \(item.kind)")
+        }
+        XCTAssertEqual(eventID, "25")
+        XCTAssertEqual(item.id, "25", "eventID and the row id are the same seq string")
+        XCTAssertEqual(outcome.requestID, "spawn-1")
+        XCTAssertEqual(outcome.openableRoomID, "room-9")
+    }
+
+    /// A malformed outcome must not vanish silently — it falls into the same
+    /// unknown-event handling every other unparseable row uses.
+    func testMalformedSpawnOutcomeFallsBackToUnknown() throws {
+        let item = try XCTUnwrap(map(event(26, type: "spawn_outcome", sender: "journal",
+                                           payload: ["outcome": "started"])))
+        guard case .unknown(let eventType) = item.kind else {
+            return XCTFail("expected .unknown, got \(item.kind)")
+        }
+        XCTAssertEqual(eventType, "spawn_outcome")
+    }
 }

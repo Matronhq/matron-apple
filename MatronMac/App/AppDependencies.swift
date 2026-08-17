@@ -238,8 +238,9 @@ final class AppDependencies {
         core(for: session).api
     }
 
-    /// Spawn consent surface: answering the session-start cards inline in a
-    /// chat. Same session-scoped `JournalAPI`; protocol slice for testability.
+    /// Agent-spawn consent surface: answering the cards inline in a chat.
+    /// No settings-screen twin — a spawn's resolution is journalled, so
+    /// there is no parked-row list to poll.
     func agentSpawnService(for session: UserSession) -> any AgentSpawnAnswering {
         core(for: session).api
     }
