@@ -1267,6 +1267,39 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_queuedRelease_earliestWins_sendThenExpired() async {
+        // The realistic double-release: a committed `send` that was never
+        // acked, then boot reconcile's terminal `expired` for the same
+        // prompt_id. The earliest release wins — the queue really was
+        // flushed, so the card keeps reporting the send that happened
+        // rather than downgrading to the generic resolved state.
+        let vm = await makeAskVM(items: [
+            queuedCardItem(id: "$1", promptID: "pr_a"),
+            releaseItem(id: "$8", promptID: "pr_a", action: "send"),
+            releaseItem(id: "$9", promptID: "pr_a", action: "expired"),
+        ])
+        XCTAssertTrue(vm.isPromptAnswered("$1"))
+        XCTAssertEqual(vm.answerSummary(forPrompt: "$1"), "⚡ Send all now")
+    }
+
+    @MainActor
+    func test_releaseRow_neverEntersRows() async {
+        // The whole design rests on release rows being invisible: they
+        // must not become rows, day separators, or scroll anchors.
+        let vm = await makeAskVM(items: [
+            queuedCardItem(id: "$1", promptID: "pr_a"),
+            releaseItem(id: "$9", promptID: "pr_a"),
+        ])
+        let messageIDs = vm.rows.compactMap { row -> String? in
+            if case .message(let item) = row { return item.id }
+            return nil
+        }
+        XCTAssertEqual(messageIDs, ["$1"], "the hidden release row must not render")
+        let separators = vm.rows.filter { if case .separator = $0 { return true } else { return false } }
+        XCTAssertEqual(separators.count, 1, "a release must not mint its own day separator")
+    }
+
+    @MainActor
     func test_pendingAsk_returnsMostRecentUnansweredPrompt() async {
         UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
         defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }

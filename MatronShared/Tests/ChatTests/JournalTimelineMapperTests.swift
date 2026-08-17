@@ -299,6 +299,20 @@ final class JournalTimelineMapperTests: XCTestCase {
         XCTAssertEqual(values, ["send"])
     }
 
+    /// A release frame is never meant to be visible, so a malformed one
+    /// (kind says queued_release but prompt_id or action is missing) must
+    /// drop entirely — falling through to the generic prompt_reply path
+    /// would render it as an empty text bubble, the exact symptom the
+    /// release branch exists to remove.
+    func testMalformedQueuedReleaseReplyIsDropped() {
+        XCTAssertNil(map(event(22, type: "prompt_reply", sender: "agent:bridge",
+                               payload: ["kind": "queued_release", "prompt_id": "pr_abc"])),
+                     "missing action must drop the row, not render a blank bubble")
+        XCTAssertNil(map(event(23, type: "prompt_reply", sender: "agent:bridge",
+                               payload: ["kind": "queued_release", "action": "send"])),
+                     "missing prompt_id must drop the row, not render a blank bubble")
+    }
+
     func testImageBuildsMediaURL() throws {
         let item = try XCTUnwrap(map(event(8, type: "image",
                                            payload: ["blob_ref": "b123", "content_type": "image/png"])))

@@ -396,6 +396,11 @@ public final class ChatViewModel {
         var lastIsOwn = false
         var nextActivityLabel: String?
         var nextSpawnOutcomes: [String: SpawnOutcome] = [:]
+        // Scratch for the queued-release memo: hidden "qr:" answer rows'
+        // values, and each card's own release key. Joined after the loop —
+        // a release can precede or follow its card in `items`.
+        var qrReleaseValues: [String: [String]] = [:]
+        var cardReleaseKey: [String: String] = [:]
         var nonOwnSenders = Set<String>()
         var nextHasMultipleSenders = false
         currentDayInterval = nil
@@ -406,6 +411,12 @@ public final class ChatViewModel {
             // duplicate must not resurrect an earlier state.
             if case .spawnOutcomeRow(_, let outcome) = item.kind {
                 nextSpawnOutcomes[outcome.requestID] = outcome
+            }
+            // Queue cards remember their bridge prompt id; captured here so
+            // the release memo can key by the card's event id.
+            if case .askUser(let id, let evt) = item.kind,
+               let releasePromptID = evt.queuedReleasePromptID {
+                cardReleaseKey[id] = "qr:\(releasePromptID)"
             }
             // The trailing activity indicator renders as a fixed footer
             // (below the scrollable timeline, above the composer), NOT a
@@ -428,8 +439,17 @@ public final class ChatViewModel {
             // `.askUserAnswer` is pendingAsk bookkeeping (button
             // responses are hidden, matching Matron X) — keep it out
             // of the rows AND out of day bucketing, same reasoning as
-            // the virtual stateChange filter above.
-            if case .askUserAnswer = item.kind { continue }
+            // the virtual stateChange filter above. Bridge release rows
+            // ("qr:" keys) are captured for the memo first: earliest wins
+            // (`items` is seq-ascending), so a committed `send` followed
+            // by boot reconcile's terminal `expired` keeps reporting the
+            // send that actually happened.
+            if case .askUserAnswer(let promptID, let values) = item.kind {
+                if promptID.hasPrefix("qr:"), qrReleaseValues[promptID] == nil {
+                    qrReleaseValues[promptID] = values
+                }
+                continue
+            }
             // `hasMultipleSenders` only counts the durable message kinds
             // that ever render an avatar (`.text` / `.image` / `.file`) —
             // NOT `.toolStreamLive`, `.stateChange`, tool cards, etc.
@@ -481,6 +501,13 @@ public final class ChatViewModel {
         // on screen through `@Observable` several times a second during a
         // streaming turn.
         if nextSpawnOutcomes != spawnOutcomes { self.spawnOutcomes = nextSpawnOutcomes }
+        var nextReleaseResolved: [String: [String]] = [:]
+        for (cardID, key) in cardReleaseKey {
+            if let values = qrReleaseValues[key] { nextReleaseResolved[cardID] = values }
+        }
+        if nextReleaseResolved != releaseResolvedAnswers {
+            self.releaseResolvedAnswers = nextReleaseResolved
+        }
         self.rows = nextRows
         self.firstRenderableItemID = first
         self.lastRenderableItemID = last
@@ -1675,16 +1702,16 @@ public final class ChatViewModel {
             guard case .askUser(let id, let evt) = item.kind else { continue }
             if answeredPromptIDs.contains(id) { continue }
             if answeredInTimeline.contains(id) { continue }
-            if queuedReleaseAnswer(for: evt) != nil { continue }
+            if queuedReleaseAnswer(forPrompt: id) != nil { continue }
             if let expiresAt = evt.expiresAt, Date.now >= expiresAt { continue }
             return AskUserPromptContext(id: id, event: evt)
         }
         return nil
     }
 
-    /// The bridge's durable resolution for a busy-queue card, or `nil`
-    /// while the card is still live. The mapper hides each
-    /// `queued_release` prompt_reply as an answer row keyed
+    /// The bridge's durable resolution for a busy-queue card (keyed by the
+    /// card's event id), or `nil` while the card is still live. The mapper
+    /// hides each `queued_release` prompt_reply as an answer row keyed
     /// `"qr:<prompt_id>"`; matching is by the card's own
     /// `queuedReleasePromptID`, NOT by seq — a "Send all now" tap on one
     /// card flushes the whole queue and the bridge emits one release per
@@ -1692,16 +1719,29 @@ public final class ChatViewModel {
     /// Deliberately not `isOwn`-gated: releases are bridge-authored
     /// facts about the queue (sent / cancelled / expired), not another
     /// user's answer, and the card must resolve for everyone.
-    private func queuedReleaseAnswer(for event: AskUserEvent) -> [String]? {
-        guard let releasePromptID = event.queuedReleasePromptID else { return nil }
-        let key = "qr:\(releasePromptID)"
-        for item in items {
-            if case .askUserAnswer(let promptID, let values) = item.kind, promptID == key {
-                return values
-            }
-        }
-        return nil
+    ///
+    /// Earliest release wins (unlike `spawnOutcomes`, where later rows
+    /// win): the realistic double is a committed `send` followed by boot
+    /// reconcile's terminal `expired`, and the card should keep reporting
+    /// the send that actually happened rather than downgrade to the
+    /// generic resolved state.
+    ///
+    /// Never folded into `answeredPromptIDs` — safe because a release
+    /// always has a higher seq than its card and `items` is the full
+    /// local history (the 120-row window is render-only), so any store
+    /// that holds the card holds its release. If local event trimming is
+    /// ever added, this is the invariant that breaks first.
+    private func queuedReleaseAnswer(forPrompt eventID: String) -> [String]? {
+        releaseResolvedAnswers[eventID]
     }
+
+    /// Backing memo for `queuedReleaseAnswer(forPrompt:)`, card event id →
+    /// release values. Rebuilt in `applyDerivedRecompute`'s single pass and
+    /// assigned only on change (same idiom as `spawnOutcomes`) — the
+    /// lookups run from view bodies per ask row per snapshot, and a
+    /// full-history scan there is exactly the per-row cost the timeline's
+    /// CPU history warns about.
+    private var releaseResolvedAnswers: [String: [String]] = [:]
 
     /// Folds cross-device answers visible in the current timeline into
     /// the persisted `answeredPromptIDs` set, so a prompt resolved on
@@ -1766,7 +1806,7 @@ public final class ChatViewModel {
                 return true
             }
         }
-        if let evt = askEvent(forPrompt: eventID), queuedReleaseAnswer(for: evt) != nil {
+        if queuedReleaseAnswer(forPrompt: eventID) != nil {
             return true
         }
         return false
@@ -1835,8 +1875,7 @@ public final class ChatViewModel {
         // option labels ("⚡ Send all now"). An `expired` release matches
         // no option and shows the generic resolved state — "You chose:
         // expired" would be a lie, nobody chose anything.
-        if let evt = askEvent(forPrompt: promptEventID),
-           let values = queuedReleaseAnswer(for: evt),
+        if let values = queuedReleaseAnswer(forPrompt: promptEventID),
            values != ["expired"] {
             return mapValuesToLabels(values, promptEventID: promptEventID)
         }

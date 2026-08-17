@@ -101,9 +101,12 @@ public enum JournalTimelineMapper {
             // flush retires every sent card's buttons on every device —
             // the generic branches below would render it as an empty
             // text bubble and resolve nothing.
-            if (payload["kind"] as? String) == "queued_release",
-               let releasePromptID = payload["prompt_id"] as? String,
-               let action = payload["action"] as? String {
+            if (payload["kind"] as? String) == "queued_release" {
+                // A release is never meant to be visible, so a malformed
+                // one (no prompt_id / no action) drops entirely rather
+                // than falling through to the generic path's empty bubble.
+                guard let releasePromptID = payload["prompt_id"] as? String,
+                      let action = payload["action"] as? String else { return nil }
                 kind = .askUserAnswer(promptEventID: "qr:\(releasePromptID)",
                                       selectedValues: [action])
                 break
