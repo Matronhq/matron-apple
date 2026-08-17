@@ -195,8 +195,11 @@ struct MacChatToolbar: ToolbarContent {
 
     private var modelContextCluster: some View {
         VStack(alignment: .leading, spacing: 1) {
+            // Effort rides on the model's own line — the cluster's height
+            // is budgeted for three caption lines and all three are spoken
+            // for. Absent effort renders as the bare model name.
             if let model = status?.model {
-                Text(model)
+                Text(UsageMetersFormat.modelLine(model: model, effort: status?.effort))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

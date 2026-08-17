@@ -994,7 +994,10 @@ public actor JournalSyncEngine {
                                 email: update.email ?? held.email,
                                 taskRef: update.taskRef ?? held.taskRef,
                                 workdir: update.workdir ?? held.workdir,
-                                vitals: update.vitals ?? held.vitals
+                                vitals: update.vitals ?? held.vitals,
+                                modelOptions: update.modelOptions ?? held.modelOptions,
+                                effortLevels: update.effortLevels ?? held.effortLevels,
+                                effort: update.effort ?? held.effort
                             )
                         } else {
                             lastSessionStatus[update.convoID] = update

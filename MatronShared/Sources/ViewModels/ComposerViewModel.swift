@@ -115,16 +115,30 @@ public final class ComposerViewModel {
     private let timeline: TimelineService
     private let commands: [BotCommand]
 
+    /// The conversation's last-known session status, read on demand from
+    /// the `ChatViewModel` that owns it. A closure rather than a stored
+    /// copy: the two view models are built as a pair by the chat list's VM
+    /// cache but are otherwise independent, and reading through means the
+    /// palette sees the newest lists with nothing having to push them
+    /// across — and that SwiftUI registers the read while evaluating the
+    /// palette's own body, so a later status frame repaints it.
+    ///
+    /// Defaults to "no status", which is what a composer with no chat half
+    /// (tests, any future non-conversation surface) should offer: nothing.
+    private let sessionStatus: @MainActor () -> SessionStatus?
+
     public init(
         roomID: String,
         timeline: TimelineService,
         commands: [BotCommand],
-        recentFolders: RecentStartFolders = RecentStartFolders()
+        recentFolders: RecentStartFolders = RecentStartFolders(),
+        sessionStatus: @escaping @MainActor () -> SessionStatus? = { nil }
     ) {
         self.roomID = roomID
         self.timeline = timeline
         self.commands = commands
         self.recentFolders = recentFolders
+        self.sessionStatus = sessionStatus
     }
 
     /// Whether the slash palette should be visible. True when the input is
@@ -221,11 +235,15 @@ public final class ComposerViewModel {
         return true
     }
 
-    /// The palette's second mode: the matched command's static argument
-    /// suggestions, then any recent-folder matches. Arguments first —
-    /// they're few and short, and the folder list can run to eight rows.
+    /// The palette's second mode: the matched command's argument
+    /// suggestions — static ones from the catalog, session-derived ones
+    /// (`/model`, `/effort`) from the bridge's status frame — then any
+    /// recent-folder matches. Arguments first: they're few and short, and
+    /// the folder list can run to eight rows.
     public var paletteSuggestions: [PaletteSuggestion] {
-        BotCommandCatalog.argSuggestions(for: input, in: commands).map { .argument($0) }
+        BotCommandCatalog
+            .argSuggestions(for: input, in: commands, status: sessionStatus())
+            .map { .argument($0) }
             + folderSuggestions.map { .folder($0) }
     }
 

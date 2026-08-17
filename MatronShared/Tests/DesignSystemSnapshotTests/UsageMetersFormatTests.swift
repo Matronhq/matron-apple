@@ -105,4 +105,15 @@ final class UsageMetersFormatTests: XCTestCase {
         XCTAssertNil(UsageMetersFormat.vitalsLine(SessionStatus.Vitals(cpuPct: nil, ramPct: nil)))
     }
 
+    /// Effort renders beside the model, and renders NOTHING when the bridge
+    /// hasn't said — no separator, no placeholder, nothing for the layout to
+    /// reserve space for (2026-08-10 spec, phase 2).
+    func testModelLine() {
+        XCTAssertEqual(UsageMetersFormat.modelLine(model: "opus", effort: "high"), "opus · high")
+        XCTAssertEqual(UsageMetersFormat.modelLine(model: "opus", effort: nil), "opus")
+        // A blank string is as unknown as an absent one — the bridge never
+        // guesses, and neither does the renderer.
+        XCTAssertEqual(UsageMetersFormat.modelLine(model: "opus", effort: "   "), "opus")
+    }
+
 }

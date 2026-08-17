@@ -297,6 +297,18 @@ public enum ServerFrame: Equatable, Sendable {
                         vitals = SessionStatus.Vitals(cpuPct: cpu, ramPct: ram)
                     }
                 }
+                // Session-scoped argument lists for the slash palette.
+                // Unlike `limits`, an empty array is NOT collapsed to nil:
+                // absent means "this bridge doesn't say" and empty means
+                // "this agent offers nothing", and only the second may
+                // overwrite a list the app already holds.
+                func options(_ key: String) -> [SessionStatus.Option]? {
+                    guard let raw = status[key] as? [[String: Any]] else { return nil }
+                    return raw.compactMap { entry in
+                        guard let value = entry["value"] as? String else { return nil }
+                        return SessionStatus.Option(value: value, label: entry["label"] as? String)
+                    }
+                }
                 return .sessionStatus(SessionStatusUpdate(
                     convoID: convoID, model: status["model"] as? String,
                     context: context, limits: limits,
@@ -307,7 +319,10 @@ public enum ServerFrame: Equatable, Sendable {
                     // for the next turn-end frame. Absent for normal convos.
                     taskRef: status["task_ref"] as? String,
                     workdir: status["workdir"] as? String,
-                    vitals: vitals))
+                    vitals: vitals,
+                    modelOptions: options("model_options"),
+                    effortLevels: options("effort_levels"),
+                    effort: status["effort"] as? String))
             }
             guard let ref = obj["message_ref"] as? String else { return nil }
             return .ephemeral(EphemeralUpdate(

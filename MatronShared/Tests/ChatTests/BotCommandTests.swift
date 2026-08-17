@@ -198,3 +198,107 @@ final class ArgSuggestionResolutionTests: XCTestCase {
         XCTAssertEqual(resolve("just chatting about --force"), [])
     }
 }
+
+/// Session-derived argument suggestions (2026-08-10 spec, phase 2): the
+/// model aliases and effort levels are lists the BRIDGE owns and publishes
+/// on the status frame, so `/model` and `/effort` take their values from
+/// `SessionStatus` rather than the catalog. Same resolver, same filtering
+/// and single-slot rules as the static values.
+final class SessionDerivedArgSuggestionTests: XCTestCase {
+    private let status = SessionStatus(
+        modelOptions: [
+            SessionStatus.Option(value: "opus", label: "Opus"),
+            SessionStatus.Option(value: "sonnet", label: "Sonnet"),
+            SessionStatus.Option(value: "opusplan", label: "Opus Plan"),
+        ],
+        effortLevels: [
+            SessionStatus.Option(value: "low", label: "Low"),
+            SessionStatus.Option(value: "high", label: "High"),
+            SessionStatus.Option(value: "xhigh", label: "X-High"),
+        ])
+
+    private func resolve(_ input: String, _ status: SessionStatus? = nil) -> [String] {
+        BotCommandCatalog.argSuggestions(
+            for: input, in: BotCommandCatalog.claudeBridge, status: status).map(\.value)
+    }
+
+    /// The catalog declares WHERE a command's values come from; it can't
+    /// hold the values themselves, because they're agent-dependent.
+    func test_claudeBridge_modelAndEffortDeclareSessionSources() {
+        let catalog = BotCommandCatalog.claudeBridge
+        XCTAssertEqual(catalog.first { $0.trigger == "/model" }?.sessionArgSource, .modelOptions)
+        XCTAssertEqual(catalog.first { $0.trigger == "/effort" }?.sessionArgSource, .effortLevels)
+        XCTAssertNil(catalog.first { $0.trigger == "/switch" }?.sessionArgSource,
+                     "statically-known values keep their catalog list")
+    }
+
+    func test_emptyArgument_offersEveryOption() {
+        XCTAssertEqual(resolve("/model ", status), ["opus", "sonnet", "opusplan"])
+        XCTAssertEqual(resolve("/effort ", status), ["low", "high", "xhigh"])
+    }
+
+    func test_partialFiltersByPrefix_caseInsensitively() {
+        XCTAssertEqual(resolve("/model op", status), ["opus", "opusplan"])
+        XCTAssertEqual(resolve("/effort X", status), ["xhigh"])
+    }
+
+    func test_noMatch_dismisses() {
+        XCTAssertEqual(resolve("/model gpt", status), [])
+    }
+
+    func test_partialIdenticalToOption_offersNothing() {
+        XCTAssertEqual(resolve("/model opus", status), ["opusplan"],
+                       "an exact match drops out, longer values still complete")
+        XCTAssertEqual(resolve("/effort high", status), [])
+    }
+
+    /// These are values, not flags: one fills the slot and the palette is
+    /// done — "/model opus sonnet" is a line the bridge would refuse.
+    func test_valuesFillASingleSlot() {
+        XCTAssertEqual(resolve("/model opus ", status), [])
+        XCTAssertEqual(resolve("/effort high ", status), [])
+    }
+
+    /// An older bridge never sends the lists. Absent means "this bridge
+    /// doesn't say" and offers nothing — exactly today's behaviour, no
+    /// version negotiation.
+    func test_absentLists_offerNothing() {
+        XCTAssertEqual(resolve("/model "), [])
+        XCTAssertEqual(resolve("/effort "), [])
+        XCTAssertEqual(resolve("/model ", SessionStatus(model: "opus")), [])
+    }
+
+    /// Empty means "this agent offers nothing" — same rendering, different
+    /// statement (a Codex session with no switchable models).
+    func test_emptyLists_offerNothing() {
+        let none = SessionStatus(modelOptions: [], effortLevels: [])
+        XCTAssertEqual(resolve("/model ", none), [])
+        XCTAssertEqual(resolve("/effort ", none), [])
+    }
+
+    /// The label rides through to the palette row; a value without one
+    /// displays as itself.
+    func test_labelsSurviveResolution() {
+        let suggestions = BotCommandCatalog.argSuggestions(
+            for: "/model ", in: BotCommandCatalog.claudeBridge, status: status)
+        XCTAssertEqual(suggestions.map(\.displayLabel), ["Opus", "Sonnet", "Opus Plan"])
+
+        let unlabelled = SessionStatus(modelOptions: [SessionStatus.Option(value: "opus", label: nil)])
+        XCTAssertEqual(
+            BotCommandCatalog.argSuggestions(
+                for: "/model ", in: BotCommandCatalog.claudeBridge, status: unlabelled)
+                .map(\.displayLabel),
+            ["opus"])
+    }
+
+    /// A session's lists belong to the command that declared them —
+    /// nothing leaks into the statically-catalogued commands.
+    func test_sessionListsDoNotLeakToOtherCommands() {
+        XCTAssertEqual(resolve("/switch ", status), ["claude", "codex"])
+        XCTAssertEqual(resolve("/restart ", status), ["--force", "--browser"])
+    }
+
+    func test_bangPrefixAndCaseResolveLikeSlash() {
+        XCTAssertEqual(resolve("!MODEL son", status), ["sonnet"])
+    }
+}

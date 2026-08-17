@@ -279,6 +279,59 @@ final class WireModelsTests: XCTestCase {
         XCTAssertEqual(empty.model, "m")
     }
 
+    /// Phase 2 of the 2026-08-10 composer-suggestions spec: the bridge
+    /// publishes the lists it owns (`model_options`, `effort_levels`) plus
+    /// the current `effort`, and the palette serves them as `/model` and
+    /// `/effort` argument suggestions. `label` is optional — a value with
+    /// no label displays as itself.
+    func testDecodeSessionStatusCarriesSuggestionListsAndEffort() throws {
+        let text = #"{"kind":"ephemeral","convo_id":"c1","status":{"model":"opus","effort":"high","model_options":[{"value":"opus","label":"Opus"},{"value":"sonnet","label":"Sonnet"}],"effort_levels":[{"value":"low","label":"Low"},{"value":"xhigh"}]}}"#
+        guard case let .sessionStatus(update)? = ServerFrame.decode(text) else {
+            return XCTFail("expected sessionStatus frame")
+        }
+        XCTAssertEqual(update.effort, "high")
+        XCTAssertEqual(update.modelOptions, [
+            SessionStatus.Option(value: "opus", label: "Opus"),
+            SessionStatus.Option(value: "sonnet", label: "Sonnet"),
+        ])
+        XCTAssertEqual(update.effortLevels, [
+            SessionStatus.Option(value: "low", label: "Low"),
+            SessionStatus.Option(value: "xhigh", label: nil),
+        ])
+    }
+
+    /// Absent and empty are different statements and must stay different in
+    /// the model: an older bridge omits the field entirely (nil — "doesn't
+    /// say"), while an agent with nothing to offer sends `[]` ("offers
+    /// nothing"). Both render as no suggestions, but only the second may
+    /// overwrite a held list. Deliberately unlike `limits`, which collapses
+    /// an empty array to nil.
+    func testDecodeSessionStatusDistinguishesAbsentFromEmptyOptionLists() throws {
+        guard case let .sessionStatus(absent)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"model":"opus"}}"#) else {
+            return XCTFail("expected sessionStatus frame from an older bridge")
+        }
+        XCTAssertNil(absent.modelOptions, "an omitted list is absent, not empty")
+        XCTAssertNil(absent.effortLevels)
+        XCTAssertNil(absent.effort, "the bridge never guesses an effort level")
+
+        guard case let (empty)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"model_options":[],"effort_levels":[]}}"#),
+              case let .sessionStatus(empty) = empty else {
+            return XCTFail("expected sessionStatus frame with empty lists")
+        }
+        XCTAssertEqual(empty.modelOptions, [])
+        XCTAssertEqual(empty.effortLevels, [])
+
+        // An entry without a `value` carries nothing selectable and is
+        // skipped; the good ones survive, as with limits[].
+        guard case let .sessionStatus(mixed)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"model_options":[{"label":"Nameless"},{"value":"opus"}]}}"#) else {
+            return XCTFail("expected sessionStatus frame with a malformed option")
+        }
+        XCTAssertEqual(mixed.modelOptions?.map(\.value), ["opus"])
+    }
+
     func testDecodeSessionStatusCarriesTaskRefForChild() throws {
         // A subagent child's status frame rides `task_ref` (the parent's
         // spawning Task tool_use_id), replayed on `viewing` so the app can
