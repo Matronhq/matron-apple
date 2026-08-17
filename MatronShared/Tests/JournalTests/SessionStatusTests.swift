@@ -176,4 +176,41 @@ final class SessionStatusTests: XCTestCase {
                        "clearing the level must not clear what the session still offers")
         XCTAssertEqual(status.effortLevels?.map(\.value), ["low"])
     }
+
+    /// `/switch claude→codex` mid-session. Codex has no switchable models
+    /// and no effort concept, so its frames carry empty lists and a null
+    /// effort rather than omitting all three: under omission the sticky
+    /// merge would leave Claude's seven effort levels on offer and keep
+    /// rendering a stale "· xhigh" for a session that rejects both.
+    func testSwitchingToCodexRetractsClaudesOffers() {
+        var status = SessionStatus()
+        status.apply(SessionStatusUpdate(
+            convoID: "c1", model: "opus", context: nil, limits: nil, email: nil,
+            taskRef: nil, workdir: nil, vitals: nil,
+            modelOptions: [SessionStatus.Option(value: "opus", label: "Opus"),
+                           SessionStatus.Option(value: "sonnet", label: "Sonnet")],
+            effortLevels: [SessionStatus.Option(value: "xhigh", label: "X-High")],
+            effort: .set("xhigh")))
+        XCTAssertEqual(
+            BotCommandCatalog.argSuggestions(
+                for: "/model ", in: BotCommandCatalog.claudeBridge, status: status).count, 2)
+
+        // The Codex-shaped frame: empty lists, explicit null effort.
+        status.apply(SessionStatusUpdate(
+            convoID: "c1", model: "gpt-5-codex", context: nil, limits: nil, email: nil,
+            taskRef: nil, workdir: nil, vitals: nil,
+            modelOptions: [], effortLevels: [], effort: .cleared))
+
+        XCTAssertEqual(status.modelOptions, [])
+        XCTAssertEqual(status.effortLevels, [])
+        XCTAssertNil(status.effort, "the level Claude was running at must not survive the switch")
+        XCTAssertEqual(
+            BotCommandCatalog.argSuggestions(
+                for: "/model ", in: BotCommandCatalog.claudeBridge, status: status), [],
+            "no model aliases are on offer for a Codex session")
+        XCTAssertEqual(
+            BotCommandCatalog.argSuggestions(
+                for: "/effort ", in: BotCommandCatalog.claudeBridge, status: status), [],
+            "Claude's effort levels must not linger on a session that rejects them")
+    }
 }

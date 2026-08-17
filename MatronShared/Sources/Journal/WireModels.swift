@@ -302,12 +302,20 @@ public enum ServerFrame: Equatable, Sendable {
                 // absent means "this bridge doesn't say" and empty means
                 // "this agent offers nothing", and only the second may
                 // overwrite a list the app already holds.
+                //
+                // A non-empty array that yields nothing is a THIRD case,
+                // and it is malformed rather than empty: returning `[]`
+                // there would let a garbled frame overwrite a good list
+                // with "offers nothing". Only a wire `[]` is a statement,
+                // so that alone survives as `[]` — the same way the limits
+                // decoder degrades a list it can't read.
                 func options(_ key: String) -> [SessionStatus.Option]? {
                     guard let raw = status[key] as? [[String: Any]] else { return nil }
-                    return raw.compactMap { entry in
+                    let parsed = raw.compactMap { entry -> SessionStatus.Option? in
                         guard let value = entry["value"] as? String else { return nil }
                         return SessionStatus.Option(value: value, label: entry["label"] as? String)
                     }
+                    return raw.isEmpty || !parsed.isEmpty ? parsed : nil
                 }
                 // Effort is tri-state, and JSONSerialization is what makes
                 // the three distinguishable: a missing key subscripts to

@@ -207,16 +207,25 @@ public enum BotCommandCatalog {
     /// session rather than the catalog. Absent and empty lists both come
     /// back empty here — the distinction lives in the model, and matters
     /// only to the merge that produced it.
+    ///
+    /// Values repeated by the bridge collapse to their first occurrence,
+    /// keeping the order it sent. This pool is remote-controlled input, and
+    /// the palette identifies rows by value: duplicates would give a
+    /// `ForEach` two rows with one identity.
     private static func sessionSuggestions(
-        _ source: SessionArgSource?, _ status: SessionStatus?
+        _ source: SessionArgSource?, _ status: () -> SessionStatus?
     ) -> [ArgSuggestion] {
-        guard let source, let status else { return [] }
+        guard let source, let status = status() else { return [] }
         let options: [SessionStatus.Option]?
         switch source {
         case .modelOptions: options = status.modelOptions
         case .effortLevels: options = status.effortLevels
         }
-        return (options ?? []).map { ArgSuggestion(value: $0.value, label: $0.label) }
+        var seen: Set<String> = []
+        return (options ?? []).compactMap { option in
+            guard seen.insert(option.value.lowercased()).inserted else { return nil }
+            return ArgSuggestion(value: option.value, label: option.label)
+        }
     }
 
     /// Resolves the argument suggestions for a raw composer input: the
@@ -227,7 +236,11 @@ public enum BotCommandCatalog {
     ///
     /// A nil `status` (no bridge has spoken, or the caller has no session)
     /// leaves session-derived commands offering nothing, which is exactly
-    /// the pre-status-frame behaviour.
+    /// the pre-status-frame behaviour. `status` is an autoclosure and is
+    /// evaluated only once a session-derived command has actually matched:
+    /// the composer's reads it out of the chat view model, and doing that
+    /// on every keystroke would make the composer observe every status
+    /// frame for input that isn't a command at all.
     ///
     /// Flags compose, so a flag stays offered until it's on the line or a
     /// conflicting one is (`conflictsWith`) — but only while the trailing
@@ -239,7 +252,8 @@ public enum BotCommandCatalog {
     /// as folder completion, so the palette doesn't linger over a
     /// completed flag.
     public static func argSuggestions(
-        for input: String, in commands: [BotCommand], status: SessionStatus? = nil
+        for input: String, in commands: [BotCommand],
+        status: @autoclosure () -> SessionStatus? = nil
     ) -> [ArgSuggestion] {
         let leading = Substring(input.drop(while: { $0 == " " || $0 == "\t" }))
         guard let first = leading.first, first == "/" || first == "!" else { return [] }

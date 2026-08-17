@@ -301,4 +301,23 @@ final class SessionDerivedArgSuggestionTests: XCTestCase {
     func test_bangPrefixAndCaseResolveLikeSlash() {
         XCTAssertEqual(resolve("!MODEL son", status), ["sonnet"])
     }
+
+    /// The pool is remote-controlled now, so a bridge that publishes the
+    /// same value twice must not produce two rows — the palette's `ForEach`
+    /// identifies rows by value, and duplicate ids drop or duplicate rows.
+    /// First occurrence wins, so the bridge's ordering survives.
+    func test_duplicateOptions_collapseKeepingBridgeOrder() {
+        let repeated = SessionStatus(modelOptions: [
+            SessionStatus.Option(value: "opus", label: "Opus"),
+            SessionStatus.Option(value: "sonnet", label: "Sonnet"),
+            SessionStatus.Option(value: "OPUS", label: "Opus (again)"),
+        ])
+        XCTAssertEqual(resolve("/model ", repeated), ["opus", "sonnet"])
+        XCTAssertEqual(
+            BotCommandCatalog.argSuggestions(
+                for: "/model ", in: BotCommandCatalog.claudeBridge, status: repeated)
+                .map(\.displayLabel),
+            ["Opus", "Sonnet"],
+            "the first occurrence is the one kept, label and all")
+    }
 }

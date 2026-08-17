@@ -995,7 +995,12 @@ final class ComposerViewModelTests: XCTestCase {
     @MainActor
     private final class StatusHolder {
         var status: SessionStatus?
+        private(set) var reads = 0
         init(_ status: SessionStatus?) { self.status = status }
+        func read() -> SessionStatus? {
+            reads += 1
+            return status
+        }
     }
 
     @MainActor
@@ -1003,7 +1008,30 @@ final class ComposerViewModelTests: XCTestCase {
         ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
                           commands: BotCommandCatalog.claudeBridge,
                           recentFolders: emptyRecentFolders(),
-                          sessionStatus: { status.status })
+                          sessionStatus: { status.read() })
+    }
+
+    /// The status is read only once a session-derived command has matched.
+    /// Reading it eagerly would have the composer observe the chat view
+    /// model's `sessionStatus` on every keystroke, so every status frame
+    /// would invalidate the composer's body while the user types ordinary
+    /// prose.
+    @MainActor
+    func test_ordinaryTypingDoesNotReadTheSessionStatus() {
+        let holder = StatusHolder(SessionStatus(
+            modelOptions: [SessionStatus.Option(value: "opus", label: "Opus")]))
+        let vm = composer(status: holder)
+
+        vm.input = "just chatting about /model"
+        _ = vm.showPalette
+        vm.input = "/restart --f"
+        _ = vm.showPalette
+        XCTAssertEqual(holder.reads, 0,
+                       "neither prose nor a statically-catalogued command needs the session")
+
+        vm.input = "/model "
+        _ = vm.showPalette
+        XCTAssertGreaterThan(holder.reads, 0, "a session-derived command does read it")
     }
 
     @MainActor

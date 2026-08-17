@@ -116,7 +116,8 @@ public enum UsageMetersFormat {
     /// publishes no effort rather than a guess, so absent is the normal
     /// state and must read as normal.
     public static func modelLine(model: String, effort: String?) -> String {
-        guard let effort = effort?.trimmingCharacters(in: .whitespaces), !effort.isEmpty
+        guard let effort = effort?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !effort.isEmpty
         else { return model }
         return "\(model) · \(effort)"
     }

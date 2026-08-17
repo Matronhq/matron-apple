@@ -195,11 +195,8 @@ struct MacChatToolbar: ToolbarContent {
 
     private var modelContextCluster: some View {
         VStack(alignment: .leading, spacing: 1) {
-            // Effort rides on the model's own line — the cluster's height
-            // is budgeted for three caption lines and all three are spoken
-            // for. Absent effort renders as the bare model name.
-            if let model = status?.model {
-                Text(UsageMetersFormat.modelLine(model: model, effort: status?.effort))
+            if let modelLine {
+                Text(modelLine)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -252,6 +249,18 @@ struct MacChatToolbar: ToolbarContent {
                     .truncationMode(.middle)
             }
         }
+    }
+
+    /// The leading cluster's first line: the model, with the session's
+    /// effort beside it when the bridge is tracking one. Effort shares the
+    /// model's line rather than taking a fourth — the cluster's height is
+    /// budgeted for three caption lines and all three are spoken for. `nil`
+    /// when no model is known, so the line is dropped rather than rendered
+    /// empty. Internal (not private) so MacChatToolbarTests can pin it
+    /// without rendering, as with `titleSubtitle`.
+    var modelLine: String? {
+        guard let model = status?.model else { return nil }
+        return UsageMetersFormat.modelLine(model: model, effort: status?.effort)
     }
 
     /// Internal (not private) so MacChatToolbarTests can pin the join

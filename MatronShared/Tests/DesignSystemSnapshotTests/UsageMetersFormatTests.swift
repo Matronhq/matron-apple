@@ -113,17 +113,21 @@ final class UsageMetersFormatTests: XCTestCase {
         XCTAssertEqual(UsageMetersFormat.modelLine(model: "opus", effort: "high"), "opus · high")
         XCTAssertEqual(UsageMetersFormat.modelLine(model: "opus", effort: nil), "opus")
         // A blank string is as unknown as an absent one — the bridge never
-        // guesses, and neither does the renderer.
+        // guesses, and neither does the renderer. Newlines count as blank
+        // too: a stray "\n" would otherwise render a dangling separator.
         XCTAssertEqual(UsageMetersFormat.modelLine(model: "opus", effort: "   "), "opus")
+        XCTAssertEqual(UsageMetersFormat.modelLine(model: "opus", effort: "\n"), "opus")
+        XCTAssertEqual(UsageMetersFormat.modelLine(model: "opus", effort: " \t\n "), "opus")
     }
 
-    /// End-to-end for the tri-state contract: a frame carrying an explicit
-    /// null effort takes the rendered line back to the bare model — what
-    /// both `SessionStatusSheet` and `MacChatToolbar` put on screen, since
-    /// both build their line here.
-    func testEffortClearReturnsTheRenderedLineToTheBareModel() {
+    /// Wire → merge → formatter for the tri-state contract: a frame
+    /// carrying an explicit null effort takes the formatted line back to
+    /// the bare model. The views' own gating (which drops the line when
+    /// there's no model at all) is theirs to test — `MacChatToolbar`'s
+    /// `modelLine` is pinned in `MacChatToolbarTests`.
+    func testEffortClearReturnsTheFormattedLineToTheBareModel() {
         func line(_ status: SessionStatus) -> String {
-            UsageMetersFormat.modelLine(model: status.model ?? "", effort: status.effort)
+            UsageMetersFormat.modelLine(model: "opus", effort: status.effort)
         }
         var status = SessionStatus()
 

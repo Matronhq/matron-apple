@@ -332,6 +332,35 @@ final class WireModelsTests: XCTestCase {
         XCTAssertEqual(mixed.modelOptions?.map(\.value), ["opus"])
     }
 
+    /// A non-empty array whose entries ALL fail to parse is a malformed
+    /// frame, not the agent saying it offers nothing. Decoding it to `[]`
+    /// would let a garbled frame overwrite a good list with "nothing" —
+    /// so it degrades to nil (silence) and the held list stands. A wire
+    /// `[]` is still a statement and still overwrites.
+    func testDecodeSessionStatusAllMalformedOptionsSayNothing() throws {
+        guard case let .sessionStatus(garbled)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"model_options":[{"label":"Nameless"}],"effort_levels":["low"]}}"#) else {
+            return XCTFail("expected sessionStatus frame with unparseable options")
+        }
+        XCTAssertNil(garbled.modelOptions, "all-malformed is silence, not an empty offer")
+        XCTAssertNil(garbled.effortLevels, "entries of the wrong shape entirely are silence too")
+
+        // The consequence that matters: a held list survives the garbled
+        // frame, and a genuine empty one still clears it.
+        var status = SessionStatus(
+            modelOptions: [SessionStatus.Option(value: "opus", label: "Opus")])
+        status.apply(garbled)
+        XCTAssertEqual(status.modelOptions?.map(\.value), ["opus"],
+                       "a garbled frame must not retract what the session offers")
+
+        guard case let .sessionStatus(none)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"model_options":[]}}"#) else {
+            return XCTFail("expected sessionStatus frame with an empty list")
+        }
+        status.apply(none)
+        XCTAssertEqual(status.modelOptions, [], "a wire [] is still a statement and still lands")
+    }
+
     /// `effort` is the one tri-state field on the frame. A missing key and
     /// a JSON null mean different things and must decode differently:
     /// missing is silence (Codex, or a bridge that predates the field),

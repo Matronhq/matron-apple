@@ -118,14 +118,22 @@ status.model_options: [{ value: "opus", label: "Opus" }, …]
 ```
 
 Built from the bridge's existing `SWITCHABLE_ALIASES` (`lib/model-aliases.js`),
-which already carries exactly these two fields and already decides what is
-offered as a button. `best` remains valid to type and absent from the list,
-matching the buttons today. For a Codex session the bridge sends what Codex
-accepts, or omits the field.
+which already decides what is offered as a button and already carries a label
+per alias — the bridge maps its `alias`/`label` pair to the wire's
+`value`/`label`, so the list is a rename rather than new information. `best`
+remains valid to type and absent from the list, matching the buttons today.
+
+**A Codex session sends `[]`, not nothing.** Omission and an empty list are
+different statements — absent means "this bridge doesn't say", empty means
+"this agent offers nothing" — and the difference is load-bearing on
+`/switch claude→codex` mid-session. Under omission the sticky merge would leave
+Claude's aliases and its seven effort levels standing, so the palette would go
+on offering values the session now rejects. An empty list retracts them.
 
 ### `effort_levels` and `effort`
 
-`effort_levels` mirrors `model_options`, built from `EFFORT_LEVELS`.
+`effort_levels` mirrors `model_options`, built from `EFFORT_LEVELS`, and is
+likewise `[]` for a Codex session.
 
 `effort` is the current level, and it is the one field here the bridge does not
 already know.
@@ -148,8 +156,8 @@ and the tracking must be honest about its own gaps.
 surfaces the TUI's confirmation as buttons (`lib/prompt-detector.js`,
 `lib/prompt-buttons.js`), so the answer passes through it. The rule:
 
-- effort starts **unknown**, and unknown is published as absent, not as a
-  guess;
+- effort starts **unknown**, and unknown is published as an explicit `null`,
+  never as a guess;
 - writing `/effort X` into the PTY does not itself set it — a confirmed
   change does;
 - when no confirmation appears, the write stands — "no confirmation" means the
@@ -164,6 +172,30 @@ restarted session's effort comes from Claude Code's own default rather than
 from anything the bridge did. Dropping to unknown costs a blank field until
 the user next sets effort through Matron; carrying it costs a lie.
 
+**Unknown has to be said out loud, which makes `effort` tri-state.** Every other
+field on this frame is sticky — absent means unchanged — so publishing unknown
+as an absent field would mean "leave the level you have", and the stale value
+the rule above exists to prevent would survive the restart anyway. The three
+states are therefore distinct:
+
+| Wire | Meaning | Effect on the held value |
+|---|---|---|
+| `"effort": "xhigh"` | tracking this level | set it |
+| `"effort": null` | tracking none | **clear it** |
+| key absent | says nothing | leave it standing |
+
+The null is republished on **every** frame while unknown, not once at the
+moment of clearing, so a client that misses a frame still converges rather than
+holding a retracted level until the next change. Absent is reserved for bridges
+that predate the field — a client must not treat it as a clear, or an old
+bridge would look like a constant retraction.
+
+Clients need care here, because the common decoding idioms erase exactly this
+distinction: `JSONSerialization` gives `NSNull` for null and nothing for a
+missing key (so `as? String` folds them together), `Codable`'s
+`decodeIfPresent` folds them, and kotlinx-serialization's `contentOrNull` folds
+them. Each needs the presence check its API provides.
+
 The gap this design accepts: effort changed by typing `/effort` directly into
 the terminal on the host is invisible to the bridge, and the app will show the
 last level Matron set until the next restart clears it. That is a real
@@ -171,7 +203,8 @@ staleness window, accepted because the alternative is showing nothing ever, and
 because setting effort through Matron is the path this feature exists to serve.
 
 The apps render effort where they render the model — beside it in the status
-sheet and the Mac toolbar — and render nothing when it is absent.
+sheet and the Mac toolbar — and render nothing when it is unknown, whether that
+arrived as a null or was never set.
 
 ## The iPhone header
 
