@@ -301,15 +301,19 @@ public final class ComposerViewModel {
         // The command name runs up to the first whitespace; there must be
         // whitespace after it for the command to be complete.
         guard let commandEnd = body.firstIndex(where: { $0.isWhitespace }) else { return nil }
-        let command = body[body.startIndex..<commandEnd]
+        // Case-insensitive, matching the command palette's filter and the
+        // argument resolver — one input, one case rule.
+        let command = body[body.startIndex..<commandEnd].lowercased()
         guard command == "start" || command == "workdir" else { return nil }
         // The trailing token (after the last whitespace) is the partial;
-        // every completed token between it and the command must be a flag.
+        // every completed token between it and the command must be a flag
+        // (smart-dashed forms included — the bridge normalizes them).
         let args = body[commandEnd...]
         let partialStart = args.lastIndex(where: { $0.isWhitespace })
             .map(args.index(after:)) ?? args.startIndex
         let earlier = args[..<partialStart].split(whereSeparator: { $0.isWhitespace })
-        guard earlier.allSatisfy({ $0.hasPrefix("--") }) else { return nil }
+        guard earlier.allSatisfy({ BotCommandCatalog.normalizeLeadingDashes($0).hasPrefix("--") })
+        else { return nil }
         return String(args[partialStart...])
     }
 
@@ -324,7 +328,10 @@ public final class ComposerViewModel {
         guard let first = trimmed.first, first == "/" || first == "!" else { return nil }
         let tokens = trimmed.dropFirst().split(whereSeparator: { $0.isWhitespace })
         guard let command = tokens.first, command == "start" || command == "workdir" else { return nil }
-        for token in tokens.dropFirst() where !token.hasPrefix("--") {
+        // Smart-dashed flags ("—browser") are flags, not folders — the
+        // bridge normalizes them, and recording one would poison recents.
+        for token in tokens.dropFirst()
+        where !BotCommandCatalog.normalizeLeadingDashes(token).hasPrefix("--") {
             return String(token)
         }
         return nil

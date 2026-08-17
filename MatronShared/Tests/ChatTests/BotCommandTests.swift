@@ -153,7 +153,37 @@ final class ArgSuggestionResolutionTests: XCTestCase {
 
     /// Flags compose, so later slots keep offering the remaining ones.
     func test_flags_remainOfferedAfterEarlierFlags() {
-        XCTAssertEqual(resolve("/start --claude "), ["--codex", "--browser"])
+        XCTAssertEqual(resolve("/restart --force "), ["--browser"])
+    }
+
+    /// Mutually exclusive flags must not be offered together — the bridge
+    /// refuses "/start --claude --codex" ("Choose only one agent"), so the
+    /// palette must not build it from two taps. --browser is Claude-only,
+    /// so a --codex line drops it too.
+    func test_exclusiveFlags_notOfferedTogether() {
+        XCTAssertEqual(resolve("/start --claude "), ["--browser"])
+        XCTAssertEqual(resolve("/start --codex "), [])
+        XCTAssertEqual(resolve("/resume --claude "), [])
+    }
+
+    /// Phone keyboards auto-correct a leading "--" into an em dash; the
+    /// bridge normalizes leading unicode dashes before parsing
+    /// (LEADING_UNICODE_DASHES in lib/command-dispatch.js), so the
+    /// resolver must match — both in the partial being completed and in
+    /// tokens already on the line.
+    func test_smartDashes_normalizedLikeTheBridge() {
+        XCTAssertEqual(resolve("/restart \u{2014}f"), ["--force"],
+                       "an em-dash partial still completes the flag")
+        XCTAssertEqual(resolve("/restart \u{2014}browser "), ["--force"],
+                       "an em-dash flag counts as typed and is not re-offered")
+    }
+
+    /// The bridge's grammar is `[flags] [path]` — once the positional slot
+    /// is filled the command line is complete, and the palette must not
+    /// re-open over it to offer trailing flags.
+    func test_flagsNotOffered_oncePositionalSlotFilled() {
+        XCTAssertEqual(resolve("/start ~/proj "), [])
+        XCTAssertEqual(resolve("/workdir ~/proj "), [])
     }
 
     func test_bangPrefix_resolvesLikeSlash() {

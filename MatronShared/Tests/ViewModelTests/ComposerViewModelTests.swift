@@ -849,6 +849,40 @@ final class ComposerViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_folderSuggestions_uppercaseCommand_stillCompletes() {
+        // The command palette and the argument resolver both match
+        // case-insensitively; the folder gate must agree, or "/START ~"
+        // opens the palette with flags but silently zero folders.
+        let store = emptyRecentFolders()
+        store.record("~/proj")
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: store)
+        vm.input = "/START ~"
+        XCTAssertEqual(vm.folderSuggestions, ["~/proj"])
+    }
+
+    @MainActor
+    func test_folderSuggestions_allowedAfterSmartDashedFlag() {
+        // iOS smart dashes rewrite "--browser" to "—browser"; the bridge
+        // still parses it as a flag, so the folder gate must too.
+        let store = emptyRecentFolders()
+        store.record("~/proj")
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: store)
+        vm.input = "/start \u{2014}browser ~/p"
+        XCTAssertEqual(vm.folderSuggestions, ["~/proj"])
+    }
+
+    @MainActor
+    func test_recentFolderArgument_skipsSmartDashedFlags() {
+        // "—browser" (em dash) is a flag the bridge normalizes, not a
+        // folder — recording it would poison the recents list.
+        XCTAssertEqual(ComposerViewModel.recentFolderArgument(from: "/start \u{2014}browser ~/x"), "~/x")
+    }
+
+    @MainActor
     func test_folderSuggestions_allowedAfterFlags() {
         // The bridge's grammar is `/start [flags] [workdir]`, so folder
         // completion must survive flag tokens ahead of the path
@@ -893,12 +927,10 @@ final class ComposerViewModelTests: XCTestCase {
                                    commands: BotCommandCatalog.claudeBridge,
                                    recentFolders: store)
         vm.input = "/start "
-        XCTAssertEqual(vm.paletteSuggestions, [
-            .argument(.init(value: "--claude", summary: "Use the Claude agent")),
-            .argument(.init(value: "--codex", summary: "Use the Codex agent")),
-            .argument(.init(value: "--browser", summary: "Add browser tools (chrome-devtools MCP)")),
-            .folder("~/proj"),
-        ])
+        let start = BotCommandCatalog.claudeBridge.first { $0.trigger == "/start" }!
+        XCTAssertEqual(vm.paletteSuggestions,
+                       start.argSuggestions.map { .argument($0) } + [.folder("~/proj")],
+                       "argument rows come first, folders after")
     }
 
     @MainActor

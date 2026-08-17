@@ -12,11 +12,24 @@ public struct ArgSuggestion: Equatable, Hashable, Sendable {
     public let label: String?
     /// One-line description, same role as `BotCommand.summary`.
     public let summary: String?
+    /// Lowercased values that suppress this suggestion when already on the
+    /// line. Encodes the bridge's static grammar constraints — mutual
+    /// exclusion is two suggestions listing each other (`--claude` ↔
+    /// `--codex`), a dependency is one-way (`--browser` is Claude-only, so
+    /// `--codex` suppresses it). The palette must not build a command line
+    /// the bridge will refuse.
+    public let conflictsWith: Set<String>
 
-    public init(value: String, label: String? = nil, summary: String? = nil) {
+    public init(
+        value: String,
+        label: String? = nil,
+        summary: String? = nil,
+        conflictsWith: Set<String> = []
+    ) {
         self.value = value
         self.label = label
         self.summary = summary
+        self.conflictsWith = conflictsWith
     }
 
     /// What the palette row displays.
@@ -63,13 +76,17 @@ public enum BotCommandCatalog {
     /// The agent-picker flags every session-creating command accepts.
     /// Summaries match the bridge's /help text.
     private static let agentFlags = [
-        ArgSuggestion(value: "--claude", summary: "Use the Claude agent"),
-        ArgSuggestion(value: "--codex", summary: "Use the Codex agent"),
+        ArgSuggestion(value: "--claude", summary: "Use the Claude agent",
+                      conflictsWith: ["--codex"]),
+        ArgSuggestion(value: "--codex", summary: "Use the Codex agent",
+                      conflictsWith: ["--claude"]),
     ]
 
     /// Claude-only session extra; ~400M of headless Chrome, so opt-in.
+    /// The bridge refuses it on a Codex line, hence the conflict.
     private static let browserFlag = ArgSuggestion(
-        value: "--browser", summary: "Add browser tools (chrome-devtools MCP)")
+        value: "--browser", summary: "Add browser tools (chrome-devtools MCP)",
+        conflictsWith: ["--codex"])
 
     /// Static catalog for the Claude bridge. In Phase 5+ this becomes
     /// config-driven (per-bot, served by the bridge or its provisioner).
@@ -152,17 +169,31 @@ public enum BotCommandCatalog {
         }
     }
 
+    /// Mirrors the bridge's `LEADING_UNICODE_DASHES` rule
+    /// (lib/command-dispatch.js): phone keyboards auto-correct a leading
+    /// `--` into a single em/en dash, and the bridge normalizes it back
+    /// before parsing — so anything comparing typed tokens to flags must
+    /// do the same.
+    public static func normalizeLeadingDashes(_ token: some StringProtocol) -> String {
+        String(token).replacingOccurrences(
+            of: "^[\u{2010}\u{2011}\u{2012}\u{2013}\u{2014}\u{2015}]+",
+            with: "--", options: .regularExpression)
+    }
+
     /// Resolves the argument suggestions for a raw composer input: the
     /// matched command's static suggestions, filtered by the trailing
     /// partial token. Empty unless the input is a fully-typed command
     /// (either `/` or `!` prefix) followed by whitespace.
     ///
-    /// Flags compose, so a flag stays offered until it's on the line;
-    /// plain values fill a single slot and are only offered while no
-    /// argument token is down yet (`/switch claude codex` is junk the
-    /// palette must not build). A suggestion identical to the partial
-    /// offers nothing — same rule as folder completion, so the palette
-    /// doesn't linger over a completed flag.
+    /// Flags compose, so a flag stays offered until it's on the line or a
+    /// conflicting one is (`conflictsWith`) — but only while the trailing
+    /// positional slot is open: the grammar is `[flags] [path]`, so a
+    /// completed non-flag token ends the offering. Plain values fill a
+    /// single slot and are only offered while no argument token is down
+    /// yet (`/switch claude codex` is junk the palette must not build).
+    /// A suggestion identical to the partial offers nothing — same rule
+    /// as folder completion, so the palette doesn't linger over a
+    /// completed flag.
     public static func argSuggestions(for input: String, in commands: [BotCommand]) -> [ArgSuggestion] {
         let leading = Substring(input.drop(while: { $0 == " " || $0 == "\t" }))
         guard let first = leading.first, first == "/" || first == "!" else { return [] }
@@ -179,18 +210,20 @@ public enum BotCommandCatalog {
         let args = body[commandEnd...]
         let partialStart = args.lastIndex(where: { $0.isWhitespace })
             .map(args.index(after:)) ?? args.startIndex
-        let partial = args[partialStart...].lowercased()
+        let partial = normalizeLeadingDashes(args[partialStart...]).lowercased()
         let earlier = Set(args[..<partialStart]
             .split(whereSeparator: { $0.isWhitespace })
-            .map { $0.lowercased() })
+            .map { normalizeLeadingDashes($0).lowercased() })
+        let positionalFilled = earlier.contains { !$0.hasPrefix("--") }
 
         return command.argSuggestions.filter { suggestion in
             let value = suggestion.value.lowercased()
             if suggestion.isFlag {
-                if earlier.contains(value) { return false }
+                if positionalFilled || earlier.contains(value) { return false }
             } else if !earlier.isEmpty {
                 return false
             }
+            guard suggestion.conflictsWith.isDisjoint(with: earlier) else { return false }
             return value.hasPrefix(partial) && value != partial
         }
     }
