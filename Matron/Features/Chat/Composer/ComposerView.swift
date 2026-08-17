@@ -106,7 +106,7 @@ struct ComposerView: View {
                         let tmp = ComposerView.photoTempURL(ext: ext)
                         await ComposerView.stagePhotoData(data, to: tmp, viewModel: viewModel)
                     } else {
-                        viewModel.reportAttachmentError("Couldn't load that photo. If it's stored in iCloud, try downloading it first.")
+                        viewModel.reportAttachmentError("Couldn't load that item. If it's stored in iCloud, try downloading it first.")
                     }
                 } catch {
                     viewModel.reportAttachmentError(error.localizedDescription)
@@ -119,11 +119,14 @@ struct ComposerView: View {
         // presentation context with it). `photoLibrary: .shared()` is
         // required for `PhotosPickerItem.supportedContentTypes` to be
         // populated — without it every selection falls back to jpg and
-        // HEIC/PNG are mislabelled `image/jpeg`.
+        // HEIC/PNG are mislabelled `image/jpeg`. Videos are included so
+        // screen recordings (which land in the photo library) can be sent —
+        // the bridge extracts timestamped key frames for claude; the same
+        // supportedContentTypes flow labels them mov/mp4 → video/* mime.
         .photosPicker(
             isPresented: $showPhotosPicker,
             selection: $photoItem,
-            matching: .images,
+            matching: .any(of: [.images, .videos]),
             photoLibrary: .shared()
         )
         .fileImporter(
