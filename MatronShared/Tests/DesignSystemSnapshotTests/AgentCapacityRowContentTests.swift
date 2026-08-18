@@ -18,4 +18,128 @@ final class AgentCapacityRowContentTests: XCTestCase {
         XCTAssertEqual(AgentCapacityRowContent.percentColor(50), UsageMetersFormat.barColor(percent: 50))
         XCTAssertEqual(AgentCapacityRowContent.percentColor(80), UsageMetersFormat.barColor(percent: 80))
     }
+
+    // MARK: Cached (offline) numbers
+
+    private let capturedAt = Date(timeIntervalSince1970: 1_754_900_000)
+    private func cached() -> AgentCapacityFreshness { .offline(capturedAt: capturedAt) }
+
+    func test_sessionsLine_readsTheCountForLiveNumbers() {
+        let capacity = BoxCapacity(liveSessions: 2, limitLines: [], accountEmail: nil)
+        XCTAssertEqual(AgentCapacityRowContent.sessionsLine(capacity, freshness: .live),
+                       "2 active sessions")
+    }
+
+    /// A box the host has put to sleep is running nothing at all, so its
+    /// cached session count is the one number that is not merely stale but
+    /// false. The quota lines survive; this one is dropped.
+    func test_sessionsLine_isDroppedForCachedNumbers() {
+        let capacity = BoxCapacity(liveSessions: 2, limitLines: [], accountEmail: nil)
+        XCTAssertNil(AgentCapacityRowContent.sessionsLine(capacity, freshness: cached()))
+    }
+
+    /// The Mac grid renders the bare count in a fixed-width cell, so it takes
+    /// the same decision as a number rather than re-deriving the rule.
+    func test_shownSessions_matchesTheSessionsLineDecision() {
+        let capacity = BoxCapacity(liveSessions: 2, limitLines: [], accountEmail: nil)
+        XCTAssertEqual(AgentCapacityRowContent.shownSessions(capacity, freshness: .live), 2)
+        XCTAssertNil(AgentCapacityRowContent.shownSessions(capacity, freshness: cached()))
+        XCTAssertNil(AgentCapacityRowContent.shownSessions(nil, freshness: .live),
+                     "no capacity at all — an old bridge or a box that never answered")
+    }
+
+    func test_sessionsLine_isAbsentWhenTheBridgeSentNoActivityBlock() {
+        let capacity = BoxCapacity(liveSessions: nil, limitLines: [], accountEmail: nil)
+        XCTAssertNil(AgentCapacityRowContent.sessionsLine(capacity, freshness: .live))
+    }
+
+    func test_percentEmphasis_tintsLiveInWindowNumbers() {
+        XCTAssertEqual(AgentCapacityRowContent.percentEmphasis(85, expired: false, freshness: .live),
+                       .tinted(UsageMetersFormat.barColor(percent: 85)))
+    }
+
+    /// Unchanged rule: a percentage from before its own reset moment is dead,
+    /// whoever reported it.
+    func test_percentEmphasis_deemphasisesAnExpiredLineOnALiveBox() {
+        XCTAssertEqual(AgentCapacityRowContent.percentEmphasis(85, expired: true, freshness: .live),
+                       .deemphasised)
+    }
+
+    /// New rule: cached numbers never wear the green/orange/red that vouches
+    /// for a reading as current, even while their window is still open.
+    func test_percentEmphasis_deemphasisesCachedNumbers() {
+        XCTAssertEqual(AgentCapacityRowContent.percentEmphasis(85, expired: false, freshness: cached()),
+                       .deemphasised)
+    }
+
+    // MARK: What a cached row actually discloses
+
+    /// The account email renders on the name line, outside this block, so it
+    /// counts as content: an email-only cached entry must still summon the
+    /// caption that says how old it is.
+    func test_hasCachedContent_countsAnEmailOnlyEntry() {
+        let capacity = BoxCapacity(liveSessions: nil, limitLines: [], accountEmail: "pat@yearbook.com")
+        XCTAssertTrue(AgentCapacityRowContent.hasCachedContent(capacity, freshness: cached()))
+    }
+
+    func test_hasCachedContent_countsLimitLines() {
+        let capacity = BoxCapacity(
+            liveSessions: nil,
+            limitLines: [LimitLine(id: "session", label: "Current session", percent: 39, resetsAt: nil)],
+            accountEmail: nil)
+        XCTAssertTrue(AgentCapacityRowContent.hasCachedContent(capacity, freshness: cached()))
+    }
+
+    /// A legacy bridge answered `recent_folders` with no capacity blocks at
+    /// all, so the persisted entry is empty. Its row discloses nothing —
+    /// a lone "offline · as of 2h ago" under it would disclaim thin air.
+    func test_hasCachedContent_rejectsAnEmptyPersistedEntry() {
+        let capacity = BoxCapacity(liveSessions: nil, limitLines: [], accountEmail: nil)
+        XCTAssertFalse(AgentCapacityRowContent.hasCachedContent(capacity, freshness: cached()))
+    }
+
+    /// A cached session count is dropped, so it can't be the thing that earns
+    /// a row its caption either.
+    func test_hasCachedContent_ignoresTheDroppedSessionCount() {
+        let capacity = BoxCapacity(liveSessions: 4, limitLines: [], accountEmail: nil)
+        XCTAssertFalse(AgentCapacityRowContent.hasCachedContent(capacity, freshness: cached()))
+    }
+
+    func test_hasCachedContent_isFalseForLiveRowsAndMissingCapacity() {
+        let capacity = BoxCapacity(liveSessions: nil, limitLines: [], accountEmail: "pat@yearbook.com")
+        XCTAssertFalse(AgentCapacityRowContent.hasCachedContent(capacity, freshness: .live),
+                       "a live row has nothing to disclaim")
+        XCTAssertFalse(AgentCapacityRowContent.hasCachedContent(nil, freshness: cached()))
+    }
+
+    // MARK: Accessibility
+
+    func test_limitAccessibilityLabel_liveCopyIsUnchanged() {
+        XCTAssertEqual(
+            AgentCapacityRowContent.limitAccessibilityLabel(
+                label: "Current session", percent: 39, expired: false,
+                resetText: "resets 11:59 PM", freshness: .live),
+            "Current session, 39 percent used, resets 11:59 PM")
+        XCTAssertEqual(
+            AgentCapacityRowContent.limitAccessibilityLabel(
+                label: "Current session", percent: 39, expired: true,
+                resetText: "reset", freshness: .live),
+            "Current session, 39 percent used before the limit reset, reset")
+        XCTAssertEqual(
+            AgentCapacityRowContent.limitAccessibilityLabel(
+                label: "Current week", percent: 12, expired: false,
+                resetText: nil, freshness: .live),
+            "Current week, 12 percent used")
+    }
+
+    /// The age itself is announced once, by the row's own caption — repeating
+    /// it in every limit cell would make a three-column Mac row read it three
+    /// times.
+    func test_limitAccessibilityLabel_marksCachedNumbersLastKnown() {
+        XCTAssertEqual(
+            AgentCapacityRowContent.limitAccessibilityLabel(
+                label: "Current session", percent: 39, expired: false,
+                resetText: "resets 11:59 PM", freshness: cached()),
+            "Current session, 39 percent used, resets 11:59 PM, last known")
+    }
 }

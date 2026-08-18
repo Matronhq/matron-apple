@@ -312,6 +312,15 @@ final class AppDependencies {
         return JournalAgentRPCService(api: core.api, engine: core.engine)
     }
 
+    /// New Chat surface: last-known per-box capacity, so a box the host has
+    /// suspended can still show the quota it had. Namespaced by user id like
+    /// the journal store file — agent device ids are only unique within a
+    /// journal, so an app-global cache would show one account another's
+    /// numbers. `signOut()` removes the account's key alongside the wipes.
+    func boxCapacityCache(for session: UserSession) -> any BoxCapacityCaching {
+        UserDefaultsBoxCapacityCache(userID: session.userID)
+    }
+
     /// Placeholder conversation row so navigating to a just-started
     /// conversation holds even when the `start` answer beats the convo's
     /// first journal frame (the real convo_meta overwrites it).
@@ -377,6 +386,8 @@ final class AppDependencies {
     /// safe to clear `cores`/`timelineCache` synchronously right after.
     func signOut() {
         let oldCores = Array(cores.values)
+        // Keyed by user id, captured before `cores.removeAll()` below.
+        let oldUserIDs = Array(cores.keys)
         // One awaitable teardown task instead of fire-and-forget per core:
         // a fast re-login used to open a new sync engine against the same
         // per-user SQLite file while the old engine was still writing, and
@@ -424,6 +435,12 @@ final class AppDependencies {
             // new session's indexing can't interleave with the wipe (bugbot
             // "Search wipe races indexing").
             try? await search?.wipe()
+            // Same data-separation contract: agent device ids repeat across
+            // journals, so the next account on this device must not inherit
+            // the last one's box capacities (account email included).
+            for userID in oldUserIDs {
+                UserDefaultsBoxCapacityCache.removeAll(for: userID)
+            }
         }
         cores.removeAll()
         mediaServices.removeAll()

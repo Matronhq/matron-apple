@@ -28,7 +28,9 @@ struct NewChatSheet: View {
         self.deps = deps
         self.session = session
         self.onCreated = onCreated
-        _viewModel = State(initialValue: NewChatViewModel(api: deps.agentRPCService(for: session)))
+        _viewModel = State(initialValue: NewChatViewModel(
+            api: deps.agentRPCService(for: session),
+            capacityCache: deps.boxCapacityCache(for: session)))
     }
 
     var body: some View {
@@ -105,11 +107,14 @@ struct NewChatSheet: View {
                                      : "Offline · Last seen \(agent.lastSeenText())")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
-                                if agent.connected {
-                                    AgentCapacityRowContent(
-                                        capacity: viewModel.capacities[agent.id],
-                                        pending: viewModel.capacityPending.contains(agent.id))
-                                }
+                                // Offline rows carry a block too, from the
+                                // cache: the host suspends idle boxes, so
+                                // quota is how the user decides which one to
+                                // wake. The block captions its own age.
+                                AgentCapacityRowContent(
+                                    capacity: viewModel.capacities[agent.id],
+                                    pending: viewModel.capacityPending.contains(agent.id),
+                                    freshness: viewModel.capacityFreshness(for: agent.id))
                             }
                             Spacer()
                             if agent.connected {

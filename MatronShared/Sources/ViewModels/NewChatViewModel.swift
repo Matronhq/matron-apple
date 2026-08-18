@@ -95,8 +95,21 @@ public final class NewChatViewModel {
     public private(set) var capacityPending: Set<Int64> = []
     /// The in-flight fan-out task; tests await it for determinism.
     public private(set) var capacityFanOutForTesting: Task<Void, Never>?
+    /// Capture times for the entries in `capacities` that came out of the
+    /// cache rather than off the wire this visit. Only offline boxes are ever
+    /// seeded, so a key here means exactly "this row is showing last-known
+    /// numbers" — see `capacityFreshness(for:)`.
+    private var capacityCapturedAt: [Int64: Date] = [:]
+
+    /// How stale a cached capacity may be before it stops being worth
+    /// showing: past this, every limit window it describes has rolled over
+    /// several times, so the percentages say nothing about the box today.
+    static let maxCachedCapacityAge: TimeInterval = 7 * 86_400
 
     private let api: any AgentRPCProviding
+    private let capacityCache: any BoxCapacityCaching
+    /// Injected clock, so tests can pin capture times.
+    private let now: @Sendable () -> Date
     /// Folder lists learned by the fan-out, keyed by device — lets
     /// `select(agent:)` render the folder step from cache instead of paying
     /// for a second round-trip to the same box.
@@ -108,8 +121,22 @@ public final class NewChatViewModel {
     /// pending row and overwrite its capacity and folder cache.
     private var capacityGeneration = 0
 
-    public init(api: any AgentRPCProviding) {
+    public init(api: any AgentRPCProviding,
+                // Not defaulted: the cache is namespaced per account, and a
+                // convenient default here would be a silent app-global one.
+                capacityCache: any BoxCapacityCaching,
+                now: @escaping @Sendable () -> Date = Date.init) {
         self.api = api
+        self.capacityCache = capacityCache
+        self.now = now
+    }
+
+    /// How much a row's capacity numbers can be trusted: live for a box this
+    /// visit asked, cached-with-an-age for an offline box seeded from the
+    /// store. A box with no entry at all reads `.live` — it has nothing to
+    /// disclaim, and its row shows nothing either way.
+    public func capacityFreshness(for agentID: Int64) -> AgentCapacityFreshness {
+        capacityCapturedAt[agentID].map { .offline(capturedAt: $0) } ?? .live
     }
 
     public func load() async {
@@ -122,7 +149,8 @@ public final class NewChatViewModel {
                 await select(agent: connected[0])
             } else {
                 phase = .agents(Self.sorted(agents))
-                startCapacityFanOut(connected.map(\.id))
+                startCapacityFanOut(connected: connected.map(\.id),
+                                    offline: agents.filter { !$0.connected }.map(\.id))
             }
         } catch {
             phase = .agents([])
@@ -143,6 +171,15 @@ public final class NewChatViewModel {
         do {
             let reply = try await api.agentRequest(
                 agentDeviceID: agent.id, method: "recent_folders", paramsData: Data("{}".utf8))
+            // A fleet with one connected box auto-skips the roster and never
+            // fans out, so this is the only reply that box's capacity can be
+            // learned from before it goes to sleep. Recorded off the answer
+            // rather than off the phase: it is true whether or not the user
+            // has moved on since.
+            if case .ok(let resultData) = reply,
+               let object = (try? JSONSerialization.jsonObject(with: resultData)) as? [String: Any] {
+                capacityCache.save(BoxCapacity.parse(replyObject: object), for: agent.id, at: now())
+            }
             guard Self.sameFolderAgent(phase, agent) else { return } // switched away meanwhile
             switch reply {
             case .ok(let resultData):
@@ -200,9 +237,10 @@ public final class NewChatViewModel {
 
     /// Asks every connected box for its `recent_folders` in parallel (2–5
     /// boxes in practice) so the roster rows can show load, quota and
-    /// account while the user is still choosing. The roster is already on
-    /// screen — this only fills rows in, so failures stay silent.
-    private func startCapacityFanOut(_ agentIDs: [Int64]) {
+    /// account while the user is still choosing, and seeds the offline rows
+    /// from the capacity cache. The roster is already on screen — this only
+    /// fills rows in, so failures stay silent.
+    private func startCapacityFanOut(connected agentIDs: [Int64], offline offlineIDs: [Int64]) {
         capacityFanOutForTesting?.cancel()
         capacityGeneration &+= 1
         let generation = capacityGeneration
@@ -218,10 +256,17 @@ public final class NewChatViewModel {
         // coming back from the folder step doesn't collapse every three-line
         // row to "Checking…" and grow it back a moment later. The honesty
         // that buys is paid for at the other end — a leg that fails clears
-        // its entry (see `fetchCapacity`). Boxes this fan-out won't ask at
-        // all have nothing to revalidate with, so they go now: an offline
-        // box still renders the account email it reported last visit.
-        capacities = capacities.filter { refreshing.contains($0.key) }
+        // its entry (see `fetchCapacity`).
+        //
+        // Two entries never survive: a box this fan-out won't ask at all
+        // (nothing would ever revalidate it — it is re-seeded from the cache
+        // below instead, captioned with its age), and a cache seed for a box
+        // that has since come online. The latter has never been confirmed
+        // against the running box, so keeping it would launder disk data into
+        // an uncaptioned, live-looking row.
+        capacities = capacities.filter { refreshing.contains($0.key) && capacityCapturedAt[$0.key] == nil }
+        capacityCapturedAt = [:]
+        seedOfflineCapacities(connected: refreshing, offline: offlineIDs)
         capacityFanOutForTesting = Task { [weak self] in
             await withTaskGroup(of: Void.self) { group in
                 for id in agentIDs {
@@ -231,11 +276,31 @@ public final class NewChatViewModel {
         }
     }
 
+    /// Fills the rows of boxes the host has put to sleep with what they last
+    /// reported. Nothing here is ever asked for over the wire — that is the
+    /// whole point: the user picks which box to wake by its remaining quota.
+    private func seedOfflineCapacities(connected: Set<Int64>, offline offlineIDs: [Int64]) {
+        // The roster is the authority on which boxes exist; an unpaired box
+        // would otherwise sit in the cache forever with nothing to refresh it.
+        capacityCache.prune(keeping: connected.union(offlineIDs))
+        let cached = capacityCache.loadAll()
+        let moment = now()
+        for id in offlineIDs {
+            guard let entry = cached[id],
+                  moment.timeIntervalSince(entry.capturedAt) <= Self.maxCachedCapacityAge else { continue }
+            capacities[id] = entry.capacity
+            capacityCapturedAt[id] = entry.capturedAt
+        }
+    }
+
     /// One box's fan-out leg. A failure, a timeout or an unparseable reply
     /// all leave the row at name + "Connected" — capacity is a convenience,
     /// never a gate — which includes dropping anything this box told us on
     /// an earlier visit: a box that just failed to answer is exactly the one
-    /// whose old numbers shouldn't be presented as live.
+    /// whose old numbers shouldn't be presented as live. The *persisted*
+    /// entry is deliberately left alone, though: it costs nothing while the
+    /// box is connected, and it is what the row will show once the host puts
+    /// that box to sleep, where it reads as last-known rather than as live.
     private func fetchCapacity(agentID: Int64, generation: Int) async {
         let reply = try? await api.agentRequest(
             agentDeviceID: agentID, method: "recent_folders", paramsData: Data("{}".utf8))
@@ -249,8 +314,15 @@ public final class NewChatViewModel {
             capacities.removeValue(forKey: agentID)
             return
         }
-        capacities[agentID] = BoxCapacity.parse(replyObject: obj)
+        let capacity = BoxCapacity.parse(replyObject: obj)
+        capacities[agentID] = capacity
+        // These numbers came off the wire, so the row must not carry an age
+        // caption for them. Unreachable today (a box is either fanned out to
+        // or seeded, never both) but the two maps have to agree, and this is
+        // the one place `capacities` is written from a live reply.
+        capacityCapturedAt.removeValue(forKey: agentID)
         folderCache[agentID] = Self.parseFolders(resultData)
+        capacityCache.save(capacity, for: agentID, at: now())
     }
 
     // MARK: Helpers
