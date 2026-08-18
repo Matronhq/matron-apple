@@ -37,7 +37,7 @@ final class MarketingScreenshots: XCTestCase {
         dismissNotificationAlert()
 
         // Chat list — wait for the seeded conversations to sync in.
-        let hero = app.staticTexts["Fix the flaky upload test"]
+        let hero = row(app, "Fix the flaky upload test")
         XCTAssertTrue(hero.waitForExistence(timeout: 20), "chat list never showed seeded convo")
         sleep(2) // let the rest of the list + unread badges settle
         try save("ios-01-chat-list")
@@ -50,10 +50,12 @@ final class MarketingScreenshots: XCTestCase {
         try save("ios-02-agent-chat")
 
         // Back to the list, open the dark-mode convo for a diff-card shot.
-        let back = app.navigationBars.buttons.matching(identifier: "Back").firstMatch
-        XCTAssertTrue(back.waitForExistence(timeout: 5), "back button never appeared — nav bar identifier may have changed")
+        // The back control's identifier drifts across iOS releases; the
+        // leading nav-bar button is stable.
+        let back = app.navigationBars.buttons.firstMatch
+        XCTAssertTrue(back.waitForExistence(timeout: 5), "no nav bar button to go back with")
         back.tap()
-        let darkMode = app.staticTexts["Dark mode for settings screen"]
+        let darkMode = row(app, "Dark mode for settings screen")
         XCTAssertTrue(darkMode.waitForExistence(timeout: 10))
         darkMode.tap()
         let diff = app.staticTexts["SettingsView.swift"]
@@ -67,7 +69,7 @@ final class MarketingScreenshots: XCTestCase {
     func testCaptureNewChatFlow() throws {
         let app = try launchAgainstRig()
 
-        XCTAssertTrue(app.staticTexts["Fix the flaky upload test"].waitForExistence(timeout: 20))
+        XCTAssertTrue(row(app, "Fix the flaky upload test").waitForExistence(timeout: 20))
         app.buttons["New chat"].tap()
         let agentRow = app.staticTexts["homelab"]
         XCTAssertTrue(agentRow.waitForExistence(timeout: 10), "agent picker never listed homelab")
@@ -85,10 +87,10 @@ final class MarketingScreenshots: XCTestCase {
     func testCaptureSessionStatus() throws {
         let app = try launchAgainstRig()
 
-        let hero = app.staticTexts["Fix the flaky upload test"]
+        let hero = row(app, "Fix the flaky upload test")
         XCTAssertTrue(hero.waitForExistence(timeout: 20))
         hero.tap()
-        let info = app.buttons["Session status"]
+        let info = app.buttons["Session info"]
         XCTAssertTrue(info.waitForExistence(timeout: 10))
         sleep(2) // let the status frame replay on viewing
         info.tap()
@@ -102,13 +104,46 @@ final class MarketingScreenshots: XCTestCase {
     func testCaptureSubChat() throws {
         let app = try launchAgainstRig()
 
-        let parent = app.staticTexts["Refactor auth middleware"]
+        let parent = row(app, "Refactor auth middleware")
         XCTAssertTrue(parent.waitForExistence(timeout: 20))
         parent.tap()
         let child = app.staticTexts["Explore: auth call sites"]
         XCTAssertTrue(child.waitForExistence(timeout: 10), "sub-chat strip never appeared")
         sleep(2)
         try save("ios-07-subchat")
+    }
+
+    /// Agent-to-agent pairing — the consent card the invite parks in the
+    /// room conversation (rig: seed.mjs sends a real `agent_invite`).
+    func testCaptureAgentPairing() throws {
+        let app = try launchAgainstRig()
+
+        let room = row(app, "homelab")
+        XCTAssertTrue(room.waitForExistence(timeout: 20), "pairing room never listed")
+        room.tap()
+        let headline = app.staticTexts.matching(
+            NSPredicate(format: "label BEGINSWITH %@", "mac-studio wants to start a chat")
+        ).firstMatch
+        XCTAssertTrue(headline.waitForExistence(timeout: 10), "consent card never rendered")
+        sleep(2)
+        try save("ios-08-agent-pairing")
+    }
+
+    /// Debug helper — dumps the element tree so selector drift can be read
+    /// instead of guessed. Not part of the capture set.
+    func testDumpHierarchy() throws {
+        let app = try launchAgainstRig()
+        sleep(8)
+        let dump = app.debugDescription
+        try dump.write(
+            to: outputDir.appendingPathComponent("hierarchy.txt"),
+            atomically: true, encoding: .utf8)
+    }
+
+    /// Chat-list rows prefix the title with the box tag letter ('M Fix the
+    /// flaky upload test'), so title lookups match by suffix.
+    private func row(_ app: XCUIApplication, _ title: String) -> XCUIElement {
+        app.staticTexts.matching(NSPredicate(format: "label ENDSWITH %@", title)).firstMatch
     }
 
     private func launchAgainstRig() throws -> XCUIApplication {

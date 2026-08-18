@@ -48,6 +48,9 @@ struct MatronMacApp: App {
         UserDefaults.standard.register(defaults: [
             "NSSplitViewItemSidebarDefaultsToFloatingAppearance": false
         ])
+        #if DEBUG
+        DebugSnapshot.armIfRequested()
+        #endif
     }
 
     var body: some Scene {
