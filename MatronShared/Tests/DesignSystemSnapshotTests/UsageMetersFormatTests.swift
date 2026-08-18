@@ -1,5 +1,6 @@
 import XCTest
 import SwiftUI
+import MatronJournal
 import MatronModels
 @testable import MatronDesignSystem
 
@@ -103,6 +104,55 @@ final class UsageMetersFormatTests: XCTestCase {
         XCTAssertEqual(UsageMetersFormat.vitalsLine(SessionStatus.Vitals(cpuPct: 12, ramPct: nil)), "CPU 12%")
         // Nothing to show -> nil so callers drop the line entirely.
         XCTAssertNil(UsageMetersFormat.vitalsLine(SessionStatus.Vitals(cpuPct: nil, ramPct: nil)))
+    }
+
+    /// Effort renders beside the model, and renders NOTHING when the bridge
+    /// hasn't said — no separator, no placeholder, nothing for the layout to
+    /// reserve space for (2026-08-10 spec, phase 2).
+    func testModelLine() {
+        XCTAssertEqual(UsageMetersFormat.modelLine(model: "opus", effort: "high"), "opus · high")
+        XCTAssertEqual(UsageMetersFormat.modelLine(model: "opus", effort: nil), "opus")
+        // A blank string is as unknown as an absent one — the bridge never
+        // guesses, and neither does the renderer. Newlines count as blank
+        // too: a stray "\n" would otherwise render a dangling separator.
+        XCTAssertEqual(UsageMetersFormat.modelLine(model: "opus", effort: "   "), "opus")
+        XCTAssertEqual(UsageMetersFormat.modelLine(model: "opus", effort: "\n"), "opus")
+        XCTAssertEqual(UsageMetersFormat.modelLine(model: "opus", effort: " \t\n "), "opus")
+    }
+
+    /// Wire → merge → formatter for the tri-state contract: a frame
+    /// carrying an explicit null effort takes the formatted line back to
+    /// the bare model. The views' own gating (which drops the line when
+    /// there's no model at all) is theirs to test — `MacChatToolbar`'s
+    /// `modelLine` is pinned in `MacChatToolbarTests`.
+    func testEffortClearReturnsTheFormattedLineToTheBareModel() {
+        func line(_ status: SessionStatus) -> String {
+            UsageMetersFormat.modelLine(model: "opus", effort: status.effort)
+        }
+        var status = SessionStatus()
+
+        guard case let .sessionStatus(tracked)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"model":"opus","effort":"xhigh"}}"#) else {
+            return XCTFail("expected a status frame carrying an effort")
+        }
+        status.apply(tracked)
+        XCTAssertEqual(line(status), "opus · xhigh")
+
+        // A frame that says nothing about effort leaves the line alone.
+        guard case let .sessionStatus(quiet)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"context":{"tokens":100,"window":1000,"pct":10}}}"#) else {
+            return XCTFail("expected a status frame with no effort key")
+        }
+        status.apply(quiet)
+        XCTAssertEqual(line(status), "opus · xhigh", "an absent effort must not blank the line")
+
+        guard case let .sessionStatus(cleared)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"effort":null}}"#) else {
+            return XCTFail("expected a status frame clearing the effort")
+        }
+        status.apply(cleared)
+        XCTAssertEqual(line(status), "opus",
+                       "the effort disappears entirely — no separator, no reserved space")
     }
 
 }

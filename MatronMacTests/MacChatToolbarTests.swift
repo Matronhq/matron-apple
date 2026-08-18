@@ -65,6 +65,26 @@ final class MacChatToolbarTests: XCTestCase {
         XCTAssertNil(toolbar().titleSubtitle)
     }
 
+    /// The leading cluster's first line carries the effort beside the
+    /// model when the bridge is tracking one, and nothing extra when it
+    /// isn't — the cluster's height is budgeted for three caption lines,
+    /// so effort shares the model's rather than taking a fourth. With no
+    /// model the line is nil (dropped), not an empty Text.
+    func testModelLineCarriesEffortBesideTheModel() {
+        func toolbar(model: String? = nil, effort: String? = nil) -> MacChatToolbar {
+            MacChatToolbar(
+                title: "Chat",
+                status: SessionStatus(model: model, effort: effort),
+                stripViewModel: makeStripVM(), onOpenSubChat: { _ in }, onCompact: {})
+        }
+        XCTAssertEqual(toolbar(model: "opus", effort: "xhigh").modelLine, "opus · xhigh")
+        XCTAssertEqual(toolbar(model: "opus").modelLine, "opus",
+                       "an untracked effort adds nothing — no separator, no reserved space")
+        XCTAssertNil(toolbar(effort: "xhigh").modelLine,
+                     "effort qualifies a model; with no model there is no line to qualify")
+        XCTAssertNil(toolbar().modelLine)
+    }
+
 
     /// The title cluster's tap target is a real binding, not a fire-and-
     /// forget closure — flipping `showSummaries.wrappedValue` on the

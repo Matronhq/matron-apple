@@ -279,6 +279,121 @@ final class WireModelsTests: XCTestCase {
         XCTAssertEqual(empty.model, "m")
     }
 
+    /// Phase 2 of the 2026-08-10 composer-suggestions spec: the bridge
+    /// publishes the lists it owns (`model_options`, `effort_levels`) plus
+    /// the current `effort`, and the palette serves them as `/model` and
+    /// `/effort` argument suggestions. `label` is optional — a value with
+    /// no label displays as itself.
+    func testDecodeSessionStatusCarriesSuggestionListsAndEffort() throws {
+        let text = #"{"kind":"ephemeral","convo_id":"c1","status":{"model":"opus","effort":"high","model_options":[{"value":"opus","label":"Opus"},{"value":"sonnet","label":"Sonnet"}],"effort_levels":[{"value":"low","label":"Low"},{"value":"xhigh"}]}}"#
+        guard case let .sessionStatus(update)? = ServerFrame.decode(text) else {
+            return XCTFail("expected sessionStatus frame")
+        }
+        XCTAssertEqual(update.effort, .set("high"))
+        XCTAssertEqual(update.modelOptions, [
+            SessionStatus.Option(value: "opus", label: "Opus"),
+            SessionStatus.Option(value: "sonnet", label: "Sonnet"),
+        ])
+        XCTAssertEqual(update.effortLevels, [
+            SessionStatus.Option(value: "low", label: "Low"),
+            SessionStatus.Option(value: "xhigh", label: nil),
+        ])
+    }
+
+    /// Absent and empty are different statements and must stay different in
+    /// the model: an older bridge omits the field entirely (nil — "doesn't
+    /// say"), while an agent with nothing to offer sends `[]` ("offers
+    /// nothing"). Both render as no suggestions, but only the second may
+    /// overwrite a held list. Deliberately unlike `limits`, which collapses
+    /// an empty array to nil.
+    func testDecodeSessionStatusDistinguishesAbsentFromEmptyOptionLists() throws {
+        guard case let .sessionStatus(absent)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"model":"opus"}}"#) else {
+            return XCTFail("expected sessionStatus frame from an older bridge")
+        }
+        XCTAssertNil(absent.modelOptions, "an omitted list is absent, not empty")
+        XCTAssertNil(absent.effortLevels)
+        XCTAssertNil(absent.effort, "an omitted effort says nothing — a Codex session, or an older bridge")
+
+        guard case let (empty)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"model_options":[],"effort_levels":[]}}"#),
+              case let .sessionStatus(empty) = empty else {
+            return XCTFail("expected sessionStatus frame with empty lists")
+        }
+        XCTAssertEqual(empty.modelOptions, [])
+        XCTAssertEqual(empty.effortLevels, [])
+
+        // An entry without a `value` carries nothing selectable and is
+        // skipped; the good ones survive, as with limits[].
+        guard case let .sessionStatus(mixed)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"model_options":[{"label":"Nameless"},{"value":"opus"}]}}"#) else {
+            return XCTFail("expected sessionStatus frame with a malformed option")
+        }
+        XCTAssertEqual(mixed.modelOptions?.map(\.value), ["opus"])
+    }
+
+    /// A non-empty array whose entries ALL fail to parse is a malformed
+    /// frame, not the agent saying it offers nothing. Decoding it to `[]`
+    /// would let a garbled frame overwrite a good list with "nothing" —
+    /// so it degrades to nil (silence) and the held list stands. A wire
+    /// `[]` is still a statement and still overwrites.
+    func testDecodeSessionStatusAllMalformedOptionsSayNothing() throws {
+        guard case let .sessionStatus(garbled)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"model_options":[{"label":"Nameless"}],"effort_levels":["low"]}}"#) else {
+            return XCTFail("expected sessionStatus frame with unparseable options")
+        }
+        XCTAssertNil(garbled.modelOptions, "all-malformed is silence, not an empty offer")
+        XCTAssertNil(garbled.effortLevels, "entries of the wrong shape entirely are silence too")
+
+        // The consequence that matters: a held list survives the garbled
+        // frame, and a genuine empty one still clears it.
+        var status = SessionStatus(
+            modelOptions: [SessionStatus.Option(value: "opus", label: "Opus")])
+        status.apply(garbled)
+        XCTAssertEqual(status.modelOptions?.map(\.value), ["opus"],
+                       "a garbled frame must not retract what the session offers")
+
+        guard case let .sessionStatus(none)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"model_options":[]}}"#) else {
+            return XCTFail("expected sessionStatus frame with an empty list")
+        }
+        status.apply(none)
+        XCTAssertEqual(status.modelOptions, [], "a wire [] is still a statement and still lands")
+    }
+
+    /// `effort` is the one tri-state field on the frame. A missing key and
+    /// a JSON null mean different things and must decode differently:
+    /// missing is silence (Codex, or a bridge that predates the field),
+    /// null is the bridge saying it is no longer tracking a level.
+    func testDecodeSessionStatusEffortIsTriState() throws {
+        guard case let .sessionStatus(tracked)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"effort":"xhigh"}}"#) else {
+            return XCTFail("expected sessionStatus frame with a tracked effort")
+        }
+        XCTAssertEqual(tracked.effort, .set("xhigh"))
+
+        guard case let .sessionStatus(cleared)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"model":"opus","effort":null}}"#) else {
+            return XCTFail("expected sessionStatus frame with a null effort")
+        }
+        XCTAssertEqual(cleared.effort, .cleared, "an explicit null is a clear, not an absence")
+        XCTAssertEqual(cleared.model, "opus", "the rest of the frame decodes as usual")
+
+        guard case let .sessionStatus(omitted)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"model":"gpt-5"}}"#) else {
+            return XCTFail("expected sessionStatus frame with no effort key")
+        }
+        XCTAssertNil(omitted.effort, "a missing key is silence — it must not decode as a clear")
+
+        // A number, a bool, an object: none of them are a level, and none
+        // of them are the bridge saying it stopped tracking. Say nothing.
+        guard case let .sessionStatus(junk)? = ServerFrame.decode(
+            #"{"kind":"ephemeral","convo_id":"c1","status":{"effort":7}}"#) else {
+            return XCTFail("expected sessionStatus frame with a malformed effort")
+        }
+        XCTAssertNil(junk.effort)
+    }
+
     func testDecodeSessionStatusCarriesTaskRefForChild() throws {
         // A subagent child's status frame rides `task_ref` (the parent's
         // spawning Task tool_use_id), replayed on `viewing` so the app can

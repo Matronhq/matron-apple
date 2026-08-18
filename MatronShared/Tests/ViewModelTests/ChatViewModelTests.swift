@@ -1595,7 +1595,8 @@ final class ChatViewModelTests: XCTestCase {
         fake.statusContinuation.yield(SessionStatusUpdate(
             convoID: "!r:s", model: nil,
             context: SessionStatus.Context(tokens: 100_000, window: 1_000_000, pct: 10),
-            limits: nil, email: nil, taskRef: nil, workdir: nil, vitals: nil))
+            limits: nil, email: nil, taskRef: nil, workdir: nil, vitals: nil,
+            modelOptions: nil, effortLevels: nil, effort: nil))
         for _ in 0..<200 {
             if vm.sessionStatus?.context != nil { break }
             try await Task.sleep(for: .milliseconds(10))
@@ -1604,7 +1605,8 @@ final class ChatViewModelTests: XCTestCase {
 
         // A model-only frame must not clear the held context.
         fake.statusContinuation.yield(SessionStatusUpdate(
-            convoID: "!r:s", model: "claude-fable-5", context: nil, limits: nil, email: nil, taskRef: nil, workdir: nil, vitals: nil))
+            convoID: "!r:s", model: "claude-fable-5", context: nil, limits: nil, email: nil, taskRef: nil, workdir: nil, vitals: nil,
+            modelOptions: nil, effortLevels: nil, effort: nil))
         for _ in 0..<200 {
             if vm.sessionStatus?.model != nil { break }
             try await Task.sleep(for: .milliseconds(10))
@@ -1630,7 +1632,8 @@ final class ChatViewModelTests: XCTestCase {
         fake.statusContinuation.yield(SessionStatusUpdate(
             convoID: "!r:s", model: nil,
             context: SessionStatus.Context(tokens: 100_000, window: 1_000_000, pct: 10),
-            limits: nil, email: nil, taskRef: nil, workdir: nil, vitals: nil))
+            limits: nil, email: nil, taskRef: nil, workdir: nil, vitals: nil,
+            modelOptions: nil, effortLevels: nil, effort: nil))
         for _ in 0..<200 {
             if vm.sessionStatus?.context != nil { break }
             try await Task.sleep(for: .milliseconds(10))

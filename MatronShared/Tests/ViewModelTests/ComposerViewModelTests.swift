@@ -994,6 +994,123 @@ final class ComposerViewModelTests: XCTestCase {
         XCTAssertEqual(vm.input, "/start ~/proj")
     }
 
+    // MARK: - Session-derived argument suggestions (2026-08-10 spec, phase 2)
+
+    /// Stands in for the `ChatViewModel` the composer reads its session
+    /// status from — the pair is created together by the chat-list VM cache,
+    /// and the composer holds a closure back to the chat half.
+    @MainActor
+    private final class StatusHolder {
+        var status: SessionStatus?
+        private(set) var reads = 0
+        init(_ status: SessionStatus?) { self.status = status }
+        func read() -> SessionStatus? {
+            reads += 1
+            return status
+        }
+    }
+
+    @MainActor
+    private func composer(status: StatusHolder) -> ComposerViewModel {
+        ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                          commands: BotCommandCatalog.claudeBridge,
+                          recentFolders: emptyRecentFolders(),
+                          sessionStatus: { status.read() })
+    }
+
+    /// The status is read only once a session-derived command has matched.
+    /// Reading it eagerly would have the composer observe the chat view
+    /// model's `sessionStatus` on every keystroke, so every status frame
+    /// would invalidate the composer's body while the user types ordinary
+    /// prose.
+    @MainActor
+    func test_ordinaryTypingDoesNotReadTheSessionStatus() {
+        let holder = StatusHolder(SessionStatus(
+            modelOptions: [SessionStatus.Option(value: "opus", label: "Opus")]))
+        let vm = composer(status: holder)
+
+        vm.input = "just chatting about /model"
+        _ = vm.showPalette
+        vm.input = "/restart --f"
+        _ = vm.showPalette
+        XCTAssertEqual(holder.reads, 0,
+                       "neither prose nor a statically-catalogued command needs the session")
+
+        vm.input = "/model "
+        _ = vm.showPalette
+        XCTAssertGreaterThan(holder.reads, 0, "a session-derived command does read it")
+    }
+
+    @MainActor
+    func test_modelAndEffort_offerTheSessionsLists() {
+        let holder = StatusHolder(SessionStatus(
+            modelOptions: [SessionStatus.Option(value: "opus", label: "Opus"),
+                           SessionStatus.Option(value: "sonnet", label: "Sonnet")],
+            effortLevels: [SessionStatus.Option(value: "high", label: "High")]))
+        let vm = composer(status: holder)
+
+        vm.input = "/model "
+        XCTAssertTrue(vm.showPalette)
+        XCTAssertEqual(argumentValues(vm), ["opus", "sonnet"])
+        XCTAssertEqual(vm.paletteItemCount, 2)
+
+        vm.input = "/effort "
+        XCTAssertEqual(argumentValues(vm), ["high"])
+    }
+
+    /// The composer reads the status live rather than holding a copy, so a
+    /// later status frame (a bridge that learns a new model) reaches the
+    /// palette without anything having to push it across.
+    @MainActor
+    func test_laterStatusFrame_reachesThePalette() {
+        let holder = StatusHolder(nil)
+        let vm = composer(status: holder)
+        vm.input = "/model "
+        XCTAssertEqual(argumentValues(vm), [], "nothing offered before the bridge speaks")
+
+        holder.status = SessionStatus(modelOptions: [SessionStatus.Option(value: "opus", label: "Opus")])
+        XCTAssertEqual(argumentValues(vm), ["opus"])
+    }
+
+    @MainActor
+    func test_selectingASessionValue_insertsItAndDismisses() {
+        let holder = StatusHolder(SessionStatus(
+            modelOptions: [SessionStatus.Option(value: "opus", label: "Opus")]))
+        let vm = composer(status: holder)
+        vm.input = "/model op"
+        vm.selectSuggestion(.argument(ArgSuggestion(value: "opus", label: "Opus")))
+        XCTAssertEqual(vm.input, "/model opus ",
+                       "the partial is replaced and a trailing space follows, as for static values")
+        XCTAssertFalse(vm.showPalette, "a value fills the single slot — nothing left to offer")
+    }
+
+    /// Keyboard selection walks the same rows as a tap.
+    @MainActor
+    func test_confirmPaletteSelection_picksASessionValue() {
+        let holder = StatusHolder(SessionStatus(
+            modelOptions: [SessionStatus.Option(value: "opus", label: "Opus"),
+                           SessionStatus.Option(value: "sonnet", label: "Sonnet")]))
+        let vm = composer(status: holder)
+        vm.input = "/model "
+        vm.paletteMoveDown()
+        vm.paletteMoveDown()
+        XCTAssertTrue(vm.confirmPaletteSelection())
+        XCTAssertEqual(vm.input, "/model sonnet ")
+    }
+
+    /// A composer built without a status source (every test fixture, and any
+    /// surface that has no chat view model) behaves exactly as it did before
+    /// this feature — an older bridge lands in the same place.
+    @MainActor
+    func test_withoutASessionStatusSource_modelOffersNothing() {
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: emptyRecentFolders())
+        vm.input = "/model "
+        XCTAssertEqual(argumentValues(vm), [])
+        XCTAssertFalse(vm.showPalette)
+    }
+
     @MainActor
     func test_selectFolder_replacesTrailingPartial_noTrailingSpace() {
         let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),

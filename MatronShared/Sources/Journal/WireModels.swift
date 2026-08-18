@@ -297,6 +297,40 @@ public enum ServerFrame: Equatable, Sendable {
                         vitals = SessionStatus.Vitals(cpuPct: cpu, ramPct: ram)
                     }
                 }
+                // Session-scoped argument lists for the slash palette.
+                // Unlike `limits`, an empty array is NOT collapsed to nil:
+                // absent means "this bridge doesn't say" and empty means
+                // "this agent offers nothing", and only the second may
+                // overwrite a list the app already holds.
+                //
+                // A non-empty array that yields nothing is a THIRD case,
+                // and it is malformed rather than empty: returning `[]`
+                // there would let a garbled frame overwrite a good list
+                // with "offers nothing". Only a wire `[]` is a statement,
+                // so that alone survives as `[]` — the same way the limits
+                // decoder degrades a list it can't read.
+                func options(_ key: String) -> [SessionStatus.Option]? {
+                    guard let raw = status[key] as? [[String: Any]] else { return nil }
+                    let parsed = raw.compactMap { entry -> SessionStatus.Option? in
+                        guard let value = entry["value"] as? String else { return nil }
+                        return SessionStatus.Option(value: value, label: entry["label"] as? String)
+                    }
+                    return raw.isEmpty || !parsed.isEmpty ? parsed : nil
+                }
+                // Effort is tri-state, and JSONSerialization is what makes
+                // the three distinguishable: a missing key subscripts to
+                // nil, a JSON null to NSNull. Folding null into nil here
+                // would leave the app showing a level the bridge has
+                // disowned (it republishes the null on every frame while
+                // untracked, so this is the only signal that arrives).
+                // Anything that is neither a string nor null is not a
+                // statement about effort — say nothing.
+                let effort: SessionStatusUpdate.Effort?
+                switch status["effort"] {
+                case let level as String: effort = .set(level)
+                case is NSNull: effort = .cleared
+                default: effort = nil
+                }
                 return .sessionStatus(SessionStatusUpdate(
                     convoID: convoID, model: status["model"] as? String,
                     context: context, limits: limits,
@@ -307,7 +341,10 @@ public enum ServerFrame: Equatable, Sendable {
                     // for the next turn-end frame. Absent for normal convos.
                     taskRef: status["task_ref"] as? String,
                     workdir: status["workdir"] as? String,
-                    vitals: vitals))
+                    vitals: vitals,
+                    modelOptions: options("model_options"),
+                    effortLevels: options("effort_levels"),
+                    effort: effort))
             }
             guard let ref = obj["message_ref"] as? String else { return nil }
             return .ephemeral(EphemeralUpdate(

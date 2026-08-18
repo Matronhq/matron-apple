@@ -40,6 +40,16 @@ public struct ArgSuggestion: Equatable, Hashable, Sendable {
     public var isFlag: Bool { value.hasPrefix("--") }
 }
 
+/// Which of the bridge's session-scoped lists supplies a command's
+/// argument values. These lists are agent-dependent and the bridge owns
+/// them, so they ride the status frame (`SessionStatus.modelOptions` /
+/// `effortLevels`) instead of being copied into the catalog — the catalog
+/// names the source, never the values.
+public enum SessionArgSource: Equatable, Hashable, Sendable {
+    case modelOptions
+    case effortLevels
+}
+
 /// A slash-command entry surfaced in the composer's slash palette.
 ///
 /// The catalog is local — driven by a static list per bot kind — because
@@ -56,17 +66,24 @@ public struct BotCommand: Equatable, Hashable, Sendable {
     /// Statically-known argument completions, offered by the palette once
     /// the command is typed in full. Empty for free-text arguments.
     public let argSuggestions: [ArgSuggestion]
+    /// The bridge-owned list this command's values come from, when they
+    /// aren't static. `nil` for every command whose grammar the catalog
+    /// knows in full; the resolver appends the session's list to
+    /// `argSuggestions` when it's set.
+    public let sessionArgSource: SessionArgSource?
 
     public init(
         trigger: String,
         summary: String,
         argHint: String? = nil,
-        argSuggestions: [ArgSuggestion] = []
+        argSuggestions: [ArgSuggestion] = [],
+        sessionArgSource: SessionArgSource? = nil
     ) {
         self.trigger = trigger
         self.summary = summary
         self.argHint = argHint
         self.argSuggestions = argSuggestions
+        self.sessionArgSource = sessionArgSource
     }
 }
 
@@ -122,8 +139,14 @@ public enum BotCommandCatalog {
                    ]),
         BotCommand(trigger: "/working", summary: "Toggle tool call visibility"),
         BotCommand(trigger: "/mcp", summary: "Show MCP server status"),
-        BotCommand(trigger: "/model", summary: "Show current model"),
-        BotCommand(trigger: "/effort", summary: "Show or set effort level", argHint: "[level]"),
+        // The values for these two are the bridge's to publish: the model
+        // aliases are agent-dependent, and the effort levels are a list the
+        // bridge enumerates. No suggestions until a status frame carries
+        // them — honest where a stale hardcoded copy would not be.
+        BotCommand(trigger: "/model", summary: "Show or switch the model",
+                   argHint: "[alias]", sessionArgSource: .modelOptions),
+        BotCommand(trigger: "/effort", summary: "Show or set effort level",
+                   argHint: "[level]", sessionArgSource: .effortLevels),
         BotCommand(trigger: "/mode", summary: "Show or switch interactive vs print",
                    argHint: "[interactive|print]",
                    argSuggestions: [
@@ -180,10 +203,44 @@ public enum BotCommandCatalog {
             with: "--", options: .regularExpression)
     }
 
+    /// The values `status` supplies for a command that draws them from the
+    /// session rather than the catalog. Absent and empty lists both come
+    /// back empty here — the distinction lives in the model, and matters
+    /// only to the merge that produced it.
+    ///
+    /// Values repeated by the bridge collapse to their first occurrence,
+    /// keeping the order it sent. This pool is remote-controlled input, and
+    /// the palette identifies rows by value: duplicates would give a
+    /// `ForEach` two rows with one identity.
+    private static func sessionSuggestions(
+        _ source: SessionArgSource?, _ status: () -> SessionStatus?
+    ) -> [ArgSuggestion] {
+        guard let source, let status = status() else { return [] }
+        let options: [SessionStatus.Option]?
+        switch source {
+        case .modelOptions: options = status.modelOptions
+        case .effortLevels: options = status.effortLevels
+        }
+        var seen: Set<String> = []
+        return (options ?? []).compactMap { option in
+            guard seen.insert(option.value.lowercased()).inserted else { return nil }
+            return ArgSuggestion(value: option.value, label: option.label)
+        }
+    }
+
     /// Resolves the argument suggestions for a raw composer input: the
-    /// matched command's static suggestions, filtered by the trailing
+    /// matched command's suggestions — static, plus whatever `status`
+    /// supplies for a session-derived command — filtered by the trailing
     /// partial token. Empty unless the input is a fully-typed command
     /// (either `/` or `!` prefix) followed by whitespace.
+    ///
+    /// A nil `status` (no bridge has spoken, or the caller has no session)
+    /// leaves session-derived commands offering nothing, which is exactly
+    /// the pre-status-frame behaviour. `status` is an autoclosure and is
+    /// evaluated only once a session-derived command has actually matched:
+    /// the composer's reads it out of the chat view model, and doing that
+    /// on every keystroke would make the composer observe every status
+    /// frame for input that isn't a command at all.
     ///
     /// Flags compose, so a flag stays offered until it's on the line or a
     /// conflicting one is (`conflictsWith`) — but only while the trailing
@@ -194,7 +251,10 @@ public enum BotCommandCatalog {
     /// A suggestion identical to the partial offers nothing — same rule
     /// as folder completion, so the palette doesn't linger over a
     /// completed flag.
-    public static func argSuggestions(for input: String, in commands: [BotCommand]) -> [ArgSuggestion] {
+    public static func argSuggestions(
+        for input: String, in commands: [BotCommand],
+        status: @autoclosure () -> SessionStatus? = nil
+    ) -> [ArgSuggestion] {
         let leading = Substring(input.drop(while: { $0 == " " || $0 == "\t" }))
         guard let first = leading.first, first == "/" || first == "!" else { return [] }
         let body = leading.dropFirst()
@@ -216,7 +276,9 @@ public enum BotCommandCatalog {
             .map { normalizeLeadingDashes($0).lowercased() })
         let positionalFilled = earlier.contains { !$0.hasPrefix("--") }
 
-        return command.argSuggestions.filter { suggestion in
+        let pool = command.argSuggestions
+            + sessionSuggestions(command.sessionArgSource, status)
+        return pool.filter { suggestion in
             let value = suggestion.value.lowercased()
             if suggestion.isFlag {
                 if positionalFilled || earlier.contains(value) { return false }
