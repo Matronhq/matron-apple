@@ -770,6 +770,13 @@ final class ComposerViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_recentFolderArgument_uppercaseCommand_stillExtracts() {
+        // Folder completion matches /START case-insensitively, so a sent
+        // uppercase line must still record the path — one case rule.
+        XCTAssertEqual(ComposerViewModel.recentFolderArgument(from: "/START ~/x"), "~/x")
+    }
+
+    @MainActor
     func test_recentFolderArgument_extractsPath() {
         XCTAssertEqual(ComposerViewModel.recentFolderArgument(from: "/start ~/x"), "~/x")
     }

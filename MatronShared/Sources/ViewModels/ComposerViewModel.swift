@@ -327,7 +327,9 @@ public final class ComposerViewModel {
         let trimmed = Substring(text.trimmingCharacters(in: .whitespacesAndNewlines))
         guard let first = trimmed.first, first == "/" || first == "!" else { return nil }
         let tokens = trimmed.dropFirst().split(whereSeparator: { $0.isWhitespace })
-        guard let command = tokens.first, command == "start" || command == "workdir" else { return nil }
+        // Case-insensitive, agreeing with folderCompletionPartial and the
+        // palette — one input, one case rule.
+        guard let command = tokens.first?.lowercased(), command == "start" || command == "workdir" else { return nil }
         // Smart-dashed flags ("—browser") are flags, not folders — the
         // bridge normalizes them, and recording one would poison recents.
         for token in tokens.dropFirst()
