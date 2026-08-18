@@ -332,34 +332,33 @@ final class ComposerViewModelTests: XCTestCase {
     @MainActor
     func test_palette_staysClosed_afterCommandSelection() {
         // Regression for bugbot finding #1: `selectCommand` set the input
-        // to "/start " (trailing space). The palette's old check trimmed
+        // to "/stop " (trailing space). The palette's old check trimmed
         // whitespace, collapsing the input back to a single token starting
         // with `/`, which re-opened the palette immediately.
         //
-        // With recent-folder completion, "/start " enters folder-suggestion
-        // mode, so an *empty* store is injected to pin the "no suggestions →
-        // palette stays closed" outcome deterministically.
+        // Pinned against /stop — a command with no argument suggestions —
+        // because commands WITH suggestions (e.g. /start) now deliberately
+        // reopen the palette in argument mode (2026-08-10 spec).
         let vm = ComposerViewModel(roomID: "!test:s", timeline: FakeTimelineService(),
                                    commands: BotCommandCatalog.claudeBridge,
                                    recentFolders: emptyRecentFolders())
-        let cmd = BotCommand(trigger: "/start", summary: "x", argHint: "[workdir]")
+        let cmd = BotCommand(trigger: "/stop", summary: "x")
         vm.selectCommand(cmd)
-        XCTAssertEqual(vm.input, "/start ")
+        XCTAssertEqual(vm.input, "/stop ")
         XCTAssertFalse(vm.showPalette,
-                       "palette should stay closed once a command has been chosen and the trailing space is in place")
+                       "palette should stay closed once a suggestion-free command has been chosen")
     }
 
     @MainActor
     func test_palette_isHiddenForCommandWithTrailingSpace() {
-        // Tightened version of the regression above: typing the command
-        // followed by a space (without the user even hitting an argument)
-        // should hide the palette so it doesn't cover the next character.
-        // An empty recent-folder store keeps folder-suggestion mode from
-        // opening the palette here (folder completion has its own tests).
+        // Tightened version of the regression above: typing a command with
+        // no argument suggestions followed by a space should hide the
+        // palette so it doesn't cover the next character. (Commands with
+        // suggestions keep it open in argument mode instead.)
         let vm = ComposerViewModel(roomID: "!test:s", timeline: FakeTimelineService(),
                                    commands: BotCommandCatalog.claudeBridge,
                                    recentFolders: emptyRecentFolders())
-        vm.input = "/start "
+        vm.input = "/stop "
         XCTAssertFalse(vm.showPalette)
     }
 
@@ -771,6 +770,13 @@ final class ComposerViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_recentFolderArgument_uppercaseCommand_stillExtracts() {
+        // Folder completion matches /START case-insensitively, so a sent
+        // uppercase line must still record the path — one case rule.
+        XCTAssertEqual(ComposerViewModel.recentFolderArgument(from: "/START ~/x"), "~/x")
+    }
+
+    @MainActor
     func test_recentFolderArgument_extractsPath() {
         XCTAssertEqual(ComposerViewModel.recentFolderArgument(from: "/start ~/x"), "~/x")
     }
@@ -843,9 +849,149 @@ final class ComposerViewModelTests: XCTestCase {
         // Not a folder command: no suggestions even though a folder is stored.
         vm.input = "/status ~/p"
         XCTAssertTrue(vm.folderSuggestions.isEmpty)
-        // A second token before the partial (flag) doesn't qualify either.
-        vm.input = "/start --browser ~/p"
+        // A non-flag token before the partial doesn't qualify — the path
+        // slot is already filled.
+        vm.input = "/start ~/other ~/p"
         XCTAssertTrue(vm.folderSuggestions.isEmpty)
+    }
+
+    @MainActor
+    func test_folderSuggestions_uppercaseCommand_stillCompletes() {
+        // The command palette and the argument resolver both match
+        // case-insensitively; the folder gate must agree, or "/START ~"
+        // opens the palette with flags but silently zero folders.
+        let store = emptyRecentFolders()
+        store.record("~/proj")
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: store)
+        vm.input = "/START ~"
+        XCTAssertEqual(vm.folderSuggestions, ["~/proj"])
+    }
+
+    @MainActor
+    func test_folderSuggestions_allowedAfterSmartDashedFlag() {
+        // iOS smart dashes rewrite "--browser" to "—browser"; the bridge
+        // still parses it as a flag, so the folder gate must too.
+        let store = emptyRecentFolders()
+        store.record("~/proj")
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: store)
+        vm.input = "/start \u{2014}browser ~/p"
+        XCTAssertEqual(vm.folderSuggestions, ["~/proj"])
+    }
+
+    @MainActor
+    func test_recentFolderArgument_skipsSmartDashedFlags() {
+        // "—browser" (em dash) is a flag the bridge normalizes, not a
+        // folder — recording it would poison the recents list.
+        XCTAssertEqual(ComposerViewModel.recentFolderArgument(from: "/start \u{2014}browser ~/x"), "~/x")
+    }
+
+    @MainActor
+    func test_folderSuggestions_allowedAfterFlags() {
+        // The bridge's grammar is `/start [flags] [workdir]`, so folder
+        // completion must survive flag tokens ahead of the path
+        // (2026-08-10 spec: folders become one suggestion source among
+        // several, not a special case that flags disable).
+        let store = emptyRecentFolders()
+        store.record("~/proj")
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: store)
+        vm.input = "/start --browser ~/p"
+        XCTAssertEqual(vm.folderSuggestions, ["~/proj"])
+    }
+
+    // MARK: - Argument suggestions (2026-08-10 spec, phase 1)
+
+    /// Convenience: the `.argument` values currently offered.
+    @MainActor
+    private func argumentValues(_ vm: ComposerViewModel) -> [String] {
+        vm.paletteSuggestions.compactMap {
+            if case .argument(let arg) = $0 { return arg.value }
+            return nil
+        }
+    }
+
+    @MainActor
+    func test_completedCommand_opensPaletteInArgumentMode() {
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: emptyRecentFolders())
+        vm.input = "/restart "
+        XCTAssertTrue(vm.showPalette)
+        XCTAssertEqual(argumentValues(vm), ["--force", "--browser"])
+        XCTAssertEqual(vm.paletteItemCount, 2)
+    }
+
+    @MainActor
+    func test_paletteSuggestions_argumentsPrecedeFolders() {
+        let store = emptyRecentFolders()
+        store.record("~/proj")
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: store)
+        vm.input = "/start "
+        let start = BotCommandCatalog.claudeBridge.first { $0.trigger == "/start" }!
+        XCTAssertEqual(vm.paletteSuggestions,
+                       start.argSuggestions.map { .argument($0) } + [.folder("~/proj")],
+                       "argument rows come first, folders after")
+    }
+
+    @MainActor
+    func test_selectSuggestion_argument_insertsValueAndSpace_thenOffersRest() {
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: emptyRecentFolders())
+        vm.input = "/restart --f"
+        vm.selectSuggestion(.argument(ArgSuggestion(value: "--force")))
+        XCTAssertEqual(vm.input, "/restart --force ",
+                       "the partial token is replaced and a trailing space readies the next argument")
+        XCTAssertEqual(argumentValues(vm), ["--browser"],
+                       "the palette immediately offers the remaining flag")
+        XCTAssertTrue(vm.showPalette)
+    }
+
+    @MainActor
+    func test_selectSuggestion_lastValue_dismissesPalette() {
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: emptyRecentFolders())
+        vm.input = "/switch "
+        vm.selectSuggestion(.argument(ArgSuggestion(value: "claude")))
+        XCTAssertEqual(vm.input, "/switch claude ")
+        XCTAssertFalse(vm.showPalette,
+                       "a value fills the single slot, so nothing is left to offer")
+    }
+
+    @MainActor
+    func test_selectSuggestion_folder_delegatesToFolderPick() {
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: emptyRecentFolders())
+        vm.input = "/start ~/y"
+        vm.selectSuggestion(.folder("~/yearbook-app"))
+        XCTAssertEqual(vm.input, "/start ~/yearbook-app",
+                       "folder picks keep the no-trailing-space caret behaviour")
+    }
+
+    @MainActor
+    func test_confirmPaletteSelection_picksFromUnifiedList() {
+        let store = emptyRecentFolders()
+        store.record("~/proj")
+        let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
+                                   commands: BotCommandCatalog.claudeBridge,
+                                   recentFolders: store)
+        vm.input = "/start "
+        // Walk the highlight to the folder row: 3 argument rows precede it.
+        vm.paletteMoveDown()
+        vm.paletteMoveDown()
+        vm.paletteMoveDown()
+        vm.paletteMoveDown()
+        XCTAssertTrue(vm.confirmPaletteSelection())
+        XCTAssertEqual(vm.input, "/start ~/proj")
     }
 
     @MainActor
@@ -996,8 +1142,9 @@ final class ComposerViewModelTests: XCTestCase {
         let vm = ComposerViewModel(roomID: "!r", timeline: FakeTimelineService(),
                                    commands: BotCommandCatalog.claudeBridge,
                                    recentFolders: store)
-        vm.input = "/start "
-        // Most-recent-first: row 0 is "~/two", row 1 is "~/one".
+        // "~" filters the palette to folder rows alone (no flag matches),
+        // most-recent-first: row 0 is "~/two", row 1 is "~/one".
+        vm.input = "/start ~"
         vm.paletteMoveDown()
         vm.paletteMoveDown()
         XCTAssertTrue(vm.confirmPaletteSelection())

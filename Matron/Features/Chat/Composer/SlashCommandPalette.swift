@@ -1,5 +1,6 @@
 import SwiftUI
 import MatronModels
+import MatronViewModels
 
 /// Drop-down palette that surfaces the current `BotCommand` matches above
 /// the composer. Item taps go through `onSelect`, which is wired to
@@ -7,22 +8,23 @@ import MatronModels
 /// `<trigger> ` and the palette dismisses.
 struct SlashCommandPalette: View {
     let commands: [BotCommand]
-    /// Recent-folder suggestions for `/start` / `/workdir` completion. When
-    /// non-empty, the palette shows folder rows instead of commands (the
-    /// two modes are mutually exclusive upstream, but folders win here).
-    let folders: [String]
+    /// Argument/folder suggestions for a fully-typed command. When
+    /// non-empty, the palette shows suggestion rows instead of commands
+    /// (the two modes are mutually exclusive upstream, but suggestions
+    /// win here).
+    let suggestions: [PaletteSuggestion]
     let onSelect: (BotCommand) -> Void
-    let onSelectFolder: (String) -> Void
+    let onSelectSuggestion: (PaletteSuggestion) -> Void
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                if !folders.isEmpty {
-                    ForEach(folders, id: \.self) { folder in
+                if !suggestions.isEmpty {
+                    ForEach(suggestions, id: \.self) { suggestion in
                         Button {
-                            onSelectFolder(folder)
+                            onSelectSuggestion(suggestion)
                         } label: {
-                            folderRow(for: folder)
+                            suggestionRow(for: suggestion)
                         }
                         .buttonStyle(.plain)
                         Divider()
@@ -43,6 +45,33 @@ struct SlashCommandPalette: View {
         .frame(maxHeight: 220)
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    @ViewBuilder
+    private func suggestionRow(for suggestion: PaletteSuggestion) -> some View {
+        switch suggestion {
+        case .folder(let path): folderRow(for: path)
+        case .argument(let argument): argumentRow(for: argument)
+        }
+    }
+
+    private func argumentRow(for argument: ArgSuggestion) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(argument.displayLabel)
+                    .font(.system(.body, design: .monospaced))
+                    .bold()
+                if let summary = argument.summary {
+                    Text(summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
     }
 
     private func folderRow(for path: String) -> some View {
