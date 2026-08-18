@@ -61,17 +61,25 @@ public struct AskUserEvent: Equatable, Sendable {
     public let kind: InputKind
     public let expiresAt: Date?
     public let replyChannel: ReplyChannel
+    /// The bridge-owned prompt id (`pr_<uuid>`) of a busy-queue
+    /// `queued_release` card, `nil` for every other prompt. The bridge's
+    /// durable release frames name cards by this id (not by seq), so it's
+    /// what lets a "Send all" on one card retire the buttons on the rest —
+    /// see `ChatViewModel.queuedReleaseAnswer(for:)`.
+    public let queuedReleasePromptID: String?
 
     public init(
         prompt: String,
         kind: InputKind,
         expiresAt: Date?,
-        replyChannel: ReplyChannel = .textReply
+        replyChannel: ReplyChannel = .textReply,
+        queuedReleasePromptID: String? = nil
     ) {
         self.prompt = prompt
         self.kind = kind
         self.expiresAt = expiresAt
         self.replyChannel = replyChannel
+        self.queuedReleasePromptID = queuedReleasePromptID
     }
 
     /// Parse a JSON `content` dictionary from a `chat.matron.ask_user`

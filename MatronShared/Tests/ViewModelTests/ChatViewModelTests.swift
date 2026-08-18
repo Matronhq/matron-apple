@@ -1175,6 +1175,130 @@ final class ChatViewModelTests: XCTestCase {
         )
     }
 
+    /// A bridge queued_release card: choice buttons plus the bridge prompt
+    /// id releases resolve against.
+    private func queuedCardItem(id: String, promptID: String) -> TimelineItem {
+        TimelineItem(
+            id: id, sender: "@bot:s", timestamp: .now,
+            kind: .askUser(
+                eventID: id,
+                AskUserEvent(
+                    prompt: "Send all 2 queued messages now, or cancel this one?",
+                    kind: .choice(options: [
+                        .init(id: "send", label: "⚡ Send all now", value: "send"),
+                        .init(id: "cancel", label: "✕ Cancel this", value: "cancel"),
+                    ], allowOther: false),
+                    expiresAt: nil, replyChannel: .buttonResponse,
+                    queuedReleasePromptID: promptID
+                )
+            ),
+            isOwn: false
+        )
+    }
+
+    /// The bridge's release row as the mapper hides it: a namespaced
+    /// answer that is NOT ours (the bridge authored it).
+    private func releaseItem(id: String, promptID: String, action: String = "send") -> TimelineItem {
+        TimelineItem(
+            id: id, sender: "agent:bridge", timestamp: .now,
+            kind: .askUserAnswer(promptEventID: "qr:\(promptID)", selectedValues: [action]),
+            isOwn: false
+        )
+    }
+
+    // MARK: - queued_release resolution (stale buttons after a flush)
+
+    @MainActor
+    func test_isPromptAnswered_viaQueuedRelease_despiteNotOwn() async {
+        // A "Send all now" tap on ONE card flushes the whole queue; the
+        // bridge emits a release per flushed card. Those releases are
+        // bridge-authored (not isOwn) and must still retire the buttons —
+        // the queue action happened regardless of which device tapped.
+        let vm = await makeAskVM(items: [
+            queuedCardItem(id: "$1", promptID: "pr_a"),
+            releaseItem(id: "$9", promptID: "pr_a"),
+        ])
+        XCTAssertTrue(vm.isPromptAnswered("$1"))
+    }
+
+    @MainActor
+    func test_queuedRelease_leavesSiblingCardsLive() async {
+        let vm = await makeAskVM(items: [
+            queuedCardItem(id: "$1", promptID: "pr_a"),
+            queuedCardItem(id: "$2", promptID: "pr_b"),
+            releaseItem(id: "$9", promptID: "pr_a"),
+        ])
+        XCTAssertTrue(vm.isPromptAnswered("$1"))
+        XCTAssertFalse(vm.isPromptAnswered("$2"),
+                       "a release names one prompt; other queued cards stay actionable")
+    }
+
+    @MainActor
+    func test_answerSummary_mapsReleaseActionThroughCardOptions() async {
+        let vm = await makeAskVM(items: [
+            queuedCardItem(id: "$1", promptID: "pr_a"),
+            releaseItem(id: "$9", promptID: "pr_a", action: "send"),
+        ])
+        XCTAssertEqual(vm.answerSummary(forPrompt: "$1"), "⚡ Send all now")
+    }
+
+    @MainActor
+    func test_answerSummary_expiredRelease_isNil() async {
+        // Boot reconcile emits terminal `expired` releases for orphaned
+        // cards. No option matches; the card shows its generic resolved
+        // state rather than "You chose: expired".
+        let vm = await makeAskVM(items: [
+            queuedCardItem(id: "$1", promptID: "pr_a"),
+            releaseItem(id: "$9", promptID: "pr_a", action: "expired"),
+        ])
+        XCTAssertTrue(vm.isPromptAnswered("$1"))
+        XCTAssertNil(vm.answerSummary(forPrompt: "$1"))
+    }
+
+    @MainActor
+    func test_pendingAsk_skipsReleaseResolvedCard() async {
+        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
+        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        let vm = await makeAskVM(items: [
+            queuedCardItem(id: "$1", promptID: "pr_a"),
+            releaseItem(id: "$9", promptID: "pr_a"),
+        ])
+        XCTAssertNil(vm.pendingAsk())
+    }
+
+    @MainActor
+    func test_queuedRelease_earliestWins_sendThenExpired() async {
+        // The realistic double-release: a committed `send` that was never
+        // acked, then boot reconcile's terminal `expired` for the same
+        // prompt_id. The earliest release wins — the queue really was
+        // flushed, so the card keeps reporting the send that happened
+        // rather than downgrading to the generic resolved state.
+        let vm = await makeAskVM(items: [
+            queuedCardItem(id: "$1", promptID: "pr_a"),
+            releaseItem(id: "$8", promptID: "pr_a", action: "send"),
+            releaseItem(id: "$9", promptID: "pr_a", action: "expired"),
+        ])
+        XCTAssertTrue(vm.isPromptAnswered("$1"))
+        XCTAssertEqual(vm.answerSummary(forPrompt: "$1"), "⚡ Send all now")
+    }
+
+    @MainActor
+    func test_releaseRow_neverEntersRows() async {
+        // The whole design rests on release rows being invisible: they
+        // must not become rows, day separators, or scroll anchors.
+        let vm = await makeAskVM(items: [
+            queuedCardItem(id: "$1", promptID: "pr_a"),
+            releaseItem(id: "$9", promptID: "pr_a"),
+        ])
+        let messageIDs = vm.rows.compactMap { row -> String? in
+            if case .message(let item) = row { return item.id }
+            return nil
+        }
+        XCTAssertEqual(messageIDs, ["$1"], "the hidden release row must not render")
+        let separators = vm.rows.filter { if case .separator = $0 { return true } else { return false } }
+        XCTAssertEqual(separators.count, 1, "a release must not mint its own day separator")
+    }
+
     @MainActor
     func test_pendingAsk_returnsMostRecentUnansweredPrompt() async {
         UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
