@@ -38,25 +38,48 @@ final class NewChatSheetCapacitySnapshotTests: XCTestCase {
                           resetsAt: now.addingTimeInterval(2 * 3600)),
             ],
             accountEmail: nil)
+        // Asleep, but its last report is cached: percentages de-emphasised,
+        // no session count, and one age caption under the name.
+        let cached = BoxCapacity(
+            liveSessions: 3,
+            limitLines: [
+                LimitLine(id: "session", label: "Current session", percent: 12,
+                          resetsAt: now.addingTimeInterval(6 * 3600)),
+                LimitLine(id: "week", label: "Current week (all models)", percent: 44,
+                          resetsAt: now.addingTimeInterval(3 * 86_400)),
+            ],
+            accountEmail: "sam@yearbook.com")
         let columns = BoxCapacity.limitColumns(across: [full, partial])
 
         let view = VStack(alignment: .leading, spacing: 10) {
-            MacAgentPickerHeader(columns: columns)
+            MacAgentPickerHeader(columns: columns, showsSessions: true)
             // 1. Everything the bridge can send.
             MacAgentPickerRow(agent: agent(1, "studio-mac", connected: true),
-                              capacity: full, pending: false, columns: columns, showsCells: true, fixedNow: now)
+                              capacity: full, pending: false, columns: columns, showsCells: true,
+                              showsSessions: true, freshness: .live, fixedNow: now)
             // 2. Missing one fleet column → em-dash cell.
             MacAgentPickerRow(agent: agent(2, "build-7", connected: true),
-                              capacity: partial, pending: false, columns: columns, showsCells: true, fixedNow: now)
+                              capacity: partial, pending: false, columns: columns, showsCells: true,
+                              showsSessions: true, freshness: .live, fixedNow: now)
             // 3. Connected, capacity still in flight.
             MacAgentPickerRow(agent: agent(3, "dev-2", connected: true),
-                              capacity: nil, pending: true, columns: columns, showsCells: true, fixedNow: now)
+                              capacity: nil, pending: true, columns: columns, showsCells: true,
+                              showsSessions: true, freshness: .live, fixedNow: now)
             // 4. Connected box on an old bridge — no capacity blocks at all.
             MacAgentPickerRow(agent: agent(4, "old-bridge", connected: true),
-                              capacity: nil, pending: false, columns: columns, showsCells: true, fixedNow: now)
-            // 5. Offline: em-dash cells, caption unchanged.
+                              capacity: nil, pending: false, columns: columns, showsCells: true,
+                              showsSessions: true, freshness: .live, fixedNow: now)
+            // 5. Offline with nothing cached: em-dash cells, no caption.
             MacAgentPickerRow(agent: agent(5, "sleeping-box", connected: false),
-                              capacity: nil, pending: false, columns: columns, showsCells: true, fixedNow: now)
+                              capacity: nil, pending: false, columns: columns, showsCells: true,
+                              showsSessions: true, freshness: .live, fixedNow: now)
+            // 6. Offline with a cached report — the row this feature exists
+            //    for: grey percentages, "—" sessions, "offline · as of 2h ago".
+            MacAgentPickerRow(agent: agent(6, "asleep-box", connected: false),
+                              capacity: cached, pending: false, columns: columns, showsCells: true,
+                              showsSessions: true,
+                              freshness: .offline(capturedAt: now.addingTimeInterval(-2 * 3600)),
+                              fixedNow: now)
         }
         .padding(12)
         .frame(width: 700)
@@ -78,10 +101,15 @@ final class NewChatSheetCapacitySnapshotTests: XCTestCase {
         let view = VStack(alignment: .leading, spacing: 10) {
             MacAgentPickerRow(agent: agent(1, "old-a", connected: true),
                               capacity: empty, pending: false, columns: [],
-                              showsCells: false, fixedNow: now)
+                              showsCells: false, showsSessions: false,
+                              freshness: .live, fixedNow: now)
+            // Asleep on a legacy bridge: the persisted capacity is EMPTY, so
+            // there is nothing cached to disclaim and no caption appears.
             MacAgentPickerRow(agent: agent(2, "old-b", connected: false),
-                              capacity: nil, pending: false, columns: [],
-                              showsCells: false, fixedNow: now)
+                              capacity: empty, pending: false, columns: [],
+                              showsCells: false, showsSessions: false,
+                              freshness: .offline(capturedAt: now.addingTimeInterval(-2 * 3600)),
+                              fixedNow: now)
         }
         .padding(12)
         .frame(width: 480)

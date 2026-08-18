@@ -96,7 +96,7 @@ public enum BotCommandCatalog {
         ArgSuggestion(value: "--claude", summary: "Use the Claude agent",
                       conflictsWith: ["--codex"]),
         ArgSuggestion(value: "--codex", summary: "Use the Codex agent",
-                      conflictsWith: ["--claude"]),
+                      conflictsWith: ["--claude", "--browser"]),
     ]
 
     /// Claude-only session extra; ~400M of headless Chrome, so opt-in.

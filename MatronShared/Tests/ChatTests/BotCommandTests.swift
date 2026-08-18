@@ -166,6 +166,14 @@ final class ArgSuggestionResolutionTests: XCTestCase {
         XCTAssertEqual(resolve("/resume --claude "), [])
     }
 
+    /// The Claude-only rule must hold in both orders: a line already
+    /// carrying --browser must not offer --codex (only --browser lists the
+    /// conflict, the resolver checks the suggestion's own list against
+    /// what's typed).
+    func test_exclusiveFlags_browserFirst_dropsCodex() {
+        XCTAssertEqual(resolve("/start --browser "), ["--claude"])
+    }
+
     /// Phone keyboards auto-correct a leading "--" into an em dash; the
     /// bridge normalizes leading unicode dashes before parsing
     /// (LEADING_UNICODE_DASHES in lib/command-dispatch.js), so the
