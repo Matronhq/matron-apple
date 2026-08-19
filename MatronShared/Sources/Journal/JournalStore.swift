@@ -894,10 +894,34 @@ public final class JournalStore: @unchecked Sendable {
     public func replaceAgents(_ agents: [AgentDTO]) throws {
         guard !agents.isEmpty else { return }
         try dbQueue.write { db in
+            // A server predating tags never sends `tag_char` at all
+            // (`tagCharKnown == false`) — its nil means "unknown", not
+            // "cleared", so the standing local tag survives the replace.
+            // Without this, every snapshot from a pre-tag journal would
+            // wipe the letters `seedAgentTagChars` carried over from the
+            // legacy UserDefaults migration. A tag-aware server's explicit
+            // null is authoritative and clears, as before.
+            let standing = try Self.agentTagCharMap(db)
             try db.execute(sql: "DELETE FROM agent")
             for a in agents {
+                let tag = a.tagCharKnown ? a.tagChar : standing[a.id]
                 try db.execute(sql: "INSERT INTO agent(id, name, tag_char) VALUES(?, ?, ?)",
-                               arguments: [a.id, a.name, a.tagChar])
+                               arguments: [a.id, a.name, tag])
+            }
+        }
+    }
+
+    /// Migration aid for pre-sync letter overrides: writes `letters` into
+    /// UNTAGGED roster rows only. A journal-held tag always wins (it is
+    /// newer by construction — the legacy store stopped taking writes when
+    /// tags moved to the journal), and ids the mirror doesn't know are
+    /// skipped rather than becoming phantom rows without names.
+    public func seedAgentTagChars(_ letters: [Int64: String]) throws {
+        guard !letters.isEmpty else { return }
+        try dbQueue.write { db in
+            for (id, letter) in letters {
+                try db.execute(sql: "UPDATE agent SET tag_char = ? WHERE id = ? AND tag_char IS NULL",
+                               arguments: [letter, id])
             }
         }
     }

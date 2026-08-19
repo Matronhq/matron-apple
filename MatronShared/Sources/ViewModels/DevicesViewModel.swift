@@ -187,10 +187,21 @@ extension BoxLetterMigration {
     /// next launch retries.
     public static func runIfNeeded(
         api: any DevicesProviding,
+        store: JournalStore,
         defaults: UserDefaults = .standard
     ) -> Task<Void, Never>? {
-        guard !BoxLetterOverrides.all(from: defaults).isEmpty else { return nil }
+        let legacy = BoxLetterOverrides.all(from: defaults)
+        guard !legacy.isEmpty else { return nil }
         return Task(priority: .utility) {
+            // Seed the local mirror BEFORE any network round-trip — the
+            // chat list paints letters from the store alone, so without
+            // this an upgraded install reverts to derived letters until
+            // the push lands, and forever against a journal that predates
+            // `POST /devices/:id/tag` (the push 404s; only the relic
+            // remains). Untagged rows only — a journal-held tag is newer
+            // by construction — and `replaceAgents` carries the seed
+            // across pre-tag snapshots (`tagCharKnown`).
+            try? store.seedAgentTagChars(legacy)
             // The roster read is the freshness guard: a box that already
             // has a journal-held tag keeps it (the journal value is newer
             // by construction — this migration only runs while the local

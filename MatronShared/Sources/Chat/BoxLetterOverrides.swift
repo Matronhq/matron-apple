@@ -61,10 +61,11 @@ public enum BoxLetterMigration {
     ///   after the sync feature shipped" — a pre-migration install that
     ///   only launches later will push its old letter back up once. The
     ///   user re-clears and it never recurs (the relic is gone).
-    /// - The migrating launch itself can have its push overwritten locally
-    ///   by an in-flight snapshot issued before the push (`replaceAgents`
-    ///   rewrites the whole `agent` table). The journal row is correct, so
-    ///   the letter shows from the next reconnect.
+    /// - The migrating launch can have its mirror seed overwritten by a
+    ///   tag-aware snapshot issued before the push (`replaceAgents` takes
+    ///   an explicit server nil as authoritative; only a PRE-tag snapshot
+    ///   preserves — see `tagCharKnown`). The push's `device_meta` echo or
+    ///   the next snapshot heals it; the journal row is correct.
     public static func run(
         defaults: UserDefaults = .standard,
         serverTags: [Int64: String?],

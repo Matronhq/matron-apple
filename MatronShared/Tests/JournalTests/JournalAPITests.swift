@@ -130,6 +130,27 @@ final class JournalAPITests: XCTestCase {
         XCTAssertNil(snap.conversations.first?.lastTS)
     }
 
+    func testSnapshotAgentsDistinguishAbsentTagCharFromNull() async throws {
+        // Three servers in one roster: a value, an explicit null (tag-aware,
+        // cleared), and no key at all (journal predating tags). Only the
+        // last must parse as "unknown" — `replaceAgents` preserves the
+        // local mirror for it instead of wiping seeded letters.
+        StubURLProtocol.responses = ["/snapshot": (200, """
+            {"conversations":[],"agents":[
+              {"device_id":7,"name":"dev-a","tag_char":"a"},
+              {"device_id":9,"name":"dev-b","tag_char":null},
+              {"device_id":11,"name":"dev-c"}],"seq":1}
+            """)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let agents = try await api.snapshot().agents
+        XCTAssertEqual(agents, [
+            AgentDTO(id: 7, name: "dev-a", tagChar: "a"),
+            AgentDTO(id: 9, name: "dev-b", tagChar: nil, tagCharKnown: true),
+            AgentDTO(id: 11, name: "dev-c", tagChar: nil, tagCharKnown: false),
+        ])
+    }
+
     func testMessagesBuildsQueryAndParsesEvents() async throws {
         StubURLProtocol.responses = ["/convo/c1/messages": (200, """
             {"events":[{"seq":8,"convo_id":"c1","ts":8000,"sender":"agent:a","type":"text","payload":{"body":"m8"}}]}

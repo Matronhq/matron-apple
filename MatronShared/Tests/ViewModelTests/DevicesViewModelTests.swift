@@ -1,6 +1,7 @@
 import XCTest
 @testable import MatronViewModels
 @testable import MatronJournal
+import MatronChat
 
 /// Recording fake for the devices/pairing API surface. Rosters are served
 /// FIFO from `rosters` (last one repeats); errors are thrown per-call via
@@ -281,6 +282,74 @@ final class DevicesViewModelTests: XCTestCase {
         await vm.setTag(vm.devices[0], toDraft: "z")
         XCTAssertNil(vm.devices.first?.tagChar)
         XCTAssertEqual(vm.errorMessage?.contains("dev-9"), true)
+    }
+
+    // MARK: Legacy letter migration (app-start entry point)
+
+    /// A scratch suite, never `.standard` (probe-name pollution gotcha).
+    private func makeLegacyDefaults(_ overrides: [Int64: String]) -> UserDefaults {
+        let suite = "DevicesViewModelTests"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        if !overrides.isEmpty {
+            defaults.set(Dictionary(uniqueKeysWithValues: overrides.map { (String($0.key), $0.value) }),
+                         forKey: "boxLetterOverrides")
+        }
+        return defaults
+    }
+
+    func test_migrationSeedsTheMirrorAndKeepsTheRelicWhenThePushFails() async throws {
+        // The deployed-journal-lags-behind case: `POST /devices/:id/tag`
+        // doesn't exist yet, so the push 404s. The user's letter must still
+        // paint (mirror seeded from the relic) and the relic must survive
+        // for the next launch's retry — it is only cleared on a server ack.
+        let defaults = makeLegacyDefaults([7: "q"])
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:t")
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-a"), AgentDTO(id: 9, name: "dev-b")])
+        let fake = FakeDevicesProvider()
+        fake.rosters = [[device(7, kind: "agent"), device(9, kind: "agent")]]
+        fake.tagError = .notFound
+
+        await BoxLetterMigration.runIfNeeded(api: fake, store: store, defaults: defaults)?.value
+
+        XCTAssertEqual(try store.agentTagChars(), [7: "q"],
+                       "the mirror is what paints — seed it so letters don't revert")
+        XCTAssertEqual(BoxLetterOverrides.all(from: defaults), [7: "q"],
+                       "no ack, no clear — the next launch retries the push")
+        defaults.removePersistentDomain(forName: "DevicesViewModelTests")
+    }
+
+    func test_migrationSeedsTheMirrorEvenWhenTheServerIsUnreachable() async throws {
+        let defaults = makeLegacyDefaults([7: "q"])
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:t")
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-a")])
+        let fake = FakeDevicesProvider()
+        fake.devicesError = .transport("offline")
+
+        await BoxLetterMigration.runIfNeeded(api: fake, store: store, defaults: defaults)?.value
+
+        XCTAssertEqual(try store.agentTagChars(), [7: "q"],
+                       "seeding must precede the roster fetch — offline paints too")
+        XCTAssertTrue(fake.tagged.isEmpty)
+        XCTAssertEqual(BoxLetterOverrides.all(from: defaults), [7: "q"])
+        defaults.removePersistentDomain(forName: "DevicesViewModelTests")
+    }
+
+    func test_migrationPushSuccessClearsTheRelicAndSeedsTheMirror() async throws {
+        let defaults = makeLegacyDefaults([7: "q"])
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:t")
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-a")])
+        let fake = FakeDevicesProvider()
+        fake.rosters = [[device(7, kind: "agent")]]
+
+        await BoxLetterMigration.runIfNeeded(api: fake, store: store, defaults: defaults)?.value
+
+        XCTAssertEqual(fake.tagged.map(\.id), [7])
+        XCTAssertEqual(fake.tagged.map(\.tagChar), ["q"])
+        XCTAssertEqual(try store.agentTagChars(), [7: "q"])
+        XCTAssertNil(defaults.object(forKey: "boxLetterOverrides"),
+                     "acked — the relic is gone for good")
+        defaults.removePersistentDomain(forName: "DevicesViewModelTests")
     }
 
     func test_tagCharFromDraft_keepsOneGraphemeMapsBlankToNil() {

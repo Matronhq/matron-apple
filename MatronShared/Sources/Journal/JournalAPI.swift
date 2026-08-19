@@ -15,11 +15,19 @@ public struct AgentDTO: Equatable, Sendable {
     /// User-chosen roster tag character, journal-held so every device shows
     /// the same letter. nil = automatic (clients derive one from the name).
     public let tagChar: String?
+    /// False when the server never sent the `tag_char` key at all — a
+    /// journal predating tags. There nil means "unknown", not "cleared",
+    /// and `JournalStore.replaceAgents` preserves the local mirror instead
+    /// of wiping migration-seeded letters on every snapshot. A tag-aware
+    /// server always sends the key (an explicit null = authoritative
+    /// clear), so the default is true.
+    public let tagCharKnown: Bool
 
-    public init(id: Int64, name: String, tagChar: String? = nil) {
+    public init(id: Int64, name: String, tagChar: String? = nil, tagCharKnown: Bool = true) {
         self.id = id
         self.name = name
         self.tagChar = tagChar
+        self.tagCharKnown = tagCharKnown
     }
 }
 
@@ -319,7 +327,12 @@ public actor JournalAPI {
         let agents = (obj["agents"] as? [[String: Any]] ?? []).compactMap { a -> AgentDTO? in
             guard let id = (a["device_id"] as? NSNumber)?.int64Value,
                   let name = a["name"] as? String else { return nil }
-            return AgentDTO(id: id, name: name, tagChar: a["tag_char"] as? String)
+            // Key-presence carries meaning: absent = a server predating
+            // tags (nil is "unknown"), present-but-null = an authoritative
+            // "no tag". JSONSerialization surfaces a JSON null as NSNull,
+            // so `a["tag_char"]` distinguishes the two.
+            return AgentDTO(id: id, name: name, tagChar: a["tag_char"] as? String,
+                            tagCharKnown: a["tag_char"] != nil)
         }
         return SnapshotResponse(conversations: conversations, agents: agents,
                                 seq: (obj["seq"] as? NSNumber)?.int64Value ?? 0)

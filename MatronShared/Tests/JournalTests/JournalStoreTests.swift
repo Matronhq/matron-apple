@@ -782,6 +782,35 @@ final class JournalStoreTests: XCTestCase {
         XCTAssertEqual(try store.agentTagChars(), [9: "b"])
     }
 
+    func testReplaceAgentsPreservesTagsWhenTheServerPredatesThem() throws {
+        let store = try makeStore()
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-a"), AgentDTO(id: 9, name: "dev-b")])
+        try store.seedAgentTagChars([7: "q"])
+        // A journal predating tags sends no tag_char key at all
+        // (`tagCharKnown == false`) — its wholesale replace must not wipe
+        // the migration-seeded letter, or upgraded installs revert to
+        // derived letters on the first snapshot after every launch.
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-a", tagChar: nil, tagCharKnown: false),
+                                 AgentDTO(id: 9, name: "dev-b", tagChar: nil, tagCharKnown: false)])
+        XCTAssertEqual(try store.agentTagChars(), [7: "q"])
+
+        // A tag-aware server's explicit nil IS authoritative: cleared.
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-a", tagChar: nil)])
+        XCTAssertEqual(try store.agentTagChars(), [:])
+    }
+
+    func testSeedAgentTagCharsFillsOnlyUntaggedKnownBoxes() throws {
+        let store = try makeStore()
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-a", tagChar: "a"),
+                                 AgentDTO(id: 9, name: "dev-b")])
+        try store.seedAgentTagChars([7: "x", 9: "y", 42: "z"])
+        // 7 keeps the journal-held tag (newer by construction), 9 takes the
+        // seed, and 42 — a box the mirror doesn't know — must not become a
+        // phantom row without a name.
+        XCTAssertEqual(try store.agentTagChars(), [7: "a", 9: "y"])
+        XCTAssertEqual(try store.agentNames().keys.sorted(), [7, 9])
+    }
+
     func testAgentRosterStreamDeliversNamesAndTagsInLockstep() async throws {
         let store = try makeStore()
         try store.replaceAgents([AgentDTO(id: 7, name: "dev-a", tagChar: "a")])
