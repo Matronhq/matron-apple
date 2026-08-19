@@ -43,6 +43,7 @@ function statusFrame() {
 
 function run(name, tokenPath) {
   const ws = new WebSocket(URL_WS);
+  let statusTimer = null;
   ws.on('open', () => ws.send(JSON.stringify({ op: 'hello', token: readToken(tokenPath), cursor: null })));
   ws.on('message', (data) => {
     const msg = JSON.parse(data.toString());
@@ -50,7 +51,7 @@ function run(name, tokenPath) {
       console.log(`[${name}] connected`);
       if (name === 'mac-studio') {
         ws.send(JSON.stringify(statusFrame()));
-        setInterval(() => ws.send(JSON.stringify(statusFrame())), 60_000);
+        statusTimer = setInterval(() => ws.send(JSON.stringify(statusFrame())), 60_000);
       }
     } else if (msg.kind === 'rpc' && msg.request) {
       const { request_id, from_device_id, method } = msg.request;
@@ -64,7 +65,7 @@ function run(name, tokenPath) {
       console.error(`[${name}] error:`, msg);
     }
   });
-  ws.on('close', () => { console.log(`[${name}] closed, reconnecting in 2s`); setTimeout(() => run(name, tokenPath), 2000); });
+  ws.on('close', () => { clearInterval(statusTimer); console.log(`[${name}] closed, reconnecting in 2s`); setTimeout(() => run(name, tokenPath), 2000); });
   ws.on('error', (e) => console.error(`[${name}]`, e.message));
 }
 
