@@ -309,9 +309,13 @@ final class ChatViewModelTests: XCTestCase {
     @MainActor
     private func makeLongTimelineVM(count: Int = 600) async throws -> ChatViewModel {
         let fake = FakeTimelineService()
+        // One timestamp for the whole fixture: per-item `.now` across a
+        // midnight boundary would synthesize an extra day separator and
+        // flake the exact row-count asserts (CodeRabbit, PR #166).
+        let timestamp = Date.now
         let items = (0..<count).map { i in
             TimelineItem(
-                id: "m\(i)", sender: "@a:s", timestamp: .now,
+                id: "m\(i)", sender: "@a:s", timestamp: timestamp,
                 kind: .text(body: "msg \(i)", formattedHTML: nil), isOwn: false
             )
         }
@@ -397,10 +401,47 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_revealNewerHistory_holdsWhenOnlyTransientRowsFollow() async throws {
+        // 480 real messages, then 240 echo rows — an active turn's worth
+        // of transient tail. A slide-down whose whole step lands in the
+        // transient run must HOLD the current anchor, not clear it: a nil
+        // anchor reattaches at the tail, teleporting the reader and
+        // re-arming follow (CodeRabbit, PR #166).
+        let timestamp = Date.now
+        var items = (0..<480).map { i in
+            TimelineItem(
+                id: "m\(i)", sender: "@a:s", timestamp: timestamp,
+                kind: .text(body: "msg \(i)", formattedHTML: nil), isOwn: false
+            )
+        }
+        items += (0..<240).map { i in
+            TimelineItem(
+                id: "echo:\(i)", sender: "@me:s", timestamp: timestamp,
+                kind: .text(body: "echo \(i)", formattedHTML: nil), isOwn: true
+            )
+        }
+        let fake = FakeTimelineService()
+        fake.snapshotsToEmit = [items]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        await task.value
+
+        for _ in 0..<3 { await vm.extendHistoryWindow() }  // 240, 360, slide
+        XCTAssertEqual(vm.windowTailAnchorID, "msg:m479",
+            "the slide's anchor scan must skip the transient run down to the last real row")
+
+        vm.revealNewerHistory()
+        XCTAssertEqual(vm.windowTailAnchorID, "msg:m479",
+            "no anchorable row strictly newer than the current anchor → hold, don't reattach")
+        XCTAssertFalse(vm.windowContainsTail)
+    }
+
+    @MainActor
     func test_vanishedAnchor_rescuesToNearestSurvivingRow() async throws {
+        let timestamp = Date.now   // one fixture timestamp — see makeLongTimelineVM
         let items = (0..<600).map { i in
             TimelineItem(
-                id: "m\(i)", sender: "@a:s", timestamp: .now,
+                id: "m\(i)", sender: "@a:s", timestamp: timestamp,
                 kind: .text(body: "msg \(i)", formattedHTML: nil), isOwn: false
             )
         }
@@ -451,9 +492,10 @@ final class ChatViewModelTests: XCTestCase {
 
     @MainActor
     func test_streamAppends_doNotMoveAnAnchoredWindow() async throws {
+        let timestamp = Date.now   // one fixture timestamp — see makeLongTimelineVM
         let items = (0..<600).map { i in
             TimelineItem(
-                id: "m\(i)", sender: "@a:s", timestamp: .now,
+                id: "m\(i)", sender: "@a:s", timestamp: timestamp,
                 kind: .text(body: "msg \(i)", formattedHTML: nil), isOwn: false
             )
         }
@@ -466,7 +508,7 @@ final class ChatViewModelTests: XCTestCase {
         let before = vm.windowedRows.map(\.id)
 
         fake.append(TimelineItem(
-            id: "m600", sender: "@a:s", timestamp: .now,
+            id: "m600", sender: "@a:s", timestamp: timestamp,
             kind: .text(body: "new msg", formattedHTML: nil), isOwn: false
         ))
         await waitFor(vm.rows.count == 602)

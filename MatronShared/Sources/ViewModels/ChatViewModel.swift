@@ -725,7 +725,13 @@ public final class ChatViewModel {
             windowTailAnchorID = anchor
             Self.logger.diag("window slide ↓ → tail anchor \(anchor)")
         } else {
-            windowTailAnchorID = nil
+            // Nothing anchorable strictly newer than the current anchor —
+            // 120+ consecutive transient rows (echo/ephemeral) below it,
+            // possible during an active turn. Hold rather than reattach:
+            // clearing the anchor here would teleport a deep reader to
+            // the tail and silently re-arm follow (CodeRabbit, PR #166).
+            // Same policy as the slide-up's no-anchor case.
+            Self.logger.diag("window slide ↓ found no anchor — holding")
         }
         recomputeWindow()
         // Held past the slide's layout pass, released off-stack — the
