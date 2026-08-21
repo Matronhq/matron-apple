@@ -95,8 +95,10 @@ public final class NewChatViewModel {
     /// (`Text(_, style: .relative)`); nil whenever `isWakingBox` is false.
     public private(set) var wakeStartedAt: Date?
     /// True when the wake loop exhausted its attempts — the folder step
-    /// offers Try Again (`retryWake()`) on it.
-    public var wakeGaveUp: Bool { errorMessage == Self.wakeGaveUpMessage }
+    /// offers Try Again (`retryWake()`) on it. Stored, not derived from the
+    /// error copy: three affordances hang off it, and a copy edit or
+    /// localization must not silently remove them.
+    public private(set) var wakeGaveUp = false
     public var customPath = ""
     public var browserEnabled = false
     /// Per-box capacity blocks, filled by the roster fan-out as replies
@@ -118,12 +120,16 @@ public final class NewChatViewModel {
     /// several times, so the percentages say nothing about the box today.
     static let maxCachedCapacityAge: TimeInterval = 7 * 86_400
 
-    /// Wake-loop cadence and ceiling (~2 minutes): incus boot plus bridge
-    /// reconnect lands well inside it. Past the ceiling the user gets the
-    /// try-again copy — the journal debounces wake commands, so retrying
-    /// costs nothing.
+    /// Wake-loop cadence and ceilings: incus boot plus bridge reconnect
+    /// lands well inside two minutes. The deadline is wall-clock because an
+    /// attempt's cost is RPC + sleep — a mid-boot timeout streak runs ~18s
+    /// per attempt, so the count alone would stretch to ~12 minutes; the
+    /// attempt limit stays as the bound the fast-refusal path actually
+    /// hits. Past either ceiling the user gets the try-again copy — the
+    /// journal debounces wake commands, so retrying costs nothing.
     public static let wakeRetryDelay: Duration = .seconds(3)
     public static let wakeAttemptLimit = 40
+    static let wakeDeadline: TimeInterval = 120
     static let wakeGaveUpMessage = "The box didn't wake — try again."
 
     private let api: any AgentRPCProviding
@@ -142,6 +148,14 @@ public final class NewChatViewModel {
     private var capacityGeneration = 0
     /// Injected wake-loop sleep, so tests run the loops at test speed.
     private let wakeSleep: @Sendable (Duration) async -> Void
+    /// Ownership of `isWakingBox`/`wakeStartedAt`. The folder wake loop and
+    /// a retrying `start` are separate tasks that interleave at every
+    /// suspension; whoever holds the current token owns the flags, and a
+    /// retired loop (superseded select, committed start, abandoned sheet)
+    /// must neither clear them nor write its give-up copy.
+    private var wakeToken = 0
+    /// Set by `abandon()`: no wake loop re-asks past it.
+    private var isAbandoned = false
 
     public init(api: any AgentRPCProviding,
                 // Not defaulted: the cache is namespaced per account, and a
@@ -167,10 +181,13 @@ public final class NewChatViewModel {
         do {
             let agents = try await api.devices().filter { $0.kind == "agent" }
             let connected = agents.filter(\.connected)
-            if connected.count == 1 {
-                // Auto-skip: the folder step fetches this box's reply itself,
-                // and no picker row is ever shown — nothing to fan out for.
-                await select(agent: connected[0])
+            if agents.count == 1, let only = agents.first {
+                // Auto-skip only when there is nothing to choose between —
+                // even an asleep box, since the folder step now wakes it.
+                // One-awake-among-asleep is the host's normal steady state
+                // (it idle-stops boxes), and skipping the roster there
+                // would make every sleeping box unreachable.
+                await select(agent: only)
             } else {
                 phase = .agents(Self.sorted(agents))
                 startCapacityFanOut(connected: connected.map(\.id),
@@ -190,6 +207,7 @@ public final class NewChatViewModel {
         folders = []
         foldersError = nil
         errorMessage = nil
+        wakeGaveUp = false
         // The roster fan-out already asked this box for its folders — render
         // them instantly rather than paying for the same round-trip twice.
         if let cached = folderCache[agent.id] {
@@ -208,6 +226,11 @@ public final class NewChatViewModel {
             switch reply {
             case .ok(let resultData):
                 folders = Self.parseFolders(resultData)
+            case .failure(let code, _) where code == "agent_unreachable":
+                // The roster's `connected` was a snapshot; the refusal says
+                // the box has since been idle-stopped — and has already
+                // fired its wake, so treat it exactly like an asleep pick.
+                await wakeAndFetchFolders(agent: agent)
             case .failure:
                 foldersError = "Couldn't fetch recent folders — you can still type a path."
             }
@@ -222,7 +245,44 @@ public final class NewChatViewModel {
     public func retryWake() async {
         guard case .folders(let agent) = phase, !isWakingBox, !isStarting else { return }
         errorMessage = nil
+        wakeGaveUp = false
         await wakeAndFetchFolders(agent: agent)
+    }
+
+    /// Called when the sheet disappears: retires every wake loop (the token
+    /// bump) and refuses further `start` re-asks. A stop, not a rollback —
+    /// an RPC already in flight still answers, and an in-flight start that
+    /// succeeds still spawns, which is the pre-existing `cancelled`
+    /// contract in the sheets. Without this, an abandoned start would keep
+    /// re-firing a non-idempotent RPC for two minutes and could silently
+    /// open a session on a box nobody is looking at.
+    public func abandon() {
+        isAbandoned = true
+        wakeToken &+= 1
+        isWakingBox = false
+        wakeStartedAt = nil
+    }
+
+    /// Claims the wake flags for one loop; only the current claim may
+    /// release them (`endWake`) or write the give-up copy.
+    private func beginWake() -> Int {
+        wakeToken &+= 1
+        isWakingBox = true
+        if wakeStartedAt == nil { wakeStartedAt = now() }
+        return wakeToken
+    }
+
+    private func endWake(_ token: Int) {
+        guard token == wakeToken else { return } // a newer owner holds the flags
+        isWakingBox = false
+        wakeStartedAt = nil
+    }
+
+    /// Every post-suspension write in a wake loop is gated on still owning
+    /// the token AND still being on this box's folder step: a superseded or
+    /// abandoned loop must exit without touching shared state.
+    private func stillOwns(_ token: Int, agent: DeviceDTO) -> Bool {
+        token == wakeToken && Self.sameFolderAgent(phase, agent)
     }
 
     /// The wake loop (journal `wake.js`): the server boots an idle-stopped
@@ -235,18 +295,15 @@ public final class NewChatViewModel {
     /// socket can be up while the bridge is still starting. Leaving this
     /// box's folder step ends the loop silently at its next check.
     private func wakeAndFetchFolders(agent: DeviceDTO) async {
-        isWakingBox = true
-        wakeStartedAt = now()
-        defer {
-            isWakingBox = false
-            wakeStartedAt = nil
-        }
+        let token = beginWake()
+        defer { endWake(token) }
+        let wakeBegan = now()
         for attempt in 1...Self.wakeAttemptLimit {
             do {
                 let reply = try await api.agentRequest(
                     agentDeviceID: agent.id, method: "recent_folders", paramsData: Data("{}".utf8))
                 recordCapacity(from: reply, agentID: agent.id)
-                guard Self.sameFolderAgent(phase, agent) else { return }
+                guard stillOwns(token, agent: agent) else { return }
                 switch reply {
                 case .ok(let resultData):
                     folders = Self.parseFolders(resultData)
@@ -258,17 +315,20 @@ public final class NewChatViewModel {
                     return
                 }
             } catch RPCRequestError.timeout {
-                guard Self.sameFolderAgent(phase, agent) else { return }
+                guard stillOwns(token, agent: agent) else { return }
             } catch {
-                guard Self.sameFolderAgent(phase, agent) else { return }
+                guard stillOwns(token, agent: agent) else { return }
                 foldersError = "Couldn't fetch recent folders — you can still type a path."
                 return
             }
-            guard attempt < Self.wakeAttemptLimit else { break }
+            guard attempt < Self.wakeAttemptLimit,
+                  now().timeIntervalSince(wakeBegan) < Self.wakeDeadline else { break }
             await wakeSleep(Self.wakeRetryDelay)
-            guard Self.sameFolderAgent(phase, agent) else { return }
+            guard stillOwns(token, agent: agent) else { return }
         }
+        guard stillOwns(token, agent: agent) else { return }
         errorMessage = Self.wakeGaveUpMessage
+        wakeGaveUp = true
     }
 
     /// Capacity is recorded off every ok `recent_folders` answer, whether
@@ -287,12 +347,16 @@ public final class NewChatViewModel {
     public func start(workdir: String?) async {
         guard case .folders(let agent) = phase, !isStarting else { return }
         isStarting = true
+        // The wake flags are only cleared through the token: a start that
+        // never retried must not tear down a folder wake loop still
+        // polling behind it.
+        var startWakeToken: Int?
         defer {
             isStarting = false
-            isWakingBox = false
-            wakeStartedAt = nil
+            if let startWakeToken { endWake(startWakeToken) }
         }
         errorMessage = nil
+        wakeGaveUp = false
         var params: [String: Any] = [:]
         let trimmed = workdir?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !trimmed.isEmpty { params["workdir"] = trimmed }
@@ -311,11 +375,14 @@ public final class NewChatViewModel {
             // stays fatal: the frame may have been delivered, and start is
             // non-idempotent.
             var attempts = 1
-            while attempts < Self.wakeAttemptLimit, Self.isUnreachable(reply) {
-                isWakingBox = true
-                if wakeStartedAt == nil { wakeStartedAt = now() }
+            while attempts < Self.wakeAttemptLimit, Self.isUnreachable(reply), !isAbandoned {
+                if startWakeToken == nil {
+                    // Taking the token also retires a folder wake loop
+                    // still polling this box: the user committed to a path.
+                    startWakeToken = beginWake()
+                }
                 await wakeSleep(Self.wakeRetryDelay)
-                guard Self.sameFolderAgent(phase, agent) else { return }
+                guard !isAbandoned, Self.sameFolderAgent(phase, agent) else { return }
                 reply = try await api.agentRequest(
                     agentDeviceID: agent.id, method: "start", paramsData: paramsData)
                 attempts += 1

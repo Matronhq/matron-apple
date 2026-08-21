@@ -60,8 +60,13 @@ struct NewChatSheet: View {
         }
         .task { await viewModel.load() }
         // Swipe-down dismissal never touches the Cancel button; anything
-        // that removes the sheet counts as abandoning the flow.
-        .onDisappear { if !navigated { cancelled = true } }
+        // that removes the sheet counts as abandoning the flow — including
+        // the wake loops, which would otherwise keep re-asking a box (and a
+        // retried start could silently spawn a session) for two minutes.
+        .onDisappear {
+            if !navigated { cancelled = true }
+            viewModel.abandon()
+        }
         .onChange(of: viewModel.phase) { _, phase in
             guard case .done(let convoID) = phase, !navigated, !cancelled else { return }
             navigated = true

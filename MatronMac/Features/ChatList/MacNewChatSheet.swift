@@ -104,8 +104,14 @@ struct MacNewChatSheet: View {
         .frame(width: layout.width)
         .task { await viewModel.load() }
         // Esc / window-close dismissal never touches the Cancel button;
-        // anything that removes the sheet counts as abandoning the flow.
-        .onDisappear { if !navigated { cancelled = true } }
+        // anything that removes the sheet counts as abandoning the flow —
+        // including the wake loops, which would otherwise keep re-asking a
+        // box (and a retried start could silently spawn a session) for two
+        // minutes.
+        .onDisappear {
+            if !navigated { cancelled = true }
+            viewModel.abandon()
+        }
         .onChange(of: viewModel.phase) { _, phase in
             guard case .done(let convoID) = phase, !navigated, !cancelled else { return }
             navigated = true
@@ -245,7 +251,9 @@ struct MacNewChatSheet: View {
         if let error = viewModel.errorMessage {
             HStack(spacing: 8) {
                 Text(error).font(.callout).foregroundStyle(.red)
-                if viewModel.wakeGaveUp {
+                // Gated on the same condition retryWake() guards on — a
+                // button that renders while a loop still runs would be dead.
+                if viewModel.wakeGaveUp && !viewModel.isStarting && !viewModel.isWakingBox {
                     Button("Try Again") {
                         Task { await viewModel.retryWake() }
                     }

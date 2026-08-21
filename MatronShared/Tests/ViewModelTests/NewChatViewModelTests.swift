@@ -157,15 +157,27 @@ final class NewChatViewModelTests: XCTestCase {
         XCTAssertEqual(list.map(\.id), [3, 4, 2], "clients excluded; connected first, then by name")
     }
 
-    func test_load_singleConnectedAgent_skipsStraightToFolders() async {
+    func test_load_singleBoxFleet_skipsStraightToFolders() async {
         let fake = FakeAgentRPCProvider()
-        fake.devicesResult = .success([agent(9, connected: true), agent(2, connected: false)])
+        fake.devicesResult = .success([agent(9, connected: true)])
         fake.replies["recent_folders"] = foldersReply(#"{"folders":[{"path":"/home/dan/app","last_used":100}]}"#)
         let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
         await vm.load()
         guard case let .folders(picked) = vm.phase else { return XCTFail("expected folders phase") }
         XCTAssertEqual(picked.id, 9)
         XCTAssertEqual(vm.folders.map(\.path), ["/home/dan/app"])
+    }
+
+    func test_load_oneConnectedAmongAsleep_showsTheRoster() async {
+        // The host idle-stops boxes, so one-awake-among-asleep is the
+        // normal steady state — auto-skipping to the awake box would make
+        // every sleeping (but wakeable) row unreachable.
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(9, connected: true), agent(2, connected: false)])
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        await vm.load()
+        guard case let .agents(list) = vm.phase else { return XCTFail("expected the roster") }
+        XCTAssertEqual(list.map(\.id), [9, 2])
     }
 
     func test_folders_sortNewestFirst_nullsLast() async {
