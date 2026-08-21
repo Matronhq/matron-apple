@@ -72,6 +72,32 @@ final class PagingFakeTimelineService: TimelineService, @unchecked Sendable {
     func markAsRead() async throws {}
 }
 
+/// Yields an initial snapshot, then lets the test push appended snapshots
+/// through the SAME `items()` subscription — the shape a live stream
+/// commit takes. `FakeTimelineService` can't do this (it finishes its
+/// stream after the queued snapshots).
+final class AppendingFakeTimelineService: TimelineService, @unchecked Sendable {
+    private var current: [TimelineItem]
+    private var continuation: AsyncThrowingStream<[TimelineItem], Error>.Continuation?
+    init(initial: [TimelineItem]) { self.current = initial }
+    func items() -> AsyncThrowingStream<[TimelineItem], Error> {
+        AsyncThrowingStream { c in
+            self.continuation = c
+            c.yield(self.current)
+        }
+    }
+    func append(_ item: TimelineItem) {
+        current.append(item)
+        continuation?.yield(current)
+    }
+    func sendText(_ body: String, inReplyTo: String?) async throws {}
+    func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {}
+    func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
+    func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
+    func paginateBackward(requestSize: UInt16) async throws -> Bool { true }
+    func markAsRead() async throws {}
+}
+
 /// Drives `ChatViewModel` against the same `FakeTimelineService` that the
 /// `ComposerViewModelTests` already exposes in this target. Because both test
 /// files compile into the same `ViewModelTests` SPM target, sharing the fake
@@ -353,6 +379,33 @@ final class ChatViewModelTests: XCTestCase {
             "a deep restore must not mount an unbounded window (old behavior: 597 rows)")
         XCTAssertFalse(vm.windowContainsTail, "a capped deep window cannot include the tail")
         XCTAssertTrue(vm.isExtendingWindow, "restore widening still holds the anchor flag")
+    }
+
+    @MainActor
+    func test_streamAppends_doNotMoveAnAnchoredWindow() async throws {
+        let items = (0..<600).map { i in
+            TimelineItem(
+                id: "m\(i)", sender: "@a:s", timestamp: .now,
+                kind: .text(body: "msg \(i)", formattedHTML: nil), isOwn: false
+            )
+        }
+        let fake = AppendingFakeTimelineService(initial: items)
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        _ = await vm.start()
+
+        for _ in 0..<3 { await vm.extendHistoryWindow() } // cap then slide → detached
+        XCTAssertFalse(vm.windowContainsTail)
+        let before = vm.windowedRows.map(\.id)
+
+        fake.append(TimelineItem(
+            id: "m600", sender: "@a:s", timestamp: .now,
+            kind: .text(body: "new msg", formattedHTML: nil), isOwn: false
+        ))
+        await waitFor(vm.rows.count == 602)
+        XCTAssertEqual(vm.rows.count, 602, "the append must have landed in rows")
+        XCTAssertEqual(vm.windowedRows.map(\.id), before,
+            "an identity-anchored window must not shift under stream appends — " +
+            "this is what makes deep reading cheap during an active turn")
     }
 
     @MainActor
