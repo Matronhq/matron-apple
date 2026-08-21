@@ -6,9 +6,10 @@ import MatronModels
 import MatronViewModels
 
 /// Mac variant of `NewChatSheet` (the Mac and iOS targets each carry their
-/// own `AppDependencies`, so the sheet is duplicated per platform): pick a
-/// connected agent → pick a folder → the agent starts a session there
-/// (agent RPC — spec 2026-07-15-new-chat-flow-design.md). `onCreated`
+/// own `AppDependencies`, so the sheet is duplicated per platform): pick an
+/// agent (a sleeping box wakes on pick) → pick a folder → the agent starts
+/// a session there (agent RPC — spec 2026-07-15-new-chat-flow-design.md).
+/// `onCreated`
 /// fires with the new conversation id once a placeholder row exists.
 struct MacNewChatSheet: View {
     let deps: AppDependencies
@@ -158,14 +159,13 @@ struct MacNewChatSheet: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .disabled(!agent.connected)
             }
             .listStyle(.inset)
             // Capacity makes the rows variable-height: grow with them up to
             // the window-derived cap, then scroll.
             .frame(minHeight: 200, maxHeight: layout.listMaxHeight)
             if !agents.contains(where: \.connected) {
-                Text("No agents connected — is the box awake?")
+                Text("All boxes are asleep — pick one to wake it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -176,6 +176,18 @@ struct MacNewChatSheet: View {
         Text("Folder on \(agent.name)")
             .font(.callout)
             .foregroundStyle(.secondary)
+        if viewModel.isWakingBox {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Waking \(agent.name)…")
+                if let since = viewModel.wakeStartedAt {
+                    Text(since, style: .relative)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            }
+            .font(.callout)
+        }
         if let foldersError = viewModel.foldersError {
             Text(foldersError).font(.caption).foregroundStyle(.secondary)
         }
@@ -201,7 +213,8 @@ struct MacNewChatSheet: View {
         .listStyle(.inset)
         .frame(minHeight: 160, maxHeight: layout.listMaxHeight)
         .overlay {
-            if viewModel.folders.isEmpty && viewModel.foldersError == nil {
+            if viewModel.folders.isEmpty && viewModel.foldersError == nil
+                && !viewModel.isWakingBox && !viewModel.wakeGaveUp {
                 Text("No recent folders on \(agent.name).")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -230,7 +243,14 @@ struct MacNewChatSheet: View {
             .font(.caption)
             .foregroundStyle(.secondary)
         if let error = viewModel.errorMessage {
-            Text(error).font(.callout).foregroundStyle(.red)
+            HStack(spacing: 8) {
+                Text(error).font(.callout).foregroundStyle(.red)
+                if viewModel.wakeGaveUp {
+                    Button("Try Again") {
+                        Task { await viewModel.retryWake() }
+                    }
+                }
+            }
         }
     }
 }
@@ -286,7 +306,7 @@ struct MacAgentPickerRow: View {
                 }
                 Text(agent.connected
                      ? "Connected"
-                     : "Offline · Last seen \(agent.lastSeenText())")
+                     : "Asleep · Last seen \(agent.lastSeenText()) — click to wake")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 // The data cells are numbers only, so the age of a sleeping
@@ -310,16 +330,12 @@ struct MacAgentPickerRow: View {
                     limitCell(column)
                 }
             }
-            Group {
-                if agent.connected {
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                } else {
-                    Color.clear
-                }
-            }
-            .frame(width: Self.chevronGutter)
+            // Asleep rows are pickable too (the journal wakes the box on
+            // the first ask), so every row carries the chevron.
+            Image(systemName: "chevron.right")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .frame(width: Self.chevronGutter)
         }
     }
 

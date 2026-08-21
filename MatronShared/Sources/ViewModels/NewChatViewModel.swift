@@ -94,6 +94,9 @@ public final class NewChatViewModel {
     /// When the running wake loop began, for the banner's elapsed time
     /// (`Text(_, style: .relative)`); nil whenever `isWakingBox` is false.
     public private(set) var wakeStartedAt: Date?
+    /// True when the wake loop exhausted its attempts — the folder step
+    /// offers Try Again (`retryWake()`) on it.
+    public var wakeGaveUp: Bool { errorMessage == Self.wakeGaveUpMessage }
     public var customPath = ""
     public var browserEnabled = false
     /// Per-box capacity blocks, filled by the roster fan-out as replies
