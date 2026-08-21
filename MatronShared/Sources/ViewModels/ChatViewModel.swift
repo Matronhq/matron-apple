@@ -560,14 +560,35 @@ public final class ChatViewModel {
     /// per-day, so this is stable across recomputes).
     private func recomputeWindow() {
         var window: [TimelineRow]
-        if let anchorID = windowTailAnchorID,
-           let anchorIdx = rows.lastIndex(where: { $0.id == anchorID }) {
+        var anchorIdx: Int?
+        if let anchorID = windowTailAnchorID {
+            anchorIdx = rows.lastIndex(where: { $0.id == anchorID })
+            if anchorIdx == nil {
+                // Anchor row vanished (redaction, `snapshot_required`
+                // mirror wipe, id rewrite). Re-anchor on the nearest
+                // surviving row of the OLD window instead of silently
+                // teleporting a deep reader to the tail — the tail
+                // fallback below re-arms follow-tail on the next settle,
+                // so it must be the last resort, and logged.
+                if let rescue = rescueAnchor() {
+                    windowTailAnchorID = rescue.id
+                    anchorIdx = rescue.index
+                    Self.logger.diag("window anchor vanished → rescued \(rescue.id)")
+                } else {
+                    Self.logger.diag("window anchor vanished → tail fallback (\(self.rows.count) rows)")
+                }
+            }
+        }
+        if let anchorIdx {
             let upper = anchorIdx + 1
             let lower = max(0, upper - visibleWindowSize)
             window = Array(rows[lower..<upper])
         } else {
-            // Anchor row gone (retired/reset) or tail mode — tail suffix.
-            windowTailAnchorID = nil
+            // Tail mode. Guarded write: recompute runs on every committed
+            // snapshot (several per second mid-turn), and `@Observable`
+            // treats an unconditional same-value assignment as a change —
+            // same convention as `spawnOutcomes` above.
+            if windowTailAnchorID != nil { windowTailAnchorID = nil }
             window = Array(rows.suffix(visibleWindowSize))
         }
         if case .message(let firstItem)? = window.first {
@@ -576,13 +597,34 @@ public final class ChatViewModel {
         self.windowedRows = window
     }
 
+    /// Replacement anchor when the anchored row itself has left `rows`:
+    /// the newest still-present, still-anchorable row of the previous
+    /// window — i.e. the closest surviving neighbour of the old anchor.
+    /// Only called on the (rare) anchor-miss path, so the O(rows) index
+    /// build doesn't run per snapshot.
+    private func rescueAnchor() -> (id: String, index: Int)? {
+        guard !windowedRows.isEmpty, !rows.isEmpty else { return nil }
+        // ROW-id space throughout — `windowTailAnchorID` stores row ids
+        // (`msg:`-prefixed), matching `anchorID(atOrBelow:)`'s return;
+        // the transient checks are on the ITEM id, also matching it.
+        var indexByID = [String: Int](minimumCapacity: rows.count)
+        for (i, row) in rows.enumerated() { indexByID[row.id] = i }
+        for row in windowedRows.reversed() {
+            guard case .message(let item) = row,
+                  !item.id.hasPrefix("echo:"), !item.id.hasPrefix("eph:"),
+                  let i = indexByID[row.id] else { continue }
+            return (row.id, i)
+        }
+        return nil
+    }
+
     /// Nearest non-transient message row at or below `index`, as an
     /// anchor candidate. Separators relocate when the window head moves
     /// and echo/ephemeral rows retire mid-stream — neither can anchor a
     /// window.
-    private func anchorID(atOrBelow index: Int) -> String? {
+    private func anchorID(atOrBelow index: Int, notBelow floor: Int = 0) -> String? {
         var i = index
-        while i >= 0 {
+        while i >= floor {
             if case .message(let item) = rows[i],
                !item.id.hasPrefix("echo:"), !item.id.hasPrefix("eph:") {
                 return rows[i].id
@@ -612,7 +654,16 @@ public final class ChatViewModel {
             Self.logger.diag("window extend → \(self.visibleWindowSize) rows (of \(self.rows.count) local)")
         } else {
             let newUpper = max(visibleWindowSize, upper - Self.windowGrowthStep)
-            guard let anchor = anchorID(atOrBelow: newUpper - 1) else { return false }
+            guard let anchor = anchorID(atOrBelow: newUpper - 1) else {
+                // Nothing anchorable at or below the slide target —
+                // 120+ consecutive transient rows. Report handled: a
+                // `false` here sends the caller to the network even
+                // though the window already holds hundreds of local
+                // rows, and an anchor found among freshly paginated
+                // rows would teleport the window far above the reader.
+                Self.logger.diag("window slide ↑ found no anchor — holding")
+                return true
+            }
             windowTailAnchorID = anchor
             Self.logger.diag("window slide ↑ → tail anchor \(anchor) (of \(self.rows.count) local)")
         }
@@ -655,8 +706,17 @@ public final class ChatViewModel {
     /// callers pin the viewport to the topmost visible row right
     /// after, exactly like a reveal-older (`historyPinTarget`).
     public func revealNewerHistory() {
+        // Mutually exclusive with reveal-older, same contract as
+        // `extendHistoryWindow`'s self-dedup: an older-reveal can sit
+        // suspended in `paginateBackward()` for seconds, and an anchor
+        // slide landing mid-flight would be silently undone when it
+        // resumes. Also the dedup for the view triggers themselves —
+        // geometry re-fires while the user rides the bottom edge, and
+        // without the hold each re-fire skipped another 120 rows.
+        if isExtendingWindow || isPaginatingBackward { return }
         guard let currentAnchor = windowTailAnchorID,
               let anchorIdx = rows.lastIndex(where: { $0.id == currentAnchor }) else { return }
+        isExtendingWindow = true
         let newUpper = anchorIdx + 1 + Self.windowGrowthStep
         if newUpper >= rows.count {
             windowTailAnchorID = nil
@@ -668,6 +728,12 @@ public final class ChatViewModel {
             windowTailAnchorID = nil
         }
         recomputeWindow()
+        // Held past the slide's layout pass, released off-stack — the
+        // same 150ms cover `ensureWindowContains` uses.
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            isExtendingWindow = false
+        }
     }
 
     /// Scroll-target id the views pin the viewport to across a
@@ -692,6 +758,22 @@ public final class ChatViewModel {
                                                     preExtendRows: [TimelineRow]) -> String? {
         if let id = visibleIDs.first(where: { !$0.hasPrefix("sep:") }) { return id }
         for row in preExtendRows {
+            if case .message(let item) = row { return item.id }
+        }
+        return nil
+    }
+
+    /// Reveal-newer twin of `historyPinTarget`: same topmost-visible
+    /// preference, but the fallback must be the NEWEST pre-slide message
+    /// row — a slide toward the tail drops the window's OLDEST rows, so
+    /// the older-reveal fallback (first message row) is precisely the
+    /// row guaranteed to have just unmounted, and pinning it no-ops.
+    /// Callers skip the slide entirely on nil: with nothing to pin,
+    /// dropping rows above the viewport is an uncompensated yank.
+    nonisolated public static func newerRevealPinTarget(visibleIDs: [String],
+                                                        preSlideRows: [TimelineRow]) -> String? {
+        if let id = visibleIDs.first(where: { !$0.hasPrefix("sep:") }) { return id }
+        for row in preSlideRows.reversed() {
             if case .message(let item) = row { return item.id }
         }
         return nil
@@ -747,6 +829,21 @@ public final class ChatViewModel {
         recomputeWindow()
     }
 
+    /// Generation-guarded twin of `resetHistoryWindow()` for the views'
+    /// room-leave `onDisappear` — the same shape (and the same reason)
+    /// as `stop(ifGeneration:)`: the VM is cached per room, and on a
+    /// same-room remount SwiftUI can run the NEW view's `.task`/`start()`
+    /// before the OLD view's `onDisappear`. An unconditional reset there
+    /// lands AFTER the successor's scroll restore has widened the window
+    /// and collapses it under a reader who is up in history. Guarded, it
+    /// only fires when no successor has started — i.e. the room is
+    /// genuinely being left, which is when trimming the cached window is
+    /// wanted (the 2026-08-21 switch-stall fix).
+    public func resetHistoryWindow(ifGeneration generation: Int) {
+        guard generation == observationGeneration else { return }
+        resetHistoryWindow()
+    }
+
     /// Grows the window (without animation concerns — called before the
     /// view scrolls) so a remembered scroll position outside the default
     /// tail window can actually be scrolled to on restore. Holds
@@ -773,8 +870,19 @@ public final class ChatViewModel {
             let upper = min(rows.count, index + 21)
             if upper >= rows.count {
                 windowTailAnchorID = nil
+            } else if let anchor = anchorID(atOrBelow: upper - 1, notBelow: index) {
+                // Floored at the target: an anchor found BELOW `index`
+                // would build a window whose newest row is older than
+                // the target, excluding it entirely and no-op'ing the
+                // caller's scrollTo. The floor makes "the target is in
+                // the window" total — worst case the target row itself
+                // anchors.
+                windowTailAnchorID = anchor
             } else {
-                windowTailAnchorID = anchorID(atOrBelow: upper - 1)
+                // Nothing anchorable in [target, target+20] — the target
+                // itself is transient (echo/ephemeral). Tail-attach the
+                // max window as the least-wrong fallback.
+                windowTailAnchorID = nil
             }
             visibleWindowSize = Self.maxWindowSize
         }

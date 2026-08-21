@@ -90,6 +90,14 @@ final class AppendingFakeTimelineService: TimelineService, @unchecked Sendable {
         current.append(item)
         continuation?.yield(current)
     }
+    func remove(id: String) {
+        current.removeAll { $0.id == id }
+        continuation?.yield(current)
+    }
+    // The tests never tear the stream down explicitly on every path —
+    // finish on deallocation so the VM's observation task can't outlive
+    // the test run (review 2026-08-21).
+    deinit { continuation?.finish() }
     func sendText(_ body: String, inReplyTo: String?) async throws {}
     func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {}
     func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
@@ -361,10 +369,70 @@ final class ChatViewModelTests: XCTestCase {
         else { XCTFail("expected a partially-returned window") }
         XCTAssertEqual(vm.windowedRows.count, 361, "sliding down keeps the cap")
 
+        // Each slide holds `isExtendingWindow` for 150ms as its dedup /
+        // mutual-exclusion cover — a real second gesture arrives later.
+        await waitFor(!vm.isExtendingWindow)
         vm.revealNewerHistory()   // next step reaches the tail → reattach
         XCTAssertTrue(vm.windowContainsTail)
         if case .message(let last)? = vm.windowedRows.last { XCTAssertEqual(last.id, "m599") }
         else { XCTFail("reattached window must end at the tail") }
+    }
+
+    @MainActor
+    func test_revealNewerHistory_dedupsInsideTheExtendHold() async throws {
+        let vm = try await makeLongTimelineVM()
+
+        for _ in 0..<4 { await vm.extendHistoryWindow() }  // detached, twice slid
+        XCTAssertFalse(vm.windowContainsTail)
+        let anchorBefore = vm.windowTailAnchorID
+
+        vm.revealNewerHistory()                       // slide #1 — raises the hold
+        let anchorAfterFirst = vm.windowTailAnchorID
+        XCTAssertNotEqual(anchorAfterFirst, anchorBefore, "the first slide must land")
+        vm.revealNewerHistory()                       // same approach's second trigger
+        XCTAssertEqual(vm.windowTailAnchorID, anchorAfterFirst,
+            "a second slide inside the 150ms hold would skip 240 rows per approach " +
+            "(geometry trigger + gesture settle both firing — review 2026-08-21)")
+        await waitFor(!vm.isExtendingWindow)
+    }
+
+    @MainActor
+    func test_vanishedAnchor_rescuesToNearestSurvivingRow() async throws {
+        let items = (0..<600).map { i in
+            TimelineItem(
+                id: "m\(i)", sender: "@a:s", timestamp: .now,
+                kind: .text(body: "msg \(i)", formattedHTML: nil), isOwn: false
+            )
+        }
+        let fake = AppendingFakeTimelineService(initial: items)
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        _ = await vm.start()
+
+        for _ in 0..<3 { await vm.extendHistoryWindow() }  // cap, then slide → anchor m479
+        XCTAssertEqual(vm.windowTailAnchorID, "msg:m479")  // anchors live in ROW-id space
+
+        fake.remove(id: "m479")                            // redaction takes the anchor row
+        await waitFor(vm.rows.count == 600)                // 599 messages + separator
+        XCTAssertFalse(vm.windowContainsTail,
+            "losing the anchor row must not teleport a deep reader to the tail " +
+            "(and silently re-arm follow — review 2026-08-21)")
+        XCTAssertEqual(vm.windowTailAnchorID, "msg:m478",
+            "re-anchors on the nearest surviving neighbour of the old anchor")
+        vm.stop()
+    }
+
+    @MainActor
+    func test_newerRevealPinTarget_fallsBackToNewestPreSlideMessage() async throws {
+        let vm = try await makeLongTimelineVM(count: 10)
+        // No usable visible ids (mid-layout, separators only): the
+        // fallback must be the NEWEST pre-slide message — the oldest
+        // (reveal-older's fallback) is precisely the row a slide toward
+        // the tail is guaranteed to drop.
+        let pin = ChatViewModel.newerRevealPinTarget(
+            visibleIDs: ["sep:2026-08-21"],
+            preSlideRows: vm.windowedRows
+        )
+        XCTAssertEqual(pin, "m9")
     }
 
     @MainActor
@@ -406,6 +474,7 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.windowedRows.map(\.id), before,
             "an identity-anchored window must not shift under stream appends — " +
             "this is what makes deep reading cheap during an active turn")
+        vm.stop()
     }
 
     @MainActor
