@@ -270,6 +270,56 @@ final class ChatViewModelTests: XCTestCase {
         )
     }
 
+    /// 600 same-day messages — enough to exercise the cap (360) and the
+    /// slide beyond it. Shared fixture for the sliding-window tests.
+    @MainActor
+    private func makeLongTimelineVM(count: Int = 600) async throws -> ChatViewModel {
+        let fake = FakeTimelineService()
+        let items = (0..<count).map { i in
+            TimelineItem(
+                id: "m\(i)", sender: "@a:s", timestamp: .now,
+                kind: .text(body: "msg \(i)", formattedHTML: nil), isOwn: false
+            )
+        }
+        fake.snapshotsToEmit = [items]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        await task.value
+        return vm
+    }
+
+    @MainActor
+    func test_extendHistoryWindow_capsAtMax_thenSlidesUpThroughHistory() async throws {
+        let vm = try await makeLongTimelineVM()
+
+        // 600 same-day messages + 1 separator; default window = tail 120.
+        XCTAssertEqual(vm.rows.count, 601)
+        XCTAssertEqual(vm.windowedRows.count, 121)
+        XCTAssertTrue(vm.windowContainsTail)
+
+        await vm.extendHistoryWindow()   // 240
+        await vm.extendHistoryWindow()   // 360 = cap
+        XCTAssertEqual(vm.windowedRows.count, 361, "growth stops at maxWindowSize")
+        XCTAssertTrue(vm.windowContainsTail, "a capped-but-unslid window still ends at the tail")
+        if case .message(let last)? = vm.windowedRows.last {
+            XCTAssertEqual(last.id, "m599")
+        } else { XCTFail("window must end on the newest message") }
+
+        await vm.extendHistoryWindow()   // cap reached → slide up by 120
+        XCTAssertEqual(vm.windowedRows.count, 361, "sliding must not grow the mounted row count")
+        XCTAssertFalse(vm.windowContainsTail, "a slid window has detached from the live tail")
+        if case .message(let last)? = vm.windowedRows.last {
+            XCTAssertEqual(last.id, "m479", "slide drops the newest 120 rows off the bottom")
+        } else { XCTFail("slid window must end on a message row") }
+        if case .separator? = vm.windowedRows.first {} else {
+            XCTFail("a mid-day window cut still re-synthesizes its leading separator")
+        }
+        // The revealed side: m120 must now be mounted (window m120...m479).
+        XCTAssertNotNil(vm.windowedRows.first {
+            if case .message(let i) = $0 { return i.id == "m120" }; return false
+        })
+    }
+
     @MainActor
     func test_identicalSnapshot_isSkippedWithoutRecommit() async throws {
         // The journal re-yields the full timeline on events that change
