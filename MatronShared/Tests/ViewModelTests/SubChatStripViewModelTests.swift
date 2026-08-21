@@ -114,6 +114,15 @@ final class SubChatStripViewModelTests: XCTestCase {
                      "the indicator is the whole message, not an infix")
     }
 
+    func test_subtaskDescription_toleratesSurroundingWhitespace_withoutFullTrim() {
+        XCTAssertEqual(
+            SubChatStripViewModel.subtaskDescription(fromMessageBody: "\n  🔀 Subtask: fix the tests  \n"),
+            "fix the tests"
+        )
+        XCTAssertNil(SubChatStripViewModel.subtaskDescription(fromMessageBody: "a long message body\nwith 🔀 Subtask: inside"))
+        XCTAssertNil(SubChatStripViewModel.subtaskDescription(fromMessageBody: String(repeating: "x", count: 100_000)))
+    }
+
     func test_resolveSubtaskTarget_matchesTitleExactly() {
         let children = [
             SubChatSummary(id: "p:sub:a", title: "explore", isRunning: false),
