@@ -386,6 +386,9 @@ final class MarkdownAttributedTests: XCTestCase {
         let b = MarkdownAttributed.rendered(for: tableSource).size(width: 400)
         XCTAssertEqual(a, b)
         XCTAssertGreaterThan(a.height, 0)
+        XCTAssertEqual(a.width, 400, accuracy: 1,
+                       "a table sets a 100% content width, so it must fill the proposal " +
+                       "instead of collapsing to the hugged width (CodeRabbit, PR #167)")
     }
 
     // MARK: - Rendered memo
