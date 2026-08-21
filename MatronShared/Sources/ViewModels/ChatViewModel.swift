@@ -762,14 +762,27 @@ public final class ChatViewModel {
         }
         guard let index else { return }
         let needed = rows.count - index + 20
-        if needed > visibleWindowSize {
-            isExtendingWindow = true
-            visibleWindowSize = needed
-            recomputeWindow()
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 150_000_000)
-                isExtendingWindow = false
+        if needed <= Self.maxWindowSize {
+            guard needed > visibleWindowSize || windowTailAnchorID != nil else { return }
+            windowTailAnchorID = nil
+            visibleWindowSize = max(visibleWindowSize, min(Self.maxWindowSize, needed))
+        } else {
+            // Too deep for a tail-attached window: anchor a capped
+            // window ~20 rows below the target so the restore scrollTo
+            // (anchor .bottom) has context under it.
+            let upper = min(rows.count, index + 21)
+            if upper >= rows.count {
+                windowTailAnchorID = nil
+            } else {
+                windowTailAnchorID = anchorID(atOrBelow: upper - 1)
             }
+            visibleWindowSize = Self.maxWindowSize
+        }
+        isExtendingWindow = true
+        recomputeWindow()
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            isExtendingWindow = false
         }
     }
 

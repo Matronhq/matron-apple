@@ -342,6 +342,20 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_ensureWindowContains_deepTarget_capsTheWindowAroundIt() async throws {
+        let vm = try await makeLongTimelineVM()
+
+        vm.ensureWindowContains("m5")
+        XCTAssertNotNil(vm.windowedRows.first {
+            if case .message(let i) = $0 { return i.id == "m5" }; return false
+        }, "the restore target must be mounted")
+        XCTAssertLessThanOrEqual(vm.windowedRows.count, 361,
+            "a deep restore must not mount an unbounded window (old behavior: 597 rows)")
+        XCTAssertFalse(vm.windowContainsTail, "a capped deep window cannot include the tail")
+        XCTAssertTrue(vm.isExtendingWindow, "restore widening still holds the anchor flag")
+    }
+
+    @MainActor
     func test_identicalSnapshot_isSkippedWithoutRecommit() async throws {
         // The journal re-yields the full timeline on events that change
         // nothing visible; each no-op reassignment of the @Observable
