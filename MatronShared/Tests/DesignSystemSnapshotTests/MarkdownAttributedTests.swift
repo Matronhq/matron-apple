@@ -236,9 +236,9 @@ final class MarkdownAttributedTests: XCTestCase {
 
     // MARK: - Size measurement
 
-    /// `size(for:source:width:)` through the same conversion path the view uses.
+    /// `Rendered.size(width:)` through the same conversion path the view uses.
     private func measure(_ source: String, width: CGFloat) -> CGSize {
-        MarkdownAttributed.size(for: convert(source), source: source, width: width)
+        MarkdownAttributed.rendered(for: source).size(width: width)
     }
 
     func test_size_shortMessage_hugsContentWidth() {
@@ -382,11 +382,26 @@ final class MarkdownAttributedTests: XCTestCase {
     }
 
     func test_size_tableSource_deterministicAndFillsWidth() {
-        let attributed = convert(tableSource)
-        let a = MarkdownAttributed.size(for: attributed, source: tableSource, width: 400)
-        let b = MarkdownAttributed.size(for: attributed, source: tableSource, width: 400)
+        let a = MarkdownAttributed.rendered(for: tableSource).size(width: 400)
+        let b = MarkdownAttributed.rendered(for: tableSource).size(width: 400)
         XCTAssertEqual(a, b)
         XCTAssertGreaterThan(a.height, 0)
+    }
+
+    // MARK: - Rendered memo
+
+    func test_rendered_memoisesPerSource_andMeasuresPerWidth() {
+        let a = MarkdownAttributed.rendered(for: "**bold** body")
+        let b = MarkdownAttributed.rendered(for: "**bold** body")
+        XCTAssertTrue(a === b, "same source must return the same Rendered instance")
+        XCTAssertFalse(a.containsTable)
+
+        let t = MarkdownAttributed.rendered(for: "| a | b |\n|---|---|\n| 1 | 2 |")
+        XCTAssertTrue(t.containsTable, "table detection memoised at build time")
+
+        let s300 = a.size(width: 300)
+        XCTAssertEqual(a.size(width: 300), s300, "per-width size memo is stable")
+        XCTAssertGreaterThan(s300.height, 0)
     }
 }
 #endif
