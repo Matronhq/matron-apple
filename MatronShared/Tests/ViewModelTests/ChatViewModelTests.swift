@@ -321,6 +321,27 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_revealNewerHistory_slidesDown_andReattachesAtTail() async throws {
+        let vm = try await makeLongTimelineVM()
+
+        for _ in 0..<4 { await vm.extendHistoryWindow() }  // 240, 360, slide→m479, slide→m359
+        XCTAssertFalse(vm.windowContainsTail)
+        if case .message(let last)? = vm.windowedRows.last { XCTAssertEqual(last.id, "m359") }
+        else { XCTFail("expected a doubly-slid window") }
+
+        vm.revealNewerHistory()   // slide down → anchored at m479
+        XCTAssertFalse(vm.windowContainsTail)
+        if case .message(let last)? = vm.windowedRows.last { XCTAssertEqual(last.id, "m479") }
+        else { XCTFail("expected a partially-returned window") }
+        XCTAssertEqual(vm.windowedRows.count, 361, "sliding down keeps the cap")
+
+        vm.revealNewerHistory()   // next step reaches the tail → reattach
+        XCTAssertTrue(vm.windowContainsTail)
+        if case .message(let last)? = vm.windowedRows.last { XCTAssertEqual(last.id, "m599") }
+        else { XCTFail("reattached window must end at the tail") }
+    }
+
+    @MainActor
     func test_identicalSnapshot_isSkippedWithoutRecommit() async throws {
         // The journal re-yields the full timeline on events that change
         // nothing visible; each no-op reassignment of the @Observable
