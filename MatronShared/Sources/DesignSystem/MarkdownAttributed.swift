@@ -287,7 +287,7 @@ enum MarkdownAttributed {
             // an empty code-styled line between the block and the next
             // paragraph (Dan, 2026-07-16).
             if previousIntent != nil, isNewBlock {
-                if !output.string.hasSuffix("\n") {
+                if !output.mutableString.hasSuffix("\n") {
                     var separatorAttrs: [NSAttributedString.Key: Any] = [:]
                     if let previousSemantics {
                         // Block + identity ONLY — reusing the previous run's
@@ -397,7 +397,7 @@ enum MarkdownAttributed {
         // or that cell's paragraph never binds to its block and the row drops
         // out of layout. Mirrors the block-boundary separator's attributes.
         if case .tableCell = previousSemantics?.block ?? .paragraph,
-           let currentCellStyle, !output.string.hasSuffix("\n") {
+           let currentCellStyle, !output.mutableString.hasSuffix("\n") {
             var terminatorAttrs: [NSAttributedString.Key: Any] = [
                 .paragraphStyle: currentCellStyle,
                 .font: font(size: baseFontSize),
@@ -420,7 +420,7 @@ enum MarkdownAttributed {
         // at the bottom of the bubble, and plan-style messages very often
         // end with a code block (Dan, 2026-07-16). Interior newlines are
         // untouched; only the string's tail is trimmed.
-        while output.length > 0, output.string.hasSuffix("\n") {
+        while output.length > 0, output.mutableString.hasSuffix("\n") {
             let attrs = output.attributes(at: output.length - 1, effectiveRange: nil)
             if let style = attrs[.paragraphStyle] as? NSParagraphStyle, !style.textBlocks.isEmpty {
                 break // table-cell terminator — structural, not dead space
