@@ -1,6 +1,7 @@
 import XCTest
 @testable import MatronViewModels
 @testable import MatronJournal
+import MatronChat
 
 /// Recording fake for the devices/pairing API surface. Rosters are served
 /// FIFO from `rosters` (last one repeats); errors are thrown per-call via
@@ -38,8 +39,9 @@ final class FakeDevicesProvider: DevicesProviding, @unchecked Sendable {
     private(set) var devicesCalls = 0
     private(set) var revokedIDs: [Int64] = []
     private(set) var renamed: [(id: Int64, name: String)] = []
+    private(set) var tagged: [(id: Int64, tagChar: String?)] = []
     private(set) var previewedCodes: [String] = []
-    private(set) var approvals: [(code: String, name: String)] = []
+    private(set) var approvals: [(code: String, name: String, tagChar: String?)] = []
 
     func renameDevice(id: Int64, name: String) async throws -> DeviceDTO {
         renamed.append((id, name))
@@ -80,13 +82,30 @@ final class FakeDevicesProvider: DevicesProviding, @unchecked Sendable {
         return try previewResult.get()
     }
 
-    func pairApprove(code: String, agentName: String) async throws {
-        approvals.append((code, agentName))
+    func pairApprove(code: String, agentName: String, tagChar: String?) async throws {
+        approvals.append((code, agentName, tagChar))
         if holdApprove {
             await withCheckedContinuation { approveContinuations.append($0) }
         }
         if approveDelay > .zero { try? await Task.sleep(for: approveDelay) }
         if let approveError { throw approveError }
+    }
+
+    var tagError: JournalAPIError?
+
+    func setDeviceTag(id: Int64, tagChar: String?) async throws {
+        tagged.append((id, tagChar))
+        if let tagError { throw tagError }
+        // Echo the roster forward with the new tag, like renameDevice does.
+        rosters = rosters.map { roster in
+            roster.map { d in
+                d.id == id
+                    ? DeviceDTO(id: d.id, kind: d.kind, name: d.name, createdAt: d.createdAt,
+                                cursor: d.cursor, lag: d.lag, lastSeenAt: d.lastSeenAt,
+                                isSelf: d.isSelf, connected: d.connected, tagChar: tagChar)
+                    : d
+            }
+        }
     }
 }
 
@@ -198,7 +217,10 @@ final class DevicesViewModelTests: XCTestCase {
                 throw JournalAPIError.transport("offline")
             }
             func pairPreview(code: String) async throws -> PairPreview { throw JournalAPIError.notFound }
-            func pairApprove(code: String, agentName: String) async throws {}
+            func pairApprove(code: String, agentName: String, tagChar: String?) async throws {}
+            func setDeviceTag(id: Int64, tagChar: String?) async throws {
+                throw JournalAPIError.transport("offline")
+            }
         }
         let vm = DevicesViewModel(api: Failing(), onSelfRevoked: {})
         await vm.refresh()
@@ -233,5 +255,125 @@ final class DevicesViewModelTests: XCTestCase {
         XCTAssertNotNil(DevicesViewModel.validate(name: ""))
         XCTAssertNotNil(DevicesViewModel.validate(name: "   "))
         XCTAssertNotNil(DevicesViewModel.validate(name: String(repeating: "y", count: 41)))
+    }
+
+    func test_setTag_sendsFirstGraphemeNilForBlank_andSurfacesFailures() async {
+        let fake = FakeDevicesProvider()
+        fake.rosters = [[DeviceDTO(id: 7, kind: "agent", name: "dev-9", createdAt: 1,
+                                   cursor: 0, lag: 0, lastSeenAt: nil, isSelf: false)]]
+        let vm = DevicesViewModel(api: fake, onSelfRevoked: {})
+        await vm.refresh()
+
+        // Only the first grapheme of the draft travels; the roster refresh
+        // shows the stored value.
+        await vm.setTag(vm.devices[0], toDraft: " 🦊x ")
+        XCTAssertEqual(fake.tagged.map(\.id), [7])
+        XCTAssertEqual(fake.tagged.map(\.tagChar), ["🦊"])
+        XCTAssertEqual(vm.devices.first?.tagChar, "🦊")
+        XCTAssertNil(vm.errorMessage)
+
+        // A blank draft clears: nil on the wire = back to automatic.
+        await vm.setTag(vm.devices[0], toDraft: "   ")
+        XCTAssertEqual(fake.tagged.last?.tagChar, nil as String?)
+        XCTAssertNil(vm.devices.first?.tagChar)
+
+        // A server refusal leaves the roster alone and explains itself.
+        fake.tagError = .forbidden
+        await vm.setTag(vm.devices[0], toDraft: "z")
+        XCTAssertNil(vm.devices.first?.tagChar)
+        XCTAssertEqual(vm.errorMessage?.contains("dev-9"), true)
+    }
+
+    // MARK: Legacy letter migration (app-start entry point)
+
+    /// A scratch suite, never `.standard` (probe-name pollution gotcha).
+    private func makeLegacyDefaults(_ overrides: [Int64: String]) -> UserDefaults {
+        let suite = "DevicesViewModelTests"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        if !overrides.isEmpty {
+            defaults.set(Dictionary(uniqueKeysWithValues: overrides.map { (String($0.key), $0.value) }),
+                         forKey: "boxLetterOverrides")
+        }
+        return defaults
+    }
+
+    func test_migrationSeedsTheMirrorAndKeepsTheRelicWhenThePushFails() async throws {
+        // The deployed-journal-lags-behind case: `POST /devices/:id/tag`
+        // doesn't exist yet, so the push 404s. The user's letter must still
+        // paint (mirror seeded from the relic) and the relic must survive
+        // for the next launch's retry — it is only cleared on a server ack.
+        let defaults = makeLegacyDefaults([7: "q"])
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:t")
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-a"), AgentDTO(id: 9, name: "dev-b")])
+        let fake = FakeDevicesProvider()
+        fake.rosters = [[device(7, kind: "agent"), device(9, kind: "agent")]]
+        fake.tagError = .notFound
+
+        await BoxLetterMigration.runIfNeeded(api: fake, store: store, defaults: defaults)?.value
+
+        XCTAssertEqual(try store.agentTagChars(), [7: "q"],
+                       "the mirror is what paints — seed it so letters don't revert")
+        XCTAssertEqual(BoxLetterOverrides.all(from: defaults), [7: "q"],
+                       "no ack, no clear — the next launch retries the push")
+        defaults.removePersistentDomain(forName: "DevicesViewModelTests")
+    }
+
+    func test_migrationSeedsTheMirrorEvenWhenTheServerIsUnreachable() async throws {
+        let defaults = makeLegacyDefaults([7: "q"])
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:t")
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-a")])
+        let fake = FakeDevicesProvider()
+        fake.devicesError = .transport("offline")
+
+        await BoxLetterMigration.runIfNeeded(api: fake, store: store, defaults: defaults)?.value
+
+        XCTAssertEqual(try store.agentTagChars(), [7: "q"],
+                       "seeding must precede the roster fetch — offline paints too")
+        XCTAssertTrue(fake.tagged.isEmpty)
+        XCTAssertEqual(BoxLetterOverrides.all(from: defaults), [7: "q"])
+        defaults.removePersistentDomain(forName: "DevicesViewModelTests")
+    }
+
+    func test_migrationPushSuccessClearsTheRelicAndSeedsTheMirror() async throws {
+        let defaults = makeLegacyDefaults([7: "q"])
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:t")
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-a")])
+        let fake = FakeDevicesProvider()
+        fake.rosters = [[device(7, kind: "agent")]]
+
+        await BoxLetterMigration.runIfNeeded(api: fake, store: store, defaults: defaults)?.value
+
+        XCTAssertEqual(fake.tagged.map(\.id), [7])
+        XCTAssertEqual(fake.tagged.map(\.tagChar), ["q"])
+        XCTAssertEqual(try store.agentTagChars(), [7: "q"])
+        XCTAssertNil(defaults.object(forKey: "boxLetterOverrides"),
+                     "acked — the relic is gone for good")
+        defaults.removePersistentDomain(forName: "DevicesViewModelTests")
+    }
+
+    func test_tagCharFromDraft_keepsOneGraphemeMapsBlankToNil() {
+        XCTAssertEqual(DevicesViewModel.tagChar(fromDraft: " mz "), "m")
+        XCTAssertEqual(DevicesViewModel.tagChar(fromDraft: "👩‍💻x"), "👩‍💻")
+        XCTAssertNil(DevicesViewModel.tagChar(fromDraft: ""))
+        XCTAssertNil(DevicesViewModel.tagChar(fromDraft: "   "))
+    }
+
+    func test_tagCharFromDraft_sievesOverlongAndInvisibleClustersToNil() {
+        // A Character is a grapheme cluster, not one code point: a Zalgo
+        // combining stack or a long ZWJ chain is "one character" that
+        // renders many glyphs wide — over 16 scalars sieves to nil (clear).
+        XCTAssertNil(DevicesViewModel.tagChar(fromDraft: "a" + String(repeating: "\u{0301}", count: 60)))
+        // 9 women + 8 ZWJs = 17 scalars, one over the bound.
+        XCTAssertNil(DevicesViewModel.tagChar(
+            fromDraft: Array(repeating: "👩", count: 9).joined(separator: "\u{200D}")))
+        // A real compound emoji stays under the bound and survives whole.
+        XCTAssertEqual(DevicesViewModel.tagChar(fromDraft: "👨‍👩‍👧‍👦"), "👨‍👩‍👧‍👦")
+        // Invisible lead clusters (soft hyphen, RLO, LRI) would be a
+        // non-nil tag rendering as nothing — suppressing the derived
+        // letter with no visible explanation. They sieve to nil too.
+        XCTAssertNil(DevicesViewModel.tagChar(fromDraft: "\u{00AD}q"))
+        XCTAssertNil(DevicesViewModel.tagChar(fromDraft: "\u{202E}abc"))
+        XCTAssertNil(DevicesViewModel.tagChar(fromDraft: "\u{2066}abc"))
     }
 }

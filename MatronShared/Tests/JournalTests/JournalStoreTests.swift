@@ -869,12 +869,101 @@ final class JournalStoreTests: XCTestCase {
         XCTAssertEqual(try store.agentNames(), [7: "dev-y"])
 
         // A live rename patches one row without a re-snapshot.
-        try store.renameAgent(id: 7, name: "dev-yellow")
+        try store.applyDeviceMeta(id: 7, name: "dev-yellow", tagChar: nil)
         XCTAssertEqual(try store.agentNames(), [7: "dev-yellow"])
 
         // A rename for a box we have never seen inserts it.
-        try store.renameAgent(id: 12, name: "dev-new")
+        try store.applyDeviceMeta(id: 12, name: "dev-new", tagChar: nil)
         XCTAssertEqual(try store.agentNames()[12], "dev-new")
+    }
+
+    func testAgentTagCharsMirrorSnapshotAndLiveMeta() throws {
+        let store = try makeStore()
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-a", tagChar: "a"),
+                                 AgentDTO(id: 9, name: "dev-b")])
+        // Only boxes WITH a tag appear — the map is the override layer, not
+        // the roster.
+        XCTAssertEqual(try store.agentTagChars(), [7: "a"])
+
+        // A live device_meta sets, changes, and clears; a nil genuinely
+        // means "no tag" because the server always sends full meta.
+        try store.applyDeviceMeta(id: 9, name: "dev-b", tagChar: "b")
+        XCTAssertEqual(try store.agentTagChars(), [7: "a", 9: "b"])
+        try store.applyDeviceMeta(id: 7, name: "dev-a", tagChar: nil)
+        XCTAssertEqual(try store.agentTagChars(), [9: "b"])
+    }
+
+    func testReplaceAgentsPreservesTagsWhenTheServerPredatesThem() throws {
+        let store = try makeStore()
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-a"), AgentDTO(id: 9, name: "dev-b")])
+        try store.seedAgentTagChars([7: "q"])
+        // A journal predating tags sends no tag_char key at all
+        // (`tagCharKnown == false`) — its wholesale replace must not wipe
+        // the migration-seeded letter, or upgraded installs revert to
+        // derived letters on the first snapshot after every launch.
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-a", tagChar: nil, tagCharKnown: false),
+                                 AgentDTO(id: 9, name: "dev-b", tagChar: nil, tagCharKnown: false)])
+        XCTAssertEqual(try store.agentTagChars(), [7: "q"])
+
+        // A tag-aware server's explicit nil IS authoritative: cleared.
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-a", tagChar: nil)])
+        XCTAssertEqual(try store.agentTagChars(), [:])
+    }
+
+    func testApplyDeviceMetaPreservesTagWhenTheFrameOmitsIt() throws {
+        let store = try makeStore()
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-a"), AgentDTO(id: 9, name: "dev-b")])
+        try store.seedAgentTagChars([7: "q", 9: "r"])
+
+        // The live path needs the same key-presence rule the snapshot path
+        // has: a server predating tags sends `device_meta` with NO `tag_char`
+        // key, so its nil means "unknown", not "cleared". Overwriting here
+        // let a plain RENAME wipe a migration-seeded letter that the
+        // snapshot path had just been taught to protect.
+        try store.applyDeviceMeta(id: 7, name: "dev-alpha", tagChar: nil, tagCharKnown: false)
+        XCTAssertEqual(try store.agentTagChars()[7], "q")
+        XCTAssertEqual(try store.agentNames()[7], "dev-alpha", "the name half still applies")
+
+        // A tag-aware server IS authoritative in both directions: an explicit
+        // null clears, and a value sets.
+        try store.applyDeviceMeta(id: 9, name: "dev-b", tagChar: nil, tagCharKnown: true)
+        XCTAssertNil(try store.agentTagChars()[9])
+        try store.applyDeviceMeta(id: 7, name: "dev-alpha", tagChar: "z", tagCharKnown: true)
+        XCTAssertEqual(try store.agentTagChars()[7], "z")
+
+        // Insert half: a box this device never snapshotted has no tag to
+        // keep, so an unknown-tag frame still creates the row (untagged).
+        try store.applyDeviceMeta(id: 42, name: "dev-new", tagChar: nil, tagCharKnown: false)
+        XCTAssertEqual(try store.agentNames()[42], "dev-new")
+        XCTAssertNil(try store.agentTagChars()[42])
+    }
+
+    func testSeedAgentTagCharsFillsOnlyUntaggedKnownBoxes() throws {
+        let store = try makeStore()
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-a", tagChar: "a"),
+                                 AgentDTO(id: 9, name: "dev-b")])
+        try store.seedAgentTagChars([7: "x", 9: "y", 42: "z"])
+        // 7 keeps the journal-held tag (newer by construction), 9 takes the
+        // seed, and 42 — a box the mirror doesn't know — must not become a
+        // phantom row without a name.
+        XCTAssertEqual(try store.agentTagChars(), [7: "a", 9: "y"])
+        XCTAssertEqual(try store.agentNames().keys.sorted(), [7, 9])
+    }
+
+    func testAgentRosterStreamDeliversNamesAndTagsInLockstep() async throws {
+        let store = try makeStore()
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-a", tagChar: "a")])
+        var iterator = store.agentRosterStream().makeAsyncIterator()
+        let initial = await iterator.next()
+        XCTAssertEqual(initial?.names, [7: "dev-a"])
+        XCTAssertEqual(initial?.tagChars, [7: "a"])
+
+        // One write, one re-fire, both maps current — a tag change must
+        // never paint with a stale name set or vice versa.
+        try store.applyDeviceMeta(id: 7, name: "dev-alpha", tagChar: "α")
+        let updated = await iterator.next()
+        XCTAssertEqual(updated?.names, [7: "dev-alpha"])
+        XCTAssertEqual(updated?.tagChars, [7: "α"])
     }
 
     func testAgentNamesStreamRefiresOnRename() async throws {
@@ -888,7 +977,7 @@ final class JournalStoreTests: XCTestCase {
         let initial = await iterator.next()
         XCTAssertEqual(initial, [7: "dev-y", 9: "dev-z"])
 
-        try store.renameAgent(id: 7, name: "dev-yellow")
+        try store.applyDeviceMeta(id: 7, name: "dev-yellow", tagChar: nil)
         let renamed = await iterator.next()
         XCTAssertEqual(renamed, [7: "dev-yellow", 9: "dev-z"])
     }

@@ -12,10 +12,22 @@ public struct LoginResponse: Equatable, Sendable {
 public struct AgentDTO: Equatable, Sendable {
     public let id: Int64
     public let name: String
+    /// User-chosen roster tag character, journal-held so every device shows
+    /// the same letter. nil = automatic (clients derive one from the name).
+    public let tagChar: String?
+    /// False when the server never sent the `tag_char` key at all — a
+    /// journal predating tags. There nil means "unknown", not "cleared",
+    /// and `JournalStore.replaceAgents` preserves the local mirror instead
+    /// of wiping migration-seeded letters on every snapshot. A tag-aware
+    /// server always sends the key (an explicit null = authoritative
+    /// clear), so the default is true.
+    public let tagCharKnown: Bool
 
-    public init(id: Int64, name: String) {
+    public init(id: Int64, name: String, tagChar: String? = nil, tagCharKnown: Bool = true) {
         self.id = id
         self.name = name
+        self.tagChar = tagChar
+        self.tagCharKnown = tagCharKnown
     }
 }
 
@@ -90,10 +102,13 @@ public struct DeviceDTO: Equatable, Sendable, Identifiable {
     /// RPC would reach it). Defaults false when the server predates the
     /// flag.
     public let connected: Bool
+    /// User-chosen roster tag character (agent boxes; journal-held). nil =
+    /// automatic, and always nil from a server predating the field.
+    public let tagChar: String?
 
     public init(id: Int64, kind: String, name: String, createdAt: Int64,
                 cursor: Int64, lag: Int64, lastSeenAt: Int64?, isSelf: Bool,
-                connected: Bool = false) {
+                connected: Bool = false, tagChar: String? = nil) {
         self.id = id
         self.kind = kind
         self.name = name
@@ -103,6 +118,7 @@ public struct DeviceDTO: Equatable, Sendable, Identifiable {
         self.lastSeenAt = lastSeenAt
         self.isSelf = isSelf
         self.connected = connected
+        self.tagChar = tagChar
     }
 }
 
@@ -321,7 +337,12 @@ public actor JournalAPI {
         let agents = (obj["agents"] as? [[String: Any]] ?? []).compactMap { a -> AgentDTO? in
             guard let id = (a["device_id"] as? NSNumber)?.int64Value,
                   let name = a["name"] as? String else { return nil }
-            return AgentDTO(id: id, name: name)
+            // Key-presence carries meaning: absent = a server predating
+            // tags (nil is "unknown"), present-but-null = an authoritative
+            // "no tag". JSONSerialization surfaces a JSON null as NSNull,
+            // so `a["tag_char"]` distinguishes the two.
+            return AgentDTO(id: id, name: name, tagChar: a["tag_char"] as? String,
+                            tagCharKnown: a["tag_char"] != nil)
         }
         return SnapshotResponse(conversations: conversations, agents: agents,
                                 seq: (obj["seq"] as? NSNumber)?.int64Value ?? 0)
@@ -425,7 +446,8 @@ public actor JournalAPI {
                 lag: (d["lag"] as? NSNumber)?.int64Value ?? 0,
                 lastSeenAt: (d["last_seen_at"] as? NSNumber)?.int64Value,
                 isSelf: d["is_self"] as? Bool ?? false,
-                connected: d["connected"] as? Bool ?? false
+                connected: d["connected"] as? Bool ?? false,
+                tagChar: d["tag_char"] as? String
             )
         }
     }
@@ -453,6 +475,17 @@ public actor JournalAPI {
                          cursor: 0, lag: 0, lastSeenAt: nil, isSelf: false)
     }
 
+    /// Sets or clears (nil) a device's roster tag character — the letter
+    /// clients show beside the box. Journal-held so the choice follows the
+    /// user to every device. Client tokens only; 404 covers "not yours"
+    /// and "gone", like rename. The server keeps only the first grapheme
+    /// of what it's sent; callers re-fetch the roster rather than trusting
+    /// the echo, same as rename.
+    public func setDeviceTag(id: Int64, tagChar: String?) async throws {
+        _ = try await request(path: "/devices/\(id)/tag", method: "POST",
+                              body: ["tag_char": tagChar ?? NSNull()])
+    }
+
     /// Previews a pairing code before approval. 404 = unknown, expired, or
     /// already approved (deliberately indistinguishable server-side).
     public func pairPreview(code: String) async throws -> PairPreview {
@@ -464,12 +497,15 @@ public actor JournalAPI {
     }
 
     /// Approves a pairing code, binding the (future) agent to this user
-    /// under `agentName`. Exactly-once: `.conflict` = already approved.
+    /// under `agentName`, optionally carrying its roster tag character so
+    /// the box is born with the right letter (colleagues' dev-a/dev-b →
+    /// a/b from day one). Exactly-once: `.conflict` = already approved.
     /// Approval does NOT create the device — it appears in the roster only
     /// once the box claims its token.
-    public func pairApprove(code: String, agentName: String) async throws {
-        _ = try await request(path: "/pair/approve", method: "POST",
-                              body: ["pair_code": code, "agent_name": agentName])
+    public func pairApprove(code: String, agentName: String, tagChar: String? = nil) async throws {
+        var body: [String: Any] = ["pair_code": code, "agent_name": agentName]
+        if let tagChar { body["tag_char"] = tagChar }
+        _ = try await request(path: "/pair/approve", method: "POST", body: body)
     }
 
     // MARK: Agent chat consent

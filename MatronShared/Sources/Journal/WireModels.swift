@@ -191,10 +191,17 @@ public enum ServerFrame: Equatable, Sendable {
     case error(code: String, ref: String?, requestID: String?, detail: String?)
     case snapshotRequired
     case unknownControl(op: String)
-    /// A device was renamed (`POST /devices/:id/rename`). Transient — not a
-    /// journal event, carries no seq. A client that misses it picks the name
-    /// up from the next snapshot's `agents` list.
-    case deviceMeta(id: Int64, name: String)
+    /// A device's meta changed (`POST /devices/:id/rename` or `/tag`). The
+    /// frame carries the device's full current meta — a rename repeats the
+    /// standing tag character and vice versa. Transient — not a journal
+    /// event, carries no seq. A client that misses it picks both up from
+    /// the next snapshot's `agents` list. `tagChar` nil = automatic, but
+    /// only when `tagCharKnown`: a server predating tags omits the key
+    /// entirely, and that nil means "unknown", not "cleared" — the store
+    /// keeps the standing local tag rather than wiping a migration-seeded
+    /// letter on a plain rename. Mirrors `AgentDTO.tagCharKnown` on the
+    /// snapshot path.
+    case deviceMeta(id: Int64, name: String, tagChar: String?, tagCharKnown: Bool)
 
     /// Bridge timestamps are `Date.toISOString()` output (always fractional),
     /// but accept plain ISO too for robustness. ISO8601DateFormatter is
@@ -375,7 +382,10 @@ public enum ServerFrame: Equatable, Sendable {
         case "device_meta":
             guard let id = (obj["device_id"] as? NSNumber)?.int64Value,
                   let name = obj["name"] as? String else { return nil }
-            return .deviceMeta(id: id, name: name)
+            // Key-presence, not value: `as? String` folds "absent" and
+            // "explicit null" together, and only the latter clears a tag.
+            return .deviceMeta(id: id, name: name, tagChar: obj["tag_char"] as? String,
+                               tagCharKnown: obj["tag_char"] != nil)
         case "control":
             guard let op = obj["op"] as? String else { return nil }
             switch op {

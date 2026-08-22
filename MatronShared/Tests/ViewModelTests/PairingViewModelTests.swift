@@ -9,8 +9,9 @@ import XCTest
 final class PairingViewModelTests: XCTestCase {
     private func makeVM(_ fake: FakeDevicesProvider,
                         existingNames: [String] = [],
+                        existingTags: [String] = [],
                         now: @escaping () -> Date = Date.init) -> PairingViewModel {
-        PairingViewModel(api: fake, existingNames: existingNames, now: now,
+        PairingViewModel(api: fake, existingNames: existingNames, existingTags: existingTags, now: now,
                          pollInterval: .milliseconds(1), previewDebounce: .milliseconds(1))
     }
 
@@ -69,6 +70,44 @@ final class PairingViewModelTests: XCTestCase {
         XCTAssertNil(vm.duplicateNameWarning)
     }
 
+    func test_duplicateTag_warnsButDoesNotBlock() {
+        let vm = makeVM(FakeDevicesProvider(), existingTags: ["q", "Z"])
+        vm.tagCharacter = "q"
+        XCTAssertEqual(vm.duplicateTagWarning, "Another agent already uses the tag q")
+        vm.tagCharacter = "m"
+        XCTAssertNil(vm.duplicateTagWarning)
+
+        // Compared on the SIEVED value: the server stores "q" for "  qx ",
+        // so that draft has to warn even though the raw string differs.
+        vm.tagCharacter = "  qx "
+        XCTAssertEqual(vm.duplicateTagWarning, "Another agent already uses the tag q")
+
+        // Case-insensitive: a derived letter renders uppercased, so "z"
+        // collides with a box already showing "Z".
+        vm.tagCharacter = "z"
+        XCTAssertEqual(vm.duplicateTagWarning, "Another agent already uses the tag z")
+
+        // Empty = automatic derivation, which is not this warning's business.
+        vm.tagCharacter = ""
+        XCTAssertNil(vm.duplicateTagWarning)
+        // A draft that sieves to nil (invisible format char) has no tag to
+        // clash with either.
+        vm.tagCharacter = "\u{00AD}"
+        XCTAssertNil(vm.duplicateTagWarning)
+    }
+
+    func test_duplicateTagAndName_warnIndependently() {
+        let vm = makeVM(FakeDevicesProvider(), existingNames: ["dev-7"], existingTags: ["7"])
+        vm.agentName = "dev-7"
+        vm.tagCharacter = "8"
+        XCTAssertNotNil(vm.duplicateNameWarning)
+        XCTAssertNil(vm.duplicateTagWarning, "a name clash must not imply a tag clash")
+        vm.agentName = "dev-8"
+        vm.tagCharacter = "7"
+        XCTAssertNil(vm.duplicateNameWarning)
+        XCTAssertNotNil(vm.duplicateTagWarning, "a tag clash must surface without a name clash")
+    }
+
     func test_approve_conflict_showsSpecCopy() async {
         let fake = FakeDevicesProvider()
         fake.previewResult = .success(PairPreview(requesterIP: "1.2.3.4", expiresIn: 600))
@@ -96,11 +135,15 @@ final class PairingViewModelTests: XCTestCase {
         vm.codeInput = "ktnm-3vq8"
         await waitUntil(vm.phase != .enterCode)
         vm.agentName = "dev-7"
+        // The optional tag rides the approve: first grapheme only, so the
+        // minted box is born with its letter.
+        vm.tagCharacter = " 7x "
         await vm.approve()
         await waitUntil(vm.phase == .success(agentName: "dev-7"))
         XCTAssertEqual(vm.phase, .success(agentName: "dev-7"))
         XCTAssertEqual(fake.approvals.count, 1)
         XCTAssertEqual(fake.approvals[0].code, "KTNM3VQ8")
+        XCTAssertEqual(fake.approvals[0].tagChar, "7")
         XCTAssertGreaterThanOrEqual(fake.devicesCalls, 3, "snapshot + at least two polls")
     }
 

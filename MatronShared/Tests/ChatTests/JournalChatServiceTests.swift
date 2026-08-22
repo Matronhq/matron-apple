@@ -247,7 +247,7 @@ final class JournalChatServiceTests: XCTestCase {
         // subscribe, so renaming too early would be indistinguishable from
         // a stream that never re-fires.
         try await Task.sleep(for: .milliseconds(150))
-        try store.renameAgent(id: 7, name: "dev-yellow")
+        try store.applyDeviceMeta(id: 7, name: "dev-yellow", tagChar: nil)
 
         // Watchdog rather than a plain await: the regression makes the
         // stream go permanently quiet, and cancelling ends the `for await`
