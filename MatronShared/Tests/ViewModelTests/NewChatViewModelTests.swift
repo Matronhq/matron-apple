@@ -48,6 +48,7 @@ final class FakeAgentRPCProvider: AgentRPCProviding, @unchecked Sendable {
     private var _replies: [String: RPCReply] = [:]
     private var _repliesByDevice: [Int64: RPCReply] = [:]
     private var _rpcError: RPCRequestError?
+    private var _replySequences: [String: [Result<RPCReply, RPCRequestError>]] = [:]
     private var _gates: [Int64: Gate] = [:]
     private var _arrivals: [Int64: Gate] = [:]
     private var _requests: [(method: String, agentDeviceID: Int64, params: [String: Any])] = []
@@ -71,6 +72,14 @@ final class FakeAgentRPCProvider: AgentRPCProviding, @unchecked Sendable {
         get { lock.withLock { _rpcError } }
         set { lock.withLock { _rpcError = newValue } }
     }
+    /// Per-method scripted outcomes, consumed one per call ahead of every
+    /// other source — lets a test answer `agent_unreachable` twice and then
+    /// `.ok`, which is the shape the wake-retry loops exist for. An
+    /// exhausted sequence falls through to the usual lookup order.
+    var replySequences: [String: [Result<RPCReply, RPCRequestError>]] {
+        get { lock.withLock { _replySequences } }
+        set { lock.withLock { _replySequences = newValue } }
+    }
     /// Parks the *next* `recent_folders` call for a device until the gate is
     /// opened; the reply is captured before parking, so re-scripting
     /// `repliesByDevice` meanwhile doesn't change what the parked leg
@@ -93,10 +102,16 @@ final class FakeAgentRPCProvider: AgentRPCProviding, @unchecked Sendable {
 
     func agentRequest(agentDeviceID: Int64, method: String, paramsData: Data) async throws -> RPCReply {
         let params = (try? JSONSerialization.jsonObject(with: paramsData)) as? [String: Any] ?? [:]
-        let error = lock.withLock { () -> RPCRequestError? in
+        let (error, scripted) = lock.withLock { () -> (RPCRequestError?, Result<RPCReply, RPCRequestError>?) in
             _requests.append((method, agentDeviceID, params))
-            return _rpcError
+            if var sequence = _replySequences[method], !sequence.isEmpty {
+                let next = sequence.removeFirst()
+                _replySequences[method] = sequence
+                return (nil, next)
+            }
+            return (_rpcError, nil)
         }
+        if let scripted { return try scripted.get() }
         if let error { throw error }
         let (reply, gate, arrival) = lock.withLock { () -> (RPCReply, Gate?, Gate?) in
             let reply = (method == "recent_folders" ? _repliesByDevice[agentDeviceID] : nil)
@@ -142,15 +157,27 @@ final class NewChatViewModelTests: XCTestCase {
         XCTAssertEqual(list.map(\.id), [3, 4, 2], "clients excluded; connected first, then by name")
     }
 
-    func test_load_singleConnectedAgent_skipsStraightToFolders() async {
+    func test_load_singleBoxFleet_skipsStraightToFolders() async {
         let fake = FakeAgentRPCProvider()
-        fake.devicesResult = .success([agent(9, connected: true), agent(2, connected: false)])
+        fake.devicesResult = .success([agent(9, connected: true)])
         fake.replies["recent_folders"] = foldersReply(#"{"folders":[{"path":"/home/dan/app","last_used":100}]}"#)
         let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
         await vm.load()
         guard case let .folders(picked) = vm.phase else { return XCTFail("expected folders phase") }
         XCTAssertEqual(picked.id, 9)
         XCTAssertEqual(vm.folders.map(\.path), ["/home/dan/app"])
+    }
+
+    func test_load_oneConnectedAmongAsleep_showsTheRoster() async {
+        // The host idle-stops boxes, so one-awake-among-asleep is the
+        // normal steady state — auto-skipping to the awake box would make
+        // every sleeping (but wakeable) row unreachable.
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(9, connected: true), agent(2, connected: false)])
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        await vm.load()
+        guard case let .agents(list) = vm.phase else { return XCTFail("expected the roster") }
+        XCTAssertEqual(list.map(\.id), [9, 2])
     }
 
     func test_folders_sortNewestFirst_nullsLast() async {
@@ -210,8 +237,9 @@ final class NewChatViewModelTests: XCTestCase {
     }
 
     func test_start_errorCopyTable() async {
+        // `agent_unreachable` is absent on purpose: start retries it (the
+        // wake loop) — NewChatViewModelWakeTests owns that behaviour.
         let cases: [(RPCReply, String)] = [
-            (.failure(code: "agent_unreachable", detail: nil), "The agent didn't answer — is the box awake?"),
             (.failure(code: "not_ready", detail: nil), "The agent didn't answer — is the box awake?"),
             (.failure(code: "bad_workdir", detail: "/nope"), "That folder doesn't exist on the box."),
             (.failure(code: "spawn_failed", detail: "boom"), "Couldn't start — boom."),

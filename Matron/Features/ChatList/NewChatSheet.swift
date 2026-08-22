@@ -4,8 +4,8 @@ import MatronJournal
 import MatronModels
 import MatronViewModels
 
-/// The `+` toolbar sheet: pick a connected agent → pick a folder → the
-/// agent starts a session there (agent RPC — spec
+/// The `+` toolbar sheet: pick an agent (a sleeping box wakes on pick) →
+/// pick a folder → the agent starts a session there (agent RPC — spec
 /// 2026-07-15-new-chat-flow-design.md). `onCreated` fires with the new
 /// conversation id once a placeholder row exists, so the parent can
 /// dismiss and navigate immediately even if the convo's first journal
@@ -60,8 +60,19 @@ struct NewChatSheet: View {
         }
         .task { await viewModel.load() }
         // Swipe-down dismissal never touches the Cancel button; anything
-        // that removes the sheet counts as abandoning the flow.
-        .onDisappear { if !navigated { cancelled = true } }
+        // that removes the sheet counts as abandoning the flow — including
+        // the wake loops, which would otherwise keep re-asking a box (and a
+        // retried start could silently spawn a session) for two minutes.
+        // Unconditional: `navigated` is set the moment `.done` lands, before
+        // `prepareConversation` returns, so gating on it would leave a sheet
+        // dismissed mid-await with the pending task still free to call
+        // `onCreated` and yank the user into a chat they walked away from.
+        // On the normal path this fires only after `onCreated` has already
+        // run, where setting it is a no-op.
+        .onDisappear {
+            cancelled = true
+            viewModel.abandon()
+        }
         .onChange(of: viewModel.phase) { _, phase in
             guard case .done(let convoID) = phase, !navigated, !cancelled else { return }
             navigated = true
@@ -104,7 +115,7 @@ struct NewChatSheet: View {
                                 }
                                 Text(agent.connected
                                      ? "Connected"
-                                     : "Offline · Last seen \(agent.lastSeenText())")
+                                     : "Asleep · Last seen \(agent.lastSeenText()) — tap to wake")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                 // Offline rows carry a block too, from the
@@ -117,11 +128,12 @@ struct NewChatSheet: View {
                                     freshness: viewModel.capacityFreshness(for: agent.id))
                             }
                             Spacer()
-                            if agent.connected {
-                                Image(systemName: "chevron.right")
-                                    .font(.caption)
-                                    .foregroundStyle(.tertiary)
-                            }
+                            // Asleep rows are pickable too (the journal
+                            // wakes the box on the first ask), so every
+                            // row navigates.
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
                         }
                         // A List button's label inherits the accent tint,
                         // so .primary/.secondary/.tertiary above would all
@@ -131,13 +143,12 @@ struct NewChatSheet: View {
                         // which gets this via .buttonStyle(.plain)).
                         .foregroundStyle(Color.primary)
                     }
-                    .disabled(!agent.connected)
                 }
             } header: {
                 Text("Start a chat on")
             } footer: {
                 if !agents.isEmpty && !agents.contains(where: \.connected) {
-                    Text("No agents connected — is the box awake?")
+                    Text("All boxes are asleep — pick one to wake it.")
                 }
             }
         }
@@ -146,11 +157,28 @@ struct NewChatSheet: View {
     @ViewBuilder private func folderPicker(_ agent: DeviceDTO) -> some View {
         List {
             Section {
+                if viewModel.isWakingBox {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Waking \(agent.name)…")
+                            if let since = viewModel.wakeStartedAt {
+                                Text(since, style: .relative)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                } else if viewModel.wakeGaveUp {
+                    Button("Try Again") {
+                        Task { await viewModel.retryWake() }
+                    }
+                }
                 if let foldersError = viewModel.foldersError {
                     Text(foldersError)
                         .font(.callout)
                         .foregroundStyle(.secondary)
-                } else if viewModel.folders.isEmpty {
+                } else if viewModel.folders.isEmpty, !viewModel.isWakingBox, !viewModel.wakeGaveUp {
                     Text("No recent folders on \(agent.name).")
                         .foregroundStyle(.secondary)
                 }

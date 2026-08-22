@@ -184,13 +184,12 @@ final class NewChatViewModelOfflineCapacityTests: XCTestCase {
         XCTAssertEqual(cache.loadAll()[1]?.capturedAt, now, "stamped with when the reply landed")
     }
 
-    /// The single-connected-box fleet never fans out — it skips straight to
-    /// the folder step — so this reply is the only chance to learn that box's
+    /// The single-box fleet never fans out — it skips straight to the
+    /// folder step — so this reply is the only chance to learn that box's
     /// capacity before it goes to sleep.
     func test_select_persistsCapacityFromTheLiveFolderReply() async {
         let fake = FakeAgentRPCProvider()
-        fake.devicesResult = .success([agent(9, name: "only", connected: true),
-                                       agent(2, name: "b", connected: false)])
+        fake.devicesResult = .success([agent(9, name: "only", connected: true)])
         fake.replies["recent_folders"] = .ok(resultData: Data(#"{"folders":[{"path":"/w","last_used":1}],"activity":{"live_sessions":3},"account":{"email":"pat@yearbook.com"}}"#.utf8))
         let cache = InMemoryBoxCapacityCache()
 
