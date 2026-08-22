@@ -420,8 +420,43 @@ final class NewChatViewModelWakeTests: XCTestCase {
                        "the folder loop really did run all the way to its give-up tail")
         XCTAssertEqual(vm.errorMessage, "That folder doesn't exist on the box.",
                        "the give-up copy must not overwrite the start error already on screen")
-        XCTAssertFalse(vm.wakeGaveUp, "Try Again belongs to a box that never answered, not to a bad path")
+        XCTAssertTrue(vm.wakeGaveUp,
+                      "the box never answered recent_folders, so the flag still flips: it keeps "
+                      + "the folder list's empty state suppressed and offers the Try Again it earned")
         XCTAssertFalse(vm.isWakingBox)
+    }
+
+    func test_selectFastBoxWhileAnotherWakes_dropsTheWakingBannerNow() async {
+        // A superseded wake loop only notices at its next suspension point,
+        // up to a full retry delay away. Switching to a box that answers
+        // instantly must retire the old owner itself, or its "Waking…"
+        // banner hangs over the new box's folder step until then.
+        let fake = FakeAgentRPCProvider()
+        let sleeper = SleepRecorder()
+        fake.replies["recent_folders"] = .failure(code: "agent_unreachable", detail: nil)
+        let boxA = agent(7, name: "dev-7", connected: false)
+        let boxB = agent(8, name: "dev-8", connected: true)
+        fake.devicesResult = .success([boxA, boxB])
+        fake.repliesByDevice[boxB.id] = .ok(
+            resultData: Data(#"{"folders":[{"path":"/home/dan/app","last_used":100}]}"#.utf8))
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache(),
+                                  wakeSleep: { await sleeper.sleep($0) })
+        await vm.load()
+        let parkA = sleeper.parkNext()
+        let selectingA = Task { await vm.select(agent: boxA) }
+        await parkA.arrived.wait()
+        XCTAssertTrue(vm.isWakingBox)
+
+        await vm.select(agent: boxB)
+        XCTAssertFalse(vm.isWakingBox,
+                       "box B answered — box A's parked loop must not keep the banner up")
+        XCTAssertNil(vm.wakeStartedAt)
+        XCTAssertEqual(vm.folders.map(\.path), ["/home/dan/app"])
+
+        parkA.resume.open()
+        await selectingA.value
+        XCTAssertFalse(vm.isWakingBox, "the retired loop exits without redressing the step")
+        XCTAssertEqual(vm.folders.map(\.path), ["/home/dan/app"])
     }
 
     func test_selectDifferentBoxWhileWaking_restartsTheWakeClock() async {

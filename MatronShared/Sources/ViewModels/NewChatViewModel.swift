@@ -209,6 +209,10 @@ public final class NewChatViewModel {
         // An impatient re-tap on the row already being woken must not stack
         // a second loop — the RPC traffic would double for nothing.
         if isWakingBox, Self.sameFolderAgent(phase, agent) { return }
+        // Committing to another box retires the previous owner NOW: until
+        // its loop next wakes and notices, the old box's flags would dress
+        // this box's folder step in a "Waking…" banner it never earned.
+        retireWakeOwner()
         phase = .folders(agent: agent)
         folders = []
         foldersError = nil
@@ -264,6 +268,15 @@ public final class NewChatViewModel {
     /// open a session on a box nobody is looking at.
     public func abandon() {
         isAbandoned = true
+        retireWakeOwner()
+    }
+
+    /// Bumps the token so no live loop passes another ownership check, and
+    /// drops the flags it was holding. A superseded loop only notices at
+    /// its next suspension point — up to a full retry delay away — so
+    /// anything that changes what the user is looking at must retire the
+    /// owner itself rather than wait for the loop to find out.
+    private func retireWakeOwner() {
         wakeToken &+= 1
         isWakingBox = false
         wakeStartedAt = nil
@@ -342,9 +355,10 @@ public final class NewChatViewModel {
         // took the wake token, so this loop can still be polling behind its
         // error. The give-up copy is generic and points at Try Again: burying
         // a specific failure under it would send the user to retry a wake
-        // that was never the problem.
-        guard errorMessage == nil else { return }
-        errorMessage = Self.wakeGaveUpMessage
+        // that was never the problem. The FLAG still flips either way — the
+        // box really never answered, so the folder list must not paint its
+        // "no recent folders" empty state, and Try Again genuinely applies.
+        if errorMessage == nil { errorMessage = Self.wakeGaveUpMessage }
         wakeGaveUp = true
     }
 
