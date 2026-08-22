@@ -204,6 +204,22 @@ final class ToolCallEventTests: XCTestCase {
         XCTAssertNil(evt.commandString)
     }
 
+    func test_argSummary_isComputedOnce_notPerAccess() {
+        // Behavioral pin: summaries derive from argsJSON at init and stay
+        // identical across accesses (the old computed property re-parsed the
+        // pretty-printed JSON on EVERY body eval — the top per-eval cost for
+        // tool-call-heavy timelines, 2026-08-21 trace).
+        let event = ToolCallEvent(
+            tool: "Bash",
+            argsJSON: "{\n  \"command\" : \"make test\"\n}",
+            status: .running, resultText: nil, resultTruncated: false,
+            startedAt: Date(timeIntervalSince1970: 0), endedAt: nil
+        )
+        XCTAssertEqual(event.argSummary, "make test")
+        XCTAssertEqual(event.commandString, "make test")
+        XCTAssertEqual(event.argSummary, event.argSummary)
+    }
+
     private func makeEvent(argsJSON: String) -> ToolCallEvent {
         ToolCallEvent(
             tool: "Bash", argsJSON: argsJSON, status: .ok,

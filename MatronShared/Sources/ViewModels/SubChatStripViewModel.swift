@@ -104,9 +104,14 @@ public final class SubChatStripViewModel {
     /// `nil` when `body` isn't one. The indicator is always the whole
     /// message (modulo surrounding whitespace), never an infix.
     nonisolated public static func subtaskDescription(fromMessageBody body: String) -> String? {
-        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasPrefix(subtaskIndicatorPrefix) else { return nil }
-        let description = trimmed.dropFirst(subtaskIndicatorPrefix.count)
+        // Runs in the timeline list body for EVERY message row (outside the
+        // per-row Equatable gate), so it must bail without copying the body:
+        // drop leading whitespace lazily, prefix-check, and only then touch
+        // the (short) remainder. The old full `trimmingCharacters` allocated
+        // a copy of every message body on every body evaluation.
+        let head = body.drop(while: \.isWhitespace)
+        guard head.hasPrefix(subtaskIndicatorPrefix) else { return nil }
+        let description = head.dropFirst(subtaskIndicatorPrefix.count)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return description.isEmpty ? nil : description
     }

@@ -69,8 +69,7 @@ final class SelectableMessageTextSnapshotTests: XCTestCase {
         let source = String(repeating: section, count: 8)
         let width: CGFloat = 480
 
-        let attributed = MarkdownAttributed.attributedString(for: source)
-        let measured = MarkdownAttributed.size(for: attributed, source: source, width: width)
+        let measured = MarkdownAttributed.rendered(for: source).size(width: width)
 
         // Host the real view at exactly the size the measurement reported —
         // the same thing the timeline does with `sizeThatFits`'s answer.
@@ -113,8 +112,7 @@ final class SelectableMessageTextSnapshotTests: XCTestCase {
         | bridge | 215 |
         | apple | 133 |
         """
-        let attributed = MarkdownAttributed.attributedString(for: source)
-        let measured = MarkdownAttributed.size(for: attributed, source: source, width: 420)
+        let measured = MarkdownAttributed.rendered(for: source).size(width: 420)
 
         let host = NSHostingView(
             rootView: SelectableMessageText(source)

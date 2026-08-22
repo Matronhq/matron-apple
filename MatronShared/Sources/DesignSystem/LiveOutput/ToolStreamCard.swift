@@ -79,7 +79,14 @@ public struct ToolStreamCard: View {
     /// truncation notice). Internal + static so tests can pin the cap
     /// and the line-boundary contract without a snapshot.
     static func collapsedSlice(of text: String) -> (text: Substring, cut: Bool) {
-        guard text.count > collapsedDisplayCapChars else { return (text[...], false) }
+        // `index(_:offsetBy:limitedBy:)` walks at most cap+1 graphemes instead
+        // of counting the whole 64 KiB live buffer on every streamed chunk.
+        // Exactly equivalent to `text.count > collapsedDisplayCapChars`: a nil
+        // result means shorter than the cap, and landing on `endIndex` means
+        // exactly the cap.
+        let overCap = text.index(text.startIndex, offsetBy: collapsedDisplayCapChars,
+                                 limitedBy: text.endIndex).map { $0 < text.endIndex } ?? false
+        guard overCap else { return (text[...], false) }
         var shown = text.suffix(collapsedDisplayCapChars)
         // Drop the (almost certainly partial) first line so the cut never
         // opens mid-word or inside a split ANSI escape sequence — but only
