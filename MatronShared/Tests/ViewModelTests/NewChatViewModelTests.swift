@@ -236,12 +236,118 @@ final class NewChatViewModelTests: XCTestCase {
         XCTAssertNil(params?["browser"], "browser only travels when true")
     }
 
+    // MARK: Model picker
+
+    func test_start_sendsSelectedModel() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(9, connected: true)])
+        fake.replies["recent_folders"] = foldersReply(#"""
+        {"folders":[],"model_options":[{"value":"opus","label":"Opus"},{"value":"sonnet","label":"Sonnet"}]}
+        """#)
+        fake.replies["start"] = .ok(resultData: Data(#"{"convo_id":"c-new"}"#.utf8))
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        await vm.load()
+        vm.selectedModel = "sonnet"
+        await vm.start(workdir: "~/dev/app")
+        XCTAssertEqual(fake.requests.last?.params["model"] as? String, "sonnet")
+    }
+
+    func test_start_omitsModelWhenDefaultPicked() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(9, connected: true)])
+        fake.replies["recent_folders"] = foldersReply(#"""
+        {"folders":[],"model_options":[{"value":"opus","label":"Opus"}]}
+        """#)
+        fake.replies["start"] = .ok(resultData: Data(#"{"convo_id":"c-new"}"#.utf8))
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        await vm.load()
+        XCTAssertNil(vm.selectedModel, "the picker opens on the bridge's own default")
+        await vm.start(workdir: "~/dev/app")
+        XCTAssertNil(fake.requests.last?.params["model"],
+                     "no pick means the bridge decides — omit the key rather than name a default")
+    }
+
+    func test_modelOptions_parsedFromRecentFolders() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(9, connected: true)])
+        fake.replies["recent_folders"] = foldersReply(#"""
+        {"folders":[],"model_options":[
+          {"value":"opus","label":"Opus 4.6"},
+          {"value":"sonnet"},
+          {"label":"nameless"},
+          {"value":""}
+        ]}
+        """#)
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        await vm.load()
+        XCTAssertEqual(vm.modelOptions, [ModelOption(value: "opus", label: "Opus 4.6"),
+                                         ModelOption(value: "sonnet", label: "sonnet")],
+                       "bridge order kept; a missing label falls back to the value, "
+                       + "and an entry with nothing to send is dropped")
+    }
+
+    func test_modelOptions_absentKeyLeavesNoOffer() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(9, connected: true)])
+        fake.replies["recent_folders"] = foldersReply(#"{"folders":[{"path":"/a","last_used":1}]}"#)
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        await vm.load()
+        XCTAssertTrue(vm.modelOptions.isEmpty, "an older bridge omits the key — the picker hides")
+        XCTAssertEqual(vm.folders.map(\.path), ["/a"], "and the rest of the reply still parses")
+    }
+
+    /// The roster fan-out already asked every connected box, so the folder
+    /// step must render that box's offer without a second round-trip — the
+    /// same prefetch that serves `folders` from cache.
+    func test_modelOptions_arriveFromTheRosterPrefetch() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(1, name: "a", connected: true),
+                                       agent(2, name: "b", connected: true)])
+        fake.repliesByDevice[1] = .ok(resultData: Data(
+            #"{"folders":[],"model_options":[{"value":"opus","label":"Opus"}]}"#.utf8))
+        fake.repliesByDevice[2] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        await vm.load()
+        await vm.capacityFanOutForTesting?.value
+        let before = fake.requests.filter { $0.method == "recent_folders" }.count
+
+        await vm.select(agent: agent(1, name: "a", connected: true))
+        XCTAssertEqual(vm.modelOptions.map(\.value), ["opus"])
+        XCTAssertEqual(fake.requests.filter { $0.method == "recent_folders" }.count, before,
+                       "served from the prefetch, not re-asked")
+    }
+
+    func test_switchingBoxes_dropsAModelTheNewBoxDoesNotOffer() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(1, name: "a", connected: true),
+                                       agent(2, name: "b", connected: true)])
+        fake.repliesByDevice[1] = .ok(resultData: Data(
+            #"{"folders":[],"model_options":[{"value":"opus","label":"Opus"},{"value":"sonnet","label":"Sonnet"}]}"#.utf8))
+        fake.repliesByDevice[2] = .ok(resultData: Data(
+            #"{"folders":[],"model_options":[{"value":"sonnet","label":"Sonnet"}]}"#.utf8))
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        await vm.load()
+        await vm.capacityFanOutForTesting?.value
+
+        await vm.select(agent: agent(1, name: "a", connected: true))
+        vm.selectedModel = "sonnet"
+        await vm.select(agent: agent(2, name: "b", connected: true))
+        XCTAssertEqual(vm.selectedModel, "sonnet", "a model the new box also offers survives")
+
+        await vm.select(agent: agent(1, name: "a", connected: true))
+        vm.selectedModel = "opus"
+        await vm.select(agent: agent(2, name: "b", connected: true))
+        XCTAssertNil(vm.selectedModel,
+                     "box b can't run opus — carrying the pick over would earn a bad_model")
+    }
+
     func test_start_errorCopyTable() async {
         // `agent_unreachable` is absent on purpose: start retries it (the
         // wake loop) — NewChatViewModelWakeTests owns that behaviour.
         let cases: [(RPCReply, String)] = [
             (.failure(code: "not_ready", detail: nil), "The agent didn't answer — is the box awake?"),
             (.failure(code: "bad_workdir", detail: "/nope"), "That folder doesn't exist on the box."),
+            (.failure(code: "bad_model", detail: "opus"), "That box doesn't offer that model — pick another."),
             (.failure(code: "spawn_failed", detail: "boom"), "Couldn't start — boom."),
             (.failure(code: "unsupported_mode", detail: nil), "Couldn't start — unsupported_mode."),
         ]

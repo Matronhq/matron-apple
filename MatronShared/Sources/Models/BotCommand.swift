@@ -110,7 +110,7 @@ public enum BotCommandCatalog {
     public static let claudeBridge: [BotCommand] = [
         // Sessions
         BotCommand(trigger: "/start", summary: "Start a new session",
-                   argHint: "[--claude|--codex] [--browser] [workdir]",
+                   argHint: "[--claude|--codex] [--browser] [--model alias] [workdir]",
                    argSuggestions: agentFlags + [browserFlag]),
         BotCommand(trigger: "/stop", summary: "Stop the current session"),
         BotCommand(trigger: "/restart", summary: "Stop and immediately resume the session",
