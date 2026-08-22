@@ -272,6 +272,7 @@ final class NewChatViewModelTests: XCTestCase {
         fake.devicesResult = .success([agent(9, connected: true)])
         fake.replies["recent_folders"] = foldersReply(#"""
         {"folders":[],"model_options":[
+          {"value":"default","label":"Default"},
           {"value":"opus","label":"Opus 4.6"},
           {"value":"sonnet"},
           {"label":"nameless"},
@@ -282,8 +283,9 @@ final class NewChatViewModelTests: XCTestCase {
         await vm.load()
         XCTAssertEqual(vm.modelOptions, [ModelOption(value: "opus", label: "Opus 4.6"),
                                          ModelOption(value: "sonnet", label: "sonnet")],
-                       "bridge order kept; a missing label falls back to the value, "
-                       + "and an entry with nothing to send is dropped")
+                       "bridge order kept; a missing label falls back to the value; "
+                       + "an entry with nothing to send is dropped, and the bridge's "
+                       + "`default` alias is folded into the picker's own nil row")
     }
 
     func test_modelOptions_absentKeyLeavesNoOffer() async {

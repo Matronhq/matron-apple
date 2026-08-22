@@ -632,8 +632,12 @@ public final class NewChatViewModel {
     /// Reads `model_options` out of a `recent_folders` reply object. Like
     /// every block a bridge attaches there it is optional: an absent key is
     /// an older bridge, and parses to no offer rather than to a failure of
-    /// the folders parse it rides along with. Bridge order is kept — the
-    /// bridge lists its default first.
+    /// the folders parse it rides along with. Bridge order is kept.
+    ///
+    /// The bridge's list mirrors its `/model` buttons, which lead with the
+    /// `default` alias — but the picker already renders "no pick" as its own
+    /// nil "Default" row (which omits the `model` key entirely), so that
+    /// entry is dropped here rather than shown as a second Default.
     static func parseModelOptions(from reply: RPCReply) -> [ModelOption] {
         guard case .ok(let resultData) = reply,
               let object = (try? JSONSerialization.jsonObject(with: resultData)) as? [String: Any]
@@ -644,7 +648,8 @@ public final class NewChatViewModel {
     static func parseModelOptions(_ replyObject: [String: Any]) -> [ModelOption] {
         guard let raw = replyObject["model_options"] as? [[String: Any]] else { return [] }
         return raw.compactMap { entry -> ModelOption? in
-            guard let value = entry["value"] as? String, !value.isEmpty else { return nil }
+            guard let value = entry["value"] as? String, !value.isEmpty, value != "default"
+            else { return nil }
             let label = (entry["label"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             return ModelOption(value: value, label: label ?? value)
         }
