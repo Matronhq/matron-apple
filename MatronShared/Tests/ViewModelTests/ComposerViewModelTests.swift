@@ -606,6 +606,85 @@ final class ComposerViewModelTests: XCTestCase {
         XCTAssertEqual(tags.map(\.total), [3, 3, 3])
     }
 
+    /// A retried attachment must rejoin the batch it fell out of. The
+    /// bridge gathers frames by batch_id: retried under the ORIGINAL id,
+    /// the frame either deposits into the still-open gather (completing
+    /// the user's one message) or — batch already finalized — takes the
+    /// per-frame path. A fresh id could do neither: the frame would wait
+    /// forever for siblings that already went out, and the message would
+    /// arrive fractured.
+    @MainActor
+    func test_retry_afterAMidBatchFailure_reusesTheOriginalBatchTag() async throws {
+        let first = try makeTempFile(named: "a.png")
+        let second = try makeTempFile(named: "b.png")
+        let third = try makeTempFile(named: "c.png")
+        let fake = FakeTimelineService()
+        fake.failSendsAfter = 1
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
+        await vm.attachFiles([first, second, third])
+
+        await vm.send()
+
+        XCTAssertEqual(fake.sentImages.map(\.filename), ["a.png"], "precondition: only a.png landed")
+        XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["b.png", "c.png"],
+                       "precondition: the unsent pair came back to the tray")
+        let original = try XCTUnwrap(fake.mediaSendBatchTags.compactMap { $0 }.first,
+                                     "precondition: the first frame carried the batch tag")
+
+        // The network comes back and the user hits send again.
+        fake.failSendsAfter = nil
+        await vm.send()
+
+        XCTAssertEqual(fake.sentImages.map(\.filename), ["a.png", "b.png", "c.png"])
+        let retried = fake.mediaSendBatchTags.suffix(2).compactMap { $0 }
+        XCTAssertEqual(retried.map(\.id), [original.id, original.id],
+                       "retried frames must carry the ORIGINAL batch id, not a fresh one")
+        XCTAssertEqual(retried.map(\.index), [2, 3], "…in their original 1-based places")
+        XCTAssertEqual(retried.map(\.total), [3, 3], "…still completing a batch of three")
+
+        // The preserved tag must not leak past the attachments that failed
+        // out of it: the next send is its own batch under a new id.
+        let fourth = try makeTempFile(named: "d.png")
+        let fifth = try makeTempFile(named: "e.png")
+        await vm.attachFiles([fourth, fifth])
+        await vm.send()
+
+        let fresh = fake.mediaSendBatchTags.suffix(2).compactMap { $0 }
+        XCTAssertEqual(fresh.count, 2, "a fresh multi-attachment send is tagged as usual")
+        XCTAssertNotEqual(fresh.first?.id, original.id, "a new send mints a new batch id")
+        XCTAssertEqual(fresh.map(\.index), [1, 2])
+        XCTAssertEqual(fresh.map(\.total), [2, 2])
+    }
+
+    /// The drops-it half of the retry bug: with only ONE attachment left to
+    /// retry, the re-send used to look like a fresh single-attachment send
+    /// and went out untagged — leaving the bridge no way to connect the
+    /// frame to the batch its sibling had already opened.
+    @MainActor
+    func test_retry_ofTheLastRemainingAttachment_isNotDemotedToAnUntaggedSend() async throws {
+        let first = try makeTempFile(named: "a.png")
+        let second = try makeTempFile(named: "b.png")
+        let fake = FakeTimelineService()
+        fake.failSendsAfter = 1
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
+        await vm.attachFiles([first, second])
+
+        await vm.send()
+
+        XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["b.png"],
+                       "precondition: b.png failed and came back alone")
+        let original = try XCTUnwrap(fake.mediaSendBatchTags.compactMap { $0 }.first)
+
+        fake.failSendsAfter = nil
+        await vm.send()
+
+        let retried = try XCTUnwrap(fake.mediaSendBatchTags.last ?? nil,
+                                    "the lone retry must still carry its batch tag")
+        XCTAssertEqual(retried.id, original.id)
+        XCTAssertEqual(retried.index, 2)
+        XCTAssertEqual(retried.total, 2)
+    }
+
     /// A single attachment goes untagged — its frame must stay
     /// byte-identical to what an older bridge already understands.
     @MainActor

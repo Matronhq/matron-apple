@@ -80,7 +80,7 @@ final class AppDependencies {
             Task { await engine.attachSearch(service) }
             if core.backfillTask == nil {
                 core.backfillTask = Self.startBackfill(search: service, api: core.api, store: core.store,
-                                                       resetBookkeepingFirst: true)
+                                                       engine: engine, resetBookkeepingFirst: true)
             }
         }
     }
@@ -180,7 +180,7 @@ final class AppDependencies {
             ownSender: "user:\(session.userID)", search: search
         )
         let core = JournalCore(api: api, store: store, engine: engine)
-        core.backfillTask = Self.startBackfill(search: search, api: api, store: store)
+        core.backfillTask = Self.startBackfill(search: search, api: api, store: store, engine: engine)
         cores[session.userID] = core
         return core
     }
@@ -210,17 +210,23 @@ final class AppDependencies {
     /// hidden by stale complete flags). Indexed messages are untouched and
     /// re-indexing is idempotent, so the cost is re-paging history once.
     static func startBackfill(search: SearchService?, api: JournalAPI, store: JournalStore,
-                              resetBookkeepingFirst: Bool = false) -> Task<Void, Never>? {
+                              engine: JournalSyncEngine, resetBookkeepingFirst: Bool = false) -> Task<Void, Never>? {
         guard let search else { return nil }
         let coordinator = SearchBackfillCoordinator(search: search) { convoID, beforeSeq, limit in
             try await api.messages(convoID: convoID, beforeSeq: beforeSeq, limit: limit)
         }
         return Task(priority: .utility) {
+            // Attach before anything else: from the moment a walk can exist,
+            // the engine's cold-start bookkeeping reset must route through
+            // this coordinator's epoch guard rather than race the walk by
+            // hitting the SearchService directly (see
+            // SearchBackfillCoordinator.reset).
+            await engine.attachBackfillCoordinator(coordinator)
             // Inside the task and ahead of the sleep, so it is ordered before
-            // the coordinator's first backfillComplete() check. Best-effort:
-            // a failed reset leaves coverage where it was, exactly as the
-            // cold-start reset does.
-            if resetBookkeepingFirst { try? await search.resetBackfill() }
+            // the coordinator's first backfillComplete() check. Best-effort
+            // (reset() swallows a failed delete), exactly as the cold-start
+            // reset is.
+            if resetBookkeepingFirst { await coordinator.reset() }
             // Let the initial connect + catch-up replay land before adding
             // background request load.
             try? await Task.sleep(for: .seconds(10))

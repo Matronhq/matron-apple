@@ -49,6 +49,65 @@ final class SearchViewModelTests: XCTestCase {
         XCTAssertEqual(vm.chatHits.map(\.id), ["!1:s"])
     }
 
+    /// The session short is VISIBLE in the row (`b5` rendered as `Y:b5`), so
+    /// it must find its chat even though `SessionTag.splitTitle` peeled it
+    /// out of the stored title (ported from matron-android#46).
+    @MainActor
+    func test_chatHits_matchTheVisibleSessionTag() {
+        let claude = BotIdentity(matrixID: "@claude:s", displayName: "Claude", avatarURL: nil)
+        let tagged = ChatSummary(id: "!1:s", title: "Auth bug", bot: claude,
+                                 lastActivity: nil, unreadCount: 0,
+                                 boxName: "dev-y", sessionShort: "b5", boxShort: "Y")
+        let other = ChatSummary(id: "!2:s", title: "Refactor", bot: claude,
+                                lastActivity: nil, unreadCount: 0,
+                                boxName: "dev-z", sessionShort: "c7", boxShort: "Z")
+        let room = ChatSummary(id: "!3:s", title: "mac ↔ dev-z", bot: claude,
+                               lastActivity: nil, unreadCount: 0,
+                               sessionShort: "ab",
+                               roomBoxNames: ["dev-y", "dev-z"], roomBoxShorts: ["Y", "Z"])
+        let vm = SearchViewModel(search: FakeSearchService(), allChats: [tagged, other, room])
+
+        vm.query = "b5"
+        XCTAssertEqual(vm.chatHits.map(\.id), ["!1:s"], "the bare short finds its chat")
+
+        vm.query = "y:b5"
+        XCTAssertEqual(vm.chatHits.map(\.id), ["!1:s"], "the displayed letter:short form matches too")
+
+        vm.query = "Y:B5"
+        XCTAssertEqual(vm.chatHits.map(\.id), ["!1:s"], "tag matching is case-insensitive")
+
+        vm.query = "y↔z:ab"
+        XCTAssertEqual(vm.chatHits.map(\.id), ["!3:s"], "the displayed room tag matches too")
+
+        vm.query = "y"
+        XCTAssertEqual(vm.chatHits.map(\.id), [],
+                       "a bare box letter matches nothing — it would light up every chat on the box")
+
+        vm.query = "d4"
+        XCTAssertEqual(vm.chatHits.map(\.id), [], "an unrelated short matches nothing")
+    }
+
+    /// Per-box letter overrides (Settings → Devices → Tag Character, #154)
+    /// change what the row renders, and `ChatSummary.boxShort` carries the
+    /// overridden letter — so search matches the letter the user actually
+    /// sees, not the derived default.
+    @MainActor
+    func test_chatHits_matchTheOverriddenBoxLetter() {
+        let claude = BotIdentity(matrixID: "@claude:s", displayName: "Claude", avatarURL: nil)
+        // dev-y would derive `Y`; the user overrode it to `Q`.
+        let letters = SessionTag.boxLetters(for: [1: "dev-y", 2: "dev-z"], overrides: [1: "Q"])
+        let chat = ChatSummary(id: "!1:s", title: "Auth bug", bot: claude,
+                               lastActivity: nil, unreadCount: 0,
+                               boxName: "dev-y", sessionShort: "b5", boxShort: letters[1])
+        let vm = SearchViewModel(search: FakeSearchService(), allChats: [chat])
+
+        vm.query = "q:b5"
+        XCTAssertEqual(vm.chatHits.map(\.id), ["!1:s"], "the overridden letter matches")
+
+        vm.query = "y:b5"
+        XCTAssertEqual(vm.chatHits.map(\.id), [], "the shadowed default letter does not")
+    }
+
     @MainActor
     func test_chatTitle_resolvesViaAllChats() {
         let claude = BotIdentity(matrixID: "@claude:s", displayName: "Claude", avatarURL: nil)

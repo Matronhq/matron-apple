@@ -40,6 +40,11 @@ public protocol SearchService: Sendable {
     /// the unbridgeable replay gap means "complete" flags may now hide
     /// head-side holes, so every room must be re-walked (cheap — already-
     /// indexed events just re-INSERT OR REPLACE).
+    ///
+    /// While a `SearchBackfillCoordinator` sweep may be running, call
+    /// `SearchBackfillCoordinator.reset()` instead of this directly: only
+    /// the coordinator's epoch guard stops an in-flight batch from
+    /// re-inserting the bookkeeping this deletes.
     func resetBackfill() async throws
 
     /// Number of indexed events for `roomID` (used by BackfillRunner to resume).
