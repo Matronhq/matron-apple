@@ -68,7 +68,8 @@ struct MacDevicesView: View {
         .frame(width: 480, height: 400)
         .task { await viewModel.refresh() }
         .sheet(isPresented: $showingAddAgent, onDismiss: { Task { await viewModel.refresh() } }) {
-            MacAddAgentSheet(api: api, existingNames: viewModel.devices.map(\.name))
+            MacAddAgentSheet(api: api, existingNames: viewModel.devices.map(\.name),
+                             existingTags: viewModel.devices.compactMap(\.tagChar))
         }
         // Revoke confirms are the app's job — the server asks no questions
         // and there is no undo (re-enrollment is the recovery path).

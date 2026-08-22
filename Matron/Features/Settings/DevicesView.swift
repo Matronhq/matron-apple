@@ -58,7 +58,8 @@ struct DevicesView: View {
         .task { await viewModel.refresh() }
         .refreshable { await viewModel.refresh() }
         .sheet(isPresented: $showingAddAgent, onDismiss: { Task { await viewModel.refresh() } }) {
-            AddAgentSheet(api: api, existingNames: viewModel.devices.map(\.name))
+            AddAgentSheet(api: api, existingNames: viewModel.devices.map(\.name),
+                          existingTags: viewModel.devices.compactMap(\.tagChar))
         }
         // Revoke confirms are the app's job — no undo server-side, and
         // self-revocation is a logout, so the copy changes for is_self.

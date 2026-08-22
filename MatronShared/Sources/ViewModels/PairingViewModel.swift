@@ -49,7 +49,12 @@ public final class PairingViewModel {
     /// name); only the first grapheme of whatever is typed is sent. Set at
     /// pairing so colleagues enrolling dev-a/dev-b get a/b from day one;
     /// changeable later in Settings → Devices, unlike the name.
-    public var tagCharacter: String = ""
+    public var tagCharacter: String = "" {
+        didSet {
+            duplicateTagWarning = Self.duplicateTagWarning(forDraft: tagCharacter,
+                                                           existingTags: existingTags)
+        }
+    }
 
     public private(set) var phase: Phase = .enterCode
     public private(set) var errorMessage: String?
@@ -62,21 +67,45 @@ public final class PairingViewModel {
     public private(set) var expiresAt: Date?
     /// Duplicate names are legal server-side — warn, don't block.
     public private(set) var duplicateNameWarning: String?
+    /// Same contract for the tag letter: a collision only costs the letter
+    /// its disambiguating power (the color and session short still tell the
+    /// boxes apart), so warn, don't block.
+    public private(set) var duplicateTagWarning: String?
 
     private let api: any DevicesProviding
     private let existingNames: [String]
+    private let existingTags: [String]
     private let now: () -> Date
     private let pollInterval: Duration
     private let previewDebounce: Duration
     private var previewTask: Task<Void, Never>?
     private var claimTask: Task<Void, Never>?
 
-    public init(api: any DevicesProviding, existingNames: [String],
+    /// The warning shown under the tag field, or nil when the drafted tag is
+    /// free (or empty — automatic derivation collides on its own terms and
+    /// is not this warning's business).
+    ///
+    /// Compared on the SIEVED value, not the raw draft: what the server
+    /// stores for "mz " is "m", so that draft must warn against a standing
+    /// "m". Case-INSENSITIVE, unlike the name warning's exact match — a
+    /// derived letter is uppercased (`SessionTag.firstAlphanumeric`), so a
+    /// typed "a" really does collide with a box already showing "A", and
+    /// the whole job of the letter is visual distinction.
+    static func duplicateTagWarning(forDraft draft: String, existingTags: [String]) -> String? {
+        guard let tag = DevicesViewModel.tagChar(fromDraft: draft) else { return nil }
+        let clash = existingTags.contains {
+            $0.compare(tag, options: .caseInsensitive) == .orderedSame
+        }
+        return clash ? "Another agent already uses the tag \(tag)" : nil
+    }
+
+    public init(api: any DevicesProviding, existingNames: [String], existingTags: [String] = [],
                 now: @escaping () -> Date = Date.init,
                 pollInterval: Duration = .seconds(2.5),
                 previewDebounce: Duration = .milliseconds(300)) {
         self.api = api
         self.existingNames = existingNames
+        self.existingTags = existingTags
         self.now = now
         self.pollInterval = pollInterval
         self.previewDebounce = previewDebounce
