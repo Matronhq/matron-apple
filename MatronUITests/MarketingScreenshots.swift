@@ -135,6 +135,12 @@ final class MarketingScreenshots: XCTestCase {
         let app = try launchAgainstRig()
         sleep(8)
         let dump = app.debugDescription
+        // Unlike the capture path, save() isn't involved here, so nothing
+        // has created outputDir yet — and String.write does not create
+        // parent directories. Without this the dump fails on a fresh boot,
+        // which is exactly when you need it.
+        try FileManager.default.createDirectory(
+            at: outputDir, withIntermediateDirectories: true)
         try dump.write(
             to: outputDir.appendingPathComponent("hierarchy.txt"),
             atomically: true, encoding: .utf8)

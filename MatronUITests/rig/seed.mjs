@@ -3,7 +3,9 @@
 // title. Rebuild of the July rig, extended with an agent-chat pairing
 // request (server-minted consent card via a real agent_invite).
 //
-// Run: NODE_PATH=/tmp/bridge-wizard/node_modules node /tmp/matron-demo/seed.mjs
+// Run: cd /tmp/matron-demo && node seed.mjs
+// (needs ./node_modules providing 'ws' — see rig/README.md; NODE_PATH does
+// not work here, the ESM resolver ignores it.)
 import WebSocket from 'ws';
 import fs from 'node:fs';
 
@@ -12,7 +14,13 @@ const macToken = fs.readFileSync('/tmp/matron-demo/agent-mac-studio.txt', 'utf8'
 const homeToken = fs.readFileSync('/tmp/matron-demo/agent-homelab.txt', 'utf8').split('token:')[1].trim().split(/\s/)[0];
 const client = JSON.parse(fs.readFileSync('/tmp/matron-demo/login-client.json', 'utf8'));
 
-const HOMELAB_DEVICE_ID = 2;
+// The invite's target device id, resolved by rebuild-rig.sh from the demo
+// DB — hardcoding the autoincrement value silently breaks the pairing-card
+// capture the moment device creation order changes.
+const HOMELAB_DEVICE_ID = Number(process.env.HOMELAB_DEVICE_ID);
+if (!Number.isInteger(HOMELAB_DEVICE_ID)) {
+  throw new Error('set HOMELAB_DEVICE_ID (rebuild-rig.sh resolves it from the demo DB)');
+}
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 

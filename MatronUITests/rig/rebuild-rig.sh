@@ -27,7 +27,13 @@ curl -s -X POST http://127.0.0.1:9810/login -H 'content-type: application/json' 
   -d '{"username":"demo","password":"matron-demo-2026","device_name":"seed-client"}' > "$DEMO/login-client.json"
 
 cd "$DEMO"
-node seed.mjs
+# The invite target must be homelab's real row id — it's an autoincrement
+# that only happens to be 2 today; reordering the `agent add` lines or
+# seeding an unwiped DB would silently aim the invite at the wrong device
+# and surface as "consent card never rendered" in the capture test.
+HOMELAB_DEVICE_ID=$(sqlite3 "$DEMO/matron.db" \
+  "SELECT id FROM devices WHERE name='homelab' AND kind='agent'") \
+  node seed.mjs
 
 python3 - <<'PYEOF'
 import sqlite3, time
