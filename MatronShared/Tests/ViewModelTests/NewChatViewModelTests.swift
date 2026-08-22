@@ -275,6 +275,7 @@ final class NewChatViewModelTests: XCTestCase {
           {"value":"default","label":"Default"},
           {"value":"opus","label":"Opus 4.6"},
           {"value":"sonnet"},
+          {"value":"opus","label":"Opus again"},
           {"label":"nameless"},
           {"value":""}
         ]}
@@ -284,8 +285,9 @@ final class NewChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.modelOptions, [ModelOption(value: "opus", label: "Opus 4.6"),
                                          ModelOption(value: "sonnet", label: "sonnet")],
                        "bridge order kept; a missing label falls back to the value; "
-                       + "an entry with nothing to send is dropped, and the bridge's "
-                       + "`default` alias is folded into the picker's own nil row")
+                       + "an entry with nothing to send is dropped; a repeated value "
+                       + "keeps its first row (value is the ForEach identity); and the "
+                       + "bridge's `default` alias folds into the picker's own nil row")
     }
 
     func test_modelOptions_absentKeyLeavesNoOffer() async {

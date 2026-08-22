@@ -647,9 +647,11 @@ public final class NewChatViewModel {
 
     static func parseModelOptions(_ replyObject: [String: Any]) -> [ModelOption] {
         guard let raw = replyObject["model_options"] as? [[String: Any]] else { return [] }
+        var seen = Set<String>()
         return raw.compactMap { entry -> ModelOption? in
-            guard let value = entry["value"] as? String, !value.isEmpty, value != "default"
-            else { return nil }
+            guard let value = entry["value"] as? String, !value.isEmpty, value != "default",
+                  seen.insert(value).inserted // value is the row identity — a repeat would
+            else { return nil }              // give the ForEach two rows with one id
             let label = (entry["label"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             return ModelOption(value: value, label: label ?? value)
         }
