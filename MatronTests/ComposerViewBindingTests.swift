@@ -1,3 +1,4 @@
+import UniformTypeIdentifiers
 import XCTest
 import MatronChat
 import MatronModels
@@ -74,6 +75,22 @@ final class ComposerViewBindingTests: XCTestCase {
         // Sanity: still in the temp dir.
         let tmp = FileManager.default.temporaryDirectory.path
         XCTAssertTrue(a.path.hasPrefix(tmp))
+    }
+
+    func test_pickedExtension_concreteTypeWins_abstractFallsBackByClass() {
+        // A picked item normally declares a concrete type first — its
+        // preferred extension must win untouched.
+        XCTAssertEqual(ComposerView.pickedExtension(for: [.quickTimeMovie]), "mov")
+        XCTAssertEqual(ComposerView.pickedExtension(for: [.heic]), "heic")
+        // Abstract `public.movie` / `public.video` have no preferred
+        // extension. Falling back to "jpg" there would relabel a video as
+        // an image and send it down the image path (isImage → sendImage →
+        // main-thread full-file preview load), so the fallback must key on
+        // the item's class instead.
+        XCTAssertEqual(ComposerView.pickedExtension(for: [.movie]), "mov")
+        XCTAssertEqual(ComposerView.pickedExtension(for: [.video]), "mov")
+        // No declared types at all: the historical image default stands.
+        XCTAssertEqual(ComposerView.pickedExtension(for: []), "jpg")
     }
 
     @MainActor

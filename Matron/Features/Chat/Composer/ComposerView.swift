@@ -102,11 +102,11 @@ struct ComposerView: View {
                 // format errors and the user got no feedback (bugbot caught it).
                 do {
                     if let data = try await newItem.loadTransferable(type: Data.self) {
-                        let ext = preferredExtension(for: newItem) ?? "jpg"
+                        let ext = ComposerView.pickedExtension(for: newItem.supportedContentTypes)
                         let tmp = ComposerView.photoTempURL(ext: ext)
                         await ComposerView.stagePhotoData(data, to: tmp, viewModel: viewModel)
                     } else {
-                        viewModel.reportAttachmentError("Couldn't load that photo. If it's stored in iCloud, try downloading it first.")
+                        viewModel.reportAttachmentError("Couldn't load that item. If it's stored in iCloud, try downloading it first.")
                     }
                 } catch {
                     viewModel.reportAttachmentError(error.localizedDescription)
@@ -119,11 +119,14 @@ struct ComposerView: View {
         // presentation context with it). `photoLibrary: .shared()` is
         // required for `PhotosPickerItem.supportedContentTypes` to be
         // populated — without it every selection falls back to jpg and
-        // HEIC/PNG are mislabelled `image/jpeg`.
+        // HEIC/PNG are mislabelled `image/jpeg`. Videos are included so
+        // screen recordings (which land in the photo library) can be sent —
+        // the bridge extracts timestamped key frames for claude; the same
+        // supportedContentTypes flow labels them mov/mp4 → video/* mime.
         .photosPicker(
             isPresented: $showPhotosPicker,
             selection: $photoItem,
-            matching: .images,
+            matching: .any(of: [.images, .videos]),
             photoLibrary: .shared()
         )
         .fileImporter(
@@ -276,17 +279,22 @@ struct ComposerView: View {
         Task { await viewModel.sendVoiceNote(url: result.url, duration: result.duration) }
     }
 
-    /// Picks the best filename extension for a `PhotosPickerItem` using
-    /// its `supportedContentTypes`. Returns `nil` when the picker hasn't
-    /// declared a content type with a preferred extension. The first
-    /// type whose preferred extension is concrete (heic / png / gif /
-    /// jpeg / …) wins, which keeps HEIC / PNG / GIF selections in their
-    /// native format instead of always being relabelled JPEG.
-    private func preferredExtension(for item: PhotosPickerItem) -> String? {
-        for type in item.supportedContentTypes {
+    /// Picks the best filename extension for a `PhotosPickerItem`'s
+    /// `supportedContentTypes`. The first type whose preferred extension
+    /// is concrete (heic / png / mov / …) wins, which keeps selections in
+    /// their native format instead of always being relabelled JPEG. When
+    /// only abstract types are declared (`public.movie` / `public.video`
+    /// have no preferred extension), the fallback must still respect the
+    /// item's class: a movie labelled `.jpg` would take the image route —
+    /// `isImage`, `sendImage`, a main-thread full-file preview load — with
+    /// video bytes. `static internal` so `ComposerViewBindingTests` can
+    /// assert both fallbacks.
+    static func pickedExtension(for types: [UTType]) -> String {
+        for type in types {
             if let ext = type.preferredFilenameExtension { return ext }
         }
-        return nil
+        let isMovie = types.contains { $0.conforms(to: .movie) || $0.conforms(to: .video) }
+        return isMovie ? "mov" : "jpg"
     }
 
     /// Builds a unique temporary URL for a `PhotosPicker` selection. The
