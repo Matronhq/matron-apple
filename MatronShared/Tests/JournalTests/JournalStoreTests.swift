@@ -910,6 +910,34 @@ final class JournalStoreTests: XCTestCase {
         XCTAssertEqual(try store.agentTagChars(), [:])
     }
 
+    func testApplyDeviceMetaPreservesTagWhenTheFrameOmitsIt() throws {
+        let store = try makeStore()
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-a"), AgentDTO(id: 9, name: "dev-b")])
+        try store.seedAgentTagChars([7: "q", 9: "r"])
+
+        // The live path needs the same key-presence rule the snapshot path
+        // has: a server predating tags sends `device_meta` with NO `tag_char`
+        // key, so its nil means "unknown", not "cleared". Overwriting here
+        // let a plain RENAME wipe a migration-seeded letter that the
+        // snapshot path had just been taught to protect.
+        try store.applyDeviceMeta(id: 7, name: "dev-alpha", tagChar: nil, tagCharKnown: false)
+        XCTAssertEqual(try store.agentTagChars()[7], "q")
+        XCTAssertEqual(try store.agentNames()[7], "dev-alpha", "the name half still applies")
+
+        // A tag-aware server IS authoritative in both directions: an explicit
+        // null clears, and a value sets.
+        try store.applyDeviceMeta(id: 9, name: "dev-b", tagChar: nil, tagCharKnown: true)
+        XCTAssertNil(try store.agentTagChars()[9])
+        try store.applyDeviceMeta(id: 7, name: "dev-alpha", tagChar: "z", tagCharKnown: true)
+        XCTAssertEqual(try store.agentTagChars()[7], "z")
+
+        // Insert half: a box this device never snapshotted has no tag to
+        // keep, so an unknown-tag frame still creates the row (untagged).
+        try store.applyDeviceMeta(id: 42, name: "dev-new", tagChar: nil, tagCharKnown: false)
+        XCTAssertEqual(try store.agentNames()[42], "dev-new")
+        XCTAssertNil(try store.agentTagChars()[42])
+    }
+
     func testSeedAgentTagCharsFillsOnlyUntaggedKnownBoxes() throws {
         let store = try makeStore()
         try store.replaceAgents([AgentDTO(id: 7, name: "dev-a", tagChar: "a"),

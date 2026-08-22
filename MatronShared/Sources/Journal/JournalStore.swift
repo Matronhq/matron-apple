@@ -979,18 +979,26 @@ public final class JournalStore: @unchecked Sendable {
     }
 
     /// Applies one live `device_meta` frame. Upsert, not update: the frame
-    /// may name a box this device has not snapshotted yet. Both halves are
-    /// written — the server always sends the device's full current meta,
-    /// so a nil `tagChar` genuinely means "no tag" (cleared, or a server
-    /// predating tags, where no tag exists to lose).
-    public func applyDeviceMeta(id: Int64, name: String, tagChar: String?) throws {
+    /// may name a box this device has not snapshotted yet. The name half
+    /// always applies. The tag half follows the same key-presence rule as
+    /// `replaceAgents`: a tag-aware server sends the device's full current
+    /// meta, so its `tag_char` — value OR explicit null — is authoritative,
+    /// but a server predating tags sends no key at all (`tagCharKnown ==
+    /// false`) and its nil means "unknown", not "cleared". Overwriting on
+    /// that frame let a plain rename wipe a letter `seedAgentTagChars`
+    /// carried over from the legacy UserDefaults migration — a local tag
+    /// the snapshot path already protects.
+    public func applyDeviceMeta(id: Int64, name: String, tagChar: String?,
+                                tagCharKnown: Bool = true) throws {
         try dbQueue.write { db in
             try db.execute(
                 sql: """
                     INSERT INTO agent(id, name, tag_char) VALUES(?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET name = excluded.name, tag_char = excluded.tag_char
+                    ON CONFLICT(id) DO UPDATE SET
+                        name = excluded.name,
+                        tag_char = CASE WHEN ? THEN excluded.tag_char ELSE agent.tag_char END
                     """,
-                arguments: [id, name, tagChar])
+                arguments: [id, name, tagChar, tagCharKnown])
         }
     }
 
