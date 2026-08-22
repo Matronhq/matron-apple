@@ -148,13 +148,57 @@ struct ChatView: View {
             preExtendRows: viewModel.windowedRows
         )
         let sizeBefore = viewModel.visibleWindowSize
+        let anchorBefore = viewModel.windowTailAnchorID
         let gesture = visibleRows.gestureCount
         Task { @MainActor in
             await viewModel.extendHistoryWindow()
-            guard viewModel.visibleWindowSize > sizeBefore, let pin else { return }
-            guard !isFollowingTail else { return }
-            chatViewLogger.breadcrumb("history reveal pin → \(pin) (window \(sizeBefore)→\(viewModel.visibleWindowSize))")
+            // "Window moved" is EITHER growth (below the cap) or a slide
+            // (at the cap: size constant, tail anchor changed) — a
+            // size-only check would skip the pin during slides and
+            // resurrect the 2026-07-15 reveal loop.
+            guard viewModel.visibleWindowSize > sizeBefore
+                    || viewModel.windowTailAnchorID != anchorBefore, let pin else { return }
+            // Gesture check on the FIRST scrollTo too, not just the
+            // re-asserts: the paginate path suspends for seconds, and a
+            // pin captured before the await must not yank a reader who
+            // has scrolled elsewhere meanwhile (review 2026-08-21).
+            guard !isFollowingTail, visibleRows.gestureCount == gesture else { return }
+            chatViewLogger.breadcrumb("history reveal pin → \(pin) (window \(sizeBefore)→\(viewModel.visibleWindowSize) anchor \(viewModel.windowTailAnchorID ?? "tail"))")
             proxy.scrollTo(pin, anchor: .top)
+            for delay in [UInt64(250_000_000), UInt64(800_000_000)] {
+                try? await Task.sleep(nanoseconds: delay)
+                guard !isFollowingTail, visibleRows.gestureCount == gesture else { return }
+                proxy.scrollTo(pin, anchor: .top)
+            }
+        }
+    }
+
+    /// Mirror of `revealOlderHistory` for a window detached from the
+    /// live tail: slides the window one step toward the tail, then pins
+    /// the viewport to the pre-slide topmost visible row (dropping rows
+    /// ABOVE the viewport otherwise yanks the content up under the
+    /// reader). See MacChatView's twin.
+    private func revealNewerHistory(via proxy: ScrollViewProxy) {
+        guard !viewModel.windowContainsTail else { return }
+        // Pin resolved BEFORE the slide, and the slide refused without
+        // one: the slide drops rows above the viewport, so with nothing
+        // to pin it is an uncompensated yank (review 2026-08-21). The
+        // newer-direction fallback differs from reveal-older's — see
+        // `newerRevealPinTarget`.
+        guard let pin = ChatViewModel.newerRevealPinTarget(
+            visibleIDs: visibleRows.orderedIDs,
+            preSlideRows: viewModel.windowedRows
+        ) else { return }
+        let anchorBefore = viewModel.windowTailAnchorID
+        let gesture = visibleRows.gestureCount
+        viewModel.revealNewerHistory()
+        // Deduped by the VM (an in-flight reveal holds
+        // `isExtendingWindow`) or otherwise a no-op — nothing moved, so
+        // nothing to pin.
+        guard viewModel.windowTailAnchorID != anchorBefore else { return }
+        chatViewLogger.breadcrumb("newer reveal pin → \(pin) (containsTail \(viewModel.windowContainsTail))")
+        proxy.scrollTo(pin, anchor: .top)
+        Task { @MainActor in
             for delay in [UInt64(250_000_000), UInt64(800_000_000)] {
                 try? await Task.sleep(nanoseconds: delay)
                 guard !isFollowingTail, visibleRows.gestureCount == gesture else { return }
@@ -505,6 +549,12 @@ struct ChatView: View {
                 if edges.nearTop, !isFollowingTail {
                     revealOlderHistory(via: proxy)
                 }
+                // A detached window's content-bottom is NOT the
+                // conversation tail — approaching it reveals newer
+                // history instead of engaging follow.
+                if edges.nearBottom, !viewModel.windowContainsTail {
+                    revealNewerHistory(via: proxy)
+                }
             }
             // Per-room scroll memory feed: the bottommost visible row
             // id, captured into a non-invalidating box (`VisibleRowsBox`
@@ -544,7 +594,16 @@ struct ChatView: View {
                     }
                 },
                 settle: {
-                    if !isFollowingTail, isNearBottom {
+                    // Follow only re-arms when the window really contains
+                    // the tail. Settled at a DETACHED window's bottom:
+                    // no follow (phantom content below) and no slide
+                    // either — the nearBottom geometry trigger owns
+                    // reveal-newer, and a second slide from here (stale
+                    // `isNearBottom` @State, same gesture) skipped 240
+                    // rows per approach (review 2026-08-21). After the
+                    // final slide reattaches, the next settle at the
+                    // true tail lands in the branch below.
+                    if !isFollowingTail, isNearBottom, viewModel.windowContainsTail {
                         isFollowingTail = true
                         chatViewLogger.breadcrumb("follow-tail ON (settled at tail)")
                     }
@@ -655,6 +714,28 @@ struct ChatView: View {
                     chatViewLogger.breadcrumb("follow-tail ON (own send)")
                 }
                 guard isFollowingTail, let target = bottomScrollTargetID else { return }
+                if !viewModel.windowContainsTail {
+                    // The tail row isn't mounted while detached — re-anchor
+                    // first (the same-tick scrollTo below resolves nothing
+                    // against rows that mount NEXT pass), then heal with
+                    // the jump button's re-assert loop: without it the
+                    // viewport strands a screenful up with follow-tail on,
+                    // so the jump button is hidden and no heal ever fires
+                    // (review 2026-08-21).
+                    viewModel.resetHistoryWindow()
+                    proxy.scrollTo(target, anchor: .bottom)
+                    followHealTask?.cancel()
+                    followHealTask = Task { @MainActor in
+                        for _ in 0..<10 {
+                            try? await Task.sleep(nanoseconds: 200_000_000)
+                            guard !Task.isCancelled, isFollowingTail, !isNearBottom,
+                                  let target = bottomScrollTargetID else { return }
+                            chatViewLogger.breadcrumb("own-send re-assert → \(target) (\(visibleRows.geoDescription))")
+                            proxy.scrollTo(target, anchor: .bottom)
+                        }
+                    }
+                    return
+                }
                 proxy.scrollTo(target, anchor: .bottom)
             }
             // "Loading earlier messages…" pill while a backward
@@ -704,11 +785,17 @@ struct ChatView: View {
                         // then let scrollTo settle row-exact position on
                         // the now-still view. Verify loop below catches
                         // anything that still slips. (Window reset
-                        // deliberately does NOT happen here — swapping
-                        // `windowedRows` mid-scroll rebuilt the layout
-                        // under the jump's feet; `onDisappear` owns the
-                        // trim.)
+                        // deliberately does NOT happen while the window
+                        // contains the tail — swapping `windowedRows`
+                        // mid-scroll rebuilt the layout under the jump's
+                        // feet; `onDisappear` owns the trim. A DETACHED
+                        // window is the exception: the tail row isn't
+                        // mounted at all, so re-anchor — momentum is
+                        // already dead.)
                         nativeScroll.killMomentumAndSnapToBottom()
+                        if !viewModel.windowContainsTail {
+                            viewModel.resetHistoryWindow()
+                        }
                         if let target = bottomScrollTargetID {
                             proxy.scrollTo(target, anchor: .bottom)
                         }
@@ -867,7 +954,23 @@ struct ChatView: View {
             startedGeneration = viewModel.observationGeneration + 1
             stripViewModel.start()
             stripStartedGeneration = stripViewModel.observationGeneration
+            // Small first-paint window, then settle — splits the open
+            // transaction's eager-layout cost in two exactly like
+            // MacChatView (2026-08-05 trace: the 0.5-1.2s switch stall
+            // was one 120-row layout transaction). Mac adopted this on
+            // 2026-08-05; iOS opens pay the same cost, so same cure.
+            viewModel.beginEntryWindow()
             await viewModel.start()
+            // Grow the entry window to steady state behind the first
+            // frame (no-op if a restore already widened it). BEFORE the
+            // open paginate — that's an HTTP fetch that can hang for
+            // seconds on a half-dead connection, and sequencing the
+            // settle after it left the room at the 40-row entry window
+            // (with reveal-older gated out by `isPaginatingBackward`)
+            // for the fetch's whole duration (review 2026-08-21). Same
+            // order as MacChatView, where this split was proven.
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            await viewModel.settleEntryWindow()
             // Explicit paginate-on-open BEFORE markAsRead. The store seeds
             // the timeline with whatever's mirrored locally (possibly
             // nothing, e.g. right after a snapshot_required wipe), so this
@@ -892,13 +995,18 @@ struct ChatView: View {
                 ChatScrollPositionMemory.store(roomID: viewModel.roomID, itemID: id)
             } else {
                 ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
-                // Off-screen and back at the tail: shrink the cached VM's
-                // history window so the next open renders the small
-                // default, not everything revealed last visit. (A reader
-                // mid-history keeps theirs — the restore path needs those
-                // rows via `ensureWindowContains`.)
-                viewModel.resetHistoryWindow()
             }
+            // Shrink the cached VM's window for the next open — keeping a
+            // grown window here is what made switching BACK to a deep-read
+            // room re-mount 600+ rows in one transaction (2026-08-21 Mac
+            // trace; same cached-VM shape here). The remembered position
+            // above survives independently; re-entry restores it via
+            // ensureWindowContains (capped). Generation-guarded like the
+            // stop below: on a same-room remount the successor may already
+            // have restored a widened window, and an unguarded reset
+            // landing after it would collapse the window under a reader
+            // who is up in history.
+            viewModel.resetHistoryWindow(ifGeneration: startedGeneration)
             // Generation-guarded: the VM is cached per room (ChatVMCache in
             // ChatListView), and on a same-room remount SwiftUI can run the
             // NEW view's `.task`/start() before the OLD view's onDisappear —

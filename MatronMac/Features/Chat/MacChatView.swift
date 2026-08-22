@@ -154,13 +154,57 @@ struct MacChatView: View {
             preExtendRows: viewModel.windowedRows
         )
         let sizeBefore = viewModel.visibleWindowSize
+        let anchorBefore = viewModel.windowTailAnchorID
         let gesture = visibleRows.gestureCount
         Task { @MainActor in
             await viewModel.extendHistoryWindow()
-            guard viewModel.visibleWindowSize > sizeBefore, let pin else { return }
-            guard !isFollowingTail else { return }
-            paginateLogger.breadcrumb("history reveal pin → \(pin) (window \(sizeBefore)→\(viewModel.visibleWindowSize))")
+            // "Window moved" is EITHER growth (below the cap) or a slide
+            // (at the cap: size constant, tail anchor changed) — a
+            // size-only check would skip the pin during slides and
+            // resurrect the 2026-07-15 reveal loop.
+            guard viewModel.visibleWindowSize > sizeBefore
+                    || viewModel.windowTailAnchorID != anchorBefore, let pin else { return }
+            // Gesture check on the FIRST scrollTo too, not just the
+            // re-asserts: the paginate path suspends for seconds, and a
+            // pin captured before the await must not yank a reader who
+            // has scrolled elsewhere meanwhile (review 2026-08-21).
+            guard !isFollowingTail, visibleRows.gestureCount == gesture else { return }
+            paginateLogger.breadcrumb("history reveal pin → \(pin) (window \(sizeBefore)→\(viewModel.visibleWindowSize) anchor \(viewModel.windowTailAnchorID ?? "tail"))")
             proxy.scrollTo(pin, anchor: .top)
+            for delay in [UInt64(250_000_000), UInt64(800_000_000)] {
+                try? await Task.sleep(nanoseconds: delay)
+                guard !isFollowingTail, visibleRows.gestureCount == gesture else { return }
+                proxy.scrollTo(pin, anchor: .top)
+            }
+        }
+    }
+
+    /// Mirror of `revealOlderHistory` for a window detached from the
+    /// live tail: slides the window one step toward the tail, then pins
+    /// the viewport to the pre-slide topmost visible row (dropping rows
+    /// ABOVE the viewport otherwise yanks the content up under the
+    /// reader).
+    private func revealNewerHistory(via proxy: ScrollViewProxy) {
+        guard !viewModel.windowContainsTail else { return }
+        // Pin resolved BEFORE the slide, and the slide refused without
+        // one: the slide drops rows above the viewport, so with nothing
+        // to pin it is an uncompensated yank (review 2026-08-21). The
+        // newer-direction fallback differs from reveal-older's — see
+        // `newerRevealPinTarget`.
+        guard let pin = ChatViewModel.newerRevealPinTarget(
+            visibleIDs: visibleRows.orderedIDs,
+            preSlideRows: viewModel.windowedRows
+        ) else { return }
+        let anchorBefore = viewModel.windowTailAnchorID
+        let gesture = visibleRows.gestureCount
+        viewModel.revealNewerHistory()
+        // Deduped by the VM (an in-flight reveal holds
+        // `isExtendingWindow`) or otherwise a no-op — nothing moved, so
+        // nothing to pin.
+        guard viewModel.windowTailAnchorID != anchorBefore else { return }
+        paginateLogger.breadcrumb("newer reveal pin → \(pin) (containsTail \(viewModel.windowContainsTail))")
+        proxy.scrollTo(pin, anchor: .top)
+        Task { @MainActor in
             for delay in [UInt64(250_000_000), UInt64(800_000_000)] {
                 try? await Task.sleep(nanoseconds: delay)
                 guard !isFollowingTail, visibleRows.gestureCount == gesture else { return }
@@ -371,6 +415,16 @@ struct MacChatView: View {
             // stream and freeze the timeline.
             viewModel.stop(ifGeneration: startedGeneration)
             stripViewModel.stop(ifGeneration: stripStartedGeneration)
+            // Shrink the cached VM's window for the next open — keeping a
+            // grown window here is what made switching BACK to a deep-read
+            // room re-mount 600+ rows in one transaction (2026-08-21
+            // trace); the remembered scroll position survives
+            // independently and re-entry restores it via
+            // ensureWindowContains (capped). Same generation guard as the
+            // stops above: on a same-room remount the successor may
+            // already have restored a widened window, and an unguarded
+            // reset would collapse it under the reader.
+            viewModel.resetHistoryWindow(ifGeneration: startedGeneration)
             // Close live-output viewer sockets behind the departing chat
             // (accumulated output kept; cards reconnect on re-appear via
             // their own startIfNeeded). Scoped to THIS chat: the sub-chat
@@ -531,6 +585,12 @@ struct MacChatView: View {
                 if edges.nearTop, !isFollowingTail {
                     revealOlderHistory(via: proxy)
                 }
+                // A detached window's content-bottom is NOT the
+                // conversation tail — approaching it reveals newer
+                // history instead of engaging follow.
+                if edges.nearBottom, !viewModel.windowContainsTail {
+                    revealNewerHistory(via: proxy)
+                }
             }
             // Per-room scroll memory feed — non-invalidating box; see
             // `VisibleRowsBox`.
@@ -561,7 +621,16 @@ struct MacChatView: View {
                     }
                 },
                 settle: {
-                    if !isFollowingTail, isNearBottom {
+                    // Follow only re-arms when the window really contains
+                    // the tail. Settled at a DETACHED window's bottom:
+                    // no follow (phantom content below) and no slide
+                    // either — the nearBottom geometry trigger owns
+                    // reveal-newer, and a second slide from here (stale
+                    // `isNearBottom` @State, same gesture) skipped 240
+                    // rows per approach (review 2026-08-21). After the
+                    // final slide reattaches, the next settle at the
+                    // true tail lands in the branch below.
+                    if !isFollowingTail, isNearBottom, viewModel.windowContainsTail {
                         isFollowingTail = true
                         paginateLogger.breadcrumb("follow-tail ON (settled at tail)")
                     }
@@ -640,6 +709,28 @@ struct MacChatView: View {
                     paginateLogger.breadcrumb("follow-tail ON (own send)")
                 }
                 guard isFollowingTail, let target = bottomScrollTargetID else { return }
+                if !viewModel.windowContainsTail {
+                    // The tail row isn't mounted while detached — re-anchor
+                    // first (the same-tick scrollTo below resolves nothing
+                    // against rows that mount NEXT pass), then heal with
+                    // the jump button's re-assert loop: without it the
+                    // viewport strands a screenful up with follow-tail on,
+                    // so the jump button is hidden and no heal ever fires
+                    // (review 2026-08-21).
+                    viewModel.resetHistoryWindow()
+                    proxy.scrollTo(target, anchor: .bottom)
+                    followHealTask?.cancel()
+                    followHealTask = Task { @MainActor in
+                        for _ in 0..<10 {
+                            try? await Task.sleep(nanoseconds: 200_000_000)
+                            guard !Task.isCancelled, isFollowingTail, !isNearBottom,
+                                  let target = bottomScrollTargetID else { return }
+                            paginateLogger.breadcrumb("own-send re-assert → \(target) (\(visibleRows.geoDescription))")
+                            proxy.scrollTo(target, anchor: .bottom)
+                        }
+                    }
+                    return
+                }
                 proxy.scrollTo(target, anchor: .bottom)
             }
             // "Loading earlier messages…" pill — see iOS `ChatView`
@@ -668,10 +759,16 @@ struct MacChatView: View {
                         // in the same frame (AppKit reach-through — see
                         // `NativeScrollViewBox`), then scrollTo settles
                         // row-exact position on the still view. No
-                        // window reset here: swapping `windowedRows`
-                        // mid-scroll rebuilds the layout under the
-                        // jump's feet; `onDisappear` owns the trim.
+                        // window reset while the window contains the
+                        // tail: swapping `windowedRows` mid-scroll
+                        // rebuilds the layout under the jump's feet;
+                        // `onDisappear` owns the trim. A DETACHED window
+                        // is the exception — the tail row isn't mounted
+                        // at all, so re-anchor (momentum already dead).
                         nativeScroll.killMomentumAndSnapToBottom()
+                        if !viewModel.windowContainsTail {
+                            viewModel.resetHistoryWindow()
+                        }
                         if let target = bottomScrollTargetID {
                             proxy.scrollTo(target, anchor: .bottom)
                         }
@@ -796,11 +893,14 @@ struct MacChatView: View {
                 ChatScrollPositionMemory.store(roomID: viewModel.roomID, itemID: id)
             } else {
                 ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
-                // Off-screen and at the tail — shrink the cached VM's
-                // window back to the default for the next open (a reader
-                // mid-history keeps theirs; see iOS ChatView).
-                viewModel.resetHistoryWindow()
             }
+            // Window trim deliberately NOT here: this onDisappear also
+            // fires on structural branch moves (sub-chat pane open/close,
+            // resize across `sideBySideMinWidth`) where the SAME room
+            // stays on screen and a reader may be deep in history — a
+            // reset would unmount every row under them. The trim lives on
+            // the stable outer view's onDisappear, generation-guarded,
+            // where only a real room-leave triggers it.
         }
         // ⌘K opens the slash palette without typing `/`. The hidden
         // button is the SwiftUI-recommended pattern for a global keyboard

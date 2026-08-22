@@ -72,6 +72,40 @@ final class PagingFakeTimelineService: TimelineService, @unchecked Sendable {
     func markAsRead() async throws {}
 }
 
+/// Yields an initial snapshot, then lets the test push appended snapshots
+/// through the SAME `items()` subscription — the shape a live stream
+/// commit takes. `FakeTimelineService` can't do this (it finishes its
+/// stream after the queued snapshots).
+final class AppendingFakeTimelineService: TimelineService, @unchecked Sendable {
+    private var current: [TimelineItem]
+    private var continuation: AsyncThrowingStream<[TimelineItem], Error>.Continuation?
+    init(initial: [TimelineItem]) { self.current = initial }
+    func items() -> AsyncThrowingStream<[TimelineItem], Error> {
+        AsyncThrowingStream { c in
+            self.continuation = c
+            c.yield(self.current)
+        }
+    }
+    func append(_ item: TimelineItem) {
+        current.append(item)
+        continuation?.yield(current)
+    }
+    func remove(id: String) {
+        current.removeAll { $0.id == id }
+        continuation?.yield(current)
+    }
+    // The tests never tear the stream down explicitly on every path —
+    // finish on deallocation so the VM's observation task can't outlive
+    // the test run (review 2026-08-21).
+    deinit { continuation?.finish() }
+    func sendText(_ body: String, inReplyTo: String?) async throws {}
+    func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {}
+    func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
+    func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
+    func paginateBackward(requestSize: UInt16) async throws -> Bool { true }
+    func markAsRead() async throws {}
+}
+
 /// Drives `ChatViewModel` against the same `FakeTimelineService` that the
 /// `ComposerViewModelTests` already exposes in this target. Because both test
 /// files compile into the same `ViewModelTests` SPM target, sharing the fake
@@ -268,6 +302,221 @@ final class ChatViewModelTests: XCTestCase {
             vm.isExtendingWindow,
             "the flag must release once the widening's layout pass is covered"
         )
+    }
+
+    /// 600 same-day messages — enough to exercise the cap (360) and the
+    /// slide beyond it. Shared fixture for the sliding-window tests.
+    @MainActor
+    private func makeLongTimelineVM(count: Int = 600) async throws -> ChatViewModel {
+        let fake = FakeTimelineService()
+        // One timestamp for the whole fixture: per-item `.now` across a
+        // midnight boundary would synthesize an extra day separator and
+        // flake the exact row-count asserts (CodeRabbit, PR #166).
+        let timestamp = Date.now
+        let items = (0..<count).map { i in
+            TimelineItem(
+                id: "m\(i)", sender: "@a:s", timestamp: timestamp,
+                kind: .text(body: "msg \(i)", formattedHTML: nil), isOwn: false
+            )
+        }
+        fake.snapshotsToEmit = [items]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        await task.value
+        return vm
+    }
+
+    @MainActor
+    func test_extendHistoryWindow_capsAtMax_thenSlidesUpThroughHistory() async throws {
+        let vm = try await makeLongTimelineVM()
+
+        // 600 same-day messages + 1 separator; default window = tail 120.
+        XCTAssertEqual(vm.rows.count, 601)
+        XCTAssertEqual(vm.windowedRows.count, 121)
+        XCTAssertTrue(vm.windowContainsTail)
+
+        await vm.extendHistoryWindow()   // 240
+        await vm.extendHistoryWindow()   // 360 = cap
+        XCTAssertEqual(vm.windowedRows.count, 361, "growth stops at maxWindowSize")
+        XCTAssertTrue(vm.windowContainsTail, "a capped-but-unslid window still ends at the tail")
+        if case .message(let last)? = vm.windowedRows.last {
+            XCTAssertEqual(last.id, "m599")
+        } else { XCTFail("window must end on the newest message") }
+
+        await vm.extendHistoryWindow()   // cap reached → slide up by 120
+        XCTAssertEqual(vm.windowedRows.count, 361, "sliding must not grow the mounted row count")
+        XCTAssertFalse(vm.windowContainsTail, "a slid window has detached from the live tail")
+        if case .message(let last)? = vm.windowedRows.last {
+            XCTAssertEqual(last.id, "m479", "slide drops the newest 120 rows off the bottom")
+        } else { XCTFail("slid window must end on a message row") }
+        if case .separator? = vm.windowedRows.first {} else {
+            XCTFail("a mid-day window cut still re-synthesizes its leading separator")
+        }
+        // The revealed side: m120 must now be mounted (window m120...m479).
+        XCTAssertNotNil(vm.windowedRows.first {
+            if case .message(let i) = $0 { return i.id == "m120" }; return false
+        })
+    }
+
+    @MainActor
+    func test_revealNewerHistory_slidesDown_andReattachesAtTail() async throws {
+        let vm = try await makeLongTimelineVM()
+
+        for _ in 0..<4 { await vm.extendHistoryWindow() }  // 240, 360, slide→m479, slide→m359
+        XCTAssertFalse(vm.windowContainsTail)
+        if case .message(let last)? = vm.windowedRows.last { XCTAssertEqual(last.id, "m359") }
+        else { XCTFail("expected a doubly-slid window") }
+
+        vm.revealNewerHistory()   // slide down → anchored at m479
+        XCTAssertFalse(vm.windowContainsTail)
+        if case .message(let last)? = vm.windowedRows.last { XCTAssertEqual(last.id, "m479") }
+        else { XCTFail("expected a partially-returned window") }
+        XCTAssertEqual(vm.windowedRows.count, 361, "sliding down keeps the cap")
+
+        // Each slide holds `isExtendingWindow` for 150ms as its dedup /
+        // mutual-exclusion cover — a real second gesture arrives later.
+        await waitFor(!vm.isExtendingWindow)
+        vm.revealNewerHistory()   // next step reaches the tail → reattach
+        XCTAssertTrue(vm.windowContainsTail)
+        if case .message(let last)? = vm.windowedRows.last { XCTAssertEqual(last.id, "m599") }
+        else { XCTFail("reattached window must end at the tail") }
+    }
+
+    @MainActor
+    func test_revealNewerHistory_dedupsInsideTheExtendHold() async throws {
+        let vm = try await makeLongTimelineVM()
+
+        for _ in 0..<4 { await vm.extendHistoryWindow() }  // detached, twice slid
+        XCTAssertFalse(vm.windowContainsTail)
+        let anchorBefore = vm.windowTailAnchorID
+
+        vm.revealNewerHistory()                       // slide #1 — raises the hold
+        let anchorAfterFirst = vm.windowTailAnchorID
+        XCTAssertNotEqual(anchorAfterFirst, anchorBefore, "the first slide must land")
+        vm.revealNewerHistory()                       // same approach's second trigger
+        XCTAssertEqual(vm.windowTailAnchorID, anchorAfterFirst,
+            "a second slide inside the 150ms hold would skip 240 rows per approach " +
+            "(geometry trigger + gesture settle both firing — review 2026-08-21)")
+        await waitFor(!vm.isExtendingWindow)
+    }
+
+    @MainActor
+    func test_revealNewerHistory_holdsWhenOnlyTransientRowsFollow() async throws {
+        // 480 real messages, then 240 echo rows — an active turn's worth
+        // of transient tail. A slide-down whose whole step lands in the
+        // transient run must HOLD the current anchor, not clear it: a nil
+        // anchor reattaches at the tail, teleporting the reader and
+        // re-arming follow (CodeRabbit, PR #166).
+        let timestamp = Date.now
+        var items = (0..<480).map { i in
+            TimelineItem(
+                id: "m\(i)", sender: "@a:s", timestamp: timestamp,
+                kind: .text(body: "msg \(i)", formattedHTML: nil), isOwn: false
+            )
+        }
+        items += (0..<240).map { i in
+            TimelineItem(
+                id: "echo:\(i)", sender: "@me:s", timestamp: timestamp,
+                kind: .text(body: "echo \(i)", formattedHTML: nil), isOwn: true
+            )
+        }
+        let fake = FakeTimelineService()
+        fake.snapshotsToEmit = [items]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        await task.value
+
+        for _ in 0..<3 { await vm.extendHistoryWindow() }  // 240, 360, slide
+        XCTAssertEqual(vm.windowTailAnchorID, "msg:m479",
+            "the slide's anchor scan must skip the transient run down to the last real row")
+
+        vm.revealNewerHistory()
+        XCTAssertEqual(vm.windowTailAnchorID, "msg:m479",
+            "no anchorable row strictly newer than the current anchor → hold, don't reattach")
+        XCTAssertFalse(vm.windowContainsTail)
+    }
+
+    @MainActor
+    func test_vanishedAnchor_rescuesToNearestSurvivingRow() async throws {
+        let timestamp = Date.now   // one fixture timestamp — see makeLongTimelineVM
+        let items = (0..<600).map { i in
+            TimelineItem(
+                id: "m\(i)", sender: "@a:s", timestamp: timestamp,
+                kind: .text(body: "msg \(i)", formattedHTML: nil), isOwn: false
+            )
+        }
+        let fake = AppendingFakeTimelineService(initial: items)
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        _ = await vm.start()
+
+        for _ in 0..<3 { await vm.extendHistoryWindow() }  // cap, then slide → anchor m479
+        XCTAssertEqual(vm.windowTailAnchorID, "msg:m479")  // anchors live in ROW-id space
+
+        fake.remove(id: "m479")                            // redaction takes the anchor row
+        await waitFor(vm.rows.count == 600)                // 599 messages + separator
+        XCTAssertFalse(vm.windowContainsTail,
+            "losing the anchor row must not teleport a deep reader to the tail " +
+            "(and silently re-arm follow — review 2026-08-21)")
+        XCTAssertEqual(vm.windowTailAnchorID, "msg:m478",
+            "re-anchors on the nearest surviving neighbour of the old anchor")
+        vm.stop()
+    }
+
+    @MainActor
+    func test_newerRevealPinTarget_fallsBackToNewestPreSlideMessage() async throws {
+        let vm = try await makeLongTimelineVM(count: 10)
+        // No usable visible ids (mid-layout, separators only): the
+        // fallback must be the NEWEST pre-slide message — the oldest
+        // (reveal-older's fallback) is precisely the row a slide toward
+        // the tail is guaranteed to drop.
+        let pin = ChatViewModel.newerRevealPinTarget(
+            visibleIDs: ["sep:2026-08-21"],
+            preSlideRows: vm.windowedRows
+        )
+        XCTAssertEqual(pin, "m9")
+    }
+
+    @MainActor
+    func test_ensureWindowContains_deepTarget_capsTheWindowAroundIt() async throws {
+        let vm = try await makeLongTimelineVM()
+
+        vm.ensureWindowContains("m5")
+        XCTAssertNotNil(vm.windowedRows.first {
+            if case .message(let i) = $0 { return i.id == "m5" }; return false
+        }, "the restore target must be mounted")
+        XCTAssertLessThanOrEqual(vm.windowedRows.count, 361,
+            "a deep restore must not mount an unbounded window (old behavior: 597 rows)")
+        XCTAssertFalse(vm.windowContainsTail, "a capped deep window cannot include the tail")
+        XCTAssertTrue(vm.isExtendingWindow, "restore widening still holds the anchor flag")
+    }
+
+    @MainActor
+    func test_streamAppends_doNotMoveAnAnchoredWindow() async throws {
+        let timestamp = Date.now   // one fixture timestamp — see makeLongTimelineVM
+        let items = (0..<600).map { i in
+            TimelineItem(
+                id: "m\(i)", sender: "@a:s", timestamp: timestamp,
+                kind: .text(body: "msg \(i)", formattedHTML: nil), isOwn: false
+            )
+        }
+        let fake = AppendingFakeTimelineService(initial: items)
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        _ = await vm.start()
+
+        for _ in 0..<3 { await vm.extendHistoryWindow() } // cap then slide → detached
+        XCTAssertFalse(vm.windowContainsTail)
+        let before = vm.windowedRows.map(\.id)
+
+        fake.append(TimelineItem(
+            id: "m600", sender: "@a:s", timestamp: timestamp,
+            kind: .text(body: "new msg", formattedHTML: nil), isOwn: false
+        ))
+        await waitFor(vm.rows.count == 602)
+        XCTAssertEqual(vm.rows.count, 602, "the append must have landed in rows")
+        XCTAssertEqual(vm.windowedRows.map(\.id), before,
+            "an identity-anchored window must not shift under stream appends — " +
+            "this is what makes deep reading cheap during an active turn")
+        vm.stop()
     }
 
     @MainActor
