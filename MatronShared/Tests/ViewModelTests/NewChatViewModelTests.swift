@@ -48,6 +48,7 @@ final class FakeAgentRPCProvider: AgentRPCProviding, @unchecked Sendable {
     private var _replies: [String: RPCReply] = [:]
     private var _repliesByDevice: [Int64: RPCReply] = [:]
     private var _rpcError: RPCRequestError?
+    private var _replySequences: [String: [Result<RPCReply, RPCRequestError>]] = [:]
     private var _gates: [Int64: Gate] = [:]
     private var _arrivals: [Int64: Gate] = [:]
     private var _requests: [(method: String, agentDeviceID: Int64, params: [String: Any])] = []
@@ -71,6 +72,14 @@ final class FakeAgentRPCProvider: AgentRPCProviding, @unchecked Sendable {
         get { lock.withLock { _rpcError } }
         set { lock.withLock { _rpcError = newValue } }
     }
+    /// Per-method scripted outcomes, consumed one per call ahead of every
+    /// other source — lets a test answer `agent_unreachable` twice and then
+    /// `.ok`, which is the shape the wake-retry loops exist for. An
+    /// exhausted sequence falls through to the usual lookup order.
+    var replySequences: [String: [Result<RPCReply, RPCRequestError>]] {
+        get { lock.withLock { _replySequences } }
+        set { lock.withLock { _replySequences = newValue } }
+    }
     /// Parks the *next* `recent_folders` call for a device until the gate is
     /// opened; the reply is captured before parking, so re-scripting
     /// `repliesByDevice` meanwhile doesn't change what the parked leg
@@ -93,10 +102,16 @@ final class FakeAgentRPCProvider: AgentRPCProviding, @unchecked Sendable {
 
     func agentRequest(agentDeviceID: Int64, method: String, paramsData: Data) async throws -> RPCReply {
         let params = (try? JSONSerialization.jsonObject(with: paramsData)) as? [String: Any] ?? [:]
-        let error = lock.withLock { () -> RPCRequestError? in
+        let (error, scripted) = lock.withLock { () -> (RPCRequestError?, Result<RPCReply, RPCRequestError>?) in
             _requests.append((method, agentDeviceID, params))
-            return _rpcError
+            if var sequence = _replySequences[method], !sequence.isEmpty {
+                let next = sequence.removeFirst()
+                _replySequences[method] = sequence
+                return (nil, next)
+            }
+            return (_rpcError, nil)
         }
+        if let scripted { return try scripted.get() }
         if let error { throw error }
         let (reply, gate, arrival) = lock.withLock { () -> (RPCReply, Gate?, Gate?) in
             let reply = (method == "recent_folders" ? _repliesByDevice[agentDeviceID] : nil)
@@ -136,21 +151,33 @@ final class NewChatViewModelTests: XCTestCase {
             agent(3, name: "dev-2", connected: true),
             agent(4, name: "dev-9", connected: true),
         ])
-        let vm = NewChatViewModel(api: fake)
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
         await vm.load()
         guard case let .agents(list) = vm.phase else { return XCTFail("expected agents phase") }
         XCTAssertEqual(list.map(\.id), [3, 4, 2], "clients excluded; connected first, then by name")
     }
 
-    func test_load_singleConnectedAgent_skipsStraightToFolders() async {
+    func test_load_singleBoxFleet_skipsStraightToFolders() async {
         let fake = FakeAgentRPCProvider()
-        fake.devicesResult = .success([agent(9, connected: true), agent(2, connected: false)])
+        fake.devicesResult = .success([agent(9, connected: true)])
         fake.replies["recent_folders"] = foldersReply(#"{"folders":[{"path":"/home/dan/app","last_used":100}]}"#)
-        let vm = NewChatViewModel(api: fake)
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
         await vm.load()
         guard case let .folders(picked) = vm.phase else { return XCTFail("expected folders phase") }
         XCTAssertEqual(picked.id, 9)
         XCTAssertEqual(vm.folders.map(\.path), ["/home/dan/app"])
+    }
+
+    func test_load_oneConnectedAmongAsleep_showsTheRoster() async {
+        // The host idle-stops boxes, so one-awake-among-asleep is the
+        // normal steady state — auto-skipping to the awake box would make
+        // every sleeping (but wakeable) row unreachable.
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(9, connected: true), agent(2, connected: false)])
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        await vm.load()
+        guard case let .agents(list) = vm.phase else { return XCTFail("expected the roster") }
+        XCTAssertEqual(list.map(\.id), [9, 2])
     }
 
     func test_folders_sortNewestFirst_nullsLast() async {
@@ -163,7 +190,7 @@ final class NewChatViewModelTests: XCTestCase {
           {"path":"/new","last_used":900}
         ]}
         """#)
-        let vm = NewChatViewModel(api: fake)
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
         await vm.load()
         XCTAssertEqual(vm.folders.map(\.path), ["/new", "/old", "/never"])
         XCTAssertNil(vm.folders.last?.lastUsed, "never-used folder carries nil lastUsed")
@@ -173,7 +200,7 @@ final class NewChatViewModelTests: XCTestCase {
         let fake = FakeAgentRPCProvider()
         fake.devicesResult = .success([agent(9, connected: true)])
         fake.rpcError = .timeout
-        let vm = NewChatViewModel(api: fake)
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
         await vm.load()
         guard case .folders = vm.phase else { return XCTFail("expected folders phase despite RPC failure") }
         XCTAssertNotNil(vm.foldersError)
@@ -185,7 +212,7 @@ final class NewChatViewModelTests: XCTestCase {
         fake.devicesResult = .success([agent(9, connected: true)])
         fake.replies["recent_folders"] = foldersReply(#"{"folders":[]}"#)
         fake.replies["start"] = .ok(resultData: Data(#"{"convo_id":"c-new"}"#.utf8))
-        let vm = NewChatViewModel(api: fake)
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
         await vm.load()
         vm.browserEnabled = true
         await vm.start(workdir: "~/dev/app")
@@ -201,7 +228,7 @@ final class NewChatViewModelTests: XCTestCase {
         fake.devicesResult = .success([agent(9, connected: true)])
         fake.replies["recent_folders"] = foldersReply(#"{"folders":[]}"#)
         fake.replies["start"] = .ok(resultData: Data(#"{"convo_id":"c-new"}"#.utf8))
-        let vm = NewChatViewModel(api: fake)
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
         await vm.load()
         await vm.start(workdir: "  ")
         let params = fake.requests.last?.params
@@ -209,11 +236,122 @@ final class NewChatViewModelTests: XCTestCase {
         XCTAssertNil(params?["browser"], "browser only travels when true")
     }
 
+    // MARK: Model picker
+
+    func test_start_sendsSelectedModel() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(9, connected: true)])
+        fake.replies["recent_folders"] = foldersReply(#"""
+        {"folders":[],"model_options":[{"value":"opus","label":"Opus"},{"value":"sonnet","label":"Sonnet"}]}
+        """#)
+        fake.replies["start"] = .ok(resultData: Data(#"{"convo_id":"c-new"}"#.utf8))
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        await vm.load()
+        vm.selectedModel = "sonnet"
+        await vm.start(workdir: "~/dev/app")
+        XCTAssertEqual(fake.requests.last?.params["model"] as? String, "sonnet")
+    }
+
+    func test_start_omitsModelWhenDefaultPicked() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(9, connected: true)])
+        fake.replies["recent_folders"] = foldersReply(#"""
+        {"folders":[],"model_options":[{"value":"opus","label":"Opus"}]}
+        """#)
+        fake.replies["start"] = .ok(resultData: Data(#"{"convo_id":"c-new"}"#.utf8))
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        await vm.load()
+        XCTAssertNil(vm.selectedModel, "the picker opens on the bridge's own default")
+        await vm.start(workdir: "~/dev/app")
+        XCTAssertNil(fake.requests.last?.params["model"],
+                     "no pick means the bridge decides — omit the key rather than name a default")
+    }
+
+    func test_modelOptions_parsedFromRecentFolders() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(9, connected: true)])
+        fake.replies["recent_folders"] = foldersReply(#"""
+        {"folders":[],"model_options":[
+          {"value":"default","label":"Default"},
+          {"value":"opus","label":"Opus 4.6"},
+          {"value":"sonnet"},
+          {"value":"opus","label":"Opus again"},
+          {"label":"nameless"},
+          {"value":""}
+        ]}
+        """#)
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        await vm.load()
+        XCTAssertEqual(vm.modelOptions, [ModelOption(value: "opus", label: "Opus 4.6"),
+                                         ModelOption(value: "sonnet", label: "sonnet")],
+                       "bridge order kept; a missing label falls back to the value; "
+                       + "an entry with nothing to send is dropped; a repeated value "
+                       + "keeps its first row (value is the ForEach identity); and the "
+                       + "bridge's `default` alias folds into the picker's own nil row")
+    }
+
+    func test_modelOptions_absentKeyLeavesNoOffer() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(9, connected: true)])
+        fake.replies["recent_folders"] = foldersReply(#"{"folders":[{"path":"/a","last_used":1}]}"#)
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        await vm.load()
+        XCTAssertTrue(vm.modelOptions.isEmpty, "an older bridge omits the key — the picker hides")
+        XCTAssertEqual(vm.folders.map(\.path), ["/a"], "and the rest of the reply still parses")
+    }
+
+    /// The roster fan-out already asked every connected box, so the folder
+    /// step must render that box's offer without a second round-trip — the
+    /// same prefetch that serves `folders` from cache.
+    func test_modelOptions_arriveFromTheRosterPrefetch() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(1, name: "a", connected: true),
+                                       agent(2, name: "b", connected: true)])
+        fake.repliesByDevice[1] = .ok(resultData: Data(
+            #"{"folders":[],"model_options":[{"value":"opus","label":"Opus"}]}"#.utf8))
+        fake.repliesByDevice[2] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        await vm.load()
+        await vm.capacityFanOutForTesting?.value
+        let before = fake.requests.filter { $0.method == "recent_folders" }.count
+
+        await vm.select(agent: agent(1, name: "a", connected: true))
+        XCTAssertEqual(vm.modelOptions.map(\.value), ["opus"])
+        XCTAssertEqual(fake.requests.filter { $0.method == "recent_folders" }.count, before,
+                       "served from the prefetch, not re-asked")
+    }
+
+    func test_switchingBoxes_dropsAModelTheNewBoxDoesNotOffer() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(1, name: "a", connected: true),
+                                       agent(2, name: "b", connected: true)])
+        fake.repliesByDevice[1] = .ok(resultData: Data(
+            #"{"folders":[],"model_options":[{"value":"opus","label":"Opus"},{"value":"sonnet","label":"Sonnet"}]}"#.utf8))
+        fake.repliesByDevice[2] = .ok(resultData: Data(
+            #"{"folders":[],"model_options":[{"value":"sonnet","label":"Sonnet"}]}"#.utf8))
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        await vm.load()
+        await vm.capacityFanOutForTesting?.value
+
+        await vm.select(agent: agent(1, name: "a", connected: true))
+        vm.selectedModel = "sonnet"
+        await vm.select(agent: agent(2, name: "b", connected: true))
+        XCTAssertEqual(vm.selectedModel, "sonnet", "a model the new box also offers survives")
+
+        await vm.select(agent: agent(1, name: "a", connected: true))
+        vm.selectedModel = "opus"
+        await vm.select(agent: agent(2, name: "b", connected: true))
+        XCTAssertNil(vm.selectedModel,
+                     "box b can't run opus — carrying the pick over would earn a bad_model")
+    }
+
     func test_start_errorCopyTable() async {
+        // `agent_unreachable` is absent on purpose: start retries it (the
+        // wake loop) — NewChatViewModelWakeTests owns that behaviour.
         let cases: [(RPCReply, String)] = [
-            (.failure(code: "agent_unreachable", detail: nil), "The agent didn't answer — is the box awake?"),
             (.failure(code: "not_ready", detail: nil), "The agent didn't answer — is the box awake?"),
             (.failure(code: "bad_workdir", detail: "/nope"), "That folder doesn't exist on the box."),
+            (.failure(code: "bad_model", detail: "opus"), "That box doesn't offer that model — pick another."),
             (.failure(code: "spawn_failed", detail: "boom"), "Couldn't start — boom."),
             (.failure(code: "unsupported_mode", detail: nil), "Couldn't start — unsupported_mode."),
         ]
@@ -222,7 +360,7 @@ final class NewChatViewModelTests: XCTestCase {
             fake.devicesResult = .success([agent(9, connected: true)])
             fake.replies["recent_folders"] = foldersReply(#"{"folders":[]}"#)
             fake.replies["start"] = reply
-            let vm = NewChatViewModel(api: fake)
+            let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
             await vm.load()
             await vm.start(workdir: "/x")
             XCTAssertEqual(vm.errorMessage, expected)
@@ -234,7 +372,7 @@ final class NewChatViewModelTests: XCTestCase {
         let fake = FakeAgentRPCProvider()
         fake.devicesResult = .success([agent(9, connected: true)])
         fake.replies["recent_folders"] = foldersReply(#"{"folders":[]}"#)
-        let vm = NewChatViewModel(api: fake)
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
         await vm.load()
         fake.rpcError = .timeout
         await vm.start(workdir: "/x")
@@ -246,7 +384,7 @@ final class NewChatViewModelTests: XCTestCase {
         fake.devicesResult = .success([agent(9, connected: true)])
         fake.replies["recent_folders"] = foldersReply(#"{"folders":[]}"#)
         fake.replies["start"] = .ok(resultData: Data(#"{}"#.utf8))
-        let vm = NewChatViewModel(api: fake)
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
         await vm.load()
         await vm.start(workdir: "/x")
         XCTAssertNotNil(vm.errorMessage)
@@ -258,7 +396,7 @@ final class NewChatViewModelTests: XCTestCase {
         fake.devicesResult = .success([agent(9, connected: true)])
         fake.replies["recent_folders"] = foldersReply(#"{"folders":[]}"#)
         fake.replies["start"] = .ok(resultData: Data(#"{"convo_id":"c-new"}"#.utf8))
-        let vm = NewChatViewModel(api: fake)
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
         await vm.load()
         async let first: Void = vm.start(workdir: "/x")
         async let second: Void = vm.start(workdir: "/x")
@@ -278,7 +416,7 @@ final class NewChatViewModelTests: XCTestCase {
         ])
         fake.repliesByDevice[1] = .ok(resultData: Data(#"{"folders":[],"account":{"email":"pat@yearbook.com"},"activity":{"live_sessions":2}}"#.utf8))
         fake.repliesByDevice[2] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
-        let vm = NewChatViewModel(api: fake)
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
         await vm.load()
         await vm.capacityFanOutForTesting?.value
         let fanned = fake.requests.filter { $0.method == "recent_folders" }.map(\.agentDeviceID).sorted()
@@ -294,7 +432,7 @@ final class NewChatViewModelTests: XCTestCase {
         fake.devicesResult = .success([agent(1, name: "a", connected: true), agent(2, name: "b", connected: true)])
         fake.repliesByDevice[1] = .ok(resultData: Data(#"{"folders":[],"activity":{"live_sessions":1}}"#.utf8))
         fake.repliesByDevice[2] = .failure(code: "agent_unreachable", detail: nil)
-        let vm = NewChatViewModel(api: fake)
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
         await vm.load()
         await vm.capacityFanOutForTesting?.value
         XCTAssertEqual(vm.capacities[1]?.liveSessions, 1)
@@ -308,7 +446,7 @@ final class NewChatViewModelTests: XCTestCase {
         fake.devicesResult = .success(agents)
         fake.repliesByDevice[1] = .ok(resultData: Data(#"{"folders":[{"path":"/w/app","last_used":100}]}"#.utf8))
         fake.repliesByDevice[2] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
-        let vm = NewChatViewModel(api: fake)
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
         await vm.load()
         await vm.capacityFanOutForTesting?.value
         let callsBefore = fake.requests.filter { $0.method == "recent_folders" }.count
@@ -324,7 +462,7 @@ final class NewChatViewModelTests: XCTestCase {
         fake.devicesResult = .success(agents)
         fake.repliesByDevice[1] = .failure(code: "agent_unreachable", detail: nil)
         fake.repliesByDevice[2] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
-        let vm = NewChatViewModel(api: fake)
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
         await vm.load()
         await vm.capacityFanOutForTesting?.value
         fake.repliesByDevice[1] = .ok(resultData: Data(#"{"folders":[{"path":"/late","last_used":1}]}"#.utf8))
@@ -338,7 +476,7 @@ final class NewChatViewModelTests: XCTestCase {
         fake.devicesResult = .success(agents)
         fake.repliesByDevice[1] = .ok(resultData: Data(#"{"folders":[],"activity":{"live_sessions":2},"account":{"email":"pat@yearbook.com"}}"#.utf8))
         fake.repliesByDevice[2] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
-        let vm = NewChatViewModel(api: fake)
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
         await vm.load()
         await vm.capacityFanOutForTesting?.value
 
@@ -364,7 +502,7 @@ final class NewChatViewModelTests: XCTestCase {
         fake.devicesResult = .success(agents)
         fake.repliesByDevice[1] = .ok(resultData: Data(#"{"folders":[],"activity":{"live_sessions":2},"account":{"email":"pat@yearbook.com"}}"#.utf8))
         fake.repliesByDevice[2] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
-        let vm = NewChatViewModel(api: fake)
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
         await vm.load()
         await vm.capacityFanOutForTesting?.value
         XCTAssertNotNil(vm.capacities[1])
@@ -379,7 +517,12 @@ final class NewChatViewModelTests: XCTestCase {
                        "the box that did answer is unaffected")
     }
 
-    func test_reload_dropsCapacityForBoxesThatWentOffline() async {
+    /// The host suspends idle boxes, so "went offline" is the normal resting
+    /// state of a box, not a fault. Nothing will revalidate it — which is
+    /// precisely why its row keeps the numbers it reported while it was up,
+    /// re-seeded from the capacity cache and captioned with their age
+    /// (`NewChatViewModelOfflineCapacityTests` covers the seeding rules).
+    func test_reload_reseedsCapacityForBoxesThatWentOffline() async {
         let fake = FakeAgentRPCProvider()
         // Three connected boxes so the reload still shows a roster — dropping
         // to one would auto-skip straight to the folder step instead.
@@ -389,20 +532,24 @@ final class NewChatViewModelTests: XCTestCase {
         fake.repliesByDevice[1] = .ok(resultData: Data(#"{"folders":[],"activity":{"live_sessions":2},"account":{"email":"pat@yearbook.com"}}"#.utf8))
         fake.repliesByDevice[2] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
         fake.repliesByDevice[3] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
-        let vm = NewChatViewModel(api: fake)
+        let captured = Date(timeIntervalSince1970: 1_754_900_000)
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache(),
+                                  now: { captured })
         await vm.load()
         await vm.capacityFanOutForTesting?.value
 
-        // Box 1 dropped off between visits, so no leg will ever refresh it —
-        // and the row's account email renders even when it's offline.
         fake.devicesResult = .success([agent(1, name: "a", connected: false),
                                        agent(2, name: "b", connected: true),
                                        agent(3, name: "c", connected: true)])
         await vm.backToAgents()
         await vm.capacityFanOutForTesting?.value
 
-        XCTAssertNil(vm.capacities[1], "nothing will revalidate an offline box — drop what it told us last time")
+        XCTAssertEqual(vm.capacities[1]?.accountEmail, "pat@yearbook.com",
+                       "a sleeping box still shows which account it runs")
+        XCTAssertEqual(vm.capacityFreshness(for: 1), .offline(capturedAt: captured),
+                       "and says so — those numbers predate this visit")
         XCTAssertNotNil(vm.capacities[2])
+        XCTAssertEqual(vm.capacityFreshness(for: 2), .live)
     }
 
     func test_reload_dropsCachedFoldersUntilTheNewFanOutAnswers() async {
@@ -411,7 +558,7 @@ final class NewChatViewModelTests: XCTestCase {
         fake.devicesResult = .success(agents)
         fake.repliesByDevice[1] = .ok(resultData: Data(#"{"folders":[{"path":"/old","last_used":1}]}"#.utf8))
         fake.repliesByDevice[2] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
-        let vm = NewChatViewModel(api: fake)
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
         await vm.load()
         await vm.capacityFanOutForTesting?.value
 
@@ -440,7 +587,7 @@ final class NewChatViewModelTests: XCTestCase {
         let gate = Gate(), arrived = Gate()
         fake.gates[1] = gate
         fake.arrivals[1] = arrived
-        let vm = NewChatViewModel(api: fake)
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
         await vm.load()
         let supersededFanOut = vm.capacityFanOutForTesting
         await arrived.wait()
@@ -465,7 +612,7 @@ final class NewChatViewModelTests: XCTestCase {
         let fake = FakeAgentRPCProvider()
         fake.devicesResult = .success([agent(3, connected: true), agent(4, connected: true)])
         fake.replies["recent_folders"] = foldersReply(#"{"folders":[]}"#)
-        let vm = NewChatViewModel(api: fake)
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
         await vm.load()
         // Drain the roster fan-out before selecting — its legs land in
         // nondeterministic order, so nothing below may assert on `last`

@@ -53,6 +53,22 @@ public struct SessionStatus: Equatable, Sendable {
         }
     }
 
+    /// One value the bridge offers for a session-scoped command argument —
+    /// a model alias for `/model`, an effort level for `/effort`. The
+    /// bridge owns these lists (they're agent-dependent: Claude aliases for
+    /// one session, Codex model ids for another), so they travel on the
+    /// status frame rather than being copied into the app's catalog.
+    /// `label` is absent when it would only repeat `value`.
+    public struct Option: Equatable, Sendable {
+        public let value: String
+        public let label: String?
+
+        public init(value: String, label: String?) {
+            self.value = value
+            self.label = label
+        }
+    }
+
     public var model: String?
     public var context: Context?
     public var limits: [Limit]?
@@ -70,8 +86,23 @@ public struct SessionStatus: Equatable, Sendable {
     public var workdir: String?
     /// Last host CPU/RAM sample from the bridge machine.
     public var vitals: Vitals?
+    /// Model aliases this session can switch to — the palette's `/model`
+    /// argument suggestions. Optional, and the optionality is load-bearing:
+    /// `nil` means this bridge doesn't say (an older one, or an agent the
+    /// bridge can't enumerate), `[]` means it says there is nothing to
+    /// offer. Both render as no suggestions; only `[]` may overwrite a
+    /// known list.
+    public var modelOptions: [Option]?
+    /// Effort levels this session accepts — `/effort`'s suggestions. Same
+    /// absent-versus-empty rule as `modelOptions`.
+    public var effortLevels: [Option]?
+    /// The session's current effort level, or nil when nothing is tracking
+    /// one. The bridge tracks this optimistically (nothing reads it back
+    /// off the TUI) and never guesses; a restart or resume drops it back to
+    /// nil. Renderers show nothing at all when it's nil.
+    public var effort: String?
 
-    public init(model: String? = nil, context: Context? = nil, limits: [Limit]? = nil, email: String? = nil, taskRef: String? = nil, workdir: String? = nil, vitals: Vitals? = nil) {
+    public init(model: String? = nil, context: Context? = nil, limits: [Limit]? = nil, email: String? = nil, taskRef: String? = nil, workdir: String? = nil, vitals: Vitals? = nil, modelOptions: [Option]? = nil, effortLevels: [Option]? = nil, effort: String? = nil) {
         self.model = model
         self.context = context
         self.limits = limits
@@ -79,6 +110,9 @@ public struct SessionStatus: Equatable, Sendable {
         self.taskRef = taskRef
         self.workdir = workdir
         self.vitals = vitals
+        self.modelOptions = modelOptions
+        self.effortLevels = effortLevels
+        self.effort = effort
     }
 
     /// Merge an update: each part replaces the held value only when the
@@ -91,6 +125,19 @@ public struct SessionStatus: Equatable, Sendable {
         if let taskRef = update.taskRef { self.taskRef = taskRef }
         if let workdir = update.workdir { self.workdir = workdir }
         if let vitals = update.vitals { self.vitals = vitals }
+        // An empty list arrives as `[]`, not nil, and legitimately replaces
+        // a held one — "this agent offers nothing" is a statement, absence
+        // is silence.
+        if let modelOptions = update.modelOptions { self.modelOptions = modelOptions }
+        if let effortLevels = update.effortLevels { self.effortLevels = effortLevels }
+        // Effort is the one tri-state field: `nil` is silence and changes
+        // nothing, `.cleared` is the bridge disowning the level it was
+        // tracking, and only `.set` writes one.
+        switch update.effort {
+        case .set(let level): self.effort = level
+        case .cleared: self.effort = nil
+        case nil: break
+        }
     }
 }
 
@@ -110,11 +157,39 @@ public struct SessionStatusUpdate: Equatable, Sendable {
     public let workdir: String?
     /// Host CPU/RAM sample. `nil` when absent or carrying no numbers.
     public let vitals: SessionStatus.Vitals?
+    /// Model aliases and effort levels the bridge offers for this session
+    /// (see `SessionStatus.modelOptions`). `nil` when the frame omits the
+    /// field — distinct from an empty array, which the decoder preserves.
+    public let modelOptions: [SessionStatus.Option]?
+    public let effortLevels: [SessionStatus.Option]?
+
+    /// A frame's statement about the session's effort level. The field is
+    /// tri-state on the wire, and the three states are genuinely different:
+    ///
+    /// - a string — the bridge is tracking this level (`.set`);
+    /// - an explicit JSON null — the bridge is tracking none, republished
+    ///   on every frame while unknown so a dropped clear can't strand a
+    ///   stale level in a client (`.cleared`);
+    /// - the key absent — the frame says nothing, which is what a Codex
+    ///   session (no effort concept) and any pre-tri-state bridge send.
+    ///
+    /// Absence is the only one that leaves a held value standing, so a
+    /// decoder that folds null into absence would keep showing a level the
+    /// bridge has disowned. `nil` here is absence; null decodes to
+    /// `.cleared`.
+    public enum Effort: Equatable, Sendable {
+        case set(String)
+        case cleared
+    }
+
+    /// This frame's statement about the effort level (see `Effort`). `nil`
+    /// when the frame carries no `effort` key at all.
+    public let effort: Effort?
 
     /// No parameter defaults, deliberately: every constructor names every
     /// field, so merge sites (SessionStatus.apply, the sync engine's
     /// replay cache) can't silently drop a newly added one.
-    public init(convoID: String, model: String?, context: SessionStatus.Context?, limits: [SessionStatus.Limit]?, email: String?, taskRef: String?, workdir: String?, vitals: SessionStatus.Vitals?) {
+    public init(convoID: String, model: String?, context: SessionStatus.Context?, limits: [SessionStatus.Limit]?, email: String?, taskRef: String?, workdir: String?, vitals: SessionStatus.Vitals?, modelOptions: [SessionStatus.Option]?, effortLevels: [SessionStatus.Option]?, effort: Effort?) {
         self.convoID = convoID
         self.model = model
         self.context = context
@@ -123,5 +198,8 @@ public struct SessionStatusUpdate: Equatable, Sendable {
         self.taskRef = taskRef
         self.workdir = workdir
         self.vitals = vitals
+        self.modelOptions = modelOptions
+        self.effortLevels = effortLevels
+        self.effort = effort
     }
 }

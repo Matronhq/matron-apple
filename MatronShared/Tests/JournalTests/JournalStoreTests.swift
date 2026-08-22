@@ -1,3 +1,4 @@
+import GRDB
 import XCTest
 @testable import MatronJournal
 
@@ -652,15 +653,44 @@ final class JournalStoreTests: XCTestCase {
             "🤝 Agent chat request")
     }
 
-    /// Same server-agreement pin for the spawn consent card (`snippetOf`
-    /// returns this exact string for `kind: "agent_spawn"`).
+    /// Same disagreement, same fix, for the spawn card — its payload carries
+    /// no `description` either.
     func testAgentSpawnCardSnippetMatchesTheServer() {
         XCTAssertEqual(
             JournalStore.snippet(type: "permission_request", payload: [
                 "kind": "agent_spawn", "request_id": "spawn-1",
-                "from_name": "dan-mac",
+                "task": "Rebase and push", "from_name": "dev-2",
             ]),
             "🤝 Agent spawn request")
+    }
+
+    /// A resolution has to retire the card's snippet, or the chat-list row
+    /// keeps advertising a settled ask forever. Strings pinned to the
+    /// server's own snippetOf (matron-journal src/journal.js).
+    func testSpawnOutcomeSnippetsMatchTheServer() {
+        let expected = [
+            "started": "🚀 Spawned session started",
+            "declined": "🚫 Spawn declined",
+            "expired": "⌛ Spawn request expired",
+            "failed": "❌ Spawn failed",
+        ]
+        for (outcome, line) in expected {
+            XCTAssertEqual(
+                JournalStore.snippet(type: "spawn_outcome",
+                                     payload: ["request_id": "s", "outcome": outcome]),
+                line)
+        }
+        XCTAssertEqual(
+            JournalStore.snippet(type: "spawn_outcome",
+                                 payload: ["request_id": "s", "outcome": "conscripted"]),
+            "[spawn_outcome]",
+            "an outcome this build doesn't know renders as the server's placeholder")
+    }
+
+    /// `spawn_outcome` joins the server's MESSAGE_TYPES — it sets the
+    /// conversation snippet and bumps unread like the card it retires.
+    func testSpawnOutcomeIsAMessageType() {
+        XCTAssertTrue(JournalEventType.messageTypes.contains(JournalEventType.spawnOutcome))
     }
 
     func testOtherPermissionRequestsKeepTheDescriptionSnippet() {
@@ -709,6 +739,87 @@ final class JournalStoreTests: XCTestCase {
         _ = try store.applyJournal(summaryEvent(2))
         try store.wipe()
         XCTAssertEqual(try store.summaryEntries(convoID: "c1"), [])
+    }
+
+    // MARK: Summary backfill migration (v7)
+
+    /// Builds a journal.sqlite frozen at the v6 schema — the last version
+    /// before the v7 summary backfill — with `events` already in the event
+    /// mirror, exactly the state of an install that synced its history
+    /// before upgrading. Opening a `JournalStore` over the file then runs
+    /// only v7. `seed` runs in the same transaction for extra pre-upgrade
+    /// rows (e.g. summary entries the live path wrote after v4).
+    private func seedPreBackfillDatabase(at url: URL, events: [JournalEvent],
+                                         seed: (Database) throws -> Void = { _ in }) throws {
+        let dbQueue = try DatabaseQueue(path: url.path)
+        try JournalStore.migrator().migrate(dbQueue, upTo: "v6")
+        try dbQueue.write { db in
+            for e in events {
+                try db.execute(
+                    sql: "INSERT INTO event(seq, convo_id, ts, sender, type, payload) VALUES(?, ?, ?, ?, ?, ?)",
+                    arguments: [e.seq, e.convoID, Int64(e.ts.timeIntervalSince1970 * 1000),
+                                e.sender, e.type, e.payloadData])
+            }
+            try seed(db)
+        }
+    }
+
+    func testMigrationBackfillsSummaryEntriesFromStoredEvents() throws {
+        // v4 created summary_entry but never scanned events already in the
+        // mirror, so an upgrading install showed an empty TOC for every
+        // conversation it had synced before the upgrade — until a
+        // from-scratch re-sync happened to replay the summary events. v7
+        // must fill the table from the stored events on open.
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let url = dir.appendingPathComponent("journal.sqlite")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        try seedPreBackfillDatabase(at: url, events: [
+            event(1),                                                  // non-summary: ignored
+            summaryEvent(2),
+            summaryEvent(3, convo: "c2"),
+            event(4, type: "summary", payload: ["detail": "no toc"]),  // undecodable: skipped, must not abort
+        ])
+
+        let upgraded = try JournalStore(databaseURL: url, ownSender: "user:dan")
+        XCTAssertEqual(try upgraded.summaryEntries(convoID: "c1").map(\.seq), [2])
+        XCTAssertEqual(try upgraded.summaryEntries(convoID: "c2").map(\.seq), [3])
+
+        // A backfilled row must be indistinguishable from what the live
+        // ingest path writes for the same event — same conversion, same
+        // values.
+        let live = try makeStore()
+        _ = try live.applyJournal(summaryEvent(2))
+        XCTAssertEqual(try upgraded.summaryEntries(convoID: "c1"),
+                       try live.summaryEntries(convoID: "c1"))
+    }
+
+    func testMigrationBackfillLeavesLiveWrittenEntriesAlone() throws {
+        // Installs running a post-v4 build already had the live path
+        // writing summary_entry rows; v7 re-scans those same events and
+        // must neither duplicate nor overwrite them (insert-or-ignore,
+        // exactly like a replayed live frame).
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let url = dir.appendingPathComponent("journal.sqlite")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        try seedPreBackfillDatabase(at: url, events: [summaryEvent(2)]) { db in
+            // Values deliberately differ from what a fresh conversion of
+            // summaryEvent(2) would produce, so an overwrite would show.
+            try db.execute(
+                sql: "INSERT INTO summary_entry(convo_id, seq, toc, detail, created_at) VALUES(?, ?, ?, ?, ?)",
+                arguments: ["c1", 2, "Live-written thing", "Live detail", 999])
+        }
+
+        let upgraded = try JournalStore(databaseURL: url, ownSender: "user:dan")
+        let entries = try upgraded.summaryEntries(convoID: "c1")
+        XCTAssertEqual(entries.count, 1, "backfill must not duplicate an existing entry")
+        XCTAssertEqual(entries.first?.toc, "Live-written thing",
+                       "an entry the live path already wrote wins over the re-derived one")
     }
 
     func testSnapshotAndConvoMetaRecordTheOwningBox() throws {

@@ -36,8 +36,30 @@ public final class SearchViewModel {
         guard !query.isEmpty else { return [] }
         let lower = query.lowercased()
         return allChats.filter {
-            $0.title.lowercased().contains(lower) || $0.bot.displayName.lowercased().contains(lower)
+            $0.title.lowercased().contains(lower)
+                || $0.bot.displayName.lowercased().contains(lower)
+                || tagMatches($0, query: lower)
         }
+    }
+
+    /// Whether `lower` (the already-lowercased query) matches the chat's
+    /// visible session tag in any of its rendered spellings
+    /// (`SessionTag.searchSpellings`): the bare short (`b5`) or the
+    /// letters:short form (`Y:b5`, `Y↔Z:ab`). The short is peeled out of the
+    /// stored title (`SessionTag.splitTitle`), so without this clause a tag
+    /// the user can SEE in the row would not find its chat (ported from
+    /// matron-android#46). A query that IS a bare box letter deliberately
+    /// never matches — one letter would light up every chat on that box and
+    /// drown the real hits.
+    private func tagMatches(_ chat: ChatSummary, query lower: String) -> Bool {
+        let letters = chat.roomBoxShorts.count >= 2
+            ? chat.roomBoxShorts : [chat.boxShort].compactMap { $0 }
+        guard !letters.contains(where: { $0.lowercased() == lower }) else { return false }
+        return SessionTag.searchSpellings(
+            boxLetter: chat.boxShort,
+            sessionShort: chat.sessionShort,
+            roomBoxShorts: chat.roomBoxShorts
+        ).contains { $0.lowercased().contains(lower) }
     }
 
     /// Resolves a room ID to its display title using `allChats`. Falls back to the raw

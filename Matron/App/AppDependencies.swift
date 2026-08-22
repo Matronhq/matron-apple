@@ -80,7 +80,7 @@ final class AppDependencies {
             Task { await engine.attachSearch(service) }
             if core.backfillTask == nil {
                 core.backfillTask = Self.startBackfill(search: service, api: core.api, store: core.store,
-                                                       resetBookkeepingFirst: true)
+                                                       engine: engine, resetBookkeepingFirst: true)
             }
         }
     }
@@ -180,7 +180,7 @@ final class AppDependencies {
             ownSender: "user:\(session.userID)", search: search
         )
         let core = JournalCore(api: api, store: store, engine: engine)
-        core.backfillTask = Self.startBackfill(search: search, api: api, store: store)
+        core.backfillTask = Self.startBackfill(search: search, api: api, store: store, engine: engine)
         // One-time: box tag letters chosen before they were journal-held
         // move up to the server so they show on every device — and into
         // the local mirror first, so they keep painting while the push is
@@ -216,17 +216,23 @@ final class AppDependencies {
     /// hidden by stale complete flags). Indexed messages are untouched and
     /// re-indexing is idempotent, so the cost is re-paging history once.
     static func startBackfill(search: SearchService?, api: JournalAPI, store: JournalStore,
-                              resetBookkeepingFirst: Bool = false) -> Task<Void, Never>? {
+                              engine: JournalSyncEngine, resetBookkeepingFirst: Bool = false) -> Task<Void, Never>? {
         guard let search else { return nil }
         let coordinator = SearchBackfillCoordinator(search: search) { convoID, beforeSeq, limit in
             try await api.messages(convoID: convoID, beforeSeq: beforeSeq, limit: limit)
         }
         return Task(priority: .utility) {
+            // Attach before anything else: from the moment a walk can exist,
+            // the engine's cold-start bookkeeping reset must route through
+            // this coordinator's epoch guard rather than race the walk by
+            // hitting the SearchService directly (see
+            // SearchBackfillCoordinator.reset).
+            await engine.attachBackfillCoordinator(coordinator)
             // Inside the task and ahead of the sleep, so it is ordered before
-            // the coordinator's first backfillComplete() check. Best-effort:
-            // a failed reset leaves coverage where it was, exactly as the
-            // cold-start reset does.
-            if resetBookkeepingFirst { try? await search.resetBackfill() }
+            // the coordinator's first backfillComplete() check. Best-effort
+            // (reset() swallows a failed delete), exactly as the cold-start
+            // reset is.
+            if resetBookkeepingFirst { await coordinator.reset() }
             // Let the initial connect + catch-up replay land before adding
             // background request load.
             try? await Task.sleep(for: .seconds(10))
@@ -298,8 +304,9 @@ final class AppDependencies {
         core(for: session).api
     }
 
-    /// Spawn consent surface: answering the session-start cards inline in a
-    /// chat. Same session-scoped `JournalAPI`; protocol slice for testability.
+    /// Agent-spawn consent surface: answering the cards inline in a chat.
+    /// No settings-screen twin — a spawn's resolution is journalled, so
+    /// there is no parked-row list to poll.
     func agentSpawnService(for session: UserSession) -> any AgentSpawnAnswering {
         core(for: session).api
     }
@@ -315,6 +322,15 @@ final class AppDependencies {
     func agentRPCService(for session: UserSession) -> any AgentRPCProviding {
         let core = core(for: session)
         return JournalAgentRPCService(api: core.api, engine: core.engine)
+    }
+
+    /// New Chat surface: last-known per-box capacity, so a box the host has
+    /// suspended can still show the quota it had. Namespaced by user id like
+    /// the journal store file — agent device ids are only unique within a
+    /// journal, so an app-global cache would show one account another's
+    /// numbers. `signOut()` removes the account's key alongside the wipes.
+    func boxCapacityCache(for session: UserSession) -> any BoxCapacityCaching {
+        UserDefaultsBoxCapacityCache(userID: session.userID)
     }
 
     /// Placeholder conversation row so navigating to a just-started
@@ -382,6 +398,8 @@ final class AppDependencies {
     /// safe to clear `cores`/`timelineCache` synchronously right after.
     func signOut() {
         let oldCores = Array(cores.values)
+        // Keyed by user id, captured before `cores.removeAll()` below.
+        let oldUserIDs = Array(cores.keys)
         // One awaitable teardown task instead of fire-and-forget per core:
         // a fast re-login used to open a new sync engine against the same
         // per-user SQLite file while the old engine was still writing, and
@@ -429,6 +447,12 @@ final class AppDependencies {
             // new session's indexing can't interleave with the wipe (bugbot
             // "Search wipe races indexing").
             try? await search?.wipe()
+            // Same data-separation contract: agent device ids repeat across
+            // journals, so the next account on this device must not inherit
+            // the last one's box capacities (account email included).
+            for userID in oldUserIDs {
+                UserDefaultsBoxCapacityCache.removeAll(for: userID)
+            }
         }
         cores.removeAll()
         mediaServices.removeAll()

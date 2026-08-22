@@ -249,6 +249,25 @@ public final class JournalStore: @unchecked Sendable {
         } else {
             dbQueue = try DatabaseQueue()
         }
+        try Self.migrator().migrate(dbQueue)
+        // Boot-time TTL sweep, mirroring the server's expire-logs job
+        // (matron-journal docs/protocol.md Retention): a cached live_log
+        // snippet must not outlive the 24h TTL just because this device
+        // never re-synced the row. Best-effort — a failed sweep must not
+        // block opening the store (the mapper's render-time TTL guard keeps
+        // the DISPLAY correct either way; the sweep is what cleans the disk).
+        do {
+            try purgeExpiredToolOutputSnippets()
+        } catch {
+            Self.logger.error("tool-output TTL sweep failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// The full schema migration chain. Static (rather than inline in
+    /// `init`) so tests can freeze a database at an intermediate version
+    /// with `migrate(_:upTo:)` and prove a later migration's work against
+    /// real pre-upgrade state.
+    static func migrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
         migrator.registerMigration("v1") { db in
             try db.create(table: "conversation") { t in
@@ -339,26 +358,41 @@ public final class JournalStore: @unchecked Sendable {
                 t.add(column: "participants", .text)
             }
         }
-        // v7: journal-held roster tag characters (spec: box tag characters).
-        // Mirrors the server's `tag_char` per agent box; NULL = automatic.
-        // Additive like v5 — rows fill in from the next snapshot.
+        // v7: backfill summary_entry from `summary` events already in the
+        // local mirror. v4 created the table but only the live apply path
+        // ever filled it, so a device that had synced history before
+        // upgrading showed an empty TOC for every existing conversation
+        // until a from-scratch re-sync. Runs as its own version (not folded
+        // into v4) so installs that already ran v4 get backfilled too. Same
+        // conversion and insert as the live path (`SummaryEntryRecord(event:)`
+        // + insert-or-ignore), so backfilled rows are indistinguishable from
+        // live-ingested ones and rows the live path already wrote win.
+        // Payloads that don't decode to a TOC entry are skipped, exactly as
+        // live ingest skips them. (`event` and `summary_entry` are still at
+        // their v1/v4 shapes when v7 runs, so using the record types here is
+        // safe.)
         migrator.registerMigration("v7") { db in
+            let rows = try EventRecord
+                .filter(Column("type") == JournalEventType.summary)
+                .fetchAll(db)
+            for row in rows {
+                guard let entry = SummaryEntryRecord(event: row.journalEvent) else { continue }
+                try entry.insert(db, onConflict: .ignore)
+            }
+        }
+        // v8: journal-held roster tag characters (spec: box tag characters).
+        // Mirrors the server's `tag_char` per agent box; NULL = automatic.
+        // Additive like v5 — rows fill in from the next snapshot. Numbered v8
+        // because main landed its own "v7" (the summary_entry backfill) first:
+        // a duplicate identifier is a registration precondition failure, and
+        // re-using the name on an installed device would silently skip this
+        // column (GRDB records the identifier, not the body).
+        migrator.registerMigration("v8") { db in
             try db.alter(table: "agent") { t in
                 t.add(column: "tag_char", .text)
             }
         }
-        try migrator.migrate(dbQueue)
-        // Boot-time TTL sweep, mirroring the server's expire-logs job
-        // (matron-journal docs/protocol.md Retention): a cached live_log
-        // snippet must not outlive the 24h TTL just because this device
-        // never re-synced the row. Best-effort — a failed sweep must not
-        // block opening the store (the mapper's render-time TTL guard keeps
-        // the DISPLAY correct either way; the sweep is what cleans the disk).
-        do {
-            try purgeExpiredToolOutputSnippets()
-        } catch {
-            Self.logger.error("tool-output TTL sweep failed: \(error.localizedDescription, privacy: .public)")
-        }
+        return migrator
     }
 
     // MARK: Tool-output TTL
@@ -666,8 +700,26 @@ public final class JournalStore: @unchecked Sendable {
             // string for the same event. A snapshot and a live frame must
             // not render the same row two different ways.
             if payload["kind"] as? String == "agent_chat" { return "🤝 Agent chat request" }
+            // The agent-spawn card is the same shape from the other side —
+            // no `description` either, and the server gives it its own line.
             if payload["kind"] as? String == "agent_spawn" { return "🤝 Agent spawn request" }
             return "permission: " + String((payload["description"] as? String ?? "").prefix(100))
+        case JournalEventType.spawnOutcome:
+            // A resolution retires the card's snippet, so the chat list stops
+            // advertising a settled ask. These are byte-exact mirrors of the
+            // server's snippetOf strings — bare, no error-code suffix — so a
+            // locally-derived snippet never disagrees with a server-minted
+            // snapshot one. Deliberately NOT `SpawnOutcome.displayLine`
+            // (MatronEvents), whose richer copy (" — errorCode" on failures)
+            // is for the timeline row only; MatronJournal is a leaf module
+            // and could not import it anyway. Pinned to the server by test.
+            switch payload["outcome"] as? String ?? "" {
+            case "started": return "🚀 Spawned session started"
+            case "declined": return "🚫 Spawn declined"
+            case "expired": return "⌛ Spawn request expired"
+            case "failed": return "❌ Spawn failed"
+            default: return "[\(type)]"
+            }
         default:
             if let s = payload["snippet"] as? String { return String(s.prefix(120)) }
             return "[\(type)]"

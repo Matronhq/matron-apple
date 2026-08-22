@@ -496,7 +496,22 @@ struct MacChatListView: View {
                 sessionShort: summary?.sessionShort,
                 boxShort: summary?.boxShort,
                 roomBoxNames: summary?.roomBoxNames ?? [],
-                roomBoxShorts: summary?.roomBoxShorts ?? []
+                roomBoxShorts: summary?.roomBoxShorts ?? [],
+                // "Open" on a started spawn: select the spawned room in the
+                // sidebar. `prepareConversation` first, exactly as the New
+                // Chat sheet does before navigating to a freshly-started
+                // conversation — the room may have no journal frames yet,
+                // and the detail column needs a row to render.
+                onOpenConversation: { roomID in
+                    // `@MainActor in` explicitly: `chatDetail(for:)` is not
+                    // an isolated context, so an unannotated Task would
+                    // resume off the main thread after the await and write
+                    // `selectedSummaryID` from there.
+                    Task { @MainActor in
+                        await deps.prepareConversation(for: session, id: roomID)
+                        selectedSummaryID = roomID
+                    }
+                }
             )
             .id(id)
         } else {
@@ -536,11 +551,18 @@ final class ChatVMCache {
         }
         let timelineSvc = deps.timelineService(for: session, roomID: roomID)
         let mediaSvc = deps.mediaService(for: session)
+        // The composer reads the chat half's session status for the palette's
+        // session-derived suggestions (`/model`, `/effort`). Weakly: this
+        // cache owns both, and the closure must not keep the chat VM alive
+        // past an eviction.
+        let chat = ChatViewModel(roomID: roomID, timeline: timelineSvc, media: mediaSvc,
+                                 agentChat: deps.agentChatService(for: session),
+                                 agentSpawn: deps.agentSpawnService(for: session))
         let pair = (
-            chat: ChatViewModel(roomID: roomID, timeline: timelineSvc, media: mediaSvc,
-                                agentChat: deps.agentChatService(for: session),
-                                agentSpawn: deps.agentSpawnService(for: session)),
-            composer: ComposerViewModel(roomID: roomID, timeline: timelineSvc, commands: BotCommandCatalog.claudeBridge)
+            chat: chat,
+            composer: ComposerViewModel(roomID: roomID, timeline: timelineSvc,
+                                        commands: BotCommandCatalog.claudeBridge,
+                                        sessionStatus: { [weak chat] in chat?.sessionStatus })
         )
         entries[roomID] = pair
         order.append(roomID)

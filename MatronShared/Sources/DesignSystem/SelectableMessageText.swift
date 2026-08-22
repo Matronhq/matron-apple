@@ -21,19 +21,20 @@ import SwiftUI
 /// destabilising the timeline, so heights must never move for a fixed input.
 public struct SelectableMessageText: View {
     private let source: String
-    private let attributed: NSAttributedString
+    private let rendered: MarkdownAttributed.Rendered
 
     /// - Parameter source: raw markdown message body. Kept alongside the
-    ///   converted string because the size memo is keyed on the SOURCE —
-    ///   `**hi**` and `hi` render identical plain text with different fonts,
-    ///   so the rendered text can't identify a size (bugbot, PR #37).
+    ///   render products because copy needs the verbatim source, and because
+    ///   the memo they live in is keyed on the SOURCE — `**hi**` and `hi`
+    ///   render identical plain text with different fonts, so the rendered
+    ///   text can't identify a size (bugbot, PR #37).
     public init(_ source: String) {
         self.source = source
-        self.attributed = MarkdownAttributed.attributedString(for: source)
+        self.rendered = MarkdownAttributed.rendered(for: source)
     }
 
     public var body: some View {
-        SelectableTextViewRepresentable(source: source, attributed: attributed)
+        SelectableTextViewRepresentable(source: source, rendered: rendered)
     }
 }
 
@@ -81,7 +82,7 @@ final class MessageCopyTextView: MouseTrackingRescueTextView {
 /// `NSViewRepresentable` wrapping the non-editable, selectable `NSTextView`.
 private struct SelectableTextViewRepresentable: NSViewRepresentable {
     let source: String
-    let attributed: NSAttributedString
+    let rendered: MarkdownAttributed.Rendered
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -112,7 +113,8 @@ private struct SelectableTextViewRepresentable: NSViewRepresentable {
         textView.isAutomaticLinkDetectionEnabled = false
         textView.displaysLinkToolTips = true
         useTextKit1IfTabled(textView)
-        textView.textStorage?.setAttributedString(attributed)
+        textView.textStorage?.setAttributedString(rendered.attributed)
+        context.coordinator.lastApplied = rendered.attributed
         return textView
     }
 
@@ -120,10 +122,14 @@ private struct SelectableTextViewRepresentable: NSViewRepresentable {
         (textView as? MessageCopyTextView)?.markdownSource = source
         useTextKit1IfTabled(textView)
         // Only touch the storage when the content actually changed (streaming
-        // deltas re-emit the same view). Avoids needless relayout churn.
-        if textView.textStorage?.string != attributed.string
-            || !(textView.textStorage?.isEqual(to: attributed) ?? false) {
-            textView.textStorage?.setAttributedString(attributed)
+        // deltas re-emit the same view). Streaming re-emits the same view with
+        // the same cached `Rendered`, so pointer equality is the cheap
+        // "unchanged" test — the old string + `isEqual(to:)` pair walked the
+        // whole content on every update. A cache-evicted-and-rebuilt source
+        // reapplies identical content once: harmless.
+        if context.coordinator.lastApplied !== rendered.attributed {
+            textView.textStorage?.setAttributedString(rendered.attributed)
+            context.coordinator.lastApplied = rendered.attributed
         }
     }
 
@@ -137,8 +143,7 @@ private struct SelectableTextViewRepresentable: NSViewRepresentable {
     /// otherwise render a table's cells as loose stacked lines.
     /// Messages without tables keep today's TextKit 2 path untouched.
     private func useTextKit1IfTabled(_ textView: NSTextView) {
-        guard textView.textLayoutManager != nil,
-              MarkdownAttributed.containsTable(attributed) else { return }
+        guard textView.textLayoutManager != nil, rendered.containsTable else { return }
         _ = textView.layoutManager
     }
 
@@ -152,7 +157,7 @@ private struct SelectableTextViewRepresentable: NSViewRepresentable {
         guard let width = proposal.width, width > 0, width.isFinite else {
             return nil
         }
-        return MarkdownAttributed.size(for: attributed, source: source, width: width)
+        return rendered.size(width: width)
     }
 
     /// Handles link clicks with the same scheme policy as `MarkdownText`
@@ -163,6 +168,12 @@ private struct SelectableTextViewRepresentable: NSViewRepresentable {
     /// carry a `.link` attribute (see `MarkdownAttributed`), so in practice only
     /// http(s)/unknown schemes ever reach this delegate.
     final class Coordinator: NSObject, NSTextViewDelegate {
+        /// The exact `NSAttributedString` instance last written into the text
+        /// view's storage. `MarkdownAttributed.Rendered` is memoised per
+        /// source, so identity here is a valid — and O(1) — "content is
+        /// unchanged" test (see `updateNSView`).
+        var lastApplied: NSAttributedString?
+
         func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
             // Tell the press-rescue layer the link WAS dispatched, whichever
             // internal AppKit route got here — this is what keeps the

@@ -28,25 +28,47 @@ public enum DateSeparatorLabel {
         let startOfThen = calendar.startOfDay(for: date)
         if let days = calendar.dateComponents([.day], from: startOfThen, to: startOfNow).day,
            days > 0, days < 7 {
-            let f = DateFormatter()
-            f.calendar = calendar
-            f.locale = calendar.locale ?? .current
-            f.timeZone = calendar.timeZone
-            f.setLocalizedDateFormatFromTemplate("EEEE")
-            return f.string(from: date)
+            return formatter(calendar: calendar, template: "EEEE", style: .medium).string(from: date)
         }
 
         // Older — localised short date. `medium` (e.g. "5 Mar 2026")
         // reads naturally in every locale; `short` collapses to digits
         // ("3/5/26") which loses the month context the reader needs to
         // tell apart events from the same week-of-month last year.
+        return formatter(calendar: calendar, template: nil, style: .medium).string(from: date)
+    }
+
+    /// Formatter construction (especially `setLocalizedDateFormatFromTemplate`'s
+    /// ICU path) costs ~0.1-1ms; the old code built one per separator per body
+    /// eval. Keyed by the calendar's identity triple so injected test calendars
+    /// still get correct output. `RelativeMinuteTimeView` already caches
+    /// statically — this is the same treatment for the separator path.
+    ///
+    /// Cached formatters are fully configured before they are published and
+    /// never mutated afterwards, which is the documented requirement for
+    /// sharing a `DateFormatter` across threads.
+    private static let formatterLock = NSLock()
+    private static var formatters: [String: DateFormatter] = [:]
+
+    private static func formatter(
+        calendar: Calendar, template: String?, style: DateFormatter.Style
+    ) -> DateFormatter {
+        let locale = calendar.locale ?? .current
+        let key = "\(calendar.identifier)|\(locale.identifier)|\(calendar.timeZone.identifier)|\(template ?? "style-\(style.rawValue)")"
+        formatterLock.lock(); defer { formatterLock.unlock() }
+        if let hit = formatters[key] { return hit }
         let f = DateFormatter()
         f.calendar = calendar
-        f.locale = calendar.locale ?? .current
+        f.locale = locale
         f.timeZone = calendar.timeZone
-        f.dateStyle = .medium
-        f.timeStyle = .none
-        return f.string(from: date)
+        if let template {
+            f.setLocalizedDateFormatFromTemplate(template)
+        } else {
+            f.dateStyle = style
+            f.timeStyle = .none
+        }
+        formatters[key] = f
+        return f
     }
 }
 

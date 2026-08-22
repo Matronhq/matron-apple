@@ -53,12 +53,26 @@ public enum JournalTimelineMapper {
             if let request = AgentChatRequest.parse(payload: payload) {
                 kind = .agentChatRequest(eventID: String(event.seq), request)
             } else if let spawn = AgentSpawnRequest.parse(payload: payload) {
-                // The spawn consent card, same story as the chat card above:
-                // in the generic branch it rendered as an anonymous
-                // "Permission request" whose buttons answered over
-                // `prompt_reply` — earning "Nothing to answer right now"
-                // from the bridge while the parked ask expired untouched.
+                // The agent-spawn card, same story: no `description`, no
+                // `options`, and an answer that leaves over HTTP.
                 kind = .agentSpawnRequest(eventID: String(event.seq), spawn)
+            } else if let consentKind = payload["kind"] as? String,
+                      consentKind == "agent_spawn" || consentKind == "agent_chat" {
+                // A consent-kind payload the parser rejected (malformed —
+                // e.g. no request_id). It answers over HTTP
+                // (`POST /agent-spawn/answer` / `/agent-chat/answer`), never
+                // `prompt_reply`, so the generic branch below would draw
+                // Allow/Deny wired to a channel nothing reads — dead taps
+                // until the ask expires. Render an inert notice instead,
+                // matching android; web renders the spawn card read-only.
+                let headline = (payload["topic"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                    ?? (payload["task"] as? String).flatMap {
+                        let first = $0.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? ""
+                        return first.isEmpty ? nil : first
+                    }
+                let notice = headline.map { "Agent request that can't be answered here: \($0)" }
+                    ?? "Agent request that can't be answered here"
+                kind = .stateChange(text: notice)
             } else {
                 let description = payload["description"] as? String ?? "Permission request"
                 let optionValues = (payload["options"] as? [String]) ?? ["Allow", "Deny"]
@@ -69,7 +83,34 @@ public enum JournalTimelineMapper {
                     expiresAt: nil, replyChannel: .buttonResponse))
             }
 
+        case JournalEventType.spawnOutcome:
+            // How a spawn request ended. Server-minted and agent-visible
+            // (unlike the card), so it replays like any other row — which is
+            // exactly what lets the card derive its resolved state from the
+            // timeline instead of remembering an answer locally.
+            if let outcome = SpawnOutcome.parse(payload: payload) {
+                kind = .spawnOutcomeRow(eventID: String(event.seq), outcome)
+            } else {
+                kind = .unknown(eventType: event.type)
+            }
+
         case JournalEventType.promptReply:
+            // A bridge-authored queued_release resolution: prompt_id +
+            // action, no target_seq and no choice. Hide it as an answer
+            // row namespaced by the bridge prompt id ("qr:pr_…") so a
+            // flush retires every sent card's buttons on every device —
+            // the generic branches below would render it as an empty
+            // text bubble and resolve nothing.
+            if (payload["kind"] as? String) == "queued_release" {
+                // A release is never meant to be visible, so a malformed
+                // one (no prompt_id / no action) drops entirely rather
+                // than falling through to the generic path's empty bubble.
+                guard let releasePromptID = payload["prompt_id"] as? String,
+                      let action = payload["action"] as? String else { return nil }
+                kind = .askUserAnswer(promptEventID: "qr:\(releasePromptID)",
+                                      selectedValues: [action])
+                break
+            }
             let target = (payload["target_seq"] as? NSNumber)?.int64Value
             inReplyTo = target.map(String.init)
             if let choice = payload["choice"] as? String {
@@ -204,9 +245,15 @@ public enum JournalTimelineMapper {
         } else {
             kind = .choice(options: options, allowOther: allowsFreeText)
         }
+        // Busy-queue cards carry the bridge-owned prompt id their durable
+        // release frames will later name — see the promptReply branch.
+        let queuedReleasePromptID = (payload["kind"] as? String) == "queued_release"
+            ? payload["prompt_id"] as? String
+            : nil
         return AskUserEvent(
             prompt: question, kind: kind, expiresAt: nil,
-            replyChannel: options.isEmpty ? .textReply : .buttonResponse)
+            replyChannel: options.isEmpty ? .textReply : .buttonResponse,
+            queuedReleasePromptID: queuedReleasePromptID)
     }
 
     public static func streamingItem(messageRef: String, text: String, convoTS: Date) -> TimelineItem {

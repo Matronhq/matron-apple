@@ -3,6 +3,15 @@ import MatronChat
 import MatronModels
 import UniformTypeIdentifiers
 
+/// One row of the palette's argument-completion mode — a static argument
+/// suggestion (flag or enumerated value) or a recent folder. Ordered
+/// arguments-first by `ComposerViewModel.paletteSuggestions`; the palette
+/// views render each case with its own row style.
+public enum PaletteSuggestion: Equatable, Hashable, Sendable {
+    case argument(ArgSuggestion)
+    case folder(String)
+}
+
 /// Drives the message composer: text input, slash-command palette, and the
 /// send / attach actions. Both iOS (`ComposerView`) and macOS
 /// (`MacChatView` / `ComposerDropDelegate`) bind against the same instance.
@@ -106,16 +115,30 @@ public final class ComposerViewModel {
     private let timeline: TimelineService
     private let commands: [BotCommand]
 
+    /// The conversation's last-known session status, read on demand from
+    /// the `ChatViewModel` that owns it. A closure rather than a stored
+    /// copy: the two view models are built as a pair by the chat list's VM
+    /// cache but are otherwise independent, and reading through means the
+    /// palette sees the newest lists with nothing having to push them
+    /// across — and that SwiftUI registers the read while evaluating the
+    /// palette's own body, so a later status frame repaints it.
+    ///
+    /// Defaults to "no status", which is what a composer with no chat half
+    /// (tests, any future non-conversation surface) should offer: nothing.
+    private let sessionStatus: @MainActor () -> SessionStatus?
+
     public init(
         roomID: String,
         timeline: TimelineService,
         commands: [BotCommand],
-        recentFolders: RecentStartFolders = RecentStartFolders()
+        recentFolders: RecentStartFolders = RecentStartFolders(),
+        sessionStatus: @escaping @MainActor () -> SessionStatus? = { nil }
     ) {
         self.roomID = roomID
         self.timeline = timeline
         self.commands = commands
         self.recentFolders = recentFolders
+        self.sessionStatus = sessionStatus
     }
 
     /// Whether the slash palette should be visible. True when the input is
@@ -130,11 +153,11 @@ public final class ComposerViewModel {
     /// arguments" → palette closed.
     public var showPalette: Bool {
         if palettePinnedOpen { return true }
-        // Folder-completion mode: `/start`/`/workdir` followed by a partial
-        // path with at least one matching recent folder. Takes priority
-        // over the command list (which only shows for single-token input,
-        // so the two never both qualify).
-        if !folderSuggestions.isEmpty { return true }
+        // Suggestion mode: a fully-typed command followed by a partial
+        // argument, with at least one argument or folder row to offer.
+        // Takes priority over the command list (which only shows for
+        // single-token input, so the two never both qualify).
+        if !paletteSuggestions.isEmpty { return true }
         let leading = input.drop(while: { $0 == " " || $0 == "\t" })
         guard leading.hasPrefix("/") || leading.hasPrefix("!") else { return false }
         return leading.split(separator: " ", omittingEmptySubsequences: false).count == 1
@@ -164,12 +187,13 @@ public final class ComposerViewModel {
     /// under the highlight, so a stale index would pick the wrong row.
     public private(set) var paletteSelection: Int?
 
-    /// Number of rows the palette is showing: folder suggestions when in
-    /// folder-completion mode, filtered commands otherwise. Must mirror
-    /// the palette view's "folders win" display rule so the keyboard
-    /// highlight and the rendered rows agree.
+    /// Number of rows the palette is showing: the unified suggestion list
+    /// when in argument/folder-completion mode, filtered commands
+    /// otherwise. Must mirror the palette view's "suggestions win" display
+    /// rule so the keyboard highlight and the rendered rows agree.
     public var paletteItemCount: Int {
-        folderSuggestions.isEmpty ? filteredCommands.count : folderSuggestions.count
+        let suggestions = paletteSuggestions
+        return suggestions.isEmpty ? filteredCommands.count : suggestions.count
     }
 
     /// Down-arrow while the palette shows: highlight the first row, or
@@ -199,16 +223,50 @@ public final class ComposerViewModel {
     public func confirmPaletteSelection() -> Bool {
         guard showPalette, let index = paletteSelection else { return false }
         paletteSelection = nil
-        let folders = folderSuggestions
-        if !folders.isEmpty {
-            guard folders.indices.contains(index) else { return false }
-            selectFolder(folders[index])
+        let suggestions = paletteSuggestions
+        if !suggestions.isEmpty {
+            guard suggestions.indices.contains(index) else { return false }
+            selectSuggestion(suggestions[index])
             return true
         }
         let commands = filteredCommands
         guard commands.indices.contains(index) else { return false }
         selectCommand(commands[index])
         return true
+    }
+
+    /// The palette's second mode: the matched command's argument
+    /// suggestions — static ones from the catalog, session-derived ones
+    /// (`/model`, `/effort`) from the bridge's status frame — then any
+    /// recent-folder matches. Arguments first: they're few and short, and
+    /// the folder list can run to eight rows.
+    public var paletteSuggestions: [PaletteSuggestion] {
+        BotCommandCatalog
+            .argSuggestions(for: input, in: commands, status: sessionStatus())
+            .map { .argument($0) }
+            + folderSuggestions.map { .folder($0) }
+    }
+
+    /// Row-tap / Return dispatch for the unified suggestion list.
+    public func selectSuggestion(_ suggestion: PaletteSuggestion) {
+        switch suggestion {
+        case .argument(let argument): selectArgument(argument)
+        case .folder(let path): selectFolder(path)
+        }
+    }
+
+    /// Replaces the trailing partial token with the chosen argument plus a
+    /// trailing space — mirroring `selectCommand(_:)` — so the palette
+    /// immediately offers whatever the command still accepts (`/restart
+    /// --force ` goes on to offer `--browser`), and dismisses itself once
+    /// nothing is left.
+    public func selectArgument(_ argument: ArgSuggestion) {
+        if let range = input.range(of: "\\S*$", options: .regularExpression) {
+            input.replaceSubrange(range, with: argument.value + " ")
+        } else {
+            input = argument.value + " "
+        }
+        palettePinnedOpen = false
     }
 
     /// Recent-folder suggestions for the current input, limited to a
@@ -249,11 +307,11 @@ public final class ComposerViewModel {
 
     /// The partial path token when the input is in folder-completion mode:
     /// a `/start`/`/workdir` command (either `/` or `!` prefix) followed by
-    /// whitespace and at most one more token with no trailing whitespace.
-    /// Returns the (possibly empty) partial token, or `nil` when the input
-    /// isn't such a command line. Flag-laden inputs (a second token before
-    /// the partial) don't qualify — the `\S*` tail must be the only
-    /// argument token so far.
+    /// whitespace, optional `--flag` tokens, and a trailing (possibly
+    /// empty) partial token. Returns the partial, or `nil` when the input
+    /// isn't such a command line. The bridge's grammar is `[flags] [path]`,
+    /// so flags ahead of the partial are fine, but a completed non-flag
+    /// token means the path slot is already taken.
     private var folderCompletionPartial: String? {
         let leading = Substring(input.drop(while: { $0 == " " || $0 == "\t" }))
         guard let first = leading.first, first == "/" || first == "!" else { return nil }
@@ -261,13 +319,20 @@ public final class ComposerViewModel {
         // The command name runs up to the first whitespace; there must be
         // whitespace after it for the command to be complete.
         guard let commandEnd = body.firstIndex(where: { $0.isWhitespace }) else { return nil }
-        let command = body[body.startIndex..<commandEnd]
+        // Case-insensitive, matching the command palette's filter and the
+        // argument resolver — one input, one case rule.
+        let command = body[body.startIndex..<commandEnd].lowercased()
         guard command == "start" || command == "workdir" else { return nil }
-        // Everything after the separating whitespace is the partial arg; it
-        // must be a single token (no further whitespace).
-        let partial = body[commandEnd...].drop(while: { $0.isWhitespace })
-        guard !partial.contains(where: { $0.isWhitespace }) else { return nil }
-        return String(partial)
+        // The trailing token (after the last whitespace) is the partial;
+        // every completed token between it and the command must be a flag
+        // (smart-dashed forms included — the bridge normalizes them).
+        let args = body[commandEnd...]
+        let partialStart = args.lastIndex(where: { $0.isWhitespace })
+            .map(args.index(after:)) ?? args.startIndex
+        let earlier = args[..<partialStart].split(whereSeparator: { $0.isWhitespace })
+        guard earlier.allSatisfy({ BotCommandCatalog.normalizeLeadingDashes($0).hasPrefix("--") })
+        else { return nil }
+        return String(args[partialStart...])
     }
 
     /// Extracts the folder-path argument to record from a sent `/start` or
@@ -280,8 +345,13 @@ public final class ComposerViewModel {
         let trimmed = Substring(text.trimmingCharacters(in: .whitespacesAndNewlines))
         guard let first = trimmed.first, first == "/" || first == "!" else { return nil }
         let tokens = trimmed.dropFirst().split(whereSeparator: { $0.isWhitespace })
-        guard let command = tokens.first, command == "start" || command == "workdir" else { return nil }
-        for token in tokens.dropFirst() where !token.hasPrefix("--") {
+        // Case-insensitive, agreeing with folderCompletionPartial and the
+        // palette — one input, one case rule.
+        guard let command = tokens.first?.lowercased(), command == "start" || command == "workdir" else { return nil }
+        // Smart-dashed flags ("—browser") are flags, not folders — the
+        // bridge normalizes them, and recording one would poison recents.
+        for token in tokens.dropFirst()
+        where !BotCommandCatalog.normalizeLeadingDashes(token).hasPrefix("--") {
             return String(token)
         }
         return nil
@@ -384,12 +454,23 @@ public final class ComposerViewModel {
         // bridge uses the tag to gather these sequential uploads back into
         // the one message the user wrote, instead of starting a turn on the
         // first image and busy-queueing the rest.
-        let batchID = attachments.count > 1 ? UUID().uuidString : nil
-        for (index, attachment) in attachments.enumerated() {
+        //
+        // An attachment that failed out of an earlier send arrives here
+        // already carrying its tag (stamped in the catch below) and keeps
+        // it verbatim. Fresh tags are minted only across the untagged
+        // attachments, so a retry neither re-brands the members of the old
+        // batch nor takes a place in a new one.
+        let untagged = attachments.filter { $0.batchTag == nil }
+        let freshBatchID = untagged.count > 1 ? UUID().uuidString : nil
+        var freshIndex = 0
+        let plan: [(attachment: StagedAttachment, batch: AttachmentBatchTag?)] = attachments.map {
+            if let carried = $0.batchTag { return ($0, carried) }
+            guard let freshBatchID else { return ($0, nil) }
+            freshIndex += 1
+            return ($0, AttachmentBatchTag(id: freshBatchID, index: freshIndex, total: untagged.count))
+        }
+        for (index, (attachment, batch)) in plan.enumerated() {
             let itemCaption = (index == 0 && !caption.isEmpty) ? caption : nil
-            let batch = batchID.map {
-                AttachmentBatchTag(id: $0, index: index + 1, total: attachments.count)
-            }
             uploadProgress = UploadProgress(
                 filename: attachment.filename, index: index + 1,
                 count: attachments.count, fraction: 0)
@@ -425,9 +506,23 @@ public final class ComposerViewModel {
                     )
                 }
             } catch {
+                // Each unsent attachment goes back to the tray stamped with
+                // the tag its frame was about to carry, so the retry
+                // re-emits it under the ORIGINAL batch_id/index/total. The
+                // bridge gathers frames by batch id: under the original id
+                // a retried frame either deposits into the still-open
+                // gather — completing the batch — or, if the batch already
+                // finalized without it, gets routed down the immediate
+                // per-frame path. A freshly minted id could do neither: the
+                // frame would wait forever for siblings that already went
+                // out, and the user's one message would arrive fractured.
                 throw AttachmentSendFailure(
                     underlying: error,
-                    unsent: Array(attachments[index...]),
+                    unsent: plan[index...].map { attachment, batch in
+                        var kept = attachment
+                        kept.batchTag = batch
+                        return kept
+                    },
                     captionDelivered: captionDelivered
                 )
             }

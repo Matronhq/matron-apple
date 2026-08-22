@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 import MatronEvents
 
@@ -23,12 +24,36 @@ public struct DiffCard: View {
         self._expanded = State(initialValue: expanded)
     }
 
-    private var allLines: [Substring] {
-        event.diff.isEmpty ? [] : event.diff.split(separator: "\n", omittingEmptySubsequences: false)
+    /// Per-diff render memo: the line split ran over the whole diff on EVERY
+    /// body evaluation, and the `AttributedString` rebuild with it. Keyed by
+    /// the diff text (the bridge caps diffs at 400 lines, so entries are
+    /// small); main-thread only, like all view-body callers.
+    private final class DiffRenderMemo {
+        let lines: [Substring]
+        var renderedCollapsed: AttributedString?
+        var renderedExpanded: AttributedString?
+        init(diff: String) {
+            lines = diff.isEmpty ? [] : diff.split(separator: "\n", omittingEmptySubsequences: false)
+        }
+    }
+
+    private static let renderMemo: NSCache<NSString, DiffRenderMemo> = {
+        let cache = NSCache<NSString, DiffRenderMemo>()
+        cache.countLimit = 200
+        return cache
+    }()
+
+    private var memo: DiffRenderMemo {
+        let key = event.diff as NSString
+        if let hit = Self.renderMemo.object(forKey: key) { return hit }
+        let built = DiffRenderMemo(diff: event.diff)
+        Self.renderMemo.setObject(built, forKey: key)
+        return built
     }
 
     public var body: some View {
-        let lines = allLines
+        let memo = self.memo
+        let lines = memo.lines
         let visible = expanded ? lines : Array(lines.prefix(Self.collapsedLineCount))
         let hidden = lines.count - visible.count
 
@@ -36,7 +61,7 @@ public struct DiffCard: View {
             header
             if !visible.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    Text(rendered(visible))
+                    Text(renderedVisible(visible, memo: memo))
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(TerminalStyle.foreground)
                         .padding(8)
@@ -129,6 +154,23 @@ public struct DiffCard: View {
                 Text("−\(removed)").font(.caption2).bold().foregroundStyle(.red)
             }
         }
+    }
+
+    /// `rendered(_:)` through the per-diff memo. A card only ever shows two
+    /// slices — the collapsed prefix and the full diff — so one cached
+    /// `AttributedString` each covers every body evaluation of every card
+    /// showing this diff.
+    private func renderedVisible(_ visible: [Substring], memo: DiffRenderMemo) -> AttributedString {
+        if expanded {
+            if let hit = memo.renderedExpanded { return hit }
+            let built = rendered(visible)
+            memo.renderedExpanded = built
+            return built
+        }
+        if let hit = memo.renderedCollapsed { return hit }
+        let built = rendered(visible)
+        memo.renderedCollapsed = built
+        return built
     }
 
     /// One AttributedString for the whole visible block — a per-line Text

@@ -33,6 +33,22 @@ public struct BoxChip: View {
         palette[paletteIndex(for: name)]
     }
 
+    /// Alpha of the chip's fill — the tint washed over the app background.
+    /// Shared with `BoxChipTests`' WCAG audit so the maths and the
+    /// rendering can never disagree about what the text actually sits on.
+    static let fillAlpha: Double = 0.18
+
+    /// How far `textTint` pulls each hue toward black (light) / white
+    /// (dark). At these fractions every palette entry clears WCAG AA
+    /// (4.5:1) over the `fillAlpha` fill in both schemes — dark indigo is
+    /// the closest call at ≈4.6:1, saved by the dark system variants being
+    /// lighter than the light hues (Android, whose palette keeps the light
+    /// values in dark theme, had to deepen its indigo to 0.35 —
+    /// matron-android#38). The full measured table is pinned by
+    /// `BoxChipTests.testTextTintClearsWCAG_AA_overChipFillForEveryPaletteEntry`.
+    static let lightTextMixFraction: Double = 0.35
+    static let darkTextMixFraction: Double = 0.3
+
     /// The raw system hues are accent colours tuned for white text ON them,
     /// not for being text — teal/cyan/mint captions on the pale fill land
     /// around 2:1 contrast. Pull the text toward the label colour (darker in
@@ -48,8 +64,8 @@ public struct BoxChip: View {
         let base = tint(for: name)
         guard #available(iOS 18.0, macOS 15.0, *) else { return base }
         return colorScheme == .dark
-            ? base.mix(with: .white, by: 0.3)
-            : base.mix(with: .black, by: 0.35)
+            ? base.mix(with: .white, by: darkTextMixFraction)
+            : base.mix(with: .black, by: lightTextMixFraction)
     }
 
     /// Apple's documented light-mode sRGB for each `palette` entry, same
@@ -123,7 +139,7 @@ public struct BoxChip: View {
             .truncationMode(.tail)
             .padding(.horizontal, 6)
             .padding(.vertical, 1)
-            .background(Self.tint(for: displayName).opacity(0.18), in: Capsule())
+            .background(Self.tint(for: displayName).opacity(Self.fillAlpha), in: Capsule())
             .foregroundStyle(textTint)
             .accessibilityLabel("Agent box \(displayName)")
     }

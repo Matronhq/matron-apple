@@ -6,9 +6,10 @@ import MatronModels
 import MatronViewModels
 
 /// Mac variant of `NewChatSheet` (the Mac and iOS targets each carry their
-/// own `AppDependencies`, so the sheet is duplicated per platform): pick a
-/// connected agent → pick a folder → the agent starts a session there
-/// (agent RPC — spec 2026-07-15-new-chat-flow-design.md). `onCreated`
+/// own `AppDependencies`, so the sheet is duplicated per platform): pick an
+/// agent (a sleeping box wakes on pick) → pick a folder → the agent starts
+/// a session there (agent RPC — spec 2026-07-15-new-chat-flow-design.md).
+/// `onCreated`
 /// fires with the new conversation id once a placeholder row exists.
 struct MacNewChatSheet: View {
     let deps: AppDependencies
@@ -29,6 +30,22 @@ struct MacNewChatSheet: View {
     struct Layout: Equatable {
         let width: CGFloat
         let listMaxHeight: CGFloat
+    }
+
+    /// Whether the picker heads a "Sessions" column at all.
+    ///
+    /// Fleet-wide and driven by what the rows can actually render: a legacy
+    /// bridge parses to an EMPTY capacity, and a sleeping box's cached count
+    /// is dropped on purpose (it runs nothing), so either can leave a heading
+    /// over a column of em-dashes. An all-asleep fleet is the normal state
+    /// now that the host suspends idle boxes, so this is the common path, not
+    /// an edge case. A pending fan-out keeps the column: its "…" placeholders
+    /// need somewhere to sit.
+    static func showsSessions(_ rows: [(capacity: BoxCapacity?, freshness: AgentCapacityFreshness)],
+                              pending: Bool) -> Bool {
+        pending || rows.contains {
+            AgentCapacityRowContent.shownSessions($0.capacity, freshness: $0.freshness) != nil
+        }
     }
 
     /// 70% of the window's width (480…880); lists get 60% of its height
@@ -53,7 +70,9 @@ struct MacNewChatSheet: View {
         self.session = session
         self.onCreated = onCreated
         _layout = State(initialValue: Self.layout(for: windowSize))
-        _viewModel = State(initialValue: NewChatViewModel(api: deps.agentRPCService(for: session)))
+        _viewModel = State(initialValue: NewChatViewModel(
+            api: deps.agentRPCService(for: session),
+            capacityCache: deps.boxCapacityCache(for: session)))
     }
 
     var body: some View {
@@ -85,8 +104,20 @@ struct MacNewChatSheet: View {
         .frame(width: layout.width)
         .task { await viewModel.load() }
         // Esc / window-close dismissal never touches the Cancel button;
-        // anything that removes the sheet counts as abandoning the flow.
-        .onDisappear { if !navigated { cancelled = true } }
+        // anything that removes the sheet counts as abandoning the flow —
+        // including the wake loops, which would otherwise keep re-asking a
+        // box (and a retried start could silently spawn a session) for two
+        // minutes.
+        // Unconditional: `navigated` is set the moment `.done` lands, before
+        // `prepareConversation` returns, so gating on it would leave a sheet
+        // dismissed mid-await with the pending task still free to call
+        // `onCreated` and yank the user into a chat they walked away from.
+        // On the normal path this fires only after `onCreated` has already
+        // run, where setting it is a no-op.
+        .onDisappear {
+            cancelled = true
+            viewModel.abandon()
+        }
         .onChange(of: viewModel.phase) { _, phase in
             guard case .done(let convoID) = phase, !navigated, !cancelled else { return }
             navigated = true
@@ -107,16 +138,23 @@ struct MacNewChatSheet: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, minHeight: 120)
         } else {
+            // Offline boxes are seeded from the capacity cache, so their
+            // cached lines join the union too — otherwise a fleet whose only
+            // reporting box is asleep would show a grid with no columns.
             let columns = BoxCapacity.limitColumns(
                 across: agents.compactMap { viewModel.capacities[$0.id] })
-            // Grid chrome only when there is real data to show (or a fan-out
-            // still in flight). Legacy bridges parse to EMPTY capacities, so
-            // a non-empty map alone proves nothing — an all-legacy fleet
-            // keeps today's plain, headerless picker.
-            let showGrid = !viewModel.capacityPending.isEmpty
-                || viewModel.capacities.values.contains(where: \.hasDisplayableData)
+            // Grid chrome follows what the rows can actually render, not what
+            // the capacities happen to contain. Two ways those differ: a
+            // legacy bridge parses to an EMPTY capacity, and a sleeping box's
+            // cached session count is dropped — so an all-asleep fleet (the
+            // normal state, since the host suspends idle boxes) would
+            // otherwise head a "Sessions" column of nothing but em-dashes.
+            let showsSessions = Self.showsSessions(
+                agents.map { (viewModel.capacities[$0.id], viewModel.capacityFreshness(for: $0.id)) },
+                pending: !viewModel.capacityPending.isEmpty)
+            let showGrid = showsSessions || !columns.isEmpty
             if showGrid {
-                MacAgentPickerHeader(columns: columns)
+                MacAgentPickerHeader(columns: columns, showsSessions: showsSessions)
             }
             List(agents) { agent in
                 Button {
@@ -127,18 +165,19 @@ struct MacNewChatSheet: View {
                         capacity: viewModel.capacities[agent.id],
                         pending: viewModel.capacityPending.contains(agent.id),
                         columns: columns,
-                        showsCells: showGrid)
+                        showsCells: showGrid,
+                        showsSessions: showsSessions,
+                        freshness: viewModel.capacityFreshness(for: agent.id))
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .disabled(!agent.connected)
             }
             .listStyle(.inset)
             // Capacity makes the rows variable-height: grow with them up to
             // the window-derived cap, then scroll.
             .frame(minHeight: 200, maxHeight: layout.listMaxHeight)
             if !agents.contains(where: \.connected) {
-                Text("No agents connected — is the box awake?")
+                Text("All boxes are asleep — pick one to wake it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -149,6 +188,18 @@ struct MacNewChatSheet: View {
         Text("Folder on \(agent.name)")
             .font(.callout)
             .foregroundStyle(.secondary)
+        if viewModel.isWakingBox {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Waking \(agent.name)…")
+                if let since = viewModel.wakeStartedAt {
+                    Text(since, style: .relative)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            }
+            .font(.callout)
+        }
         if let foldersError = viewModel.foldersError {
             Text(foldersError).font(.caption).foregroundStyle(.secondary)
         }
@@ -174,7 +225,8 @@ struct MacNewChatSheet: View {
         .listStyle(.inset)
         .frame(minHeight: 160, maxHeight: layout.listMaxHeight)
         .overlay {
-            if viewModel.folders.isEmpty && viewModel.foldersError == nil {
+            if viewModel.folders.isEmpty && viewModel.foldersError == nil
+                && !viewModel.isWakingBox && !viewModel.wakeGaveUp {
                 Text("No recent folders on \(agent.name).")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -199,11 +251,34 @@ struct MacNewChatSheet: View {
         }
         Toggle("Browser tools", isOn: $viewModel.browserEnabled)
             .toggleStyle(.checkbox)
+        // Hidden for a bridge that doesn't say what it can run — an empty
+        // menu would only ever offer "Default". `.fixedSize` keeps the menu
+        // at its own width: the sheet is rigid and up to 880pt wide, and a
+        // full-width popup next to the checkbox reads as a text field.
+        if !viewModel.modelOptions.isEmpty {
+            Picker("Model", selection: $viewModel.selectedModel) {
+                Text("Default").tag(String?.none)
+                ForEach(viewModel.modelOptions) { option in
+                    Text(option.label).tag(Optional(option.value))
+                }
+            }
+            .pickerStyle(.menu)
+            .fixedSize()
+        }
         Text("Blank starts in the agent's default folder — pick a recent one above, or type a path.")
             .font(.caption)
             .foregroundStyle(.secondary)
         if let error = viewModel.errorMessage {
-            Text(error).font(.callout).foregroundStyle(.red)
+            HStack(spacing: 8) {
+                Text(error).font(.callout).foregroundStyle(.red)
+                // Gated on the same condition retryWake() guards on — a
+                // button that renders while a loop still runs would be dead.
+                if viewModel.wakeGaveUp && !viewModel.isStarting && !viewModel.isWakingBox {
+                    Button("Try Again") {
+                        Task { await viewModel.retryWake() }
+                    }
+                }
+            }
         }
     }
 }
@@ -223,7 +298,15 @@ struct MacAgentPickerRow: View {
     /// False for an all-legacy fleet: no data cells at all, so the row
     /// looks exactly like the pre-grid picker instead of a wall of dashes.
     let showsCells: Bool
-    /// Frozen clock for the reset captions; nil = now.
+    /// False when no row in the fleet can render a session count — an
+    /// all-asleep fleet drops the column rather than heading a wall of
+    /// em-dashes. Fleet-wide, so every row agrees with the header.
+    let showsSessions: Bool
+    /// Live numbers, or last-known ones for a box the host has put to sleep.
+    /// Deliberately NOT defaulted: a `.live` default silently renders cached
+    /// numbers as current, which is the one thing this type exists to stop.
+    let freshness: AgentCapacityFreshness
+    /// Frozen clock for the reset and age captions; nil = now.
     var fixedNow: Date?
 
     /// Cell width contract shared with `MacAgentPickerHeader`.
@@ -251,27 +334,36 @@ struct MacAgentPickerRow: View {
                 }
                 Text(agent.connected
                      ? "Connected"
-                     : "Offline · Last seen \(agent.lastSeenText())")
+                     : "Asleep · Last seen \(agent.lastSeenText()) — click to wake")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                // The data cells are numbers only, so the age of a sleeping
+                // box's numbers is captioned here, once per row — but only
+                // when the row actually discloses something cached. A legacy
+                // bridge persists an EMPTY capacity, and a bare disclaimer
+                // under a row showing nothing disclaims thin air.
+                if AgentCapacityRowContent.hasCachedContent(capacity, freshness: freshness),
+                   let age = freshness.ageText(now: fixedNow ?? Date()) {
+                    Text(age)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             if showsCells {
-                sessionsCell
+                if showsSessions {
+                    sessionsCell
+                }
                 ForEach(columns) { column in
                     limitCell(column)
                 }
             }
-            Group {
-                if agent.connected {
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                } else {
-                    Color.clear
-                }
-            }
-            .frame(width: Self.chevronGutter)
+            // Asleep rows are pickable too (the journal wakes the box on
+            // the first ask), so every row carries the chevron.
+            Image(systemName: "chevron.right")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .frame(width: Self.chevronGutter)
         }
     }
 
@@ -281,9 +373,15 @@ struct MacAgentPickerRow: View {
         pending && agent.connected ? "…" : "—"
     }
 
+    /// Cached blocks show no count at all — a sleeping box runs nothing, so
+    /// its last count would be false rather than merely old.
+    private var shownSessions: Int? {
+        AgentCapacityRowContent.shownSessions(capacity, freshness: freshness)
+    }
+
     private var sessionsCell: some View {
         Group {
-            if let live = capacity?.liveSessions {
+            if let live = shownSessions {
                 Text("\(live)")
                     .fontWeight(.medium)
                     .monospacedDigit()
@@ -297,7 +395,7 @@ struct MacAgentPickerRow: View {
     }
 
     private var sessionsAccessibilityLabel: String {
-        guard let live = capacity?.liveSessions else { return "Sessions unknown" }
+        guard let live = shownSessions else { return "Sessions unknown" }
         switch live {
         case ...0: return "No active sessions"
         case 1: return "1 active session"
@@ -309,16 +407,18 @@ struct MacAgentPickerRow: View {
         let now = fixedNow ?? Date()
         let line = capacity?.limitLines.first { $0.id == column.id }
         let reset = line.flatMap { BoxCapacity.resetText($0.resetsAt, now: now) }
-        // Same stale-percent rule as AgentCapacityRowContent: a percent from
-        // before its own reset moment renders tertiary, not green/red.
         let expired = line.map { BoxCapacity.hasReset($0.resetsAt, now: now) } ?? false
         return VStack(alignment: .trailing, spacing: 1) {
             if let line {
                 Text("\(line.percent)%")
                     .fontWeight(.medium)
                     .monospacedDigit()
-                    .foregroundStyle(expired ? AnyShapeStyle(.tertiary)
-                                             : AnyShapeStyle(UsageMetersFormat.barColor(percent: line.percent)))
+                    // Same emphasis rule as the stacked iOS block, from the
+                    // same helper: expired lines and cached blocks both lose
+                    // the threshold tint.
+                    .foregroundStyle(AgentCapacityRowContent
+                        .percentEmphasis(line.percent, expired: expired, freshness: freshness)
+                        .shapeStyle)
                 if let reset {
                     Text(reset)
                         .font(.caption2)
@@ -333,9 +433,9 @@ struct MacAgentPickerRow: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
             line.map {
-                "\(column.label), \($0.percent) percent used"
-                    + (expired ? " before the limit reset" : "")
-                    + (reset.map { ", \($0)" } ?? "")
+                AgentCapacityRowContent.limitAccessibilityLabel(
+                    label: column.label, percent: $0.percent, expired: expired,
+                    resetText: reset, freshness: freshness)
             } ?? "\(column.label), no data")
     }
 }
@@ -344,13 +444,17 @@ struct MacAgentPickerRow: View {
 /// Rendered outside the `List` so it never scrolls away.
 struct MacAgentPickerHeader: View {
     let columns: [LimitColumn]
+    /// Matches the rows: no "Sessions" heading when no row can fill it.
+    let showsSessions: Bool
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 10) {
             Text("Machine")
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Text("Sessions")
-                .frame(width: MacAgentPickerRow.sessionsCellWidth, alignment: .trailing)
+            if showsSessions {
+                Text("Sessions")
+                    .frame(width: MacAgentPickerRow.sessionsCellWidth, alignment: .trailing)
+            }
             ForEach(columns) { column in
                 Text(column.label)
                     .multilineTextAlignment(.trailing)

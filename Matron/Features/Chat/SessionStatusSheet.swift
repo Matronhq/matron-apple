@@ -111,7 +111,8 @@ struct SessionStatusSheet: View {
                                     Text(email)
                                 }
                                 if let model = status?.model {
-                                    Text(model)
+                                    Text(UsageMetersFormat.modelLine(
+                                        model: model, effort: status?.effort))
                                 }
                                 if let workdir = status?.workdir {
                                     Text(UsageMetersFormat.homeAbbreviated(workdir))

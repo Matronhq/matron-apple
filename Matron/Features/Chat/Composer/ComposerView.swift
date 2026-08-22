@@ -49,9 +49,9 @@ struct ComposerView: View {
             if viewModel.showPalette {
                 SlashCommandPalette(
                     commands: viewModel.filteredCommands,
-                    folders: viewModel.folderSuggestions,
+                    suggestions: viewModel.paletteSuggestions,
                     onSelect: { cmd in viewModel.selectCommand(cmd) },
-                    onSelectFolder: { folder in viewModel.selectFolder(folder) }
+                    onSelectSuggestion: { suggestion in viewModel.selectSuggestion(suggestion) }
                 )
                 .padding(.horizontal)
                 .padding(.bottom, 4)

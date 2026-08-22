@@ -19,6 +19,10 @@ public enum JournalEventType {
     /// updates the conversation row and is skipped in the timeline.
     public static let convoMeta = "convo_meta"
     public static let summary = "summary"
+    /// How an agent-spawn consent card ended (matron-journal
+    /// `emitSpawnOutcome`). Server-minted, agent-visible, and durable — the
+    /// row the spawn card derives its resolved state from.
+    public static let spawnOutcome = "spawn_outcome"
 
     /// Infix in a subagent child's convo id: `<parent>:sub:<agentId>`
     /// (mirrors the bridge's `CHILD_CONVO_INFIX`, lib/subagent-convos.js).
@@ -31,6 +35,10 @@ public enum JournalEventType {
     /// mirrors the server's MESSAGE_TYPES (src/journal.js).
     public static let messageTypes: Set<String> = [
         text, toolOutput, diff, prompt, permissionRequest, file, image,
+        // `spawn_outcome` joins the server's MESSAGE_TYPES: a resolution has
+        // to retire the card's "🤝 Agent spawn request" snippet, or the
+        // chat-list row keeps advertising a settled ask forever.
+        spawnOutcome,
     ]
 }
 
@@ -292,6 +300,40 @@ public enum ServerFrame: Equatable, Sendable {
                         vitals = SessionStatus.Vitals(cpuPct: cpu, ramPct: ram)
                     }
                 }
+                // Session-scoped argument lists for the slash palette.
+                // Unlike `limits`, an empty array is NOT collapsed to nil:
+                // absent means "this bridge doesn't say" and empty means
+                // "this agent offers nothing", and only the second may
+                // overwrite a list the app already holds.
+                //
+                // A non-empty array that yields nothing is a THIRD case,
+                // and it is malformed rather than empty: returning `[]`
+                // there would let a garbled frame overwrite a good list
+                // with "offers nothing". Only a wire `[]` is a statement,
+                // so that alone survives as `[]` — the same way the limits
+                // decoder degrades a list it can't read.
+                func options(_ key: String) -> [SessionStatus.Option]? {
+                    guard let raw = status[key] as? [[String: Any]] else { return nil }
+                    let parsed = raw.compactMap { entry -> SessionStatus.Option? in
+                        guard let value = entry["value"] as? String else { return nil }
+                        return SessionStatus.Option(value: value, label: entry["label"] as? String)
+                    }
+                    return raw.isEmpty || !parsed.isEmpty ? parsed : nil
+                }
+                // Effort is tri-state, and JSONSerialization is what makes
+                // the three distinguishable: a missing key subscripts to
+                // nil, a JSON null to NSNull. Folding null into nil here
+                // would leave the app showing a level the bridge has
+                // disowned (it republishes the null on every frame while
+                // untracked, so this is the only signal that arrives).
+                // Anything that is neither a string nor null is not a
+                // statement about effort — say nothing.
+                let effort: SessionStatusUpdate.Effort?
+                switch status["effort"] {
+                case let level as String: effort = .set(level)
+                case is NSNull: effort = .cleared
+                default: effort = nil
+                }
                 return .sessionStatus(SessionStatusUpdate(
                     convoID: convoID, model: status["model"] as? String,
                     context: context, limits: limits,
@@ -302,7 +344,10 @@ public enum ServerFrame: Equatable, Sendable {
                     // for the next turn-end frame. Absent for normal convos.
                     taskRef: status["task_ref"] as? String,
                     workdir: status["workdir"] as? String,
-                    vitals: vitals))
+                    vitals: vitals,
+                    modelOptions: options("model_options"),
+                    effortLevels: options("effort_levels"),
+                    effort: effort))
             }
             guard let ref = obj["message_ref"] as? String else { return nil }
             return .ephemeral(EphemeralUpdate(

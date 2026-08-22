@@ -581,11 +581,18 @@ final class ChatVMCache {
         }
         let timelineSvc = deps.timelineService(for: session, roomID: roomID)
         let mediaSvc = deps.mediaService(for: session)
+        // The composer reads the chat half's session status for the palette's
+        // session-derived suggestions (`/model`, `/effort`). Weakly: this
+        // cache owns both, and the closure must not keep the chat VM alive
+        // past an eviction.
+        let chat = ChatViewModel(roomID: roomID, timeline: timelineSvc, media: mediaSvc,
+                                 agentChat: deps.agentChatService(for: session),
+                                 agentSpawn: deps.agentSpawnService(for: session))
         let pair = (
-            chat: ChatViewModel(roomID: roomID, timeline: timelineSvc, media: mediaSvc,
-                                agentChat: deps.agentChatService(for: session),
-                                agentSpawn: deps.agentSpawnService(for: session)),
-            composer: ComposerViewModel(roomID: roomID, timeline: timelineSvc, commands: BotCommandCatalog.claudeBridge)
+            chat: chat,
+            composer: ComposerViewModel(roomID: roomID, timeline: timelineSvc,
+                                        commands: BotCommandCatalog.claudeBridge,
+                                        sessionStatus: { [weak chat] in chat?.sessionStatus })
         )
         entries[roomID] = pair
         order.append(roomID)

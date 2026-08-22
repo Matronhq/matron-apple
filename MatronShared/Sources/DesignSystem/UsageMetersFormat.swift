@@ -110,4 +110,16 @@ public enum UsageMetersFormat {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
+    /// "opus" / "opus · high" — the session's model with its effort level
+    /// beside it. An unknown effort adds nothing at all: no separator, no
+    /// placeholder, nothing for a layout to reserve space for. The bridge
+    /// publishes no effort rather than a guess, so absent is the normal
+    /// state and must read as normal.
+    public static func modelLine(model: String, effort: String?) -> String {
+        guard let effort = effort?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !effort.isEmpty
+        else { return model }
+        return "\(model) · \(effort)"
+    }
+
 }

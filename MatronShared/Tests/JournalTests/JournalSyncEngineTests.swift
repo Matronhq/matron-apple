@@ -185,6 +185,32 @@ final class JournalSyncEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    /// The replay cache merges field-by-field, so it has to honour the
+    /// effort clear the same way `SessionStatus.apply` does: a null effort
+    /// must overwrite the tracked level in the cache, not be treated as an
+    /// absent field and skipped. Otherwise a client attaching after a
+    /// restart is replayed the stale level the bridge just disowned.
+    func testSessionStatusReplayCacheHonorsEffortClear() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        // Both frames land before anyone subscribes — the cache is all
+        // that carries them.
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","status":{"model":"opus","effort":"xhigh"}}"#)
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","status":{"effort":null}}"#)
+        try await Task.sleep(for: .milliseconds(50))
+        var iterator = engine.sessionStatus(convoID: "c1").makeAsyncIterator()
+        let replayed = await iterator.next()
+        XCTAssertEqual(replayed?.effort, .cleared,
+                       "the cached frame must carry the clear, not the level it replaced")
+        XCTAssertEqual(replayed?.model, "opus",
+                       "the clear must not disturb the other fields the cache holds")
+        await engine.endSync()
+    }
+
     /// A cached frame for one convo must never leak to a subscriber for a
     /// different convo — the replay path reuses per-convo filtering, not a
     /// single global "last frame".
@@ -1087,6 +1113,52 @@ final class JournalSyncEngineTests: XCTestCase {
         XCTAssertEqual(secondCount, 0, "the later attach must have been ignored")
         await engine.endSync()
     }
+
+    /// Cold-start's backfill-bookkeeping reset must route through the
+    /// attached `SearchBackfillCoordinator` (whose epoch guard invalidates
+    /// any walk in flight), not hit the SearchService directly — the direct
+    /// call is the race fixed as matron-android #41: a walk suspended
+    /// mid-batch commits its progress row after the delete and resurrects
+    /// the bookkeeping the reset cleared. The two fakes are distinct on
+    /// purpose so the two paths are distinguishable.
+    func testColdStartRoutesBackfillResetThroughAttachedCoordinator() async throws {
+        SnapshotRequiredStubURLProtocol.reset()
+        SnapshotRequiredStubURLProtocol.snapshotBody = #"""
+            {"conversations":[{"id":"c9","title":"fresh","session_state":"running","last_seq":400,"unread_count":0,"snippet":"s","created_at":0}],"seq":400}
+            """#
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SnapshotRequiredStubURLProtocol.self]
+        let api = JournalAPI(serverURL: URL(string: "https://x")!,
+                             urlSession: URLSession(configuration: config))
+
+        // Empty store, cursor 0 → the first connect takes the cold-start path.
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:dan")
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(400))
+        let connector = FakeConnector([socket])
+
+        let engineSearch = RecordingSearchService()
+        let coordinatorSearch = RecordingSearchService()
+        let coordinator = SearchBackfillCoordinator(search: coordinatorSearch,
+                                                    fetchPage: { _, _, _ in [] })
+        let engine = JournalSyncEngine(api: api, store: store, connector: connector,
+                                       token: "t", ownSender: "user:dan", search: engineSearch,
+                                       backoffBaseSeconds: 0.001)
+        await engine.attachBackfillCoordinator(coordinator)
+
+        await engine.beginSync()
+        // Ready implies establish() ran, which is sequenced after
+        // coldStartIfNeeded() — including its awaited reset.
+        try await engine.waitUntilReady()
+
+        XCTAssertEqual(store.cursor, 400, "cold start must land the snapshot cursor")
+        let viaCoordinator = await coordinatorSearch.resetBackfillCalls
+        let direct = await engineSearch.resetBackfillCalls
+        XCTAssertEqual(viaCoordinator, 1, "the reset must go through the coordinator's epoch guard")
+        XCTAssertEqual(direct, 0, "the engine must not bypass the coordinator once one is attached")
+
+        await engine.endSync()
+    }
 }
 
 /// Records what an engine asks it to index; every other `SearchService`
@@ -1095,6 +1167,9 @@ final class JournalSyncEngineTests: XCTestCase {
 actor RecordingSearchService: SearchService {
     private(set) var entries: [SearchIndexEntry] = []
     var count: Int { entries.count }
+    /// How many times `resetBackfill()` was called — lets the cold-start
+    /// test tell the direct reset path from the coordinator-routed one.
+    private(set) var resetBackfillCalls = 0
 
     func index(roomID: String, eventID: String, sender: String, timestamp: Date, body: String) async throws {
         entries.append(SearchIndexEntry(roomID: roomID, eventID: eventID, sender: sender,
@@ -1122,7 +1197,7 @@ actor RecordingSearchService: SearchService {
     func recordBackfillProgress(roomID: String, indexedCount: Int, oldestEventID: String?, complete: Bool) async throws {}
     func backfillComplete(roomID: String) async throws -> Bool { false }
     func backfillOldestEventID(roomID: String) async throws -> String? { nil }
-    func resetBackfill() async throws {}
+    func resetBackfill() async throws { resetBackfillCalls += 1 }
     func eventCount(roomID: String) async throws -> Int { entries.count }
     func contains(eventID: String) async throws -> Bool { entries.contains { $0.eventID == eventID } }
 }

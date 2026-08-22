@@ -34,6 +34,28 @@ public struct ToolCallEvent: Equatable, Sendable {
     /// no snippet area, no fetch button.
     public let expired: Bool
 
+    /// One-line argument summary for the collapsed card header. Reads
+    /// `argsJSON` as a JSON object and prefers the human-readable form:
+    /// - a string under `"command"` (the Bash shape) is shown verbatim;
+    /// - an object with exactly one entry whose value is a string is shown
+    ///   compactly as `key: value` (e.g. `{"file_path": …}`);
+    /// - anything else falls back to the raw JSON.
+    /// The chosen string is then collapsed to a single line and truncated to
+    /// 80 characters. Nullary tools (`argsJSON == "{}"`) summarise to "".
+    ///
+    /// Derived from `argsJSON` ONCE, in `init`: the pretty-printed JSON for a
+    /// Write/Edit call can be tens of KB, and the previous computed property
+    /// re-parsed it on every body evaluation of every collapsed card.
+    public let argSummary: String
+
+    /// The Bash-tool command string: present when `argsJSON` is a JSON
+    /// object carrying a string value under `"command"`, `nil` for every
+    /// other shape (already-flattened journal `tool_output` commands, other
+    /// tools, malformed JSON). The expanded card shows this raw command in
+    /// its "Command" block instead of the `{"command": …}` JSON wrapper.
+    /// Derived alongside `argSummary` from the same single parse.
+    public let commandString: String?
+
     public init(
         tool: String,
         argsJSON: String,
@@ -56,6 +78,34 @@ public struct ToolCallEvent: Equatable, Sendable {
         self.exitCode = exitCode
         self.denied = denied
         self.expired = expired
+
+        // One parse feeds both derived fields. Nullary tools normalise to
+        // exactly "{}" at parse time — skip the parse entirely and show
+        // nothing rather than a meaningless brace pair next to the name.
+        // Already-flattened command strings (`"make test"`) aren't JSON
+        // objects, so `argsObject` is nil and the raw string passes through.
+        let argsObject: [String: Any]? = {
+            guard argsJSON != "{}",
+                  let data = argsJSON.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return nil }
+            return obj
+        }()
+        self.commandString = argsObject?["command"] as? String
+        self.argSummary = {
+            guard argsJSON != "{}" else { return "" }
+            let candidate: String
+            if let command = argsObject?["command"] as? String {
+                candidate = command
+            } else if let obj = argsObject, obj.count == 1, let key = obj.keys.first,
+                      let value = obj[key] as? String {
+                candidate = "\(key): \(value)"
+            } else {
+                candidate = argsJSON
+            }
+            let oneLine = candidate.replacingOccurrences(of: "\n", with: " ")
+            return oneLine.count > 80 ? String(oneLine.prefix(77)) + "…" : oneLine
+        }()
     }
 
     /// Parse a JSON `content` dictionary from a `chat.matron.tool_call`
@@ -117,58 +167,5 @@ public struct ToolCallEvent: Equatable, Sendable {
             startedAt: Date(timeIntervalSince1970: startedMs / 1000),
             endedAt: endedAt
         )
-    }
-}
-
-public extension ToolCallEvent {
-    /// The Bash-tool command string: present when `argsJSON` is a JSON
-    /// object carrying a string value under `"command"`, `nil` for every
-    /// other shape (already-flattened journal `tool_output` commands, other
-    /// tools, malformed JSON). The expanded card shows this raw command in
-    /// its "Command" block instead of the `{"command": …}` JSON wrapper.
-    var commandString: String? {
-        Self.argsObject(from: argsJSON)?["command"] as? String
-    }
-
-    /// One-line argument summary for the collapsed card header. Reads
-    /// `argsJSON` as a JSON object and prefers the human-readable form:
-    /// - a string under `"command"` (the Bash shape) is shown verbatim;
-    /// - an object with exactly one entry whose value is a string is shown
-    ///   compactly as `key: value` (e.g. `{"file_path": …}`);
-    /// - anything else falls back to the raw JSON.
-    /// The chosen string is then collapsed to a single line and truncated to
-    /// 80 characters. Nullary tools (`argsJSON == "{}"`) summarise to "".
-    var argSummary: String {
-        // Nullary tools normalise to exactly "{}" at parse time — show
-        // nothing rather than a meaningless brace pair next to the name.
-        guard argsJSON != "{}" else { return "" }
-        let oneLine = Self.summaryCandidate(from: argsJSON)
-            .replacingOccurrences(of: "\n", with: " ")
-        return oneLine.count > 80 ? String(oneLine.prefix(77)) + "…" : oneLine
-    }
-
-    /// Parse `argsJSON` back into a `[String: Any]`, or `nil` when it isn't a
-    /// JSON object (already-flattened command strings like `"make test"`
-    /// parse to `nil`).
-    private static func argsObject(from argsJSON: String) -> [String: Any]? {
-        guard let data = argsJSON.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-        return obj
-    }
-
-    /// The un-truncated, still-multiline summary string — see `argSummary`
-    /// for the shape rules. One-lining and truncation are the caller's job.
-    private static func summaryCandidate(from argsJSON: String) -> String {
-        if let obj = argsObject(from: argsJSON) {
-            if let command = obj["command"] as? String {
-                return command
-            }
-            if obj.count == 1, let key = obj.keys.first,
-               let value = obj[key] as? String {
-                return "\(key): \(value)"
-            }
-        }
-        return argsJSON
     }
 }

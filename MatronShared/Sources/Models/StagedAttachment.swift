@@ -25,13 +25,27 @@ public struct StagedAttachment: Identifiable, Equatable, Sendable {
     public let filename: String
     public let mimeType: String
     public let sizeBytes: Int
+    /// The batch tag this attachment's frame carried when a send failed,
+    /// or nil for an attachment that hasn't failed out of a batch. Freshly
+    /// staged attachments never have one — the composer stamps it onto the
+    /// unsent leftovers of a failed multi-attachment send so a retry can
+    /// re-emit the frame under the SAME `batch_id`/`batch_index`/
+    /// `batch_total`. The bridge gathers frames by batch id: a retried
+    /// frame under the original id either deposits into the still-open
+    /// gather (completing the message) or, if the batch already finalized,
+    /// is routed down the per-frame path. A fresh id could do neither —
+    /// the frame would sit waiting for siblings that already went out, and
+    /// the user's one message would arrive fractured.
+    public var batchTag: AttachmentBatchTag?
 
-    public init(id: UUID = UUID(), url: URL, filename: String, mimeType: String, sizeBytes: Int) {
+    public init(id: UUID = UUID(), url: URL, filename: String, mimeType: String, sizeBytes: Int,
+                batchTag: AttachmentBatchTag? = nil) {
         self.id = id
         self.url = url
         self.filename = filename
         self.mimeType = mimeType
         self.sizeBytes = sizeBytes
+        self.batchTag = batchTag
     }
 
     /// Drives both the tray (thumbnail vs. file chip) and the send path

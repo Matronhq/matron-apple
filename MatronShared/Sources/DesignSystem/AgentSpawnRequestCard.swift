@@ -1,78 +1,79 @@
 import SwiftUI
 import MatronEvents
 
-/// The spawn consent card, inline in the timeline — one agent asking to
-/// start a session on another box, and the two buttons that answer it.
+/// The agent-spawn consent card, inline in the timeline — one agent asking to
+/// start another on a box, in a folder, on a task — and the two buttons that
+/// answer it.
 ///
-/// Deliberately its own card rather than an `AskUserCard`, same as
-/// `AgentChatRequestCard`: the decision rests on facts (who is asking, which
-/// box, which folder, what the child session would do) a generic prompt has
-/// nowhere to put, and its answer leaves over HTTP rather than into the
-/// conversation — hence the explicit `state`.
+/// Its own card rather than an `AskUserCard` for the same reasons as
+/// `AgentChatRequestCard`: the facts a consent decision rests on (who, where,
+/// what) have nowhere to live in a generic prompt, and the answer leaves over
+/// HTTP rather than into the conversation.
+///
+/// Unlike the agent-chat card, `resolved` is not a remembered local decision:
+/// it carries the journal's own `spawn_outcome`, which is why a started spawn
+/// can offer to open the room it created.
 ///
 /// Pure: plain values and closures only, so it stays in MatronDesignSystem
 /// and snapshots directly.
 public struct AgentSpawnRequestCard: View {
     public let request: AgentSpawnRequest
-    public let state: AgentChatCardState
+    public let state: AgentSpawnCardState
     /// Answers this one request. There is no standing consent to grant: the
-    /// next ask gets its own card.
+    /// next spawn from the same agent gets its own card.
     public let onApprove: () -> Void
     public let onDeny: () -> Void
+    /// Opens the room a started spawn talks in. `nil` in contexts with
+    /// nowhere to navigate (previews, tests) — the button is then omitted
+    /// rather than drawn dead.
+    public let onOpen: ((String) -> Void)?
 
     public init(
         request: AgentSpawnRequest,
-        state: AgentChatCardState,
+        state: AgentSpawnCardState,
         onApprove: @escaping () -> Void,
-        onDeny: @escaping () -> Void
+        onDeny: @escaping () -> Void,
+        onOpen: ((String) -> Void)? = nil
     ) {
         self.request = request
         self.state = state
         self.onApprove = onApprove
         self.onDeny = onDeny
+        self.onOpen = onOpen
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Label {
-                Text("New session request").font(.callout.weight(.semibold))
+                Text("Agent spawn request").font(.callout.weight(.semibold))
             } icon: {
-                Image(systemName: "macbook.and.iphone").foregroundStyle(.tint)
+                Image(systemName: "sparkles.rectangle.stack").foregroundStyle(.tint)
             }
 
             Text(request.headline).font(.body)
 
-            // The facts the approval actually grants: which session is
-            // asking, which box would run it, in which folder, doing what.
-            // Degrades to device ids against an older journal rather than
-            // vanishing — the ends and the task are the point of the card.
+            // Who is asking, where it would run, and in which folder — the
+            // three facts that make this a decision rather than a formality.
             detail(label: "From", value: request.fromLabel)
-            detail(label: "On", value: request.targetLabel)
-            detail(label: "Folder", value: request.workdir)
-            detail(label: "Task", value: request.task)
-            if let topic = request.topic {
-                detail(label: "About", value: topic)
+            detail(label: "Target", value: request.targetLabel)
+            if !request.workdir.isEmpty {
+                detail(label: "Folder", value: request.workdir)
             }
+
+            // The seed prompt, verbatim and monospaced: approving this card
+            // is approving these exact words, so they are never summarised.
+            Text(request.task)
+                .font(.callout.monospaced())
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary))
 
             switch state {
             case .idle, .sending, .failed:
                 controls
-            case .answered(let approved):
-                Label {
-                    Text(approved ? "Approved" : "Declined")
-                } icon: {
-                    Image(systemName: approved ? "checkmark.circle.fill" : "xmark.circle.fill")
-                        .foregroundStyle(approved ? .green : .secondary)
-                }
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            case .expired:
-                // The row stopped awaiting an answer: it timed out (24h), or
-                // the decision was already made on another device. Either
-                // way there is nothing left to press.
-                Text("This request is no longer waiting for an answer.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+            case .resolved(let outcome):
+                resolution(outcome)
             }
 
             if case .failed(let message) = state {
@@ -99,6 +100,32 @@ public struct AgentSpawnRequestCard: View {
             }
         }
         .disabled(state == .sending)
+    }
+
+    /// How it ended, in the journal's own words — plus a way into the room
+    /// when a session actually started.
+    ///
+    /// No SF Symbol beside the text: `displayLine` already opens with the
+    /// server's emoji, and pairing the two makes every resolved row read
+    /// twice. The expired case is the exception, and it borrows the
+    /// agent-chat card's sentence verbatim — a 409 and a swept 24h ask are
+    /// the same fact to the user.
+    @ViewBuilder
+    private func resolution(_ outcome: SpawnOutcome) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if outcome.kind == .expired {
+                Text("This request is no longer waiting for an answer.")
+            } else {
+                Text(outcome.displayLine)
+            }
+            if let roomID = outcome.openableRoomID, let onOpen {
+                Button("Open") { onOpen(roomID) }
+                    .buttonStyle(.bordered)
+                    .font(.callout)
+            }
+        }
+        .font(.callout)
+        .foregroundStyle(.secondary)
     }
 
     private func detail(label: String, value: String) -> some View {

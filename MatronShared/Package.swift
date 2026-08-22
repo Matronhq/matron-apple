@@ -183,6 +183,11 @@ let package = Package(
             dependencies: [
                 "MatronDesignSystem",
                 "MatronEvents",
+                // Lets a formatting test start from a raw wire frame, so
+                // the status contract is pinned across decode → merge →
+                // formatter in one go. The views' own gating is pinned in
+                // their shells' test targets.
+                "MatronJournal",
                 "MatronModels",
                 .product(name: "SnapshotTesting", package: "swift-snapshot-testing"),
             ],

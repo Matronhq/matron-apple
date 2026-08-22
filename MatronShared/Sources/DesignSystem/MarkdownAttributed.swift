@@ -63,40 +63,109 @@ enum MarkdownAttributed {
 
     // MARK: - Public API
 
-    /// Converts markdown `source` to a display-ready `NSAttributedString`.
-    /// Memoised on `source` — messages are immutable, so the same body converts
-    /// once; a long streaming session churns intermediate texts through the
-    /// bounded cache without pinning them.
-    static func attributedString(for source: String) -> NSAttributedString {
-        let key = source as NSString
-        if let cached = cache.object(forKey: key) {
-            return cached
+    /// Everything derived from one markdown source, memoised together: the
+    /// attributed string, the (expensive, previously per-mount) table probe,
+    /// and the per-width measured sizes. One cache entry per source replaces
+    /// the old separate string-keyed size cache, whose key interpolated the
+    /// ENTIRE source on every `sizeThatFits` call (O(content) per lookup —
+    /// SwiftUI calls `sizeThatFits` several times per row per layout pass).
+    public final class Rendered {
+        public let attributed: NSAttributedString
+
+        /// True when `attributed` carries TextKit table blocks.
+        ///
+        /// `SelectableMessageText` uses this to opt its text view into TextKit
+        /// 1 BEFORE the first layout. AppKit falls back to TextKit 1 on its
+        /// own when it meets table blocks, but only once the view is in a
+        /// window and only mid-layout: the view then re-sizes to the (correct,
+        /// smaller) TextKit 1 height keeping its TOP edge fixed, which moves
+        /// its origin out from under the frame SwiftUI placed it at — the
+        /// message draws above its bubble and the first rows are clipped.
+        ///
+        /// Computed once at build time: the probe walks every paragraph-style
+        /// run, and it used to run on every mount and every `updateNSView`.
+        public let containsTable: Bool
+
+        private var sizes: [CGFloat: CGSize] = [:]
+        private let lock = NSLock()
+
+        init(attributed: NSAttributedString) {
+            self.attributed = attributed
+            var found = false
+            attributed.enumerateAttribute(
+                .paragraphStyle, in: NSRange(location: 0, length: attributed.length)
+            ) { value, _, stop in
+                if let style = value as? NSParagraphStyle, !style.textBlocks.isEmpty {
+                    found = true
+                    stop.pointee = true
+                }
+            }
+            self.containsTable = found
         }
-        let built = build(from: source)
-        cache.setObject(built, forKey: key)
+
+        /// Exact laid-out size of the string wrapped to `proposedWidth`.
+        ///
+        /// Width is the CONTENT's natural width (longest line fragment,
+        /// rounded up), never the proposal — that's what lets a short
+        /// message's bubble hug its text instead of spanning the pane. Height
+        /// is re-measured at that hugged width so the reported (width, height)
+        /// pair is exactly what the live text view will render.
+        ///
+        /// Measured against a standalone TextKit stack rather than a live
+        /// `NSTextView`, so the result is a pure function of (source, width) —
+        /// no dependence on a view's frame, `widthTracksTextView`, or layout
+        /// timing. This is the size `SelectableMessageText` reports to SwiftUI;
+        /// keeping it deterministic is what protects the timeline from height
+        /// churn (bugbot, PR #37: heights must never be keyed on the RENDERED
+        /// text — `**hi**` and `hi` render the same characters — which is why
+        /// the memo lives on the per-SOURCE object).
+        ///
+        /// Memoised: SwiftUI calls `sizeThatFits` for every visible row on
+        /// every layout pass, and the timeline is deliberately non-lazy
+        /// (blank-chat cure), so an uncached TextKit layout here ran ~120 full
+        /// measurements per scroll tick — the 2026-07 Mac scroll lag.
+        public func size(width proposedWidth: CGFloat) -> CGSize {
+            guard proposedWidth > 0, proposedWidth.isFinite else { return .zero }
+            lock.lock()
+            if let hit = sizes[proposedWidth] { lock.unlock(); return hit }
+            lock.unlock()
+            let first = MarkdownAttributed.layoutSize(for: attributed, width: proposedWidth)
+            var result = first
+            // Hug: if the content is narrower than the proposal, re-wrap at the
+            // hugged width so the height matches what the view renders at that
+            // width (the ceil can shift a wrap boundary; measuring twice
+            // removes the guess).
+            if first.width < proposedWidth.rounded(.down) {
+                let rewrapped = MarkdownAttributed.layoutSize(for: attributed, width: first.width)
+                result = CGSize(width: first.width, height: rewrapped.height)
+            }
+            lock.lock()
+            sizes[proposedWidth] = result
+            lock.unlock()
+            return result
+        }
+    }
+
+    /// Everything derived from markdown `source`, memoised per source
+    /// (countLimit 400, evicts under memory pressure) — one object carries the
+    /// string + table flag + size memo, so a cache hit costs one NSString hash
+    /// of the source instead of a separate attributed-string lookup plus an
+    /// O(source) size-cache key build. Messages are immutable, so the same body
+    /// converts once; a long streaming session churns intermediate texts
+    /// through the bounded cache without pinning them.
+    static func rendered(for source: String) -> Rendered {
+        let key = source as NSString
+        if let cached = renderedCache.object(forKey: key) { return cached }
+        let built = Rendered(attributed: build(from: source))
+        renderedCache.setObject(built, forKey: key)
         return built
     }
 
-    /// True when `attributed` carries TextKit table blocks.
-    ///
-    /// `SelectableMessageText` uses this to opt its text view into TextKit 1
-    /// BEFORE the first layout. AppKit falls back to TextKit 1 on its own when
-    /// it meets table blocks, but only once the view is in a window and only
-    /// mid-layout: the view then re-sizes to the (correct, smaller) TextKit 1
-    /// height keeping its TOP edge fixed, which moves its origin out from
-    /// under the frame SwiftUI placed it at — the message draws above its
-    /// bubble and the first rows are clipped.
-    static func containsTable(_ attributed: NSAttributedString) -> Bool {
-        var found = false
-        attributed.enumerateAttribute(
-            .paragraphStyle, in: NSRange(location: 0, length: attributed.length)
-        ) { value, _, stop in
-            if let style = value as? NSParagraphStyle, !style.textBlocks.isEmpty {
-                found = true
-                stop.pointee = true
-            }
-        }
-        return found
+    /// Converts markdown `source` to a display-ready `NSAttributedString`.
+    /// Thin wrapper over `rendered(for:)` for callers that only need the
+    /// string (copy-time reconstruction, tests).
+    static func attributedString(for source: String) -> NSAttributedString {
+        rendered(for: source).attributed
     }
 
     /// Custom attribute carrying `MarkdownRunSemantics` for copy-time
@@ -106,8 +175,8 @@ enum MarkdownAttributed {
 
     /// Bounded, thread-safe memo — mirrors `MarkdownText.contentCache`
     /// (countLimit 400, evicts under memory pressure).
-    private static let cache: NSCache<NSString, NSAttributedString> = {
-        let cache = NSCache<NSString, NSAttributedString>()
+    private static let renderedCache: NSCache<NSString, Rendered> = {
+        let cache = NSCache<NSString, Rendered>()
         cache.countLimit = 400
         return cache
     }()
@@ -116,46 +185,8 @@ enum MarkdownAttributed {
 
     // MARK: - Size measurement
 
-    /// Exact laid-out size of `attributed` wrapped to `proposedWidth`.
-    ///
-    /// Width is the CONTENT's natural width (longest line fragment, rounded
-    /// up), never the proposal — that's what lets a short message's bubble hug
-    /// its text instead of spanning the pane. Height is re-measured at that
-    /// hugged width so the reported (width, height) pair is exactly what the
-    /// live text view will render.
-    ///
-    /// Measured against a standalone TextKit stack rather than a live
-    /// `NSTextView`, so the result is a pure function of (attributed string,
-    /// width) — no dependence on a view's frame, `widthTracksTextView`, or
-    /// layout timing. This is the size `SelectableMessageText` reports to
-    /// SwiftUI; keeping it deterministic is what protects the timeline from
-    /// height churn.
-    ///
-    /// Memoised: SwiftUI calls `sizeThatFits` for every visible row on every
-    /// layout pass, and the timeline is deliberately non-lazy (blank-chat
-    /// cure), so an uncached TextKit layout here ran ~120 full measurements
-    /// per scroll tick — the 2026-07 Mac scroll lag.
-    static func size(for attributed: NSAttributedString, source: String, width proposedWidth: CGFloat) -> CGSize {
-        guard proposedWidth > 0, proposedWidth.isFinite else { return .zero }
-        let key = "\(proposedWidth)|\(source)" as NSString
-        if let hit = sizeCache.object(forKey: key) { return hit.sizeValue }
-
-        let first = layoutSize(for: attributed, width: proposedWidth)
-        var result = first
-        // Hug: if the content is narrower than the proposal, re-wrap at the
-        // hugged width so the height matches what the view renders at that
-        // width (the ceil can shift a wrap boundary; measuring twice removes
-        // the guess).
-        if first.width < proposedWidth.rounded(.down) {
-            let rewrapped = layoutSize(for: attributed, width: first.width)
-            result = CGSize(width: first.width, height: rewrapped.height)
-        }
-        sizeCache.setObject(NSValue(size: result), forKey: key)
-        return result
-    }
-
     /// One uncached TextKit layout pass: natural width (≤ `width`) and height.
-    private static func layoutSize(for attributed: NSAttributedString, width: CGFloat) -> CGSize {
+    fileprivate static func layoutSize(for attributed: NSAttributedString, width: CGFloat) -> CGSize {
         let textStorage = NSTextStorage(attributedString: attributed)
         let textContainer = NSTextContainer(size: NSSize(width: width, height: .greatestFiniteMagnitude))
         // Match the live text view's geometry (see SelectableMessageText) so the
@@ -168,20 +199,6 @@ enum MarkdownAttributed {
         let used = layoutManager.usedRect(for: textContainer)
         return CGSize(width: min(ceil(used.width), width), height: ceil(used.height))
     }
-
-    /// Memo for `size(for:source:width:)`, keyed on (proposed width, markdown
-    /// SOURCE). The source — not the attributed string's rendered text —
-    /// identifies the attributes: `**hi**` and `hi` render the same plain
-    /// characters with different fonts, so a rendered-text key would let one
-    /// message reuse the other's size (bugbot, PR #37). Conversion is a pure
-    /// function of source, so (source, width) → size is collision-free.
-    /// Generous bound — entries are one NSValue each; the key dominates, and
-    /// 2000 keys of chat-message length is still small.
-    private static let sizeCache: NSCache<NSString, NSValue> = {
-        let cache = NSCache<NSString, NSValue>()
-        cache.countLimit = 2000
-        return cache
-    }()
 
     // MARK: - Conversion
 
@@ -270,7 +287,7 @@ enum MarkdownAttributed {
             // an empty code-styled line between the block and the next
             // paragraph (Dan, 2026-07-16).
             if previousIntent != nil, isNewBlock {
-                if !output.string.hasSuffix("\n") {
+                if !output.mutableString.hasSuffix("\n") {
                     var separatorAttrs: [NSAttributedString.Key: Any] = [:]
                     if let previousSemantics {
                         // Block + identity ONLY — reusing the previous run's
@@ -380,7 +397,7 @@ enum MarkdownAttributed {
         // or that cell's paragraph never binds to its block and the row drops
         // out of layout. Mirrors the block-boundary separator's attributes.
         if case .tableCell = previousSemantics?.block ?? .paragraph,
-           let currentCellStyle, !output.string.hasSuffix("\n") {
+           let currentCellStyle, !output.mutableString.hasSuffix("\n") {
             var terminatorAttrs: [NSAttributedString.Key: Any] = [
                 .paragraphStyle: currentCellStyle,
                 .font: font(size: baseFontSize),
@@ -403,7 +420,7 @@ enum MarkdownAttributed {
         // at the bottom of the bubble, and plan-style messages very often
         // end with a code block (Dan, 2026-07-16). Interior newlines are
         // untouched; only the string's tail is trimmed.
-        while output.length > 0, output.string.hasSuffix("\n") {
+        while output.length > 0, output.mutableString.hasSuffix("\n") {
             let attrs = output.attributes(at: output.length - 1, effectiveRange: nil)
             if let style = attrs[.paragraphStyle] as? NSParagraphStyle, !style.textBlocks.isEmpty {
                 break // table-cell terminator — structural, not dead space

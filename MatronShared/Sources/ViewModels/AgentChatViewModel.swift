@@ -11,16 +11,6 @@ public protocol AgentChatAnswering: Sendable {
     ) async throws -> Bool
 }
 
-/// The one call that resolves a spawn consent card — one agent asking to
-/// start a session on another box. Its own seam, not a method on
-/// `AgentChatAnswering`, so the two card families keep independently fakeable
-/// answer paths (and existing chat fakes don't grow a method they never call).
-public protocol AgentSpawnAnswering: Sendable {
-    func answerAgentSpawn(
-        requestID: String, decision: AgentChatDecision
-    ) async throws
-}
-
 /// The agent-chat slice of `JournalAPI`, extracted so the settings screen can
 /// be tested against a fake without a URL session. `JournalAPI` conforms
 /// as-is.
@@ -29,7 +19,6 @@ public protocol AgentChatProviding: AgentChatAnswering {
 }
 
 extension JournalAPI: AgentChatProviding {}
-extension JournalAPI: AgentSpawnAnswering {}
 
 /// Drives the Agent chats settings screen: the requests still waiting on the
 /// user. Every ask waits for an answer — there is no standing consent to
