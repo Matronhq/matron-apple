@@ -44,6 +44,28 @@ public struct RecentFolder: Equatable, Sendable, Identifiable {
     }
 }
 
+/// One model a bridge offers on its `recent_folders` reply
+/// (`model_options`): `value` is the alias the `start` RPC's `model`
+/// param takes, `label` is what the picker shows for it.
+///
+/// Deliberately not `SessionStatus.Option` (same wire shape, different
+/// job — that one rides a per-conversation status frame and keeps `label`
+/// optional because the palette falls back to the value), for the same
+/// reason `LimitLine` isn't `SessionStatus.Limit`: this is chooser data,
+/// keyed for a `ForEach` and always displayable.
+public struct ModelOption: Equatable, Sendable, Identifiable {
+    public var id: String { value }
+    public let value: String
+    /// Never empty — the parser falls back to `value` when the bridge
+    /// sends no label, so no renderer needs its own fallback.
+    public let label: String
+
+    public init(value: String, label: String) {
+        self.value = value
+        self.label = label
+    }
+}
+
 extension RecentFolder {
     /// Row caption: relative last-used, or the never-used convention
     /// (`last_used: null` = the bridge's default workdir on a fresh box).
@@ -101,6 +123,14 @@ public final class NewChatViewModel {
     public private(set) var wakeGaveUp = false
     public var customPath = ""
     public var browserEnabled = false
+    /// The model alias `start` will carry, or nil for the bridge's own
+    /// default — the picker's "Default" row. Only ever set to a value the
+    /// current box listed (see `adoptModelOptions`).
+    public var selectedModel: String?
+    /// What the box on the folder step offers, in bridge order. Empty for a
+    /// bridge that doesn't send `model_options` at all, which hides the
+    /// picker rather than showing an empty menu.
+    public private(set) var modelOptions: [ModelOption] = []
     /// Per-box capacity blocks, filled by the roster fan-out as replies
     /// land. Display-only: a missing entry just means a quieter row, never
     /// an unpickable one.
@@ -140,6 +170,10 @@ public final class NewChatViewModel {
     /// `select(agent:)` render the folder step from cache instead of paying
     /// for a second round-trip to the same box.
     private var folderCache: [Int64: [RecentFolder]] = [:]
+    /// Model offers learned by the fan-out, keyed by device — same lifetime
+    /// as `folderCache`, since both come out of the one `recent_folders`
+    /// reply and both are wrong the moment that reply is re-asked for.
+    private var modelOptionsCache: [Int64: [ModelOption]] = [:]
     /// Bumped by every fan-out. Cancelling the previous task doesn't stop an
     /// RPC that's already in flight from answering, so each leg carries the
     /// generation it was started for and drops its reply if it's been
@@ -218,6 +252,9 @@ public final class NewChatViewModel {
         foldersError = nil
         errorMessage = nil
         wakeGaveUp = false
+        // Model offers are per-box, so the step opens on what this box is
+        // known to offer — nothing, until its own reply lands.
+        adoptModelOptions(modelOptionsCache[agent.id] ?? [])
         // The roster fan-out already asked this box for its folders — render
         // them instantly rather than paying for the same round-trip twice.
         if let cached = folderCache[agent.id] {
@@ -232,10 +269,12 @@ public final class NewChatViewModel {
             let reply = try await api.agentRequest(
                 agentDeviceID: agent.id, method: "recent_folders", paramsData: Data("{}".utf8))
             recordCapacity(from: reply, agentID: agent.id)
+            let offered = Self.parseModelOptions(from: reply)
             guard Self.sameFolderAgent(phase, agent) else { return } // switched away meanwhile
             switch reply {
             case .ok(let resultData):
                 folders = Self.parseFolders(resultData)
+                adoptModelOptions(offered)
             case .failure(let code, _) where code == "agent_unreachable":
                 // The roster's `connected` was a snapshot; the refusal says
                 // the box has since been idle-stopped — and has already
@@ -331,6 +370,7 @@ public final class NewChatViewModel {
                 switch reply {
                 case .ok(let resultData):
                     folders = Self.parseFolders(resultData)
+                    adoptModelOptions(Self.parseModelOptions(from: reply))
                     return
                 case .failure(let code, _) where code == "agent_unreachable":
                     break // still booting — go around
@@ -392,6 +432,9 @@ public final class NewChatViewModel {
         let trimmed = workdir?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !trimmed.isEmpty { params["workdir"] = trimmed }
         if browserEnabled { params["browser"] = true }
+        // nil is the bridge's own default model, and the bridge distinguishes
+        // "no opinion" from any alias it knows — so omit the key entirely.
+        if let selectedModel { params["model"] = selectedModel }
         // A [String: Any] of strings/bools always serializes.
         let paramsData = (try? JSONSerialization.data(withJSONObject: params)) ?? Data("{}".utf8)
         do {
@@ -460,6 +503,7 @@ public final class NewChatViewModel {
         // them before the new replies land — it falls back to a live
         // `recent_folders` when the cache is empty.
         folderCache.removeAll()
+        modelOptionsCache.removeAll()
         // Capacity, unlike folders, is deliberately stale-while-revalidate:
         // the rows keep last-known numbers until the refresh answers, so
         // coming back from the folder step doesn't collapse every three-line
@@ -531,7 +575,21 @@ public final class NewChatViewModel {
         // the one place `capacities` is written from a live reply.
         capacityCapturedAt.removeValue(forKey: agentID)
         folderCache[agentID] = Self.parseFolders(resultData)
+        modelOptionsCache[agentID] = Self.parseModelOptions(obj)
         capacityCache.save(capacity, for: agentID, at: now())
+    }
+
+    /// Points the picker at one box's offer, and drops a selection that
+    /// offer doesn't contain. A model this box doesn't list can't start a
+    /// session here — carrying the previous box's pick across the switch
+    /// would send an alias the bridge answers `bad_model` to. A box that
+    /// offers nothing (older bridge) hides the picker, which is the same
+    /// situation: back to the bridge's default.
+    private func adoptModelOptions(_ options: [ModelOption]) {
+        modelOptions = options
+        if let selectedModel, !options.contains(where: { $0.value == selectedModel }) {
+            self.selectedModel = nil
+        }
     }
 
     // MARK: Helpers
@@ -571,6 +629,34 @@ public final class NewChatViewModel {
         }
     }
 
+    /// Reads `model_options` out of a `recent_folders` reply object. Like
+    /// every block a bridge attaches there it is optional: an absent key is
+    /// an older bridge, and parses to no offer rather than to a failure of
+    /// the folders parse it rides along with. Bridge order is kept.
+    ///
+    /// The bridge's list mirrors its `/model` buttons, which lead with the
+    /// `default` alias — but the picker already renders "no pick" as its own
+    /// nil "Default" row (which omits the `model` key entirely), so that
+    /// entry is dropped here rather than shown as a second Default.
+    static func parseModelOptions(from reply: RPCReply) -> [ModelOption] {
+        guard case .ok(let resultData) = reply,
+              let object = (try? JSONSerialization.jsonObject(with: resultData)) as? [String: Any]
+        else { return [] }
+        return parseModelOptions(object)
+    }
+
+    static func parseModelOptions(_ replyObject: [String: Any]) -> [ModelOption] {
+        guard let raw = replyObject["model_options"] as? [[String: Any]] else { return [] }
+        var seen = Set<String>()
+        return raw.compactMap { entry -> ModelOption? in
+            guard let value = entry["value"] as? String, !value.isEmpty, value != "default",
+                  seen.insert(value).inserted // value is the row identity — a repeat would
+            else { return nil }              // give the ForEach two rows with one id
+            let label = (entry["label"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            return ModelOption(value: value, label: label ?? value)
+        }
+    }
+
     static func startErrorCopy(code: String, detail: String?) -> String {
         switch code {
         case "agent_unreachable", "not_ready":
@@ -578,6 +664,10 @@ public final class NewChatViewModel {
             return "The agent didn't answer — is the box awake?"
         case "bad_workdir":
             return "That folder doesn't exist on the box."
+        case "bad_model":
+            // The offer came from this box's own reply, so this means it has
+            // changed its mind since — the default always works.
+            return "That box doesn't offer that model — pick another."
         default:
             return "Couldn't start — \(detail ?? code)."
         }

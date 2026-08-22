@@ -213,6 +213,16 @@ struct NewChatSheet: View {
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                 Toggle("Browser tools", isOn: $viewModel.browserEnabled)
+                // Hidden for a bridge that doesn't say what it can run —
+                // an empty menu would only ever offer "Default".
+                if !viewModel.modelOptions.isEmpty {
+                    Picker("Model", selection: $viewModel.selectedModel) {
+                        Text("Default").tag(String?.none)
+                        ForEach(viewModel.modelOptions) { option in
+                            Text(option.label).tag(Optional(option.value))
+                        }
+                    }
+                }
                 Button {
                     Task { await viewModel.start(workdir: viewModel.customPath) }
                 } label: {
