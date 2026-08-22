@@ -154,6 +154,12 @@ public final class NewChatViewModel {
     /// retired loop (superseded select, committed start, abandoned sheet)
     /// must neither clear them nor write its give-up copy.
     private var wakeToken = 0
+    /// Which box the live `wakeStartedAt` was stamped for. A start that
+    /// supersedes the folder wake loop on the SAME box is one boot from
+    /// where the user sits, so its banner clock carries on; switching to a
+    /// DIFFERENT box has to restart it, or the new box's "Waking…" inherits
+    /// the old box's elapsed time and reads as a far longer boot.
+    private var wakeAgentID: Int64?
     /// Set by `abandon()`: no wake loop re-asks past it.
     private var isAbandoned = false
 
@@ -261,14 +267,18 @@ public final class NewChatViewModel {
         wakeToken &+= 1
         isWakingBox = false
         wakeStartedAt = nil
+        wakeAgentID = nil
     }
 
     /// Claims the wake flags for one loop; only the current claim may
-    /// release them (`endWake`) or write the give-up copy.
-    private func beginWake() -> Int {
+    /// release them (`endWake`) or write the give-up copy. The elapsed
+    /// clock is per box: it continues for a handover on the same box (the
+    /// folder loop → a retrying start) and restarts for any other.
+    private func beginWake(for agentID: Int64) -> Int {
         wakeToken &+= 1
         isWakingBox = true
-        if wakeStartedAt == nil { wakeStartedAt = now() }
+        if wakeStartedAt == nil || wakeAgentID != agentID { wakeStartedAt = now() }
+        wakeAgentID = agentID
         return wakeToken
     }
 
@@ -276,6 +286,7 @@ public final class NewChatViewModel {
         guard token == wakeToken else { return } // a newer owner holds the flags
         isWakingBox = false
         wakeStartedAt = nil
+        wakeAgentID = nil
     }
 
     /// Every post-suspension write in a wake loop is gated on still owning
@@ -295,7 +306,7 @@ public final class NewChatViewModel {
     /// socket can be up while the bridge is still starting. Leaving this
     /// box's folder step ends the loop silently at its next check.
     private func wakeAndFetchFolders(agent: DeviceDTO) async {
-        let token = beginWake()
+        let token = beginWake(for: agent.id)
         defer { endWake(token) }
         let wakeBegan = now()
         for attempt in 1...Self.wakeAttemptLimit {
@@ -327,6 +338,12 @@ public final class NewChatViewModel {
             guard stillOwns(token, agent: agent) else { return }
         }
         guard stillOwns(token, agent: agent) else { return }
+        // A start that failed for a real reason (bad_workdir, say) never
+        // took the wake token, so this loop can still be polling behind its
+        // error. The give-up copy is generic and points at Try Again: burying
+        // a specific failure under it would send the user to retry a wake
+        // that was never the problem.
+        guard errorMessage == nil else { return }
         errorMessage = Self.wakeGaveUpMessage
         wakeGaveUp = true
     }
@@ -379,7 +396,7 @@ public final class NewChatViewModel {
                 if startWakeToken == nil {
                     // Taking the token also retires a folder wake loop
                     // still polling this box: the user committed to a path.
-                    startWakeToken = beginWake()
+                    startWakeToken = beginWake(for: agent.id)
                 }
                 await wakeSleep(Self.wakeRetryDelay)
                 guard !isAbandoned, Self.sameFolderAgent(phase, agent) else { return }

@@ -54,6 +54,15 @@ private final class SteppingClock: @unchecked Sendable {
     }
 }
 
+/// Clock the test moves by hand — nothing advances between reads, so a
+/// wake stamp can be compared against an exact expected instant.
+private final class SettableClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var time = Date(timeIntervalSince1970: 1_000)
+    func now() -> Date { lock.withLock { time } }
+    func advance(_ seconds: TimeInterval) { lock.withLock { time.addTimeInterval(seconds) } }
+}
+
 private func agent(_ id: Int64, name: String = "dev", connected: Bool) -> DeviceDTO {
     DeviceDTO(id: id, kind: "agent", name: name, createdAt: 0, cursor: 0,
               lag: 0, lastSeenAt: nil, isSelf: false, connected: connected)
@@ -76,10 +85,12 @@ final class NewChatViewModelWakeTests: XCTestCase {
     /// Two-asleep-box fleet: big enough to show the roster (a single-box
     /// fleet auto-skips it, asleep or not — pinned separately below).
     private func makeAsleepVM(fake: FakeAgentRPCProvider,
-                              sleeper: SleepRecorder) async -> (NewChatViewModel, DeviceDTO) {
+                              sleeper: SleepRecorder,
+                              clock: SettableClock? = nil) async -> (NewChatViewModel, DeviceDTO) {
         let box = agent(7, name: "dev-7", connected: false)
         fake.devicesResult = .success([box, agent(8, name: "dev-8", connected: false)])
         let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache(),
+                                  now: { clock?.now() ?? Date() },
                                   wakeSleep: { await sleeper.sleep($0) })
         await vm.load()
         guard case .agents = vm.phase else {
@@ -385,5 +396,96 @@ final class NewChatViewModelWakeTests: XCTestCase {
         XCTAssertEqual(vm.errorMessage, "The agent didn't answer — is the box awake?")
         guard case .folders = vm.phase else { return XCTFail("a failed start stays on the folder step") }
         XCTAssertFalse(vm.isWakingBox)
+    }
+
+    func test_folderWakeGivingUp_neverBuriesAStartError() async {
+        // A start that fails fast for a real reason (bad_workdir) never
+        // takes the wake token, so the folder loop keeps polling behind it
+        // and later hits its ceiling. Its give-up copy is generic — burying
+        // "That folder doesn't exist" under "The box didn't wake" would send
+        // the user to retry a wake that was never the problem.
+        let fake = FakeAgentRPCProvider()
+        let sleeper = SleepRecorder()
+        fake.replies["recent_folders"] = .failure(code: "agent_unreachable", detail: nil)
+        let (vm, box) = await makeAsleepVM(fake: fake, sleeper: sleeper)
+        let park = sleeper.parkNext()
+        let selecting = Task { await vm.select(agent: box) }
+        await park.arrived.wait()
+        fake.replySequences["start"] = [.success(.failure(code: "bad_workdir", detail: "/nope"))]
+        await vm.start(workdir: "/nope")
+        XCTAssertEqual(vm.errorMessage, "That folder doesn't exist on the box.")
+        park.resume.open()
+        await selecting.value
+        XCTAssertEqual(foldersRequests(fake), NewChatViewModel.wakeAttemptLimit,
+                       "the folder loop really did run all the way to its give-up tail")
+        XCTAssertEqual(vm.errorMessage, "That folder doesn't exist on the box.",
+                       "the give-up copy must not overwrite the start error already on screen")
+        XCTAssertFalse(vm.wakeGaveUp, "Try Again belongs to a box that never answered, not to a bad path")
+        XCTAssertFalse(vm.isWakingBox)
+    }
+
+    func test_selectDifferentBoxWhileWaking_restartsTheWakeClock() async {
+        // "Waking… 45s" is per box. Switching boxes mid-wake must stamp the
+        // new loop now, or the new box inherits the old one's elapsed time
+        // and reads as having been booting far longer than it has.
+        let fake = FakeAgentRPCProvider()
+        let sleeper = SleepRecorder()
+        let clock = SettableClock()
+        fake.replies["recent_folders"] = .failure(code: "agent_unreachable", detail: nil)
+        let boxA = agent(7, name: "dev-7", connected: false)
+        let boxB = agent(8, name: "dev-8", connected: false)
+        fake.devicesResult = .success([boxA, boxB])
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache(),
+                                  now: { clock.now() },
+                                  wakeSleep: { await sleeper.sleep($0) })
+        await vm.load()
+        let parkA = sleeper.parkNext()
+        let selectingA = Task { await vm.select(agent: boxA) }
+        await parkA.arrived.wait()
+        guard let stampedA = vm.wakeStartedAt else { return XCTFail("box A's wake is clocked") }
+        clock.advance(45)
+        let parkB = sleeper.parkNext()
+        let selectingB = Task { await vm.select(agent: boxB) }
+        await parkB.arrived.wait()
+        XCTAssertEqual(vm.wakeStartedAt, stampedA.addingTimeInterval(45),
+                       "a different box's Waking… clock starts now, not from box A's stamp")
+        parkA.resume.open()
+        await selectingA.value
+        XCTAssertEqual(vm.wakeStartedAt, stampedA.addingTimeInterval(45),
+                       "the retired loop must not restore its own stamp on the way out")
+        fake.replySequences["recent_folders"] = [folders]
+        parkB.resume.open()
+        await selectingB.value
+        XCTAssertFalse(vm.isWakingBox)
+        XCTAssertNil(vm.wakeStartedAt)
+    }
+
+    func test_startRetryOnTheSameBox_keepsTheWakeClockRunning() async {
+        // The other half of the ownership rule: a start that supersedes the
+        // folder wake loop on the SAME box is the same boot from the user's
+        // side, so the banner clock carries on rather than snapping to zero.
+        let fake = FakeAgentRPCProvider()
+        let sleeper = SleepRecorder()
+        let clock = SettableClock()
+        fake.replies["recent_folders"] = .failure(code: "agent_unreachable", detail: nil)
+        fake.replies["start"] = .failure(code: "agent_unreachable", detail: nil)
+        let (vm, box) = await makeAsleepVM(fake: fake, sleeper: sleeper, clock: clock)
+        let folderPark = sleeper.parkNext()
+        let selecting = Task { await vm.select(agent: box) }
+        await folderPark.arrived.wait()
+        guard let stamped = vm.wakeStartedAt else { return XCTFail("the folder wake is clocked") }
+        clock.advance(30)
+        let startPark = sleeper.parkNext()
+        let starting = Task { await vm.start(workdir: "/x") }
+        await startPark.arrived.wait()
+        XCTAssertEqual(vm.wakeStartedAt, stamped,
+                       "the same box's boot keeps one clock across the folder→start handover")
+        folderPark.resume.open()
+        await selecting.value
+        XCTAssertEqual(vm.wakeStartedAt, stamped, "the retired folder loop leaves the start's clock alone")
+        startPark.resume.open()
+        await starting.value
+        XCTAssertFalse(vm.isWakingBox)
+        XCTAssertNil(vm.wakeStartedAt)
     }
 }

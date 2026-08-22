@@ -108,8 +108,14 @@ struct MacNewChatSheet: View {
         // including the wake loops, which would otherwise keep re-asking a
         // box (and a retried start could silently spawn a session) for two
         // minutes.
+        // Unconditional: `navigated` is set the moment `.done` lands, before
+        // `prepareConversation` returns, so gating on it would leave a sheet
+        // dismissed mid-await with the pending task still free to call
+        // `onCreated` and yank the user into a chat they walked away from.
+        // On the normal path this fires only after `onCreated` has already
+        // run, where setting it is a no-op.
         .onDisappear {
-            if !navigated { cancelled = true }
+            cancelled = true
             viewModel.abandon()
         }
         .onChange(of: viewModel.phase) { _, phase in
