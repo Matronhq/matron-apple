@@ -174,8 +174,65 @@ final class ChatViewModelTests: XCTestCase {
         await vm.stepChatSearch(older: false)
         XCTAssertEqual(vm.chatSearch?.index, 0)
 
+        // Re-running the search (new query submitted from the bar) resets
+        // to the newest match, not wherever the old walk was parked.
+        await vm.stepChatSearch(older: true)
+        XCTAssertEqual(vm.chatSearch?.index, 1)
+        await vm.beginChatSearch(query: "match")
+        XCTAssertEqual(vm.chatSearch?.index, 0)
+
         vm.endChatSearch()
         XCTAssertNil(vm.chatSearch)
+        vm.stop()
+    }
+
+    /// A hit whose id is not a seq (should never happen — the index only
+    /// ever stores seqs) is dropped rather than crashing or derailing
+    /// navigation.
+    @MainActor
+    func test_inChatSearch_nonNumericHitIDsAreDropped() async throws {
+        let items = [TimelineItem(id: "3", sender: "@a:s", timestamp: .now,
+                                  kind: .text(body: "match", formattedHTML: nil), isOwn: false)]
+        let fake = PagingFakeTimelineService(loaded: items, olderPages: [])
+        let search = FakeSearchService(hits: [
+            SearchHit(id: "3", roomID: "r1", sender: "@a:s", timestamp: .now, snippet: "s"),
+            SearchHit(id: "$not-a-seq", roomID: "r1", sender: "@a:s", timestamp: .now, snippet: "s"),
+        ])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService(), search: search)
+        _ = await vm.start()
+        await vm.beginChatSearch(query: "match")
+        XCTAssertEqual(vm.chatSearch?.matchSeqs, [3])
+    }
+
+    /// Arming a search on a COLD view model (room not cached; the results
+    /// tap runs before the destination's `start()`) must not run the
+    /// focus loop against the unsubscribed stream — that falsely latched
+    /// `reachedHistoryStart` and killed scroll-up for the room (review
+    /// 2026-08-26). The jump parks and fires once the first snapshot lands.
+    @MainActor
+    func test_inChatSearch_beforeStartParksJumpAndNeverLatchesHistoryStart() async throws {
+        let items = [TimelineItem(id: "3", sender: "@a:s", timestamp: .now,
+                                  kind: .text(body: "match", formattedHTML: nil), isOwn: false)]
+        let fake = PagingFakeTimelineService(loaded: items, olderPages: [])
+        let search = FakeSearchService(hits: [
+            SearchHit(id: "3", roomID: "r1", sender: "@a:s", timestamp: .now, snippet: "s"),
+        ])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService(), search: search)
+
+        await vm.beginChatSearch(query: "match")
+        XCTAssertEqual(vm.chatSearch?.matchSeqs, [3], "the bar arms immediately")
+        XCTAssertFalse(vm.reachedHistoryStart,
+                       "a pre-start search must not latch history-start")
+        XCTAssertNil(vm.pendingFocusID, "no jump before the stream is live")
+
+        _ = await vm.start()
+        // The parked jump fires off the first snapshot's Task hop.
+        let deadline = Date().addingTimeInterval(2)
+        while vm.pendingFocusID == nil && Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(vm.pendingFocusID, "3", "the parked jump fires once the stream is live")
+        XCTAssertFalse(vm.reachedHistoryStart)
         vm.stop()
     }
 

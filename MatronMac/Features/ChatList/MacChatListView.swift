@@ -171,7 +171,14 @@ struct MacChatListView: View {
                         let query = searchModel.trimmedQuery
                         selectedSummaryID = group.roomID
                         searchModel.query = ""
-                        if let deps, let session {
+                        // Only top-level chats get the bar: a hit in a
+                        // subagent child (indexed like any convo, but
+                        // absent from the list snapshot) opens in
+                        // MacSubChatPane, which renders no ChatSearchBar —
+                        // arming there would run an invisible, undismissable
+                        // search (review 2026-08-26).
+                        if let deps, let session,
+                           allChatSummaries.contains(where: { $0.id == group.roomID }) {
                             let (chat, _) = vmCache.viewModels(for: group.roomID, deps: deps, session: session)
                             Task { await chat.beginChatSearch(query: query) }
                         }

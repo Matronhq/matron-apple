@@ -20,8 +20,6 @@ public struct ChatSearchBar: View {
     let onNewer: () -> Void
     let onClose: () -> Void
 
-    @FocusState private var fieldFocused: Bool
-
     public init(query: Binding<String>, matchCount: Int, matchIndex: Int,
                 onSubmit: @escaping () -> Void, onOlder: @escaping () -> Void,
                 onNewer: @escaping () -> Void, onClose: @escaping () -> Void) {
@@ -38,9 +36,11 @@ public struct ChatSearchBar: View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
+            // Deliberately NOT auto-focused: the bar usually appears mid-
+            // jump-to-match, and popping the keyboard (iOS) would cover the
+            // very message the jump landed on. Tap/click the field to edit.
             TextField("Search in chat", text: $query)
                 .textFieldStyle(.plain)
-                .focused($fieldFocused)
                 .onSubmit(onSubmit)
             Text(positionLabel)
                 .font(.caption)

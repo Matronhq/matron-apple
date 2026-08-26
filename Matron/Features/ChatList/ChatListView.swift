@@ -194,7 +194,13 @@ struct ChatListView: View {
                             // timeline jumps to the newest match (paging
                             // history back as needed, like a TOC jump).
                             showingSearch = false
-                            if let session {
+                            // Only top-level chats get the bar — a subagent
+                            // child (absent from the list snapshot) opens in
+                            // SubChatView, which renders no ChatSearchBar;
+                            // arming there would run an invisible search
+                            // (review 2026-08-26).
+                            if let session,
+                               allChatSummaries.contains(where: { $0.id == group.roomID }) {
                                 let (chat, _) = vmCache.viewModels(for: group.roomID, deps: deps, session: session)
                                 Task { await chat.beginChatSearch(query: query) }
                             }

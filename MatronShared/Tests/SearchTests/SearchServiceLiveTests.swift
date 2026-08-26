@@ -70,6 +70,24 @@ final class SearchServiceLiveTests: XCTestCase {
         XCTAssertEqual(groups[1].newestHit.id, "3")
     }
 
+    /// Pins the load-bearing SQLite bare-column rule: with a single MAX()
+    /// aggregate, `event_id`/`sender` must come from the max-timestamp row
+    /// even when that row was inserted FIRST (lowest rowid) — a "last row
+    /// scanned wins" implementation would pick the wrong hit here.
+    func test_queryGrouped_newestWinsRegardlessOfInsertOrder() async throws {
+        try await svc.index(roomID: "rD", eventID: "d-new", sender: "@new:s",
+                            timestamp: Date(timeIntervalSince1970: 1_000), body: "deploy freshest")
+        try await svc.index(roomID: "rD", eventID: "d-old", sender: "@old:s",
+                            timestamp: Date(timeIntervalSince1970: 900), body: "deploy stale")
+        let groups = try await svc.queryGrouped("deploy", limit: 10)
+        XCTAssertEqual(groups.map(\.roomID), ["rD"])
+        XCTAssertEqual(groups[0].count, 2)
+        XCTAssertEqual(groups[0].newestHit.id, "d-new")
+        XCTAssertEqual(groups[0].newestHit.sender, "@new:s")
+        XCTAssertTrue(groups[0].newestHit.snippet.contains("freshest"),
+                      "snippet must follow the newest row: \(groups[0].newestHit.snippet)")
+    }
+
     func test_queryGrouped_respectsRoomLimit() async throws {
         try await seedGroupedFixture()
         let groups = try await svc.queryGrouped("deploy", limit: 1)

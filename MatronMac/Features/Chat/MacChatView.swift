@@ -705,7 +705,10 @@ struct MacChatView: View {
             // is already loaded (paginating backward as needed first), so
             // there's no "rows just populated" gate to wait on here. See
             // iOS `ChatView` for the twin.
-            .onChange(of: viewModel.pendingFocusID) { _, target in
+            // `initial: true` — see the twin comment in iOS `ChatView`: a
+            // search jump can land before this view mounts, and a
+            // change-only observer would drop it (review 2026-08-26).
+            .onChange(of: viewModel.pendingFocusID, initial: true) { _, target in
                 guard let target else { return }
                 isFollowingTail = false          // otherwise the tail-follow engine yanks the viewport back to the bottom
                 latestFocusTarget = target

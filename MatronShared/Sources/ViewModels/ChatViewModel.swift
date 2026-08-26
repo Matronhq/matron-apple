@@ -365,7 +365,14 @@ public final class ChatViewModel {
         // Flip on the first processed snapshot so the empty-state
         // placeholder gates correctly even when the snapshot itself
         // is empty.
+        let isFirstSnapshot = !hasReceivedFirstSnapshot
         self.hasReceivedFirstSnapshot = true
+        // A search armed before start() parked its jump here — the stream
+        // is live now, so the focus loop's growth sampling is meaningful.
+        if isFirstSnapshot, let seq = pendingChatSearchFocusSeq {
+            pendingChatSearchFocusSeq = nil
+            Task { @MainActor [weak self] in await self?.focus(seq: seq) }
+        }
         // Debounce the empty-state so a transient timeline clear
         // (sliding-sync reset) doesn't flash the "no messages yet"
         // placeholder.
@@ -961,11 +968,23 @@ public final class ChatViewModel {
     /// landed.
     private var focusTask: Task<Void, Never>?
 
+    /// Hard cap on the backward paginates one focus jump may issue. Each
+    /// iteration is a network round-trip plus up to a 2.5s snapshot wait —
+    /// a search hit thousands of messages deep must not fetch the whole
+    /// history while the transcript sits still with no cancel affordance
+    /// (review 2026-08-26: this PR made `focus(seq:)` user-reachable for
+    /// the first time). Hitting the cap lands on the oldest loaded row via
+    /// the fallback below, same as a genuine history start.
+    private static let maxFocusPaginates = 20
+
     private func performFocus(seq: Int64) async {
+        var paginates = 0
         while nearestMessageID(atOrBefore: seq) == nil && !reachedHistoryStart {
             if Task.isCancelled { return }
+            if paginates >= Self.maxFocusPaginates { break }
             let beforeCount = items.count
             await paginateBackward()
+            paginates += 1
             let madeProgress = items.count != beforeCount || reachedHistoryStart
             if !madeProgress {
                 guard isPaginatingBackward else { break }
@@ -1014,10 +1033,25 @@ public final class ChatViewModel {
         let hits = (try? await search.query(trimmed, roomID: roomID, limit: Self.chatSearchMatchLimit)) ?? []
         let seqs = hits.compactMap { Int64($0.id) }
         chatSearch = ChatSearchState(query: trimmed, matchSeqs: seqs, index: 0)
-        if let newest = seqs.first {
+        guard let newest = seqs.first else { return }
+        if hasReceivedFirstSnapshot {
             await focus(seq: newest)
+        } else {
+            // Armed from the search results BEFORE the chat view has run
+            // `start()` (a cold cache miss): the focus loop measures
+            // paginate progress by `items` growth, and `items` only grows
+            // through the subscription `start()` opens — sampling growth
+            // against an unsubscribed stream falsely latches
+            // `reachedHistoryStart` and kills scroll-up for the room
+            // (review 2026-08-26). Park the target; the first processed
+            // snapshot fires it.
+            pendingChatSearchFocusSeq = newest
         }
     }
+
+    /// Focus target parked by `beginChatSearch` until the first timeline
+    /// snapshot lands — see the comment at its write site.
+    private var pendingChatSearchFocusSeq: Int64?
 
     /// Steps to the adjacent match — `older: true` walks up into history
     /// (higher index in the newest-first list). Clamped at the ends.
@@ -1033,6 +1067,7 @@ public final class ChatViewModel {
     /// Dismisses the bar. The transcript stays where the user left it.
     public func endChatSearch() {
         chatSearch = nil
+        pendingChatSearchFocusSeq = nil
     }
 
     /// Cap on navigable matches per conversation. Far beyond any realistic
@@ -1632,6 +1667,10 @@ public final class ChatViewModel {
         historyRefillTask = nil
         focusTask?.cancel()
         focusTask = nil
+        // Leaving the room dismisses the in-conversation search — the VM
+        // is cached, and re-opening days later must not resurrect a stale
+        // bar whose match list predates everything received since.
+        endChatSearch()
     }
 
     private var historyRefillTask: Task<Void, Never>?

@@ -185,7 +185,8 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
             // that supplied the maximum.
             let groups = try Row.fetchAll(db, sql: """
                 SELECT m.room_id, COUNT(*) AS hit_count, MAX(m.timestamp) AS newest_ts,
-                       m.event_id AS newest_event_id, m.sender AS newest_sender
+                       m.event_id AS newest_event_id, m.sender AS newest_sender,
+                       m.rowid AS newest_rowid
                 FROM messages_fts
                 JOIN messages m ON m.rowid = messages_fts.rowid
                 WHERE messages_fts MATCH ?
@@ -195,17 +196,21 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
             """, arguments: [pattern, limit])
             guard !groups.isEmpty else { return [] }
 
-            // Pass 2: snippets for just the winning rows. The WHERE filter
-            // runs before the projection, so `snippet()` is evaluated at
-            // most `limit` times.
-            let winnerIDs = groups.map { $0["newest_event_id"] as String }
-            let placeholders = winnerIDs.map { _ in "?" }.joined(separator: ",")
+            // Pass 2: snippets for just the winning rows. Constrained on
+            // messages_fts.rowid so FTS5 seeks straight to the winners
+            // instead of re-walking the whole match set (this query runs
+            // per keystroke), and the projection's `snippet()` is
+            // evaluated at most `limit` times.
+            let winnerRowids = groups.map { $0["newest_rowid"] as Int64 }
+            let placeholders = winnerRowids.map { _ in "?" }.joined(separator: ",")
+            var snippetArguments: [any DatabaseValueConvertible] = [pattern]
+            snippetArguments.append(contentsOf: winnerRowids)
             let snippetRows = try Row.fetchAll(db, sql: """
                 SELECT m.event_id, snippet(messages_fts, 0, '<mark>', '</mark>', '…', 32) AS snippet
                 FROM messages_fts
                 JOIN messages m ON m.rowid = messages_fts.rowid
-                WHERE messages_fts MATCH ? AND m.event_id IN (\(placeholders))
-            """, arguments: StatementArguments([pattern] + winnerIDs))
+                WHERE messages_fts MATCH ? AND messages_fts.rowid IN (\(placeholders))
+            """, arguments: StatementArguments(snippetArguments))
             let snippets = Dictionary(uniqueKeysWithValues: snippetRows.map {
                 ($0["event_id"] as String, $0["snippet"] as String)
             })

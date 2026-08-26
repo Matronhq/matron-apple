@@ -700,7 +700,12 @@ struct ChatView: View {
             // `focus(seq:)` only sets `pendingFocusID` once the target row
             // is already loaded (paginating backward as needed first), so
             // there's no "rows just populated" gate to wait on here.
-            .onChange(of: viewModel.pendingFocusID) { _, target in
+            // `initial: true`: a search jump can write `pendingFocusID`
+            // BEFORE this view mounts (the results tap arms the cached VM,
+            // then navigates) — a change-only observer registered after the
+            // write never fires, and the un-cleared value then swallows
+            // every later same-seq jump too (review 2026-08-26).
+            .onChange(of: viewModel.pendingFocusID, initial: true) { _, target in
                 guard let target else { return }
                 isFollowingTail = false          // otherwise the tail-follow engine yanks the viewport back to the bottom
                 latestFocusTarget = target
