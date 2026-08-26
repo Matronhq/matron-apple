@@ -3,6 +3,7 @@ import SwiftUI
 import MatronChat
 import MatronEvents
 import MatronModels
+import MatronSearch
 import MatronStorage
 @testable import MatronViewModels
 
@@ -132,6 +133,60 @@ final class ChatViewModelTests: XCTestCase {
 
         XCTAssertEqual(vm.items.count, 1)
         XCTAssertEqual(vm.items.first?.id, "1")
+    }
+
+    /// In-conversation search lifecycle: `beginChatSearch` runs the
+    /// room-scoped query, focuses the NEWEST match, and the chevrons step
+    /// through matches via `focus(seq:)` with clamping at both ends.
+    @MainActor
+    func test_inChatSearch_beginStepAndEnd() async throws {
+        let items = (1...3).map {
+            TimelineItem(id: "\($0)", sender: "@a:s",
+                         timestamp: Date(timeIntervalSince1970: Double($0)),
+                         kind: .text(body: "match \($0)", formattedHTML: nil), isOwn: false)
+        }
+        let fake = PagingFakeTimelineService(loaded: items, olderPages: [])
+        // Seqs 3 and 1 match; 2 does not. Newest first, per the contract.
+        let search = FakeSearchService(hits: [
+            SearchHit(id: "3", roomID: "r1", sender: "@a:s",
+                      timestamp: Date(timeIntervalSince1970: 3), snippet: "<mark>match</mark> 3"),
+            SearchHit(id: "1", roomID: "r1", sender: "@a:s",
+                      timestamp: Date(timeIntervalSince1970: 1), snippet: "<mark>match</mark> 1"),
+        ])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService(), search: search)
+        _ = await vm.start()
+
+        await vm.beginChatSearch(query: "match")
+        XCTAssertEqual(vm.chatSearch?.matchSeqs, [3, 1])
+        XCTAssertEqual(vm.chatSearch?.index, 0)
+        XCTAssertEqual(vm.pendingFocusID, "3", "opens on the newest match")
+        vm.clearPendingFocus()
+
+        await vm.stepChatSearch(older: true)
+        XCTAssertEqual(vm.chatSearch?.index, 1)
+        XCTAssertEqual(vm.pendingFocusID, "1")
+        vm.clearPendingFocus()
+
+        await vm.stepChatSearch(older: true)
+        XCTAssertEqual(vm.chatSearch?.index, 1, "clamped at the oldest match")
+        XCTAssertNil(vm.pendingFocusID, "a clamped step must not re-focus")
+
+        await vm.stepChatSearch(older: false)
+        XCTAssertEqual(vm.chatSearch?.index, 0)
+
+        vm.endChatSearch()
+        XCTAssertNil(vm.chatSearch)
+        vm.stop()
+    }
+
+    /// Without a search service (fakes, failed index open) the entry point
+    /// is a no-op — the bar must not come up reporting bogus emptiness.
+    @MainActor
+    func test_inChatSearch_noServiceIsNoop() async throws {
+        let fake = PagingFakeTimelineService(loaded: [], olderPages: [])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService())
+        await vm.beginChatSearch(query: "match")
+        XCTAssertNil(vm.chatSearch)
     }
 
     @MainActor

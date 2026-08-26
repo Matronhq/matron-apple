@@ -44,6 +44,9 @@ struct MacChatView: View {
     /// strip / switcher; cleared by the pane's close button. Reset per
     /// parent chat because `MacChatView` is rebuilt with `.id(id)`.
     @State private var openSubChatID: String?
+    /// Local text for the in-conversation search bar's field — seeded from
+    /// `viewModel.chatSearch?.query`, submitted back via `beginChatSearch`.
+    @State private var chatSearchQuery = ""
     /// App lifecycle — drives `viewModel.handleForeground()` so a
     /// background→foreground timeline re-sync doesn't flash the empty
     /// placeholder. See iOS `ChatView`.
@@ -449,6 +452,27 @@ struct MacChatView: View {
                     .background(Color.red.opacity(0.9))
                     .accessibilityLabel("Chat error: \(errorMessage)")
                     .chatTopBanner()
+            }
+            // In-conversation search (armed by a grouped search-result tap).
+            // The bar's field is local state seeded from the VM's query so
+            // typing doesn't round-trip the view model; submit re-runs the
+            // room-scoped search.
+            if let searchState = viewModel.chatSearch {
+                ChatSearchBar(
+                    query: $chatSearchQuery,
+                    matchCount: searchState.matchSeqs.count,
+                    matchIndex: searchState.index,
+                    onSubmit: { Task { await viewModel.beginChatSearch(query: chatSearchQuery) } },
+                    onOlder: { Task { await viewModel.stepChatSearch(older: true) } },
+                    onNewer: { Task { await viewModel.stepChatSearch(older: false) } },
+                    onClose: { viewModel.endChatSearch() }
+                )
+                .onAppear { chatSearchQuery = searchState.query }
+                .onChange(of: searchState.query) { _, newQuery in
+                    // A second global-search tap while the bar is up
+                    // replaces the session — mirror the new query.
+                    chatSearchQuery = newQuery
+                }
             }
             // Tap-to-compact nudge once the session's context passes the
             // absolute threshold — same slot and behaviour as iOS

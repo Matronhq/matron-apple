@@ -12,7 +12,10 @@ import MatronDesignSystem  // SearchResultRow
 struct SearchView: View {
     @State var viewModel: SearchViewModel
     let onSelectChat: (ChatSummary) -> Void
-    let onSelectMessage: (SearchHit) -> Void
+    /// Grouped message-row tap: the chat's aggregate plus the query that
+    /// produced it, so the parent can arm the opened chat's in-conversation
+    /// search (the VM lives inside this sheet and dies with it).
+    let onSelectMessage: (SearchChatHit, String) -> Void
     /// Live chat-list snapshot from the parent. `viewModel` is held as `@State`,
     /// so the `allChats` it was built with freezes when the sheet opens; folding
     /// later updates in here keeps new rooms and renamed titles searchable while
@@ -44,17 +47,20 @@ struct SearchView: View {
             }
             if !viewModel.messageHits.isEmpty {
                 Section("Messages") {
-                    ForEach(viewModel.messageHits) { hit in
-                        let line = viewModel.hitTitle(for: hit.roomID)
+                    // One row per CHAT (newest hit's snippet + match count),
+                    // not one per message — see `SearchViewModel.messageHits`.
+                    ForEach(viewModel.messageHits) { group in
+                        let line = viewModel.hitTitle(for: group.roomID)
                         SearchResultRow(
-                            hit: hit,
+                            hit: group.newestHit,
                             chatTitle: line.title,
                             sessionShort: line.sessionShort,
                             boxLetter: line.boxLetter,
                             boxName: line.boxName,
                             roomBoxNames: line.roomBoxNames,
                             roomBoxShorts: line.roomBoxShorts,
-                            onTap: { onSelectMessage(hit) }
+                            matchCount: group.count,
+                            onTap: { onSelectMessage(group, viewModel.trimmedQuery) }
                         )
                     }
                 }

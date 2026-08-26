@@ -10,7 +10,11 @@ import MatronModels
 @MainActor
 public final class SearchViewModel {
     public var query: String = ""
-    public private(set) var messageHits: [SearchHit] = []
+    /// Message results grouped one-per-conversation (match count + newest
+    /// hit's snippet). A flat per-message list drowned every other chat the
+    /// moment the query was a common word (Dan, 2026-08-26); drilling into a
+    /// chat's individual matches is the in-conversation search's job.
+    public private(set) var messageHits: [SearchChatHit] = []
     public private(set) var isSearching = false
 
     public private(set) var allChats: [ChatSummary]
@@ -106,6 +110,12 @@ public final class SearchViewModel {
         guard !trimmed.isEmpty else { messageHits = []; return }
         isSearching = true
         defer { isSearching = false }
-        messageHits = (try? await search.query(trimmed, limit: 100)) ?? []
+        messageHits = (try? await search.queryGrouped(trimmed, limit: 50)) ?? []
+    }
+
+    /// The current query, ready to hand to the opened chat's
+    /// in-conversation search when the user taps a grouped message row.
+    public var trimmedQuery: String {
+        query.trimmingCharacters(in: .whitespaces)
     }
 }

@@ -188,12 +188,17 @@ struct ChatListView: View {
                             showingSearch = false
                             onOpenChat?(chat.id)
                         },
-                        onSelectMessage: { hit in
-                            // Opens the hit's room. Precise scroll-to-event
-                            // (focused-timeline) is a Phase 6 follow-up — see
-                            // the search plan's jump-to-message note.
+                        onSelectMessage: { group, query in
+                            // Opens the chat with its in-conversation
+                            // search armed: the bar comes up and the
+                            // timeline jumps to the newest match (paging
+                            // history back as needed, like a TOC jump).
                             showingSearch = false
-                            onOpenChat?(hit.roomID)
+                            if let session {
+                                let (chat, _) = vmCache.viewModels(for: group.roomID, deps: deps, session: session)
+                                Task { await chat.beginChatSearch(query: query) }
+                            }
+                            onOpenChat?(group.roomID)
                         },
                         // Keep `allChats` fresh while the sheet is open — the VM
                         // is `@State` inside SearchView and freezes otherwise
@@ -587,7 +592,8 @@ final class ChatVMCache {
         // past an eviction.
         let chat = ChatViewModel(roomID: roomID, timeline: timelineSvc, media: mediaSvc,
                                  agentChat: deps.agentChatService(for: session),
-                                 agentSpawn: deps.agentSpawnService(for: session))
+                                 agentSpawn: deps.agentSpawnService(for: session),
+                                 search: deps.search)
         let pair = (
             chat: chat,
             composer: ComposerViewModel(roomID: roomID, timeline: timelineSvc,

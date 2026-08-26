@@ -41,6 +41,9 @@ struct ChatView: View {
     @Environment(\.appDependencies) private var deps
     @Environment(\.currentSession) private var session
     @State private var wasBackgrounded = false
+    /// Local text for the in-conversation search bar's field — seeded from
+    /// `viewModel.chatSearch?.query`, submitted back via `beginChatSearch`.
+    @State private var chatSearchQuery = ""
     /// Sticky "following the live tail" mode. `true` from open-at-tail
     /// until the user *deliberately drags away* (gesture phases via
     /// `onUserScrollGesture`); re-engaged when scrolling settles near the
@@ -382,6 +385,24 @@ struct ChatView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.red.opacity(0.9))
                     .accessibilityLabel("Chat error: \(errorMessage)")
+            }
+            // In-conversation search (armed by a grouped search-result
+            // tap). Field text is local, seeded from the VM's query;
+            // submit re-runs the room-scoped search. Same slot as the Mac.
+            if let searchState = viewModel.chatSearch {
+                ChatSearchBar(
+                    query: $chatSearchQuery,
+                    matchCount: searchState.matchSeqs.count,
+                    matchIndex: searchState.index,
+                    onSubmit: { Task { await viewModel.beginChatSearch(query: chatSearchQuery) } },
+                    onOlder: { Task { await viewModel.stepChatSearch(older: true) } },
+                    onNewer: { Task { await viewModel.stepChatSearch(older: false) } },
+                    onClose: { viewModel.endChatSearch() }
+                )
+                .onAppear { chatSearchQuery = searchState.query }
+                .onChange(of: searchState.query) { _, newQuery in
+                    chatSearchQuery = newQuery
+                }
             }
             // Tap-to-compact nudge once the session's context passes the
             // absolute threshold (see CompactContextBanner.shouldShow).

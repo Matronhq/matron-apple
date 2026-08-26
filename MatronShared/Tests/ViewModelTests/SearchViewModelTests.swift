@@ -37,6 +37,31 @@ final class SearchViewModelTests: XCTestCase {
         XCTAssertEqual(vm.messageHits.count, 1)
     }
 
+    /// Message results arrive grouped one-per-chat: match count + the
+    /// newest hit per room, rooms ordered by their newest hit. A common
+    /// word must not flood the list with one row per message.
+    @MainActor
+    func test_search_groupsMessageHitsPerChat() async {
+        func hit(_ id: String, room: String, t: TimeInterval) -> SearchHit {
+            SearchHit(id: id, roomID: room, sender: "@a:s",
+                      timestamp: Date(timeIntervalSince1970: t), snippet: "<mark>x</mark> \(id)")
+        }
+        // Newest-first, as the service contract delivers them.
+        let fakeSearch = FakeSearchService(hits: [
+            hit("$5", room: "!a:s", t: 500),
+            hit("$4", room: "!b:s", t: 400),
+            hit("$3", room: "!a:s", t: 300),
+            hit("$2", room: "!a:s", t: 200),
+        ])
+        let vm = SearchViewModel(search: fakeSearch, allChats: [])
+        vm.query = "x"
+        await vm.search()
+        XCTAssertEqual(vm.messageHits.map(\.roomID), ["!a:s", "!b:s"])
+        XCTAssertEqual(vm.messageHits.map(\.count), [3, 1])
+        XCTAssertEqual(vm.messageHits.first?.newestHit.id, "$5",
+                       "the row previews the newest matching message")
+    }
+
     @MainActor
     func test_chatHits_filterByTitleOrBotName() {
         let claude = BotIdentity(matrixID: "@claude:s", displayName: "Claude", avatarURL: nil)

@@ -40,6 +40,53 @@ final class SearchServiceLiveTests: XCTestCase {
         XCTAssertEqual(hits2.count, 1)
     }
 
+    // MARK: Grouped + room-scoped queries
+
+    /// Seeds three rooms: rA has 3 hits (newest at t=400), rB has 1 hit
+    /// (t=300), rC has none for the term.
+    private func seedGroupedFixture() async throws {
+        func at(_ t: TimeInterval) -> Date { Date(timeIntervalSince1970: t) }
+        try await svc.index(roomID: "rA", eventID: "1", sender: "@a:s", timestamp: at(100), body: "deploy the app")
+        try await svc.index(roomID: "rA", eventID: "2", sender: "@a:s", timestamp: at(200), body: "deploy again")
+        try await svc.index(roomID: "rB", eventID: "3", sender: "@b:s", timestamp: at(300), body: "one deploy here")
+        try await svc.index(roomID: "rA", eventID: "4", sender: "@c:s", timestamp: at(400), body: "final deploy done")
+        try await svc.index(roomID: "rC", eventID: "5", sender: "@a:s", timestamp: at(500), body: "unrelated words")
+    }
+
+    func test_queryGrouped_onePerRoom_countAndNewestSnippet() async throws {
+        try await seedGroupedFixture()
+        let groups = try await svc.queryGrouped("deploy", limit: 10)
+        XCTAssertEqual(groups.map(\.roomID), ["rA", "rB"], "ordered by newest hit, one row per room")
+        XCTAssertEqual(groups.map(\.count), [3, 1])
+        // The preview must belong to the NEWEST matching message, not an
+        // arbitrary group member.
+        XCTAssertEqual(groups[0].newestHit.id, "4")
+        XCTAssertEqual(groups[0].newestHit.sender, "@c:s")
+        XCTAssertEqual(groups[0].newestHit.timestamp.timeIntervalSince1970, 400, accuracy: 1.0)
+        XCTAssertTrue(groups[0].newestHit.snippet.contains("<mark>deploy</mark>"),
+                      "snippet missing highlight: \(groups[0].newestHit.snippet)")
+        XCTAssertTrue(groups[0].newestHit.snippet.contains("final"),
+                      "snippet must come from the newest hit: \(groups[0].newestHit.snippet)")
+        XCTAssertEqual(groups[1].newestHit.id, "3")
+    }
+
+    func test_queryGrouped_respectsRoomLimit() async throws {
+        try await seedGroupedFixture()
+        let groups = try await svc.queryGrouped("deploy", limit: 1)
+        XCTAssertEqual(groups.map(\.roomID), ["rA"], "limit bounds rooms, keeping the most recent")
+        XCTAssertEqual(groups[0].count, 3)
+    }
+
+    func test_queryScopedToRoom_limitAppliesPostFilter() async throws {
+        try await seedGroupedFixture()
+        let hits = try await svc.query("deploy", roomID: "rA", limit: 2)
+        XCTAssertEqual(hits.map(\.id), ["4", "2"], "newest first, other rooms excluded")
+        XCTAssertTrue(hits.allSatisfy { $0.roomID == "rA" })
+        let all = try await svc.query("deploy", roomID: "rA", limit: 10)
+        XCTAssertEqual(all.map(\.id), ["4", "2", "1"])
+        XCTAssertTrue(all[0].snippet.contains("<mark>deploy</mark>"))
+    }
+
     /// FTS5's external-content integrity check (`rank = 1` verifies the index
     /// against the content table). Throws SQLITE_CORRUPT when the two diverge —
     /// e.g. ghost entries left by a REPLACE that deleted a content row without

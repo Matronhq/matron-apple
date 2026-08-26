@@ -21,6 +21,17 @@ public protocol SearchService: Sendable {
     /// Queries by free-text. Returns at most `limit` hits, newest first.
     func query(_ text: String, limit: Int) async throws -> [SearchHit]
 
+    /// Queries by free-text, grouped per conversation: at most `limit`
+    /// rooms, each carrying its total match count and its newest hit,
+    /// ordered by that newest hit's recency. The unit of the search UI's
+    /// Messages section.
+    func queryGrouped(_ text: String, limit: Int) async throws -> [SearchChatHit]
+
+    /// Queries by free-text within ONE conversation. Returns at most
+    /// `limit` hits, newest first — the in-conversation search's match
+    /// list, navigated hit by hit.
+    func query(_ text: String, roomID: String, limit: Int) async throws -> [SearchHit]
+
     /// Wipes all data (used on sign-out).
     func wipe() async throws
 
@@ -77,5 +88,31 @@ public extension SearchService {
             try await index(roomID: entry.roomID, eventID: entry.eventID,
                             sender: entry.sender, timestamp: entry.timestamp, body: entry.body)
         }
+    }
+
+    /// Default for fakes: group a flat query in memory. `SearchServiceLive`
+    /// overrides with a single grouped SQL pass — this fallback's counts are
+    /// only as complete as the flat query's limit.
+    func queryGrouped(_ text: String, limit: Int) async throws -> [SearchChatHit] {
+        let hits = try await query(text, limit: 1_000)
+        var order: [String] = []
+        var grouped: [String: (count: Int, newest: SearchHit)] = [:]
+        for hit in hits {  // hits are newest-first, so the first per room wins
+            if var entry = grouped[hit.roomID] {
+                entry.count += 1
+                grouped[hit.roomID] = entry
+            } else {
+                grouped[hit.roomID] = (1, hit)
+                order.append(hit.roomID)
+            }
+        }
+        return order.prefix(limit).map { SearchChatHit(roomID: $0, count: grouped[$0]!.count,
+                                                       newestHit: grouped[$0]!.newest) }
+    }
+
+    /// Default for fakes: filter a flat query in memory. Live overrides
+    /// with a room-scoped SQL query so `limit` applies post-filter.
+    func query(_ text: String, roomID: String, limit: Int) async throws -> [SearchHit] {
+        try await query(text, limit: 1_000).filter { $0.roomID == roomID }.prefix(limit).map { $0 }
     }
 }

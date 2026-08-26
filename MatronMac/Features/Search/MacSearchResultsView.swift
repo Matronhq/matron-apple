@@ -12,7 +12,7 @@ import MatronDesignSystem  // SearchResultRow
 struct MacSearchResultsView: View {
     @Bindable var viewModel: SearchViewModel
     let onSelectChat: (ChatSummary) -> Void
-    let onSelectMessage: (SearchHit) -> Void
+    let onSelectMessage: (SearchChatHit) -> Void
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -39,17 +39,20 @@ struct MacSearchResultsView: View {
             }
             if !viewModel.messageHits.isEmpty {
                 Section("Messages") {
-                    ForEach(viewModel.messageHits) { hit in
-                        let line = viewModel.hitTitle(for: hit.roomID)
+                    // One row per CHAT (newest hit's snippet + match count),
+                    // not one per message — see `SearchViewModel.messageHits`.
+                    ForEach(viewModel.messageHits) { group in
+                        let line = viewModel.hitTitle(for: group.roomID)
                         SearchResultRow(
-                            hit: hit,
+                            hit: group.newestHit,
                             chatTitle: line.title,
                             sessionShort: line.sessionShort,
                             boxLetter: line.boxLetter,
                             boxName: line.boxName,
                             roomBoxNames: line.roomBoxNames,
                             roomBoxShorts: line.roomBoxShorts,
-                            onTap: { onSelectMessage(hit) }
+                            matchCount: group.count,
+                            onTap: { onSelectMessage(group) }
                         )
                     }
                 }

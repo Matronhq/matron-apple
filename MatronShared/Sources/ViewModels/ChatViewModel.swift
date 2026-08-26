@@ -6,6 +6,7 @@ import MatronChat
 import MatronEvents
 import MatronJournal
 import MatronModels
+import MatronSearch
 import MatronStorage
 
 /// Rendering unit for the chat timeline. The view-model walks `items`
@@ -981,6 +982,63 @@ public final class ChatViewModel {
         pendingFocusID = target
     }
 
+    // MARK: In-conversation search
+
+    /// One active in-conversation search (WhatsApp-style): the query, its
+    /// matching message seqs newest-first, and which match is focused.
+    /// Views render the navigation bar from this and step through matches;
+    /// each step rides `focus(seq:)`, so navigating into deep history
+    /// pages backward exactly like a TOC jump.
+    public struct ChatSearchState: Equatable {
+        public var query: String
+        /// Matching message seqs, newest first (the FTS index's event ids
+        /// ARE journal seqs).
+        public var matchSeqs: [Int64]
+        /// Index into `matchSeqs` of the focused match; 0 = newest.
+        public var index: Int
+    }
+
+    /// Non-nil while the in-conversation search bar is up.
+    public private(set) var chatSearch: ChatSearchState?
+
+    /// Starts (or re-runs, on a new query from the bar's field) an
+    /// in-conversation search and jumps to the newest match. No-op without
+    /// a search service (fakes, or a device whose index failed to open) —
+    /// the entry points are gated the same way. An empty result set still
+    /// shows the bar, reporting "No matches" rather than silently doing
+    /// nothing.
+    public func beginChatSearch(query: String) async {
+        guard let search else { return }
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        let hits = (try? await search.query(trimmed, roomID: roomID, limit: Self.chatSearchMatchLimit)) ?? []
+        let seqs = hits.compactMap { Int64($0.id) }
+        chatSearch = ChatSearchState(query: trimmed, matchSeqs: seqs, index: 0)
+        if let newest = seqs.first {
+            await focus(seq: newest)
+        }
+    }
+
+    /// Steps to the adjacent match — `older: true` walks up into history
+    /// (higher index in the newest-first list). Clamped at the ends.
+    public func stepChatSearch(older: Bool) async {
+        guard var state = chatSearch else { return }
+        let next = state.index + (older ? 1 : -1)
+        guard state.matchSeqs.indices.contains(next) else { return }
+        state.index = next
+        chatSearch = state
+        await focus(seq: state.matchSeqs[next])
+    }
+
+    /// Dismisses the bar. The transcript stays where the user left it.
+    public func endChatSearch() {
+        chatSearch = nil
+    }
+
+    /// Cap on navigable matches per conversation. Far beyond any realistic
+    /// manual chevron walk; bounds the seq array and the FTS projection.
+    private static let chatSearchMatchLimit = 500
+
     /// Latest `rows` message id whose seq is `<= seq`, or nil if every
     /// loaded message postdates it. `rows` is ascending (oldest first —
     /// see `applyDerivedRecompute`), so the scan can stop at the first
@@ -1107,6 +1165,10 @@ public final class ChatViewModel {
 
     private let timeline: TimelineService
     private let media: MediaService
+    /// FTS index for the in-conversation search (`beginChatSearch`). Nil
+    /// in fakes and on devices whose index failed to open — the search
+    /// entry points are gated on the same service being available.
+    private let search: (any SearchService)?
     private var observationTask: Task<Void, Never>?
     private var statusTask: Task<Void, Never>?
     private var sessionStateTask: Task<Void, Never>?
@@ -1191,12 +1253,14 @@ public final class ChatViewModel {
 
     public init(roomID: String, timeline: TimelineService, media: MediaService,
                 agentChat: (any AgentChatAnswering)? = nil,
-                agentSpawn: (any AgentSpawnAnswering)? = nil) {
+                agentSpawn: (any AgentSpawnAnswering)? = nil,
+                search: (any SearchService)? = nil) {
         self.roomID = roomID
         self.timeline = timeline
         self.media = media
         self.agentChat = agentChat
         self.agentSpawn = agentSpawn
+        self.search = search
         let stored = UserDefaults.standard.stringArray(forKey: "matron.answeredPrompts.\(roomID)") ?? []
         self.answeredPromptIDs = Set(stored)
         self.agentChatAnswers = UserDefaults.standard

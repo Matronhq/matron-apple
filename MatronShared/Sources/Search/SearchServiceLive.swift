@@ -171,6 +171,89 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
         }
     }
 
+    public func queryGrouped(_ text: String, limit: Int) async throws -> [SearchChatHit] {
+        let escaped = text.replacingOccurrences(of: "\"", with: "\"\"")
+        let pattern = "\"\(escaped)\"*"
+        return try await queue.read { db in
+            // Pass 1: counts + each room's newest hit, WITHOUT snippets.
+            // `snippet()` re-tokenizes the document, so computing it for
+            // every match of a common word (thousands of rows, re-run per
+            // keystroke) is the expensive part — deferred to pass 2, which
+            // only touches the winners. The bare `m.event_id` / `m.sender`
+            // ride SQLite's documented single-MAX rule: with exactly one
+            // MAX() aggregate, bare columns take their values from the row
+            // that supplied the maximum.
+            let groups = try Row.fetchAll(db, sql: """
+                SELECT m.room_id, COUNT(*) AS hit_count, MAX(m.timestamp) AS newest_ts,
+                       m.event_id AS newest_event_id, m.sender AS newest_sender
+                FROM messages_fts
+                JOIN messages m ON m.rowid = messages_fts.rowid
+                WHERE messages_fts MATCH ?
+                GROUP BY m.room_id
+                ORDER BY newest_ts DESC
+                LIMIT ?
+            """, arguments: [pattern, limit])
+            guard !groups.isEmpty else { return [] }
+
+            // Pass 2: snippets for just the winning rows. The WHERE filter
+            // runs before the projection, so `snippet()` is evaluated at
+            // most `limit` times.
+            let winnerIDs = groups.map { $0["newest_event_id"] as String }
+            let placeholders = winnerIDs.map { _ in "?" }.joined(separator: ",")
+            let snippetRows = try Row.fetchAll(db, sql: """
+                SELECT m.event_id, snippet(messages_fts, 0, '<mark>', '</mark>', '…', 32) AS snippet
+                FROM messages_fts
+                JOIN messages m ON m.rowid = messages_fts.rowid
+                WHERE messages_fts MATCH ? AND m.event_id IN (\(placeholders))
+            """, arguments: StatementArguments([pattern] + winnerIDs))
+            let snippets = Dictionary(uniqueKeysWithValues: snippetRows.map {
+                ($0["event_id"] as String, $0["snippet"] as String)
+            })
+
+            return groups.map { row in
+                let eventID = row["newest_event_id"] as String
+                return SearchChatHit(
+                    roomID: row["room_id"],
+                    count: row["hit_count"],
+                    newestHit: SearchHit(
+                        id: eventID,
+                        roomID: row["room_id"],
+                        sender: row["newest_sender"],
+                        timestamp: Date(timeIntervalSince1970: TimeInterval(row["newest_ts"] as Int)),
+                        snippet: snippets[eventID] ?? ""
+                    )
+                )
+            }
+        }
+    }
+
+    public func query(_ text: String, roomID: String, limit: Int) async throws -> [SearchHit] {
+        let escaped = text.replacingOccurrences(of: "\"", with: "\"\"")
+        let pattern = "\"\(escaped)\"*"
+        return try await queue.read { db in
+            // Room filter in the WHERE keeps `limit` post-filter, and the
+            // projection (with its snippet) only runs for passing rows.
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT m.room_id, m.event_id, m.sender, m.timestamp,
+                       snippet(messages_fts, 0, '<mark>', '</mark>', '…', 32) AS snippet
+                FROM messages_fts
+                JOIN messages m ON m.rowid = messages_fts.rowid
+                WHERE messages_fts MATCH ? AND m.room_id = ?
+                ORDER BY m.timestamp DESC
+                LIMIT ?
+            """, arguments: [pattern, roomID, limit])
+            return rows.map { row in
+                SearchHit(
+                    id: row["event_id"],
+                    roomID: row["room_id"],
+                    sender: row["sender"],
+                    timestamp: Date(timeIntervalSince1970: TimeInterval(row["timestamp"] as Int)),
+                    snippet: row["snippet"]
+                )
+            }
+        }
+    }
+
     public func wipe() async throws {
         try await queue.write { db in
             // Deleting from `messages` fires the AFTER DELETE trigger for each row,

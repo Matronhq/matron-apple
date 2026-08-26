@@ -162,13 +162,19 @@ struct MacChatListView: View {
                         selectedSummaryID = chat.id
                         searchModel.query = ""
                     },
-                    onSelectMessage: { hit in
-                        // Opens the hit's room. Precise scroll-to-event
-                        // (focused-timeline) is a Phase 6 follow-up — same scope
-                        // as iOS jump-to-message.
-                        listLogger.notice("selection set by search-message-hit: \(hit.roomID, privacy: .public)")
-                        selectedSummaryID = hit.roomID
+                    onSelectMessage: { group in
+                        // Opens the chat with its in-conversation search
+                        // armed: the bar comes up, and the timeline jumps
+                        // to the newest match (paging history back as
+                        // needed — same machinery as a TOC jump).
+                        listLogger.notice("selection set by search-message-hit: \(group.roomID, privacy: .public)")
+                        let query = searchModel.trimmedQuery
+                        selectedSummaryID = group.roomID
                         searchModel.query = ""
+                        if let deps, let session {
+                            let (chat, _) = vmCache.viewModels(for: group.roomID, deps: deps, session: session)
+                            Task { await chat.beginChatSearch(query: query) }
+                        }
                     }
                 )
             } else {
@@ -557,7 +563,8 @@ final class ChatVMCache {
         // past an eviction.
         let chat = ChatViewModel(roomID: roomID, timeline: timelineSvc, media: mediaSvc,
                                  agentChat: deps.agentChatService(for: session),
-                                 agentSpawn: deps.agentSpawnService(for: session))
+                                 agentSpawn: deps.agentSpawnService(for: session),
+                                 search: deps.search)
         let pair = (
             chat: chat,
             composer: ComposerViewModel(roomID: roomID, timeline: timelineSvc,
