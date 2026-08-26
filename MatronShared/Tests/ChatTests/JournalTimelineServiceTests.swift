@@ -41,8 +41,13 @@ final class JournalTimelineServiceTests: XCTestCase {
         return String(decoding: data, as: UTF8.self)
     }
 
+    // 10s, not 3: locally every wait resolves in well under a second, but
+    // the CI runner (coverage-instrumented `swift test` on a shared 3-core
+    // macos-15 box) blew a 3s window once on a wait whose three
+    // predecessors in the same test had all just passed — starvation, not
+    // a lost wakeup. A genuine lost wakeup still fails, just 7s later.
     private func waitUntil(
-        timeout: TimeInterval = 3, file: StaticString = #filePath, line: UInt = #line,
+        timeout: TimeInterval = 10, file: StaticString = #filePath, line: UInt = #line,
         _ predicate: @escaping @Sendable () async -> Bool
     ) async throws {
         let deadline = Date().addingTimeInterval(timeout)
@@ -619,6 +624,55 @@ final class JournalTimelineServiceTests: XCTestCase {
         await overlay.prependOlder([textEvent(4), textEvent(2), textEvent(5)])
         let seqs = await overlay.events.map(\.seq)
         XCTAssertEqual(seqs, [2, 3, 4])
+    }
+
+    /// The re-open history hole's RACING variant (Bugbot, PR #171): after
+    /// a rebase drops a non-contiguous prefix, `events` still shows the
+    /// stale pre-gap rows. A local reveal landing BEFORE the new tail's
+    /// first delivery used to key off that stale head — revealing only
+    /// rows below it, so once the tail landed the span between the stale
+    /// head and the new anchor was permanently unreachable (the reveal
+    /// boundary had moved below it forever). The reveal boundary must be
+    /// the pending anchor, and `prependOlder` must accept everything
+    /// below it — including rows at/above the stale displayed head.
+    func testOverlayRevealDuringRebaseGapLeavesNoHole() async {
+        let overlay = JournalTimelineService.OverlayState(staleness: 30)
+        // Previous session: tail window [5, 6].
+        let e0 = await overlay.rebaseForNewTailSubscription(anchor: 5)
+        await overlay.setTail([textEvent(5), textEvent(6)], epoch: e0)
+        // Re-open after events 7-9 landed offline: fresh anchor 8, the
+        // held prefix (newest 6) is non-contiguous and gets dropped.
+        let e1 = await overlay.rebaseForNewTailSubscription(anchor: 8)
+        let boundary = await overlay.localRevealBoundary
+        XCTAssertEqual(boundary, 8, "reveal below the NEW anchor, not the stale head")
+        // The racing local reveal: the mirror page below the boundary.
+        await overlay.prependOlder((1...7).map { textEvent($0) })
+        var seqs = await overlay.events.map(\.seq)
+        XCTAssertEqual(seqs, Array(1...7),
+                       "pre-delivery reveal keeps the stale rows it re-covers")
+        // First delivery of the new tail — the merged list must be whole.
+        await overlay.setTail([textEvent(8), textEvent(9)], epoch: e1)
+        seqs = await overlay.events.map(\.seq)
+        XCTAssertEqual(seqs, Array(1...9), "no hole once the tail lands")
+        // And the boundary is back to the merged head for later paginates.
+        let settled = await overlay.localRevealBoundary
+        XCTAssertEqual(settled, 1)
+    }
+
+    /// The retained-prefix flavor of the same rebase: when the held rows
+    /// DO reach the new anchor, the boundary is the prefix's head — a
+    /// reveal must not re-fetch (or double-accept) rows the prefix
+    /// already covers.
+    func testOverlayRevealBoundaryWithRetainedPrefixIsThePrefixHead() async {
+        let overlay = JournalTimelineService.OverlayState(staleness: 30)
+        let e0 = await overlay.rebaseForNewTailSubscription(anchor: 5)
+        await overlay.setTail([textEvent(5), textEvent(6)], epoch: e0)
+        _ = await overlay.rebaseForNewTailSubscription(anchor: 6)
+        let boundary = await overlay.localRevealBoundary
+        XCTAssertEqual(boundary, 5, "contiguous prefix keeps the reveal at its head")
+        await overlay.prependOlder([textEvent(4), textEvent(5)])
+        let seqs = await overlay.events.map(\.seq)
+        XCTAssertEqual(seqs, [4, 5, 6], "row 5 must not double-render")
     }
 
     func testOverlayStaleEpochDeliveryIgnored() async {

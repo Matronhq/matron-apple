@@ -142,8 +142,33 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         /// 2026-08-26). Stale-epoch deliveries are dropped instead.
         private var tailEpoch = 0
 
+        /// Anchor of a subscription whose first delivery hasn't landed yet
+        /// — set by `rebaseForNewTailSubscription`, cleared by the first
+        /// epoch-valid `setTail`. While non-nil, `events` may still hold
+        /// STALE pre-rebase rows kept purely for display, and they must
+        /// not define the reveal boundary (see `localRevealBoundary`).
+        private var pendingAnchor: Int64?
+
+        /// The seq below which `paginateBackward`'s local reveal should
+        /// fetch, and below which `prependOlder` accepts rows. Normally
+        /// the merged head — but between a rebase and the new tail's
+        /// first delivery the merged head can be a stale pre-gap row:
+        /// revealing below THAT leaves the rows between the stale head
+        /// and the new anchor permanently unreachable once the tail
+        /// lands and the remerge rebuilds from `olderEvents` (Bugbot,
+        /// PR #171: the re-open history hole's racing variant). The
+        /// boundary is therefore what will actually SURVIVE the next
+        /// remerge: the retained prefix's head, else the new anchor.
+        var localRevealBoundary: Int64? {
+            if let pending = pendingAnchor {
+                return olderEvents.first?.seq ?? pending
+            }
+            return events.first?.seq
+        }
+
         func setTail(_ tail: [JournalEvent], epoch: Int) {
             guard epoch == tailEpoch else { return }
+            pendingAnchor = nil
             if tail.isEmpty {
                 // The mirror holds nothing at or above the anchor: either
                 // the conversation is genuinely empty, or a
@@ -163,13 +188,17 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         }
 
         /// Prepends older rows revealed by pagination. Only rows strictly
-        /// below the current merged head are accepted — the observation owns
+        /// below `localRevealBoundary` are accepted — the observation owns
         /// everything at or above its anchor, and a duplicate here would
-        /// double-render.
+        /// double-render. The boundary (not the merged head) is what makes
+        /// this safe mid-rebase: a reveal racing the new tail's first
+        /// delivery may legitimately carry rows AT or ABOVE the stale
+        /// displayed head, and rejecting those re-opened the very gap the
+        /// reveal was filling (Bugbot, PR #171).
         func prependOlder(_ older: [JournalEvent]) {
-            let head = events.first?.seq
+            let boundary = localRevealBoundary
             let fresh = older
-                .filter { head == nil || $0.seq < head! }
+                .filter { boundary == nil || $0.seq < boundary! }
                 .sorted { $0.seq < $1.seq }
             guard !fresh.isEmpty else { return }
             olderEvents = fresh + olderEvents
@@ -190,6 +219,7 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         /// deliveries with.
         func rebaseForNewTailSubscription(anchor: Int64) -> Int {
             tailEpoch += 1
+            pendingAnchor = anchor
             if let newest = events.last?.seq, newest >= anchor {
                 olderEvents = events
             } else {
@@ -197,7 +227,9 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             }
             // `events` itself is left in place until the first delivery so
             // pre-delivery emits (outbox, activity, the sweep) don't flash
-            // an empty or truncated timeline on re-open.
+            // an empty or truncated timeline on re-open. These stale rows
+            // are display-only: `localRevealBoundary` (not the merged
+            // head) governs pagination until the fresh tail lands.
             tailEvents = []
             return tailEpoch
         }
@@ -770,7 +802,12 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         // Local reveal first: the events observation only fetches a tail
         // window (see `items()`), so older rows usually already sit in the
         // mirror — surface a page of them without touching the network.
-        if let oldestFetched = await overlay.events.first?.seq {
+        // Keyed off the overlay's reveal boundary, NOT the merged head:
+        // right after a re-open the head can be a stale pre-rebase row,
+        // and revealing below it while the fresh tail's first delivery is
+        // in flight left the rows in between permanently unreachable
+        // (Bugbot, PR #171).
+        if let oldestFetched = await overlay.localRevealBoundary {
             let localPage = try store.events(convoID: convoID, beforeSeq: oldestFetched,
                                              limit: max(Int(requestSize), Self.localRevealPageLimit))
             if !localPage.isEmpty {
