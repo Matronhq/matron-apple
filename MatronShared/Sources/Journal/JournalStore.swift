@@ -218,6 +218,9 @@ public struct SummaryEntryRecord: Codable, FetchableRecord, PersistableRecord, E
 public final class JournalStore: @unchecked Sendable {
     private static let logger = os.Logger(subsystem: "chat.matron", category: "journal-store")
     private let dbQueue: DatabaseQueue
+    /// See `applyReadTimeSnippetTTL` — memoizes its per-conversation event
+    /// sub-queries across the conversation observation's per-commit re-runs.
+    private let snippetTTLMemo = SnippetTTLMemo()
     private let ownSender: String
 
     public init(databaseURL: URL?, ownSender: String) throws {
@@ -393,6 +396,9 @@ public final class JournalStore: @unchecked Sendable {
     /// does. Idempotent: already-expired payloads are skipped. `now` is
     /// injectable for tests only.
     public func purgeExpiredToolOutputSnippets(now: Date = Date()) throws {
+        // Rewrites event payloads without touching `last_seq` — see the
+        // matching invalidation note on `insertHistory`.
+        snippetTTLMemo.removeAll()
         let cutoff = Int64(now.timeIntervalSince1970 * 1000) - Int64(24 * 3600 * 1000)
         try dbQueue.write { db in
             let rows = try EventRecord
@@ -717,6 +723,10 @@ public final class JournalStore: @unchecked Sendable {
     // MARK: History
 
     public func insertHistory(_ events: [JournalEvent]) throws {
+        // Backfilled rows can change a conversation's newest message-type
+        // event without bumping `last_seq` — drop the TTL memo so the list
+        // snippet re-derives.
+        snippetTTLMemo.removeAll()
         try dbQueue.write { db in
             for e in events {
                 try EventRecord(e).insert(db, onConflict: .ignore)
@@ -776,7 +786,7 @@ public final class JournalStore: @unchecked Sendable {
                 // activity timestamp fall to the bottom on their own.
                 .order(Column("last_activity_ts").desc, Column("last_seq").desc)
                 .fetchAll(db)
-            return try records.map { try Self.applyReadTimeSnippetTTL($0, db: db, now: now) }
+            return try records.map { try Self.applyReadTimeSnippetTTL($0, db: db, now: now, memo: snippetTTLMemo) }
         }
     }
 
@@ -833,11 +843,27 @@ public final class JournalStore: @unchecked Sendable {
     /// touches the in-memory record; the disk sweep is still what cleans
     /// the payload.
     private static func applyReadTimeSnippetTTL(
-        _ record: ConversationRecord, db: Database, now: Date
+        _ record: ConversationRecord, db: Database, now: Date, memo: SnippetTTLMemo? = nil
     ) throws -> ConversationRecord {
         guard let activityTS = record.lastActivityTS else { return record }
         let cutoff = Int64(now.timeIntervalSince1970 * 1000) - Int64(24 * 3600 * 1000)
         guard activityTS <= cutoff else { return record }
+        // Past the gate, the answer is a pure function of the row's events —
+        // and `last_seq` moves on every applied frame — so the sub-queries
+        // below can be memoized per (id, last_seq). Without this,
+        // `conversationsStream()` re-ran them for EVERY stale conversation
+        // on EVERY commit anywhere in the store (2026-08-26 lag captures).
+        // The staleness gate above deliberately stays outside the memo: it
+        // depends on wall time, not on the row.
+        if let memo, let cached = memo.lookup(id: record.id, lastSeq: record.lastSeq) {
+            guard let snippet = cached else { return record }
+            var expired = record
+            expired.snippet = snippet
+            return expired
+        }
+        func remember(_ override: String?) {
+            memo?.store(id: record.id, lastSeq: record.lastSeq, snippetOverride: override)
+        }
         guard let seq = try newestMessageSeq(db, convoID: record.id),
               let event = try EventRecord.fetchOne(db, key: seq),
               event.type == JournalEventType.toolOutput,
@@ -845,10 +871,44 @@ public final class JournalStore: @unchecked Sendable {
               payload["live_log"] as? Bool == true,
               payload["expired"] as? Bool != true,
               let command = payload["command"] as? String, !command.isEmpty
-        else { return record }
+        else {
+            remember(nil)
+            return record
+        }
         var expired = record
         expired.snippet = String("$ \(command)".prefix(120))
+        remember(expired.snippet)
         return expired
+    }
+
+    /// Lock-protected memo for `applyReadTimeSnippetTTL`'s per-row event
+    /// sub-queries. An entry is valid while the conversation's `last_seq`
+    /// is unchanged; whole-store invalidation happens on the paths that
+    /// touch event rows without bumping `last_seq` (`insertHistory`,
+    /// `purgeExpiredToolOutputSnippets`, `wipe`).
+    final class SnippetTTLMemo: @unchecked Sendable {
+        private let lock = NSLock()
+        private var entries: [String: (lastSeq: Int64, snippetOverride: String?)] = [:]
+
+        /// Outer nil = miss; inner nil = cached "no override".
+        func lookup(id: String, lastSeq: Int64) -> String?? {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let entry = entries[id], entry.lastSeq == lastSeq else { return nil }
+            return .some(entry.snippetOverride)
+        }
+
+        func store(id: String, lastSeq: Int64, snippetOverride: String?) {
+            lock.lock()
+            defer { lock.unlock() }
+            entries[id] = (lastSeq, snippetOverride)
+        }
+
+        func removeAll() {
+            lock.lock()
+            defer { lock.unlock() }
+            entries.removeAll()
+        }
     }
 
     public func events(convoID: String) throws -> [JournalEvent] {
@@ -1009,6 +1069,7 @@ public final class JournalStore: @unchecked Sendable {
     /// and a mirror wipe must not eat the user's unsent messages. Sign-out
     /// calls `wipeOutbox()` separately.
     public func wipe() throws {
+        snippetTTLMemo.removeAll()
         try dbQueue.write { db in
             try db.execute(sql: "DELETE FROM event; DELETE FROM conversation; DELETE FROM meta; DELETE FROM summary_entry;")
         }
@@ -1149,6 +1210,7 @@ public final class JournalStore: @unchecked Sendable {
     // MARK: Observation
 
     public func conversationsStream() -> AsyncStream<[ConversationRecord]> {
+        let memo = snippetTTLMemo
         let observation = ValueObservation.tracking { db in
             let records = try ConversationRecord
                 .filter(Column("hidden") == false)
@@ -1164,9 +1226,14 @@ public final class JournalStore: @unchecked Sendable {
             // been open a while still gets the TTL re-evaluated against
             // current wall time rather than whatever "now" was at
             // subscribe time. See `applyReadTimeSnippetTTL`.
-            return try records.map { try Self.applyReadTimeSnippetTTL($0, db: db, now: Date()) }
+            return try records.map { try Self.applyReadTimeSnippetTTL($0, db: db, now: Date(), memo: memo) }
         }
-        return Self.stream(observation, in: dbQueue)
+        // This observation reads the `event` table (the TTL sub-queries), so
+        // it re-runs on EVERY applied journal frame — including frames for
+        // conversations that don't move the list at all. Deduplicating here
+        // keeps that churn out of the chat-list view model and SwiftUI
+        // (2026-08-26 lag capture: list re-diffs on every commit).
+        return Self.stream(observation.removeDuplicates(), in: dbQueue)
     }
 
     /// Live id → name map of the user's agent boxes. Deliberately separate
@@ -1220,15 +1287,62 @@ public final class JournalStore: @unchecked Sendable {
         return Self.stream(observation, in: dbQueue)
     }
 
-    public func eventsStream(convoID: String) -> AsyncStream<[JournalEvent]> {
+    /// Live tail of one conversation's events: every row with
+    /// `seq >= sinceSeq`, ascending. Anchored — not the whole history —
+    /// because the `convo_id` filter is non-key, which makes GRDB observe
+    /// the ENTIRE event table: every applied journal frame in ANY
+    /// conversation re-runs this fetch. Unanchored, that re-fetched and
+    /// re-decoded the open chat's full history per commit — O(history) per
+    /// delta, quadratic over a streaming turn, and the dominant cost in the
+    /// 2026-08-26 lag captures. Callers pick the anchor via
+    /// `tailWindowStart(convoID:limit:)` and reveal older rows with the
+    /// one-shot `events(convoID:beforeSeq:limit:)`.
+    ///
+    /// `removeDuplicates()` matters for the same reason: the per-commit
+    /// re-runs can't be avoided (SQLite has no narrower region for this
+    /// filter), but a frame landing in another conversation yields an
+    /// identical tail, and dropping it here spares the whole downstream
+    /// pipeline (overlay reconcile → mapper → SwiftUI diff).
+    public func eventsStream(convoID: String, sinceSeq: Int64) -> AsyncStream<[JournalEvent]> {
         let observation = ValueObservation.tracking { db in
             try EventRecord
-                .filter(Column("convo_id") == convoID)
+                .filter(Column("convo_id") == convoID && Column("seq") >= sinceSeq)
                 .order(Column("seq"))
                 .fetchAll(db)
                 .map(\.journalEvent)
         }
-        return Self.stream(observation, in: dbQueue)
+        return Self.stream(observation.removeDuplicates(), in: dbQueue)
+    }
+
+    /// The anchor for `eventsStream(convoID:sinceSeq:)`: the lowest seq
+    /// within the newest `limit` events, or 0 when the conversation holds
+    /// fewer rows than that (observe everything it has — new live rows all
+    /// land above the anchor either way; only backward pagination goes
+    /// below it).
+    public func tailWindowStart(convoID: String, limit: Int) throws -> Int64 {
+        try dbQueue.read { db in
+            try Int64.fetchOne(db, sql: """
+                SELECT MIN(seq) FROM (
+                    SELECT seq FROM event WHERE convo_id = ? ORDER BY seq DESC LIMIT ?
+                )
+                """, arguments: [convoID, limit]) ?? 0
+        }
+    }
+
+    /// One page of events strictly older than `beforeSeq`, ascending — the
+    /// local-mirror side of backward pagination. Rows below the events
+    /// stream's anchor are fetched once here (they're immutable) instead of
+    /// riding the live observation.
+    public func events(convoID: String, beforeSeq: Int64, limit: Int) throws -> [JournalEvent] {
+        try dbQueue.read { db in
+            try EventRecord
+                .filter(Column("convo_id") == convoID && Column("seq") < beforeSeq)
+                .order(Column("seq").desc)
+                .limit(limit)
+                .fetchAll(db)
+                .reversed()
+                .map(\.journalEvent)
+        }
     }
 
     /// Live stream of one conversation's TOC entries, newest first.
@@ -1242,10 +1356,10 @@ public final class JournalStore: @unchecked Sendable {
         return Self.stream(observation, in: dbQueue)
     }
 
-    private static func stream<T: Sendable>(
-        _ observation: ValueObservation<ValueReducers.Fetch<T>>,
+    private static func stream<Reducer: ValueReducer>(
+        _ observation: ValueObservation<Reducer>,
         in dbQueue: DatabaseQueue
-    ) -> AsyncStream<T> {
+    ) -> AsyncStream<Reducer.Value> where Reducer.Value: Sendable {
         AsyncStream { continuation in
             // Box so the restart closure below can swap the live cancellable
             // without capturing itself recursively.

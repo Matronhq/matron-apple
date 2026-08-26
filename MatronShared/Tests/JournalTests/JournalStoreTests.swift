@@ -301,6 +301,94 @@ final class JournalStoreTests: XCTestCase {
                        "newer last_activity_ts must sort first in the stream too, even with a lower last_seq")
     }
 
+    func testConversationsStreamSuppressesDuplicateDeliveries() async throws {
+        // The conversations fetch re-runs on every commit store-wide (its
+        // TTL sub-queries read the event table). A commit that doesn't
+        // change the visible list — here, traffic in a hidden conversation
+        // — must not be delivered downstream.
+        let store = try makeStore()
+        try store.applyJournal(event(1, convo: "c-visible"))
+        try store.applyJournal(event(2, convo: "c-hidden"))
+        try store.setHidden(true, convoID: "c-hidden")
+
+        var iterator = store.conversationsStream().makeAsyncIterator()
+        let initial = await iterator.next()
+        XCTAssertEqual(initial?.map(\.id), ["c-visible"])
+
+        // No-op for the visible list, then a real change. If the no-op
+        // were delivered, this next() would return the stale duplicate
+        // (last_seq still 1) instead of the bumped row. The sleep keeps
+        // GRDB from coalescing both commits into one notification, which
+        // would let a dedup regression slip past this assert.
+        try store.applyJournal(event(3, convo: "c-hidden"))
+        try await Task.sleep(for: .milliseconds(150))
+        try store.applyJournal(event(4, convo: "c-visible", payload: ["body": "bumped"]))
+        let updated = await iterator.next()
+        XCTAssertEqual(updated?.first?.id, "c-visible")
+        XCTAssertEqual(updated?.first?.lastSeq, 4,
+                       "hidden-convo traffic must be deduplicated, not delivered as a stale list")
+    }
+
+    // MARK: Windowed events stream + local pagination reads
+
+    func testTailWindowStart() throws {
+        let store = try makeStore()
+        XCTAssertEqual(try store.tailWindowStart(convoID: "c1", limit: 3), 0,
+                       "empty conversation anchors at 0 (observe everything)")
+        for seq in 1...5 { try store.applyJournal(event(Int64(seq))) }
+        try store.applyJournal(event(6, convo: "c2"))
+        XCTAssertEqual(try store.tailWindowStart(convoID: "c1", limit: 3), 3,
+                       "anchor is the lowest seq of the newest `limit` rows")
+        XCTAssertEqual(try store.tailWindowStart(convoID: "c1", limit: 10), 1,
+                       "fewer rows than the window: anchor is the oldest row")
+    }
+
+    func testEventsBeforeSeqReturnsAscendingPage() throws {
+        let store = try makeStore()
+        for seq in 1...6 { try store.applyJournal(event(Int64(seq))) }
+        try store.applyJournal(event(7, convo: "c2"))
+        let page = try store.events(convoID: "c1", beforeSeq: 5, limit: 3)
+        XCTAssertEqual(page.map(\.seq), [2, 3, 4],
+                       "page is the newest rows strictly below the bound, ascending")
+        XCTAssertEqual(try store.events(convoID: "c1", beforeSeq: 2, limit: 3).map(\.seq), [1])
+        XCTAssertEqual(try store.events(convoID: "c1", beforeSeq: 1, limit: 3).map(\.seq), [])
+    }
+
+    func testEventsStreamAnchoredAtSinceSeq() async throws {
+        let store = try makeStore()
+        for seq in 1...4 { try store.applyJournal(event(Int64(seq))) }
+
+        var iterator = store.eventsStream(convoID: "c1", sinceSeq: 3).makeAsyncIterator()
+        let initial = await iterator.next()
+        XCTAssertEqual(initial?.map(\.seq), [3, 4],
+                       "rows below the anchor never ride the observation")
+
+        try store.applyJournal(event(5))
+        let updated = await iterator.next()
+        XCTAssertEqual(updated?.map(\.seq), [3, 4, 5])
+    }
+
+    func testEventsStreamSuppressesOtherConversationCommits() async throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1))
+
+        var iterator = store.eventsStream(convoID: "c1", sinceSeq: 0).makeAsyncIterator()
+        let initial = await iterator.next()
+        XCTAssertEqual(initial?.map(\.seq), [1])
+
+        // A frame landing in another conversation re-runs the fetch (the
+        // convo_id filter observes the whole table) but must not deliver a
+        // duplicate — the next delivered value has to be the c1 change.
+        // Sleep so the two commits can't coalesce into one notification
+        // (which would mask a dedup regression).
+        try store.applyJournal(event(2, convo: "c2"))
+        try await Task.sleep(for: .milliseconds(150))
+        try store.applyJournal(event(3))
+        let updated = await iterator.next()
+        XCTAssertEqual(updated?.map(\.seq), [1, 3],
+                       "other-convo commit delivered a duplicate snapshot")
+    }
+
     func testWipe() throws {
         let store = try makeStore()
         try store.applyJournal(event(1))

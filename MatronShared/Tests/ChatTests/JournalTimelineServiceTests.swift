@@ -419,6 +419,102 @@ final class JournalTimelineServiceTests: XCTestCase {
         XCTAssertTrue(try store.events(convoID: "c1").isEmpty)
     }
 
+    // MARK: windowed events fetch — the observation carries only a tail
+    // anchor's worth of rows; older mirror rows reveal via paginateBackward
+    // without touching the network, and rows below the mirror still come
+    // from the server.
+
+    private func textEvent(_ seq: Int64, convo: String = "c1") -> JournalEvent {
+        JournalEvent(seq: seq, convoID: convo, ts: Date(timeIntervalSince1970: Double(seq)),
+                     sender: "agent:a", type: "text",
+                     payloadData: Data(#"{"body":"m\#(seq)"}"#.utf8))
+    }
+
+    func testWindowedFetchRevealsOlderMirrorRowsLocally() async throws {
+        let store = try makeStore()
+        for seq in 1...6 { try store.applyJournal(textEvent(Int64(seq))) }
+
+        PaginateStubURLProtocol.responses = [:]
+        PaginateStubURLProtocol.lastRequest = nil
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [PaginateStubURLProtocol.self]
+        let api = JournalAPI(serverURL: URL(string: "https://x")!, urlSession: URLSession(configuration: config))
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api,
+                                             session: makeSession(), fetchWindow: 3)
+
+        let (collector, task) = collectItems(service.items())
+        try await waitUntil { await collector.values.last?.count == 3 }
+        var items = await collector.values.last!
+        XCTAssertEqual(items.map(\.id), ["4", "5", "6"],
+                       "first snapshot carries only the tail window")
+
+        // Older rows already sit in the mirror — paginating must reveal
+        // them without a network request.
+        let hasMore = try await service.paginateBackward(requestSize: 20)
+        XCTAssertTrue(hasMore)
+        try await waitUntil { await collector.values.last?.count == 6 }
+        items = await collector.values.last!
+        XCTAssertEqual(items.map(\.id), ["1", "2", "3", "4", "5", "6"])
+        XCTAssertNil(PaginateStubURLProtocol.lastRequest,
+                     "local reveal must not hit the server")
+
+        // Live rows keep landing above the anchor and append after the
+        // revealed prefix.
+        try store.applyJournal(textEvent(7))
+        try await waitUntil { await collector.values.last?.count == 7 }
+        items = await collector.values.last!
+        XCTAssertEqual(items.last?.id, "7")
+
+        task.cancel()
+    }
+
+    func testPaginationFallsBackToNetworkBelowLocalMirror() async throws {
+        let store = try makeStore()
+        for seq in 4...6 { try store.applyJournal(textEvent(Int64(seq))) }
+
+        PaginateStubURLProtocol.responses = [
+            "/convo/c1/messages": (200, """
+                {"events":[
+                  {"seq":2,"convo_id":"c1","ts":2000,"sender":"agent:a","type":"text","payload":{"body":"m2"}},
+                  {"seq":3,"convo_id":"c1","ts":3000,"sender":"agent:a","type":"text","payload":{"body":"m3"}}
+                ]}
+                """),
+        ]
+        PaginateStubURLProtocol.lastRequest = nil
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [PaginateStubURLProtocol.self]
+        let api = JournalAPI(serverURL: URL(string: "https://x")!, urlSession: URLSession(configuration: config))
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api,
+                                             session: makeSession(), fetchWindow: 2)
+
+        let (collector, task) = collectItems(service.items())
+        try await waitUntil { await collector.values.last?.count == 2 }
+
+        // First paginate reveals seq 4 from the mirror (below the anchor
+        // at 5), still no network.
+        let revealedLocally = try await service.paginateBackward(requestSize: 20)
+        XCTAssertTrue(revealedLocally)
+        try await waitUntil { await collector.values.last?.count == 3 }
+        XCTAssertNil(PaginateStubURLProtocol.lastRequest)
+
+        // Mirror exhausted — the next paginate goes to the server below
+        // seq 4, and the fetched rows must surface in the snapshot even
+        // though the anchored observation can never deliver them.
+        let fetchedRemotely = try await service.paginateBackward(requestSize: 20)
+        XCTAssertTrue(fetchedRemotely)
+        try await waitUntil { await collector.values.last?.count == 5 }
+        let items = await collector.values.last!
+        XCTAssertEqual(items.map(\.id), ["2", "3", "4", "5", "6"])
+        let query = PaginateStubURLProtocol.lastRequest?.url?.query ?? ""
+        XCTAssertTrue(query.contains("before_seq=4"), "unexpected query: \(query)")
+        XCTAssertEqual(try store.events(convoID: "c1").map(\.seq), [2, 3, 4, 5, 6],
+                       "network page must also persist to the mirror")
+
+        task.cancel()
+    }
+
     // MARK: (f) an offline sendText queues durably instead of throwing —
     // the echo renders as .queued and the composer keeps nothing back.
 

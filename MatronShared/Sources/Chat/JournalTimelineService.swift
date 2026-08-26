@@ -20,7 +20,9 @@ private extension Duration {
 /// the Matrix-SDK-backed `TimelineServiceLive`). One instance per open room.
 ///
 /// `items()` merges three inputs into a single snapshot stream:
-///  1. `store.eventsStream(convoID:)`, mapped through `JournalTimelineMapper`;
+///  1. `store.eventsStream(convoID:sinceSeq:)` — a tail-anchored window, not
+///     the whole history; see `items()` — mapped through
+///     `JournalTimelineMapper`;
 ///  2. streaming "ephemeral" overlay rows (assistant output arriving token
 ///     by token, before the finalize journal row lands);
 ///  3. local-echo rows for in-flight `sendText` calls, so the composer's
@@ -39,12 +41,28 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
     private let search: (any SearchService)?
     private let overlay: OverlayState
     private let sweepInterval: Duration
+    /// How many tail events the store observation fetches per re-run — see
+    /// `JournalStore.eventsStream(convoID:sinceSeq:)` for why the fetch is
+    /// windowed at all. Sized to comfortably out-cover the view models'
+    /// largest render window (`ChatViewModel.maxWindowSize`, 360 rows), so
+    /// window growth stays local until the user genuinely reads past it.
+    private let fetchWindow: Int
+    /// Older-history page size for local reveals. Bigger than the network
+    /// page (30): a mirror read is cheap, and each reveal must outpace the
+    /// view model's 120-row window growth step or near-top scrolling
+    /// triggers a paginate per step.
+    private static let localRevealPageLimit = 200
+    /// `items()` parks its emit trigger here so `paginateBackward` can wake
+    /// the snapshot pipeline after feeding the overlay rows the anchored
+    /// observation cannot see. Never cleared: yielding into a finished tick
+    /// stream is a no-op, and the next `items()` call overwrites it.
+    private let itemsSignal = OSAllocatedUnfairLock<(@Sendable () -> Void)?>(initialState: nil)
 
     public init(
         convoID: String, store: JournalStore, engine: JournalSyncEngine,
         api: JournalAPI, session: UserSession, search: (any SearchService)? = nil,
         overlayStaleness: Duration = .seconds(30), sweepInterval: Duration = .seconds(10),
-        toolStreamStaleness: Duration = .seconds(600)
+        toolStreamStaleness: Duration = .seconds(600), fetchWindow: Int = 500
     ) {
         self.convoID = convoID
         self.store = store
@@ -55,6 +73,7 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         self.overlay = OverlayState(staleness: overlayStaleness.timeInterval,
                                     toolStaleness: toolStreamStaleness.timeInterval)
         self.sweepInterval = sweepInterval
+        self.fetchWindow = fetchWindow
     }
 
     /// Streaming overlays + pending-send projection, isolated on one actor.
@@ -69,13 +88,19 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
     /// the row and its echo can never render together in one snapshot.
     actor OverlayState {
         private(set) var streaming: [String: (text: String, updated: Date)] = [:]
-        /// Latest event list from the store's `ValueObservation`. The
-        /// observation already fetches the full row set on every change,
-        /// so `emit()` reuses that instead of issuing its own second
-        /// full-table read — which it used to do on EVERY tick, including
-        /// each coalesced streaming-token tick that never touched the
-        /// store at all.
+        /// The merged event list `emit()` renders from: `olderEvents`
+        /// (revealed history below the observation's anchor) followed by
+        /// `tailEvents` (the live windowed observation). Kept as a stored
+        /// merge — recomputed only when either side changes — because
+        /// `reconcile` and `mappedItems` walk it on every tick, including
+        /// coalesced streaming-token ticks that never touch the store.
         private(set) var events: [JournalEvent] = []
+        /// Events below the tail window's anchor, ascending, strictly older
+        /// than `tailEvents.first`. Fed by `paginateBackward` (local mirror
+        /// page or network backfill); immutable rows, so fetch-once is safe.
+        private var olderEvents: [JournalEvent] = []
+        /// Latest row set from `JournalStore.eventsStream(convoID:sinceSeq:)`.
+        private var tailEvents: [JournalEvent] = []
         /// Mapped-item memo keyed by event seq. Journal events are
         /// immutable once written (streaming mutations ride the ephemeral
         /// overlay, never the row), so a mapped `TimelineItem` never goes
@@ -101,8 +126,48 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             return extracted
         }
 
-        func setEvents(_ events: [JournalEvent]) {
-            self.events = events
+        func setTail(_ tail: [JournalEvent]) {
+            tailEvents = tail
+            remerge()
+        }
+
+        /// Prepends older rows revealed by pagination. Only rows strictly
+        /// below the current merged head are accepted — the observation owns
+        /// everything at or above its anchor, and a duplicate here would
+        /// double-render.
+        func prependOlder(_ older: [JournalEvent]) {
+            let head = events.first?.seq
+            let fresh = older
+                .filter { head == nil || $0.seq < head! }
+                .sorted { $0.seq < $1.seq }
+            guard !fresh.isEmpty else { return }
+            olderEvents = fresh + olderEvents
+            remerge()
+        }
+
+        /// Called when `items()` (re)opens the store subscription with a
+        /// fresh anchor near the live tail: everything currently held moves
+        /// into the revealed prefix so the merged list never shrinks, and
+        /// `remerge` drops whatever the new observation's first delivery
+        /// covers again. Without this, a room re-open on a cached service
+        /// would transiently lose the previous session's rows.
+        func rebaseForNewTailSubscription() {
+            olderEvents = events
+            tailEvents = []
+        }
+
+        private func remerge() {
+            guard let tailFirst = tailEvents.first?.seq else {
+                // An empty tail delivery (mirror wipe mid-resync) keeps the
+                // revealed prefix on screen: those rows are real, immutable
+                // journal rows the re-sync will restore with the same seqs.
+                events = olderEvents
+                return
+            }
+            if let lastOld = olderEvents.last?.seq, lastOld >= tailFirst {
+                olderEvents = olderEvents.filter { $0.seq < tailFirst }
+            }
+            events = olderEvents + tailEvents
         }
 
         /// Maps the cached events through `JournalTimelineMapper`, reusing
@@ -442,6 +507,10 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             // emit, rather than replaying every intermediate state.
             let (ticks, tickContinuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
             let signal: @Sendable () -> Void = { tickContinuation.yield(()) }
+            // Let `paginateBackward` wake this pipeline too: local-reveal
+            // rows bypass the store observation, so without this the view
+            // model's "did the snapshot grow" wait would time out.
+            self.itemsSignal.withLock { $0 = signal }
 
             let emitTask = Task {
                 for await _ in ticks { await emit() }
@@ -456,14 +525,23 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             let viewingTask = Task {
                 await engine.setViewing(convoID: convoID)
             }
+            let fetchWindow = fetchWindow
             let storeTask = Task {
-                // The observation delivers the full ordered row set on
-                // every change; stash it on the overlay actor so `emit()`
-                // (and every non-store tick — streaming tokens, echoes,
-                // the staleness sweep) renders from memory instead of
-                // re-reading the whole table from SQLite each time.
-                for await events in store.eventsStream(convoID: convoID) {
-                    await overlay.setEvents(events)
+                // The observation is anchored: it fetches only the newest
+                // `fetchWindow` rows (as of subscribe time) plus everything
+                // arriving after, because its non-key filter makes GRDB
+                // re-run the fetch on EVERY commit store-wide — an
+                // unanchored fetch re-decoded the whole history per commit
+                // (the 2026-08-26 lag). Rows below the anchor reach the
+                // overlay through `paginateBackward`'s local reveal. The
+                // anchor is re-derived per subscription so a cached
+                // service re-opened days later still observes a bounded
+                // tail; `rebaseForNewTailSubscription` keeps the previous
+                // session's rows visible across that switch.
+                await overlay.rebaseForNewTailSubscription()
+                let anchor = (try? store.tailWindowStart(convoID: convoID, limit: fetchWindow)) ?? 0
+                for await tail in store.eventsStream(convoID: convoID, sinceSeq: anchor) {
+                    await overlay.setTail(tail)
                     signal()
                 }
                 // The store stream now self-heals observation errors, so a
@@ -641,10 +719,29 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
     }
 
     public func paginateBackward(requestSize: UInt16) async throws -> Bool {
+        // Local reveal first: the events observation only fetches a tail
+        // window (see `items()`), so older rows usually already sit in the
+        // mirror — surface a page of them without touching the network.
+        if let oldestFetched = await overlay.events.first?.seq {
+            let localPage = try store.events(convoID: convoID, beforeSeq: oldestFetched,
+                                             limit: max(Int(requestSize), Self.localRevealPageLimit))
+            if !localPage.isEmpty {
+                await overlay.prependOlder(localPage)
+                itemsSignal.withLock { $0 }?()
+                return true
+            }
+        }
+        // Mirror exhausted below the window (or no items() subscription
+        // yet): fetch the next page from the server, as before the fetch
+        // window existed.
         let before = try store.minSeq(convoID: convoID)
         let events = try await api.messages(convoID: convoID, beforeSeq: before, limit: Int(requestSize))
         let newOnes = events.filter { before == nil || $0.seq < before! }
         try store.insertHistory(newOnes)
+        // These rows land below the observation's anchor, so it will never
+        // deliver them — feed the overlay directly.
+        await overlay.prependOlder(newOnes)
+        itemsSignal.withLock { $0 }?()
         if let search {
             for event in newOnes {
                 if let body = event.searchableBody {
