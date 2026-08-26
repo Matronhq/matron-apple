@@ -396,11 +396,12 @@ public final class JournalStore: @unchecked Sendable {
     /// does. Idempotent: already-expired payloads are skipped. `now` is
     /// injectable for tests only.
     public func purgeExpiredToolOutputSnippets(now: Date = Date()) throws {
-        // Rewrites event payloads without touching `last_seq` — see the
-        // matching invalidation note on `insertHistory`.
-        snippetTTLMemo.removeAll()
         let cutoff = Int64(now.timeIntervalSince1970 * 1000) - Int64(24 * 3600 * 1000)
         try dbQueue.write { db in
+            // Rewrites event payloads without touching `last_seq` — see the
+            // matching invalidation note on `insertHistory` (inside the
+            // write block for the same serialization reason).
+            self.snippetTTLMemo.removeAll()
             let rows = try EventRecord
                 .filter(Column("type") == JournalEventType.toolOutput && Column("ts") <= cutoff)
                 .fetchAll(db)
@@ -723,11 +724,14 @@ public final class JournalStore: @unchecked Sendable {
     // MARK: History
 
     public func insertHistory(_ events: [JournalEvent]) throws {
-        // Backfilled rows can change a conversation's newest message-type
-        // event without bumping `last_seq` — drop the TTL memo so the list
-        // snippet re-derives.
-        snippetTTLMemo.removeAll()
         try dbQueue.write { db in
+            // Backfilled rows can change a conversation's newest
+            // message-type event without bumping `last_seq` — drop the TTL
+            // memo so the list snippet re-derives. INSIDE the write block:
+            // the queue serializes this against observation fetches, so an
+            // in-flight read can't re-store the pre-write value after the
+            // clear (review, 2026-08-26).
+            self.snippetTTLMemo.removeAll()
             for e in events {
                 try EventRecord(e).insert(db, onConflict: .ignore)
                 if let entry = SummaryEntryRecord(event: e) {
@@ -886,6 +890,13 @@ public final class JournalStore: @unchecked Sendable {
     /// is unchanged; whole-store invalidation happens on the paths that
     /// touch event rows without bumping `last_seq` (`insertHistory`,
     /// `purgeExpiredToolOutputSnippets`, `wipe`).
+    ///
+    /// Known accepted staleness: `upsertSummary` can set `last_seq` to the
+    /// SERVER's head ahead of the local cursor, and the replayed frames
+    /// that follow then insert event rows under an unchanged `last_seq` —
+    /// a >24h-stale conversation catching up that way keeps its cached
+    /// snippet until the next real bump. Cosmetic and short-lived; not
+    /// worth widening the memo key over.
     final class SnippetTTLMemo: @unchecked Sendable {
         private let lock = NSLock()
         private var entries: [String: (lastSeq: Int64, snippetOverride: String?)] = [:]
@@ -1069,8 +1080,9 @@ public final class JournalStore: @unchecked Sendable {
     /// and a mirror wipe must not eat the user's unsent messages. Sign-out
     /// calls `wipeOutbox()` separately.
     public func wipe() throws {
-        snippetTTLMemo.removeAll()
         try dbQueue.write { db in
+            // Inside the write block — see `insertHistory`'s invalidation note.
+            self.snippetTTLMemo.removeAll()
             try db.execute(sql: "DELETE FROM event; DELETE FROM conversation; DELETE FROM meta; DELETE FROM summary_entry;")
         }
     }
@@ -1315,10 +1327,11 @@ public final class JournalStore: @unchecked Sendable {
     }
 
     /// The anchor for `eventsStream(convoID:sinceSeq:)`: the lowest seq
-    /// within the newest `limit` events, or 0 when the conversation holds
-    /// fewer rows than that (observe everything it has — new live rows all
-    /// land above the anchor either way; only backward pagination goes
-    /// below it).
+    /// within the newest `limit` events. A conversation with fewer rows
+    /// than `limit` anchors at its oldest row, and one with no rows at all
+    /// anchors at 0 — both mean "observe everything it has"; new live rows
+    /// always land above the anchor, and only backward pagination goes
+    /// below it.
     public func tailWindowStart(convoID: String, limit: Int) throws -> Int64 {
         try dbQueue.read { db in
             try Int64.fetchOne(db, sql: """

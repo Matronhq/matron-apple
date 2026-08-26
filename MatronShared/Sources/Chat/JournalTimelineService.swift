@@ -54,9 +54,16 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
     private static let localRevealPageLimit = 200
     /// `items()` parks its emit trigger here so `paginateBackward` can wake
     /// the snapshot pipeline after feeding the overlay rows the anchored
-    /// observation cannot see. Never cleared: yielding into a finished tick
-    /// stream is a no-op, and the next `items()` call overwrites it.
-    private let itemsSignal = OSAllocatedUnfairLock<(@Sendable () -> Void)?>(initialState: nil)
+    /// observation cannot see. Reference identity makes ownership explicit:
+    /// a terminating stream only clears the slot while it still holds its
+    /// OWN registration, so it can never null out a successor's. (A class,
+    /// not a tuple — swiftc 6.3.3 crashes on a closure-bearing tuple
+    /// assigned through `withLock`'s inout state.)
+    private final class SignalRegistration: Sendable {
+        let signal: @Sendable () -> Void
+        init(_ signal: @escaping @Sendable () -> Void) { self.signal = signal }
+    }
+    private let itemsSignal = OSAllocatedUnfairLock<SignalRegistration?>(initialState: nil)
 
     public init(
         convoID: String, store: JournalStore, engine: JournalSyncEngine,
@@ -126,7 +133,31 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             return extracted
         }
 
-        func setTail(_ tail: [JournalEvent]) {
+        /// Monotonic stamp for the tail subscription. `items()` can be
+        /// re-entered while a previous subscription's Task is still
+        /// winding down (ChatViewModel.start() cancels without awaiting
+        /// teardown), and a late delivery from the OLD anchor merged into
+        /// the NEW prefix would truncate it at the old anchor — the
+        /// low-threshold variant of the re-open history hole (review,
+        /// 2026-08-26). Stale-epoch deliveries are dropped instead.
+        private var tailEpoch = 0
+
+        func setTail(_ tail: [JournalEvent], epoch: Int) {
+            guard epoch == tailEpoch else { return }
+            if tail.isEmpty {
+                // The mirror holds nothing at or above the anchor: either
+                // the conversation is genuinely empty, or a
+                // snapshot_required wipe emptied it under us. A retained
+                // prefix is stale either way — and keeping it would hold
+                // the snapshot non-empty, which is exactly the signal
+                // ChatViewModel's content→empty history-refill trigger
+                // needs to see to rebuild the mirror (review, 2026-08-26:
+                // the old code stranded the timeline on pre-wipe rows and
+                // disabled the refill forever). Rows re-fetched by that
+                // refill come back through this observation (the newest
+                // page sits above the anchor by construction).
+                olderEvents = []
+            }
             tailEvents = tail
             remerge()
         }
@@ -145,22 +176,34 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             remerge()
         }
 
-        /// Called when `items()` (re)opens the store subscription with a
-        /// fresh anchor near the live tail: everything currently held moves
-        /// into the revealed prefix so the merged list never shrinks, and
-        /// `remerge` drops whatever the new observation's first delivery
-        /// covers again. Without this, a room re-open on a cached service
-        /// would transiently lose the previous session's rows.
-        func rebaseForNewTailSubscription() {
-            olderEvents = events
+        /// Called when `items()` (re)opens the store subscription anchored
+        /// at `anchor`. The held rows are only reusable as the revealed
+        /// prefix when they run right up to the new anchor — the anchor is
+        /// the min seq of the newest `fetchWindow` rows, so a newest held
+        /// row BELOW it means events landed in between while no
+        /// subscription was live (room closed during a long agent turn),
+        /// and carrying the prefix would render a silently missing middle
+        /// that no code path ever backfills (review, 2026-08-26). A
+        /// dropped prefix costs nothing durable: the rows are still in the
+        /// mirror and `paginateBackward`'s local reveal brings them back.
+        /// Returns the epoch the new subscription must stamp its
+        /// deliveries with.
+        func rebaseForNewTailSubscription(anchor: Int64) -> Int {
+            tailEpoch += 1
+            if let newest = events.last?.seq, newest >= anchor {
+                olderEvents = events
+            } else {
+                olderEvents = []
+            }
+            // `events` itself is left in place until the first delivery so
+            // pre-delivery emits (outbox, activity, the sweep) don't flash
+            // an empty or truncated timeline on re-open.
             tailEvents = []
+            return tailEpoch
         }
 
         private func remerge() {
             guard let tailFirst = tailEvents.first?.seq else {
-                // An empty tail delivery (mirror wipe mid-resync) keeps the
-                // revealed prefix on screen: those rows are real, immutable
-                // journal rows the re-sync will restore with the same seqs.
                 events = olderEvents
                 return
             }
@@ -510,7 +553,8 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             // Let `paginateBackward` wake this pipeline too: local-reveal
             // rows bypass the store observation, so without this the view
             // model's "did the snapshot grow" wait would time out.
-            self.itemsSignal.withLock { $0 = signal }
+            let registration = SignalRegistration(signal)
+            self.itemsSignal.withLock { $0 = registration }
 
             let emitTask = Task {
                 for await _ in ticks { await emit() }
@@ -537,11 +581,14 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                 // anchor is re-derived per subscription so a cached
                 // service re-opened days later still observes a bounded
                 // tail; `rebaseForNewTailSubscription` keeps the previous
-                // session's rows visible across that switch.
-                await overlay.rebaseForNewTailSubscription()
+                // session's rows visible across that switch (when they
+                // reach the new anchor — see its doc) and stamps this
+                // subscription's epoch so a not-yet-torn-down predecessor
+                // can't merge a stale delivery into the fresh state.
                 let anchor = (try? store.tailWindowStart(convoID: convoID, limit: fetchWindow)) ?? 0
+                let epoch = await overlay.rebaseForNewTailSubscription(anchor: anchor)
                 for await tail in store.eventsStream(convoID: convoID, sinceSeq: anchor) {
-                    await overlay.setTail(tail)
+                    await overlay.setTail(tail, epoch: epoch)
                     signal()
                 }
                 // The store stream now self-heals observation errors, so a
@@ -610,7 +657,8 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                     signal()
                 }
             }
-            continuation.onTermination = { _ in
+            continuation.onTermination = { [itemsSignal] _ in
+                itemsSignal.withLock { if $0 === registration { $0 = nil } }
                 viewingTask.cancel()
                 storeTask.cancel()
                 ephemeralTask.cancel()
@@ -727,7 +775,7 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                                              limit: max(Int(requestSize), Self.localRevealPageLimit))
             if !localPage.isEmpty {
                 await overlay.prependOlder(localPage)
-                itemsSignal.withLock { $0 }?()
+                itemsSignal.withLock { $0 }?.signal()
                 return true
             }
         }
@@ -741,7 +789,7 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         // These rows land below the observation's anchor, so it will never
         // deliver them — feed the overlay directly.
         await overlay.prependOlder(newOnes)
-        itemsSignal.withLock { $0 }?()
+        itemsSignal.withLock { $0 }?.signal()
         if let search {
             for event in newOnes {
                 if let body = event.searchableBody {

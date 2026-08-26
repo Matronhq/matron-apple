@@ -368,6 +368,51 @@ final class JournalStoreTests: XCTestCase {
         XCTAssertEqual(updated?.map(\.seq), [3, 4, 5])
     }
 
+    // MARK: Snippet-TTL memo invalidation
+
+    /// `insertHistory` writes event rows without bumping `last_seq`, so it
+    /// must drop the TTL memo: a stale conversation whose newest message
+    /// arrives via backfill would otherwise keep its cached "no override"
+    /// answer and never show the `$ command` snippet.
+    func testSnippetTTLMemoInvalidatedByInsertHistory() throws {
+        let store = try makeStore()
+        // Stale conversation (1970 activity), summary-known head at seq 10,
+        // no local events yet — the first read caches "no override".
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "c1", title: "T", sessionState: "running",
+                            lastSeq: 10, snippet: "from-server", createdAt: 0, lastTS: 1_000),
+        ], headSeq: 0)
+        XCTAssertEqual(try store.conversations().first?.snippet, "from-server")
+
+        // Backfill lands a live-log tool_output as the newest message-type
+        // event; `last_seq` is untouched, so only the insertHistory
+        // invalidation makes the next read recompute.
+        try store.insertHistory([event(9, type: JournalEventType.toolOutput,
+                                       payload: ["live_log": true, "command": "make build"])])
+        XCTAssertEqual(try store.conversations().first?.snippet, "$ make build",
+                       "stale memo served after insertHistory changed the newest message")
+    }
+
+    func testSnippetTTLMemoInvalidatedByWipe() throws {
+        let store = try makeStore()
+        // Stale conversation whose newest message is an unexpired live_log
+        // tool_output — the read caches the `$ command` override.
+        try store.applyJournal(event(5, type: JournalEventType.toolOutput,
+                                     payload: ["live_log": true, "command": "make build"]))
+        XCTAssertEqual(try store.conversations().first?.snippet, "$ make build")
+
+        // Wipe, then re-bootstrap the same conversation at the SAME
+        // last_seq with no events: the memo key matches, so only the wipe
+        // invalidation keeps the stale override from resurfacing.
+        try store.wipe()
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "c1", title: "T", sessionState: "running",
+                            lastSeq: 5, snippet: "fresh", createdAt: 0, lastTS: 1_000),
+        ], headSeq: 5)
+        XCTAssertEqual(try store.conversations().first?.snippet, "fresh",
+                       "stale memo override survived a mirror wipe")
+    }
+
     func testEventsStreamSuppressesOtherConversationCommits() async throws {
         let store = try makeStore()
         try store.applyJournal(event(1))

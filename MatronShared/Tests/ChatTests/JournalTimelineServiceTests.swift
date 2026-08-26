@@ -515,6 +515,124 @@ final class JournalTimelineServiceTests: XCTestCase {
         task.cancel()
     }
 
+    /// Re-open after events landed while no subscription was live: the
+    /// retained rows end BELOW the fresh anchor, and carrying them as the
+    /// revealed prefix would render a contiguous block of history as
+    /// silently missing (review 2026-08-26, Critical #1). The rebase must
+    /// drop the prefix instead — pagination brings those rows straight
+    /// back from the mirror.
+    func testReopenAfterOfflineGapNeverShowsAHole() async throws {
+        let store = try makeStore()
+        for seq in 1...6 { try store.applyJournal(textEvent(Int64(seq))) }
+        let api = JournalAPI(serverURL: URL(string: "https://x")!)
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api,
+                                             session: makeSession(), fetchWindow: 2)
+
+        let (first, firstTask) = collectItems(service.items())
+        try await waitUntil { await first.values.last?.map(\.id) == ["5", "6"] }
+        firstTask.cancel()
+
+        // Room closed; a long agent turn writes past the fetch window.
+        for seq in 7...9 { try store.applyJournal(textEvent(Int64(seq))) }
+
+        let (second, secondTask) = collectItems(service.items())
+        try await waitUntil { await second.values.last?.map(\.id) == ["8", "9"] }
+        let hasMore = try await service.paginateBackward(requestSize: 20)
+        XCTAssertTrue(hasMore)
+        try await waitUntil { await second.values.last?.count == 9 }
+        let items = await second.values.last!
+        XCTAssertEqual(items.map(\.id), (1...9).map(String.init))
+
+        // No delivered snapshot may ever contain the hole (6 next to 8) —
+        // every snapshot in this fixture is a contiguous run by construction.
+        for snapshot in await second.values {
+            let seqs = snapshot.compactMap { Int64($0.id) }
+            for (a, b) in zip(seqs, seqs.dropFirst()) {
+                XCTAssertEqual(b, a + 1, "non-contiguous snapshot delivered: \(seqs)")
+            }
+        }
+        secondTask.cancel()
+    }
+
+    /// Re-open with NO intervening events: the retained rows reach the new
+    /// anchor, so revealed history must survive the re-subscription with no
+    /// shrink and no duplicate seqs.
+    func testReopenWithNoNewEventsKeepsRevealedHistory() async throws {
+        let store = try makeStore()
+        for seq in 1...6 { try store.applyJournal(textEvent(Int64(seq))) }
+        let api = JournalAPI(serverURL: URL(string: "https://x")!)
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api,
+                                             session: makeSession(), fetchWindow: 2)
+
+        let (first, firstTask) = collectItems(service.items())
+        try await waitUntil { await first.values.last?.count == 2 }
+        _ = try await service.paginateBackward(requestSize: 20)
+        try await waitUntil { await first.values.last?.count == 6 }
+        firstTask.cancel()
+
+        let (second, secondTask) = collectItems(service.items())
+        // The retained list must persist across the re-subscription's first
+        // delivery — give the pipeline a beat, then check every snapshot.
+        try await waitUntil { await !second.values.isEmpty }
+        try await Task.sleep(for: .milliseconds(300))
+        for snapshot in await second.values {
+            XCTAssertEqual(snapshot.map(\.id), (1...6).map(String.init),
+                           "revealed history shrank or duplicated across re-open")
+        }
+        secondTask.cancel()
+    }
+
+    /// A mirror wipe under an open subscription must surface an EMPTY
+    /// snapshot — ChatViewModel's content→empty transition is the only
+    /// trigger for its history refill. Retaining the revealed prefix hid
+    /// the wipe and stranded the timeline on rows the store no longer has
+    /// (review 2026-08-26, Critical #2).
+    func testWipeUnderOpenSubscriptionEmptiesSnapshot() async throws {
+        let store = try makeStore()
+        for seq in 1...6 { try store.applyJournal(textEvent(Int64(seq))) }
+        let api = JournalAPI(serverURL: URL(string: "https://x")!)
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api,
+                                             session: makeSession(), fetchWindow: 2)
+
+        let (collector, task) = collectItems(service.items())
+        try await waitUntil { await collector.values.last?.count == 2 }
+        _ = try await service.paginateBackward(requestSize: 20)
+        try await waitUntil { await collector.values.last?.count == 6 }
+
+        try store.wipe()
+        try await waitUntil { await collector.values.last?.isEmpty == true }
+        task.cancel()
+    }
+
+    // MARK: OverlayState merge invariants (unit level)
+
+    func testOverlayPrependOlderDropsRowsAtOrAboveMergedHead() async {
+        let overlay = JournalTimelineService.OverlayState(staleness: 30)
+        let epoch = await overlay.rebaseForNewTailSubscription(anchor: 0)
+        await overlay.setTail([textEvent(3), textEvent(4)], epoch: epoch)
+        // Rows at/above the merged head (4, 5) must be dropped wholesale —
+        // they'd double-render seqs the observation already owns. The kept
+        // row must also be sorted into place regardless of input order.
+        await overlay.prependOlder([textEvent(4), textEvent(2), textEvent(5)])
+        let seqs = await overlay.events.map(\.seq)
+        XCTAssertEqual(seqs, [2, 3, 4])
+    }
+
+    func testOverlayStaleEpochDeliveryIgnored() async {
+        let overlay = JournalTimelineService.OverlayState(staleness: 30)
+        let stale = await overlay.rebaseForNewTailSubscription(anchor: 0)
+        let fresh = await overlay.rebaseForNewTailSubscription(anchor: 0)
+        await overlay.setTail([textEvent(1)], epoch: stale)
+        var seqs = await overlay.events.map(\.seq)
+        XCTAssertEqual(seqs, [], "a superseded subscription's delivery must be dropped")
+        await overlay.setTail([textEvent(1)], epoch: fresh)
+        seqs = await overlay.events.map(\.seq)
+        XCTAssertEqual(seqs, [1])
+    }
+
     // MARK: (f) an offline sendText queues durably instead of throwing —
     // the echo renders as .queued and the composer keeps nothing back.
 
