@@ -101,6 +101,26 @@ enum MarkdownAttributed {
                 }
             }
             self.containsTable = found
+
+            var ranges: [NSRange] = []
+            var openIdentity: Int?
+            attributed.enumerateAttribute(
+                MarkdownAttributed.semanticsKey,
+                in: NSRange(location: 0, length: attributed.length)
+            ) { value, subrange, _ in
+                guard let semantics = value as? MarkdownRunSemantics,
+                      semantics.block.isCodeBlock else {
+                    openIdentity = nil
+                    return
+                }
+                if semantics.blockIdentity == openIdentity, let last = ranges.indices.last {
+                    ranges[last] = NSUnionRange(ranges[last], subrange)
+                } else {
+                    ranges.append(subrange)
+                    openIdentity = semantics.blockIdentity
+                }
+            }
+            self.codeBlockRanges = ranges
         }
 
         /// Exact laid-out size of the string wrapped to `proposedWidth`.
@@ -144,6 +164,65 @@ enum MarkdownAttributed {
             lock.unlock()
             return result
         }
+
+        /// One fenced code block's laid-out geometry within the rendered
+        /// message, for overlaying copy chrome (`SelectableMessageText`'s
+        /// per-block copy button) on the text view.
+        public struct CodeBlockFrame: Equatable {
+            /// The block's bounding rect at the given width, in the text
+            /// view's coordinate space (top-left origin, zero inset — the
+            /// geometry `SelectableMessageText` renders with).
+            public let rect: CGRect
+            /// The block's bare code, trailing newlines trimmed — what the
+            /// copy button puts on the pasteboard.
+            public let code: String
+        }
+
+        /// Code-block frames at `width` — the ACTUAL rendered width
+        /// (`SelectableMessageText` hugs content, so callers pass the
+        /// laid-out view width, not the proposal). Measured on the same
+        /// standalone TextKit stack as `size(width:)` so rects match the
+        /// live view; memoised per width alongside the sizes because SwiftUI
+        /// re-evaluates overlays per layout pass and the timeline is
+        /// non-lazy. Messages without code blocks never pay for a layout
+        /// pass here.
+        public func codeBlockFrames(width: CGFloat) -> [CodeBlockFrame] {
+            guard width > 0, width.isFinite, !codeBlockRanges.isEmpty else { return [] }
+            lock.lock()
+            if let hit = codeFrames[width] { lock.unlock(); return hit }
+            lock.unlock()
+
+            let textStorage = NSTextStorage(attributedString: attributed)
+            let textContainer = NSTextContainer(size: NSSize(width: width, height: .greatestFiniteMagnitude))
+            textContainer.lineFragmentPadding = 0
+            let layoutManager = NSLayoutManager()
+            layoutManager.addTextContainer(textContainer)
+            textStorage.addLayoutManager(layoutManager)
+            layoutManager.ensureLayout(for: textContainer)
+
+            let text = attributed.string as NSString
+            let frames = codeBlockRanges.map { range -> CodeBlockFrame in
+                var code = text.substring(with: range)
+                while code.hasSuffix("\n") { code.removeLast() }
+                let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+                return CodeBlockFrame(
+                    rect: layoutManager.boundingRect(forGlyphRange: glyphs, in: textContainer),
+                    code: code
+                )
+            }
+            lock.lock()
+            codeFrames[width] = frames
+            lock.unlock()
+            return frames
+        }
+
+        /// Character range of each fenced code block, in document order —
+        /// consecutive `semanticsKey` runs grouped by block identity.
+        /// Computed once at build time, like `containsTable`, so reads need
+        /// no locking.
+        private let codeBlockRanges: [NSRange]
+
+        private var codeFrames: [CGFloat: [CodeBlockFrame]] = [:]
     }
 
     /// Everything derived from markdown `source`, memoised per source
