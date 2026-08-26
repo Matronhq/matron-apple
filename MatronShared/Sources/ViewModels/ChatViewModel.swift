@@ -1047,6 +1047,12 @@ public final class ChatViewModel {
         let hits = (try? await search.query(trimmed, roomID: roomID, limit: Self.chatSearchMatchLimit)) ?? []
         let seqs = hits.compactMap { Int64($0.id) }
         chatSearch = ChatSearchState(query: trimmed, matchSeqs: seqs, index: 0)
+        // Every re-query owns the jump machinery from here: a previous
+        // query's parked seq must not fire on the next snapshot after
+        // this one's results replaced it in the bar (Bugbot, PR #172 —
+        // second round: the no-hit path cancelled the in-flight task but
+        // left the park armed).
+        pendingChatSearchFocusSeq = nil
         guard let newest = seqs.first else {
             // A re-query with no hits shows "No matches" — an earlier
             // query's still-paginating deep jump landing after that would
@@ -1055,19 +1061,26 @@ public final class ChatViewModel {
             focusTask?.cancel()
             return
         }
+        await focusOrPark(seq: newest)
+    }
+
+    /// Runs a search jump when the items stream is live; parks it
+    /// otherwise. The gate exists because the focus loop measures
+    /// paginate progress by `items` growth, and `items` only grows
+    /// through a live subscription — sampling growth against an
+    /// unsubscribed stream (cold VM before `start()`, or a warm cached
+    /// VM whose previous view already ran `stop()`) falsely latches
+    /// `reachedHistoryStart` and kills scroll-up for the room (review +
+    /// Bugbot, 2026-08-26). A parked target fires on the next stream
+    /// delivery (`receiveSnapshot`). Shared by `beginChatSearch` and
+    /// `stepChatSearch` — the chevrons are tappable in the same
+    /// pre-first-snapshot window their bar appears in.
+    private func focusOrPark(seq: Int64) async {
         if hasReceivedFirstSnapshot, observationTask != nil {
-            await focus(seq: newest)
+            pendingChatSearchFocusSeq = nil
+            await focus(seq: seq)
         } else {
-            // Armed while the items stream is down — either BEFORE the
-            // chat view has run `start()` (cold cache miss) or on a warm
-            // cached VM whose previous view already ran `stop()`: the
-            // focus loop measures paginate progress by `items` growth,
-            // and `items` only grows through a live subscription —
-            // sampling growth against an unsubscribed stream falsely
-            // latches `reachedHistoryStart` and kills scroll-up for the
-            // room (review + Bugbot, 2026-08-26). Park the target; the
-            // next stream delivery fires it.
-            pendingChatSearchFocusSeq = newest
+            pendingChatSearchFocusSeq = seq
         }
     }
 
@@ -1083,7 +1096,7 @@ public final class ChatViewModel {
         guard state.matchSeqs.indices.contains(next) else { return }
         state.index = next
         chatSearch = state
-        await focus(seq: state.matchSeqs[next])
+        await focusOrPark(seq: state.matchSeqs[next])
     }
 
     /// Dismisses the bar. The transcript stays where the user left it —

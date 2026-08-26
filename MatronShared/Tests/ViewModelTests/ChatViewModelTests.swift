@@ -323,6 +323,38 @@ final class ChatViewModelTests: XCTestCase {
         vm.stop()
     }
 
+    /// A re-query must disarm the previous query's parked jump: begin on
+    /// a stopped VM (parks), re-query with no hits ("No matches"), then
+    /// restart the stream — the stale park must NOT fire a jump to a
+    /// match the bar no longer shows (Bugbot, PR #172 — second round).
+    /// A stepped chevron re-park after the no-hit query still works.
+    @MainActor
+    func test_inChatSearch_noHitRequeryDisarmsParkedJump() async throws {
+        let items = [TimelineItem(id: "3", sender: "@a:s", timestamp: .now,
+                                  kind: .text(body: "match", formattedHTML: nil), isOwn: false)]
+        let fake = PagingFakeTimelineService(loaded: items, olderPages: [])
+        let search = FakeSearchService(hits: [
+            SearchHit(id: "3", roomID: "r1", sender: "@a:s", timestamp: .now, snippet: "s"),
+        ])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService(), search: search)
+        _ = await vm.start()
+        vm.stop()
+
+        await vm.beginChatSearch(query: "match")
+        XCTAssertNil(vm.pendingFocusID, "first query parks on the stopped stream")
+
+        await search.setHits([])
+        await vm.beginChatSearch(query: "nothing-matches-this")
+        XCTAssertEqual(vm.chatSearch?.matchSeqs, [], "the bar shows No matches")
+
+        _ = await vm.start()
+        // Give the (wrongly) parked jump every chance to fire.
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertNil(vm.pendingFocusID,
+                     "a no-hit re-query must disarm the previous query's parked jump")
+        vm.stop()
+    }
+
     /// Dismissing the bar mid-jump must abandon the jump: a deep hit's
     /// pagination otherwise keeps running and lands `pendingFocusID`
     /// after the user closed search, scrolling the transcript out from
