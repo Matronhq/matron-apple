@@ -327,16 +327,28 @@ public final class ChatViewModel {
     /// and otherwise coalesces bursts so streaming turns commit at most
     /// once per `snapshotCoalesceInterval`.
     private func receiveSnapshot(_ snapshot: [TimelineItem]) {
-        if !hasReceivedFirstSnapshot || isPaginatingBackward || isExtendingWindow {
+        // A parked search jump forces an immediate commit AND fires here —
+        // not in `commitSnapshot`, which `stop()`'s teardown flush also
+        // reaches: firing there launched the jump against the very dead
+        // stream the parking exists to avoid. This method only runs from
+        // the live stream's loop, so a delivery here means the focus
+        // loop's growth sampling is meaningful again (warm restarts
+        // included — the first snapshot ever is not the only re-arm).
+        let parkedSeq = pendingChatSearchFocusSeq
+        if !hasReceivedFirstSnapshot || isPaginatingBackward || isExtendingWindow || parkedSeq != nil {
             commitSnapshot(snapshot)
-            return
-        }
-        let now = ContinuousClock.now
-        if let last = lastCommitInstant, now - last < snapshotCoalesceInterval {
-            pendingSnapshot = snapshot
-            scheduleCoalescedCommit(after: snapshotCoalesceInterval - (now - last))
         } else {
+            let now = ContinuousClock.now
+            if let last = lastCommitInstant, now - last < snapshotCoalesceInterval {
+                pendingSnapshot = snapshot
+                scheduleCoalescedCommit(after: snapshotCoalesceInterval - (now - last))
+                return
+            }
             commitSnapshot(snapshot)
+        }
+        if let seq = parkedSeq {
+            pendingChatSearchFocusSeq = nil
+            Task { @MainActor [weak self] in await self?.focus(seq: seq) }
         }
     }
 
@@ -364,15 +376,9 @@ public final class ChatViewModel {
         self.error = nil
         // Flip on the first processed snapshot so the empty-state
         // placeholder gates correctly even when the snapshot itself
-        // is empty.
-        let isFirstSnapshot = !hasReceivedFirstSnapshot
+        // is empty. (A parked search jump fires from `receiveSnapshot`,
+        // not here — this path is also reached by `stop()`'s flush.)
         self.hasReceivedFirstSnapshot = true
-        // A search armed before start() parked its jump here — the stream
-        // is live now, so the focus loop's growth sampling is meaningful.
-        if isFirstSnapshot, let seq = pendingChatSearchFocusSeq {
-            pendingChatSearchFocusSeq = nil
-            Task { @MainActor [weak self] in await self?.focus(seq: seq) }
-        }
         // Debounce the empty-state so a transient timeline clear
         // (sliding-sync reset) doesn't flash the "no messages yet"
         // placeholder.
@@ -811,6 +817,14 @@ public final class ChatViewModel {
     /// or its grow then our no-op) and a reader left up in history both
     /// keep their larger window.
     public func beginEntryWindow() {
+        // An active in-conversation search owns the viewport: its jump can
+        // complete BEFORE this view mounts (warm cached VM), and shrinking
+        // here would unmount the landed-on row — the view's 200ms re-assert
+        // scrolls to nothing and `settleEntryWindow`'s bottom-anchored
+        // regrow parks the transcript back at the tail (Bugbot, PR #172).
+        // Skipping the entry optimization just re-pays the original
+        // room-switch layout cost for this one open.
+        guard chatSearch == nil else { return }
         guard visibleWindowSize == Self.defaultWindowSize, windowTailAnchorID == nil else { return }
         visibleWindowSize = Self.entryWindowSize
         recomputeWindow()
@@ -1033,18 +1047,26 @@ public final class ChatViewModel {
         let hits = (try? await search.query(trimmed, roomID: roomID, limit: Self.chatSearchMatchLimit)) ?? []
         let seqs = hits.compactMap { Int64($0.id) }
         chatSearch = ChatSearchState(query: trimmed, matchSeqs: seqs, index: 0)
-        guard let newest = seqs.first else { return }
-        if hasReceivedFirstSnapshot {
+        guard let newest = seqs.first else {
+            // A re-query with no hits shows "No matches" — an earlier
+            // query's still-paginating deep jump landing after that would
+            // scroll the transcript to a match that no longer exists in
+            // the bar (Bugbot, PR #172).
+            focusTask?.cancel()
+            return
+        }
+        if hasReceivedFirstSnapshot, observationTask != nil {
             await focus(seq: newest)
         } else {
-            // Armed from the search results BEFORE the chat view has run
-            // `start()` (a cold cache miss): the focus loop measures
-            // paginate progress by `items` growth, and `items` only grows
-            // through the subscription `start()` opens — sampling growth
-            // against an unsubscribed stream falsely latches
-            // `reachedHistoryStart` and kills scroll-up for the room
-            // (review 2026-08-26). Park the target; the first processed
-            // snapshot fires it.
+            // Armed while the items stream is down — either BEFORE the
+            // chat view has run `start()` (cold cache miss) or on a warm
+            // cached VM whose previous view already ran `stop()`: the
+            // focus loop measures paginate progress by `items` growth,
+            // and `items` only grows through a live subscription —
+            // sampling growth against an unsubscribed stream falsely
+            // latches `reachedHistoryStart` and kills scroll-up for the
+            // room (review + Bugbot, 2026-08-26). Park the target; the
+            // next stream delivery fires it.
             pendingChatSearchFocusSeq = newest
         }
     }
@@ -1064,10 +1086,15 @@ public final class ChatViewModel {
         await focus(seq: state.matchSeqs[next])
     }
 
-    /// Dismisses the bar. The transcript stays where the user left it.
+    /// Dismisses the bar. The transcript stays where the user left it —
+    /// which is why an in-flight deep jump must die here too: left
+    /// running, its pagination keeps going and a late `pendingFocusID`
+    /// write scrolls the transcript after the user dismissed search
+    /// (Bugbot, PR #172).
     public func endChatSearch() {
         chatSearch = nil
         pendingChatSearchFocusSeq = nil
+        focusTask?.cancel()
     }
 
     /// Cap on navigable matches per conversation. Far beyond any realistic
