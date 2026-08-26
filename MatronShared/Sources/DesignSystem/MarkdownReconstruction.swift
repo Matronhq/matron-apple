@@ -88,7 +88,14 @@ enum MarkdownReconstruction {
             identity = semantics.blockIdentity
         }
         guard isSoleCodeBlock, identity != nil else { return nil }
-        return trimTrailingNewlines((attributed.string as NSString).substring(with: range))
+        let raw = (attributed.string as NSString).substring(with: range)
+        let trimmed = trimTrailingNewlines(raw)
+        // Never return "": a newline-only selection (a drag across a blank
+        // line inside the block) would flow into `setString("", …)` and wipe
+        // the clipboard's plain-text flavor — the exact state the empty-
+        // selection guard in `MessageCopyTextView.copy` exists to prevent.
+        // The raw newlines ARE what the user selected, so copy them.
+        return trimmed.isEmpty ? raw : trimmed
     }
 
     // MARK: - Model

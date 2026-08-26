@@ -201,14 +201,30 @@ enum MarkdownAttributed {
             layoutManager.ensureLayout(for: textContainer)
 
             let text = attributed.string as NSString
-            let frames = codeBlockRanges.map { range -> CodeBlockFrame in
+            let frames: [CodeBlockFrame] = codeBlockRanges.compactMap { range in
+                // Trim the terminator newline(s) from both the code AND the
+                // measured range — each trimmed "\n" is one UTF-16 unit.
                 var code = text.substring(with: range)
-                while code.hasSuffix("\n") { code.removeLast() }
-                let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
-                return CodeBlockFrame(
-                    rect: layoutManager.boundingRect(forGlyphRange: glyphs, in: textContainer),
-                    code: code
-                )
+                var measured = range
+                while code.hasSuffix("\n") {
+                    code.removeLast()
+                    measured.length -= 1
+                }
+                guard !code.isEmpty else { return nil }
+                // Union of per-line USED rects, not `boundingRect(for:in:)`:
+                // bounding rects are line-FRAGMENT unions, and a fragment is
+                // pulled to the full container width whenever the range ends
+                // in "\n" or spans 2+ lines — which put the button hundreds
+                // of points right of a narrow mid-message block (PR #170
+                // review). Used rects hug the glyphs, and their union matches
+                // the live TextKit 2 view's standard text segments exactly.
+                let glyphs = layoutManager.glyphRange(forCharacterRange: measured, actualCharacterRange: nil)
+                var union = CGRect.null
+                layoutManager.enumerateLineFragments(forGlyphRange: glyphs) { _, used, _, _, _ in
+                    union = union.union(used)
+                }
+                guard !union.isNull else { return nil }
+                return CodeBlockFrame(rect: union, code: code)
             }
             lock.lock()
             codeFrames[width] = frames

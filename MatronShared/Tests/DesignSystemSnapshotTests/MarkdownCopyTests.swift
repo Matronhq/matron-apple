@@ -335,6 +335,61 @@ final class MarkdownCopyTests: XCTestCase {
         XCTAssertGreaterThan(frames[1].rect.minY, frames[0].rect.maxY - 1)
     }
 
+    /// A code block that is NOT the message's last block keeps its
+    /// terminator newline, and `boundingRect(forGlyphRange:)` pulls such a
+    /// range's line fragments to the full container width — which floated
+    /// the copy button hundreds of points right of a narrow block (PR #170
+    /// review). Frames must hug the code's natural width instead.
+    func test_codeBlockFrames_midMessageNarrowBlock_hugsCodeWidth() {
+        let source = "A deliberately long intro paragraph that wraps and spans the full bubble width easily.\n\n```bash\nls\n```\n\nAfter."
+        let frames = MarkdownAttributed.rendered(for: source).codeBlockFrames(width: 500)
+        XCTAssertEqual(frames.map(\.code), ["ls"])
+        XCTAssertLessThan(frames[0].rect.width, 60)
+    }
+
+    func test_codeBlockFrames_multiLineBlock_hugsLongestLine() {
+        let source = "```bash\ncd /tmp\nls\n```\n\nAfter."
+        let frames = MarkdownAttributed.rendered(for: source).codeBlockFrames(width: 500)
+        XCTAssertEqual(frames.map(\.code), ["cd /tmp\nls"])
+        XCTAssertLessThan(frames[0].rect.width, 100)
+        XCTAssertGreaterThan(frames[0].rect.height, 20)
+    }
+
+    /// A newline-only selection inside a code block (drag across a blank
+    /// line) must copy the newlines — returning "" would flow into
+    /// `setString("", …)` and wipe the clipboard's plain-text flavor.
+    func test_reconstruct_newlineOnlySelectionInCodeBlock_copiesNewlines() {
+        let attributed = convert("```\nfoo\n\n\nbar\n```")
+        let start = (attributed.string as NSString).range(of: "foo")
+        let end = (attributed.string as NSString).range(of: "bar")
+        let range = NSRange(
+            location: start.location + start.length,
+            length: end.location - (start.location + start.length)
+        )
+        XCTAssertGreaterThan(range.length, 0)
+        XCTAssertEqual(
+            MarkdownReconstruction.markdown(from: attributed, in: range),
+            (attributed.string as NSString).substring(with: range)
+        )
+    }
+
+    func test_copy_newlineOnlySelectionInCodeBlock_pasteboardNotEmptied() {
+        let view = makeCopyView("```\nfoo\n\n\nbar\n```")
+        let full = view.textStorage!.string as NSString
+        let start = full.range(of: "foo")
+        let end = full.range(of: "bar")
+        view.setSelectedRange(NSRange(
+            location: start.location + start.length,
+            length: end.location - (start.location + start.length)
+        ))
+
+        view.copy(nil)
+
+        let pasted = NSPasteboard.general.string(forType: .string)
+        XCTAssertNotNil(pasted)
+        XCTAssertFalse(pasted!.isEmpty)
+    }
+
     // MARK: - Copy override
 
     private func makeCopyView(_ source: String) -> MessageCopyTextView {

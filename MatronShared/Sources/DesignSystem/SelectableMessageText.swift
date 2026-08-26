@@ -65,6 +65,9 @@ public struct SelectableMessageText: View {
 private struct CodeBlockCopyButton: View {
     let code: String
     @State private var copied = false
+    /// Cancelled on re-tap so a second copy gets a full 1.2s of checkmark,
+    /// not the tail of the first tap's timer.
+    @State private var resetTask: Task<Void, Never>?
 
     var body: some View {
         Button {
@@ -72,7 +75,12 @@ private struct CodeBlockCopyButton: View {
             pasteboard.clearContents()
             pasteboard.setString(code, forType: .string)
             copied = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+            resetTask?.cancel()
+            resetTask = Task {
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                guard !Task.isCancelled else { return }
+                copied = false
+            }
         } label: {
             Image(systemName: copied ? "checkmark" : "doc.on.doc")
                 .font(.system(size: 10, weight: .medium))
@@ -83,6 +91,7 @@ private struct CodeBlockCopyButton: View {
         }
         .buttonStyle(.plain)
         .help("Copy code")
+        .accessibilityLabel("Copy code")
     }
 }
 
