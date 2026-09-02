@@ -17,6 +17,9 @@ public struct SearchResultRow: View {
     let boxName: String?
     let roomBoxNames: [String]
     let roomBoxShorts: [String]
+    /// Total matches in this chat when the row aggregates a whole
+    /// conversation (grouped search results). `nil` or 1 renders no badge.
+    let matchCount: Int?
     let onTap: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
@@ -24,11 +27,13 @@ public struct SearchResultRow: View {
     public init(hit: SearchHit, chatTitle: String,
                 sessionShort: String? = nil, boxLetter: String? = nil,
                 boxName: String? = nil, roomBoxNames: [String] = [],
-                roomBoxShorts: [String] = [], onTap: @escaping () -> Void) {
+                roomBoxShorts: [String] = [], matchCount: Int? = nil,
+                onTap: @escaping () -> Void) {
         self.hit = hit; self.chatTitle = chatTitle
         self.sessionShort = sessionShort; self.boxLetter = boxLetter
         self.boxName = boxName; self.roomBoxNames = roomBoxNames
-        self.roomBoxShorts = roomBoxShorts; self.onTap = onTap
+        self.roomBoxShorts = roomBoxShorts; self.matchCount = matchCount
+        self.onTap = onTap
     }
 
     /// Same composition and fallbacks as the chat-list rows' titleLine.
@@ -45,6 +50,17 @@ public struct SearchResultRow: View {
                 HStack {
                     titleLine.font(.callout).bold()
                     Spacer()
+                    if let matchCount, matchCount > 1 {
+                        // How many messages in this chat match — the row
+                        // shows only the newest one's snippet.
+                        Text("\(matchCount)")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(Color.secondary.opacity(0.15)))
+                            .accessibilityLabel("\(matchCount) matching messages")
+                    }
                     // Minute-granularity, like the chat list — the built-in
                     // `.relative` style ticks every second, and the width
                     // churn made the whole results list jump each tick.

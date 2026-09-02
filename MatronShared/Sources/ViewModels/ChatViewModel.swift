@@ -6,6 +6,7 @@ import MatronChat
 import MatronEvents
 import MatronJournal
 import MatronModels
+import MatronSearch
 import MatronStorage
 
 /// Rendering unit for the chat timeline. The view-model walks `items`
@@ -326,16 +327,28 @@ public final class ChatViewModel {
     /// and otherwise coalesces bursts so streaming turns commit at most
     /// once per `snapshotCoalesceInterval`.
     private func receiveSnapshot(_ snapshot: [TimelineItem]) {
-        if !hasReceivedFirstSnapshot || isPaginatingBackward || isExtendingWindow {
+        // A parked search jump forces an immediate commit AND fires here —
+        // not in `commitSnapshot`, which `stop()`'s teardown flush also
+        // reaches: firing there launched the jump against the very dead
+        // stream the parking exists to avoid. This method only runs from
+        // the live stream's loop, so a delivery here means the focus
+        // loop's growth sampling is meaningful again (warm restarts
+        // included — the first snapshot ever is not the only re-arm).
+        let parkedSeq = pendingChatSearchFocusSeq
+        if !hasReceivedFirstSnapshot || isPaginatingBackward || isExtendingWindow || parkedSeq != nil {
             commitSnapshot(snapshot)
-            return
-        }
-        let now = ContinuousClock.now
-        if let last = lastCommitInstant, now - last < snapshotCoalesceInterval {
-            pendingSnapshot = snapshot
-            scheduleCoalescedCommit(after: snapshotCoalesceInterval - (now - last))
         } else {
+            let now = ContinuousClock.now
+            if let last = lastCommitInstant, now - last < snapshotCoalesceInterval {
+                pendingSnapshot = snapshot
+                scheduleCoalescedCommit(after: snapshotCoalesceInterval - (now - last))
+                return
+            }
             commitSnapshot(snapshot)
+        }
+        if let seq = parkedSeq {
+            pendingChatSearchFocusSeq = nil
+            Task { @MainActor [weak self] in await self?.focus(seq: seq) }
         }
     }
 
@@ -363,7 +376,8 @@ public final class ChatViewModel {
         self.error = nil
         // Flip on the first processed snapshot so the empty-state
         // placeholder gates correctly even when the snapshot itself
-        // is empty.
+        // is empty. (A parked search jump fires from `receiveSnapshot`,
+        // not here — this path is also reached by `stop()`'s flush.)
         self.hasReceivedFirstSnapshot = true
         // Debounce the empty-state so a transient timeline clear
         // (sliding-sync reset) doesn't flash the "no messages yet"
@@ -803,6 +817,14 @@ public final class ChatViewModel {
     /// or its grow then our no-op) and a reader left up in history both
     /// keep their larger window.
     public func beginEntryWindow() {
+        // An active in-conversation search owns the viewport: its jump can
+        // complete BEFORE this view mounts (warm cached VM), and shrinking
+        // here would unmount the landed-on row — the view's 200ms re-assert
+        // scrolls to nothing and `settleEntryWindow`'s bottom-anchored
+        // regrow parks the transcript back at the tail (Bugbot, PR #172).
+        // Skipping the entry optimization just re-pays the original
+        // room-switch layout cost for this one open.
+        guard chatSearch == nil else { return }
         guard visibleWindowSize == Self.defaultWindowSize, windowTailAnchorID == nil else { return }
         visibleWindowSize = Self.entryWindowSize
         recomputeWindow()
@@ -960,11 +982,23 @@ public final class ChatViewModel {
     /// landed.
     private var focusTask: Task<Void, Never>?
 
+    /// Hard cap on the backward paginates one focus jump may issue. Each
+    /// iteration is a network round-trip plus up to a 2.5s snapshot wait —
+    /// a search hit thousands of messages deep must not fetch the whole
+    /// history while the transcript sits still with no cancel affordance
+    /// (review 2026-08-26: this PR made `focus(seq:)` user-reachable for
+    /// the first time). Hitting the cap lands on the oldest loaded row via
+    /// the fallback below, same as a genuine history start.
+    private static let maxFocusPaginates = 20
+
     private func performFocus(seq: Int64) async {
+        var paginates = 0
         while nearestMessageID(atOrBefore: seq) == nil && !reachedHistoryStart {
             if Task.isCancelled { return }
+            if paginates >= Self.maxFocusPaginates { break }
             let beforeCount = items.count
             await paginateBackward()
+            paginates += 1
             let madeProgress = items.count != beforeCount || reachedHistoryStart
             if !madeProgress {
                 guard isPaginatingBackward else { break }
@@ -980,6 +1014,105 @@ public final class ChatViewModel {
         ensureWindowContains(target)
         pendingFocusID = target
     }
+
+    // MARK: In-conversation search
+
+    /// One active in-conversation search (WhatsApp-style): the query, its
+    /// matching message seqs newest-first, and which match is focused.
+    /// Views render the navigation bar from this and step through matches;
+    /// each step rides `focus(seq:)`, so navigating into deep history
+    /// pages backward exactly like a TOC jump.
+    public struct ChatSearchState: Equatable {
+        public var query: String
+        /// Matching message seqs, newest first (the FTS index's event ids
+        /// ARE journal seqs).
+        public var matchSeqs: [Int64]
+        /// Index into `matchSeqs` of the focused match; 0 = newest.
+        public var index: Int
+    }
+
+    /// Non-nil while the in-conversation search bar is up.
+    public private(set) var chatSearch: ChatSearchState?
+
+    /// Starts (or re-runs, on a new query from the bar's field) an
+    /// in-conversation search and jumps to the newest match. No-op without
+    /// a search service (fakes, or a device whose index failed to open) —
+    /// the entry points are gated the same way. An empty result set still
+    /// shows the bar, reporting "No matches" rather than silently doing
+    /// nothing.
+    public func beginChatSearch(query: String) async {
+        guard let search else { return }
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        let hits = (try? await search.query(trimmed, roomID: roomID, limit: Self.chatSearchMatchLimit)) ?? []
+        let seqs = hits.compactMap { Int64($0.id) }
+        chatSearch = ChatSearchState(query: trimmed, matchSeqs: seqs, index: 0)
+        // Every re-query owns the jump machinery from here: a previous
+        // query's parked seq must not fire on the next snapshot after
+        // this one's results replaced it in the bar (Bugbot, PR #172 —
+        // second round: the no-hit path cancelled the in-flight task but
+        // left the park armed).
+        pendingChatSearchFocusSeq = nil
+        guard let newest = seqs.first else {
+            // A re-query with no hits shows "No matches" — an earlier
+            // query's still-paginating deep jump landing after that would
+            // scroll the transcript to a match that no longer exists in
+            // the bar (Bugbot, PR #172).
+            focusTask?.cancel()
+            return
+        }
+        await focusOrPark(seq: newest)
+    }
+
+    /// Runs a search jump when the items stream is live; parks it
+    /// otherwise. The gate exists because the focus loop measures
+    /// paginate progress by `items` growth, and `items` only grows
+    /// through a live subscription — sampling growth against an
+    /// unsubscribed stream (cold VM before `start()`, or a warm cached
+    /// VM whose previous view already ran `stop()`) falsely latches
+    /// `reachedHistoryStart` and kills scroll-up for the room (review +
+    /// Bugbot, 2026-08-26). A parked target fires on the next stream
+    /// delivery (`receiveSnapshot`). Shared by `beginChatSearch` and
+    /// `stepChatSearch` — the chevrons are tappable in the same
+    /// pre-first-snapshot window their bar appears in.
+    private func focusOrPark(seq: Int64) async {
+        if hasReceivedFirstSnapshot, observationTask != nil {
+            pendingChatSearchFocusSeq = nil
+            await focus(seq: seq)
+        } else {
+            pendingChatSearchFocusSeq = seq
+        }
+    }
+
+    /// Focus target parked by `beginChatSearch` until the first timeline
+    /// snapshot lands — see the comment at its write site.
+    private var pendingChatSearchFocusSeq: Int64?
+
+    /// Steps to the adjacent match — `older: true` walks up into history
+    /// (higher index in the newest-first list). Clamped at the ends.
+    public func stepChatSearch(older: Bool) async {
+        guard var state = chatSearch else { return }
+        let next = state.index + (older ? 1 : -1)
+        guard state.matchSeqs.indices.contains(next) else { return }
+        state.index = next
+        chatSearch = state
+        await focusOrPark(seq: state.matchSeqs[next])
+    }
+
+    /// Dismisses the bar. The transcript stays where the user left it —
+    /// which is why an in-flight deep jump must die here too: left
+    /// running, its pagination keeps going and a late `pendingFocusID`
+    /// write scrolls the transcript after the user dismissed search
+    /// (Bugbot, PR #172).
+    public func endChatSearch() {
+        chatSearch = nil
+        pendingChatSearchFocusSeq = nil
+        focusTask?.cancel()
+    }
+
+    /// Cap on navigable matches per conversation. Far beyond any realistic
+    /// manual chevron walk; bounds the seq array and the FTS projection.
+    private static let chatSearchMatchLimit = 500
 
     /// Latest `rows` message id whose seq is `<= seq`, or nil if every
     /// loaded message postdates it. `rows` is ascending (oldest first —
@@ -1107,6 +1240,10 @@ public final class ChatViewModel {
 
     private let timeline: TimelineService
     private let media: MediaService
+    /// FTS index for the in-conversation search (`beginChatSearch`). Nil
+    /// in fakes and on devices whose index failed to open — the search
+    /// entry points are gated on the same service being available.
+    private let search: (any SearchService)?
     private var observationTask: Task<Void, Never>?
     private var statusTask: Task<Void, Never>?
     private var sessionStateTask: Task<Void, Never>?
@@ -1191,12 +1328,14 @@ public final class ChatViewModel {
 
     public init(roomID: String, timeline: TimelineService, media: MediaService,
                 agentChat: (any AgentChatAnswering)? = nil,
-                agentSpawn: (any AgentSpawnAnswering)? = nil) {
+                agentSpawn: (any AgentSpawnAnswering)? = nil,
+                search: (any SearchService)? = nil) {
         self.roomID = roomID
         self.timeline = timeline
         self.media = media
         self.agentChat = agentChat
         self.agentSpawn = agentSpawn
+        self.search = search
         let stored = UserDefaults.standard.stringArray(forKey: "matron.answeredPrompts.\(roomID)") ?? []
         self.answeredPromptIDs = Set(stored)
         self.agentChatAnswers = UserDefaults.standard
@@ -1568,6 +1707,10 @@ public final class ChatViewModel {
         historyRefillTask = nil
         focusTask?.cancel()
         focusTask = nil
+        // Leaving the room dismisses the in-conversation search — the VM
+        // is cached, and re-opening days later must not resurrect a stale
+        // bar whose match list predates everything received since.
+        endChatSearch()
     }
 
     private var historyRefillTask: Task<Void, Never>?

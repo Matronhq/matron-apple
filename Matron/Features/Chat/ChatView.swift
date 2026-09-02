@@ -41,6 +41,9 @@ struct ChatView: View {
     @Environment(\.appDependencies) private var deps
     @Environment(\.currentSession) private var session
     @State private var wasBackgrounded = false
+    /// Local text for the in-conversation search bar's field — seeded from
+    /// `viewModel.chatSearch?.query`, submitted back via `beginChatSearch`.
+    @State private var chatSearchQuery = ""
     /// Sticky "following the live tail" mode. `true` from open-at-tail
     /// until the user *deliberately drags away* (gesture phases via
     /// `onUserScrollGesture`); re-engaged when scrolling settles near the
@@ -383,6 +386,24 @@ struct ChatView: View {
                     .background(Color.red.opacity(0.9))
                     .accessibilityLabel("Chat error: \(errorMessage)")
             }
+            // In-conversation search (armed by a grouped search-result
+            // tap). Field text is local, seeded from the VM's query;
+            // submit re-runs the room-scoped search. Same slot as the Mac.
+            if let searchState = viewModel.chatSearch {
+                ChatSearchBar(
+                    query: $chatSearchQuery,
+                    matchCount: searchState.matchSeqs.count,
+                    matchIndex: searchState.index,
+                    onSubmit: { Task { await viewModel.beginChatSearch(query: chatSearchQuery) } },
+                    onOlder: { Task { await viewModel.stepChatSearch(older: true) } },
+                    onNewer: { Task { await viewModel.stepChatSearch(older: false) } },
+                    onClose: { viewModel.endChatSearch() }
+                )
+                .onAppear { chatSearchQuery = searchState.query }
+                .onChange(of: searchState.query) { _, newQuery in
+                    chatSearchQuery = newQuery
+                }
+            }
             // Tap-to-compact nudge once the session's context passes the
             // absolute threshold (see CompactContextBanner.shouldShow).
             // Sits between the error banner and the subagent strip, same
@@ -679,7 +700,12 @@ struct ChatView: View {
             // `focus(seq:)` only sets `pendingFocusID` once the target row
             // is already loaded (paginating backward as needed first), so
             // there's no "rows just populated" gate to wait on here.
-            .onChange(of: viewModel.pendingFocusID) { _, target in
+            // `initial: true`: a search jump can write `pendingFocusID`
+            // BEFORE this view mounts (the results tap arms the cached VM,
+            // then navigates) — a change-only observer registered after the
+            // write never fires, and the un-cleared value then swallows
+            // every later same-seq jump too (review 2026-08-26).
+            .onChange(of: viewModel.pendingFocusID, initial: true) { _, target in
                 guard let target else { return }
                 isFollowingTail = false          // otherwise the tail-follow engine yanks the viewport back to the bottom
                 latestFocusTarget = target

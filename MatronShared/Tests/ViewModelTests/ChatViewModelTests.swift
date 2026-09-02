@@ -3,6 +3,7 @@ import SwiftUI
 import MatronChat
 import MatronEvents
 import MatronModels
+import MatronSearch
 import MatronStorage
 @testable import MatronViewModels
 
@@ -72,6 +73,57 @@ final class PagingFakeTimelineService: TimelineService, @unchecked Sendable {
     func markAsRead() async throws {}
 }
 
+/// `PagingFakeTimelineService` whose paginate parks on a gate until the
+/// test calls `release()` — lets a test take an action (dismiss the
+/// search bar) deterministically WHILE a deep jump's pagination is in
+/// flight, instead of racing a fast fake.
+final class BlockingPagingFakeTimelineService: TimelineService, @unchecked Sendable {
+    private var currentItems: [TimelineItem]
+    private var olderPages: [[TimelineItem]]
+    private var continuation: AsyncThrowingStream<[TimelineItem], Error>.Continuation?
+    private var gate: CheckedContinuation<Void, Never>?
+    private(set) var paginateStarted = false
+
+    init(loaded: [TimelineItem], olderPages: [[TimelineItem]]) {
+        self.currentItems = loaded
+        self.olderPages = olderPages
+    }
+
+    deinit {
+        continuation?.finish()
+        gate?.resume()
+    }
+
+    func items() -> AsyncThrowingStream<[TimelineItem], Error> {
+        AsyncThrowingStream { continuation in
+            self.continuation = continuation
+            continuation.yield(self.currentItems)
+        }
+    }
+
+    func sendText(_ body: String, inReplyTo: String?) async throws {}
+    func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {}
+    func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
+    func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
+
+    func paginateBackward(requestSize: UInt16) async throws -> Bool {
+        paginateStarted = true
+        await withCheckedContinuation { self.gate = $0 }
+        guard !olderPages.isEmpty else { return true }
+        let page = olderPages.removeFirst()
+        currentItems = page + currentItems
+        continuation?.yield(currentItems)
+        return olderPages.isEmpty
+    }
+
+    func release() {
+        gate?.resume()
+        gate = nil
+    }
+
+    func markAsRead() async throws {}
+}
+
 /// Yields an initial snapshot, then lets the test push appended snapshots
 /// through the SAME `items()` subscription — the shape a live stream
 /// commit takes. `FakeTimelineService` can't do this (it finishes its
@@ -132,6 +184,222 @@ final class ChatViewModelTests: XCTestCase {
 
         XCTAssertEqual(vm.items.count, 1)
         XCTAssertEqual(vm.items.first?.id, "1")
+    }
+
+    /// In-conversation search lifecycle: `beginChatSearch` runs the
+    /// room-scoped query, focuses the NEWEST match, and the chevrons step
+    /// through matches via `focus(seq:)` with clamping at both ends.
+    @MainActor
+    func test_inChatSearch_beginStepAndEnd() async throws {
+        let items = (1...3).map {
+            TimelineItem(id: "\($0)", sender: "@a:s",
+                         timestamp: Date(timeIntervalSince1970: Double($0)),
+                         kind: .text(body: "match \($0)", formattedHTML: nil), isOwn: false)
+        }
+        let fake = PagingFakeTimelineService(loaded: items, olderPages: [])
+        // Seqs 3 and 1 match; 2 does not. Newest first, per the contract.
+        let search = FakeSearchService(hits: [
+            SearchHit(id: "3", roomID: "r1", sender: "@a:s",
+                      timestamp: Date(timeIntervalSince1970: 3), snippet: "<mark>match</mark> 3"),
+            SearchHit(id: "1", roomID: "r1", sender: "@a:s",
+                      timestamp: Date(timeIntervalSince1970: 1), snippet: "<mark>match</mark> 1"),
+        ])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService(), search: search)
+        _ = await vm.start()
+
+        await vm.beginChatSearch(query: "match")
+        XCTAssertEqual(vm.chatSearch?.matchSeqs, [3, 1])
+        XCTAssertEqual(vm.chatSearch?.index, 0)
+        XCTAssertEqual(vm.pendingFocusID, "3", "opens on the newest match")
+        vm.clearPendingFocus()
+
+        await vm.stepChatSearch(older: true)
+        XCTAssertEqual(vm.chatSearch?.index, 1)
+        XCTAssertEqual(vm.pendingFocusID, "1")
+        vm.clearPendingFocus()
+
+        await vm.stepChatSearch(older: true)
+        XCTAssertEqual(vm.chatSearch?.index, 1, "clamped at the oldest match")
+        XCTAssertNil(vm.pendingFocusID, "a clamped step must not re-focus")
+
+        await vm.stepChatSearch(older: false)
+        XCTAssertEqual(vm.chatSearch?.index, 0)
+
+        // Re-running the search (new query submitted from the bar) resets
+        // to the newest match, not wherever the old walk was parked.
+        await vm.stepChatSearch(older: true)
+        XCTAssertEqual(vm.chatSearch?.index, 1)
+        await vm.beginChatSearch(query: "match")
+        XCTAssertEqual(vm.chatSearch?.index, 0)
+
+        vm.endChatSearch()
+        XCTAssertNil(vm.chatSearch)
+        vm.stop()
+    }
+
+    /// A hit whose id is not a seq (should never happen — the index only
+    /// ever stores seqs) is dropped rather than crashing or derailing
+    /// navigation.
+    @MainActor
+    func test_inChatSearch_nonNumericHitIDsAreDropped() async throws {
+        let items = [TimelineItem(id: "3", sender: "@a:s", timestamp: .now,
+                                  kind: .text(body: "match", formattedHTML: nil), isOwn: false)]
+        let fake = PagingFakeTimelineService(loaded: items, olderPages: [])
+        let search = FakeSearchService(hits: [
+            SearchHit(id: "3", roomID: "r1", sender: "@a:s", timestamp: .now, snippet: "s"),
+            SearchHit(id: "$not-a-seq", roomID: "r1", sender: "@a:s", timestamp: .now, snippet: "s"),
+        ])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService(), search: search)
+        _ = await vm.start()
+        await vm.beginChatSearch(query: "match")
+        XCTAssertEqual(vm.chatSearch?.matchSeqs, [3])
+    }
+
+    /// Arming a search on a COLD view model (room not cached; the results
+    /// tap runs before the destination's `start()`) must not run the
+    /// focus loop against the unsubscribed stream — that falsely latched
+    /// `reachedHistoryStart` and killed scroll-up for the room (review
+    /// 2026-08-26). The jump parks and fires once the first snapshot lands.
+    @MainActor
+    func test_inChatSearch_beforeStartParksJumpAndNeverLatchesHistoryStart() async throws {
+        let items = [TimelineItem(id: "3", sender: "@a:s", timestamp: .now,
+                                  kind: .text(body: "match", formattedHTML: nil), isOwn: false)]
+        let fake = PagingFakeTimelineService(loaded: items, olderPages: [])
+        let search = FakeSearchService(hits: [
+            SearchHit(id: "3", roomID: "r1", sender: "@a:s", timestamp: .now, snippet: "s"),
+        ])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService(), search: search)
+
+        await vm.beginChatSearch(query: "match")
+        XCTAssertEqual(vm.chatSearch?.matchSeqs, [3], "the bar arms immediately")
+        XCTAssertFalse(vm.reachedHistoryStart,
+                       "a pre-start search must not latch history-start")
+        XCTAssertNil(vm.pendingFocusID, "no jump before the stream is live")
+
+        _ = await vm.start()
+        // The parked jump fires off the first snapshot's Task hop.
+        let deadline = Date().addingTimeInterval(2)
+        while vm.pendingFocusID == nil && Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(vm.pendingFocusID, "3", "the parked jump fires once the stream is live")
+        XCTAssertFalse(vm.reachedHistoryStart)
+        vm.stop()
+    }
+
+    /// The warm twin of the cold-parking test above: a cached VM whose
+    /// previous view already ran `stop()` still has
+    /// `hasReceivedFirstSnapshot == true`, but its stream is just as dead
+    /// as a never-started one — focusing immediately samples paginate
+    /// growth against nothing and falsely latches `reachedHistoryStart`
+    /// (Bugbot, PR #172). The jump must park and fire on the restarted
+    /// stream's first delivery.
+    @MainActor
+    func test_inChatSearch_afterStopParksJumpUntilRestart() async throws {
+        let items = [TimelineItem(id: "3", sender: "@a:s", timestamp: .now,
+                                  kind: .text(body: "match", formattedHTML: nil), isOwn: false)]
+        let fake = PagingFakeTimelineService(loaded: items, olderPages: [])
+        let search = FakeSearchService(hits: [
+            SearchHit(id: "3", roomID: "r1", sender: "@a:s", timestamp: .now, snippet: "s"),
+        ])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService(), search: search)
+        _ = await vm.start()
+        vm.stop()
+
+        await vm.beginChatSearch(query: "match")
+        XCTAssertEqual(vm.chatSearch?.matchSeqs, [3], "the bar arms immediately")
+        XCTAssertNil(vm.pendingFocusID, "no jump against a torn-down stream")
+        XCTAssertFalse(vm.reachedHistoryStart,
+                       "a search on a stopped VM must not latch history-start")
+
+        _ = await vm.start()
+        let deadline = Date().addingTimeInterval(2)
+        while vm.pendingFocusID == nil && Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(vm.pendingFocusID, "3",
+                       "the parked jump fires once the stream is live again")
+        XCTAssertFalse(vm.reachedHistoryStart)
+        vm.stop()
+    }
+
+    /// A re-query must disarm the previous query's parked jump: begin on
+    /// a stopped VM (parks), re-query with no hits ("No matches"), then
+    /// restart the stream — the stale park must NOT fire a jump to a
+    /// match the bar no longer shows (Bugbot, PR #172 — second round).
+    /// A stepped chevron re-park after the no-hit query still works.
+    @MainActor
+    func test_inChatSearch_noHitRequeryDisarmsParkedJump() async throws {
+        let items = [TimelineItem(id: "3", sender: "@a:s", timestamp: .now,
+                                  kind: .text(body: "match", formattedHTML: nil), isOwn: false)]
+        let fake = PagingFakeTimelineService(loaded: items, olderPages: [])
+        let search = FakeSearchService(hits: [
+            SearchHit(id: "3", roomID: "r1", sender: "@a:s", timestamp: .now, snippet: "s"),
+        ])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService(), search: search)
+        _ = await vm.start()
+        vm.stop()
+
+        await vm.beginChatSearch(query: "match")
+        XCTAssertNil(vm.pendingFocusID, "first query parks on the stopped stream")
+
+        await search.setHits([])
+        await vm.beginChatSearch(query: "nothing-matches-this")
+        XCTAssertEqual(vm.chatSearch?.matchSeqs, [], "the bar shows No matches")
+
+        _ = await vm.start()
+        // Give the (wrongly) parked jump every chance to fire.
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertNil(vm.pendingFocusID,
+                     "a no-hit re-query must disarm the previous query's parked jump")
+        vm.stop()
+    }
+
+    /// Dismissing the bar mid-jump must abandon the jump: a deep hit's
+    /// pagination otherwise keeps running and lands `pendingFocusID`
+    /// after the user closed search, scrolling the transcript out from
+    /// under them (Bugbot, PR #172). The gated fake parks the paginate
+    /// so the dismissal deterministically lands mid-flight.
+    @MainActor
+    func test_inChatSearch_endMidJumpCancelsTheJump() async throws {
+        let loaded = [TimelineItem(id: "50", sender: "@a:s",
+                                   timestamp: Date(timeIntervalSince1970: 50),
+                                   kind: .text(body: "tail", formattedHTML: nil), isOwn: false)]
+        let older = [TimelineItem(id: "3", sender: "@a:s",
+                                  timestamp: Date(timeIntervalSince1970: 3),
+                                  kind: .text(body: "match", formattedHTML: nil), isOwn: false)]
+        let fake = BlockingPagingFakeTimelineService(loaded: loaded, olderPages: [older])
+        let search = FakeSearchService(hits: [
+            SearchHit(id: "3", roomID: "r1", sender: "@a:s",
+                      timestamp: Date(timeIntervalSince1970: 3), snippet: "s"),
+        ])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService(), search: search)
+        _ = await vm.start()
+
+        let jump = Task { @MainActor in await vm.beginChatSearch(query: "match") }
+        let deadline = Date().addingTimeInterval(2)
+        while !fake.paginateStarted && Date() < deadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(fake.paginateStarted, "the deep hit must reach pagination")
+
+        vm.endChatSearch()
+        fake.release()
+        await jump.value
+
+        XCTAssertNil(vm.chatSearch)
+        XCTAssertNil(vm.pendingFocusID, "a dismissed search must not land its jump")
+        vm.stop()
+    }
+
+    /// Without a search service (fakes, failed index open) the entry point
+    /// is a no-op — the bar must not come up reporting bogus emptiness.
+    @MainActor
+    func test_inChatSearch_noServiceIsNoop() async throws {
+        let fake = PagingFakeTimelineService(loaded: [], olderPages: [])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService())
+        await vm.beginChatSearch(query: "match")
+        XCTAssertNil(vm.chatSearch)
     }
 
     @MainActor
@@ -632,6 +900,50 @@ final class ChatViewModelTests: XCTestCase {
             vm.windowedRows.first { if case .message(let i) = $0 { return i.id == "m5" }; return false },
             "entry shrink must not yank a restore target out of the window"
         )
+    }
+
+    /// A search jump that completed BEFORE the chat view mounts (warm
+    /// cached VM) can land on a row inside the default tail window —
+    /// `ensureWindowContains` no-ops there, so nothing widens the window
+    /// and the old entry-shrink guard passed. The mount's
+    /// `beginEntryWindow()` then cut the window to 40 rows, unmounting
+    /// the landed-on row; the view's re-assert scrolls to nothing and
+    /// the settle re-grows bottom-anchored, parking the transcript at
+    /// the tail (Bugbot, PR #172). An active in-conversation search must
+    /// veto the entry shrink.
+    @MainActor
+    func test_beginEntryWindow_skipsWhileChatSearchActive() async throws {
+        let items = (0..<200).map { i in
+            TimelineItem(
+                id: "\(i)", sender: "@a:s",
+                timestamp: Date(timeIntervalSince1970: Double(i)),
+                kind: .text(body: "msg \(i)", formattedHTML: nil), isOwn: false
+            )
+        }
+        let fake = PagingFakeTimelineService(loaded: items, olderPages: [])
+        // Row 150 is within the default 120-row tail — deep enough for the
+        // 40-row entry window to unmount it, shallow enough that
+        // `ensureWindowContains` never widened anything.
+        let search = FakeSearchService(hits: [
+            SearchHit(id: "150", roomID: "r1", sender: "@a:s",
+                      timestamp: Date(timeIntervalSince1970: 150), snippet: "s"),
+        ])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService(), search: search)
+        _ = await vm.start()
+        await vm.beginChatSearch(query: "msg")
+        XCTAssertEqual(vm.pendingFocusID, "150")
+
+        vm.beginEntryWindow()
+        XCTAssertNotNil(
+            vm.windowedRows.first { if case .message(let i) = $0 { return i.id == "150" }; return false },
+            "entry shrink must not unmount an active search's jump target"
+        )
+
+        // With search dismissed the entry optimization applies again.
+        vm.endChatSearch()
+        vm.clearPendingFocus()
+        vm.beginEntryWindow()
+        XCTAssertEqual(vm.windowedRows.count, 41, "entry shrink resumes once search closes")
     }
 
     // MARK: isTurnRunning (floating stop button)
