@@ -527,8 +527,17 @@ final class WireModelsTests: XCTestCase {
     }
 
     func testDecodesDeviceMetaRenameFrame() {
+        // A server predating tags and an explicit JSON null both carry a nil
+        // tag, but they are NOT the same frame: only the null is
+        // authoritative. `tagCharKnown` is that distinction, and the store
+        // needs it to avoid clearing a migration-seeded letter on a rename
+        // from a pre-tag journal.
         let frame = ServerFrame.decode(#"{"kind":"device_meta","device_id":7,"name":"dev-y"}"#)
-        XCTAssertEqual(frame, .deviceMeta(id: 7, name: "dev-y"))
+        XCTAssertEqual(frame, .deviceMeta(id: 7, name: "dev-y", tagChar: nil, tagCharKnown: false))
+        let nullTag = ServerFrame.decode(#"{"kind":"device_meta","device_id":7,"name":"dev-y","tag_char":null}"#)
+        XCTAssertEqual(nullTag, .deviceMeta(id: 7, name: "dev-y", tagChar: nil, tagCharKnown: true))
+        let tagged = ServerFrame.decode(#"{"kind":"device_meta","device_id":7,"name":"dev-y","tag_char":"y"}"#)
+        XCTAssertEqual(tagged, .deviceMeta(id: 7, name: "dev-y", tagChar: "y", tagCharKnown: true))
         // Malformed frames are skipped, not crashed on.
         XCTAssertNil(ServerFrame.decode(#"{"kind":"device_meta","name":"dev-y"}"#))
         XCTAssertNil(ServerFrame.decode(#"{"kind":"device_meta","device_id":7}"#))

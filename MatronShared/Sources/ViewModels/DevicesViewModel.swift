@@ -1,4 +1,5 @@
 import Foundation
+import MatronChat
 import MatronJournal
 
 /// The devices/pairing slice of `JournalAPI`, extracted so view models can
@@ -8,8 +9,9 @@ public protocol DevicesProviding: Sendable {
     func devices() async throws -> [DeviceDTO]
     func revokeDevice(id: Int64) async throws
     func renameDevice(id: Int64, name: String) async throws -> DeviceDTO
+    func setDeviceTag(id: Int64, tagChar: String?) async throws
     func pairPreview(code: String) async throws -> PairPreview
-    func pairApprove(code: String, agentName: String) async throws
+    func pairApprove(code: String, agentName: String, tagChar: String?) async throws
 }
 
 extension JournalAPI: DevicesProviding {}
@@ -103,6 +105,42 @@ public final class DevicesViewModel {
         }
     }
 
+    /// The client-side mirror of the server's tag sieve: trim, then keep
+    /// only the first grapheme. Empty means "clear back to automatic",
+    /// which the API expresses as nil. Two extra bounds match the server:
+    /// a Character is a grapheme cluster, not one code point, so a Zalgo
+    /// combining stack or a ZWJ chain over 16 scalars sieves to nil; and a
+    /// cluster of only format/control/space scalars (soft hyphen, RLO) is
+    /// a non-nil tag that renders as NOTHING — it would suppress the
+    /// derived letter on every device with no visible explanation, so it
+    /// sieves to nil too. The server enforces the same bounds; mirroring
+    /// them here keeps the drafted value honest before it is sent.
+    public static func tagChar(fromDraft draft: String) -> String? {
+        guard let first = draft.trimmingCharacters(in: .whitespacesAndNewlines).first else { return nil }
+        let tag = String(first)
+        guard tag.unicodeScalars.count <= 16 else { return nil }
+        let visible = tag.unicodeScalars.contains { scalar in
+            switch scalar.properties.generalCategory {
+            case .format, .control, .spaceSeparator: return false
+            default: return true
+            }
+        }
+        return visible ? tag : nil
+    }
+
+    /// Sets or clears `device`'s roster tag character — journal-held, so
+    /// the letter changes on every one of the user's devices at once.
+    /// Re-fetches like `rename` so the row shows what the server stored.
+    public func setTag(_ device: DeviceDTO, toDraft draft: String) async {
+        do {
+            try await api.setDeviceTag(id: device.id, tagChar: Self.tagChar(fromDraft: draft))
+            errorMessage = nil
+            await refresh()
+        } catch {
+            errorMessage = "Couldn't set the tag for \(device.name) — \(Self.describe(error))"
+        }
+    }
+
     static func sorted(_ devices: [DeviceDTO]) -> [DeviceDTO] {
         devices.sorted { a, b in
             let aClient = a.kind == "client", bClient = b.kind == "client"
@@ -137,5 +175,50 @@ extension DeviceDTO {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
         return formatter.localizedString(for: date, relativeTo: now)
+    }
+}
+
+extension BoxLetterMigration {
+    /// App-start entry point for the legacy push-up: a device-local letter
+    /// dictionary from before tags were journal-held moves to the server
+    /// once, then vanishes. Returns nil (no task at all) for the common
+    /// case — an install with no legacy overrides — so every later launch
+    /// costs one UserDefaults read. Failures leave entries in place; the
+    /// next launch retries.
+    ///
+    /// `userID` is the signed-in account. The legacy dictionary predates
+    /// accounts and device ids repeat across journals, so the entries are
+    /// bound to the first account that runs this (`BoxLetterOverrides.claim`)
+    /// and every other account on the install returns nil here — nothing
+    /// seeded into its mirror, nothing pushed to its boxes, nothing dropped.
+    public static func runIfNeeded(
+        api: any DevicesProviding,
+        store: JournalStore,
+        userID: String,
+        defaults: UserDefaults = .standard
+    ) -> Task<Void, Never>? {
+        let legacy = BoxLetterOverrides.all(from: defaults)
+        guard !legacy.isEmpty, BoxLetterOverrides.claim(userID: userID, in: defaults) else { return nil }
+        return Task(priority: .utility) {
+            // Seed the local mirror BEFORE any network round-trip — the
+            // chat list paints letters from the store alone, so without
+            // this an upgraded install reverts to derived letters until
+            // the push lands, and forever against a journal that predates
+            // `POST /devices/:id/tag` (the push 404s; only the relic
+            // remains). Untagged rows only — a journal-held tag is newer
+            // by construction — and `replaceAgents` carries the seed
+            // across pre-tag snapshots (`tagCharKnown`).
+            try? store.seedAgentTagChars(legacy)
+            // The roster read is the freshness guard: a box that already
+            // has a journal-held tag keeps it (the journal value is newer
+            // by construction — this migration only runs while the local
+            // relic exists). Unreachable server → retry next launch.
+            guard let devices = try? await api.devices() else { return }
+            let serverTags = Dictionary(uniqueKeysWithValues:
+                devices.filter { $0.kind == "agent" }.map { ($0.id, $0.tagChar) })
+            await run(defaults: defaults, serverTags: serverTags) { id, letter in
+                try await api.setDeviceTag(id: id, tagChar: letter)
+            }
+        }
     }
 }

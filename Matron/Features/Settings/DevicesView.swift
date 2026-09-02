@@ -58,7 +58,8 @@ struct DevicesView: View {
         .task { await viewModel.refresh() }
         .refreshable { await viewModel.refresh() }
         .sheet(isPresented: $showingAddAgent, onDismiss: { Task { await viewModel.refresh() } }) {
-            AddAgentSheet(api: api, existingNames: viewModel.devices.map(\.name))
+            AddAgentSheet(api: api, existingNames: viewModel.devices.map(\.name),
+                          existingTags: viewModel.devices.compactMap(\.tagChar))
         }
         // Revoke confirms are the app's job — no undo server-side, and
         // self-revocation is a logout, so the copy changes for is_self.
@@ -97,14 +98,14 @@ struct DevicesView: View {
             Button("Cancel", role: .cancel) { letterEditing = nil }
             Button("Save") {
                 if let device = letterEditing {
-                    // A blank draft clears the override — sanitize maps
-                    // empty to nil, which means "back to automatic".
-                    BoxLetterOverrides.set(draftLetter, for: device.id)
+                    // A blank draft clears back to automatic — the view
+                    // model maps empty to nil for the server.
+                    Task { await viewModel.setTag(device, toDraft: draftLetter) }
                 }
                 letterEditing = nil
             }
         } message: {
-            Text("One character shown before chat titles to identify this machine. Leave empty to derive it from the box name.")
+            Text("One character shown before chat titles to identify this machine, on all your devices. Leave empty to derive it from the box name.")
         }
     }
 
@@ -152,7 +153,7 @@ struct DevicesView: View {
             }
             if device.kind == "agent" {
                 Button("Set Tag Character…") {
-                    draftLetter = BoxLetterOverrides.letter(for: device.id) ?? ""
+                    draftLetter = device.tagChar ?? ""
                     letterEditing = device
                 }
             }
@@ -163,12 +164,12 @@ struct DevicesView: View {
         }
     }
 
-    /// The row's detail line; an agent box with a tag-character override
-    /// shows it here, so the setting is discoverable and its current value
-    /// visible without opening the editor.
+    /// The row's detail line; an agent box with a tag character shows it
+    /// here, so the setting is discoverable and its current value visible
+    /// without opening the editor.
     private func caption(for device: DeviceDTO) -> String {
         var caption = "\(device.kind.capitalized) · Last seen \(device.lastSeenText()) · \(device.lagText)"
-        if device.kind == "agent", let letter = BoxLetterOverrides.letter(for: device.id) {
+        if device.kind == "agent", let letter = device.tagChar {
             caption += " · Tag \(letter)"
         }
         return caption

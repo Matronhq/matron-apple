@@ -130,6 +130,27 @@ final class JournalAPITests: XCTestCase {
         XCTAssertNil(snap.conversations.first?.lastTS)
     }
 
+    func testSnapshotAgentsDistinguishAbsentTagCharFromNull() async throws {
+        // Three servers in one roster: a value, an explicit null (tag-aware,
+        // cleared), and no key at all (journal predating tags). Only the
+        // last must parse as "unknown" — `replaceAgents` preserves the
+        // local mirror for it instead of wiping seeded letters.
+        StubURLProtocol.responses = ["/snapshot": (200, """
+            {"conversations":[],"agents":[
+              {"device_id":7,"name":"dev-a","tag_char":"a"},
+              {"device_id":9,"name":"dev-b","tag_char":null},
+              {"device_id":11,"name":"dev-c"}],"seq":1}
+            """)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let agents = try await api.snapshot().agents
+        XCTAssertEqual(agents, [
+            AgentDTO(id: 7, name: "dev-a", tagChar: "a"),
+            AgentDTO(id: 9, name: "dev-b", tagChar: nil, tagCharKnown: true),
+            AgentDTO(id: 11, name: "dev-c", tagChar: nil, tagCharKnown: false),
+        ])
+    }
+
     func testMessagesBuildsQueryAndParsesEvents() async throws {
         StubURLProtocol.responses = ["/convo/c1/messages": (200, """
             {"events":[{"seq":8,"convo_id":"c1","ts":8000,"sender":"agent:a","type":"text","payload":{"body":"m8"}}]}
@@ -301,6 +322,31 @@ final class JournalAPITests: XCTestCase {
         let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
         XCTAssertEqual(obj["pair_code"] as? String, "KTNM3VQ8")
         XCTAssertEqual(obj["agent_name"] as? String, "dev-7")
+        // No tag chosen → the key is absent entirely, not null: an older
+        // server must never see a field it doesn't know.
+        XCTAssertNil(obj["tag_char"])
+
+        try await api.pairApprove(code: "KTNM3VQ8", agentName: "dev-7", tagChar: "7")
+        let tagged = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: XCTUnwrap(StubURLProtocol.lastRequestBody)) as? [String: Any])
+        XCTAssertEqual(tagged["tag_char"] as? String, "7")
+    }
+
+    func testSetDeviceTagSendsValueAndNullForClear() async throws {
+        StubURLProtocol.responses = ["/devices/7/tag": (200, #"{"ok":true,"device":{"device_id":7,"name":"dev-a","tag_char":"a"}}"#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        try await api.setDeviceTag(id: 7, tagChar: "a")
+        var obj = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: XCTUnwrap(StubURLProtocol.lastRequestBody)) as? [String: Any])
+        XCTAssertEqual(obj["tag_char"] as? String, "a")
+
+        // Clearing sends an explicit JSON null — the server 400s an absent
+        // key so that "clear" is always said out loud.
+        try await api.setDeviceTag(id: 7, tagChar: nil)
+        obj = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: XCTUnwrap(StubURLProtocol.lastRequestBody)) as? [String: Any])
+        XCTAssertTrue(obj["tag_char"] is NSNull)
     }
 
     func testPairApproveMapsConflict() async throws {

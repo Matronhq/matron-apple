@@ -36,7 +36,7 @@ struct MacDevicesView: View {
                           onRevoke: { confirming = device },
                           onRename: { draftName = device.name; renaming = device },
                           onSetLetter: {
-                              draftLetter = BoxLetterOverrides.letter(for: device.id) ?? ""
+                              draftLetter = device.tagChar ?? ""
                               letterEditing = device
                           })
             }
@@ -68,7 +68,8 @@ struct MacDevicesView: View {
         .frame(width: 480, height: 400)
         .task { await viewModel.refresh() }
         .sheet(isPresented: $showingAddAgent, onDismiss: { Task { await viewModel.refresh() } }) {
-            MacAddAgentSheet(api: api, existingNames: viewModel.devices.map(\.name))
+            MacAddAgentSheet(api: api, existingNames: viewModel.devices.map(\.name),
+                             existingTags: viewModel.devices.compactMap(\.tagChar))
         }
         // Revoke confirms are the app's job — the server asks no questions
         // and there is no undo (re-enrollment is the recovery path).
@@ -108,14 +109,14 @@ struct MacDevicesView: View {
             Button("Cancel", role: .cancel) { letterEditing = nil }
             Button("Save") {
                 if let device = letterEditing {
-                    // A blank draft clears the override — sanitize maps
-                    // empty to nil, which means "back to automatic".
-                    BoxLetterOverrides.set(draftLetter, for: device.id)
+                    // A blank draft clears back to automatic — the view
+                    // model maps empty to nil for the server.
+                    Task { await viewModel.setTag(device, toDraft: draftLetter) }
                 }
                 letterEditing = nil
             }
         } message: {
-            Text("One character shown before chat titles to identify this machine. Leave empty to derive it from the box name.")
+            Text("One character shown before chat titles to identify this machine, on all your devices. Leave empty to derive it from the box name.")
         }
     }
 }
@@ -127,6 +128,16 @@ private struct DeviceRow: View {
     /// Opens the tag-character editor — agent boxes only; the tag fronts
     /// chat titles and clients have no box letter.
     let onSetLetter: () -> Void
+
+    /// Mirrors the iOS row's detail line: an agent box with a tag character
+    /// shows it, so the current value is visible without opening the editor.
+    private var caption: String {
+        var caption = "\(device.kind.capitalized) · Last seen \(device.lastSeenText()) · \(device.lagText)"
+        if device.kind == "agent", let letter = device.tagChar {
+            caption += " · Tag \(letter)"
+        }
+        return caption
+    }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -147,7 +158,7 @@ private struct DeviceRow: View {
                             .foregroundStyle(Color.accentColor)
                     }
                 }
-                Text("\(device.kind.capitalized) · Last seen \(device.lastSeenText()) · \(device.lagText)")
+                Text(caption)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

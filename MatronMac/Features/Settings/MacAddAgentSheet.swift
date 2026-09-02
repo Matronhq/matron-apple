@@ -11,8 +11,9 @@ struct MacAddAgentSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: PairingViewModel
 
-    init(api: any DevicesProviding, existingNames: [String]) {
-        _viewModel = State(initialValue: PairingViewModel(api: api, existingNames: existingNames))
+    init(api: any DevicesProviding, existingNames: [String], existingTags: [String] = []) {
+        _viewModel = State(initialValue: PairingViewModel(api: api, existingNames: existingNames,
+                                                          existingTags: existingTags))
     }
 
     var body: some View {
@@ -66,9 +67,18 @@ struct MacAddAgentSheet: View {
             }
             TextField("Agent name (e.g. dev-7)", text: $viewModel.agentName)
                 .textFieldStyle(.roundedBorder)
-            Text(viewModel.duplicateNameWarning ?? "Convention: the box's short hostname. The name can't be changed later.")
+            TextField("Tag character (optional, e.g. 7)", text: $viewModel.tagCharacter)
+                .textFieldStyle(.roundedBorder)
+            // Either field can be in a duplicate state independently, so both
+            // warnings show when both fire — a tag clash must not be hidden
+            // behind a name clash. Mirrors the iOS sheet's footer.
+            let warnings = [viewModel.duplicateNameWarning, viewModel.duplicateTagWarning]
+                .compactMap { $0 }
+            Text(warnings.isEmpty
+                 ? "Convention: the box's short hostname. The name can't be changed later. The tag is the one character shown before this box's chat titles on all your devices — leave it empty to derive one from the name; you can change it later in Devices."
+                 : warnings.joined(separator: "\n"))
                 .font(.caption)
-                .foregroundStyle(viewModel.duplicateNameWarning == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
+                .foregroundStyle(warnings.isEmpty ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
         }
         HStack {
             Spacer()

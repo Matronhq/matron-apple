@@ -1041,11 +1041,12 @@ public actor JournalSyncEngine {
                         } else if ref == "send" {
                             handleSendRejected(code: code, detail: detail)
                         }
-                    case .deviceMeta(let id, let name):
-                        // A device was renamed elsewhere — patch the local
-                        // roster so open chat lists relabel their chips
-                        // without waiting for the next snapshot.
-                        try? store.renameAgent(id: id, name: name)
+                    case .deviceMeta(let id, let name, let tagChar, let tagCharKnown):
+                        // A device's name or tag character changed elsewhere
+                        // — patch the local roster so open chat lists
+                        // relabel without waiting for the next snapshot.
+                        try? store.applyDeviceMeta(id: id, name: name, tagChar: tagChar,
+                                                   tagCharKnown: tagCharKnown)
                     case .helloOK, .unknownControl:
                         break // post-hello control frames are advisory
                     }
