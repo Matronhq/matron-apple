@@ -35,6 +35,63 @@ public struct SelectableMessageText: View {
 
     public var body: some View {
         SelectableTextViewRepresentable(source: source, rendered: rendered)
+            .overlay {
+                // Copy buttons for fenced code blocks, one per block, pinned
+                // to each block's top-right. Geometry comes from the same
+                // pure (source, width) measurement stack as `sizeThatFits`,
+                // so the rects match what the text view rendered. The
+                // GeometryReader itself draws nothing and only the buttons
+                // hit-test, so text selection under the overlay is untouched.
+                GeometryReader { proxy in
+                    let frames = rendered.codeBlockFrames(width: proxy.size.width)
+                    ForEach(frames.indices, id: \.self) { index in
+                        let frame = frames[index]
+                        CodeBlockCopyButton(code: frame.code)
+                            // Just past the block's top-right corner when the
+                            // block is narrow; clamped inside the message
+                            // bounds for full-width blocks.
+                            .position(
+                                x: min(frame.rect.maxX + 12, proxy.size.width - 12),
+                                y: frame.rect.minY + 12
+                            )
+                    }
+                }
+            }
+    }
+}
+
+/// Small copy button overlaid on one rendered code block. Copies the block's
+/// bare code (no fences) and flashes a checkmark as feedback.
+private struct CodeBlockCopyButton: View {
+    let code: String
+    @State private var copied = false
+    /// Cancelled on re-tap so a second copy gets a full 1.2s of checkmark,
+    /// not the tail of the first tap's timer.
+    @State private var resetTask: Task<Void, Never>?
+
+    var body: some View {
+        Button {
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(code, forType: .string)
+            copied = true
+            resetTask?.cancel()
+            resetTask = Task {
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                guard !Task.isCancelled else { return }
+                copied = false
+            }
+        } label: {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(copied ? Color.green : Color.secondary)
+                .frame(width: 12, height: 12)
+                .padding(4)
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 5))
+        }
+        .buttonStyle(.plain)
+        .help("Copy code")
+        .accessibilityLabel("Copy code")
     }
 }
 
@@ -57,7 +114,12 @@ final class MessageCopyTextView: MouseTrackingRescueTextView {
         guard range.length > 0, let storage = textStorage else { return }
 
         let markdown: String
-        if range == NSRange(location: 0, length: storage.length), !markdownSource.isEmpty {
+        if let code = MarkdownReconstruction.soleCodeBlockText(from: storage, in: range) {
+            // Selection entirely inside one code block: bare code beats both
+            // paths below — the user sees only code and expects to paste it
+            // runnable, not wrapped in ``` fences (Dan, 2026-08-26).
+            markdown = code
+        } else if range == NSRange(location: 0, length: storage.length), !markdownSource.isEmpty {
             markdown = markdownSource
         } else {
             markdown = MarkdownReconstruction.markdown(from: storage, in: range)

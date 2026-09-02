@@ -12,6 +12,9 @@ import AppKit
 enum MarkdownReconstruction {
 
     static func markdown(from attributed: NSAttributedString, in range: NSRange) -> String {
+        if let code = soleCodeBlockText(from: attributed, in: range) {
+            return code
+        }
         var blocks: [Block] = []
 
         attributed.enumerateAttribute(MarkdownAttributed.semanticsKey, in: range) { value, subrange, _ in
@@ -61,6 +64,38 @@ enum MarkdownReconstruction {
             }
         }
         return output
+    }
+
+    /// The bare code text when `range` lies entirely within ONE code block,
+    /// else `nil`. Fences are block chrome, not content: a selection the user
+    /// sees as pure code should paste runnable into a terminal, so this wins
+    /// over both fence-wrapping reconstruction and the full-message
+    /// raw-source fast path. Trailing newlines are trimmed — a drag past the
+    /// last line naturally grabs the block's terminator newline (annotated
+    /// with the code block's own identity).
+    static func soleCodeBlockText(from attributed: NSAttributedString, in range: NSRange) -> String? {
+        guard range.length > 0 else { return nil }
+        var identity: Int?
+        var isSoleCodeBlock = true
+        attributed.enumerateAttribute(MarkdownAttributed.semanticsKey, in: range) { value, _, stop in
+            guard let semantics = value as? MarkdownRunSemantics,
+                  case .codeBlock = semantics.block,
+                  identity == nil || identity == semantics.blockIdentity else {
+                isSoleCodeBlock = false
+                stop.pointee = true
+                return
+            }
+            identity = semantics.blockIdentity
+        }
+        guard isSoleCodeBlock, identity != nil else { return nil }
+        let raw = (attributed.string as NSString).substring(with: range)
+        let trimmed = trimTrailingNewlines(raw)
+        // Never return "": a newline-only selection (a drag across a blank
+        // line inside the block) would flow into `setString("", …)` and wipe
+        // the clipboard's plain-text flavor — the exact state the empty-
+        // selection guard in `MessageCopyTextView.copy` exists to prevent.
+        // The raw newlines ARE what the user selected, so copy them.
+        return trimmed.isEmpty ? raw : trimmed
     }
 
     // MARK: - Model
