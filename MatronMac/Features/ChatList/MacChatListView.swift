@@ -311,6 +311,21 @@ struct MacChatListView: View {
             }
         }
         .task { viewModel.start() }
+        #if DEBUG
+        // Screenshot-rig hook: MATRON_DEBUG_OPEN_CONVO=<id> selects that
+        // conversation once it syncs in, so an unattended capture can show
+        // a chat without injected clicks. See DebugSnapshot.swift.
+        .task {
+            guard let target = ProcessInfo.processInfo.environment["MATRON_DEBUG_OPEN_CONVO"] else { return }
+            for _ in 0..<100 {
+                if viewModel.groups.contains(where: { $0.summaries.contains(where: { $0.id == target }) }) {
+                    selectedSummaryID = target
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+        }
+        #endif
         .onDisappear { viewModel.cancel() }
         // Sync connection-state banner. Subscribes to the host's
         // long-lived `stateStream()` and mirrors yields into the local
