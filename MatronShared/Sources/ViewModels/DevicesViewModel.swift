@@ -185,13 +185,20 @@ extension BoxLetterMigration {
     /// case — an install with no legacy overrides — so every later launch
     /// costs one UserDefaults read. Failures leave entries in place; the
     /// next launch retries.
+    ///
+    /// `userID` is the signed-in account. The legacy dictionary predates
+    /// accounts and device ids repeat across journals, so the entries are
+    /// bound to the first account that runs this (`BoxLetterOverrides.claim`)
+    /// and every other account on the install returns nil here — nothing
+    /// seeded into its mirror, nothing pushed to its boxes, nothing dropped.
     public static func runIfNeeded(
         api: any DevicesProviding,
         store: JournalStore,
+        userID: String,
         defaults: UserDefaults = .standard
     ) -> Task<Void, Never>? {
         let legacy = BoxLetterOverrides.all(from: defaults)
-        guard !legacy.isEmpty else { return nil }
+        guard !legacy.isEmpty, BoxLetterOverrides.claim(userID: userID, in: defaults) else { return nil }
         return Task(priority: .utility) {
             // Seed the local mirror BEFORE any network round-trip — the
             // chat list paints letters from the store alone, so without

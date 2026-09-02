@@ -8,9 +8,19 @@ import Foundation
 ///
 /// `BoxLetterMigration` pushes these up to the journal once and deletes
 /// them. Nothing writes here anymore.
+///
+/// The legacy dictionary is install-wide and keyed by agent device id
+/// alone — it predates any notion of which account chose the letters, and
+/// device ids repeat across journals. So the relics belong to exactly one
+/// account: the first one signed in once this code runs (`claim`), which
+/// on any real install is the account that wrote them (the session
+/// survives the upgrade). Every other account on the install ignores them.
 public enum BoxLetterOverrides {
 
     static let defaultsKey = "boxLetterOverrides"
+    /// User id of the account that owns the legacy entries. Written by
+    /// `claim` on first use, removed with the last entry.
+    static let ownerKey = "boxLetterOverridesOwner"
 
     /// Every stored override, sanitized. Unparseable keys are skipped
     /// rather than crashing on a hand-edited plist.
@@ -31,9 +41,28 @@ public enum BoxLetterOverrides {
         raw.removeValue(forKey: String(id))
         if raw.isEmpty {
             defaults.removeObject(forKey: defaultsKey)
+            defaults.removeObject(forKey: ownerKey)
         } else {
             defaults.set(raw, forKey: defaultsKey)
         }
+    }
+
+    /// Whether `userID` may migrate the legacy entries. The first account
+    /// to ask while entries exist becomes their owner; afterwards only that
+    /// account gets `true`. Agent device ids collide across journals, so
+    /// without this a second account signing in on the same install would
+    /// have account A's letter for id 1 seeded and pushed onto ITS box 1 —
+    /// or A's relics dropped as "revoked" because B's roster lacks the id.
+    /// The owner stamp disappears with the last entry (`remove`), so a
+    /// fully migrated install carries no residue.
+    ///
+    /// Accepted edge: an install that was signed OUT across the upgrade
+    /// has no owner on record, so whoever signs in first claims the relics.
+    public static func claim(userID: String, in defaults: UserDefaults = .standard) -> Bool {
+        guard defaults.dictionary(forKey: defaultsKey) != nil else { return false }
+        if let owner = defaults.string(forKey: ownerKey) { return owner == userID }
+        defaults.set(userID, forKey: ownerKey)
+        return true
     }
 
     /// The tag is one character by contract, but that character is the

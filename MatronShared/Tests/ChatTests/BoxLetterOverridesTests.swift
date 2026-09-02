@@ -59,6 +59,24 @@ final class BoxLetterOverridesTests: XCTestCase {
                        [1: "Y", 2: "Z"])
     }
 
+    func testClaimBindsTheRelicsToTheFirstAccountAndClearsWithTheLastEntry() {
+        // No entries → nothing to claim, no owner stamp written.
+        XCTAssertFalse(BoxLetterOverrides.claim(userID: "a", in: defaults))
+        XCTAssertNil(defaults.string(forKey: BoxLetterOverrides.ownerKey))
+
+        seedLegacy([7: "q", 9: "z"])
+        XCTAssertTrue(BoxLetterOverrides.claim(userID: "a", in: defaults), "first account claims")
+        XCTAssertFalse(BoxLetterOverrides.claim(userID: "b", in: defaults), "a second account is refused")
+        XCTAssertTrue(BoxLetterOverrides.claim(userID: "a", in: defaults), "the owner keeps its claim")
+
+        BoxLetterOverrides.remove(id: 7, from: defaults)
+        XCTAssertEqual(defaults.string(forKey: BoxLetterOverrides.ownerKey), "a",
+                       "an entry remains — the stamp stays with it")
+        BoxLetterOverrides.remove(id: 9, from: defaults)
+        XCTAssertNil(defaults.string(forKey: BoxLetterOverrides.ownerKey),
+                     "last entry gone — no residue, a later account is free to claim afresh")
+    }
+
     // MARK: Migration
 
     func testMigrationPushesUntaggedBoxesAndClearsEntries() async {

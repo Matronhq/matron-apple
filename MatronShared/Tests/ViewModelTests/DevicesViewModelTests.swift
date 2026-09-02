@@ -310,7 +310,7 @@ final class DevicesViewModelTests: XCTestCase {
         fake.rosters = [[device(7, kind: "agent"), device(9, kind: "agent")]]
         fake.tagError = .notFound
 
-        await BoxLetterMigration.runIfNeeded(api: fake, store: store, defaults: defaults)?.value
+        await BoxLetterMigration.runIfNeeded(api: fake, store: store, userID: "t", defaults: defaults)?.value
 
         XCTAssertEqual(try store.agentTagChars(), [7: "q"],
                        "the mirror is what paints — seed it so letters don't revert")
@@ -326,7 +326,7 @@ final class DevicesViewModelTests: XCTestCase {
         let fake = FakeDevicesProvider()
         fake.devicesError = .transport("offline")
 
-        await BoxLetterMigration.runIfNeeded(api: fake, store: store, defaults: defaults)?.value
+        await BoxLetterMigration.runIfNeeded(api: fake, store: store, userID: "t", defaults: defaults)?.value
 
         XCTAssertEqual(try store.agentTagChars(), [7: "q"],
                        "seeding must precede the roster fetch — offline paints too")
@@ -342,13 +342,50 @@ final class DevicesViewModelTests: XCTestCase {
         let fake = FakeDevicesProvider()
         fake.rosters = [[device(7, kind: "agent")]]
 
-        await BoxLetterMigration.runIfNeeded(api: fake, store: store, defaults: defaults)?.value
+        await BoxLetterMigration.runIfNeeded(api: fake, store: store, userID: "t", defaults: defaults)?.value
 
         XCTAssertEqual(fake.tagged.map(\.id), [7])
         XCTAssertEqual(fake.tagged.map(\.tagChar), ["q"])
         XCTAssertEqual(try store.agentTagChars(), [7: "q"])
         XCTAssertNil(defaults.object(forKey: "boxLetterOverrides"),
                      "acked — the relic is gone for good")
+        defaults.removePersistentDomain(forName: "DevicesViewModelTests")
+    }
+
+    func test_migrationBelongsToTheFirstAccountAndNeverLeaksToAnother() async throws {
+        // Two journals, both with an agent id 7. Account A chose "q" for its
+        // box 7 before tags were journal-held; account B then signs in on
+        // the same install. B must not have A's letter seeded into its
+        // mirror or pushed onto its own box 7 — and A's relic must survive
+        // B's visit intact so A still migrates when it comes back.
+        let defaults = makeLegacyDefaults([7: "q"])
+        let storeA = try JournalStore(databaseURL: nil, ownSender: "user:a")
+        try storeA.replaceAgents([AgentDTO(id: 7, name: "dev-a")])
+        let apiA = FakeDevicesProvider()
+        apiA.rosters = [[device(7, kind: "agent")]]
+        apiA.devicesError = .transport("offline")   // A's push stays pending
+        await BoxLetterMigration.runIfNeeded(api: apiA, store: storeA, userID: "a", defaults: defaults)?.value
+        XCTAssertEqual(try storeA.agentTagChars(), [7: "q"])
+        XCTAssertEqual(BoxLetterOverrides.all(from: defaults), [7: "q"], "A's relic waits for its retry")
+
+        let storeB = try JournalStore(databaseURL: nil, ownSender: "user:b")
+        try storeB.replaceAgents([AgentDTO(id: 7, name: "build-box")])
+        let apiB = FakeDevicesProvider()
+        apiB.rosters = [[device(7, kind: "agent")]]
+        let task = BoxLetterMigration.runIfNeeded(api: apiB, store: storeB, userID: "b", defaults: defaults)
+        await task?.value
+
+        XCTAssertNil(task, "B is not the owner — no migration task at all")
+        XCTAssertEqual(try storeB.agentTagChars(), [:], "A's letter must not paint on B's box 7")
+        XCTAssertTrue(apiB.tagged.isEmpty, "…nor be pushed onto B's journal")
+        XCTAssertEqual(BoxLetterOverrides.all(from: defaults), [7: "q"],
+                       "B's roster lacking the id must not drop A's relic as revoked")
+
+        // A returns, online this time: the push lands and the install is clean.
+        apiA.devicesError = nil
+        await BoxLetterMigration.runIfNeeded(api: apiA, store: storeA, userID: "a", defaults: defaults)?.value
+        XCTAssertEqual(apiA.tagged.map(\.id), [7])
+        XCTAssertNil(defaults.object(forKey: "boxLetterOverrides"))
         defaults.removePersistentDomain(forName: "DevicesViewModelTests")
     }
 

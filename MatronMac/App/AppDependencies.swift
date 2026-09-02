@@ -135,7 +135,7 @@ final class AppDependencies {
         // the local mirror first, so they keep painting while the push is
         // pending (or the journal predates the tag route). A Task keeps
         // itself alive; nil (no legacy overrides) is the steady state.
-        _ = BoxLetterMigration.runIfNeeded(api: api, store: store)
+        _ = BoxLetterMigration.runIfNeeded(api: api, store: store, userID: session.userID)
         cores[session.userID] = core
         return core
     }
