@@ -17,10 +17,16 @@ const client = JSON.parse(fs.readFileSync('/tmp/matron-demo/login-client.json', 
 // The invite's target device id, resolved by rebuild-rig.sh from the demo
 // DB — hardcoding the autoincrement value silently breaks the pairing-card
 // capture the moment device creation order changes.
-const HOMELAB_DEVICE_ID = Number(process.env.HOMELAB_DEVICE_ID);
-if (!Number.isInteger(HOMELAB_DEVICE_ID)) {
-  throw new Error('set HOMELAB_DEVICE_ID (rebuild-rig.sh resolves it from the demo DB)');
+// Validated as a positive-integer STRING, not via Number(): Number('')
+// is 0 and Number.isInteger(0) holds, so an empty variable (the sqlite
+// lookup returning no row) would sail through and aim the invite at
+// device 0 — the exact silent "consent card never rendered" failure this
+// guard exists to catch early.
+const rawHomelabDeviceID = process.env.HOMELAB_DEVICE_ID ?? '';
+if (!/^[1-9][0-9]*$/.test(rawHomelabDeviceID)) {
+  throw new Error(`HOMELAB_DEVICE_ID must be a positive integer device id, got ${JSON.stringify(rawHomelabDeviceID)} (rebuild-rig.sh resolves it from the demo DB)`);
 }
+const HOMELAB_DEVICE_ID = Number(rawHomelabDeviceID);
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 

@@ -32,8 +32,14 @@ cd "$DEMO"
 # seeding an unwiped DB would silently aim the invite at the wrong device
 # and surface as "consent card never rendered" in the capture test.
 HOMELAB_DEVICE_ID=$(sqlite3 "$DEMO/matron.db" \
-  "SELECT id FROM devices WHERE name='homelab' AND kind='agent'") \
-  node seed.mjs
+  "SELECT id FROM devices WHERE name='homelab' AND kind='agent'")
+# An empty lookup must stop here, not reach seed.mjs as "" (which
+# Number() reads as 0): `agent add` above failed or the DB wasn't wiped.
+if [[ ! "$HOMELAB_DEVICE_ID" =~ ^[1-9][0-9]*$ ]]; then
+  echo "rebuild-rig: no homelab agent row in $DEMO/matron.db (got '$HOMELAB_DEVICE_ID')" >&2
+  exit 1
+fi
+HOMELAB_DEVICE_ID="$HOMELAB_DEVICE_ID" node seed.mjs
 
 python3 - <<'PYEOF'
 import sqlite3, time
