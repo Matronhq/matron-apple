@@ -41,8 +41,13 @@ final class JournalTimelineServiceTests: XCTestCase {
         return String(decoding: data, as: UTF8.self)
     }
 
+    // 10s, not 3: locally every wait resolves in well under a second, but
+    // the CI runner (coverage-instrumented `swift test` on a shared 3-core
+    // macos-15 box) blew a 3s window once on a wait whose three
+    // predecessors in the same test had all just passed — starvation, not
+    // a lost wakeup. A genuine lost wakeup still fails, just 7s later.
     private func waitUntil(
-        timeout: TimeInterval = 3, file: StaticString = #filePath, line: UInt = #line,
+        timeout: TimeInterval = 10, file: StaticString = #filePath, line: UInt = #line,
         _ predicate: @escaping @Sendable () async -> Bool
     ) async throws {
         let deadline = Date().addingTimeInterval(timeout)
@@ -417,6 +422,269 @@ final class JournalTimelineServiceTests: XCTestCase {
         let hasMore = try await service.paginateBackward(requestSize: 20)
         XCTAssertFalse(hasMore)
         XCTAssertTrue(try store.events(convoID: "c1").isEmpty)
+    }
+
+    // MARK: windowed events fetch — the observation carries only a tail
+    // anchor's worth of rows; older mirror rows reveal via paginateBackward
+    // without touching the network, and rows below the mirror still come
+    // from the server.
+
+    private func textEvent(_ seq: Int64, convo: String = "c1") -> JournalEvent {
+        JournalEvent(seq: seq, convoID: convo, ts: Date(timeIntervalSince1970: Double(seq)),
+                     sender: "agent:a", type: "text",
+                     payloadData: Data(#"{"body":"m\#(seq)"}"#.utf8))
+    }
+
+    func testWindowedFetchRevealsOlderMirrorRowsLocally() async throws {
+        let store = try makeStore()
+        for seq in 1...6 { try store.applyJournal(textEvent(Int64(seq))) }
+
+        PaginateStubURLProtocol.responses = [:]
+        PaginateStubURLProtocol.lastRequest = nil
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [PaginateStubURLProtocol.self]
+        let api = JournalAPI(serverURL: URL(string: "https://x")!, urlSession: URLSession(configuration: config))
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api,
+                                             session: makeSession(), fetchWindow: 3)
+
+        let (collector, task) = collectItems(service.items())
+        try await waitUntil { await collector.values.last?.count == 3 }
+        var items = await collector.values.last!
+        XCTAssertEqual(items.map(\.id), ["4", "5", "6"],
+                       "first snapshot carries only the tail window")
+
+        // Older rows already sit in the mirror — paginating must reveal
+        // them without a network request.
+        let hasMore = try await service.paginateBackward(requestSize: 20)
+        XCTAssertTrue(hasMore)
+        try await waitUntil { await collector.values.last?.count == 6 }
+        items = await collector.values.last!
+        XCTAssertEqual(items.map(\.id), ["1", "2", "3", "4", "5", "6"])
+        XCTAssertNil(PaginateStubURLProtocol.lastRequest,
+                     "local reveal must not hit the server")
+
+        // Live rows keep landing above the anchor and append after the
+        // revealed prefix.
+        try store.applyJournal(textEvent(7))
+        try await waitUntil { await collector.values.last?.count == 7 }
+        items = await collector.values.last!
+        XCTAssertEqual(items.last?.id, "7")
+
+        task.cancel()
+    }
+
+    func testPaginationFallsBackToNetworkBelowLocalMirror() async throws {
+        let store = try makeStore()
+        for seq in 4...6 { try store.applyJournal(textEvent(Int64(seq))) }
+
+        PaginateStubURLProtocol.responses = [
+            "/convo/c1/messages": (200, """
+                {"events":[
+                  {"seq":2,"convo_id":"c1","ts":2000,"sender":"agent:a","type":"text","payload":{"body":"m2"}},
+                  {"seq":3,"convo_id":"c1","ts":3000,"sender":"agent:a","type":"text","payload":{"body":"m3"}}
+                ]}
+                """),
+        ]
+        PaginateStubURLProtocol.lastRequest = nil
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [PaginateStubURLProtocol.self]
+        let api = JournalAPI(serverURL: URL(string: "https://x")!, urlSession: URLSession(configuration: config))
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api,
+                                             session: makeSession(), fetchWindow: 2)
+
+        let (collector, task) = collectItems(service.items())
+        try await waitUntil { await collector.values.last?.count == 2 }
+
+        // First paginate reveals seq 4 from the mirror (below the anchor
+        // at 5), still no network.
+        let revealedLocally = try await service.paginateBackward(requestSize: 20)
+        XCTAssertTrue(revealedLocally)
+        try await waitUntil { await collector.values.last?.count == 3 }
+        XCTAssertNil(PaginateStubURLProtocol.lastRequest)
+
+        // Mirror exhausted — the next paginate goes to the server below
+        // seq 4, and the fetched rows must surface in the snapshot even
+        // though the anchored observation can never deliver them.
+        let fetchedRemotely = try await service.paginateBackward(requestSize: 20)
+        XCTAssertTrue(fetchedRemotely)
+        try await waitUntil { await collector.values.last?.count == 5 }
+        let items = await collector.values.last!
+        XCTAssertEqual(items.map(\.id), ["2", "3", "4", "5", "6"])
+        let query = PaginateStubURLProtocol.lastRequest?.url?.query ?? ""
+        XCTAssertTrue(query.contains("before_seq=4"), "unexpected query: \(query)")
+        XCTAssertEqual(try store.events(convoID: "c1").map(\.seq), [2, 3, 4, 5, 6],
+                       "network page must also persist to the mirror")
+
+        task.cancel()
+    }
+
+    /// Re-open after events landed while no subscription was live: the
+    /// retained rows end BELOW the fresh anchor, and carrying them as the
+    /// revealed prefix would render a contiguous block of history as
+    /// silently missing (review 2026-08-26, Critical #1). The rebase must
+    /// drop the prefix instead — pagination brings those rows straight
+    /// back from the mirror.
+    func testReopenAfterOfflineGapNeverShowsAHole() async throws {
+        let store = try makeStore()
+        for seq in 1...6 { try store.applyJournal(textEvent(Int64(seq))) }
+        let api = JournalAPI(serverURL: URL(string: "https://x")!)
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api,
+                                             session: makeSession(), fetchWindow: 2)
+
+        let (first, firstTask) = collectItems(service.items())
+        try await waitUntil { await first.values.last?.map(\.id) == ["5", "6"] }
+        firstTask.cancel()
+
+        // Room closed; a long agent turn writes past the fetch window.
+        for seq in 7...9 { try store.applyJournal(textEvent(Int64(seq))) }
+
+        let (second, secondTask) = collectItems(service.items())
+        try await waitUntil { await second.values.last?.map(\.id) == ["8", "9"] }
+        let hasMore = try await service.paginateBackward(requestSize: 20)
+        XCTAssertTrue(hasMore)
+        try await waitUntil { await second.values.last?.count == 9 }
+        let items = await second.values.last!
+        XCTAssertEqual(items.map(\.id), (1...9).map(String.init))
+
+        // No delivered snapshot may ever contain the hole (6 next to 8) —
+        // every snapshot in this fixture is a contiguous run by construction.
+        for snapshot in await second.values {
+            let seqs = snapshot.compactMap { Int64($0.id) }
+            for (a, b) in zip(seqs, seqs.dropFirst()) {
+                XCTAssertEqual(b, a + 1, "non-contiguous snapshot delivered: \(seqs)")
+            }
+        }
+        secondTask.cancel()
+    }
+
+    /// Re-open with NO intervening events: the retained rows reach the new
+    /// anchor, so revealed history must survive the re-subscription with no
+    /// shrink and no duplicate seqs.
+    func testReopenWithNoNewEventsKeepsRevealedHistory() async throws {
+        let store = try makeStore()
+        for seq in 1...6 { try store.applyJournal(textEvent(Int64(seq))) }
+        let api = JournalAPI(serverURL: URL(string: "https://x")!)
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api,
+                                             session: makeSession(), fetchWindow: 2)
+
+        let (first, firstTask) = collectItems(service.items())
+        try await waitUntil { await first.values.last?.count == 2 }
+        _ = try await service.paginateBackward(requestSize: 20)
+        try await waitUntil { await first.values.last?.count == 6 }
+        firstTask.cancel()
+
+        let (second, secondTask) = collectItems(service.items())
+        // The retained list must persist across the re-subscription's first
+        // delivery — give the pipeline a beat, then check every snapshot.
+        try await waitUntil { await !second.values.isEmpty }
+        try await Task.sleep(for: .milliseconds(300))
+        for snapshot in await second.values {
+            XCTAssertEqual(snapshot.map(\.id), (1...6).map(String.init),
+                           "revealed history shrank or duplicated across re-open")
+        }
+        secondTask.cancel()
+    }
+
+    /// A mirror wipe under an open subscription must surface an EMPTY
+    /// snapshot — ChatViewModel's content→empty transition is the only
+    /// trigger for its history refill. Retaining the revealed prefix hid
+    /// the wipe and stranded the timeline on rows the store no longer has
+    /// (review 2026-08-26, Critical #2).
+    func testWipeUnderOpenSubscriptionEmptiesSnapshot() async throws {
+        let store = try makeStore()
+        for seq in 1...6 { try store.applyJournal(textEvent(Int64(seq))) }
+        let api = JournalAPI(serverURL: URL(string: "https://x")!)
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api,
+                                             session: makeSession(), fetchWindow: 2)
+
+        let (collector, task) = collectItems(service.items())
+        try await waitUntil { await collector.values.last?.count == 2 }
+        _ = try await service.paginateBackward(requestSize: 20)
+        try await waitUntil { await collector.values.last?.count == 6 }
+
+        try store.wipe()
+        try await waitUntil { await collector.values.last?.isEmpty == true }
+        task.cancel()
+    }
+
+    // MARK: OverlayState merge invariants (unit level)
+
+    func testOverlayPrependOlderDropsRowsAtOrAboveMergedHead() async {
+        let overlay = JournalTimelineService.OverlayState(staleness: 30)
+        let epoch = await overlay.rebaseForNewTailSubscription(anchor: 0)
+        await overlay.setTail([textEvent(3), textEvent(4)], epoch: epoch)
+        // Rows at/above the merged head (4, 5) must be dropped wholesale —
+        // they'd double-render seqs the observation already owns. The kept
+        // row must also be sorted into place regardless of input order.
+        await overlay.prependOlder([textEvent(4), textEvent(2), textEvent(5)])
+        let seqs = await overlay.events.map(\.seq)
+        XCTAssertEqual(seqs, [2, 3, 4])
+    }
+
+    /// The re-open history hole's RACING variant (Bugbot, PR #171): after
+    /// a rebase drops a non-contiguous prefix, `events` still shows the
+    /// stale pre-gap rows. A local reveal landing BEFORE the new tail's
+    /// first delivery used to key off that stale head — revealing only
+    /// rows below it, so once the tail landed the span between the stale
+    /// head and the new anchor was permanently unreachable (the reveal
+    /// boundary had moved below it forever). The reveal boundary must be
+    /// the pending anchor, and `prependOlder` must accept everything
+    /// below it — including rows at/above the stale displayed head.
+    func testOverlayRevealDuringRebaseGapLeavesNoHole() async {
+        let overlay = JournalTimelineService.OverlayState(staleness: 30)
+        // Previous session: tail window [5, 6].
+        let e0 = await overlay.rebaseForNewTailSubscription(anchor: 5)
+        await overlay.setTail([textEvent(5), textEvent(6)], epoch: e0)
+        // Re-open after events 7-9 landed offline: fresh anchor 8, the
+        // held prefix (newest 6) is non-contiguous and gets dropped.
+        let e1 = await overlay.rebaseForNewTailSubscription(anchor: 8)
+        let boundary = await overlay.localRevealBoundary
+        XCTAssertEqual(boundary, 8, "reveal below the NEW anchor, not the stale head")
+        // The racing local reveal: the mirror page below the boundary.
+        await overlay.prependOlder((1...7).map { textEvent($0) })
+        var seqs = await overlay.events.map(\.seq)
+        XCTAssertEqual(seqs, Array(1...7),
+                       "pre-delivery reveal keeps the stale rows it re-covers")
+        // First delivery of the new tail — the merged list must be whole.
+        await overlay.setTail([textEvent(8), textEvent(9)], epoch: e1)
+        seqs = await overlay.events.map(\.seq)
+        XCTAssertEqual(seqs, Array(1...9), "no hole once the tail lands")
+        // And the boundary is back to the merged head for later paginates.
+        let settled = await overlay.localRevealBoundary
+        XCTAssertEqual(settled, 1)
+    }
+
+    /// The retained-prefix flavor of the same rebase: when the held rows
+    /// DO reach the new anchor, the boundary is the prefix's head — a
+    /// reveal must not re-fetch (or double-accept) rows the prefix
+    /// already covers.
+    func testOverlayRevealBoundaryWithRetainedPrefixIsThePrefixHead() async {
+        let overlay = JournalTimelineService.OverlayState(staleness: 30)
+        let e0 = await overlay.rebaseForNewTailSubscription(anchor: 5)
+        await overlay.setTail([textEvent(5), textEvent(6)], epoch: e0)
+        _ = await overlay.rebaseForNewTailSubscription(anchor: 6)
+        let boundary = await overlay.localRevealBoundary
+        XCTAssertEqual(boundary, 5, "contiguous prefix keeps the reveal at its head")
+        await overlay.prependOlder([textEvent(4), textEvent(5)])
+        let seqs = await overlay.events.map(\.seq)
+        XCTAssertEqual(seqs, [4, 5, 6], "row 5 must not double-render")
+    }
+
+    func testOverlayStaleEpochDeliveryIgnored() async {
+        let overlay = JournalTimelineService.OverlayState(staleness: 30)
+        let stale = await overlay.rebaseForNewTailSubscription(anchor: 0)
+        let fresh = await overlay.rebaseForNewTailSubscription(anchor: 0)
+        await overlay.setTail([textEvent(1)], epoch: stale)
+        var seqs = await overlay.events.map(\.seq)
+        XCTAssertEqual(seqs, [], "a superseded subscription's delivery must be dropped")
+        await overlay.setTail([textEvent(1)], epoch: fresh)
+        seqs = await overlay.events.map(\.seq)
+        XCTAssertEqual(seqs, [1])
     }
 
     // MARK: (f) an offline sendText queues durably instead of throwing —
