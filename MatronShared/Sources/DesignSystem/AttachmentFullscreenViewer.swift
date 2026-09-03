@@ -23,9 +23,10 @@ public struct AttachmentFullscreenViewer: View {
     @State private var index: Int
     /// Resolved images keyed by entry id. Seeded with the tapped image.
     @State private var loaded: [String: ViewerImage]
-    /// Entries whose fetch returned nothing — shown as unavailable and not
-    /// retried for the life of the sheet (blob ids are immutable; a miss
-    /// stays a miss).
+    /// Entries whose fetch returned nothing — shown as unavailable.
+    /// Neighbour preloads leave them alone, but stepping onto one tries
+    /// again: the loader can't tell a reaped blob from a flaky network,
+    /// so a miss must not be permanent (Bugbot, PR #175).
     @State private var failed: Set<String> = []
     @State private var inFlight: Set<String> = []
     /// Sign of the last step (+1 next, −1 previous) — drives which edge
@@ -99,18 +100,22 @@ public struct AttachmentFullscreenViewer: View {
     /// cancelled mid-flight must not be mistaken for a miss — these run to
     /// completion and land in `loaded` whenever they finish.
     private func loadAround(_ index: Int) {
-        for i in [index] + ImageGalleryNavigation.preloadIndices(around: index, count: entries.count) {
-            Task { @MainActor in await ensureLoaded(i) }
+        Task { @MainActor in await ensureLoaded(index, retryingFailed: true) }
+        for i in ImageGalleryNavigation.preloadIndices(around: index, count: entries.count) {
+            Task { @MainActor in await ensureLoaded(i, retryingFailed: false) }
         }
     }
 
     @MainActor
-    private func ensureLoaded(_ i: Int) async {
+    private func ensureLoaded(_ i: Int, retryingFailed: Bool) async {
         guard entries.indices.contains(i) else { return }
         let entry = entries[i]
         guard let url = entry.url, !entry.expired,
-              loaded[entry.id] == nil, !failed.contains(entry.id),
-              !inFlight.contains(entry.id) else { return }
+              loaded[entry.id] == nil, !inFlight.contains(entry.id) else { return }
+        if failed.contains(entry.id) {
+            guard retryingFailed else { return }
+            failed.remove(entry.id)
+        }
         inFlight.insert(entry.id)
         let result = await gallery.load(url)
         inFlight.remove(entry.id)
@@ -613,6 +618,13 @@ private struct FullscreenImageBody: View {
     /// the finger so the gesture reads as dragging to the neighbour.
     @State private var pageTranslation: CGFloat = 0
     @State private var contentSize: CGSize = .zero
+    /// A pinch in progress. The simultaneous drag sees the two-finger
+    /// centroid as a drag, and until the pinch commits `isZoomed` still
+    /// reads "fit scale" — so without this a pinch-to-zoom whose centroid
+    /// drifted sideways would page to the neighbour (Bugbot, PR #175).
+    /// Any drag that overlapped a pinch is discarded when it ends.
+    @State private var pinchActive = false
+    @State private var dragTaintedByPinch = false
 
     /// Threshold for the swipe-down dismiss and the sideways step. 100pt
     /// is the same value SwiftUI's interactive sheet dismiss uses
@@ -726,6 +738,7 @@ private struct FullscreenImageBody: View {
     private func magnification(_ geometry: ZoomPanGeometry) -> some Gesture {
         MagnifyGesture()
             .onChanged { value in
+                pinchActive = true
                 let result = geometry.zoom(
                     to: committedScale * value.magnification,
                     around: value.startLocation,
@@ -736,6 +749,7 @@ private struct FullscreenImageBody: View {
                 offset = result.offset
             }
             .onEnded { _ in
+                pinchActive = false
                 commit(geometry)
             }
     }
@@ -751,6 +765,12 @@ private struct FullscreenImageBody: View {
                         ),
                         at: scale
                     )
+                    return
+                }
+                if pinchActive || dragTaintedByPinch {
+                    dragTaintedByPinch = true
+                    pageTranslation = 0
+                    dismissTranslation = 0
                     return
                 }
                 let translation = value.translation
@@ -769,6 +789,14 @@ private struct FullscreenImageBody: View {
             .onEnded { value in
                 if isZoomed {
                     committedOffset = offset
+                    return
+                }
+                if dragTaintedByPinch {
+                    dragTaintedByPinch = false
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        dismissTranslation = 0
+                        pageTranslation = 0
+                    }
                     return
                 }
                 let intent = ImageGalleryNavigation.swipeIntent(
