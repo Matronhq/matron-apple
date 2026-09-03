@@ -2,41 +2,103 @@ import XCTest
 import CoreGraphics
 @testable import MatronDesignSystem
 
-/// Pins the Mac fullscreen-viewer display-size rule: 1:1 pixels when the
-/// image fits the bound, aspect-fit downscale when it doesn't, and never
-/// an upscale past the bitmap's native resolution (the "small and
-/// pixelated" bug — the sheet used to stretch every bitmap into a fixed
-/// 480pt slot regardless of its native size).
+/// Pins the Mac fullscreen-viewer sizing rules.
+///
+/// Sheet: fills most of the presenting window (a fixed fraction of its
+/// content area), never larger than the screen's visible frame, never
+/// smaller than a floor that keeps the Done row and a usable image area.
+/// Previously the sheet was sized to the image's native pixel size, so
+/// anything smaller than the screen opened in a small box (2026-09-03,
+/// Dan: "it should take up most of the area of the app").
+///
+/// Image: aspect-fits the viewer's image area — up as well as down — so
+/// a small screenshot fills the viewer rather than sitting 1:1 in a
+/// corner of it.
 final class ImageViewerSizingTests: XCTestCase {
-    func test_smallImage_displaysAtOneToOnePixels_notUpscaled() {
-        // 320×240 px on a 2x screen = 160×120 pt is the largest size at
-        // which the bitmap stays sharp. The old layout stretched it to
-        // 448 pt wide.
+
+    // MARK: - Sheet size
+
+    func test_viewerSize_isFractionOfWindowContent() {
+        let size = AttachmentFullscreenViewer.viewerSize(
+            windowContentSize: CGSize(width: 1400, height: 1000),
+            screenVisibleSize: CGSize(width: 3000, height: 2000)
+        )
+        XCTAssertEqual(size.width, 1400 * AttachmentFullscreenViewer.windowFillFraction, accuracy: 0.5)
+        XCTAssertEqual(size.height, 1000 * AttachmentFullscreenViewer.windowFillFraction, accuracy: 0.5)
+    }
+
+    func test_viewerSize_isClampedToScreen() {
+        // Mac sheets are not clamped to the parent window by the system;
+        // a window larger than the screen (or on a smaller screen) must
+        // not produce a sheet that overhangs the screen.
+        let size = AttachmentFullscreenViewer.viewerSize(
+            windowContentSize: CGSize(width: 4000, height: 3000),
+            screenVisibleSize: CGSize(width: 1440, height: 850)
+        )
+        let margin = AttachmentFullscreenViewer.screenMargin
+        XCTAssertEqual(size.width, 1440 - margin * 2, accuracy: 0.5)
+        XCTAssertEqual(size.height, 850 - margin * 2, accuracy: 0.5)
+    }
+
+    func test_viewerSize_neverBelowFloor() {
+        let size = AttachmentFullscreenViewer.viewerSize(
+            windowContentSize: CGSize(width: 300, height: 200),
+            screenVisibleSize: CGSize(width: 1440, height: 850)
+        )
+        XCTAssertEqual(size, AttachmentFullscreenViewer.minimumViewerSize)
+    }
+
+    func test_viewerSize_screenCapBeatsFloor() {
+        // A screen smaller than the floor plus margins (CodeRabbit on PR
+        // #174): the sheet must still fit the screen — an overhanging
+        // sheet is unusable, a slightly-under-floor one is merely small.
+        let size = AttachmentFullscreenViewer.viewerSize(
+            windowContentSize: CGSize(width: 400, height: 300),
+            screenVisibleSize: CGSize(width: 500, height: 400)
+        )
+        let margin = AttachmentFullscreenViewer.screenMargin
+        XCTAssertEqual(size.width, 500 - margin * 2, accuracy: 0.5)
+        XCTAssertEqual(size.height, 400 - margin * 2, accuracy: 0.5)
+    }
+
+    func test_viewerSize_noWindow_fallsBackToScreenFraction() {
+        // Headless / no presenting window: size against the screen alone.
+        let size = AttachmentFullscreenViewer.viewerSize(
+            windowContentSize: nil,
+            screenVisibleSize: CGSize(width: 2000, height: 1200)
+        )
+        XCTAssertEqual(size.width, 2000 * AttachmentFullscreenViewer.screenFillFraction, accuracy: 0.5)
+        XCTAssertEqual(size.height, 1200 * AttachmentFullscreenViewer.screenFillFraction, accuracy: 0.5)
+    }
+
+    // MARK: - Image fit
+
+    func test_smallImage_upscalesToFillBound() {
+        // 320×240 px in a 1000×800 area: height-limited at 800 → 1066 wide
+        // would overflow, so width-limited at 1000 → 750 tall.
         let size = AttachmentFullscreenViewer.imageDisplaySize(
             pixelSize: CGSize(width: 320, height: 240),
-            displayScale: 2,
             bound: CGSize(width: 1000, height: 800)
         )
-        XCTAssertEqual(size, CGSize(width: 160, height: 120))
+        XCTAssertNotNil(size)
+        XCTAssertEqual(size!.width, 1000, accuracy: 0.5)
+        XCTAssertEqual(size!.height, 750, accuracy: 0.5)
     }
 
     func test_largeImage_aspectFitsWithinBound() {
-        // iPhone screenshot: 1206×2622 px @2x → 603×1311 pt natural,
-        // height-limited by an 800 pt bound.
+        // iPhone screenshot, 1206×2622 px, height-limited by an 800 pt bound.
         let size = AttachmentFullscreenViewer.imageDisplaySize(
             pixelSize: CGSize(width: 1206, height: 2622),
-            displayScale: 2,
             bound: CGSize(width: 1000, height: 800)
         )
         XCTAssertNotNil(size)
         XCTAssertEqual(size!.height, 800, accuracy: 0.5)
-        XCTAssertEqual(size!.width, 603.0 * 800.0 / 1311.0, accuracy: 0.5)
+        XCTAssertEqual(size!.width, 1206.0 * 800.0 / 2622.0, accuracy: 0.5)
     }
 
     func test_wideImage_widthLimited() {
         let size = AttachmentFullscreenViewer.imageDisplaySize(
             pixelSize: CGSize(width: 4000, height: 1000),
-            displayScale: 2,
             bound: CGSize(width: 1000, height: 800)
         )
         XCTAssertNotNil(size)
@@ -44,43 +106,22 @@ final class ImageViewerSizingTests: XCTestCase {
         XCTAssertEqual(size!.height, 250, accuracy: 0.5)
     }
 
-    func test_exactFit_returnsNaturalSize() {
+    func test_exactAspect_fillsBound() {
         let size = AttachmentFullscreenViewer.imageDisplaySize(
-            pixelSize: CGSize(width: 2000, height: 1600),
-            displayScale: 2,
+            pixelSize: CGSize(width: 500, height: 400),
             bound: CGSize(width: 1000, height: 800)
         )
         XCTAssertEqual(size, CGSize(width: 1000, height: 800))
     }
 
-    func test_oneXScreen_naturalSizeIsPixelSize() {
-        let size = AttachmentFullscreenViewer.imageDisplaySize(
-            pixelSize: CGSize(width: 320, height: 240),
-            displayScale: 1,
-            bound: CGSize(width: 1000, height: 800)
-        )
-        XCTAssertEqual(size, CGSize(width: 320, height: 240))
-    }
-
     func test_degenerateInputs_returnNil() {
         XCTAssertNil(AttachmentFullscreenViewer.imageDisplaySize(
             pixelSize: .zero,
-            displayScale: 2,
             bound: CGSize(width: 1000, height: 800)
         ))
         XCTAssertNil(AttachmentFullscreenViewer.imageDisplaySize(
             pixelSize: CGSize(width: 100, height: 100),
-            displayScale: 2,
             bound: .zero
         ))
-    }
-
-    func test_zeroDisplayScale_treatedAsOne() {
-        let size = AttachmentFullscreenViewer.imageDisplaySize(
-            pixelSize: CGSize(width: 300, height: 200),
-            displayScale: 0,
-            bound: CGSize(width: 1000, height: 800)
-        )
-        XCTAssertEqual(size, CGSize(width: 300, height: 200))
     }
 }
