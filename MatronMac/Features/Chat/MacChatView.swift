@@ -255,9 +255,9 @@ struct MacChatView: View {
 
     /// Identifiable wrapper around a SwiftUI `Image` so
     /// `.sheet(item:)` has something to key on. Per-present UUID so
-    /// two consecutive taps re-mount the sheet. `pixelSize` lets the
-    /// viewer open the sheet at the image's natural size (nil → the
-    /// viewer's legacy flexible layout).
+    /// two consecutive taps re-mount the sheet. `pixelSize` gives the
+    /// viewer the image's aspect ratio for its zoom/pan geometry (nil →
+    /// plain aspect-fit, no zoom).
     fileprivate struct ImagePreview: Identifiable {
         let id = UUID()
         let image: Image

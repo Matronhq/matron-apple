@@ -4,10 +4,11 @@ import AppKit
 #endif
 
 /// Fullscreen image viewer presented from a chat attachment tap. iOS
-/// supports pinch-zoom + swipe-down-to-dismiss; Mac opens a sheet sized
-/// to the image's native resolution with Preview.app-style interactions
-/// (trackpad pinch, drag-pan while zoomed, double-click, ⌘+/⌘−/⌘0) and
-/// a "Done" button — see `MacZoomableImage`.
+/// supports pinch-zoom + swipe-down-to-dismiss; Mac opens a sheet that
+/// fills most of the presenting window, aspect-fits the image into it,
+/// and adds Preview.app-style interactions (trackpad pinch, drag-pan
+/// while zoomed, double-click, ⌘+/⌘−/⌘0) plus a "Done" button — see
+/// `MacZoomableImage`.
 ///
 /// The `Image` is taken pre-resolved (via `ChatViewModel.image(for:)`)
 /// so the viewer stays a leaf View — avoids dragging `MediaService`
@@ -15,10 +16,10 @@ import AppKit
 public struct AttachmentFullscreenViewer: View {
     private let image: Image
     /// Native bitmap size in pixels, when the call site knows it. Mac
-    /// uses it to open the sheet at the image's natural size instead of
-    /// a fixed 480pt minimum that shrank big photos and stretched small
-    /// bitmaps into pixelation. `nil` (iOS call sites, or an image whose
-    /// size never resolved) keeps the legacy flexible layout.
+    /// uses its aspect ratio to lay the image out at an exact fitted
+    /// size, which is what the zoom/pan geometry needs to know where the
+    /// image's edges are. `nil` (iOS call sites, or an image whose size
+    /// never resolved) falls back to a plain aspect-fit without zoom.
     private let nativePixelSize: CGSize?
     private let onDismiss: () -> Void
 
@@ -55,64 +56,55 @@ public struct AttachmentFullscreenViewer: View {
     // MARK: - Mac
 
     #if os(macOS)
-    /// Scale of the screen the sheet lands on — needed to translate the
-    /// bitmap's pixel size into the largest point size that doesn't
-    /// upscale (2x screen → half the pixels, in points).
-    @Environment(\.displayScale) private var displayScale
-
     @ViewBuilder
     private var macBody: some View {
         // Mac sheet sizing, probed empirically (2026-08-12): a sheet only
         // adopts its content's size when the content is fully RIGID. Any
         // flexibility (a `minWidth`/`minHeight` range, a bare `resizable`
         // image) collapses the sheet to a small system default that gets
-        // proposed to the content — which is exactly the old "small and
-        // pixelated" bug. So when the bitmap's native size is known, the
-        // whole body takes an explicit width × height. macOS does NOT
-        // clamp sheets to the parent window, so the display size must be
+        // proposed to the content. So the whole body takes an explicit
+        // width × height — most of the presenting window (2026-09-03,
+        // Dan: "it should take up most of the area of the app"; the
+        // previous rule sized the sheet to the bitmap, so anything
+        // smaller than the screen opened in a small box). macOS does NOT
+        // clamp sheets to the parent window, so the size is also
         // screen-bounded here.
-        if let displaySize = nativePixelSize.flatMap({
-            Self.imageDisplaySize(
-                pixelSize: $0,
-                displayScale: displayScale,
-                bound: Self.screenBound()
-            )
-        }) {
-            VStack(spacing: 0) {
-                doneRow.frame(height: Self.doneRowHeight)
-                MacZoomableImage(image: image, displaySize: displaySize)
-                    // Fill whatever the min-size floor adds beyond the
-                    // image, keeping a small bitmap centred at 1:1 rather
-                    // than stretched.
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(Self.imagePadding)
+        let viewerSize = Self.viewerSize(
+            windowContentSize: Self.presentingWindowContentSize(),
+            screenVisibleSize: Self.screenVisibleSize()
+        )
+        let imageArea = CGSize(
+            width: viewerSize.width - Self.imagePadding * 2,
+            height: viewerSize.height - Self.imagePadding * 2 - Self.doneRowHeight
+        )
+        VStack(spacing: 0) {
+            doneRow.frame(height: Self.doneRowHeight)
+            Group {
+                if let fitted = nativePixelSize.flatMap({
+                    Self.imageDisplaySize(pixelSize: $0, bound: imageArea)
+                }) {
+                    MacZoomableImage(
+                        image: image,
+                        containerSize: imageArea,
+                        contentSize: fitted
+                    )
+                } else {
+                    // No pixel size (never on Mac today, but the parameter
+                    // is optional): plain aspect-fit, no zoom — the zoom
+                    // geometry needs the fitted rect, which only the
+                    // pixel aspect ratio can give us up front.
+                    image
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                }
             }
-            .frame(
-                width: max(480, displaySize.width + Self.imagePadding * 2),
-                height: max(
-                    360,
-                    displaySize.height + Self.imagePadding * 2 + Self.doneRowHeight
-                )
-            )
-            .background(Color.black.opacity(0.85))
-            .accessibilityLabel("Image preview")
-        } else {
-            // Legacy flexible layout for call sites that can't supply a
-            // pixel size (never on Mac today, but the parameter is
-            // optional).
-            VStack(spacing: 0) {
-                doneRow
-                image
-                    .resizable()
-                    .interpolation(.high)
-                    .scaledToFit()
-                    .padding()
-                Spacer(minLength: 0)
-            }
-            .frame(minWidth: 480, minHeight: 360)
-            .background(Color.black.opacity(0.85))
-            .accessibilityLabel("Image preview")
+            .frame(width: imageArea.width, height: imageArea.height)
+            .padding(Self.imagePadding)
         }
+        .frame(width: viewerSize.width, height: viewerSize.height)
+        .background(Color.black.opacity(0.85))
+        .accessibilityLabel("Image preview")
     }
 
     @ViewBuilder
@@ -125,17 +117,36 @@ public struct AttachmentFullscreenViewer: View {
         }
     }
 
-    /// Largest display rect the image may occupy: 85% of the main
-    /// screen's visible frame, less the sheet chrome around the image.
-    /// Falls back to a conservative laptop-ish bound when no screen is
-    /// available (headless tests).
-    private static func screenBound() -> CGSize {
-        let visible = NSScreen.main?.visibleFrame.size
-            ?? CGSize(width: 1280, height: 800)
-        return CGSize(
-            width: visible.width * 0.85 - imagePadding * 2,
-            height: visible.height * 0.85 - imagePadding * 2 - doneRowHeight
-        )
+    /// Content area of the window the sheet hangs from. Sheets stack
+    /// (the media browser is itself a sheet, and it presents this
+    /// viewer), so walk `sheetParent` to the root document window — the
+    /// user means "the app", not the 640pt browser sheet. Evaluated while
+    /// the sheet is being presented, when the key window is still the
+    /// presenter (or, on a re-evaluation, our own sheet — either way the
+    /// walk ends at the same root). Same source the New Chat sheet sizes
+    /// from (`MacChatListView`, `NSApp.keyWindow?.contentLayoutRect`).
+    /// With no key or main window (app not active — seen only in a
+    /// launchd-spawned repro, never from a click) a lone visible root
+    /// window is trusted; anything more ambiguous returns `nil`, which
+    /// sizes against the screen instead.
+    private static func presentingWindowContentSize() -> CGSize? {
+        var window = NSApp.keyWindow ?? NSApp.mainWindow
+        while let parent = window?.sheetParent { window = parent }
+        if window == nil {
+            let roots = NSApp.windows.filter { $0.isVisible && !$0.isSheet }
+            if roots.count == 1 { window = roots[0] }
+        }
+        guard let window else { return nil }
+        // `contentLayoutRect` excludes the title bar / toolbar that the
+        // sheet attaches beneath, so the fraction is of the area the
+        // sheet can actually cover without hanging past the bottom edge.
+        return window.contentLayoutRect.size
+    }
+
+    /// Visible frame of the main screen, or a conservative laptop-ish
+    /// size when no screen is available (headless tests).
+    private static func screenVisibleSize() -> CGSize {
+        NSScreen.main?.visibleFrame.size ?? CGSize(width: 1280, height: 800)
     }
 
     /// Fixed height for the Done-button row. Fixed (not intrinsic) so the
@@ -146,26 +157,58 @@ public struct AttachmentFullscreenViewer: View {
     private static let imagePadding: CGFloat = 16
     #endif
 
-    /// Display size in points for a bitmap of `pixelSize` shown on a
-    /// screen of `displayScale`, bounded by `bound` (points): 1:1 pixels
-    /// when the image fits, aspect-fit downscale when it doesn't, never
-    /// an upscale. Returns `nil` for degenerate inputs (zero-area image
-    /// or bound), which callers treat as "fall back to flexible layout".
-    /// Platform-independent math, `static` for direct unit testing.
-    static func imageDisplaySize(
-        pixelSize: CGSize,
-        displayScale: CGFloat,
-        bound: CGSize
-    ) -> CGSize? {
+    // MARK: - Sizing rules (platform-independent, unit-tested)
+
+    /// Share of the presenting window's content area the sheet covers.
+    /// "Most of the app" while still reading as a sheet over it rather
+    /// than a replacement for it.
+    static let windowFillFraction: CGFloat = 0.9
+    /// Share of the screen used when there is no presenting window to
+    /// measure.
+    static let screenFillFraction: CGFloat = 0.85
+    /// Gap kept between the sheet and the screen's visible-frame edges.
+    static let screenMargin: CGFloat = 24
+    /// Smallest sheet: room for the Done row plus a usable image area,
+    /// even from a tiny window.
+    static let minimumViewerSize = CGSize(width: 480, height: 360)
+
+    /// Sheet size for a presenting window of `windowContentSize` (nil when
+    /// unknown) on a screen whose visible frame is `screenVisibleSize`:
+    /// `windowFillFraction` of the window, never past the screen (less
+    /// `screenMargin`), never under `minimumViewerSize`.
+    static func viewerSize(
+        windowContentSize: CGSize?,
+        screenVisibleSize: CGSize
+    ) -> CGSize {
+        let screenCap = CGSize(
+            width: screenVisibleSize.width - screenMargin * 2,
+            height: screenVisibleSize.height - screenMargin * 2
+        )
+        let target = windowContentSize.map {
+            CGSize(width: $0.width * windowFillFraction,
+                   height: $0.height * windowFillFraction)
+        } ?? CGSize(
+            width: screenVisibleSize.width * screenFillFraction,
+            height: screenVisibleSize.height * screenFillFraction
+        )
+        return CGSize(
+            width: max(minimumViewerSize.width, min(target.width, screenCap.width)),
+            height: max(minimumViewerSize.height, min(target.height, screenCap.height))
+        )
+    }
+
+    /// Aspect-fit of a bitmap with `pixelSize` into `bound` (points) —
+    /// scaled up as well as down, so a small screenshot fills the viewer
+    /// instead of sitting 1:1 in the middle of it. Returns `nil` for
+    /// degenerate inputs (zero-area image or bound), which callers treat
+    /// as "fall back to a plain resizable image".
+    static func imageDisplaySize(pixelSize: CGSize, bound: CGSize) -> CGSize? {
         guard pixelSize.width > 0, pixelSize.height > 0,
               bound.width > 0, bound.height > 0 else { return nil }
-        let scale = displayScale > 0 ? displayScale : 1
-        let natural = CGSize(width: pixelSize.width / scale,
-                             height: pixelSize.height / scale)
-        let ratio = min(bound.width / natural.width,
-                        bound.height / natural.height, 1)
-        return CGSize(width: natural.width * ratio,
-                      height: natural.height * ratio)
+        let ratio = min(bound.width / pixelSize.width,
+                        bound.height / pixelSize.height)
+        return CGSize(width: pixelSize.width * ratio,
+                      height: pixelSize.height * ratio)
     }
 }
 
@@ -176,15 +219,20 @@ public struct AttachmentFullscreenViewer: View {
 /// `doubleTapScale`, and ⌘+/⌘−/⌘0 step centred for mouse-only and
 /// keyboard users. All the zoom/pan math is the shared `ZoomPanGeometry`;
 /// unlike iOS there is no measurement preference — the Mac sheet already
-/// knows the image's exact laid-out size (`displaySize`), which is both
-/// the content and the container (the sheet was sized to the image).
+/// knows both rects up front: the image area it laid out
+/// (`containerSize`) and the image aspect-fitted inside it
+/// (`contentSize`).
 ///
-/// Zoomed content stays inside the image's own rect via `.clipped()` —
-/// the sheet keeps its opening size; zooming changes what's visible
-/// within it, matching Preview.app rather than growing the window.
+/// Zoomed content stays inside the image area via `.clipped()` — the
+/// sheet keeps its opening size; zooming changes what's visible within
+/// it, matching Preview.app rather than growing the window.
 private struct MacZoomableImage: View {
     let image: Image
-    let displaySize: CGSize
+    /// The image area the gestures respond over — the letterbox counts,
+    /// so a pinch starting beside a tall image still lands.
+    let containerSize: CGSize
+    /// The image's aspect-fitted rect at scale 1, centred in the container.
+    let contentSize: CGSize
 
     /// Live values, updated continuously during a gesture.
     @State private var scale: CGFloat = 1
@@ -196,7 +244,7 @@ private struct MacZoomableImage: View {
     @State private var committedOffset: CGSize = .zero
 
     private var geometry: ZoomPanGeometry {
-        ZoomPanGeometry(containerSize: displaySize, contentSize: displaySize)
+        ZoomPanGeometry(containerSize: containerSize, contentSize: contentSize)
     }
 
     private var isZoomed: Bool { committedScale > ZoomPanGeometry.minScale }
@@ -204,14 +252,15 @@ private struct MacZoomableImage: View {
     var body: some View {
         image
             .resizable()
-            // High interpolation for the big downscales (a 12MP photo fit
-            // to ~1000pt) that alias visibly at the default.
+            // High interpolation both ways: big downscales (a 12MP photo
+            // fit to ~1000pt) alias at the default, and small bitmaps
+            // filling the viewer would otherwise show hard pixel edges.
             .interpolation(.high)
             .scaledToFit()
-            .frame(width: displaySize.width, height: displaySize.height)
+            .frame(width: contentSize.width, height: contentSize.height)
             .scaleEffect(scale)
             .offset(offset)
-            .frame(width: displaySize.width, height: displaySize.height)
+            .frame(width: containerSize.width, height: containerSize.height)
             .clipped()
             // Whole rect responds, not just the bitmap's opaque pixels.
             .contentShape(Rectangle())
@@ -291,7 +340,7 @@ private struct MacZoomableImage: View {
     private func centredZoom(_ target: CGFloat) -> (scale: CGFloat, offset: CGSize) {
         geometry.zoom(
             to: target,
-            around: CGPoint(x: displaySize.width / 2, y: displaySize.height / 2),
+            around: CGPoint(x: containerSize.width / 2, y: containerSize.height / 2),
             from: committedOffset,
             at: committedScale
         )
