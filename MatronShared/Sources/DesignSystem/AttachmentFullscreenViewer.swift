@@ -3,55 +3,169 @@ import SwiftUI
 import AppKit
 #endif
 
-/// Fullscreen image viewer presented from a chat attachment tap. iOS
-/// supports pinch-zoom + swipe-down-to-dismiss; Mac opens a sheet that
-/// fills most of the presenting window, aspect-fits the image into it,
-/// and adds Preview.app-style interactions (trackpad pinch, drag-pan
-/// while zoomed, double-click, ⌘+/⌘−/⌘0) plus a "Done" button — see
-/// `MacZoomableImage`.
+/// Fullscreen image viewer presented from a chat attachment tap or a
+/// media-grid cell. Steps through an `ImageGallery` — Mac ←/→ keys and
+/// edge chevrons, iOS horizontal swipe — with a "3 of 12" counter; the
+/// ends are hard stops. iOS supports pinch-zoom + swipe-down-to-dismiss;
+/// Mac opens a sheet that fills most of the presenting window,
+/// aspect-fits the image into it, and adds Preview.app-style
+/// interactions (trackpad pinch, drag-pan while zoomed, double-click,
+/// ⌘+/⌘−/⌘0) plus a "Done" button — see `MacZoomableImage`.
 ///
-/// The `Image` is taken pre-resolved (via `ChatViewModel.image(for:)`)
-/// so the viewer stays a leaf View — avoids dragging `MediaService`
-/// into `MatronDesignSystem` for one sheet.
+/// Images resolve through the gallery's `load` closure, so the viewer
+/// stays free of `MediaService`. The tapped image arrives pre-resolved
+/// (`ImageGallery.initial`) and shows instantly; the two neighbours are
+/// fetched ahead so a step is usually instant too.
 public struct AttachmentFullscreenViewer: View {
-    private let image: Image
-    /// Native bitmap size in pixels, when the call site knows it. Mac
-    /// uses its aspect ratio to lay the image out at an exact fitted
-    /// size, which is what the zoom/pan geometry needs to know where the
-    /// image's edges are. `nil` (iOS call sites, or an image whose size
-    /// never resolved) falls back to a plain aspect-fit without zoom.
-    private let nativePixelSize: CGSize?
+    private let gallery: ImageGallery
     private let onDismiss: () -> Void
 
+    @State private var index: Int
+    /// Resolved images keyed by entry id. Seeded with the tapped image.
+    @State private var loaded: [String: ViewerImage]
+    /// Entries whose fetch returned nothing — shown as unavailable and not
+    /// retried for the life of the sheet (blob ids are immutable; a miss
+    /// stays a miss).
+    @State private var failed: Set<String> = []
+    @State private var inFlight: Set<String> = []
+    /// Sign of the last step (+1 next, −1 previous) — drives which edge
+    /// the iOS slide transition enters from.
+    @State private var lastStep: Int = 1
+
+    public init(gallery: ImageGallery, onDismiss: @escaping () -> Void) {
+        self.gallery = gallery
+        self.onDismiss = onDismiss
+        _index = State(initialValue: gallery.startIndex)
+        var seeded: [String: ViewerImage] = [:]
+        if let initial = gallery.initial {
+            seeded[gallery.entries[gallery.startIndex].id] = initial
+        }
+        _loaded = State(initialValue: seeded)
+    }
+
+    /// Single-image convenience — a one-entry gallery, no stepping.
     public init(
         image: Image,
         nativePixelSize: CGSize? = nil,
         onDismiss: @escaping () -> Void
     ) {
-        self.image = image
-        self.nativePixelSize = nativePixelSize
-        self.onDismiss = onDismiss
+        self.init(gallery: .single(image, pixelSize: nativePixelSize), onDismiss: onDismiss)
     }
 
     public var body: some View {
-        #if os(macOS)
-        macBody
-        #else
-        iosBody
-        #endif
+        Group {
+            #if os(macOS)
+            macBody
+            #else
+            iosBody
+            #endif
+        }
+        .task(id: index) { loadAround(index) }
+    }
+
+    // MARK: - Gallery state
+
+    private var entries: [ImageGallery.Entry] { gallery.entries }
+    private var current: ImageGallery.Entry { entries[index] }
+    private var canPage: Bool { entries.count > 1 }
+    private var counter: String? {
+        ImageGalleryNavigation.counterLabel(index: index, count: entries.count)
+    }
+    private var canGoPrevious: Bool {
+        ImageGalleryNavigation.step(index, by: -1, count: entries.count) != nil
+    }
+    private var canGoNext: Bool {
+        ImageGalleryNavigation.step(index, by: 1, count: entries.count) != nil
+    }
+
+    /// What the current entry renders as right now.
+    private var slot: ViewerSlot {
+        if let image = loaded[current.id] { return .image(image) }
+        if current.expired || current.url == nil || failed.contains(current.id) {
+            return .unavailable
+        }
+        return .loading
+    }
+
+    private func step(_ delta: Int) {
+        guard let next = ImageGalleryNavigation.step(index, by: delta, count: entries.count)
+        else { return }
+        lastStep = delta
+        withAnimation(.easeInOut(duration: 0.22)) { index = next }
+    }
+
+    /// Fetch the current entry, then its neighbours. Unstructured tasks on
+    /// purpose: `.task(id:)` cancels its body on every step, and a fetch
+    /// cancelled mid-flight must not be mistaken for a miss — these run to
+    /// completion and land in `loaded` whenever they finish.
+    private func loadAround(_ index: Int) {
+        for i in [index] + ImageGalleryNavigation.preloadIndices(around: index, count: entries.count) {
+            Task { @MainActor in await ensureLoaded(i) }
+        }
+    }
+
+    @MainActor
+    private func ensureLoaded(_ i: Int) async {
+        guard entries.indices.contains(i) else { return }
+        let entry = entries[i]
+        guard let url = entry.url, !entry.expired,
+              loaded[entry.id] == nil, !failed.contains(entry.id),
+              !inFlight.contains(entry.id) else { return }
+        inFlight.insert(entry.id)
+        let result = await gallery.load(url)
+        inFlight.remove(entry.id)
+        if let result {
+            loaded[entry.id] = result
+        } else {
+            failed.insert(entry.id)
+        }
     }
 
     // MARK: - iOS
 
     #if !os(macOS)
     /// iOS body. Pinch-to-zoom anchored on the pinch itself, one-finger
-    /// pan once zoomed, double-tap to toggle, and swipe-down to dismiss
-    /// while at fit scale. See `FullscreenImageBody`.
+    /// pan once zoomed, double-tap to toggle, swipe-down to dismiss and
+    /// swipe-sideways to step while at fit scale. See `FullscreenImageBody`.
     @ViewBuilder
     private var iosBody: some View {
-        FullscreenImageBody(image: image, onDismiss: onDismiss)
+        FullscreenImageBody(
+            slot: slot,
+            entryID: current.id,
+            counter: counter,
+            canPage: canPage,
+            canGoPrevious: canGoPrevious,
+            canGoNext: canGoNext,
+            stepDirection: lastStep,
+            onStep: { step($0) },
+            onDismiss: onDismiss
+        )
+        // Hardware-keyboard arrows (iPad) — same hidden-button routing
+        // the Mac zoom shortcuts use.
+        .background(keyboardStepButtons)
     }
     #endif
+
+    /// Hidden buttons carrying ←/→ — SwiftUI routes `keyboardShortcut`
+    /// through the responder chain even at zero opacity. Only mounted
+    /// when there is somewhere to step, so a lone image leaves the arrow
+    /// keys alone.
+    @ViewBuilder
+    private var keyboardStepButtons: some View {
+        if canPage {
+            Group {
+                Button("Previous image") { step(-1) }
+                    .keyboardShortcut(.leftArrow, modifiers: [])
+                    .disabled(!canGoPrevious)
+                Button("Next image") { step(1) }
+                    .keyboardShortcut(.rightArrow, modifiers: [])
+                    .disabled(!canGoNext)
+            }
+            .opacity(0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+    }
 
     // MARK: - Mac
 
@@ -80,23 +194,31 @@ public struct AttachmentFullscreenViewer: View {
         VStack(spacing: 0) {
             doneRow.frame(height: Self.doneRowHeight)
             Group {
-                if let fitted = nativePixelSize.flatMap({
-                    Self.imageDisplaySize(pixelSize: $0, bound: imageArea)
-                }) {
-                    MacZoomableImage(
-                        image: image,
-                        containerSize: imageArea,
-                        contentSize: fitted
-                    )
-                } else {
-                    // No pixel size (never on Mac today, but the parameter
-                    // is optional): plain aspect-fit, no zoom — the zoom
-                    // geometry needs the fitted rect, which only the
-                    // pixel aspect ratio can give us up front.
-                    image
-                        .resizable()
-                        .interpolation(.high)
-                        .scaledToFit()
+                switch slot {
+                case .image(let viewerImage):
+                    if let pixelSize = viewerImage.pixelSize,
+                       let fitted = Self.imageDisplaySize(pixelSize: pixelSize, bound: imageArea) {
+                        MacZoomableImage(
+                            image: viewerImage.image,
+                            containerSize: imageArea,
+                            contentSize: fitted
+                        )
+                        // Fresh zoom/pan state per image — stepping to the
+                        // next photo must not inherit the last one's zoom.
+                        .id(current.id)
+                    } else {
+                        // No pixel size: plain aspect-fit, no zoom — the
+                        // zoom geometry needs the fitted rect, which only
+                        // the pixel aspect ratio can give us up front.
+                        viewerImage.image
+                            .resizable()
+                            .interpolation(.high)
+                            .scaledToFit()
+                    }
+                case .loading:
+                    ProgressView().controlSize(.large)
+                case .unavailable:
+                    UnavailableImagePlaceholder()
                 }
             }
             .frame(width: imageArea.width, height: imageArea.height)
@@ -107,13 +229,36 @@ public struct AttachmentFullscreenViewer: View {
         .accessibilityLabel("Image preview")
     }
 
+    /// Chrome row: step chevrons leading (they carry the ←/→ shortcuts,
+    /// so disabling them at an end disables the key too), counter
+    /// centred, Done trailing.
     @ViewBuilder
     private var doneRow: some View {
-        HStack {
+        HStack(spacing: 4) {
+            if canPage {
+                Button { step(-1) } label: { Image(systemName: "chevron.left") }
+                    .keyboardShortcut(.leftArrow, modifiers: [])
+                    .disabled(!canGoPrevious)
+                    .help("Previous image")
+                    .accessibilityLabel("Previous image")
+                Button { step(1) } label: { Image(systemName: "chevron.right") }
+                    .keyboardShortcut(.rightArrow, modifiers: [])
+                    .disabled(!canGoNext)
+                    .help("Next image")
+                    .accessibilityLabel("Next image")
+            }
             Spacer()
             Button("Done") { onDismiss() }
                 .keyboardShortcut(.cancelAction)
-                .padding()
+        }
+        .padding(.horizontal)
+        .overlay {
+            if let counter {
+                Text(counter)
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Image \(counter)")
+            }
         }
     }
 
@@ -211,6 +356,29 @@ public struct AttachmentFullscreenViewer: View {
                         bound.height / pixelSize.height)
         return CGSize(width: pixelSize.width * ratio,
                       height: pixelSize.height * ratio)
+    }
+}
+
+/// Render state of the entry the viewer is showing.
+fileprivate enum ViewerSlot {
+    case image(ViewerImage)
+    case loading
+    case unavailable
+}
+
+/// Stand-in for an entry with nothing to show: a reaped (expired)
+/// attachment or a fetch that came back empty. Shown in place rather
+/// than skipped so the counter stays in step with the grid.
+private struct UnavailableImagePlaceholder: View {
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "photo.badge.exclamationmark")
+                .font(.largeTitle)
+            Text("Image unavailable")
+                .font(.callout)
+        }
+        .foregroundStyle(.secondary)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -392,9 +560,10 @@ private struct ContentSizeKey: PreferenceKey {
 }
 
 /// iOS subview that hosts the gesture state. Lifting it out of
-/// `AttachmentFullscreenViewer` keeps the parent stateless so the
-/// `#if` switch above stays a one-line `body` without leaking
-/// gesture-state ownership across platforms.
+/// `AttachmentFullscreenViewer` keeps the parent's `#if` switch a
+/// one-line `body` without leaking gesture-state ownership across
+/// platforms; the parent owns which entry is showing, this view owns how
+/// it is zoomed.
 ///
 /// Gestures, and why each is shaped the way it is:
 ///
@@ -407,14 +576,26 @@ private struct ContentSizeKey: PreferenceKey {
 ///   image eg was not able to pan"). It also read `value.magnitude`
 ///   directly, which restarts at 1.0 each gesture, so successive pinches
 ///   couldn't accumulate.
-/// * **Drag** pans while zoomed and dismisses while at fit scale. One
-///   gesture serving both is what makes "swipe down to close" survive:
-///   at fit scale there is nothing to pan to, and once zoomed a downward
-///   drag is unambiguously a request to see the bottom of the image.
+/// * **Drag** pans while zoomed; at fit scale its dominant axis decides:
+///   downward dismisses (the original swipe-down), sideways steps to the
+///   previous/next image (2026-09-03). One gesture serving all three is
+///   what keeps them from fighting — at fit scale there is nothing to
+///   pan to, and once zoomed a drag is unambiguously a request to see
+///   another part of THIS image.
 /// * **Double-tap** toggles between fit and `doubleTapScale`, anchored on
 ///   the tap, as the fast path for "let me read that bit".
 private struct FullscreenImageBody: View {
-    let image: Image
+    let slot: ViewerSlot
+    /// Identity of the showing entry — changes reset the zoom and drive
+    /// the slide transition.
+    let entryID: String
+    let counter: String?
+    let canPage: Bool
+    let canGoPrevious: Bool
+    let canGoNext: Bool
+    /// +1 when the last step was to the next image, −1 for previous.
+    let stepDirection: Int
+    let onStep: (Int) -> Void
     let onDismiss: () -> Void
 
     /// Live values, updated continuously during a gesture.
@@ -428,13 +609,16 @@ private struct FullscreenImageBody: View {
     /// Downward travel of an in-progress dismiss swipe, kept apart from
     /// `offset` so it never pollutes the pan state.
     @State private var dismissTranslation: CGFloat = 0
+    /// Sideways travel of an in-progress page swipe — the image follows
+    /// the finger so the gesture reads as dragging to the neighbour.
+    @State private var pageTranslation: CGFloat = 0
     @State private var contentSize: CGSize = .zero
 
-    /// Threshold for the swipe-down dismiss. 100pt is the same value
-    /// SwiftUI's interactive sheet dismiss uses internally and reads
-    /// as "intentional swipe" without tripping on a normal scroll
-    /// inertia bounce.
-    private static let dismissThreshold: CGFloat = 100
+    /// Threshold for the swipe-down dismiss and the sideways step. 100pt
+    /// is the same value SwiftUI's interactive sheet dismiss uses
+    /// internally and reads as "intentional swipe" without tripping on a
+    /// normal scroll inertia bounce.
+    private static let swipeThreshold: CGFloat = 100
 
     private var isZoomed: Bool { committedScale > ZoomPanGeometry.minScale }
 
@@ -448,23 +632,17 @@ private struct FullscreenImageBody: View {
             ZStack {
                 Color.black.ignoresSafeArea()
 
-                image
-                    .resizable()
-                    .scaledToFit()
-                    // Measured before the transforms: `scaleEffect` and
-                    // `offset` are render-time only and don't change the
-                    // laid-out rect, but reading the size here keeps that
-                    // independence explicit.
-                    .background(
-                        GeometryReader { imageProxy in
-                            Color.clear.preference(
-                                key: ContentSizeKey.self,
-                                value: imageProxy.size
-                            )
-                        }
-                    )
+                slotView
+                    // New identity per entry so a step slides the old
+                    // image out and the new one in from the far edge.
+                    .id(entryID)
+                    .transition(.asymmetric(
+                        insertion: .move(edge: stepDirection >= 0 ? .trailing : .leading),
+                        removal: .move(edge: stepDirection >= 0 ? .leading : .trailing)
+                    ))
                     .scaleEffect(scale)
-                    .offset(x: offset.width, y: offset.height + dismissTranslation)
+                    .offset(x: offset.width + pageTranslation,
+                            y: offset.height + dismissTranslation)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // Without this the gestures only respond over the image's own
@@ -479,11 +657,12 @@ private struct FullscreenImageBody: View {
         // Fades the sheet out under an in-progress dismiss swipe, so the
         // gesture reads as "dragging the photo away" rather than as the
         // image sliding off a black wall.
-        .opacity(1 - min(dismissTranslation / (Self.dismissThreshold * 3), 0.6))
+        .opacity(1 - min(dismissTranslation / (Self.swipeThreshold * 3), 0.6))
         // While zoomed, a downward pan must not be stolen by the sheet's
         // own interactive dismiss — the user is trying to see the bottom
         // of the image, not close it.
         .interactiveDismissDisabled(isZoomed)
+        .onChange(of: entryID) { _, _ in resetZoom() }
         .overlay(alignment: .topTrailing) {
             // Top-trailing close button — provides a no-gesture path
             // out for VoiceOver users / anyone unfamiliar with the
@@ -496,6 +675,52 @@ private struct FullscreenImageBody: View {
             }
             .accessibilityLabel("Close image preview")
         }
+        .overlay(alignment: .top) {
+            if let counter {
+                Text(counter)
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(.black.opacity(0.4), in: Capsule())
+                    .padding(.top, 14)
+                    .accessibilityLabel("Image \(counter)")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var slotView: some View {
+        switch slot {
+        case .image(let viewerImage):
+            viewerImage.image
+                .resizable()
+                .scaledToFit()
+                // Measured before the transforms: `scaleEffect` and
+                // `offset` are render-time only and don't change the
+                // laid-out rect, but reading the size here keeps that
+                // independence explicit.
+                .background(
+                    GeometryReader { imageProxy in
+                        Color.clear.preference(
+                            key: ContentSizeKey.self,
+                            value: imageProxy.size
+                        )
+                    }
+                )
+        case .loading:
+            ProgressView().tint(.white).controlSize(.large)
+        case .unavailable:
+            UnavailableImagePlaceholder()
+        }
+    }
+
+    private func resetZoom() {
+        scale = ZoomPanGeometry.minScale
+        offset = .zero
+        committedScale = ZoomPanGeometry.minScale
+        committedOffset = .zero
+        contentSize = .zero
     }
 
     private func magnification(_ geometry: ZoomPanGeometry) -> some Gesture {
@@ -526,18 +751,42 @@ private struct FullscreenImageBody: View {
                         ),
                         at: scale
                     )
-                } else if value.translation.height > 0 {
-                    dismissTranslation = value.translation.height
+                    return
+                }
+                let translation = value.translation
+                if abs(translation.width) > abs(translation.height) {
+                    // Sideways: follow the finger only when there is a
+                    // neighbour in that direction, so the ends feel solid.
+                    let towardNext = translation.width < 0
+                    let canFollow = canPage && (towardNext ? canGoNext : canGoPrevious)
+                    pageTranslation = canFollow ? translation.width : 0
+                    dismissTranslation = 0
+                } else if translation.height > 0 {
+                    dismissTranslation = translation.height
+                    pageTranslation = 0
                 }
             }
             .onEnded { value in
                 if isZoomed {
                     committedOffset = offset
-                } else if value.translation.height > Self.dismissThreshold {
+                    return
+                }
+                let intent = ImageGalleryNavigation.swipeIntent(
+                    translation: value.translation, threshold: Self.swipeThreshold
+                )
+                switch intent {
+                case .dismiss:
                     onDismiss()
-                } else {
+                case .next where canPage && canGoNext:
+                    withAnimation(.easeInOut(duration: 0.22)) { pageTranslation = 0 }
+                    onStep(1)
+                case .previous where canPage && canGoPrevious:
+                    withAnimation(.easeInOut(duration: 0.22)) { pageTranslation = 0 }
+                    onStep(-1)
+                default:
                     withAnimation(.easeOut(duration: 0.2)) {
                         dismissTranslation = 0
+                        pageTranslation = 0
                     }
                 }
             }

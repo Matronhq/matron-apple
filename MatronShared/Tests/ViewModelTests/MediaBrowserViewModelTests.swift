@@ -108,6 +108,24 @@ final class MediaBrowserViewModelTests: XCTestCase {
         XCTAssertFalse(vm.loadFailed)
     }
 
+    func test_imageEntries_returnsOnlyImagesInStoreOrder() throws {
+        // The fullscreen viewer's previous/next stepping walks this list
+        // (chat taps build it straight from the store, without a browser
+        // view model), so it must be the same media list `load()` shows —
+        // images only, store order (newest first), tombstones kept.
+        let store = FakeBrowserStore(attachments: [
+            event(5, type: "image", payload: ["expired": true]),
+            event(3, type: "file", payload: ["blob_ref": "b3", "name": "a.pdf"]),
+            event(1, type: "image", payload: ["blob_ref": "b1"]),
+        ])
+        let entries = try MediaBrowserViewModel.imageEntries(
+            store: store, convoID: "c1", serverURL: server)
+        XCTAssertEqual(entries.map(\.id), [5, 1])
+        XCTAssertTrue(entries[0].expired)
+        XCTAssertEqual(entries[1].url,
+                       server.appendingPathComponent("media").appendingPathComponent("b1"))
+    }
+
     @MainActor
     func test_load_extractsDedupesAndOrdersLinks() async {
         let store = FakeBrowserStore(linkCandidates: [   // store returns newest first

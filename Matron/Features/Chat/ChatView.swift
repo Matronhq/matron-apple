@@ -291,12 +291,12 @@ struct ChatView: View {
     /// sheet (and so `.sheet(item:)` doesn't conflate two separate
     /// images).
     fileprivate enum AttachmentPreview: Identifiable {
-        case image(id: UUID = UUID(), Image)
+        case image(id: UUID = UUID(), URL, Image)
         case file(id: UUID = UUID(), URL, filename: String)
 
         var id: UUID {
             switch self {
-            case .image(let id, _): return id
+            case .image(let id, _, _): return id
             case .file(let id, _, _): return id
             }
         }
@@ -1056,9 +1056,12 @@ struct ChatView: View {
         // button, or successful share).
         .sheet(item: $attachmentPreview) { preview in
             switch preview {
-            case .image(_, let img):
+            case .image(_, let url, let img):
                 AttachmentFullscreenViewer(
-                    image: img,
+                    gallery: ImageGalleries.conversation(
+                        tapped: url, image: img, chatViewModel: viewModel,
+                        deps: deps, session: session
+                    ),
                     onDismiss: { attachmentPreview = nil }
                 )
             case .file(_, let url, let filename):
@@ -1252,8 +1255,8 @@ private struct TimelineRowView: View, Equatable {
                     item: item,
                     resolveImage: { viewModel.image(for: $0) },
                     onRetry: { id in viewModel.retrySend(itemID: id) },
-                    onTapImage: { img in
-                        onPreview(.image(img))
+                    onTapImage: { url, img in
+                        onPreview(.image(url, img))
                     },
                     onTapFile: { mxc, filename in
                         Task {
@@ -1525,8 +1528,14 @@ struct SubChatView: View {
         }
         .sheet(item: $attachmentPreview) { preview in
             switch preview {
-            case .image(_, let img):
-                AttachmentFullscreenViewer(image: img, onDismiss: { attachmentPreview = nil })
+            case .image(_, let url, let img):
+                AttachmentFullscreenViewer(
+                    gallery: ImageGalleries.conversation(
+                        tapped: url, image: img, chatViewModel: viewModel,
+                        deps: deps, session: session
+                    ),
+                    onDismiss: { attachmentPreview = nil }
+                )
             case .file(_, let url, let filename):
                 FilePreviewSheet(url: url, filename: filename,
                                  onDone: { attachmentPreview = nil })

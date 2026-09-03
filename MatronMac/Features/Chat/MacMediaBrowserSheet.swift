@@ -25,8 +25,7 @@ struct MacMediaBrowserSheet: View {
 
     private struct Preview: Identifiable {
         let id = UUID()
-        let image: Image
-        let pixelSize: CGSize
+        let gallery: ImageGallery
     }
 
     var body: some View {
@@ -74,11 +73,8 @@ struct MacMediaBrowserSheet: View {
             viewModel = vm
         }
         .sheet(item: $imagePreview) { preview in
-            AttachmentFullscreenViewer(
-                image: preview.image,
-                nativePixelSize: preview.pixelSize,
-                onDismiss: { imagePreview = nil }
-            )
+            AttachmentFullscreenViewer(gallery: preview.gallery,
+                                       onDismiss: { imagePreview = nil })
         }
     }
 
@@ -118,8 +114,12 @@ struct MacMediaBrowserSheet: View {
         openingMedia.insert(url)
         Task {
             defer { openingMedia.remove(url) }
-            if let sized = await media.sizedImage(for: url) {
-                imagePreview = Preview(image: sized.image, pixelSize: sized.pixelSize)
+            if let sized = await media.sizedImage(for: url), let viewModel {
+                imagePreview = Preview(gallery: ImageGalleries.mediaGrid(
+                    items: viewModel.mediaItems, tappedID: cell.id,
+                    initial: ViewerImage(image: sized.image, pixelSize: sized.pixelSize),
+                    media: media
+                ))
             }
         }
     }

@@ -83,23 +83,7 @@ public final class MediaBrowserViewModel {
         do {
             let attachments = try store.attachmentEvents(convoID: convoID)
             let candidates = try store.linkCandidateEvents(convoID: convoID)
-            var mediaAcc: [MediaEntry] = []
-            var fileAcc: [FileEntry] = []
-            for event in attachments {
-                guard let item = JournalTimelineMapper.timelineItem(
-                    from: event, ownSender: "", serverURL: serverURL) else { continue }
-                switch item.kind {
-                case let .image(url, caption, _, expired):
-                    mediaAcc.append(MediaEntry(id: event.seq, url: url,
-                                               caption: caption, expired: expired))
-                case let .file(url, name, caption, size, expired):
-                    fileAcc.append(FileEntry(id: event.seq, url: url, name: name,
-                                             sizeBytes: size, caption: caption,
-                                             expired: expired))
-                default:
-                    continue
-                }
-            }
+            let (mediaAcc, fileAcc) = Self.partition(attachments, serverURL: serverURL)
             var seen = Set<String>()
             var linkAcc: [LinkEntry] = []
             for event in candidates {   // newest first → first sighting IS the newest
@@ -120,6 +104,44 @@ public final class MediaBrowserViewModel {
             loadFailed = true
             mediaItems = []; fileItems = []; links = []
         }
+    }
+
+    /// The conversation's images as the media grid lists them — store
+    /// order (newest first), tombstones kept. This is the list the
+    /// fullscreen viewer's previous/next stepping walks, and a chat tap
+    /// builds it straight from the store without a browser view model,
+    /// so it goes through the same mapping as `load()` and can never
+    /// disagree with the grid.
+    nonisolated public static func imageEntries(
+        store: MediaBrowserStoreReading, convoID: String, serverURL: URL
+    ) throws -> [MediaEntry] {
+        partition(try store.attachmentEvents(convoID: convoID), serverURL: serverURL).media
+    }
+
+    /// Splits attachment events into the grid's media and file lists via
+    /// the timeline mapper, so the browser shows exactly what the chat
+    /// rendered (same payload contract, same expiry/tombstone handling).
+    nonisolated private static func partition(
+        _ events: [JournalEvent], serverURL: URL
+    ) -> (media: [MediaEntry], files: [FileEntry]) {
+        var mediaAcc: [MediaEntry] = []
+        var fileAcc: [FileEntry] = []
+        for event in events {
+            guard let item = JournalTimelineMapper.timelineItem(
+                from: event, ownSender: "", serverURL: serverURL) else { continue }
+            switch item.kind {
+            case let .image(url, caption, _, expired):
+                mediaAcc.append(MediaEntry(id: event.seq, url: url,
+                                           caption: caption, expired: expired))
+            case let .file(url, name, caption, size, expired):
+                fileAcc.append(FileEntry(id: event.seq, url: url, name: name,
+                                         sizeBytes: size, caption: caption,
+                                         expired: expired))
+            default:
+                continue
+            }
+        }
+        return (mediaAcc, fileAcc)
     }
 
     public func isUnavailable(_ url: URL) -> Bool { unavailable.contains(url) }

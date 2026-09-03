@@ -30,7 +30,7 @@ struct TimelineItemView: View {
     /// `Image` (already in memory via `resolveImage`) so the parent
     /// can present the fullscreen viewer without a second fetch.
     /// `nil` keeps existing test sites compiling unchanged.
-    var onTapImage: ((Image) -> Void)? = nil
+    var onTapImage: ((URL, Image) -> Void)? = nil
     /// File-attachment tap handler — receives the `mxc://` URL plus
     /// the original filename so the parent can stage the bytes to a
     /// temp file and present `ShareLink` (iOS) / `NSWorkspace.open`
@@ -166,9 +166,10 @@ struct TimelineItemView: View {
                         // the fullscreen viewer with no bytes would just
                         // show an empty black sheet.
                         onTap: {
-                            if let img = resolvedImage(for: url),
+                            if let url,
+                               let img = resolvedImage(for: url),
                                let onTapImage {
-                                onTapImage(img)
+                                onTapImage(url, img)
                             }
                         }
                     )
