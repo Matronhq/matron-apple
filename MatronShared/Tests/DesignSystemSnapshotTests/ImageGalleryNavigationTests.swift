@@ -39,6 +39,28 @@ final class ImageGalleryNavigationTests: XCTestCase {
         XCTAssertEqual(ImageGalleryNavigation.preloadIndices(around: 0, count: 1), [])
     }
 
+    // MARK: - Retained cache window
+
+    func test_retainedIndices_windowAroundIndex() {
+        // Resolved images are kept only near the current index so holding
+        // an arrow key through a big gallery can't pin every bitmap.
+        XCTAssertEqual(
+            ImageGalleryNavigation.retainedIndices(around: 10, count: 50, radius: 3),
+            Set([7, 8, 9, 10, 11, 12, 13])
+        )
+    }
+
+    func test_retainedIndices_clampedAtEnds() {
+        XCTAssertEqual(
+            ImageGalleryNavigation.retainedIndices(around: 0, count: 5, radius: 3),
+            Set([0, 1, 2, 3])
+        )
+        XCTAssertEqual(
+            ImageGalleryNavigation.retainedIndices(around: 4, count: 5, radius: 3),
+            Set([1, 2, 3, 4])
+        )
+    }
+
     // MARK: - Swipe classification (iOS)
 
     func test_swipe_leftPastThreshold_isNext() {

@@ -25,6 +25,18 @@ enum ImageGalleryNavigation {
         [index - 1, index + 1].filter { $0 >= 0 && $0 < count }
     }
 
+    /// The indices within `radius` of `index`, clamped to the gallery —
+    /// the entries whose resolved bitmaps are worth keeping in memory.
+    /// Everything else is evicted on a step, so holding an arrow key
+    /// through a big gallery can't pin every image at once.
+    static func retainedIndices(around index: Int, count: Int, radius: Int) -> Set<Int> {
+        guard count > 0 else { return [] }
+        let lower = max(0, index - radius)
+        let upper = min(count - 1, index + radius)
+        guard lower <= upper else { return [] }
+        return Set(lower...upper)
+    }
+
     /// Classifies a completed drag by its dominant axis: horizontal past
     /// `threshold` pages, downward past `threshold` dismisses (the
     /// pre-existing swipe-down), anything else is a no-op. The dominant

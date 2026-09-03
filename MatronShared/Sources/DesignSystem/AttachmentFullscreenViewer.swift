@@ -61,7 +61,7 @@ public struct AttachmentFullscreenViewer: View {
             iosBody
             #endif
         }
-        .task(id: index) { loadAround(index) }
+        .task(id: index) { await loadAround(index) }
     }
 
     // MARK: - Gallery state
@@ -95,14 +95,27 @@ public struct AttachmentFullscreenViewer: View {
         withAnimation(.easeInOut(duration: 0.22)) { index = next }
     }
 
-    /// Fetch the current entry, then its neighbours. Unstructured tasks on
-    /// purpose: `.task(id:)` cancels its body on every step, and a fetch
-    /// cancelled mid-flight must not be mistaken for a miss — these run to
-    /// completion and land in `loaded` whenever they finish.
-    private func loadAround(_ index: Int) {
-        Task { @MainActor in await ensureLoaded(index, retryingFailed: true) }
-        for i in ImageGalleryNavigation.preloadIndices(around: index, count: entries.count) {
-            Task { @MainActor in await ensureLoaded(i, retryingFailed: false) }
+    /// Entries either side of the current one whose bitmaps stay cached.
+    static let retainedRadius = 4
+    /// Fetches this viewer may have in flight at once.
+    static let maxConcurrentLoads = 3
+
+    /// Trim the bitmap cache to a window around `index`, then fetch the
+    /// current entry and its neighbours in turn. Runs inside `.task(id:)`,
+    /// so a step cancels it: a fetch cancelled mid-flight is dropped
+    /// rather than recorded as a miss, and `inFlight` keeps the next step
+    /// from re-issuing it while it drains. Together with the concurrency
+    /// cap this bounds what a held arrow key can queue (CodeRabbit,
+    /// PR #175).
+    private func loadAround(_ index: Int) async {
+        let keep = ImageGalleryNavigation.retainedIndices(
+            around: index, count: entries.count, radius: Self.retainedRadius
+        )
+        let keepIDs = Set(keep.map { entries[$0].id })
+        loaded = loaded.filter { keepIDs.contains($0.key) }
+        for i in [index] + ImageGalleryNavigation.preloadIndices(around: index, count: entries.count) {
+            guard !Task.isCancelled else { return }
+            await ensureLoaded(i, retryingFailed: i == index)
         }
     }
 
@@ -116,12 +129,18 @@ public struct AttachmentFullscreenViewer: View {
             guard retryingFailed else { return }
             failed.remove(entry.id)
         }
+        // Wait for a slot rather than piling requests up.
+        while inFlight.count >= Self.maxConcurrentLoads {
+            guard !Task.isCancelled else { return }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        guard loaded[entry.id] == nil, !inFlight.contains(entry.id) else { return }
         inFlight.insert(entry.id)
         let result = await gallery.load(url)
         inFlight.remove(entry.id)
         if let result {
             loaded[entry.id] = result
-        } else {
+        } else if !Task.isCancelled {
             failed.insert(entry.id)
         }
     }
@@ -619,10 +638,12 @@ private struct FullscreenImageBody: View {
     @State private var pageTranslation: CGFloat = 0
     @State private var contentSize: CGSize = .zero
     /// A pinch in progress. The simultaneous drag sees the two-finger
-    /// centroid as a drag, and until the pinch commits `isZoomed` still
-    /// reads "fit scale" — so without this a pinch-to-zoom whose centroid
-    /// drifted sideways would page to the neighbour (Bugbot, PR #175).
-    /// Any drag that overlapped a pinch is discarded when it ends.
+    /// centroid as a drag, and `isZoomed` only flips when the pinch
+    /// commits — so without this a pinch-out whose centroid drifted
+    /// sideways would page to the neighbour, and a pinch back to fit
+    /// that committed first would let the same drag's end page or dismiss
+    /// (Bugbot, PR #175, twice). Any drag that overlapped a pinch at any
+    /// point — zoomed or not — is discarded when it ends.
     @State private var pinchActive = false
     @State private var dragTaintedByPinch = false
 
@@ -757,6 +778,7 @@ private struct FullscreenImageBody: View {
     private func drag(_ geometry: ZoomPanGeometry) -> some Gesture {
         DragGesture()
             .onChanged { value in
+                if pinchActive { dragTaintedByPinch = true }
                 if isZoomed {
                     offset = geometry.clamped(
                         offset: CGSize(
@@ -767,8 +789,7 @@ private struct FullscreenImageBody: View {
                     )
                     return
                 }
-                if pinchActive || dragTaintedByPinch {
-                    dragTaintedByPinch = true
+                if dragTaintedByPinch {
                     pageTranslation = 0
                     dismissTranslation = 0
                     return
@@ -787,12 +808,13 @@ private struct FullscreenImageBody: View {
                 }
             }
             .onEnded { value in
+                let tainted = dragTaintedByPinch
+                dragTaintedByPinch = false
                 if isZoomed {
                     committedOffset = offset
                     return
                 }
-                if dragTaintedByPinch {
-                    dragTaintedByPinch = false
+                if tainted {
                     withAnimation(.easeOut(duration: 0.2)) {
                         dismissTranslation = 0
                         pageTranslation = 0
