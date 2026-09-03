@@ -174,8 +174,10 @@ public struct AttachmentFullscreenViewer: View {
 
     /// Sheet size for a presenting window of `windowContentSize` (nil when
     /// unknown) on a screen whose visible frame is `screenVisibleSize`:
-    /// `windowFillFraction` of the window, never past the screen (less
-    /// `screenMargin`), never under `minimumViewerSize`.
+    /// `windowFillFraction` of the window, raised to `minimumViewerSize`,
+    /// then capped to the screen (less `screenMargin`) — the cap is
+    /// applied last because a sheet that overhangs the screen is unusable
+    /// no matter how small the floor says it may not go.
     static func viewerSize(
         windowContentSize: CGSize?,
         screenVisibleSize: CGSize
@@ -192,8 +194,8 @@ public struct AttachmentFullscreenViewer: View {
             height: screenVisibleSize.height * screenFillFraction
         )
         return CGSize(
-            width: max(minimumViewerSize.width, min(target.width, screenCap.width)),
-            height: max(minimumViewerSize.height, min(target.height, screenCap.height))
+            width: min(screenCap.width, max(minimumViewerSize.width, target.width)),
+            height: min(screenCap.height, max(minimumViewerSize.height, target.height))
         )
     }
 

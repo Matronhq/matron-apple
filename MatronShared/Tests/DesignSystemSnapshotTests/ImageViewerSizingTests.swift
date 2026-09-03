@@ -48,6 +48,19 @@ final class ImageViewerSizingTests: XCTestCase {
         XCTAssertEqual(size, AttachmentFullscreenViewer.minimumViewerSize)
     }
 
+    func test_viewerSize_screenCapBeatsFloor() {
+        // A screen smaller than the floor plus margins (CodeRabbit on PR
+        // #174): the sheet must still fit the screen — an overhanging
+        // sheet is unusable, a slightly-under-floor one is merely small.
+        let size = AttachmentFullscreenViewer.viewerSize(
+            windowContentSize: CGSize(width: 400, height: 300),
+            screenVisibleSize: CGSize(width: 500, height: 400)
+        )
+        let margin = AttachmentFullscreenViewer.screenMargin
+        XCTAssertEqual(size.width, 500 - margin * 2, accuracy: 0.5)
+        XCTAssertEqual(size.height, 400 - margin * 2, accuracy: 0.5)
+    }
+
     func test_viewerSize_noWindow_fallsBackToScreenFraction() {
         // Headless / no presenting window: size against the screen alone.
         let size = AttachmentFullscreenViewer.viewerSize(
