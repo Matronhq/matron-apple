@@ -22,7 +22,7 @@ struct MediaBrowserSheet: View {
     @State private var openingMedia: Set<URL> = []
 
     private enum Preview: Identifiable {
-        case image(UUID, Image)
+        case image(UUID, ImageGallery)
         case file(UUID, URL, filename: String)
         var id: UUID {
             switch self {
@@ -76,8 +76,8 @@ struct MediaBrowserSheet: View {
         }
         .sheet(item: $preview) { presented in
             switch presented {
-            case .image(_, let img):
-                AttachmentFullscreenViewer(image: img, onDismiss: { preview = nil })
+            case .image(_, let gallery):
+                AttachmentFullscreenViewer(gallery: gallery, onDismiss: { preview = nil })
             case .file(_, let url, let filename):
                 // Same routing as the timeline (#143): QuickLook when it
                 // can preview the file, share-only fallback otherwise.
@@ -94,8 +94,12 @@ struct MediaBrowserSheet: View {
         openingMedia.insert(url)
         Task {
             defer { openingMedia.remove(url) }
-            if let img = await media.swiftUIImage(for: url) {
-                preview = .image(UUID(), img)
+            if let sized = await media.sizedImage(for: url), let viewModel {
+                preview = .image(UUID(), ImageGalleries.mediaGrid(
+                    items: viewModel.mediaItems, tappedID: cell.id,
+                    initial: ViewerImage(image: sized.image, pixelSize: sized.pixelSize),
+                    media: media
+                ))
             }
         }
     }

@@ -291,7 +291,7 @@ struct ChatView: View {
     /// sheet (and so `.sheet(item:)` doesn't conflate two separate
     /// images).
     fileprivate enum AttachmentPreview: Identifiable {
-        case image(id: UUID = UUID(), Image)
+        case image(id: UUID = UUID(), ImageGallery)
         case file(id: UUID = UUID(), URL, filename: String)
 
         var id: UUID {
@@ -448,7 +448,13 @@ struct ChatView: View {
                         stripViewModel: stripViewModel,
                         onOpenSubChat: nil,
                         onOpenSpawnRoom: openSpawnedRoom,
-                        onPreview: { attachmentPreview = $0 }
+                        onPreview: { attachmentPreview = $0 },
+                        onTapImage: { url, img in
+                            attachmentPreview = .image(ImageGalleries.conversation(
+                                tapped: url, image: img, chatViewModel: viewModel,
+                                deps: deps, session: session
+                            ))
+                        }
                     )
                     .equatable()
                     // The bot's typing / tool-use indicator, inline
@@ -1056,11 +1062,8 @@ struct ChatView: View {
         // button, or successful share).
         .sheet(item: $attachmentPreview) { preview in
             switch preview {
-            case .image(_, let img):
-                AttachmentFullscreenViewer(
-                    image: img,
-                    onDismiss: { attachmentPreview = nil }
-                )
+            case .image(_, let gallery):
+                AttachmentFullscreenViewer(gallery: gallery, onDismiss: { attachmentPreview = nil })
             case .file(_, let url, let filename):
                 FilePreviewSheet(url: url, filename: filename,
                                  onDone: { attachmentPreview = nil })
@@ -1121,6 +1124,12 @@ private struct TimelineListContent: View, Equatable {
     /// `onOpenSubChat`, so `==` ignoring it is safe.
     let onOpenSpawnRoom: ((String) -> Void)?
     let onPreview: (ChatView.AttachmentPreview) -> Void
+    /// Image tap → the screen builds the conversation gallery ONCE here,
+    /// at tap time, and stores it in the preview payload. Building it in
+    /// the sheet's content closure would re-query the journal on every
+    /// parent refresh and could shift entries under the viewer's kept
+    /// index (Bugbot, PR #175).
+    let onTapImage: (URL, Image) -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.viewModel === rhs.viewModel && lhs.stripViewModel === rhs.stripViewModel
@@ -1179,7 +1188,8 @@ private struct TimelineListContent: View, Equatable {
                     viewModel: viewModel,
                     onOpenSubChat: onOpenSubChat,
                     onOpenSpawnRoom: onOpenSpawnRoom,
-                    onPreview: onPreview
+                    onPreview: onPreview,
+                    onTapImage: onTapImage
                 )
                 .equatable()
                 .id(anchorID)
@@ -1217,6 +1227,12 @@ private struct TimelineRowView: View, Equatable {
     /// omitted rather than drawn dead.
     let onOpenSpawnRoom: ((String) -> Void)?
     let onPreview: (ChatView.AttachmentPreview) -> Void
+    /// Image tap → the screen builds the conversation gallery ONCE here,
+    /// at tap time, and stores it in the preview payload. Building it in
+    /// the sheet's content closure would re-query the journal on every
+    /// parent refresh and could shift entries under the viewer's kept
+    /// index (Bugbot, PR #175).
+    let onTapImage: (URL, Image) -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.row == rhs.row && lhs.subtaskChild == rhs.subtaskChild
@@ -1252,9 +1268,7 @@ private struct TimelineRowView: View, Equatable {
                     item: item,
                     resolveImage: { viewModel.image(for: $0) },
                     onRetry: { id in viewModel.retrySend(itemID: id) },
-                    onTapImage: { img in
-                        onPreview(.image(img))
-                    },
+                    onTapImage: onTapImage,
                     onTapFile: { mxc, filename in
                         Task {
                             if let url = await viewModel.writeTempFile(
@@ -1441,7 +1455,13 @@ struct SubChatView: View {
                             stripViewModel: stripViewModel,
                             onOpenSubChat: switchTo,
                             onOpenSpawnRoom: openSpawnedRoom,
-                            onPreview: { attachmentPreview = $0 }
+                            onPreview: { attachmentPreview = $0 },
+                            onTapImage: { url, img in
+                                attachmentPreview = .image(ImageGalleries.conversation(
+                                    tapped: url, image: img, chatViewModel: viewModel,
+                                    deps: deps, session: session
+                                ))
+                            }
                         )
                         Color.clear
                             .frame(height: 1)
@@ -1525,8 +1545,8 @@ struct SubChatView: View {
         }
         .sheet(item: $attachmentPreview) { preview in
             switch preview {
-            case .image(_, let img):
-                AttachmentFullscreenViewer(image: img, onDismiss: { attachmentPreview = nil })
+            case .image(_, let gallery):
+                AttachmentFullscreenViewer(gallery: gallery, onDismiss: { attachmentPreview = nil })
             case .file(_, let url, let filename):
                 FilePreviewSheet(url: url, filename: filename,
                                  onDone: { attachmentPreview = nil })

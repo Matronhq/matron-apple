@@ -252,16 +252,18 @@ struct MacChatView: View {
     /// the temp file to QuickLook / the user's preferred app, which
     /// means no SwiftUI sheet is needed. Only image taps land here.
     @State private var imagePreview: ImagePreview?
+    @Environment(\.appDependencies) private var deps
+    @Environment(\.currentSession) private var session
 
-    /// Identifiable wrapper around a SwiftUI `Image` so
-    /// `.sheet(item:)` has something to key on. Per-present UUID so
-    /// two consecutive taps re-mount the sheet. `pixelSize` gives the
-    /// viewer the image's aspect ratio for its zoom/pan geometry (nil →
-    /// plain aspect-fit, no zoom).
+    /// Identifiable wrapper around the tapped image's gallery so
+    /// `.sheet(item:)` has something to key on. Per-present UUID so two
+    /// consecutive taps re-mount the sheet. The gallery is built ONCE at
+    /// tap time (`ImageGalleries.conversation`) — building it in the
+    /// sheet closure would re-query the journal on every refresh and
+    /// could shift entries under the viewer's kept index.
     fileprivate struct ImagePreview: Identifiable {
         let id = UUID()
-        let image: Image
-        let pixelSize: CGSize?
+        let gallery: ImageGallery
     }
 
     /// Drives the summaries TOC popover — flipped on by the title cluster
@@ -514,10 +516,10 @@ struct MacChatView: View {
                         onOpenSubChat: { openSubChatID = $0 },
                         onOpenSpawnRoom: onOpenConversation,
                         onPreviewImage: { url, img in
-                            imagePreview = ImagePreview(
-                                image: img,
-                                pixelSize: viewModel.imagePixelSize(for: url)
-                            )
+                            imagePreview = ImagePreview(gallery: ImageGalleries.conversation(
+                                tapped: url, image: img, chatViewModel: viewModel,
+                                deps: deps, session: session
+                            ))
                         }
                     )
                     .equatable()
@@ -963,11 +965,8 @@ struct MacChatView: View {
         // already owns the file path, so the only sheet wired here is
         // for the in-app pinch-zoom-style image viewer.
         .sheet(item: $imagePreview) { preview in
-            AttachmentFullscreenViewer(
-                image: preview.image,
-                nativePixelSize: preview.pixelSize,
-                onDismiss: { imagePreview = nil }
-            )
+            AttachmentFullscreenViewer(gallery: preview.gallery,
+                                       onDismiss: { imagePreview = nil })
         }
         .sheet(isPresented: $showMediaBrowser) {
             MacMediaBrowserSheet(chatViewModel: viewModel)
@@ -1266,6 +1265,8 @@ struct MacSubChatPane: View {
     var onOpenSpawnRoom: ((String) -> Void)? = nil
 
     @State private var imagePreview: MacSubChatImagePreview?
+    @Environment(\.appDependencies) private var deps
+    @Environment(\.currentSession) private var session
     @State private var startedGeneration = 0
     /// Generation guard for the SHARED per-parent strip VM — switching to a
     /// sibling replaces this pane, and the successor's `.task` can restart
@@ -1327,10 +1328,10 @@ struct MacSubChatPane: View {
                             onOpenSubChat: onOpenSibling,
                             onOpenSpawnRoom: onOpenSpawnRoom,
                             onPreviewImage: { url, img in
-                                imagePreview = MacSubChatImagePreview(
-                                    image: img,
-                                    pixelSize: viewModel.imagePixelSize(for: url)
-                                )
+                                imagePreview = MacSubChatImagePreview(gallery: ImageGalleries.conversation(
+                                    tapped: url, image: img, chatViewModel: viewModel,
+                                    deps: deps, session: session
+                                ))
                             }
                         )
                         Color.clear
@@ -1414,11 +1415,8 @@ struct MacSubChatPane: View {
             LiveOutputSessionStore.shared.suspendSessions(in: childID)
         }
         .sheet(item: $imagePreview) { preview in
-            AttachmentFullscreenViewer(
-                image: preview.image,
-                nativePixelSize: preview.pixelSize,
-                onDismiss: { imagePreview = nil }
-            )
+            AttachmentFullscreenViewer(gallery: preview.gallery,
+                                       onDismiss: { imagePreview = nil })
         }
     }
 }
@@ -1427,8 +1425,7 @@ struct MacSubChatPane: View {
 /// `.sheet(item:)` — mirrors `MacChatView.ImagePreview`.
 private struct MacSubChatImagePreview: Identifiable {
     let id = UUID()
-    let image: Image
-    let pixelSize: CGSize?
+    let gallery: ImageGallery
 }
 
 /// The Mac sub-chat pane's mini-header: a close/back control, title +
