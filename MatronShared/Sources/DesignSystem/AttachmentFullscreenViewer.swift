@@ -28,7 +28,12 @@ public struct AttachmentFullscreenViewer: View {
     /// again: the loader can't tell a reaped blob from a flaky network,
     /// so a miss must not be permanent (Bugbot, PR #175).
     @State private var failed: Set<String> = []
-    @State private var inFlight: Set<String> = []
+    /// One shared fetch per entry. Unstructured on purpose: it outlives
+    /// the `.task(id:)` that started it, so a step can never cancel it
+    /// into a nil that reads as a miss, and a re-visit joins the running
+    /// fetch instead of finding a "loading" slot nobody is filling
+    /// (Bugbot, PR #175). Bounded by `maxConcurrentLoads`.
+    @State private var inFlight: [String: Task<ViewerImage?, Never>] = [:]
     /// Sign of the last step (+1 next, −1 previous) — drives which edge
     /// the iOS slide transition enters from.
     @State private var lastStep: Int = 1
@@ -102,11 +107,10 @@ public struct AttachmentFullscreenViewer: View {
 
     /// Trim the bitmap cache to a window around `index`, then fetch the
     /// current entry and its neighbours in turn. Runs inside `.task(id:)`,
-    /// so a step cancels it: a fetch cancelled mid-flight is dropped
-    /// rather than recorded as a miss, and `inFlight` keeps the next step
-    /// from re-issuing it while it drains. Together with the concurrency
-    /// cap this bounds what a held arrow key can queue (CodeRabbit,
-    /// PR #175).
+    /// so a step stops it from STARTING further fetches (the ones already
+    /// running finish and land in `loaded`); together with the
+    /// concurrency cap this bounds what a held arrow key can queue
+    /// (CodeRabbit, PR #175).
     private func loadAround(_ index: Int) async {
         let keep = ImageGalleryNavigation.retainedIndices(
             around: index, count: entries.count, radius: Self.retainedRadius
@@ -123,24 +127,31 @@ public struct AttachmentFullscreenViewer: View {
     private func ensureLoaded(_ i: Int, retryingFailed: Bool) async {
         guard entries.indices.contains(i) else { return }
         let entry = entries[i]
-        guard let url = entry.url, !entry.expired,
-              loaded[entry.id] == nil, !inFlight.contains(entry.id) else { return }
+        guard let url = entry.url, !entry.expired, loaded[entry.id] == nil else { return }
         if failed.contains(entry.id) {
             guard retryingFailed else { return }
             failed.remove(entry.id)
         }
+        // Already being fetched (e.g. by the step we just came back from):
+        // the owner applies the result; nothing to do here.
+        guard inFlight[entry.id] == nil else { return }
         // Wait for a slot rather than piling requests up.
         while inFlight.count >= Self.maxConcurrentLoads {
             guard !Task.isCancelled else { return }
             try? await Task.sleep(for: .milliseconds(50))
         }
-        guard loaded[entry.id] == nil, !inFlight.contains(entry.id) else { return }
-        inFlight.insert(entry.id)
-        let result = await gallery.load(url)
-        inFlight.remove(entry.id)
+        guard loaded[entry.id] == nil, inFlight[entry.id] == nil, !Task.isCancelled else { return }
+        let load = gallery.load
+        let fetch = Task { @MainActor in await load(url) }
+        inFlight[entry.id] = fetch
+        // `Task.value` is not interrupted by our own cancellation, so the
+        // bookkeeping below runs even if the step that started this fetch
+        // has since been superseded.
+        let result = await fetch.value
+        inFlight[entry.id] = nil
         if let result {
             loaded[entry.id] = result
-        } else if !Task.isCancelled {
+        } else {
             failed.insert(entry.id)
         }
     }
