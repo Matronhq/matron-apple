@@ -29,10 +29,14 @@ public struct AttachmentFullscreenViewer: View {
     /// so a miss must not be permanent (Bugbot, PR #175).
     @State private var failed: Set<String> = []
     /// One shared fetch per entry. Unstructured on purpose: it outlives
-    /// the `.task(id:)` that started it, so a step can never cancel it
-    /// into a nil that reads as a miss, and a re-visit joins the running
-    /// fetch instead of finding a "loading" slot nobody is filling
-    /// (Bugbot, PR #175). Bounded by `maxConcurrentLoads`.
+    /// the `.task(id:)` that started it, so a step can never implicitly
+    /// cancel it into a nil that reads as a miss, and a re-visit joins the
+    /// running fetch instead of finding a "loading" slot nobody is
+    /// filling (Bugbot, PR #175). Fetches for entries the user has moved
+    /// away from are cancelled EXPLICITLY on the next step, so they free
+    /// their `maxConcurrentLoads` slot instead of holding up the visible
+    /// image; the owner recognises its own cancellation and drops the
+    /// result without recording a miss.
     @State private var inFlight: [String: Task<ViewerImage?, Never>] = [:]
     /// Sign of the last step (+1 next, −1 previous) — drives which edge
     /// the iOS slide transition enters from.
@@ -67,6 +71,9 @@ public struct AttachmentFullscreenViewer: View {
             #endif
         }
         .task(id: index) { await loadAround(index) }
+        // Closing the viewer abandons every outstanding fetch — nothing
+        // will display them, and they'd otherwise run to completion.
+        .onDisappear { for fetch in inFlight.values { fetch.cancel() } }
     }
 
     // MARK: - Gallery state
@@ -117,14 +124,24 @@ public struct AttachmentFullscreenViewer: View {
         )
         let keepIDs = Set(keep.map { entries[$0].id })
         loaded = loaded.filter { keepIDs.contains($0.key) }
-        for i in [index] + ImageGalleryNavigation.preloadIndices(around: index, count: entries.count) {
+        // Fetches for anything but the current entry and its neighbours
+        // are stale — cancel them so the visible image never queues
+        // behind preloads for a position we've left (Bugbot, PR #175).
+        let wanted = [index] + ImageGalleryNavigation.preloadIndices(around: index, count: entries.count)
+        let wantedIDs = Set(wanted.map { entries[$0].id })
+        for (id, fetch) in inFlight where !wantedIDs.contains(id) { fetch.cancel() }
+        for i in wanted {
             guard !Task.isCancelled else { return }
-            await ensureLoaded(i, retryingFailed: i == index)
+            await ensureLoaded(i, retryingFailed: i == index, isCurrent: i == index)
         }
     }
 
+    /// - Parameters:
+    ///   - retryingFailed: re-fetch an entry previously recorded as a miss.
+    ///   - isCurrent: the visible entry — never waits for a concurrency
+    ///     slot, so preloads can't delay what the user is looking at.
     @MainActor
-    private func ensureLoaded(_ i: Int, retryingFailed: Bool) async {
+    private func ensureLoaded(_ i: Int, retryingFailed: Bool, isCurrent: Bool) async {
         guard entries.indices.contains(i) else { return }
         let entry = entries[i]
         guard let url = entry.url, !entry.expired, loaded[entry.id] == nil else { return }
@@ -132,15 +149,22 @@ public struct AttachmentFullscreenViewer: View {
             guard retryingFailed else { return }
             failed.remove(entry.id)
         }
-        // Already being fetched (e.g. by the step we just came back from):
-        // the owner applies the result; nothing to do here.
-        guard inFlight[entry.id] == nil else { return }
-        // Wait for a slot rather than piling requests up.
-        while inFlight.count >= Self.maxConcurrentLoads {
-            guard !Task.isCancelled else { return }
-            try? await Task.sleep(for: .milliseconds(50))
+        if let running = inFlight[entry.id] {
+            // A live fetch's owner will apply its result — nothing to do.
+            // A fetch we cancelled on the way out (and now want again)
+            // must drain first, then we start a fresh one below.
+            guard running.isCancelled else { return }
+            _ = await running.value
         }
-        guard loaded[entry.id] == nil, inFlight[entry.id] == nil, !Task.isCancelled else { return }
+        if !isCurrent {
+            // Wait for a slot rather than piling requests up.
+            while inFlight.count >= Self.maxConcurrentLoads {
+                guard !Task.isCancelled else { return }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+        }
+        guard loaded[entry.id] == nil, inFlight[entry.id]?.isCancelled != false,
+              !Task.isCancelled else { return }
         let load = gallery.load
         let fetch = Task { @MainActor in await load(url) }
         inFlight[entry.id] = fetch
@@ -148,10 +172,12 @@ public struct AttachmentFullscreenViewer: View {
         // bookkeeping below runs even if the step that started this fetch
         // has since been superseded.
         let result = await fetch.value
-        inFlight[entry.id] = nil
+        // Only clear our own registration — a re-visit may already have
+        // replaced a cancelled fetch with a fresh one.
+        if inFlight[entry.id] == fetch { inFlight[entry.id] = nil }
         if let result {
             loaded[entry.id] = result
-        } else {
+        } else if !fetch.isCancelled {
             failed.insert(entry.id)
         }
     }
