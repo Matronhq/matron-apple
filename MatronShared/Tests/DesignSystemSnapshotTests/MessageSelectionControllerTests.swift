@@ -102,6 +102,14 @@ final class MessageSelectionControllerTests: XCTestCase {
         XCTAssertNil(c.current)
     }
 
+    func test_sameRowSpan_clampsToStorageLength() {
+        // Anchor charIndex (999) is far beyond B's storageLength (40).
+        controller.beginCrossMessage(anchorID: "b", charIndex: 999)
+        controller.extend(toWindowPoint: NSPoint(x: 50, y: 230), window: nil) // index 10 of B
+        XCTAssertEqual(controller.selectedIDs, ["b"])
+        XCTAssertEqual(b.current, NSRange(location: 10, length: 30))
+    }
+
     func test_pointerInGapAboveHead_givesZeroLengthHeadSpan() {
         controller.beginCrossMessage(anchorID: "a", charIndex: 0)
         // y = 250 is between A (minY 300) and B (maxY 240); nearer B by 10 vs 50.
@@ -135,6 +143,17 @@ final class MessageSelectionControllerTests: XCTestCase {
         controller.extend(toWindowPoint: NSPoint(x: 50, y: 220), window: nil)  // back to B
         XCTAssertEqual(controller.selectedIDs, ["a", "b"])
         XCTAssertNil(c.current, "a row that left the range must have its highlight cleared")
+    }
+
+    func test_endLeavingRowOrder_dropsSelection_andClearsEveryHighlight() {
+        controller.beginCrossMessage(anchorID: "a", charIndex: 0)
+        controller.extend(toWindowPoint: NSPoint(x: 50, y: 130), window: nil)  // a…c, all three lit
+        // The timeline's row window moves and drops the anchor row.
+        controller.orderedIDs = ["b", "c"]
+        controller.extend(toWindowPoint: NSPoint(x: 50, y: 130), window: nil)
+        XCTAssertFalse(controller.hasSelection)
+        XCTAssertEqual(controller.selectedIDs, [])
+        XCTAssertNil(a.current); XCTAssertNil(b.current); XCTAssertNil(c.current)
     }
 
     func test_idsWithoutTarget_areInSelectedIDs_butSpanTextIsNil() {

@@ -207,14 +207,29 @@ public final class MessageSelectionController {
     /// middles full, head `start…pointer`. Dragging UP mirrors it. Same row:
     /// the ordinary min…max range.
     private func applySpans() {
+        // Either end can fall out of `orderedIDs` when the timeline's row
+        // window moves (rows are dropped without an explicit `clear()`).
+        // The highlighted set must stay in lockstep with anchor/head — a
+        // stranded highlight with no corresponding selection is worse than
+        // dropping the selection outright, so fall through to `clear()`
+        // rather than returning with rows still lit and `hasSelection` true.
         guard let anchor, let head,
               let a = orderedIDs.firstIndex(of: anchor.id),
-              let h = orderedIDs.firstIndex(of: head.id) else { return }
+              let h = orderedIDs.firstIndex(of: head.id) else {
+            clear()
+            return
+        }
         var next: [String: NSRange] = [:]
         if a == h {
-            let lo = min(anchor.charIndex, head.charIndex)
-            let hi = max(anchor.charIndex, head.charIndex)
-            next[anchor.id] = NSRange(location: lo, length: hi - lo)
+            // No target (e.g. an image/card row) produces no span for this
+            // id — fall through so any stale highlight elsewhere still gets
+            // cleared by the loop below, instead of returning early.
+            if let target = target(for: anchor.id) {
+                let length = target.storageLength
+                let lo = min(anchor.charIndex, head.charIndex, length)
+                let hi = min(max(anchor.charIndex, head.charIndex), length)
+                next[anchor.id] = NSRange(location: lo, length: hi - lo)
+            }
         } else {
             let down = a < h
             for id in orderedIDs[min(a, h)...max(a, h)] {
