@@ -346,7 +346,7 @@ struct MacChatView: View {
     static func transcript(
         from items: [TimelineItem], spans: [SelectedSpan],
         locale: Locale = .current, timeZone: TimeZone = .current
-    ) -> Transcript {
+    ) -> SelectionTranscript {
         let byID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var entries: [TranscriptEntry] = []
         for span in spans {
@@ -357,14 +357,16 @@ struct MacChatView: View {
             case .text:
                 guard !selected.isEmpty else { continue }
                 text = selected
-            case .image(_, let caption, _, _):
-                // A captioned image whose caption view is registered but
-                // has nothing selected contributes nothing; an uncaptioned
-                // one (no view) copies its marker.
-                if span.text != nil, selected.isEmpty, !(caption ?? "").isEmpty { continue }
+            case .image:
+                // A caption view that is registered but has nothing selected
+                // contributes nothing; an uncaptioned image (no view at all,
+                // `text == nil`) copies its marker. `text != nil` already
+                // means a caption view exists, so the caption itself needs no
+                // second look.
+                if span.text != nil, selected.isEmpty { continue }
                 text = selected.isEmpty ? "[Photo]" : "[Photo] \(selected)"
-            case .file(_, let filename, let caption, _, _):
-                if span.text != nil, selected.isEmpty, !(caption ?? "").isEmpty { continue }
+            case .file(_, let filename, _, _, _):
+                if span.text != nil, selected.isEmpty { continue }
                 text = selected.isEmpty ? "[File: \(filename)]" : "[File: \(filename)] \(selected)"
             default:
                 continue
@@ -372,7 +374,7 @@ struct MacChatView: View {
             let name = item.isOwn ? "Me" : MacTimelineItemView.displayName(for: item.sender)
             entries.append(TranscriptEntry(timestamp: item.timestamp, name: name, text: text))
         }
-        return Transcript(
+        return SelectionTranscript(
             text: TranscriptFormatter.format(entries, locale: locale, timeZone: timeZone),
             messageCount: entries.count)
     }
@@ -383,7 +385,7 @@ struct MacChatView: View {
     /// VM must stay evictable by ChatVMCache after the room is left.
     static func installTranscriptProvider(on messageSelection: MessageSelectionController, viewModel: ChatViewModel) {
         messageSelection.transcriptProvider = { [weak messageSelection, weak viewModel] in
-            guard let messageSelection, let viewModel else { return Transcript(text: "", messageCount: 0) }
+            guard let messageSelection, let viewModel else { return SelectionTranscript(text: "", messageCount: 0) }
             let items = viewModel.windowedRows.compactMap { row -> TimelineItem? in
                 if case .message(let item) = row { return item }
                 return nil
@@ -1167,13 +1169,23 @@ private struct MacTimelineListContent: View, Equatable {
 /// state there would make every mounted row observe the selection and
 /// the streaming `windowedRows`, invalidating all ~185 rows per commit
 /// and bypassing the per-row `Equatable` gate below).
+///
+/// The body reads exactly two things: `hasSelection` (the controller's only
+/// observed property) and `finishedTranscript` (`@ObservationIgnored`, a
+/// snapshot taken at `finish()`). It must NOT call `transcriptProvider()` —
+/// that closure reads the view model's `windowedRows`, which would enrol this
+/// menu's host row in the streaming timeline's observation and undo the fence
+/// described above. Copying the captured text (rather than re-deriving it)
+/// also settles the click race: the click is a left mouse down, which the
+/// controller's clear-monitor answers by clearing the selection.
 private struct MacSelectionCopyMenuItems: View {
     @Environment(MessageSelectionController.self) private var messageSelection: MessageSelectionController?
 
     var body: some View {
         if let messageSelection, messageSelection.hasSelection,
-           let count = messageSelection.transcriptProvider?().messageCount, count > 0 {
-            Button { messageSelection.copyTranscript() } label: {
+           let transcript = messageSelection.finishedTranscript, transcript.messageCount > 0 {
+            let count = transcript.messageCount
+            Button { messageSelection.copyText(transcript.text) } label: {
                 Label("Copy \(count) Message\(count == 1 ? "" : "s")", systemImage: "doc.on.doc")
             }
             Divider()
@@ -1294,12 +1306,16 @@ private struct MacTimelineRowView: View, Equatable {
                 // Copy only (Dan, 2026-08-03: no Share / View
                 // source, same as the iOS long-press menu). An
                 // empty builder result (non-text rows) presents
-                // no menu at all. With a cross-message selection
-                // present, "Copy N Messages" leads — the body's own
-                // AppKit menu offers the same item over the text.
+                // no menu at all — so BOTH items live inside the
+                // `.text` branch: a "Copy N Messages"-only menu on
+                // an image or a tool card would be a menu where
+                // this branch found none before. Captioned
+                // image/file rows still offer the same item over
+                // their caption, from the text view's AppKit menu.
+                // With a cross-message selection present it leads.
                 .contextMenu {
-                    MacSelectionCopyMenuItems()
                     if case .text(let body, _) = item.kind {
+                        MacSelectionCopyMenuItems()
                         Button {
                             Pasteboard.copy(body)
                         } label: {
