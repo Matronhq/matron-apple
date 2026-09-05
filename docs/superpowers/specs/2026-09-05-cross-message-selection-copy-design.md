@@ -54,10 +54,10 @@ State:
 - `orderedIDs: [String]` — message item ids in row order, written by
   `MacTimelineListContent` each time it renders (`@ObservationIgnored`,
   a plain assignment; never read from a SwiftUI body).
-- Registry of live message text views keyed by item id and slot
-  (`.body` or `.caption`), populated by `MessageCopyTextView` on
-  `viewDidMoveToWindow` (window non-nil registers, nil unregisters),
-  weak references.
+- Registry of live message text views keyed by item id (an item has
+  either a body or a caption view, never both), populated by
+  `MessageCopyTextView` on `viewDidMoveToWindow` (window non-nil
+  registers, nil unregisters), weak references.
 - `anchor: (id, charIndex)?` and `head: (id, charIndex)?` — the two ends
   of the current cross-message selection. `nil` when there is none.
 - `spans: [String: NSRange]` — the resulting per-message selected
@@ -157,14 +157,12 @@ The highlight is the text views' own selection drawing, so a
 cross-message selection looks like a within-message one continued
 downwards. `MessageCopyTextView` draws its selected range in the
 active selection colour whether or not it is first responder, so every
-span matches. Implementation: override `drawBackground(in:)` (TextKit 2
-path: `textLayoutManager.enumerateTextSegments(in:type: .selection)`;
-TextKit 1 path for tabled messages: `layoutManager.enumerateEnclosingRects`)
-filling `NSColor.selectedTextBackgroundColor`, and set
-`selectedTextAttributes` to an empty background so AppKit does not
-double-paint the focused view in a different tone. If the unemphasized
-override proves unnecessary on the target OS, the plan may drop it,
-but the acceptance criterion stands: all spans the same colour.
+span matches. Implementation: TextKit 2 rendering attributes
+(`NSTextLayoutManager.addRenderingAttribute(.backgroundColor…)`) and
+TextKit 1 temporary attributes for tabled messages, in
+`NSColor.selectedTextBackgroundColor`. The anchor's own `selectedRange`
+is emptied on escalation so AppKit never paints its focused/unfocused
+variants underneath.
 
 Rows without a text body show nothing. The selection lives until the
 next `leftMouseDown` anywhere (controller monitor), until the chat
@@ -185,24 +183,16 @@ Three entry points, one path:
 - Right-click on the row outside the body: the existing SwiftUI
   `.contextMenu` adds the same item when `controller.hasSelection`.
 
-`MacChatView.copyHandler` builds the transcript:
-
-```
-entries = controller.selectedSpans() grouped by id, in row order
-for each id:
-  item = viewModel item with that id (windowedRows lookup)
-  switch item.kind
-    .text(body, _):
-       text = span covers whole storage ? body (verbatim source)
-            : MarkdownReconstruction.markdown(from: storage, in: range)
-    .image(_, caption, …): text = "[Photo]" + (selected caption part, if any, prefixed by a space)
-    .file(_, name, caption, …): text = "[File: name]" + (selected caption part)
-    default: skip
-  if text is empty after trimming: skip   // e.g. head span of length 0
-  entry = (timestamp, name, text)
-TranscriptFormatter.format(entries) -> String
-Pasteboard.copy(string)
-```
+`MacChatView.copyHandler` builds the transcript: `controller.selectedSpans()`
+grouped by id in row order, each id resolved to its `windowedRows` item.
+Implemented as `MacChatView.transcript(from:spans:locale:timeZone:)` —
+pure and unit-tested (`MacChatViewTranscriptTests`). Rule table: `.text`
+→ the selected text, skipped when empty; `.image` → `[Photo]` /
+`[Photo] <selected caption>`; `.file` → `[File: name]` /
+`[File: name] <selected caption>`; a captioned image/file whose caption
+view has nothing selected contributes nothing; every other kind
+omitted. The resulting entries feed `TranscriptFormatter.format(entries)`,
+which is then written with `Pasteboard.copy(string)`.
 
 Name: `"Me"` when `item.isOwn`, else
 `MacTimelineItemView.displayName(for: item.sender)` (the timeline's own
@@ -286,10 +276,10 @@ Unit (`MatronShared/Tests`, macOS-gated where AppKit is involved):
   headless (existing rule: AppKit press paths flip between shapes run
   to run).
 
-Snapshot (`MatronMacTests`, respects `MATRON_SKIP_SNAPSHOT_TESTS`): one
-timeline of three messages with spans applied via the controller —
-verifies the uniform highlight colour across a focused and an
-unfocused view.
+Attribute readback (`MessageCopyTextViewSelectionTests`): applying and
+clearing a span adds/removes the background rendering attribute — the
+uniform-colour guarantee is then a property of using one attribute
+value everywhere, checked visually in the manual pass.
 
 Manual (`manual-tests.md`): drag from mid-message to mid-message
 downwards and upwards; ⌘C, Edit ▸ Copy and both right-click paths yield
