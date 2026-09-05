@@ -174,6 +174,33 @@ final class MessageCopyTextViewSelectionTests: XCTestCase {
         XCTAssertTrue(menu.items.count >= 2 && menu.items[1].isSeparatorItem)
     }
 
+    // MARK: Takeover decisions
+
+    func test_shouldEscalate_onlyOutsideVerticalBandWithSlop() {
+        let bounds = NSRect(x: 0, y: 0, width: 300, height: 60)
+        XCTAssertFalse(MessageCopyTextView.shouldEscalate(pointY: 30, bounds: bounds, slop: 4))
+        XCTAssertFalse(MessageCopyTextView.shouldEscalate(pointY: -4, bounds: bounds, slop: 4), "inside slop above")
+        XCTAssertFalse(MessageCopyTextView.shouldEscalate(pointY: 64, bounds: bounds, slop: 4), "inside slop below")
+        XCTAssertTrue(MessageCopyTextView.shouldEscalate(pointY: -4.5, bounds: bounds, slop: 4))
+        XCTAssertTrue(MessageCopyTextView.shouldEscalate(pointY: 64.5, bounds: bounds, slop: 4))
+    }
+
+    func test_takesOverPress_plainSingleClickOnly() {
+        func press(clicks: Int, flags: NSEvent.ModifierFlags) -> NSEvent {
+            NSEvent.mouseEvent(
+                with: .leftMouseDown, location: .zero, modifierFlags: flags, timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                clickCount: clicks, pressure: 1)!
+        }
+        XCTAssertTrue(MessageCopyTextView.takesOverPress(press(clicks: 1, flags: [])))
+        XCTAssertFalse(MessageCopyTextView.takesOverPress(press(clicks: 2, flags: [])), "double-click = word selection stays AppKit's")
+        XCTAssertFalse(MessageCopyTextView.takesOverPress(press(clicks: 1, flags: .shift)))
+        XCTAssertFalse(MessageCopyTextView.takesOverPress(press(clicks: 1, flags: .command)))
+        XCTAssertFalse(MessageCopyTextView.takesOverPress(press(clicks: 1, flags: .option)))
+        XCTAssertFalse(MessageCopyTextView.takesOverPress(press(clicks: 1, flags: .control)), "ctrl-click is a context menu")
+        XCTAssertTrue(MessageCopyTextView.takesOverPress(press(clicks: 1, flags: .capsLock)), "lock keys are not modifiers here")
+    }
+
     // MARK: Helpers
 
     private func backgroundRenderingColor(in layoutManager: NSTextLayoutManager, at offset: Int) -> NSColor? {

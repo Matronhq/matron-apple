@@ -223,6 +223,98 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
         return NSTextRange(location: start, end: end)
     }
 
+    // MARK: Press takeover
+
+    /// Vertical slack, in points, before a drag leaving the body counts as
+    /// leaving the message (guards against jitter on the first/last line).
+    static let escapeSlop: CGFloat = 4
+    /// How long the loop waits for the next event before re-checking the
+    /// physical button — the lost-`mouseUp` guard for this path (see
+    /// `MouseTrackingRescueTextView` for why a press can outlive its up).
+    static let pressPollInterval: TimeInterval = 0.25
+
+    /// `true` when the pointer's y (view coordinates) is outside the body's
+    /// vertical band including `slop`. Horizontal overshoot never escalates
+    /// — dragging past a line's end must still select to the line end.
+    static func shouldEscalate(pointY: CGFloat, bounds: NSRect, slop: CGFloat) -> Bool {
+        pointY < bounds.minY - slop || pointY > bounds.maxY + slop
+    }
+
+    /// Plain single left-clicks only. Multi-clicks (word/paragraph
+    /// selection) and shift/⌘/⌥/ctrl presses keep AppKit's own handling.
+    static func takesOverPress(_ event: NSEvent) -> Bool {
+        guard event.type == .leftMouseDown, event.clickCount == 1 else { return false }
+        return event.modifierFlags.intersection([.shift, .command, .option, .control]).isEmpty
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let controller = selectionController, selectionItemID != nil,
+              isSelectable, !isEditable, Self.takesOverPress(event) else {
+            super.mouseDown(with: event)
+            return
+        }
+        // Any press ends the previous cross-message selection.
+        controller.clear()
+        armLinkPress(for: event)
+        window?.makeFirstResponder(self)
+
+        let anchorIndex = characterIndexForInsertion(at: convert(event.locationInWindow, from: nil))
+        setSelectedRange(NSRange(location: anchorIndex, length: 0))
+
+        var escalated = false
+        var lastDrag: NSEvent?
+        loop: while true {
+            guard let window, superview != nil else { break }
+            let next = window.nextEvent(
+                matching: [.leftMouseDragged, .leftMouseUp],
+                until: Date(timeIntervalSinceNow: Self.pressPollInterval),
+                inMode: .eventTracking, dequeue: true)
+            guard let next else {
+                // Timed out: is the press still real?
+                if !leftButtonIsDown() { break loop }
+                // Pointer parked past an edge — keep autoscrolling and
+                // extending while the button is held.
+                if escalated, let lastDrag {
+                    autoscroll(with: lastDrag)
+                    controller.extend(toWindowPoint: lastDrag.locationInWindow, window: window)
+                }
+                continue
+            }
+            if next.type == .leftMouseUp { break loop }
+            lastDrag = next
+            let point = convert(next.locationInWindow, from: nil)
+            if Self.shouldEscalate(pointY: point.y, bounds: bounds, slop: Self.escapeSlop) {
+                if !escalated {
+                    escalated = true
+                    // Hand the within-message selection over to the controller.
+                    setSelectedRange(NSRange(location: anchorIndex, length: 0))
+                    controller.beginCrossMessage(anchorID: selectionItemID!, charIndex: anchorIndex)
+                }
+                controller.extend(toWindowPoint: next.locationInWindow, window: window)
+                autoscroll(with: next)
+            } else {
+                if escalated {
+                    // Back inside the anchor: ordinary text selection again.
+                    escalated = false
+                    controller.clear()
+                }
+                let index = characterIndexForInsertion(at: point)
+                let range = NSRange(location: min(anchorIndex, index), length: abs(index - anchorIndex))
+                setSelectedRange(range, affinity: index < anchorIndex ? .upstream : .downstream, stillSelecting: true)
+            }
+        }
+
+        if escalated {
+            controller.finish()
+        } else {
+            let range = selectedRange()
+            setSelectedRange(range, affinity: .downstream, stillSelecting: false)
+            // We ran the loop, so AppKit never saw the click — a clean press
+            // on a link is dispatched here as the normal route.
+            resolveLinkPressIfNeeded(expected: true)
+        }
+    }
+
     // MARK: Copy entry points
 
     static func menuTitle(forMessageCount count: Int) -> String {
