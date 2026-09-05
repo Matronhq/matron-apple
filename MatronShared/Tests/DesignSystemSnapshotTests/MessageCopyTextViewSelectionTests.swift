@@ -56,6 +56,36 @@ final class MessageCopyTextViewSelectionTests: XCTestCase {
         XCTAssertNil(textView.crossSelectionRange, "a detached view must no longer be registered")
     }
 
+    /// `updateNSView` mutates `selectionItemID` in place when SwiftUI reuses
+    /// a body view for a different timeline item. The old registration must
+    /// not survive that — a leak would let a later drag over the OLD row
+    /// resolve to this view, painting the wrong message and copying its text
+    /// under the old id.
+    func test_changingItemID_unregistersOldID_registersNewID() {
+        textView.selectionItemID = "m2"
+
+        // The id it no longer has must not reach this view.
+        controller.beginCrossMessage(anchorID: "m1", charIndex: 0)
+        controller.finish()
+        XCTAssertNil(textView.crossSelectionRange, "must not be reachable under the id it no longer has")
+        controller.clear()
+
+        // Its current id must reach this view.
+        controller.beginCrossMessage(anchorID: "m2", charIndex: 0)
+        controller.finish()
+        XCTAssertNotNil(textView.crossSelectionRange, "must be reachable under its current id")
+    }
+
+    /// Same failure mode as above, for the opt-out path: setting the id to
+    /// nil must unregister, not merely skip registering under a new id.
+    func test_changingItemIDToNil_unregistersOldID() {
+        textView.selectionItemID = nil
+
+        controller.beginCrossMessage(anchorID: "m1", charIndex: 0)
+        controller.finish()
+        XCTAssertNil(textView.crossSelectionRange, "a nil id must unregister the view, not just leave the old entry stranded")
+    }
+
     // MARK: Highlight
 
     func test_setCrossSelection_appliesAndRemovesBackgroundRenderingAttribute() throws {

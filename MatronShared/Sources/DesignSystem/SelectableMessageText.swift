@@ -121,6 +121,13 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
     /// The timeline item this body belongs to. `nil` (previews, tests, the
     /// composer palette) keeps the view out of any cross-message selection.
     var selectionItemID: String? {
+        // `unregister` keys its lookup off `target.selectionItemID` read at
+        // call time, so it must run in `willSet` — while the OLD id is still
+        // current — or an id change no-ops the unregister (it looks itself
+        // up under the NEW id, finds nothing, and the stale entry under the
+        // old id survives, keeping this view reachable under a message it no
+        // longer represents).
+        willSet { selectionController?.unregister(self) }
         didSet { reregister(previousController: selectionController) }
     }
 
