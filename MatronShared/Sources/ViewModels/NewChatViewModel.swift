@@ -131,6 +131,14 @@ public final class NewChatViewModel {
     /// bridge that doesn't send `model_options` at all, which hides the
     /// picker rather than showing an empty menu.
     public private(set) var modelOptions: [ModelOption] = []
+    /// What the picker's nil "Default" row will actually run on, when the
+    /// box says (`default_model` on its `recent_folders` reply — the
+    /// bridge's `MATRON_DEFAULT_MODEL`). Display only: the row still omits
+    /// the `model` key, because the bridge applies its default itself and
+    /// naming it here would turn "no opinion" into an explicit pick. The
+    /// offered option's label when the value is listed, the raw alias
+    /// otherwise; nil for a bridge that doesn't say.
+    public private(set) var defaultModelLabel: String?
     /// Per-box capacity blocks, filled by the roster fan-out as replies
     /// land. Display-only: a missing entry just means a quieter row, never
     /// an unpickable one.
@@ -174,6 +182,9 @@ public final class NewChatViewModel {
     /// as `folderCache`, since both come out of the one `recent_folders`
     /// reply and both are wrong the moment that reply is re-asked for.
     private var modelOptionsCache: [Int64: [ModelOption]] = [:]
+    /// The `default_model` learned alongside `modelOptionsCache`, same
+    /// lifetime; absent for a box that doesn't send one.
+    private var defaultModelCache: [Int64: String] = [:]
     /// Bumped by every fan-out. Cancelling the previous task doesn't stop an
     /// RPC that's already in flight from answering, so each leg carries the
     /// generation it was started for and drops its reply if it's been
@@ -254,7 +265,7 @@ public final class NewChatViewModel {
         wakeGaveUp = false
         // Model offers are per-box, so the step opens on what this box is
         // known to offer — nothing, until its own reply lands.
-        adoptModelOptions(modelOptionsCache[agent.id] ?? [])
+        adoptModelOptions(modelOptionsCache[agent.id] ?? [], defaultModel: defaultModelCache[agent.id])
         // The roster fan-out already asked this box for its folders — render
         // them instantly rather than paying for the same round-trip twice.
         if let cached = folderCache[agent.id] {
@@ -270,11 +281,12 @@ public final class NewChatViewModel {
                 agentDeviceID: agent.id, method: "recent_folders", paramsData: Data("{}".utf8))
             recordCapacity(from: reply, agentID: agent.id)
             let offered = Self.parseModelOptions(from: reply)
+            let boxDefault = Self.parseDefaultModel(from: reply)
             guard Self.sameFolderAgent(phase, agent) else { return } // switched away meanwhile
             switch reply {
             case .ok(let resultData):
                 folders = Self.parseFolders(resultData)
-                adoptModelOptions(offered)
+                adoptModelOptions(offered, defaultModel: boxDefault)
             case .failure(let code, _) where code == "agent_unreachable":
                 // The roster's `connected` was a snapshot; the refusal says
                 // the box has since been idle-stopped — and has already
@@ -370,7 +382,8 @@ public final class NewChatViewModel {
                 switch reply {
                 case .ok(let resultData):
                     folders = Self.parseFolders(resultData)
-                    adoptModelOptions(Self.parseModelOptions(from: reply))
+                    adoptModelOptions(Self.parseModelOptions(from: reply),
+                                      defaultModel: Self.parseDefaultModel(from: reply))
                     return
                 case .failure(let code, _) where code == "agent_unreachable":
                     break // still booting — go around
@@ -504,6 +517,7 @@ public final class NewChatViewModel {
         // `recent_folders` when the cache is empty.
         folderCache.removeAll()
         modelOptionsCache.removeAll()
+        defaultModelCache.removeAll()
         // Capacity, unlike folders, is deliberately stale-while-revalidate:
         // the rows keep last-known numbers until the refresh answers, so
         // coming back from the folder step doesn't collapse every three-line
@@ -576,6 +590,7 @@ public final class NewChatViewModel {
         capacityCapturedAt.removeValue(forKey: agentID)
         folderCache[agentID] = Self.parseFolders(resultData)
         modelOptionsCache[agentID] = Self.parseModelOptions(obj)
+        defaultModelCache[agentID] = Self.parseDefaultModel(obj)
         capacityCache.save(capacity, for: agentID, at: now())
     }
 
@@ -585,11 +600,21 @@ public final class NewChatViewModel {
     /// would send an alias the bridge answers `bad_model` to. A box that
     /// offers nothing (older bridge) hides the picker, which is the same
     /// situation: back to the bridge's default.
-    private func adoptModelOptions(_ options: [ModelOption]) {
+    private func adoptModelOptions(_ options: [ModelOption], defaultModel: String?) {
         modelOptions = options
+        defaultModelLabel = defaultModel.map { value in
+            options.first(where: { $0.value == value })?.label ?? value
+        }
         if let selectedModel, !options.contains(where: { $0.value == selectedModel }) {
             self.selectedModel = nil
         }
+    }
+
+    /// The nil row's title in both pickers: "Default (Fable)" on a box that
+    /// declares its default, plain "Default" otherwise. Lives here rather
+    /// than in each sheet so the two platforms can't drift.
+    public var defaultRowTitle: String {
+        defaultModelLabel.map { "Default (\($0))" } ?? "Default"
     }
 
     // MARK: Helpers
@@ -655,6 +680,22 @@ public final class NewChatViewModel {
             let label = (entry["label"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             return ModelOption(value: value, label: label ?? value)
         }
+    }
+
+    /// Reads `default_model` out of a `recent_folders` reply object: the
+    /// alias (or full model name) a start with no `model` will run on. Like
+    /// `model_options` it is optional — an older bridge, or one with no
+    /// `MATRON_DEFAULT_MODEL`, omits it, and the row reads plain "Default".
+    static func parseDefaultModel(from reply: RPCReply) -> String? {
+        guard case .ok(let resultData) = reply,
+              let object = (try? JSONSerialization.jsonObject(with: resultData)) as? [String: Any]
+        else { return nil }
+        return parseDefaultModel(object)
+    }
+
+    static func parseDefaultModel(_ replyObject: [String: Any]) -> String? {
+        guard let value = replyObject["default_model"] as? String, !value.isEmpty else { return nil }
+        return value
     }
 
     static func startErrorCopy(code: String, detail: String?) -> String {

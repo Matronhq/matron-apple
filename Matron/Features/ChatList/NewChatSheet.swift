@@ -217,7 +217,7 @@ struct NewChatSheet: View {
                 // an empty menu would only ever offer "Default".
                 if !viewModel.modelOptions.isEmpty {
                     Picker("Model", selection: $viewModel.selectedModel) {
-                        Text("Default").tag(String?.none)
+                        Text(viewModel.defaultRowTitle).tag(String?.none)
                         ForEach(viewModel.modelOptions) { option in
                             Text(option.label).tag(Optional(option.value))
                         }

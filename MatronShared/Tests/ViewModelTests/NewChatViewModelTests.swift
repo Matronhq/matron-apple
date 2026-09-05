@@ -345,6 +345,74 @@ final class NewChatViewModelTests: XCTestCase {
                      "box b can't run opus — carrying the pick over would earn a bad_model")
     }
 
+    // MARK: Default model
+
+    func test_defaultModel_titlesTheDefaultRowAndStillOmitsTheKey() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(9, connected: true)])
+        fake.replies["recent_folders"] = foldersReply(#"""
+        {"folders":[],"default_model":"fable","model_options":[{"value":"opus","label":"Opus"},{"value":"fable","label":"Fable"}]}
+        """#)
+        fake.replies["start"] = .ok(resultData: Data(#"{"convo_id":"c-new"}"#.utf8))
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        await vm.load()
+        XCTAssertEqual(vm.defaultModelLabel, "Fable", "the offered option's label, not the raw alias")
+        XCTAssertEqual(vm.defaultRowTitle, "Default (Fable)")
+        XCTAssertNil(vm.selectedModel, "naming the default is not picking it")
+        await vm.start(workdir: "~/dev/app")
+        XCTAssertNil(fake.requests.last?.params["model"],
+                     "the bridge applies its own default — the key stays omitted")
+    }
+
+    func test_defaultModel_absentOrEmptyReadsPlainDefault() async {
+        for reply in [#"{"folders":[],"model_options":[{"value":"opus","label":"Opus"}]}"#,
+                      #"{"folders":[],"default_model":"","model_options":[{"value":"opus","label":"Opus"}]}"#] {
+            let fake = FakeAgentRPCProvider()
+            fake.devicesResult = .success([agent(9, connected: true)])
+            fake.replies["recent_folders"] = foldersReply(reply)
+            let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+            await vm.load()
+            XCTAssertNil(vm.defaultModelLabel)
+            XCTAssertEqual(vm.defaultRowTitle, "Default", "an older bridge, or one with no box default")
+        }
+    }
+
+    func test_defaultModel_unlistedValueShowsTheRawName() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(9, connected: true)])
+        fake.replies["recent_folders"] = foldersReply(#"""
+        {"folders":[],"default_model":"claude-opus-5","model_options":[{"value":"opus","label":"Opus"}]}
+        """#)
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        await vm.load()
+        XCTAssertEqual(vm.defaultRowTitle, "Default (claude-opus-5)",
+                       "a full model name is not in the alias offer — show it as sent")
+    }
+
+    /// Same prefetch contract as `model_options`: the folder step renders
+    /// the box's default off the roster fan-out, and switching boxes swaps
+    /// it for the new box's (or drops it for a box that doesn't say).
+    func test_defaultModel_followsTheBoxAcrossTheRosterPrefetch() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(1, name: "a", connected: true),
+                                       agent(2, name: "b", connected: true)])
+        fake.repliesByDevice[1] = .ok(resultData: Data(
+            #"{"folders":[],"default_model":"fable","model_options":[{"value":"fable","label":"Fable"}]}"#.utf8))
+        fake.repliesByDevice[2] = .ok(resultData: Data(
+            #"{"folders":[],"model_options":[{"value":"sonnet","label":"Sonnet"}]}"#.utf8))
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        await vm.load()
+        await vm.capacityFanOutForTesting?.value
+        let before = fake.requests.filter { $0.method == "recent_folders" }.count
+
+        await vm.select(agent: agent(1, name: "a", connected: true))
+        XCTAssertEqual(vm.defaultRowTitle, "Default (Fable)")
+        XCTAssertEqual(fake.requests.filter { $0.method == "recent_folders" }.count, before,
+                       "served from the prefetch, not re-asked")
+        await vm.select(agent: agent(2, name: "b", connected: true))
+        XCTAssertEqual(vm.defaultRowTitle, "Default", "box b never said — no stale label carried over")
+    }
+
     func test_start_errorCopyTable() async {
         // `agent_unreachable` is absent on purpose: start retries it (the
         // wake loop) — NewChatViewModelWakeTests owns that behaviour.
