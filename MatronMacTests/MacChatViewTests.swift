@@ -4,6 +4,8 @@ import SwiftUI
 import UniformTypeIdentifiers
 @testable import MatronMac
 import MatronChat
+import MatronDesignSystem
+import MatronEvents
 import MatronModels
 import MatronViewModels
 
@@ -216,4 +218,122 @@ final class MacChatViewTests: XCTestCase {
     }
 
 }
+/// The bridge from controller spans to transcript text — pure, so it is
+/// pinned here without a window or a drag.
+final class MacChatViewTranscriptTests: XCTestCase {
+
+    private let gb = Locale(identifier: "en_GB")
+    private let utc = TimeZone(identifier: "UTC")!
+    private let t = Date(timeIntervalSince1970: 1_788_618_780) // 2026-09-05 14:33 UTC
+
+    /// `sender` carries the already-stripped display form the journal
+    /// mapper produces (`"claude"`, `"dan"`), NOT a full `agent:claude`
+    /// id — `MacTimelineItemView.displayName(for:)` splits on ":" and
+    /// would render the latter as "agent".
+    private func item(_ id: String, _ kind: TimelineItem.Kind, own: Bool) -> TimelineItem {
+        TimelineItem(id: id, sender: own ? "dan" : "claude", timestamp: t, kind: kind, isOwn: own)
+    }
+
+    func test_textSpans_partialFirstAndLast_namesAndOrder() {
+        let items = [
+            item("1", .text(body: "first message body", formattedHTML: nil), own: true),
+            item("2", .text(body: "middle", formattedHTML: nil), own: false),
+            item("3", .text(body: "last message body", formattedHTML: nil), own: true),
+        ]
+        let spans = [
+            SelectedSpan(id: "1", text: "message body"),
+            SelectedSpan(id: "2", text: "middle"),
+            SelectedSpan(id: "3", text: "last"),
+        ]
+        let out = MacChatView.transcript(from: items, spans: spans, locale: gb, timeZone: utc)
+        XCTAssertEqual(out.messageCount, 3)
+        XCTAssertEqual(out.text, """
+        [05/09/2026, 14:33] Me: message body
+        [05/09/2026, 14:33] claude: middle
+        [05/09/2026, 14:33] Me: last
+        """)
+    }
+
+    func test_emptySpan_andNonTextKinds_areSkipped() {
+        let items = [
+            item("1", .text(body: "a", formattedHTML: nil), own: true),
+            item("tool", .toolCall(eventID: "e", ToolCallEvent(
+                tool: "Bash", argsJSON: "{}", status: .ok, resultText: nil,
+                resultTruncated: false, startedAt: t, endedAt: nil)), own: false),
+            item("2", .text(body: "b", formattedHTML: nil), own: false),
+        ]
+        let spans = [
+            SelectedSpan(id: "1", text: "a"),
+            SelectedSpan(id: "tool", text: nil),
+            SelectedSpan(id: "2", text: ""),
+        ]
+        let out = MacChatView.transcript(from: items, spans: spans, locale: gb, timeZone: utc)
+        XCTAssertEqual(out.messageCount, 1)
+        XCTAssertEqual(out.text, "[05/09/2026, 14:33] Me: a")
+    }
+
+    func test_imageAndFile_markersWithAndWithoutCaption() {
+        let items = [
+            item("img", .image(url: nil, caption: "sunset", sizeBytes: nil, expired: false), own: false),
+            item("img2", .image(url: nil, caption: nil, sizeBytes: nil, expired: false), own: false),
+            item("f", .file(url: nil, filename: "notes.pdf", caption: nil, sizeBytes: nil, expired: false), own: true),
+        ]
+        let spans = [
+            SelectedSpan(id: "img", text: "sunset"),
+            SelectedSpan(id: "img2", text: nil),
+            SelectedSpan(id: "f", text: nil),
+        ]
+        let out = MacChatView.transcript(from: items, spans: spans, locale: gb, timeZone: utc)
+        XCTAssertEqual(out.messageCount, 3)
+        XCTAssertEqual(out.text, """
+        [05/09/2026, 14:33] claude: [Photo] sunset
+        [05/09/2026, 14:33] claude: [Photo]
+        [05/09/2026, 14:33] Me: [File: notes.pdf]
+        """)
+    }
+
+    func test_captionedImage_withEmptySelectedCaption_isSkipped() {
+        let items = [item("img", .image(url: nil, caption: "sunset", sizeBytes: nil, expired: false), own: false)]
+        let out = MacChatView.transcript(from: items, spans: [SelectedSpan(id: "img", text: "")], locale: gb, timeZone: utc)
+        XCTAssertEqual(out.messageCount, 0)
+        XCTAssertEqual(out.text, "")
+    }
+
+    /// A `.text` row with NO text view at all (`text == nil`) contributes
+    /// nothing — there is no body to have selected, and unlike an image
+    /// there is no marker to stand in for one.
+    func test_textItem_withNilSpanText_isSkipped() {
+        let items = [
+            item("1", .text(body: "a", formattedHTML: nil), own: true),
+            item("2", .text(body: "b", formattedHTML: nil), own: false),
+        ]
+        let spans = [
+            SelectedSpan(id: "1", text: nil),
+            SelectedSpan(id: "2", text: "b"),
+        ]
+        let out = MacChatView.transcript(from: items, spans: spans, locale: gb, timeZone: utc)
+        XCTAssertEqual(out.messageCount, 1)
+        XCTAssertEqual(out.text, "[05/09/2026, 14:33] claude: b")
+    }
+
+    /// A file whose caption IS partly selected copies the marker AND the
+    /// selected caption text.
+    func test_fileWithSelectedCaption_keepsMarkerAndCaption() {
+        let items = [
+            item("f", .file(url: nil, filename: "notes.pdf", caption: "the meeting notes",
+                            sizeBytes: nil, expired: false), own: true),
+        ]
+        let out = MacChatView.transcript(
+            from: items, spans: [SelectedSpan(id: "f", text: "meeting notes")],
+            locale: gb, timeZone: utc)
+        XCTAssertEqual(out.messageCount, 1)
+        XCTAssertEqual(out.text, "[05/09/2026, 14:33] Me: [File: notes.pdf] meeting notes")
+    }
+
+    func test_spanWithUnknownID_isIgnored() {
+        let out = MacChatView.transcript(from: [], spans: [SelectedSpan(id: "ghost", text: "x")], locale: gb, timeZone: utc)
+        XCTAssertEqual(out.messageCount, 0)
+    }
+}
+
 #endif

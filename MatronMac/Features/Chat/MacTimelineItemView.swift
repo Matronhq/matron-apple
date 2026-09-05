@@ -105,7 +105,7 @@ struct MacTimelineItemView: View {
                 // re-emits `.text` with a longer body), so we rely on
                 // `MarkdownAttributed`'s source-keyed cache for cheap
                 // re-conversion during streaming.
-                SelectableMessageText(body)
+                SelectableMessageText(body, itemID: item.id)
             }
             // Mac VoiceOver mirror of the iOS accessibility wiring — see
             // `TimelineItemView.accessibilityLabel(for:body:)` (QA finding #13).
@@ -150,7 +150,7 @@ struct MacTimelineItemView: View {
                         }
                     )
                     if let caption, !caption.isEmpty {
-                        SelectableMessageText(caption)
+                        SelectableMessageText(caption, itemID: item.id)
                     }
                 }
             }
@@ -191,7 +191,7 @@ struct MacTimelineItemView: View {
                         }
                     )
                     if let caption, !caption.isEmpty {
-                        SelectableMessageText(caption)
+                        SelectableMessageText(caption, itemID: item.id)
                     }
                 }
             }

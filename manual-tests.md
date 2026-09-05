@@ -411,3 +411,23 @@ Run before every TestFlight build (iOS) and every Mac App Store build.
 
 - [ ] **iOS (real device):** the matron-search.sqlite file has `NSFileProtectionComplete` (the in-app defensive assert is device-only — it's `#if !targetEnvironment(simulator)`-gated since the Simulator doesn't enforce data protection). On a locked, powered-off device the file should be unreadable pre-unlock.
 - [ ] **Mac:** no file-protection check — encryption at rest is FileVault's responsibility (user-managed). Confirm the file path is sandbox-private (`~/Library/Application Support/chat.matron.mac/matron-search.sqlite` is inside the app's container).
+
+### Cross-message selection + transcript copy — Mac
+
+- [ ] Press inside message A's text and drag downward into message C: A highlights from the press point to its end, B fully, C from its start to the pointer; all three spans are the same colour.
+- [ ] Release, press ⌘C, paste into TextEdit: three lines `[dd/mm/yyyy, hh:mm] Name: text`, first and last lines carry only the selected part; "Me" for own messages.
+- [ ] Edit ▸ Copy is enabled after the drag and produces the same text.
+- [ ] Right-click on a highlighted body: first item is "Copy 3 Messages" and produces the same text. Right-click on the bubble margin (outside the text) offers the same item.
+- [ ] Drag upward (press in C, drag into A): mirrored spans, same copy.
+- [ ] Drag out of A then back into A: the cross-message highlight clears and an ordinary within-A selection follows the pointer.
+- [ ] Drag across a tool-call card / diff / image: the card shows no highlight and is absent from the copy; a captioned image copies as `[Photo] <caption part>`.
+- [ ] Hold the pointer below the timeline's bottom edge mid-drag: the timeline scrolls and the selection keeps extending.
+- [ ] A left-click anywhere clears the highlight; switching chats clears it; the previous chat's ⌘C no longer copies a transcript.
+- [ ] Clicking a link in a message still opens it (single click, no drag). Double-click still selects a word; triple-click a paragraph; shift-click extends within a message.
+- [ ] A message that is still streaming while inside the selection keeps its highlight after each delta.
+- [ ] Sub-chat pane open beside the parent: a drag in one never highlights the other.
+- [ ] Right-click on a highlighted body AND right-click on the bubble margin: in both menus "Copy N Messages" is enabled (not greyed out) and clicking it copies — a silent no-op here means the controller's left-click monitor cleared the selection before the item acted.
+- [ ] Inside a message taller than the window, drag to the bottom edge of the viewport and hold: the message scrolls and the selection keeps growing within it (no cross-message escalation until the pointer actually leaves the message).
+- [ ] Park the pointer below the viewport inside a very tall message: scrolling continues until the pointer moves; the selection then escalates normally on the next movement.
+- [ ] A double-click on a word still selects the word even though the first click of the pair is handled by the takeover loop.
+- [ ] Known change: dragging an existing text selection out of a message to another app no longer starts a drag (the takeover loop owns plain presses).
