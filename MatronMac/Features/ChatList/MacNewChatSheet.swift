@@ -257,7 +257,7 @@ struct MacNewChatSheet: View {
         // full-width popup next to the checkbox reads as a text field.
         if !viewModel.modelOptions.isEmpty {
             Picker("Model", selection: $viewModel.selectedModel) {
-                Text("Default").tag(String?.none)
+                Text(viewModel.defaultRowTitle).tag(String?.none)
                 ForEach(viewModel.modelOptions) { option in
                     Text(option.label).tag(Optional(option.value))
                 }
