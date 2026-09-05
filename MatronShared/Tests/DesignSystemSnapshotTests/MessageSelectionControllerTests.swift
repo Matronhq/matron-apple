@@ -137,6 +137,63 @@ final class MessageSelectionControllerTests: XCTestCase {
         XCTAssertNil(c.current)
     }
 
+    /// The default hit-tester walks the window, so with two timelines side by
+    /// side it can return the OTHER timeline's text view. A direct hit that
+    /// this controller has not registered must be ignored, not trusted — the
+    /// unvalidated version froze the drag (its id is absent from `orderedIDs`,
+    /// so `extend` returned without moving the head).
+    func test_directHitNotRegisteredHere_fallsBackToNearestRegistered() {
+        let foreign = FakeTarget(id: "other-timeline", length: 40,
+                                 frame: NSRect(x: 0, y: 200, width: 300, height: 40))
+        controller.hitTester = { _, _ in foreign }
+        controller.beginCrossMessage(anchorID: "a", charIndex: 0)
+        controller.extend(toWindowPoint: NSPoint(x: 50, y: 130), window: nil)
+        XCTAssertEqual(controller.selectedIDs, ["a", "b", "c"],
+                       "the nearest REGISTERED row must win over a foreign direct hit")
+        XCTAssertNil(foreign.current, "a foreign target must never be painted")
+    }
+
+    /// Same rule for a hit on a target registered under an id this controller
+    /// knows but that is a DIFFERENT object (a recycled body view mid-swap).
+    func test_directHitWithKnownID_butForeignObject_fallsBackToNearest() {
+        let impostor = FakeTarget(id: "b", length: 40, frame: NSRect(x: 0, y: 200, width: 300, height: 40))
+        controller.hitTester = { _, _ in impostor }
+        controller.beginCrossMessage(anchorID: "a", charIndex: 0)
+        controller.extend(toWindowPoint: NSPoint(x: 50, y: 130), window: nil)
+        XCTAssertEqual(controller.selectedIDs, ["a", "b", "c"])
+        XCTAssertNil(impostor.current)
+        XCTAssertEqual(c.current, NSRange(location: 0, length: 30))
+    }
+
+    /// A FINISHED selection outlives the drag, so the row window can move
+    /// under it — most commonly the `eph:` streaming placeholder being
+    /// replaced by its durable row. Without revalidation `hasSelection`
+    /// stayed true over an empty `selectedIDs`: highlights lingered and ⌘C /
+    /// "Copy N Messages" silently copied nothing.
+    func test_finishedSelection_isDropped_whenAnEndpointLeavesRowOrder() {
+        controller.transcriptProvider = { SelectionTranscript(text: "x", messageCount: 3) }
+        controller.beginCrossMessage(anchorID: "a", charIndex: 0)
+        controller.extend(toWindowPoint: NSPoint(x: 50, y: 130), window: nil)
+        controller.finish()
+        XCTAssertTrue(controller.hasSelection)
+        XCTAssertNotNil(controller.finishedTranscript)
+
+        controller.orderedIDs = ["b", "c"]
+        XCTAssertFalse(controller.hasSelection)
+        XCTAssertEqual(controller.selectedIDs, [])
+        XCTAssertNil(a.current); XCTAssertNil(b.current); XCTAssertNil(c.current)
+        XCTAssertNil(controller.finishedTranscript, "the menu must not offer a dead snapshot")
+    }
+
+    func test_reassigningRowOrder_keepsSelection_whenBothEndsSurvive() {
+        controller.beginCrossMessage(anchorID: "a", charIndex: 0)
+        controller.extend(toWindowPoint: NSPoint(x: 50, y: 220), window: nil)  // a…b
+        controller.finish()
+        controller.orderedIDs = ["a", "b", "c", "d"]
+        XCTAssertTrue(controller.hasSelection)
+        XCTAssertEqual(controller.selectedIDs, ["a", "b"])
+    }
+
     func test_extendingShrinksPreviouslySelectedRows() {
         controller.beginCrossMessage(anchorID: "a", charIndex: 0)
         controller.extend(toWindowPoint: NSPoint(x: 50, y: 130), window: nil)  // through C
@@ -191,13 +248,13 @@ final class MessageSelectionControllerTests: XCTestCase {
     func test_copyTranscript_writesProviderText_andSkipsEmpty() {
         var written: [String] = []
         controller.pasteboardWriter = { written.append($0) }
-        controller.transcriptProvider = { Transcript(text: "[x] Me: hi", messageCount: 1) }
+        controller.transcriptProvider = { SelectionTranscript(text: "[x] Me: hi", messageCount: 1) }
         controller.beginCrossMessage(anchorID: "a", charIndex: 0)
         controller.extend(toWindowPoint: NSPoint(x: 50, y: 220), window: nil)
         controller.copyTranscript()
         XCTAssertEqual(written, ["[x] Me: hi"])
 
-        controller.transcriptProvider = { Transcript(text: "", messageCount: 0) }
+        controller.transcriptProvider = { SelectionTranscript(text: "", messageCount: 0) }
         controller.copyTranscript()
         XCTAssertEqual(written, ["[x] Me: hi"], "an empty transcript must not clear the pasteboard")
     }
@@ -205,9 +262,71 @@ final class MessageSelectionControllerTests: XCTestCase {
     func test_copyTranscript_withoutSelection_isNoop() {
         var written: [String] = []
         controller.pasteboardWriter = { written.append($0) }
-        controller.transcriptProvider = { Transcript(text: "x", messageCount: 1) }
+        controller.transcriptProvider = { SelectionTranscript(text: "x", messageCount: 1) }
         controller.copyTranscript()
         XCTAssertEqual(written, [])
+    }
+
+    // MARK: Begin result
+
+    func test_beginCrossMessage_reportsWhetherASelectionStarted() {
+        XCTAssertTrue(controller.beginCrossMessage(anchorID: "a", charIndex: 0))
+        XCTAssertTrue(controller.hasSelection)
+        XCTAssertFalse(controller.beginCrossMessage(anchorID: "not-a-row", charIndex: 0),
+                       "an anchor outside the row order starts nothing, and the caller must know")
+        XCTAssertFalse(controller.hasSelection)
+    }
+
+    // MARK: finish() — snapshot and monitor
+
+    func test_finish_snapshotsTheTranscript_andClearDropsIt() {
+        var calls = 0
+        controller.transcriptProvider = {
+            calls += 1
+            return SelectionTranscript(text: "[x] Me: hi", messageCount: 2)
+        }
+        controller.beginCrossMessage(anchorID: "a", charIndex: 0)
+        controller.extend(toWindowPoint: NSPoint(x: 50, y: 220), window: nil)
+        XCTAssertNil(controller.finishedTranscript, "no snapshot until the drag ends")
+        controller.finish()
+        XCTAssertEqual(calls, 1)
+        XCTAssertEqual(controller.finishedTranscript?.text, "[x] Me: hi")
+        XCTAssertEqual(controller.finishedTranscript?.messageCount, 2)
+        controller.clear()
+        XCTAssertNil(controller.finishedTranscript)
+    }
+
+    func test_finish_withLiveSelection_armsExactlyOneClearMonitor() {
+        controller.beginCrossMessage(anchorID: "a", charIndex: 0)
+        controller.extend(toWindowPoint: NSPoint(x: 50, y: 220), window: nil)
+        controller.finish()
+        XCTAssertTrue(controller.hasClearMonitor)
+        controller.clear()
+        XCTAssertFalse(controller.hasClearMonitor)
+    }
+
+    /// `applySpans` inside `finish()` can clear the selection outright (an end
+    /// left the row order). Arming the clear monitor anyway left a monitor
+    /// with nothing to clear firing on every left press for the life of the
+    /// controller.
+    func test_finish_thatClearsTheSelection_armsNoMonitor() {
+        controller.transcriptProvider = { SelectionTranscript(text: "x", messageCount: 1) }
+        controller.beginCrossMessage(anchorID: "a", charIndex: 0)
+        controller.extend(toWindowPoint: NSPoint(x: 50, y: 130), window: nil)
+        controller.orderedIDs = ["b", "c"]   // the anchor row leaves
+        controller.finish()
+        XCTAssertFalse(controller.hasSelection)
+        XCTAssertFalse(controller.hasClearMonitor)
+        XCTAssertNil(controller.finishedTranscript)
+    }
+
+    func test_copyText_writesCapturedText_andSkipsEmpty() {
+        var written: [String] = []
+        controller.pasteboardWriter = { written.append($0) }
+        controller.copyText("captured at menu-build time")
+        controller.copyText("")
+        XCTAssertEqual(written, ["captured at menu-build time"],
+                       "captured text copies without a live selection; empty must not clear the pasteboard")
     }
 }
 #endif

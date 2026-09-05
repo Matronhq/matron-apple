@@ -37,7 +37,7 @@ public struct SelectedSpan: Equatable {
 
 /// What the timeline host builds from `selectedSpans()`: the pasteboard
 /// text and how many messages contributed a line (for "Copy N Messages").
-public struct Transcript {
+public struct SelectionTranscript {
     public let text: String
     public let messageCount: Int
 
@@ -65,11 +65,33 @@ public final class MessageSelectionController {
     /// Message item ids in row order; assigned by the timeline list whenever
     /// its rows change. Plain storage: written from `onChange`, never read
     /// from a SwiftUI body.
-    @ObservationIgnored public var orderedIDs: [String] = []
+    ///
+    /// Reassignment revalidates a FINISHED selection: a selection outlives
+    /// its drag, so the row window can move under it — most commonly the
+    /// `eph:` streaming placeholder being replaced by its durable row. An
+    /// endpoint that leaves the order would leave `hasSelection` true over an
+    /// empty `selectedIDs`: highlights linger and every copy path silently
+    /// no-ops. Dropping the whole selection is the honest outcome.
+    @ObservationIgnored public var orderedIDs: [String] = [] {
+        didSet {
+            guard hasSelection, let anchor, let head else { return }
+            guard !orderedIDs.contains(anchor.id) || !orderedIDs.contains(head.id) else { return }
+            // `clear()` never touches `orderedIDs`, so this cannot recurse.
+            clear()
+        }
+    }
 
     public private(set) var hasSelection = false
 
-    @ObservationIgnored public var transcriptProvider: (() -> Transcript)?
+    /// The transcript as it stood when the selection was finished — the
+    /// snapshot both menu paths use. `@ObservationIgnored` on purpose: the
+    /// SwiftUI menu leaf may read it without joining the timeline's
+    /// observation graph, and it is stable between finish() and clear(), so
+    /// a menu item's title and payload cannot disagree with each other or
+    /// change under a click. ⌘C still copies through the LIVE provider.
+    @ObservationIgnored public private(set) var finishedTranscript: SelectionTranscript?
+
+    @ObservationIgnored public var transcriptProvider: (() -> SelectionTranscript)?
     @ObservationIgnored public var pasteboardWriter: (String) -> Void = { Pasteboard.copy($0) }
     /// Resolves the target directly under a window point, if any. `window`
     /// is `nil` in tests that drive `extend` without a real window; the
@@ -127,12 +149,18 @@ public final class MessageSelectionController {
 
     // MARK: Selection lifecycle
 
-    public func beginCrossMessage(anchorID: String, charIndex: Int) {
+    /// - Returns: `true` when a selection was actually started. `false` (the
+    ///   anchor id is not in the current row order) leaves the caller's press
+    ///   un-escalated, so it keeps selecting within its own message and still
+    ///   closes its selection sequence on mouse-up.
+    @discardableResult
+    public func beginCrossMessage(anchorID: String, charIndex: Int) -> Bool {
         clear()
-        guard orderedIDs.contains(anchorID) else { return }
+        guard orderedIDs.contains(anchorID) else { return false }
         anchor = End(id: anchorID, charIndex: charIndex)
         head = anchor
         hasSelection = true
+        return true
     }
 
     public func extend(toWindowPoint point: NSPoint, window: NSWindow?) {
@@ -147,6 +175,11 @@ public final class MessageSelectionController {
     public func finish() {
         guard anchor != nil else { return }
         applySpans()
+        // `applySpans` falls through to `clear()` when an end has left the
+        // row order: there is then no selection to snapshot and no reason to
+        // arm a monitor whose only job is to clear one.
+        guard anchor != nil else { return }
+        finishedTranscript = transcriptProvider?()
         installClearMonitor()
     }
 
@@ -155,6 +188,7 @@ public final class MessageSelectionController {
         highlighted = []
         anchor = nil
         head = nil
+        finishedTranscript = nil
         removeClearMonitor()
         if hasSelection { hasSelection = false }
     }
@@ -175,9 +209,21 @@ public final class MessageSelectionController {
         }
     }
 
+    /// ⌘C / Edit ▸ Copy / the AppKit item's fallback. Uses the LIVE provider,
+    /// never `finishedTranscript`, so copying a selection that includes a
+    /// still-streaming message copies its text as it stands now. Never runs
+    /// from a SwiftUI body.
     public func copyTranscript() {
         guard hasSelection, let transcript = transcriptProvider?(), !transcript.text.isEmpty else { return }
         pasteboardWriter(transcript.text)
+    }
+
+    /// Copies text captured earlier (a menu item's payload, taken when the
+    /// menu was built) rather than re-deriving it at click time — the click
+    /// itself can reach the clear-monitor first and leave nothing to derive.
+    public func copyText(_ text: String) {
+        guard !text.isEmpty else { return }
+        pasteboardWriter(text)
     }
 
     // MARK: Internals
@@ -185,8 +231,17 @@ public final class MessageSelectionController {
     /// Direct hit first (always consulted, even without a window); otherwise
     /// the registered target vertically nearest the point (distance to its
     /// frame's y-extent, 0 when inside), ties broken by row order.
+    ///
+    /// The direct hit is only accepted when it is THIS controller's live
+    /// registration for its id. The default hit-tester walks the window, so
+    /// with a sub-chat pane beside the parent timeline it can return the
+    /// other timeline's text view (or a recycled view mid-swap): trusting it
+    /// froze the drag, because `extend` then found the id absent from
+    /// `orderedIDs` and returned without moving the head instead of falling
+    /// back to the nearest row.
     private func resolveTarget(at point: NSPoint, window: NSWindow?) -> CrossSelectionTarget? {
-        if let direct = hitTester(point, window), direct.selectionItemID != nil {
+        if let direct = hitTester(point, window), let id = direct.selectionItemID,
+           targets[id]?.target === direct {
             return direct
         }
         var best: (CrossSelectionTarget, CGFloat)?
@@ -256,6 +311,11 @@ public final class MessageSelectionController {
         }
         highlighted = Set(next.keys.filter { target(for: $0) != nil })
     }
+
+    /// Test seam: a finished selection arms exactly one clear monitor, and a
+    /// cleared one arms none (a monitor with nothing to clear would still
+    /// fire on every left press for the life of the controller).
+    var hasClearMonitor: Bool { clearMonitor != nil }
 
     private func installClearMonitor() {
         removeClearMonitor()
