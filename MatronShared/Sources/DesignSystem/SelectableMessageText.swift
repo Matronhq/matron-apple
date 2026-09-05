@@ -247,8 +247,26 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
         return event.modifierFlags.intersection([.shift, .command, .option, .control]).isEmpty
     }
 
+    /// Grows the in-progress text selection from the press anchor to `point`
+    /// (view coordinates). `anchorIndex` is re-clamped on every use: a
+    /// streaming delta can replace the storage mid-press and shrink it below
+    /// the index the press started on. Always `stillSelecting: true` — the
+    /// tail of `mouseDown` closes the sequence exactly once.
+    private func extendSelection(fromAnchor anchorIndex: Int, toViewPoint point: NSPoint) {
+        let anchor = min(anchorIndex, storageLength)
+        let index = characterIndexForInsertion(at: point)
+        let range = NSRange(location: min(anchor, index), length: abs(index - anchor))
+        setSelectedRange(range, affinity: index < anchor ? .upstream : .downstream, stillSelecting: true)
+    }
+
     override func mouseDown(with event: NSEvent) {
-        guard let controller = selectionController, selectionItemID != nil,
+        // `anchorID` is captured HERE, not read inside the loop: the loop
+        // pumps the main run loop in `.eventTracking` (a common mode), so
+        // SwiftUI's `updateNSView` can run mid-drag and reassign
+        // `selectionItemID` — to nil, or to a different message when a body
+        // view is recycled. Reading it later would crash on nil or pair a
+        // new id with this press's anchor index.
+        guard let controller = selectionController, let anchorID = selectionItemID,
               isSelectable, !isEditable, Self.takesOverPress(event) else {
             super.mouseDown(with: event)
             return
@@ -272,35 +290,51 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
             guard let next else {
                 // Timed out: is the press still real?
                 if !leftButtonIsDown() { break loop }
-                // Pointer parked past an edge — keep autoscrolling and
-                // extending while the button is held.
-                if escalated, let lastDrag {
+                // Pointer parked (usually against a viewport edge) with the
+                // button still held. Autoscroll regardless of escalation —
+                // a message taller than the viewport scrolls WITHIN itself,
+                // and the selection has to keep growing as content moves
+                // under the stationary pointer.
+                if let lastDrag {
                     autoscroll(with: lastDrag)
-                    controller.extend(toWindowPoint: lastDrag.locationInWindow, window: window)
+                    if escalated {
+                        controller.extend(toWindowPoint: lastDrag.locationInWindow, window: window)
+                    } else {
+                        // Re-derive AFTER the scroll: the same window point
+                        // now names a different character.
+                        extendSelection(fromAnchor: anchorIndex,
+                                        toViewPoint: convert(lastDrag.locationInWindow, from: nil))
+                    }
                 }
                 continue
             }
             if next.type == .leftMouseUp { break loop }
             lastDrag = next
+            // Unconditional, and BEFORE the window→view conversion. AppKit's
+            // own tracking loop autoscrolled for free; this path replaces it,
+            // and `shouldEscalate` compares against the view's own `bounds`,
+            // which for a long message extends well past the visible clip
+            // rect — so a drag at the viewport edge inside a tall message
+            // neither escalates nor scrolls unless we scroll here. It no-ops
+            // when the point is inside the clip view.
+            autoscroll(with: next)
             let point = convert(next.locationInWindow, from: nil)
             if Self.shouldEscalate(pointY: point.y, bounds: bounds, slop: Self.escapeSlop) {
                 if !escalated {
                     escalated = true
                     // Hand the within-message selection over to the controller.
-                    setSelectedRange(NSRange(location: anchorIndex, length: 0))
-                    controller.beginCrossMessage(anchorID: selectionItemID!, charIndex: anchorIndex)
+                    let anchor = min(anchorIndex, storageLength)
+                    setSelectedRange(NSRange(location: anchor, length: 0))
+                    controller.beginCrossMessage(anchorID: anchorID, charIndex: anchor)
                 }
                 controller.extend(toWindowPoint: next.locationInWindow, window: window)
-                autoscroll(with: next)
             } else {
                 if escalated {
                     // Back inside the anchor: ordinary text selection again.
                     escalated = false
                     controller.clear()
                 }
-                let index = characterIndexForInsertion(at: point)
-                let range = NSRange(location: min(anchorIndex, index), length: abs(index - anchorIndex))
-                setSelectedRange(range, affinity: index < anchorIndex ? .upstream : .downstream, stillSelecting: true)
+                extendSelection(fromAnchor: anchorIndex, toViewPoint: point)
             }
         }
 
