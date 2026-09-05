@@ -21,20 +21,31 @@ import SwiftUI
 /// destabilising the timeline, so heights must never move for a fixed input.
 public struct SelectableMessageText: View {
     private let source: String
+    private let itemID: String?
     private let rendered: MarkdownAttributed.Rendered
+    /// The owning timeline's cross-message selection, when hosted in one.
+    /// Optional environment: previews, tests and non-timeline hosts have
+    /// none, and the body then behaves exactly as before.
+    @Environment(MessageSelectionController.self) private var selectionController: MessageSelectionController?
 
-    /// - Parameter source: raw markdown message body. Kept alongside the
-    ///   render products because copy needs the verbatim source, and because
-    ///   the memo they live in is keyed on the SOURCE — `**hi**` and `hi`
-    ///   render identical plain text with different fonts, so the rendered
-    ///   text can't identify a size (bugbot, PR #37).
-    public init(_ source: String) {
+    /// - Parameters:
+    ///   - source: raw markdown message body. Kept alongside the
+    ///     render products because copy needs the verbatim source, and because
+    ///     the memo they live in is keyed on the SOURCE — `**hi**` and `hi`
+    ///     render identical plain text with different fonts, so the rendered
+    ///     text can't identify a size (bugbot, PR #37).
+    ///   - itemID: the timeline item this body belongs to; enables the
+    ///     cross-message selection. `nil` opts out.
+    public init(_ source: String, itemID: String? = nil) {
         self.source = source
+        self.itemID = itemID
         self.rendered = MarkdownAttributed.rendered(for: source)
     }
 
     public var body: some View {
-        SelectableTextViewRepresentable(source: source, rendered: rendered)
+        SelectableTextViewRepresentable(
+            source: source, rendered: rendered,
+            itemID: itemID, selectionController: selectionController)
             .overlay {
                 // Copy buttons for fenced code blocks, one per block, pinned
                 // to each block's top-right. Geometry comes from the same
@@ -96,17 +107,130 @@ private struct CodeBlockCopyButton: View {
 }
 
 /// The message-body text view: `MouseTrackingRescueTextView`'s tracking-loop
-/// protections plus markdown-preserving copy. `copy(_:)` is the single seam —
-/// ⌘C, the Edit menu, and the context menu all route through it for a
-/// non-editable text view.
-final class MessageCopyTextView: MouseTrackingRescueTextView {
+/// protections plus markdown-preserving copy, plus the view's side of the
+/// cross-message selection (`CrossSelectionTarget`). `copy(_:)` is the
+/// single seam — ⌘C, the Edit menu, and the context menu all route through
+/// it for a non-editable text view.
+final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarget {
     /// Raw markdown source of the rendered message. A selection covering the
     /// whole storage copies this verbatim (perfect fidelity, matching the
     /// message context menu's Copy); partial selections reconstruct via
     /// `MarkdownReconstruction`.
     var markdownSource: String = ""
 
+    /// The timeline item this body belongs to. `nil` (previews, tests, the
+    /// composer palette) keeps the view out of any cross-message selection.
+    var selectionItemID: String? {
+        didSet { reregister(previousController: selectionController) }
+    }
+
+    /// The owning timeline's controller. Registration follows the window:
+    /// attached views are candidates, detached ones are dropped.
+    var selectionController: MessageSelectionController? {
+        didSet { reregister(previousController: oldValue) }
+    }
+
+    /// The span of THIS message inside the cross-message selection, or nil.
+    /// Drawn through TextKit rendering attributes (TK2) / temporary
+    /// attributes (TK1) rather than `selectedRange`, so every span in the
+    /// selection paints in the same colour — `selectedRange` would draw
+    /// unemphasized grey in every view that is not first responder, and
+    /// only one can be.
+    private(set) var crossSelectionRange: NSRange?
+
+    // MARK: Registration
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        reregister(previousController: selectionController)
+    }
+
+    private func reregister(previousController: MessageSelectionController?) {
+        previousController?.unregister(self)
+        if window != nil, selectionItemID != nil {
+            selectionController?.register(self)
+        } else {
+            // Leaving the window (or losing our id) also drops any highlight.
+            if crossSelectionRange != nil { setCrossSelection(nil) }
+        }
+    }
+
+    // MARK: CrossSelectionTarget
+
+    var storageLength: Int { textStorage?.length ?? 0 }
+
+    var frameInWindow: NSRect {
+        convert(bounds, to: nil)
+    }
+
+    func characterIndex(atWindowPoint point: NSPoint) -> Int {
+        characterIndexForInsertion(at: convert(point, from: nil))
+    }
+
+    func setCrossSelection(_ range: NSRange?) {
+        let length = storageLength
+        let clamped: NSRange? = range.map { r in
+            let location = min(max(0, r.location), length)
+            let end = min(max(location, r.location + r.length), length)
+            return NSRange(location: location, length: end - location)
+        }
+        crossSelectionRange = clamped
+        applyHighlight(clamped)
+    }
+
+    func crossSelectionMarkdown() -> String {
+        guard let storage = textStorage, let range = crossSelectionRange, range.length > 0 else { return "" }
+        let clamped = NSRange(location: min(range.location, storage.length),
+                              length: min(range.length, storage.length - min(range.location, storage.length)))
+        guard clamped.length > 0 else { return "" }
+        if clamped == NSRange(location: 0, length: storage.length), !markdownSource.isEmpty {
+            return markdownSource
+        }
+        return MarkdownReconstruction.markdown(from: storage, in: clamped)
+    }
+
+    private func applyHighlight(_ range: NSRange?) {
+        let full = NSRange(location: 0, length: storageLength)
+        if let layoutManager = textLayoutManager, let content = layoutManager.textContentManager {
+            // TextKit 2: rendering attributes are draw-only — never enter the
+            // storage, never affect `MarkdownReconstruction`.
+            layoutManager.removeRenderingAttribute(.backgroundColor, for: layoutManager.documentRange)
+            if let range, range.length > 0, let textRange = Self.textRange(range, in: content) {
+                layoutManager.addRenderingAttribute(
+                    .backgroundColor, value: NSColor.selectedTextBackgroundColor, for: textRange)
+            }
+        } else if let layoutManager = layoutManager {
+            // TextKit 1 (tabled messages, see `useTextKit1IfTabled`).
+            layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: full)
+            if let range, range.length > 0 {
+                layoutManager.addTemporaryAttribute(
+                    .backgroundColor, value: NSColor.selectedTextBackgroundColor, forCharacterRange: range)
+            }
+        }
+        needsDisplay = true
+    }
+
+    private static func textRange(_ range: NSRange, in content: NSTextContentManager) -> NSTextRange? {
+        guard let start = content.location(content.documentRange.location, offsetBy: range.location),
+              let end = content.location(start, offsetBy: range.length) else { return nil }
+        return NSTextRange(location: start, end: end)
+    }
+
+    // MARK: Copy entry points
+
+    static func menuTitle(forMessageCount count: Int) -> String {
+        "Copy \(count) Message\(count == 1 ? "" : "s")"
+    }
+
+    @objc func copyCrossSelection(_ sender: Any?) {
+        selectionController?.copyTranscript()
+    }
+
     override func copy(_ sender: Any?) {
+        if let selectionController, selectionController.hasSelection {
+            selectionController.copyTranscript()
+            return
+        }
         let range = selectedRange()
         // Deterministic no-op on empty selection — `super.copy` with no
         // selection has unspecified behavior and must not clear the
@@ -139,12 +263,36 @@ final class MessageCopyTextView: MouseTrackingRescueTextView {
         }
         pasteboard.setString(markdown, forType: .string)
     }
+
+    override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        // The anchor's own text selection is empty during a cross-message
+        // selection, which would grey out Edit ▸ Copy.
+        if item.action == #selector(NSTextView.copy(_:)), selectionController?.hasSelection == true {
+            return true
+        }
+        return super.validateUserInterfaceItem(item)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event) ?? NSMenu()
+        guard let selectionController, selectionController.hasSelection,
+              let count = selectionController.transcriptProvider?().messageCount, count > 0 else { return menu }
+        let item = NSMenuItem(
+            title: Self.menuTitle(forMessageCount: count),
+            action: #selector(copyCrossSelection(_:)), keyEquivalent: "")
+        item.target = self
+        menu.insertItem(.separator(), at: 0)
+        menu.insertItem(item, at: 0)
+        return menu
+    }
 }
 
 /// `NSViewRepresentable` wrapping the non-editable, selectable `NSTextView`.
 private struct SelectableTextViewRepresentable: NSViewRepresentable {
     let source: String
     let rendered: MarkdownAttributed.Rendered
+    let itemID: String?
+    let selectionController: MessageSelectionController?
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -160,6 +308,8 @@ private struct SelectableTextViewRepresentable: NSViewRepresentable {
         // 2026-08-02 tracking-loop wedge hit (see that class's doc).
         let textView = MessageCopyTextView()
         textView.markdownSource = source
+        textView.selectionItemID = itemID
+        textView.selectionController = selectionController
         textView.isEditable = false
         textView.isSelectable = true
         textView.drawsBackground = false
@@ -182,6 +332,10 @@ private struct SelectableTextViewRepresentable: NSViewRepresentable {
 
     func updateNSView(_ textView: NSTextView, context: Context) {
         (textView as? MessageCopyTextView)?.markdownSource = source
+        if let view = textView as? MessageCopyTextView {
+            if view.selectionItemID != itemID { view.selectionItemID = itemID }
+            if view.selectionController !== selectionController { view.selectionController = selectionController }
+        }
         useTextKit1IfTabled(textView)
         // Only touch the storage when the content actually changed (streaming
         // deltas re-emit the same view). Streaming re-emits the same view with
@@ -192,6 +346,11 @@ private struct SelectableTextViewRepresentable: NSViewRepresentable {
         if context.coordinator.lastApplied !== rendered.attributed {
             textView.textStorage?.setAttributedString(rendered.attributed)
             context.coordinator.lastApplied = rendered.attributed
+            // Streaming replaced the storage: re-clamp and repaint the
+            // cross-message span (rendering attributes die with the storage).
+            if let view = textView as? MessageCopyTextView, let range = view.crossSelectionRange {
+                view.setCrossSelection(range)
+            }
         }
     }
 
