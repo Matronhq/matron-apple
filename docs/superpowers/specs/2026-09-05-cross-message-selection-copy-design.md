@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-05
 **Platform:** macOS only (MatronMac)
-**Status:** approved design, awaiting implementation plan
+**Status:** implemented (branch `feat/cross-message-copy`); this document tracks the shipped code
 
 ## Goal
 
@@ -59,33 +59,51 @@ State:
   `MessageCopyTextView` on `viewDidMoveToWindow` (window non-nil
   registers, nil unregisters), weak references.
 - `anchor: (id, charIndex)?` and `head: (id, charIndex)?` — the two ends
-  of the current cross-message selection. `nil` when there is none.
-- `spans: [String: NSRange]` — the resulting per-message selected
-  ranges, derived from `anchor`/`head` and `orderedIDs`.
+  of the current cross-message selection. `nil` when there is none. The
+  per-message ranges are derived from them on every change and pushed
+  straight to the views; no `spans` dictionary is kept, only the set of
+  ids currently carrying a range, so a shrink can clear exactly those.
 - `hasSelection: Bool` (observed) — drives the context-menu item and
-  ⌘C validation.
-- `copyHandler: (() -> Void)?` — installed by `MacChatView`; builds and
-  writes the transcript.
+  ⌘C validation. The controller's ONLY observed property.
+- `transcriptProvider: (() -> SelectionTranscript)?` — installed by
+  `MacChatView`; maps `selectedSpans()` + the live `windowedRows` to the
+  pasteboard text and the message count. Weak in both captures, so
+  neither the controller nor the room's view model is retained by it.
+- `finishedTranscript: SelectionTranscript?` (`@ObservationIgnored`) —
+  the provider's result snapshotted at `finish()`, nil while there is no
+  selection. Both MENU paths render and copy this snapshot, so a menu
+  title and its payload always agree and neither is re-derived under the
+  click that clears the selection. ⌘C keeps using the live provider, so
+  it copies a still-streaming message as it stands now.
 
 Operations:
 
-- `beginCrossMessage(anchorID:charIndex:)` — called by the anchor text
-  view when a drag escapes it vertically.
+- `beginCrossMessage(anchorID:charIndex:) -> Bool` — called by the
+  anchor text view when a drag escapes it vertically. Returns `false`
+  (and starts nothing) when the anchor id is not in `orderedIDs`; the
+  caller then stays un-escalated and keeps selecting within its own
+  message.
 - `extend(toWindowPoint:in window:)` — resolves the message under the
   pointer (§3), converts the point into that text view and takes its
-  `characterIndexForInsertion`, recomputes `spans`, and applies them:
-  the anchor gets `press…end` (dragging down) or `start…press` (dragging
-  up); the head gets `start…pointer` or `pointer…end`; every id between
-  them in `orderedIDs` gets its full storage range. Ranges are applied
-  with `setSelectedRange(_:affinity:stillSelecting:)` on the registered
-  views; unregistered ids (no text body) are skipped.
-- `finish()` — re-applies the spans with `stillSelecting: false`,
-  installs a local `leftMouseDown` event monitor that calls `clear()`
-  on the next press anywhere (the monitor returns the event unchanged).
-- `clear()` — zeroes the selected range on every registered view,
-  removes the monitor, nils `anchor`/`head`/`spans`.
-- `selectedSpans() -> [(id: String, slot: Slot, range: NSRange)]` in
-  row order, for the copy handler.
+  `characterIndexForInsertion`, recomputes the per-message ranges and
+  applies them: the anchor gets `press…end` (dragging down) or
+  `start…press` (dragging up); the head gets `start…pointer` or
+  `pointer…end`; every id between them in `orderedIDs` gets its full
+  storage range. Ranges are pushed with `setCrossSelection(_:)` (§4),
+  not `setSelectedRange`; unregistered ids (no text body) are skipped.
+  When either end has left `orderedIDs` the whole selection is cleared
+  rather than left half-lit.
+- `finish()` — re-applies the ranges, and, unless that cleared the
+  selection, snapshots `finishedTranscript` and installs a local
+  `leftMouseDown` event monitor that calls `clear()` on the next press
+  anywhere (the monitor returns the event unchanged). A finish that
+  cleared arms no monitor.
+- `clear()` — drops every applied range, removes the monitor, nils
+  `anchor`/`head`/`finishedTranscript`.
+- `selectedSpans() -> [SelectedSpan]` in row order, for the transcript
+  provider. Each span is `(id, text: String?)`: `nil` when that id has no
+  text view at all (an uncaptioned image, a card), `""` when it has one
+  with nothing selected.
 
 ### 2. The press and drag
 
@@ -109,7 +127,13 @@ Takeover path:
      `window == nil` or `superview == nil`, the press is over — exit.
      This is the built-in replacement for the rescue watchdog on this
      path (the lost-mouseUp and mid-press-remount cases both resolve
-     within 0.25s). Otherwise keep looping.
+     within 0.25s). Otherwise the pointer is parked with the button held
+     (usually against a viewport edge): autoscroll from the last drag
+     event and then handle its position through the SAME per-point
+     routine the drag branch uses, re-derived after the scroll. Sharing
+     the routine is load-bearing — a parked branch that only grew the
+     running selection scrolled a tall message to its end and froze,
+     because it never re-ran the escalation test after the content moved.
    - `.leftMouseUp`: exit.
    - `.leftMouseDragged`, not yet escalated: convert the point into the
      view. If its y is within `[bounds.minY - slop, bounds.maxY + slop]`
@@ -118,7 +142,10 @@ Takeover path:
      — the within-message selection, now driven by us. Horizontal
      overshoot is allowed and clamps to the line ends as before. If y is
      outside the band, escalate: `controller.beginCrossMessage(anchorID:
-     itemID, charIndex: anchorIndex)`.
+     itemID, charIndex: anchorIndex)`. The press only counts as escalated
+     if that returns `true`; a refusal (this message has left the row
+     window mid-press) keeps the drag selecting within the message, so
+     the selection sequence is still closed on mouse-up.
    - `.leftMouseDragged`, escalated: `controller.extend(toWindowPoint:
      event.locationInWindow, in: window)` then `autoscroll(with:
      event)` so the enclosing scroll view scrolls at the edges. Dragging
@@ -137,7 +164,12 @@ function `shouldEscalate(pointY:bounds:slop:)` so it is unit-testable.
 `controller.extend` finds the target text view as follows:
 
 1. `window.contentView?.hitTest(point)`, walking `superview` until a
-   registered `MessageCopyTextView` is found — the direct hit.
+   `MessageCopyTextView` is found — the direct hit. It is accepted only
+   when it is THIS controller's live registration for its own id;
+   otherwise it is discarded and rule 2 applies. (The hit test walks the
+   whole window, so with a sub-chat pane beside the parent it can return
+   the other timeline's view — trusting it froze the drag, because the
+   foreign id is absent from `orderedIDs`.)
 2. Otherwise (pointer over a card, a date separator, bubble padding, or
    the composer/toolbar), the registered view whose window-space frame
    is vertically nearest the pointer, ties broken by row order.
@@ -174,16 +206,25 @@ the pane disappears.
 Three entry points, one path:
 
 - ⌘C / Edit ▸ Copy: `MessageCopyTextView.copy(_:)` — if
-  `controller.hasSelection`, call `controller.copyHandler` and return;
-  else today's behaviour. `validateUserInterfaceItem` returns `true` for
-  `copy(_:)` while `hasSelection`, since the text view's own selection
-  may be empty (e.g. the anchor sits in a gap).
+  `controller.hasSelection`, call `controller.copyTranscript()` (the
+  LIVE provider) and return; else today's behaviour.
+  `validateUserInterfaceItem` returns `true` for `copy(_:)` while
+  `hasSelection`, since the text view's own selection may be empty (e.g.
+  the anchor sits in a gap), and answers for `copyCrossSelection(_:)`
+  itself rather than relying on `NSTextView`'s non-contractual answer
+  for an action it does not know.
 - Right-click on a body: `menu(for:)` prepends "Copy N Messages" (N =
-  distinct ids in `spans`) and a separator when `hasSelection`.
+  `finishedTranscript.messageCount`) and a separator to whatever `super`
+  returned, and carries the snapshot's text in the item's
+  `representedObject`; `copyCrossSelection(_:)` copies that captured
+  string. When there is nothing to add, `menu(for:)` returns exactly what
+  `super` returned — including `nil`, so a right-click that AppKit would
+  not answer is not swallowed by an empty menu.
 - Right-click on the row outside the body: the existing SwiftUI
-  `.contextMenu` adds the same item when `controller.hasSelection`.
+  `.contextMenu` on `.text` rows adds the same item, built from
+  `finishedTranscript` and copying its captured text.
 
-`MacChatView.copyHandler` builds the transcript: `controller.selectedSpans()`
+`MacChatView`'s transcript provider builds the transcript: `controller.selectedSpans()`
 grouped by id in row order, each id resolved to its `windowedRows` item.
 Implemented as `MacChatView.transcript(from:spans:locale:timeZone:)` —
 pure and unit-tested (`MacChatViewTranscriptTests`). Rule table: `.text`
@@ -216,29 +257,46 @@ from iOS later):
 
 ### 6. Timeline wiring
 
-- `SelectableMessageText` gains `itemID: String?` and
-  `slot: SelectionSlot = .body` (`.body`/`.caption`), defaulting to nil
-  so every existing call site and test compiles unchanged. It reads the
-  controller from `@Environment(MessageSelectionController.self)` as an
-  optional and hands both to the text view in `makeNSView`/`updateNSView`.
+- `SelectableMessageText` gains `itemID: String?`, defaulting to nil so
+  every existing call site and test compiles unchanged. There is no
+  slot: an item has either a body or a caption view, never both, so the
+  item id alone identifies the view. It reads the controller from
+  `@Environment(MessageSelectionController.self)` as an optional and
+  hands both to the text view in `makeNSView`/`updateNSView`.
 - `MacTimelineItemView` passes `item.id` for bodies and captions.
-- `MacTimelineListContent.body` assigns `controller.orderedIDs` from
-  `windowedRows` (message rows only).
+- `MacTimelineListContent` assigns `controller.orderedIDs` from
+  `windowedRows` (message rows only) in an `onChange`, never in `body`.
 - `MacChatView` owns the controller in `@State`, injects it with
-  `.environment(controller)`, installs `copyHandler`, clears on room
-  change and in the outer `onDisappear`. `MacSubChatPane` does the same
-  with its own instance.
+  `.environment(controller)`, installs the transcript provider in
+  `onAppear`, and clears the selection + drops the provider in the outer
+  `onDisappear`. There is no explicit room-change clear: `MacChatListView`
+  keys the chat on `.id(roomID)`, so a room change rebuilds the whole
+  view — the old instance's `onDisappear` runs the teardown and the new
+  one gets a fresh controller. `MacSubChatPane` does the same with its
+  own instance.
 - Row `==` gates are untouched: no row reads controller state in its
-  body, so no per-drag SwiftUI invalidation occurs. The only observed
-  property, `hasSelection`, is read by context-menu builders (evaluated
-  on open) and nowhere else.
+  body. The only reads are in the leaf `MacSelectionCopyMenuItems`, which
+  reads `hasSelection` (observed) and `finishedTranscript`
+  (`@ObservationIgnored`) — never `transcriptProvider()`, which would
+  pull the streaming `windowedRows` into the host row's observation.
 
 ### 7. Edge cases
 
 - Streaming tail row: its storage is replaced by deltas while selected.
-  `setAttributedString` resets the selection in that view; on the next
-  drag event `extend` re-applies spans, clamping to the new length. On
-  copy, ranges are clamped to `storage.length` before use.
+  The rendering attributes die with the old storage, so `updateNSView`
+  re-applies the view's range with `setCrossSelection(_:force: true)`
+  (the plain call early-outs on an unchanged range — a drag pushes the
+  same range to every middle view on every mouse event). On copy, ranges
+  are clamped to `storage.length` before use.
+- An endpoint leaves the row window while the selection is FINISHED —
+  most often the `eph:` streaming placeholder being replaced by its
+  durable row. Reassigning `orderedIDs` revalidates both ends and clears
+  the whole selection when either is gone; otherwise `hasSelection`
+  would stay true over an empty `selectedIDs`, leaving highlights lit
+  while every copy path silently no-ops.
+- A body view is recycled onto a different message id mid-selection: the
+  id change unregisters under the old id AND drops any range painted
+  under it, which the controller could no longer reach to clear.
 - The anchor view is remounted or scrolled out of the window mid-drag
   (it cannot leave the eager window, but a chat switch can unmount it):
   the loop's `superview == nil` check exits; `finish()` on an
@@ -265,14 +323,17 @@ Unit (`MatronShared/Tests`, macOS-gated where AppKit is involved):
 - `MessageSelectionControllerTests` with a stub registry (frames and
   storages supplied by the test, no window): spans for down-drag and
   up-drag; anchor == head collapses to a within-message range;
-  nearest-view fallback picks the vertically nearest; `clear()` zeroes
-  every view; `selectedSpans()` order follows `orderedIDs`, not
-  registration order; ids without a view are skipped.
+  nearest-view fallback picks the vertically nearest, including when the
+  direct hit belongs to another controller; `clear()` zeroes every view;
+  `selectedSpans()` order follows `orderedIDs`, not registration order;
+  ids without a view are skipped; a finished selection is dropped when an
+  endpoint leaves a reassigned `orderedIDs`.
 - `MessageCopyTextViewTests`: `shouldEscalate` band math including slop;
-  `copy(_:)` routes to `copyHandler` when the controller has a
+  `copy(_:)` routes to `copyTranscript()` when the controller has a
   selection and to the markdown path otherwise;
-  `validateUserInterfaceItem` for `copy(_:)`; `menu(for:)` prepends the
-  item with the right count. The tracking loop itself is not driven
+  `validateUserInterfaceItem` for both `copy(_:)` and
+  `copyCrossSelection(_:)`; `menu(for:)` prepends the item with the right
+  count and carries the finished transcript's text on it. The tracking loop itself is not driven
   headless (existing rule: AppKit press paths flip between shapes run
   to run).
 
