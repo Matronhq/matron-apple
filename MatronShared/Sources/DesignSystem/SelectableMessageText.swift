@@ -128,7 +128,14 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
         // old id survives, keeping this view reachable under a message it no
         // longer represents).
         willSet { selectionController?.unregister(self) }
-        didSet { reregister(previousController: selectionController) }
+        didSet {
+            // A span painted under the OLD id is now unreachable by the
+            // controller (it looks its targets up by id), so a later shrink
+            // or clear can never remove it — drop it here or the highlight is
+            // stranded on screen until the view is destroyed.
+            if selectionItemID != oldValue, crossSelectionRange != nil { setCrossSelection(nil) }
+            reregister(previousController: selectionController)
+        }
     }
 
     /// The owning timeline's controller. Registration follows the window:
@@ -175,12 +182,23 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
     }
 
     func setCrossSelection(_ range: NSRange?) {
+        setCrossSelection(range, force: false)
+    }
+
+    /// - Parameter force: re-applies the highlight even when the clamped
+    ///   range is unchanged. Needed exactly once — after a streaming delta
+    ///   swaps the storage, where the range still matches but the rendering
+    ///   attributes died with the old storage. Every other caller wants the
+    ///   early-out: a drag pushes a range to every view in the span on every
+    ///   mouse event, and the middles' ranges never change.
+    func setCrossSelection(_ range: NSRange?, force: Bool) {
         let length = storageLength
         let clamped: NSRange? = range.map { r in
             let location = min(max(0, r.location), length)
             let end = min(max(location, r.location + r.length), length)
             return NSRange(location: location, length: end - location)
         }
+        guard force || clamped != crossSelectionRange else { return }
         crossSelectionRange = clamped
         applyHighlight(clamped)
     }
@@ -259,6 +277,47 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
         setSelectedRange(range, affinity: index < anchor ? .upstream : .downstream, stillSelecting: true)
     }
 
+    /// One pointer position, handled the same way whether it arrived as a
+    /// drag event or as a parked pointer re-evaluated after an autoscroll.
+    /// Shared on purpose: the parked branch used to only ever grow whichever
+    /// selection was already running, so a press held at the viewport edge in
+    /// a tall message scrolled to the message end and then froze — it never
+    /// re-ran the escalation test after the content moved under it.
+    ///
+    /// - Parameters:
+    ///   - point: pointer in THIS view's coordinates (recomputed after any
+    ///     autoscroll — the same window point names a different character
+    ///     once the content moved).
+    ///   - windowPoint: the same position in window coordinates, for the
+    ///     controller's cross-timeline hit test.
+    ///   - escalated: in/out — `true` while the controller owns the drag.
+    private func handleDragPoint(
+        _ point: NSPoint, windowPoint: NSPoint, anchorID: String, anchorIndex: Int,
+        controller: MessageSelectionController, escalated: inout Bool
+    ) {
+        if Self.shouldEscalate(pointY: point.y, bounds: bounds, slop: Self.escapeSlop) {
+            if !escalated {
+                // Hand the within-message selection over to the controller —
+                // but only if it accepts the anchor. It refuses when this
+                // message has left the row window mid-press; the press then
+                // stays an ordinary within-message drag rather than becoming
+                // a selection that belongs to nobody.
+                let anchor = min(anchorIndex, storageLength)
+                escalated = controller.beginCrossMessage(anchorID: anchorID, charIndex: anchor)
+                if escalated { setSelectedRange(NSRange(location: anchor, length: 0)) }
+            }
+            if escalated {
+                controller.extend(toWindowPoint: windowPoint, window: window)
+                return
+            }
+        } else if escalated {
+            // Back inside the anchor: ordinary text selection again.
+            escalated = false
+            controller.clear()
+        }
+        extendSelection(fromAnchor: anchorIndex, toViewPoint: point)
+    }
+
     override func mouseDown(with event: NSEvent) {
         // `anchorID` is captured HERE, not read inside the loop: the loop
         // pumps the main run loop in `.eventTracking` (a common mode), so
@@ -297,14 +356,15 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
                 // under the stationary pointer.
                 if let lastDrag {
                     autoscroll(with: lastDrag)
-                    if escalated {
-                        controller.extend(toWindowPoint: lastDrag.locationInWindow, window: window)
-                    } else {
-                        // Re-derive AFTER the scroll: the same window point
-                        // now names a different character.
-                        extendSelection(fromAnchor: anchorIndex,
-                                        toViewPoint: convert(lastDrag.locationInWindow, from: nil))
-                    }
+                    // Re-derive AFTER the scroll: the same window point now
+                    // names a different character — and, in a message taller
+                    // than the viewport, can now sit outside (or back inside)
+                    // the body's band, so the escalation test must run again.
+                    handleDragPoint(
+                        convert(lastDrag.locationInWindow, from: nil),
+                        windowPoint: lastDrag.locationInWindow,
+                        anchorID: anchorID, anchorIndex: anchorIndex,
+                        controller: controller, escalated: &escalated)
                 }
                 continue
             }
@@ -318,24 +378,11 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
             // neither escalates nor scrolls unless we scroll here. It no-ops
             // when the point is inside the clip view.
             autoscroll(with: next)
-            let point = convert(next.locationInWindow, from: nil)
-            if Self.shouldEscalate(pointY: point.y, bounds: bounds, slop: Self.escapeSlop) {
-                if !escalated {
-                    escalated = true
-                    // Hand the within-message selection over to the controller.
-                    let anchor = min(anchorIndex, storageLength)
-                    setSelectedRange(NSRange(location: anchor, length: 0))
-                    controller.beginCrossMessage(anchorID: anchorID, charIndex: anchor)
-                }
-                controller.extend(toWindowPoint: next.locationInWindow, window: window)
-            } else {
-                if escalated {
-                    // Back inside the anchor: ordinary text selection again.
-                    escalated = false
-                    controller.clear()
-                }
-                extendSelection(fromAnchor: anchorIndex, toViewPoint: point)
-            }
+            handleDragPoint(
+                convert(next.locationInWindow, from: nil),
+                windowPoint: next.locationInWindow,
+                anchorID: anchorID, anchorIndex: anchorIndex,
+                controller: controller, escalated: &escalated)
         }
 
         if escalated {
@@ -355,7 +402,17 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
         "Copy \(count) Message\(count == 1 ? "" : "s")"
     }
 
+    /// Copies the transcript the menu item captured when the menu was BUILT.
+    /// Deriving it here instead would race the controller's clear-monitor:
+    /// clicking the item is a left mouse down, which the monitor sees first
+    /// and answers by clearing the selection, leaving nothing to derive.
+    /// Senders without a payload (a menu built elsewhere, or a keyboard
+    /// route) fall back to the live transcript.
     @objc func copyCrossSelection(_ sender: Any?) {
+        if let text = (sender as? NSMenuItem)?.representedObject as? String {
+            selectionController?.copyText(text)
+            return
+        }
         selectionController?.copyTranscript()
     }
 
@@ -403,20 +460,39 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
         if item.action == #selector(NSTextView.copy(_:)), selectionController?.hasSelection == true {
             return true
         }
+        // NSTextView's answer for an action it does not know is not
+        // contractual — answer for our own item rather than shipping it
+        // greyed out on whichever OS version decides to say no.
+        if item.action == #selector(copyCrossSelection(_:)) {
+            return selectionController?.hasSelection == true
+        }
         return super.validateUserInterfaceItem(item)
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        let menu = super.menu(for: event) ?? NSMenu()
+        // Exactly what super returned when there is nothing to add — an empty
+        // `NSMenu()` substitute would swallow the right-click instead of
+        // letting AppKit decline to show a menu at all.
+        let base = super.menu(for: event)
         guard let selectionController, selectionController.hasSelection,
-              let count = selectionController.transcriptProvider?().messageCount, count > 0 else { return menu }
+              // The FINISHED snapshot, not the live provider: the title and
+              // the payload must agree, and neither may change under the
+              // click that is about to clear the selection.
+              let transcript = selectionController.finishedTranscript,
+              transcript.messageCount > 0 else { return base }
         let item = NSMenuItem(
-            title: Self.menuTitle(forMessageCount: count),
+            title: Self.menuTitle(forMessageCount: transcript.messageCount),
             action: #selector(copyCrossSelection(_:)), keyEquivalent: "")
         item.target = self
-        menu.insertItem(.separator(), at: 0)
-        menu.insertItem(item, at: 0)
-        return menu
+        item.representedObject = transcript.text
+        guard let base else {
+            let menu = NSMenu()
+            menu.addItem(item)
+            return menu
+        }
+        base.insertItem(.separator(), at: 0)
+        base.insertItem(item, at: 0)
+        return base
     }
 }
 
@@ -482,7 +558,7 @@ private struct SelectableTextViewRepresentable: NSViewRepresentable {
             // Streaming replaced the storage: re-clamp and repaint the
             // cross-message span (rendering attributes die with the storage).
             if let view = textView as? MessageCopyTextView, let range = view.crossSelectionRange {
-                view.setCrossSelection(range)
+                view.setCrossSelection(range, force: true)
             }
         }
     }
