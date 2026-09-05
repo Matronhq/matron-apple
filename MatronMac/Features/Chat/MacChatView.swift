@@ -377,6 +377,21 @@ struct MacChatView: View {
             messageCount: entries.count)
     }
 
+    /// Installs the spans → transcript bridge on a timeline's controller.
+    /// Shared by the chat and the sub-chat pane. Weak captures: the
+    /// controller must not retain itself through its own provider, and the
+    /// VM must stay evictable by ChatVMCache after the room is left.
+    static func installTranscriptProvider(on messageSelection: MessageSelectionController, viewModel: ChatViewModel) {
+        messageSelection.transcriptProvider = { [weak messageSelection, weak viewModel] in
+            guard let messageSelection, let viewModel else { return Transcript(text: "", messageCount: 0) }
+            let items = viewModel.windowedRows.compactMap { row -> TimelineItem? in
+                if case .message(let item) = row { return item }
+                return nil
+            }
+            return transcript(from: items, spans: messageSelection.selectedSpans())
+        }
+    }
+
     var body: some View {
         GeometryReader { geo in
             if let childID = openSubChatID {
@@ -427,14 +442,7 @@ struct MacChatView: View {
         .environment(messageSelection)
         .onAppear {
             // Installed here, not in init: the provider needs the live VM.
-            let viewModel = viewModel
-            messageSelection.transcriptProvider = { [messageSelection] in
-                let items = viewModel.windowedRows.compactMap { row -> TimelineItem? in
-                    if case .message(let item) = row { return item }
-                    return nil
-                }
-                return Self.transcript(from: items, spans: messageSelection.selectedSpans())
-            }
+            MacChatView.installTranscriptProvider(on: messageSelection, viewModel: viewModel)
         }
         // Observation lifecycle lives HERE, on the stable outer view — NOT
         // on `chatColumn`. The pane branches move `chatColumn` between
@@ -478,6 +486,10 @@ struct MacChatView: View {
             // Drops the selection and its local click monitor with the
             // timeline — a monitor outliving the view would keep firing.
             messageSelection.clear()
+            // `clear()` does NOT drop the provider, and the provider is what
+            // holds this room's VM alive; releasing it here keeps ChatVMCache
+            // free to evict the VM once the room is left.
+            messageSelection.transcriptProvider = nil
             // Generation-guarded: the VM is cached per room (ChatVMCache),
             // and on a same-room remount SwiftUI can run the NEW view's
             // `.task`/start() before the OLD view's onDisappear — an
@@ -1149,6 +1161,26 @@ private struct MacTimelineListContent: View, Equatable {
     }
 }
 
+/// The "Copy N Messages" item — its own View so the controller reads
+/// happen in THIS leaf's body, not in the row's (the `.contextMenu`
+/// builder runs during the row's body evaluation; reading observable
+/// state there would make every mounted row observe the selection and
+/// the streaming `windowedRows`, invalidating all ~185 rows per commit
+/// and bypassing the per-row `Equatable` gate below).
+private struct MacSelectionCopyMenuItems: View {
+    @Environment(MessageSelectionController.self) private var messageSelection: MessageSelectionController?
+
+    var body: some View {
+        if let messageSelection, messageSelection.hasSelection,
+           let count = messageSelection.transcriptProvider?().messageCount, count > 0 {
+            Button { messageSelection.copyTranscript() } label: {
+                Label("Copy \(count) Message\(count == 1 ? "" : "s")", systemImage: "doc.on.doc")
+            }
+            Divider()
+        }
+    }
+}
+
 /// One timeline row, fenced behind `Equatable` so a stream commit that
 /// reassigns `windowedRows` re-evaluates ONLY the rows whose value
 /// actually changed (normally just the streaming tail row). Without this
@@ -1180,11 +1212,6 @@ private struct MacTimelineRowView: View, Equatable {
     /// `nil` where there is nowhere to navigate.
     let onOpenSpawnRoom: ((String) -> Void)?
     let onPreviewImage: (URL, Image) -> Void
-    /// The hosting timeline's cross-message selection, read ONLY inside the
-    /// `.contextMenu` builder below — never in the row body proper, so the
-    /// per-row `==` scroll-perf gate stays intact. Deliberately absent from
-    /// `==`: it is fixed for the life of the timeline.
-    @Environment(MessageSelectionController.self) private var messageSelection: MessageSelectionController?
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.row == rhs.row && lhs.subtaskChild == rhs.subtaskChild
@@ -1271,15 +1298,7 @@ private struct MacTimelineRowView: View, Equatable {
                 // present, "Copy N Messages" leads — the body's own
                 // AppKit menu offers the same item over the text.
                 .contextMenu {
-                    if let messageSelection, messageSelection.hasSelection,
-                       let count = messageSelection.transcriptProvider?().messageCount, count > 0 {
-                        Button {
-                            messageSelection.copyTranscript()
-                        } label: {
-                            Label("Copy \(count) Message\(count == 1 ? "" : "s")", systemImage: "doc.on.doc")
-                        }
-                        Divider()
-                    }
+                    MacSelectionCopyMenuItems()
                     if case .text(let body, _) = item.kind {
                         Button {
                             Pasteboard.copy(body)
@@ -1492,14 +1511,7 @@ struct MacSubChatPane: View {
         .environment(messageSelection)
         .onAppear {
             // Installed here, not in init: the provider needs the live VM.
-            let viewModel = viewModel
-            messageSelection.transcriptProvider = { [messageSelection] in
-                let items = viewModel.windowedRows.compactMap { row -> TimelineItem? in
-                    if case .message(let item) = row { return item }
-                    return nil
-                }
-                return MacChatView.transcript(from: items, spans: messageSelection.selectedSpans())
-            }
+            MacChatView.installTranscriptProvider(on: messageSelection, viewModel: viewModel)
         }
         .task {
             startedGeneration = viewModel.observationGeneration + 1
@@ -1517,9 +1529,10 @@ struct MacSubChatPane: View {
             await viewModel.paginateBackward()
         }
         .onDisappear {
-            // Same reasoning as the parent timeline's: drop the selection
-            // and its click monitor with the pane.
+            // Same reasoning as the parent timeline's: drop the selection,
+            // its click monitor and the VM-holding provider with the pane.
             messageSelection.clear()
+            messageSelection.transcriptProvider = nil
             followHealTask?.cancel()
             viewModel.stop(ifGeneration: startedGeneration)
             stripViewModel.stop(ifGeneration: stripStartedGeneration)

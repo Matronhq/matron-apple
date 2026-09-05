@@ -299,6 +299,37 @@ final class MacChatViewTranscriptTests: XCTestCase {
         XCTAssertEqual(out.text, "")
     }
 
+    /// A `.text` row with NO text view at all (`text == nil`) contributes
+    /// nothing — there is no body to have selected, and unlike an image
+    /// there is no marker to stand in for one.
+    func test_textItem_withNilSpanText_isSkipped() {
+        let items = [
+            item("1", .text(body: "a", formattedHTML: nil), own: true),
+            item("2", .text(body: "b", formattedHTML: nil), own: false),
+        ]
+        let spans = [
+            SelectedSpan(id: "1", text: nil),
+            SelectedSpan(id: "2", text: "b"),
+        ]
+        let out = MacChatView.transcript(from: items, spans: spans, locale: gb, timeZone: utc)
+        XCTAssertEqual(out.messageCount, 1)
+        XCTAssertEqual(out.text, "[05/09/2026, 14:33] claude: b")
+    }
+
+    /// A file whose caption IS partly selected copies the marker AND the
+    /// selected caption text.
+    func test_fileWithSelectedCaption_keepsMarkerAndCaption() {
+        let items = [
+            item("f", .file(url: nil, filename: "notes.pdf", caption: "the meeting notes",
+                            sizeBytes: nil, expired: false), own: true),
+        ]
+        let out = MacChatView.transcript(
+            from: items, spans: [SelectedSpan(id: "f", text: "meeting notes")],
+            locale: gb, timeZone: utc)
+        XCTAssertEqual(out.messageCount, 1)
+        XCTAssertEqual(out.text, "[05/09/2026, 14:33] Me: [File: notes.pdf] meeting notes")
+    }
+
     func test_spanWithUnknownID_isIgnored() {
         let out = MacChatView.transcript(from: [], spans: [SelectedSpan(id: "ghost", text: "x")], locale: gb, timeZone: utc)
         XCTAssertEqual(out.messageCount, 0)
