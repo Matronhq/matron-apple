@@ -115,8 +115,13 @@ targets:
         # sync — and the offline outbox flush — run periodically while the
         # app is backgrounded. Identifier must match
         # MatronAppDelegate.refreshTaskID.
+        # audio — a voice note keeps recording while the app is
+        # backgrounded (switching apps mid-note). Only bites while the
+        # recorder holds an active audio session; the rest of the time the
+        # app suspends as before.
         UIBackgroundModes:
           - fetch
+          - audio
         BGTaskSchedulerPermittedIdentifiers:
           - chat.matron.refresh
         # Production talks to https://chat.example.com, so ATS stays on.
