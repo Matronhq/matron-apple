@@ -167,6 +167,25 @@ final class MarkdownSourceTests: XCTestCase {
         XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions(">\t\t[x]: y"), ">\t\t[x]: y")
     }
 
+    /// Tabs advance to the next multiple of four columns, so a tab is one
+    /// to four columns depending on where it sits, and consuming a list
+    /// item's offset out of a tab leaves the remainder as indent (Bugbot
+    /// round 8, PR #183).
+    func test_tabsAreMeasuredAgainstTabStops() {
+        let stillOpen = "- ```\n\t  ```\n  [x]: y"
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions(stillOpen), stillOpen,
+                       "a tab past a two-column offset leaves two columns, plus two spaces: not a closer")
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions("- ```\n\t```\n  [x]: y"), "- ```\n\t```\n  \\[x]: y",
+                       "the same tab alone leaves two columns: a closer")
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions("1.\t[x]: a\n\n    [x]: b"), "1.\t\\[x]: a\n\n    \\[x]: b",
+                       "a tab after a two-character marker is two columns: content offset four")
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions("- item\n\n\t[x]: y"), "- item\n\n\t\\[x]: y")
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions("-\t[x]: y"), "-\t\\[x]: y")
+        for body in ["  \t[x]: y", " \t> [x]: y"] {
+            XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions(body), body, body)
+        }
+    }
+
     /// A nested marker may sit behind up to three spaces of the previous
     /// marker's content indent.
     func test_nestedMarkersBehindLeftoverIndent() {

@@ -34,7 +34,10 @@ enum MarkdownSource {
         var fence: (char: Character, length: Int, depth: Int)?
         var changed = false
         var out: [String] = []
-        for line in source.split(separator: "\n", omittingEmptySubsequences: false) {
+        for rawLine in source.split(separator: "\n", omittingEmptySubsequences: false) {
+            // Every column rule below runs on a tab-expanded copy of the
+            // line; the original is what gets emitted.
+            let line = expandingTabs(rawLine)
             let (matched, remainder) = continuation(of: open, on: line)
             var rest = remainder
             if let active = fence {
@@ -44,7 +47,7 @@ enum MarkdownSource {
                        run.char == active.char, run.length >= active.length, run.rest.isEmpty {
                         fence = nil
                     }
-                    out.append(String(line))
+                    out.append(String(rawLine))
                     continue
                 }
                 fence = nil // a container the fence lived in ended on this line
@@ -53,18 +56,19 @@ enum MarkdownSource {
             openContainers(on: &rest, into: &open)
             let ws = rest.prefix(while: isSpace)
             if columns(ws) >= 4 {
-                out.append(String(line)) // indented code
+                out.append(String(rawLine)) // indented code
                 continue
             }
             rest = rest[ws.endIndex...]
             if let run = fenceRun(rest) {
                 fence = (run.char, run.length, open.count)
-                out.append(String(line))
+                out.append(String(rawLine))
             } else if isReferenceDefinition(rest) {
-                out.append(line[..<rest.startIndex] + "\\" + rest)
+                let cut = index(in: rawLine, atColumn: line.distance(from: line.startIndex, to: rest.startIndex))
+                out.append(rawLine[..<cut] + "\\" + rawLine[cut...])
                 changed = true
             } else {
-                out.append(String(line))
+                out.append(String(rawLine))
             }
         }
         return changed ? out.joined(separator: "\n") : source
@@ -74,8 +78,42 @@ enum MarkdownSource {
         character == " " || character == "\t"
     }
 
+    /// Columns of leading whitespace on a tab-expanded line.
     private static func columns(_ whitespace: Substring) -> Int {
-        whitespace.reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
+        whitespace.count
+    }
+
+    /// The line with each tab replaced by the spaces that carry it to the
+    /// next multiple of four columns, so a tab is one to four columns
+    /// depending on where it sits. Lines without tabs are returned as is.
+    private static func expandingTabs(_ line: Substring) -> Substring {
+        guard line.contains("\t") else { return line }
+        var expanded = ""
+        var column = 0
+        for character in line {
+            if character == "\t" {
+                let width = 4 - column % 4
+                expanded += String(repeating: " ", count: width)
+                column += width
+            } else {
+                expanded.append(character)
+                column += 1
+            }
+        }
+        return Substring(expanded)
+    }
+
+    /// The index in the original line that sits at `column` of its
+    /// tab-expanded form. The escape goes in front of a `[`, which always
+    /// starts a column, so the walk lands exactly on it.
+    private static func index(in line: Substring, atColumn column: Int) -> Substring.Index {
+        var cursor = line.startIndex
+        var reached = 0
+        while reached < column, cursor < line.endIndex {
+            reached += line[cursor] == "\t" ? 4 - reached % 4 : 1
+            cursor = line.index(after: cursor)
+        }
+        return cursor
     }
 
     /// How many of the open containers this line continues, and what is
@@ -96,13 +134,7 @@ enum MarkdownSource {
                     continue
                 }
                 guard columns(ws) >= offset else { return (index, rest) }
-                var consumed = 0
-                var cursor = rest.startIndex
-                while consumed < offset {
-                    consumed += rest[cursor] == "\t" ? 4 : 1
-                    cursor = rest.index(after: cursor)
-                }
-                rest = rest[cursor...]
+                rest = rest.dropFirst(offset)
             }
         }
         return (open.count, rest)
