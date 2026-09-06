@@ -298,6 +298,9 @@ enum MarkdownAttributed {
     // MARK: - Conversion
 
     private static func build(from source: String) -> NSAttributedString {
+        // Chat bodies are prose — see MarkdownSource for the one shape the
+        // parser would otherwise swallow whole.
+        let source = MarkdownSource.escapingReferenceDefinitions(source)
         let attributed: AttributedString
         do {
             attributed = try AttributedString(

@@ -89,7 +89,9 @@ public struct MarkdownText: View {
         if let cached = contentCache.object(forKey: key) {
             return cached.content
         }
-        let parsed = MarkdownContent(raw)
+        // Same pre-parse fix as the Mac renderer: a `[label]: text` line is
+        // a reference definition to MarkdownUI too, and renders as nothing.
+        let parsed = MarkdownContent(MarkdownSource.escapingReferenceDefinitions(raw))
         if cache {
             contentCache.setObject(ParsedMarkdown(parsed), forKey: key)
         }
