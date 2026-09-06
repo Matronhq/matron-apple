@@ -48,6 +48,31 @@ final class MarkdownSourceTests: XCTestCase {
                        "a backtick run does not close a tilde fence")
     }
 
+    /// A definition inside a block quote or after a list marker is still a
+    /// definition to CommonMark (Bugbot, PR #183) — a quoted voice note or
+    /// a labelled list item vanished the same way.
+    func test_definitionsBehindContainerPrefixesAreEscaped() {
+        let cases: [(String, String)] = [
+            ("> [Voice note transcription]: Hello.", "> \\[Voice note transcription]: Hello."),
+            (">[x]: y", ">\\[x]: y"),
+            ("> > [x]: y", "> > \\[x]: y"),
+            ("- [x]: y", "- \\[x]: y"),
+            ("* [x]: y", "* \\[x]: y"),
+            ("1. [x]: y", "1. \\[x]: y"),
+            ("2) [x]: y", "2) \\[x]: y"),
+            ("> - [x]: y", "> - \\[x]: y"),
+        ]
+        for (body, expected) in cases {
+            XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions(body), expected, body)
+        }
+    }
+
+    func test_taskListItemsAndBlankLabelsAreNotDefinitions() {
+        for body in ["- [x] done", "- [ ] todo", "[ ]: blank label", "- [ ]: blank label"] {
+            XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions(body), body, body)
+        }
+    }
+
     func test_ordinaryBodiesPassThroughUntouched() {
         for body in ["plain", "[link](u)", "[x] not a definition", "a: b", "[]: empty label", ""] {
             XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions(body), body)

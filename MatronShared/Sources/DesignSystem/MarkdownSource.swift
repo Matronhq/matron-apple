@@ -33,8 +33,11 @@ enum MarkdownSource {
             // Four columns of indentation make an indented code block, where
             // a definition-shaped line is content.
             let indentColumns = indent.reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
-            if fence == nil, indentColumns < 4, isReferenceDefinition(trimmed) {
-                out.append(indent + "\\" + trimmed)
+            // Block-quote and list markers are containers: what follows them
+            // is still a paragraph line, and still a definition to the parser.
+            let (prefix, rest) = containerPrefix(trimmed)
+            if fence == nil, indentColumns < 4, isReferenceDefinition(rest) {
+                out.append(indent + prefix + "\\" + rest)
                 changed = true
             } else {
                 out.append(String(line))
@@ -53,12 +56,47 @@ enum MarkdownSource {
         return (first, run.count, rest)
     }
 
-    /// `[label]:` with a non-empty label (up to the first `]`) and at least
-    /// one more character after the colon — the parser needs a destination.
+    /// Peels any run of block-quote markers (`>` plus one optional space)
+    /// and list markers (`-`, `*`, `+`, or up to nine digits with `.` or
+    /// `)`, each followed by at least one space) off the front of a line.
+    private static func containerPrefix(_ line: Substring) -> (prefix: String, rest: Substring) {
+        var rest = line
+        var prefix = ""
+        while true {
+            if rest.first == ">" {
+                var end = rest.index(after: rest.startIndex)
+                if end < rest.endIndex, rest[end] == " " { end = rest.index(after: end) }
+                prefix += rest[rest.startIndex..<end]
+                rest = rest[end...]
+                continue
+            }
+            var markerEnd: Substring.Index?
+            if let first = rest.first, first == "-" || first == "*" || first == "+" {
+                markerEnd = rest.index(after: rest.startIndex)
+            } else {
+                let digits = rest.prefix(while: \.isNumber)
+                if (1...9).contains(digits.count), digits.endIndex < rest.endIndex,
+                   rest[digits.endIndex] == "." || rest[digits.endIndex] == ")" {
+                    markerEnd = rest.index(after: digits.endIndex)
+                }
+            }
+            if let markerEnd, markerEnd < rest.endIndex, rest[markerEnd] == " " {
+                let afterSpaces = rest[markerEnd...].drop(while: { $0 == " " }).startIndex
+                prefix += rest[rest.startIndex..<afterSpaces]
+                rest = rest[afterSpaces...]
+                continue
+            }
+            return (prefix, rest)
+        }
+    }
+
+    /// `[label]:` with a label (up to the first `]`) that has at least one
+    /// non-whitespace character, and at least one more character after the
+    /// colon — the parser needs a destination.
     private static func isReferenceDefinition(_ line: Substring) -> Bool {
         guard line.first == "[", let close = line.firstIndex(of: "]") else { return false }
         let label = line[line.index(after: line.startIndex)..<close]
-        guard !label.isEmpty, !label.contains("["), !label.contains("\n") else { return false }
+        guard label.contains(where: { !$0.isWhitespace }), !label.contains("[") else { return false }
         let afterClose = line.index(after: close)
         guard afterClose < line.endIndex, line[afterClose] == ":" else { return false }
         let rest = line[line.index(after: afterClose)...].drop(while: { $0 == " " || $0 == "\t" })
