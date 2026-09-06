@@ -87,6 +87,27 @@ final class MarkdownSourceTests: XCTestCase {
         }
     }
 
+    /// A fence lives inside its container: leaving the quote ends the
+    /// fence, a deeper-nested line is still content, and only a closer at
+    /// the fence's own level closes it (Bugbot round 3, PR #183).
+    func test_fenceStateFollowsContainerBoundaries() {
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions("> ```\n[x]: y"), "> ```\n\\[x]: y",
+                       "an unprefixed line ends the quote, and the fence with it")
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions("> ```\n> > [x]: y\n> ```\n> [x]: y"),
+                       "> ```\n> > [x]: y\n> ```\n> \\[x]: y", "a deeper-nested line inside the quoted fence is content")
+        let realFence = "```\n> ```\n[x]: y\n```"
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions(realFence), realFence,
+                       "a quoted fence line inside an unquoted fence is content, not a closer")
+    }
+
+    /// A nested marker may sit behind up to three spaces of the previous
+    /// marker's content indent.
+    func test_nestedMarkersBehindLeftoverIndent() {
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions("-   > [x]: y"), "-   > \\[x]: y")
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions("1.  - [x]: y"), "1.  - \\[x]: y")
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions(">  - [x]: y"), ">  - \\[x]: y")
+    }
+
     func test_taskListItemsAndBlankLabelsAreNotDefinitions() {
         for body in ["- [x] done", "- [ ] todo", "[ ]: blank label", "- [ ]: blank label"] {
             XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions(body), body, body)

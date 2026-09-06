@@ -13,9 +13,13 @@ enum MarkdownSource {
     /// text. Fenced code is left alone — a definition there is content.
     static func escapingReferenceDefinitions(_ source: String) -> String {
         guard source.contains("]:") else { return source }
-        // The open fence's character and run length: a fence closes only on
-        // a run of the SAME character at least as long, with nothing after it.
-        var fence: (char: Character, length: Int)?
+        // The open fence: its character, run length, and the block-quote
+        // markers it lives under. A fence closes on a run of the SAME
+        // character at least as long, with nothing after it, at the SAME
+        // container level; leaving its container (a line with a shorter or
+        // different marker prefix) ends the container and the fence with it;
+        // a deeper-nested line inside it is content.
+        var fence: (char: Character, length: Int, markers: String)?
         var changed = false
         var out: [String] = []
         for line in source.split(separator: "\n", omittingEmptySubsequences: false) {
@@ -31,6 +35,10 @@ enum MarkdownSource {
             // is still a paragraph line (or a fence) to the parser, subject
             // to the same up-to-three-spaces rule inside the container.
             var (prefix, rest) = containerPrefix(trimmed)
+            // Only block-quote markers scope a fence: a list item's
+            // continuation lines carry indentation, not the marker, and
+            // are still inside the item.
+            let markers = prefix.filter { $0 == ">" }
             let inner = rest.prefix(while: { $0 == " " || $0 == "\t" })
             if columns(inner) >= 4 {
                 out.append(String(line))
@@ -38,11 +46,16 @@ enum MarkdownSource {
             }
             prefix += inner
             rest = rest[inner.endIndex...]
+            if let open = fence, !markers.hasPrefix(open.markers) {
+                fence = nil // the fence's container ended on this line
+            }
             if let run = fenceRun(rest) {
                 if let open = fence {
-                    if run.char == open.char, run.length >= open.length, run.rest.isEmpty { fence = nil }
+                    if markers == open.markers, run.char == open.char, run.length >= open.length, run.rest.isEmpty {
+                        fence = nil
+                    }
                 } else {
-                    fence = (run.char, run.length)
+                    fence = (run.char, run.length, markers)
                 }
                 out.append(String(line))
                 continue
@@ -78,6 +91,18 @@ enum MarkdownSource {
         var rest = line
         var prefix = ""
         while true {
+            // Up to three spaces may precede a nested marker; more is
+            // indented code, which the caller's inner-indent rule handles.
+            let gap = rest.prefix(while: { $0 == " " })
+            if !gap.isEmpty {
+                let after = rest[gap.endIndex...]
+                let startsMarker = after.first == ">" || after.first == "-" || after.first == "*"
+                    || after.first == "+" || (after.first?.isNumber ?? false)
+                guard gap.count <= 3, startsMarker else { return (prefix, rest) }
+                let (nested, nestedRest) = containerPrefix(after)
+                guard !nested.isEmpty else { return (prefix, rest) }
+                return (prefix + gap + nested, nestedRest)
+            }
             if rest.first == ">" {
                 var end = rest.index(after: rest.startIndex)
                 if end < rest.endIndex, rest[end] == " " { end = rest.index(after: end) }
