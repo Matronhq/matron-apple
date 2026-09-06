@@ -20,6 +20,10 @@ import MatronViewModels
 struct MacComposerView: View {
     @State var viewModel: ComposerViewModel
     @State private var recorder = VoiceRecorder()
+    /// The global voice-note hotkey's seam (see `VoiceNoteCommandBus`).
+    /// Optional so a composer built without the app root (tests,
+    /// previews) simply has no hotkey.
+    @Environment(VoiceNoteCommandBus.self) private var voiceBus: VoiceNoteCommandBus?
 
     /// Placeholder shown in the empty composer — drawn as a SwiftUI overlay,
     /// since `NSTextView` has no placeholder of its own.
@@ -152,6 +156,38 @@ struct MacComposerView: View {
             // abort it (discarding the temp file) rather than letting the
             // mic keep capturing with nothing to stop or send it.
             recorder.cancel()
+            voiceBus?.hasComposer = false
+        }
+        .onAppear { voiceBus?.hasComposer = true }
+        // The global hotkey: each press is one toggle, resolved against
+        // this composer's own recorder so a hotkey note and a mouse note
+        // are the same note. The composer is the only place that owns a
+        // recorder, so the bus's refusal path (no chat open) is handled
+        // at the app root, where a press with no composer still sounds.
+        .onChange(of: voiceBus?.pressCount ?? 0) { _, _ in
+            guard voiceBus != nil else { return }
+            let isRecording: Bool
+            if case .recording = recorder.state { isRecording = true } else { isRecording = false }
+            switch VoiceNoteHotkeyAction.resolve(isRecording: isRecording, hasComposer: true) {
+            case .start:
+                Task {
+                    await startRecording()
+                    if case .recording = recorder.state { VoiceNoteCommandBus.playStartSound() }
+                }
+            case .stopAndSend:
+                stopRecordingAndSend()
+                VoiceNoteCommandBus.playStopSound()
+            case .refuse:
+                VoiceNoteCommandBus.playRefuseSound()
+            }
+        }
+        // Every recording, hotkey or mouse, drives the floating indicator.
+        .onChange(of: recorder.state) { _, state in
+            if case .recording(let start) = state {
+                voiceBus?.recordingStart = start
+            } else {
+                voiceBus?.recordingStart = nil
+            }
         }
     }
 
