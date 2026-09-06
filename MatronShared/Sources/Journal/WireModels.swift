@@ -31,6 +31,19 @@ public enum JournalEventType {
     /// parent_convo_id linkage (learned only from convo_meta) has arrived.
     public static let childConvoInfix = ":sub:"
 
+    /// Markers the bridge puts at the head of every agent-chat room title
+    /// (`↔️ [ab] mac ↔ dev-z`, matron-bridge#225/#228; `🔗 ` is the legacy
+    /// marker rooms minted before #228 still carry). A room is born by an
+    /// agent's `agent_chat_start`, not by the user, so it must never
+    /// auto-open — the title, carried by `convo_meta`, is the only frame
+    /// that tells a room apart from the session the user just started.
+    public static let agentRoomTitleMarkers = ["↔️ ", "🔗 "]
+
+    /// Whether a title is an agent-chat room's (see `agentRoomTitleMarkers`).
+    public static func isAgentRoomTitle(_ title: String) -> Bool {
+        agentRoomTitleMarkers.contains { title.hasPrefix($0) }
+    }
+
     /// Types that bump unread counts and set the conversation snippet —
     /// mirrors the server's MESSAGE_TYPES (src/journal.js).
     public static let messageTypes: Set<String> = [
