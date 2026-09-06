@@ -207,7 +207,7 @@ public final class VoiceRecorder {
     /// paused, and a later `stop()` still delivers what was captured. A
     /// failed resume is left alone for the same reason.
     private func handle(interruption: AudioInterruption) {
-        Self.logger.info("interruption: \(String(describing: interruption)) state=\(String(describing: self.state)) wasInterrupted=\(self.isInterrupted)")
+        Self.logger.info("interruption: \(String(describing: interruption), privacy: .public) state=\(String(describing: self.state), privacy: .public) wasInterrupted=\(self.isInterrupted)")
         guard case .recording = state, let recorder else { return }
         switch interruption {
         case .began:
@@ -242,7 +242,7 @@ public final class VoiceRecorder {
         do {
             try session.setActive(true)
         } catch {
-            Self.logger.error("resume: setActive failed: \(error.localizedDescription)")
+            Self.logger.error("resume: setActive failed: \(error.localizedDescription, privacy: .public)")
         }
         Self.logSessionState(session, at: "resume")
         #endif
@@ -252,13 +252,16 @@ public final class VoiceRecorder {
     /// One line per recording milestone with everything that decides what
     /// the file will contain: the input route iOS actually chose (a
     /// connected accessory can override the built-in mic), input
-    /// availability and gain, and the permission state.
+    /// availability and gain, and the permission state. Strings are marked
+    /// public on purpose: os.Logger redacts interpolated strings as
+    /// `<private>` on a real device, which would hide the very route names
+    /// this line exists to show. Port types and names are not sensitive.
     private static func logSessionState(_ session: AVAudioSession, at milestone: String) {
         let inputs = session.currentRoute.inputs
             .map { "\($0.portType.rawValue):\($0.portName)" }
             .joined(separator: ",")
         let outputs = session.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
-        logger.info("\(milestone): inputs=[\(inputs)] outputs=[\(outputs)] inputAvailable=\(session.isInputAvailable) gain=\(session.inputGain, format: .fixed(precision: 2)) channels=\(session.inputNumberOfChannels) sampleRate=\(session.sampleRate, format: .fixed(precision: 0)) permission=\(AVAudioApplication.shared.recordPermission.rawValue) otherAudio=\(session.isOtherAudioPlaying)")
+        logger.info("\(milestone, privacy: .public): inputs=[\(inputs, privacy: .public)] outputs=[\(outputs, privacy: .public)] inputAvailable=\(session.isInputAvailable) gain=\(session.inputGain, format: .fixed(precision: 2)) channels=\(session.inputNumberOfChannels) sampleRate=\(session.sampleRate, format: .fixed(precision: 0)) permission=\(AVAudioApplication.shared.recordPermission.rawValue) otherAudio=\(session.isOtherAudioPlaying)")
     }
     #endif
 
