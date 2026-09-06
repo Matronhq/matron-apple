@@ -17,6 +17,7 @@ import MatronViewModels
 /// keep a Sign Out affordance now that this view is no longer reached
 /// via a menu item that already implied "you're managing your account".
 struct MacDeviceSettingsView: View {
+    @AppStorage(VoiceNoteHotkeyKey.storageKey) private var voiceHotkeyRaw = VoiceNoteHotkeyKey.default.rawValue
     let session: UserSession
     /// Sign-out action. Optional so previews / tests can omit it and
     /// render the view without a destructive action wired up.
@@ -66,6 +67,21 @@ struct MacDeviceSettingsView: View {
                 // NSApp.appearance, so the switch is live app-wide.
                 AppearancePicker()
             }
+            Section {
+                // Same pattern: MatronMacApp's root observes the key and
+                // re-registers the Carbon hotkey live.
+                Picker("Voice note key", selection: $voiceHotkeyRaw) {
+                    ForEach(VoiceNoteHotkeyKey.allCases) { key in
+                        Text(key.label).tag(key.rawValue)
+                    }
+                }
+            } header: {
+                Text("Voice notes")
+            } footer: {
+                Text("Press the key from any app to start a voice note in the open chat, and again to send it. On Apple keyboards F5 is the Dictation key: turn off the Dictation shortcut in System Settings → Keyboard, or pick another key.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             if let onSignOut {
                 Section {
                     Button("Sign Out", role: .destructive, action: onSignOut)
@@ -74,7 +90,7 @@ struct MacDeviceSettingsView: View {
         }
         .formStyle(.grouped)
         // Tall enough for the Privacy section when biometrics exist.
-        .frame(width: 420, height: 440)
+        .frame(width: 420, height: 560)
         .navigationTitle("Device")
     }
 }

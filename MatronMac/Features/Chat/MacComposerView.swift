@@ -20,6 +20,14 @@ import MatronViewModels
 struct MacComposerView: View {
     @State var viewModel: ComposerViewModel
     @State private var recorder = VoiceRecorder()
+    /// The global voice-note hotkey's seam (see `VoiceNoteCommandBus`).
+    /// Optional so a composer built without the app root (tests,
+    /// previews) simply has no hotkey.
+    @Environment(VoiceNoteCommandBus.self) private var voiceBus: VoiceNoteCommandBus?
+    /// This composer's identity on the bus, and the window it lives in so
+    /// it can re-claim the bus when that window becomes key.
+    @State private var voiceComposerID = UUID()
+    @State private var hostWindow: NSWindow?
 
     /// Placeholder shown in the empty composer — drawn as a SwiftUI overlay,
     /// since `NSTextView` has no placeholder of its own.
@@ -151,7 +159,56 @@ struct MacComposerView: View {
             // An in-flight recording has no UI once this composer is gone —
             // abort it (discarding the temp file) rather than letting the
             // mic keep capturing with nothing to stop or send it.
+            // The cancel above never reaches `onChange(of: recorder.state)`
+            // (a disappeared view gets no more change callbacks), so the
+            // floating indicator is cleared here by hand.
+            if case .recording = recorder.state { voiceBus?.setRecording(voiceComposerID, start: nil) }
             recorder.cancel()
+            voiceBus?.release(voiceComposerID)
+        }
+        // Claimed once the window is known, and only if that window is key
+        // (or nothing holds the bus): a composer remounting in a background
+        // window must not steal the key window's claim.
+        .background(WindowAccessor { window in
+            hostWindow = window
+            voiceBus?.claimIfKey(voiceComposerID, isKey: window?.isKeyWindow == true)
+        })
+        // With File → New Window, several composers share the bus; the
+        // one whose window is key is the one a press should land in.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
+            guard let hostWindow, let window = note.object as? NSWindow, window === hostWindow else { return }
+            voiceBus?.claim(voiceComposerID)
+        }
+        // The global hotkey: each press is one toggle, resolved against
+        // this composer's own recorder so a hotkey note and a mouse note
+        // are the same note. Only the addressed composer reacts. The
+        // no-chat-open refusal lives at the app root, where a press with
+        // no composer at all still sounds; the lock is checked there too.
+        .onChange(of: voiceBus?.pressCount ?? 0) { _, _ in
+            guard let voiceBus, voiceBus.pressTarget == voiceComposerID else { return }
+            let isRecording: Bool
+            if case .recording = recorder.state { isRecording = true } else { isRecording = false }
+            switch VoiceNoteHotkeyAction.resolve(isRecording: isRecording, hasComposer: true,
+                                                 mediaAvailable: ComposerViewModel.mediaAvailable) {
+            case .start:
+                Task {
+                    await startRecording()
+                    if case .recording = recorder.state { VoiceNoteCommandBus.playStartSound() }
+                }
+            case .stopAndSend:
+                stopRecordingAndSend()
+                VoiceNoteCommandBus.playStopSound()
+            case .refuse:
+                VoiceNoteCommandBus.playRefuseSound()
+            }
+        }
+        // Every recording, hotkey or mouse, drives the floating indicator.
+        .onChange(of: recorder.state) { _, state in
+            if case .recording(let start) = state {
+                voiceBus?.setRecording(voiceComposerID, start: start)
+            } else {
+                voiceBus?.setRecording(voiceComposerID, start: nil)
+            }
         }
     }
 
