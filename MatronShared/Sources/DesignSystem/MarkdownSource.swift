@@ -3,6 +3,15 @@ import Foundation
 /// Pre-parse fixes applied to every chat body before either renderer
 /// (`MarkdownText` on iOS, `MarkdownAttributed` on Mac) sees it.
 enum MarkdownSource {
+    /// A container block left open by an earlier line. A block quote needs
+    /// its `>` marker on every line (fenced code has no lazy continuation);
+    /// a list item continues on lines indented to its content offset, or
+    /// blank ones.
+    private enum Container {
+        case quote
+        case item(offset: Int)
+    }
+
     /// A line shaped like a CommonMark link reference definition —
     /// `[label]: destination` — is consumed by the parser and renders as
     /// nothing. Chat bodies are prose: nobody writes reference definitions
@@ -10,64 +19,49 @@ enum MarkdownSource {
     /// ("[Voice note transcription]: Hello.") and plenty of ordinary text
     /// ("[TODO]: fix it") take exactly that shape, and vanished into an
     /// empty bubble. Escaping the opening bracket turns the line back into
-    /// text. Fenced code is left alone — a definition there is content.
+    /// text. Fenced and indented code are left alone — a definition there
+    /// is content.
     static func escapingReferenceDefinitions(_ source: String) -> String {
         guard source.contains("]:") else { return source }
-        // The open fence: its character, run length, and the block-quote
-        // markers it lives under. A fence closes on a run of the SAME
-        // character at least as long, with nothing after it, at the SAME
-        // container level; leaving its container (a line with a shorter or
-        // different marker prefix) ends the container and the fence with it;
-        // a deeper-nested line inside it is content.
-        var fence: (char: Character, length: Int, markers: String)?
+        var open: [Container] = []
+        // The open fence: its character and run length, and how many of
+        // `open` it lives inside. It closes on a run of the same character
+        // at least as long, with nothing after it, on a line that continues
+        // every one of those containers; if any of them ends, the fence
+        // ends with it. Indentation is always measured past the innermost
+        // container's content start, so "four columns make indented code"
+        // means four past a list item's offset, not four from the margin.
+        var fence: (char: Character, length: Int, depth: Int)?
         var changed = false
         var out: [String] = []
         for line in source.split(separator: "\n", omittingEmptySubsequences: false) {
-            let trimmed = line.drop(while: { $0 == " " || $0 == "\t" })
-            let indent = line[line.startIndex..<trimmed.startIndex]
-            // Four columns of indentation make an indented code block, where
-            // a definition-shaped line is content — and so is a fence marker.
-            if columns(indent) >= 4 {
-                // Indented code at the top level — or, inside a list item,
-                // a continuation line whose indentation is the item's
-                // content offset. Either way its quote markers decide
-                // whether an open quoted fence survives it.
-                let markers = containerPrefix(trimmed).prefix.filter { $0 == ">" }
-                if let open = fence, !markers.hasPrefix(open.markers) { fence = nil }
-                out.append(String(line))
-                continue
-            }
-            // Block-quote and list markers are containers: what follows them
-            // is still a paragraph line (or a fence) to the parser, subject
-            // to the same up-to-three-spaces rule inside the container.
-            var (prefix, rest) = containerPrefix(trimmed)
-            // Only block-quote markers scope a fence: a list item's
-            // continuation lines carry indentation, not the marker, and
-            // are still inside the item.
-            let markers = prefix.filter { $0 == ">" }
-            if let open = fence, !markers.hasPrefix(open.markers) {
-                fence = nil // the fence's quote ended on this line
-            }
-            let inner = rest.prefix(while: { $0 == " " || $0 == "\t" })
-            if columns(inner) >= 4 {
-                out.append(String(line))
-                continue
-            }
-            prefix += inner
-            rest = rest[inner.endIndex...]
-            if let run = fenceRun(rest) {
-                if let open = fence {
-                    if markers == open.markers, run.char == open.char, run.length >= open.length, run.rest.isEmpty {
+            let (matched, remainder) = continuation(of: open, on: line)
+            var rest = remainder
+            if let active = fence {
+                if matched == active.depth {
+                    let ws = rest.prefix(while: isSpace)
+                    if columns(ws) <= 3, let run = fenceRun(rest[ws.endIndex...]),
+                       run.char == active.char, run.length >= active.length, run.rest.isEmpty {
                         fence = nil
                     }
-                } else {
-                    fence = (run.char, run.length, markers)
+                    out.append(String(line))
+                    continue
                 }
-                out.append(String(line))
+                fence = nil // a container the fence lived in ended on this line
+            }
+            open.removeSubrange(matched...)
+            openContainers(on: &rest, into: &open)
+            let ws = rest.prefix(while: isSpace)
+            if columns(ws) >= 4 {
+                out.append(String(line)) // indented code
                 continue
             }
-            if fence == nil, isReferenceDefinition(rest) {
-                out.append(indent + prefix + "\\" + rest)
+            rest = rest[ws.endIndex...]
+            if let run = fenceRun(rest) {
+                fence = (run.char, run.length, open.count)
+                out.append(String(line))
+            } else if isReferenceDefinition(rest) {
+                out.append(line[..<rest.startIndex] + "\\" + rest)
                 changed = true
             } else {
                 out.append(String(line))
@@ -76,8 +70,83 @@ enum MarkdownSource {
         return changed ? out.joined(separator: "\n") : source
     }
 
+    private static func isSpace(_ character: Character) -> Bool {
+        character == " " || character == "\t"
+    }
+
     private static func columns(_ whitespace: Substring) -> Int {
         whitespace.reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
+    }
+
+    /// How many of the open containers this line continues, and what is
+    /// left of the line once their markers and indentation are consumed.
+    private static func continuation(of open: [Container], on line: Substring) -> (matched: Int, rest: Substring) {
+        var rest = line
+        for (index, container) in open.enumerated() {
+            let ws = rest.prefix(while: isSpace)
+            switch container {
+            case .quote:
+                let after = rest[ws.endIndex...]
+                guard columns(ws) <= 3, after.first == ">" else { return (index, rest) }
+                rest = after.dropFirst()
+                if rest.first == " " { rest = rest.dropFirst() }
+            case .item(let offset):
+                if ws.endIndex == rest.endIndex {
+                    rest = rest[ws.endIndex...] // a blank line stays inside the item
+                    continue
+                }
+                guard columns(ws) >= offset else { return (index, rest) }
+                var consumed = 0
+                var cursor = rest.startIndex
+                while consumed < offset {
+                    consumed += rest[cursor] == "\t" ? 4 : 1
+                    cursor = rest.index(after: cursor)
+                }
+                rest = rest[cursor...]
+            }
+        }
+        return (open.count, rest)
+    }
+
+    /// Opens the containers a line starts: block-quote markers (`>` plus one
+    /// optional space) and list markers (`-`, `*`, `+`, or up to nine digits
+    /// with `.` or `)`, followed by whitespace or the end of the line), each
+    /// behind at most three columns of the previous container's content.
+    private static func openContainers(on rest: inout Substring, into open: inout [Container]) {
+        while true {
+            let gap = rest.prefix(while: isSpace)
+            guard columns(gap) <= 3 else { return }
+            let after = rest[gap.endIndex...]
+            if after.first == ">" {
+                open.append(.quote)
+                rest = after.dropFirst()
+                if rest.first == " " { rest = rest.dropFirst() }
+                continue
+            }
+            guard let markerEnd = listMarkerEnd(after) else { return }
+            let padding = after[markerEnd...].prefix(while: isSpace)
+            guard !padding.isEmpty || markerEnd == after.endIndex else { return }
+            let width = columns(gap) + after.distance(from: after.startIndex, to: markerEnd)
+            // One to four columns of padding belong to the marker. Five or
+            // more — or nothing but whitespace — count as one, and the rest
+            // of the line is indented code inside the item.
+            if (1...4).contains(columns(padding)), padding.endIndex < after.endIndex {
+                open.append(.item(offset: width + columns(padding)))
+                rest = after[padding.endIndex...]
+            } else {
+                open.append(.item(offset: width + 1))
+                rest = padding.isEmpty ? after[markerEnd...] : after[after.index(after: markerEnd)...]
+            }
+        }
+    }
+
+    private static func listMarkerEnd(_ line: Substring) -> Substring.Index? {
+        guard let first = line.first else { return nil }
+        if first == "-" || first == "*" || first == "+" { return line.index(after: line.startIndex) }
+        let digits = line.prefix(while: \.isNumber)
+        guard (1...9).contains(digits.count), digits.endIndex < line.endIndex,
+              line[digits.endIndex] == "." || line[digits.endIndex] == ")" else { return nil }
+        return line.index(after: digits.endIndex)
     }
 
     /// A fence marker at the start of a (whitespace-trimmed) line: three or
@@ -86,54 +155,8 @@ enum MarkdownSource {
         guard let first = line.first, first == "`" || first == "~" else { return nil }
         let run = line.prefix(while: { $0 == first })
         guard run.count >= 3 else { return nil }
-        let rest = line[run.endIndex...].drop(while: { $0 == " " || $0 == "\t" })
+        let rest = line[run.endIndex...].drop(while: isSpace)
         return (first, run.count, rest)
-    }
-
-    /// Peels any run of block-quote markers (`>` plus one optional space)
-    /// and list markers (`-`, `*`, `+`, or up to nine digits with `.` or
-    /// `)`, each followed by at least one space) off the front of a line.
-    private static func containerPrefix(_ line: Substring) -> (prefix: String, rest: Substring) {
-        var rest = line
-        var prefix = ""
-        while true {
-            // Up to three spaces may precede a nested marker; more is
-            // indented code, which the caller's inner-indent rule handles.
-            let gap = rest.prefix(while: { $0 == " " })
-            if !gap.isEmpty {
-                let after = rest[gap.endIndex...]
-                let startsMarker = after.first == ">" || after.first == "-" || after.first == "*"
-                    || after.first == "+" || (after.first?.isNumber ?? false)
-                guard gap.count <= 3, startsMarker else { return (prefix, rest) }
-                let (nested, nestedRest) = containerPrefix(after)
-                guard !nested.isEmpty else { return (prefix, rest) }
-                return (prefix + gap + nested, nestedRest)
-            }
-            if rest.first == ">" {
-                var end = rest.index(after: rest.startIndex)
-                if end < rest.endIndex, rest[end] == " " { end = rest.index(after: end) }
-                prefix += rest[rest.startIndex..<end]
-                rest = rest[end...]
-                continue
-            }
-            var markerEnd: Substring.Index?
-            if let first = rest.first, first == "-" || first == "*" || first == "+" {
-                markerEnd = rest.index(after: rest.startIndex)
-            } else {
-                let digits = rest.prefix(while: \.isNumber)
-                if (1...9).contains(digits.count), digits.endIndex < rest.endIndex,
-                   rest[digits.endIndex] == "." || rest[digits.endIndex] == ")" {
-                    markerEnd = rest.index(after: digits.endIndex)
-                }
-            }
-            if let markerEnd, markerEnd < rest.endIndex, rest[markerEnd] == " " {
-                let afterSpace = rest.index(after: markerEnd)
-                prefix += rest[rest.startIndex..<afterSpace]
-                rest = rest[afterSpace...]
-                continue
-            }
-            return (prefix, rest)
-        }
     }
 
     /// `[label]:` with a label (up to the first `]`) that has at least one
@@ -145,7 +168,7 @@ enum MarkdownSource {
         guard label.contains(where: { !$0.isWhitespace }), !label.contains("[") else { return false }
         let afterClose = line.index(after: close)
         guard afterClose < line.endIndex, line[afterClose] == ":" else { return false }
-        let rest = line[line.index(after: afterClose)...].drop(while: { $0 == " " || $0 == "\t" })
+        let rest = line[line.index(after: afterClose)...].drop(while: isSpace)
         return !rest.isEmpty
     }
 }

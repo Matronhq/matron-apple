@@ -118,6 +118,45 @@ final class MarkdownSourceTests: XCTestCase {
         XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions(body), body)
     }
 
+    /// At document level, four columns of indentation are indented code,
+    /// so a `>` behind them is content and the quote — with its fence —
+    /// has ended. Inside a list item the same columns are the item's
+    /// continuation and the marker is real (Bugbot round 7, PR #183).
+    func test_indentedQuoteMarkerOnlyContinuesAQuoteInsideAListItem() {
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions("> ```\n    > code\n> [x]: y"),
+                       "> ```\n    > code\n> \\[x]: y")
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions("- > ```\n    > [x]: y\n  > ```\n  > [x]: z"),
+                       "- > ```\n    > [x]: y\n  > ```\n  > \\[x]: z")
+    }
+
+    /// Indentation is measured from the enclosing item's content offset,
+    /// not from the line start: a fence closer up to three columns past
+    /// that offset closes, four or more make it content, and a definition
+    /// four columns in on a `- ` item is a two-column paragraph line
+    /// (Bugbot round 7, PR #183).
+    func test_indentationIsMeasuredFromTheListItemContentOffset() {
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions("- ```\n     ```\n  [x]: y"),
+                       "- ```\n     ```\n  \\[x]: y", "a closer three columns past the content offset closes")
+        let stillOpen = "- ```\n      ```\n  [x]: y"
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions(stillOpen), stillOpen, "four columns past it is content")
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions("- item\n\n    [x]: y"), "- item\n\n    \\[x]: y")
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions("- item\n\n      [x]: y"), "- item\n\n      [x]: y",
+                       "six columns are four past the offset: indented code")
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions("- item\n    ```\n    [x]: y\n    ```\n    [x]: z"),
+                       "- item\n    ```\n    [x]: y\n    ```\n    \\[x]: z", "a fence two columns into the item opens and closes")
+    }
+
+    /// A blank line keeps a list item open but ends a block quote; an
+    /// under-indented line ends the item.
+    func test_blankAndUnderIndentedLinesCloseTheRightContainers() {
+        let itemFence = "- ```\n\n  [x]: y\n  ```"
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions(itemFence), itemFence, "a blank line is fence content inside the item")
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions("> ```\n\n> [x]: y"), "> ```\n\n> \\[x]: y",
+                       "a blank line ends the quote and its fence")
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions("- ```\n [x]: y"), "- ```\n \\[x]: y",
+                       "one column is not the item's continuation")
+    }
+
     /// A nested marker may sit behind up to three spaces of the previous
     /// marker's content indent.
     func test_nestedMarkersBehindLeftoverIndent() {
