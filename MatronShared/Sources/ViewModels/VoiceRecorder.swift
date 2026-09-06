@@ -203,7 +203,9 @@ public final class VoiceRecorder {
             isInterrupted = false
             guard shouldResume else { return }
             reactivateSession()
-            recorder.record()
+            // A failed resume leaves the recorder paused: the pause keeps
+            // running until stop(), so it stays open here too.
+            guard recorder.record() else { return }
             if let pausedSince {
                 pausedTotal += now().timeIntervalSince(pausedSince)
                 self.pausedSince = nil

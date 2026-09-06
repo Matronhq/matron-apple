@@ -122,6 +122,26 @@ final class VoiceRecorderTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(rec.stop()).duration, 10, accuracy: 0.001)
     }
 
+    /// A resume that fails leaves the recorder paused, so the pause keeps
+    /// running until Stop (Bugbot, PR #180).
+    @MainActor
+    func test_duration_excludesTimeAfterAFailedResume() async throws {
+        let fake = FakeAudioRecorder()
+        let interruptions = FakeInterruptions()
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        var now = t0
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake },
+                                observeInterruptions: interruptions.source, now: { now })
+        try await rec.start()
+        now = t0.addingTimeInterval(10)
+        interruptions.handler?(.began)
+        fake.recordReturn = false
+        now = t0.addingTimeInterval(15)
+        interruptions.handler?(.ended(shouldResume: true))
+        now = t0.addingTimeInterval(20)
+        XCTAssertEqual(try XCTUnwrap(rec.stop()).duration, 10, accuracy: 0.001)
+    }
+
     @MainActor
     func test_stopAndCancel_unsubscribeFromInterruptions() async throws {
         let fake = FakeAudioRecorder()
