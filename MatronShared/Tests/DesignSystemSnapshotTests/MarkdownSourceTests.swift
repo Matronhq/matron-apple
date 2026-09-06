@@ -67,6 +67,26 @@ final class MarkdownSourceTests: XCTestCase {
         }
     }
 
+    /// A fence opened behind a quote marker is a fence; its lines are
+    /// content even when they look like definitions (Bugbot, PR #183).
+    func test_fencesBehindContainerPrefixesAreHonoured() {
+        for body in ["> ```\n> [x]: y\n> ```", "> > ~~~\n> > [x]: y\n> > ~~~", "- ```\n  [x]: y\n  ```"] {
+            XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions(body), body, body)
+        }
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions("> ```\n> [x]: y\n> ```\n> [x]: y"),
+                       "> ```\n> [x]: y\n> ```\n> \\[x]: y", "after the quoted fence closes, a definition is escaped again")
+    }
+
+    /// Up to three spaces after a marker are still the same paragraph
+    /// line; four or more make indented code inside the container.
+    func test_indentAfterContainerPrefixes() {
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions(">   [x]: y"), ">   \\[x]: y")
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions("-   [x]: y"), "-   \\[x]: y")
+        for body in [">     [x]: y", "-      [x]: y"] {
+            XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions(body), body, body)
+        }
+    }
+
     func test_taskListItemsAndBlankLabelsAreNotDefinitions() {
         for body in ["- [x] done", "- [ ] todo", "[ ]: blank label", "- [ ]: blank label"] {
             XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions(body), body, body)

@@ -21,7 +21,24 @@ enum MarkdownSource {
         for line in source.split(separator: "\n", omittingEmptySubsequences: false) {
             let trimmed = line.drop(while: { $0 == " " || $0 == "\t" })
             let indent = line[line.startIndex..<trimmed.startIndex]
-            if let run = fenceRun(trimmed) {
+            // Four columns of indentation make an indented code block, where
+            // a definition-shaped line is content — and so is a fence marker.
+            if columns(indent) >= 4 {
+                out.append(String(line))
+                continue
+            }
+            // Block-quote and list markers are containers: what follows them
+            // is still a paragraph line (or a fence) to the parser, subject
+            // to the same up-to-three-spaces rule inside the container.
+            var (prefix, rest) = containerPrefix(trimmed)
+            let inner = rest.prefix(while: { $0 == " " || $0 == "\t" })
+            if columns(inner) >= 4 {
+                out.append(String(line))
+                continue
+            }
+            prefix += inner
+            rest = rest[inner.endIndex...]
+            if let run = fenceRun(rest) {
                 if let open = fence {
                     if run.char == open.char, run.length >= open.length, run.rest.isEmpty { fence = nil }
                 } else {
@@ -30,13 +47,7 @@ enum MarkdownSource {
                 out.append(String(line))
                 continue
             }
-            // Four columns of indentation make an indented code block, where
-            // a definition-shaped line is content.
-            let indentColumns = indent.reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
-            // Block-quote and list markers are containers: what follows them
-            // is still a paragraph line, and still a definition to the parser.
-            let (prefix, rest) = containerPrefix(trimmed)
-            if fence == nil, indentColumns < 4, isReferenceDefinition(rest) {
+            if fence == nil, isReferenceDefinition(rest) {
                 out.append(indent + prefix + "\\" + rest)
                 changed = true
             } else {
@@ -44,6 +55,10 @@ enum MarkdownSource {
             }
         }
         return changed ? out.joined(separator: "\n") : source
+    }
+
+    private static func columns(_ whitespace: Substring) -> Int {
+        whitespace.reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
     }
 
     /// A fence marker at the start of a (whitespace-trimmed) line: three or
@@ -81,9 +96,9 @@ enum MarkdownSource {
                 }
             }
             if let markerEnd, markerEnd < rest.endIndex, rest[markerEnd] == " " {
-                let afterSpaces = rest[markerEnd...].drop(while: { $0 == " " }).startIndex
-                prefix += rest[rest.startIndex..<afterSpaces]
-                rest = rest[afterSpaces...]
+                let afterSpace = rest.index(after: markerEnd)
+                prefix += rest[rest.startIndex..<afterSpace]
+                rest = rest[afterSpace...]
                 continue
             }
             return (prefix, rest)
