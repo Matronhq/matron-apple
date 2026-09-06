@@ -28,6 +28,8 @@ enum MarkdownSource {
             // Four columns of indentation make an indented code block, where
             // a definition-shaped line is content — and so is a fence marker.
             if columns(indent) >= 4 {
+                // No quote marker on this line: it exits any quoted fence.
+                if let open = fence, !open.markers.isEmpty { fence = nil }
                 out.append(String(line))
                 continue
             }
@@ -39,6 +41,9 @@ enum MarkdownSource {
             // continuation lines carry indentation, not the marker, and
             // are still inside the item.
             let markers = prefix.filter { $0 == ">" }
+            if let open = fence, !markers.hasPrefix(open.markers) {
+                fence = nil // the fence's quote ended on this line
+            }
             let inner = rest.prefix(while: { $0 == " " || $0 == "\t" })
             if columns(inner) >= 4 {
                 out.append(String(line))
@@ -46,9 +51,6 @@ enum MarkdownSource {
             }
             prefix += inner
             rest = rest[inner.endIndex...]
-            if let open = fence, !markers.hasPrefix(open.markers) {
-                fence = nil // the fence's container ended on this line
-            }
             if let run = fenceRun(rest) {
                 if let open = fence {
                     if markers == open.markers, run.char == open.char, run.length >= open.length, run.rest.isEmpty {

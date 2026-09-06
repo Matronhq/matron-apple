@@ -100,6 +100,16 @@ final class MarkdownSourceTests: XCTestCase {
                        "a quoted fence line inside an unquoted fence is content, not a closer")
     }
 
+    /// An indented-code line with no quote marker still exits the quote,
+    /// and the fence with it (Bugbot round 4, PR #183).
+    func test_indentedLineExitingTheQuoteEndsItsFence() {
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions("> ```\n    code\n> [x]: y"),
+                       "> ```\n    code\n> \\[x]: y")
+        let stillInside = "> ```\n>     code\n> [x]: y\n> ```"
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions(stillInside), stillInside,
+                       "an indented line that keeps the quote marker is fence content")
+    }
+
     /// A nested marker may sit behind up to three spaces of the previous
     /// marker's content indent.
     func test_nestedMarkersBehindLeftoverIndent() {
