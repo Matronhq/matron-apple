@@ -58,8 +58,54 @@ final class VoiceNoteHotkeyTests: XCTestCase {
         XCTAssertEqual(bus.pressCount, 2)
         XCTAssertNil(bus.recordingStart)
         let start = Date()
-        bus.recordingStart = start
+        bus.setRecording(composer, start: start)
         XCTAssertEqual(bus.recordingStart, start)
+        bus.setRecording(composer, start: nil)
+        XCTAssertNil(bus.recordingStart)
+    }
+
+    /// Only the recording composer may end its own recording on the bus:
+    /// another composer's teardown must not clear an indicator it doesn't own.
+    func test_bus_onlyTheRecordingComposerClearsTheRecording() {
+        let bus = VoiceNoteCommandBus()
+        let a = UUID(), b = UUID()
+        bus.setRecording(a, start: Date())
+        bus.setRecording(b, start: nil)
+        XCTAssertNotNil(bus.recordingStart)
+        bus.setRecording(a, start: nil)
+        XCTAssertNil(bus.recordingStart)
+    }
+
+    /// Switching windows mid-note must not start a second capture: while
+    /// any composer is recording, a press is addressed to IT, so the key
+    /// window's composer stays out of it (Bugbot round 2, PR #182).
+    func test_bus_pressTargetsTheRecordingComposerOverTheKeyWindow() {
+        let bus = VoiceNoteCommandBus()
+        let a = UUID(), b = UUID()
+        bus.claim(a)
+        bus.setRecording(a, start: Date())
+        bus.claim(b)
+        bus.press()
+        XCTAssertEqual(bus.pressTarget, a, "the recording composer gets the stop-and-send")
+        bus.setRecording(a, start: nil)
+        bus.press()
+        XCTAssertEqual(bus.pressTarget, b, "with nothing recording, the key window's composer starts")
+    }
+
+    /// A composer that mounts in a window which is NOT key (a chat switch
+    /// in a background window) must not steal the claim from the key
+    /// window's composer; it may only take an unclaimed bus.
+    func test_bus_claimIfKeyOrUnclaimed() {
+        let bus = VoiceNoteCommandBus()
+        let key = UUID(), background = UUID()
+        bus.claim(key)
+        bus.claimIfKey(background, isKey: false)
+        XCTAssertEqual(bus.activeComposerID, key)
+        bus.release(key)
+        bus.claimIfKey(background, isKey: false)
+        XCTAssertEqual(bus.activeComposerID, background, "an unclaimed bus takes any composer")
+        bus.claimIfKey(key, isKey: true)
+        XCTAssertEqual(bus.activeComposerID, key)
     }
 
     /// A chat switch mounts the successor composer BEFORE the outgoing one

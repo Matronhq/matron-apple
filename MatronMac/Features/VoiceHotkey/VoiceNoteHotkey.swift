@@ -87,18 +87,41 @@ final class VoiceNoteCommandBus {
     /// The composer the latest press is addressed to; only it reacts.
     private(set) var pressTarget: UUID?
     private(set) var activeComposerID: UUID?
-    var recordingStart: Date?
+    /// The composer currently recording, and when it began. Published by
+    /// that composer; only it can clear them.
+    private(set) var recordingComposerID: UUID?
+    private(set) var recordingStart: Date?
 
     var hasActiveComposer: Bool { activeComposerID != nil }
 
     func claim(_ id: UUID) { activeComposerID = id }
 
+    /// A composer mounting in a window that is NOT key (a chat switch in a
+    /// background window) must not steal the key window's claim; it may
+    /// only take an unclaimed bus.
+    func claimIfKey(_ id: UUID, isKey: Bool) {
+        if isKey || activeComposerID == nil { activeComposerID = id }
+    }
+
     func release(_ id: UUID) {
         if activeComposerID == id { activeComposerID = nil }
     }
 
+    func setRecording(_ id: UUID, start: Date?) {
+        if let start {
+            recordingComposerID = id
+            recordingStart = start
+        } else if recordingComposerID == id {
+            recordingComposerID = nil
+            recordingStart = nil
+        }
+    }
+
+    /// While a note is recording, the press belongs to the composer
+    /// recording it — whichever window is key — so switching windows
+    /// mid-note ends that note instead of starting a second one.
     func press() {
-        pressTarget = activeComposerID
+        pressTarget = recordingComposerID ?? activeComposerID
         pressCount &+= 1
     }
 

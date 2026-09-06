@@ -162,12 +162,17 @@ struct MacComposerView: View {
             // The cancel above never reaches `onChange(of: recorder.state)`
             // (a disappeared view gets no more change callbacks), so the
             // floating indicator is cleared here by hand.
-            if case .recording = recorder.state { voiceBus?.recordingStart = nil }
+            if case .recording = recorder.state { voiceBus?.setRecording(voiceComposerID, start: nil) }
             recorder.cancel()
             voiceBus?.release(voiceComposerID)
         }
-        .onAppear { voiceBus?.claim(voiceComposerID) }
-        .background(WindowAccessor { hostWindow = $0 })
+        // Claimed once the window is known, and only if that window is key
+        // (or nothing holds the bus): a composer remounting in a background
+        // window must not steal the key window's claim.
+        .background(WindowAccessor { window in
+            hostWindow = window
+            voiceBus?.claimIfKey(voiceComposerID, isKey: window?.isKeyWindow == true)
+        })
         // With File → New Window, several composers share the bus; the
         // one whose window is key is the one a press should land in.
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
@@ -200,9 +205,9 @@ struct MacComposerView: View {
         // Every recording, hotkey or mouse, drives the floating indicator.
         .onChange(of: recorder.state) { _, state in
             if case .recording(let start) = state {
-                voiceBus?.recordingStart = start
+                voiceBus?.setRecording(voiceComposerID, start: start)
             } else {
-                voiceBus?.recordingStart = nil
+                voiceBus?.setRecording(voiceComposerID, start: nil)
             }
         }
     }
