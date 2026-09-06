@@ -83,6 +83,45 @@ final class VoiceRecorderTests: XCTestCase {
         XCTAssertEqual(fake.recordCalls, 1)
     }
 
+    /// The duration handed to the send path is capture time, not wall time:
+    /// a two-minute call in the middle of a note is silence the recorder
+    /// never captured (CodeRabbit, PR #180).
+    @MainActor
+    func test_duration_excludesInterruptedTime_whenResumed() async throws {
+        let fake = FakeAudioRecorder()
+        let interruptions = FakeInterruptions()
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        var now = t0
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake },
+                                observeInterruptions: interruptions.source, now: { now })
+        try await rec.start()
+        now = t0.addingTimeInterval(10)
+        interruptions.handler?(.began)
+        now = t0.addingTimeInterval(15)
+        interruptions.handler?(.ended(shouldResume: true))
+        now = t0.addingTimeInterval(20)
+        XCTAssertEqual(try XCTUnwrap(rec.stop()).duration, 15, accuracy: 0.001)
+    }
+
+    /// Not resumed: paused from the interruption until Stop, so nothing
+    /// after `began` counts.
+    @MainActor
+    func test_duration_excludesInterruptedTime_whenNotResumed() async throws {
+        let fake = FakeAudioRecorder()
+        let interruptions = FakeInterruptions()
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        var now = t0
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake },
+                                observeInterruptions: interruptions.source, now: { now })
+        try await rec.start()
+        now = t0.addingTimeInterval(10)
+        interruptions.handler?(.began)
+        now = t0.addingTimeInterval(15)
+        interruptions.handler?(.ended(shouldResume: false))
+        now = t0.addingTimeInterval(20)
+        XCTAssertEqual(try XCTUnwrap(rec.stop()).duration, 10, accuracy: 0.001)
+    }
+
     @MainActor
     func test_stopAndCancel_unsubscribeFromInterruptions() async throws {
         let fake = FakeAudioRecorder()

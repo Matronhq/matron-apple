@@ -58,6 +58,13 @@ public final class VoiceRecorder {
     /// window in which an `ended` may resume capture. An `ended` with no
     /// `began` is a stale notification, not a reason to poke the recorder.
     private var isInterrupted = false
+    /// Interruption bookkeeping for the reported duration: capture time,
+    /// not wall time — a call in the middle of a note is silence the
+    /// recorder never captured. `pausedSince` is set on `began` and cleared
+    /// only by a resume; an unresumed pause runs until `stop()`.
+    private var pausedSince: Date?
+    private var pausedTotal: TimeInterval = 0
+    private let now: () -> Date
     private var recorder: AudioRecording?
     private var fileURL: URL?
     private var startedAt: Date?
@@ -79,11 +86,13 @@ public final class VoiceRecorder {
     init(requestPermission: @escaping () async -> Bool,
          makeRecorder: @escaping (URL) throws -> AudioRecording,
          setKeepScreenAwake: @escaping (Bool) -> Void = { _ in },
-         observeInterruptions: @escaping (@escaping @MainActor (AudioInterruption) -> Void) -> () -> Void = { _ in {} }) {
+         observeInterruptions: @escaping (@escaping @MainActor (AudioInterruption) -> Void) -> () -> Void = { _ in {} },
+         now: @escaping () -> Date = Date.init) {
         self.requestPermission = requestPermission
         self.makeRecorder = makeRecorder
         self.setKeepScreenAwake = setKeepScreenAwake
         self.observeInterruptions = observeInterruptions
+        self.now = now
     }
 
     public convenience init() {
@@ -124,11 +133,13 @@ public final class VoiceRecorder {
             guard recorder.record() else { throw RecorderError.recordFailed }
             self.recorder = recorder
             self.fileURL = url
-            let started = Date()
+            let started = now()
             self.startedAt = started
             state = .recording(start: started)
             setKeepScreenAwake(true)
             isInterrupted = false
+            pausedSince = nil
+            pausedTotal = 0
             stopObservingInterruptions = observeInterruptions { [weak self] event in
                 self?.handle(interruption: event)
             }
@@ -147,7 +158,9 @@ public final class VoiceRecorder {
     public func stop() -> (url: URL, duration: TimeInterval)? {
         guard case .recording = state, let recorder, let fileURL, let startedAt else { return nil }
         recorder.stop()
-        let duration = Date().timeIntervalSince(startedAt)
+        let stoppedAt = now()
+        let stillPaused = pausedSince.map { stoppedAt.timeIntervalSince($0) } ?? 0
+        let duration = stoppedAt.timeIntervalSince(startedAt) - pausedTotal - stillPaused
         self.recorder = nil
         self.fileURL = nil
         self.startedAt = nil
@@ -184,12 +197,17 @@ public final class VoiceRecorder {
         switch interruption {
         case .began:
             isInterrupted = true
+            if pausedSince == nil { pausedSince = now() }
         case .ended(let shouldResume):
             guard isInterrupted else { return }
             isInterrupted = false
             guard shouldResume else { return }
             reactivateSession()
             recorder.record()
+            if let pausedSince {
+                pausedTotal += now().timeIntervalSince(pausedSince)
+                self.pausedSince = nil
+            }
         }
     }
 
@@ -197,6 +215,8 @@ public final class VoiceRecorder {
         stopObservingInterruptions?()
         stopObservingInterruptions = nil
         isInterrupted = false
+        pausedSince = nil
+        pausedTotal = 0
     }
 
     private func reactivateSession() {
