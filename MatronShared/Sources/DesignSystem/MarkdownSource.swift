@@ -89,7 +89,7 @@ enum MarkdownSource {
                 let after = rest[ws.endIndex...]
                 guard columns(ws) <= 3, after.first == ">" else { return (index, rest) }
                 rest = after.dropFirst()
-                if rest.first == " " { rest = rest.dropFirst() }
+                if let pad = rest.first, isSpace(pad) { rest = rest.dropFirst() }
             case .item(let offset):
                 if ws.endIndex == rest.endIndex {
                     rest = rest[ws.endIndex...] // a blank line stays inside the item
@@ -109,7 +109,7 @@ enum MarkdownSource {
     }
 
     /// Opens the containers a line starts: block-quote markers (`>` plus one
-    /// optional space) and list markers (`-`, `*`, `+`, or up to nine digits
+    /// optional space or tab) and list markers (`-`, `*`, `+`, or up to nine digits
     /// with `.` or `)`, followed by whitespace or the end of the line), each
     /// behind at most three columns of the previous container's content.
     private static func openContainers(on rest: inout Substring, into open: inout [Container]) {
@@ -120,7 +120,7 @@ enum MarkdownSource {
             if after.first == ">" {
                 open.append(.quote)
                 rest = after.dropFirst()
-                if rest.first == " " { rest = rest.dropFirst() }
+                if let pad = rest.first, isSpace(pad) { rest = rest.dropFirst() }
                 continue
             }
             guard let markerEnd = listMarkerEnd(after) else { return }

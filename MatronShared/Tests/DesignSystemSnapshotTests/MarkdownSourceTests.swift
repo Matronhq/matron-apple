@@ -157,6 +157,16 @@ final class MarkdownSourceTests: XCTestCase {
                        "one column is not the item's continuation")
     }
 
+    /// A tab after a quote marker is the marker's padding, not indented
+    /// code: the definition behind it is a paragraph line (CodeRabbit,
+    /// PR #183). A second tab is four more columns, and code.
+    func test_tabAfterQuoteMarkerIsPadding() {
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions(">\t[x]: y"), ">\t\\[x]: y")
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions("> ```\n>\t[x]: y\n> ```\n>\t[x]: z"),
+                       "> ```\n>\t[x]: y\n> ```\n>\t\\[x]: z", "the same inside a continued quote")
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions(">\t\t[x]: y"), ">\t\t[x]: y")
+    }
+
     /// A nested marker may sit behind up to three spaces of the previous
     /// marker's content indent.
     func test_nestedMarkersBehindLeftoverIndent() {
