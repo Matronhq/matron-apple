@@ -59,26 +59,48 @@ enum VoiceNoteHotkeyAction: Equatable {
     case stopAndSend
     case refuse
 
-    static func resolve(isRecording: Bool, hasComposer: Bool) -> VoiceNoteHotkeyAction {
-        guard hasComposer else { return .refuse }
+    /// `isLocked`: the app lock is an overlay — the composer stays mounted
+    /// behind it — so the key must refuse on the lock itself, or a
+    /// passer-by could record and send into the last chat.
+    /// `mediaAvailable`: a composer that hides its mic button must not
+    /// grow one through the keyboard.
+    static func resolve(isRecording: Bool, hasComposer: Bool,
+                        isLocked: Bool = false, mediaAvailable: Bool = true) -> VoiceNoteHotkeyAction {
+        guard hasComposer, !isLocked, mediaAvailable else { return .refuse }
         return isRecording ? .stopAndSend : .start
     }
 }
 
-/// The seam between the global hotkey and the one Mac composer on screen.
-/// The hotkey bumps `pressCount`; the composer observes it and drives its
-/// own recorder (so the recording pill, error path and upload are the
-/// ones a mouse-started note uses). The composer publishes
-/// `recordingStart` back so the floating indicator follows every
-/// recording, however it began, and `hasComposer` so a press with no chat
-/// open can be refused audibly rather than dropped in silence.
+/// The seam between the global hotkey and the Mac composers on screen.
+/// Composers `claim` the bus (on appear, and whenever their window becomes
+/// key) and `release` it on disappear; a release only clears its own
+/// claim, because a chat switch mounts the successor BEFORE the outgoing
+/// composer disappears. The hotkey bumps `pressCount` and stamps
+/// `pressTarget` with the claimant, so with several windows open exactly
+/// one composer — the one in the key window — drives its recorder (and the
+/// recording pill, error path and upload are the ones a mouse-started
+/// note uses). The composer publishes `recordingStart` back so the
+/// floating indicator follows every recording, however it began.
 @Observable @MainActor
 final class VoiceNoteCommandBus {
     private(set) var pressCount = 0
+    /// The composer the latest press is addressed to; only it reacts.
+    private(set) var pressTarget: UUID?
+    private(set) var activeComposerID: UUID?
     var recordingStart: Date?
-    var hasComposer = false
 
-    func press() { pressCount &+= 1 }
+    var hasActiveComposer: Bool { activeComposerID != nil }
+
+    func claim(_ id: UUID) { activeComposerID = id }
+
+    func release(_ id: UUID) {
+        if activeComposerID == id { activeComposerID = nil }
+    }
+
+    func press() {
+        pressTarget = activeComposerID
+        pressCount &+= 1
+    }
 
     /// The sounds are the only feedback when Matron is behind another
     /// window: a rising tick to start, a soft pop on send, the alert

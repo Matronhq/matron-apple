@@ -210,8 +210,11 @@ struct MatronMacApp: App {
             // screen (no chat open) is refused audibly here, since the
             // composer's own handler can't run when there is none.
             .onChange(of: voiceHotkeyRaw, initial: true) { _, raw in
-                let registrar = voiceHotkey ?? VoiceNoteHotkeyRegistrar { [voiceBus] in
-                    if voiceBus.hasComposer {
+                let registrar = voiceHotkey ?? VoiceNoteHotkeyRegistrar { [voiceBus, appLock] in
+                    // The lock is an overlay, so a composer is still
+                    // mounted behind it: refuse here or a passer-by could
+                    // record and send into the last chat.
+                    if voiceBus.hasActiveComposer, !appLock.isLocked {
                         voiceBus.press()
                     } else {
                         VoiceNoteCommandBus.playRefuseSound()

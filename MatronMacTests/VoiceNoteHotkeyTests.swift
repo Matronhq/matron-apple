@@ -37,8 +37,21 @@ final class VoiceNoteHotkeyTests: XCTestCase {
         XCTAssertEqual(VoiceNoteHotkeyAction.resolve(isRecording: true, hasComposer: false), .refuse)
     }
 
+    /// The lock is an overlay — the composer stays mounted behind it — so
+    /// the key must refuse on the lock itself, or a passer-by could record
+    /// and send into the last chat (Bugbot + CodeRabbit, PR #182). Same
+    /// for a build whose composer hides the mic (`mediaAvailable`).
+    func test_pressResolution_refusesWhileLocked_orWithoutMedia() {
+        XCTAssertEqual(VoiceNoteHotkeyAction.resolve(isRecording: false, hasComposer: true, isLocked: true), .refuse)
+        XCTAssertEqual(VoiceNoteHotkeyAction.resolve(isRecording: true, hasComposer: true, isLocked: true), .refuse)
+        XCTAssertEqual(VoiceNoteHotkeyAction.resolve(isRecording: false, hasComposer: true, mediaAvailable: false), .refuse)
+        XCTAssertEqual(VoiceNoteHotkeyAction.resolve(isRecording: false, hasComposer: true, isLocked: false, mediaAvailable: true), .start)
+    }
+
     func test_bus_countsPresses_andTracksRecording() {
         let bus = VoiceNoteCommandBus()
+        let composer = UUID()
+        bus.claim(composer)
         XCTAssertEqual(bus.pressCount, 0)
         bus.press()
         bus.press()
@@ -47,6 +60,36 @@ final class VoiceNoteHotkeyTests: XCTestCase {
         let start = Date()
         bus.recordingStart = start
         XCTAssertEqual(bus.recordingStart, start)
+    }
+
+    /// A chat switch mounts the successor composer BEFORE the outgoing one
+    /// disappears, so a single boolean written from both would end up
+    /// false (Bugbot, PR #182). A release only clears its own claim.
+    func test_bus_successorClaimSurvivesPredecessorRelease() {
+        let bus = VoiceNoteCommandBus()
+        let outgoing = UUID(), successor = UUID()
+        bus.claim(outgoing)
+        bus.claim(successor)
+        bus.release(outgoing)
+        XCTAssertEqual(bus.activeComposerID, successor)
+        XCTAssertTrue(bus.hasActiveComposer)
+        bus.release(successor)
+        XCTAssertNil(bus.activeComposerID)
+        XCTAssertFalse(bus.hasActiveComposer)
+    }
+
+    /// With File → New Window, several composers observe the same bus; a
+    /// press must land in exactly one — the claimed (key-window) composer.
+    func test_bus_pressTargetsTheActiveComposerOnly() {
+        let bus = VoiceNoteCommandBus()
+        let a = UUID(), b = UUID()
+        bus.claim(a)
+        bus.claim(b)
+        bus.press()
+        XCTAssertEqual(bus.pressTarget, b)
+        bus.claim(a)
+        bus.press()
+        XCTAssertEqual(bus.pressTarget, a)
     }
 }
 #endif
