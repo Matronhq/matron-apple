@@ -25,6 +25,29 @@ final class MarkdownSourceTests: XCTestCase {
                        "```\n[ref]: http://x\n```\n\\[ref]: http://x")
     }
 
+    /// Four spaces (or a tab) of indentation make an indented code block,
+    /// where a definition-shaped line is content (CodeRabbit, PR #183).
+    func test_indentedCodeIsLeftAlone() {
+        for body in ["    [ref]: value", "\t[ref]: value", "para\n\n    [ref]: value"] {
+            XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions(body), body)
+        }
+        // Up to three spaces is still a paragraph line, and is escaped.
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions("   [ref]: value"), "   \\[ref]: value")
+    }
+
+    /// A fence closes only on a run of the same character at least as long
+    /// as the one that opened it — three backticks inside a four-backtick
+    /// fence are content, not a closer.
+    func test_longerFenceIsNotClosedByAShorterRun() {
+        let body = "````\n```\n[ref]: x\n````\n[ref]: y"
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions(body),
+                       "````\n```\n[ref]: x\n````\n\\[ref]: y")
+        let tilde = "~~~\n[ref]: x\n```\n[ref]: y\n~~~\n[ref]: z"
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions(tilde),
+                       "~~~\n[ref]: x\n```\n[ref]: y\n~~~\n\\[ref]: z",
+                       "a backtick run does not close a tilde fence")
+    }
+
     func test_ordinaryBodiesPassThroughUntouched() {
         for body in ["plain", "[link](u)", "[x] not a definition", "a: b", "[]: empty label", ""] {
             XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions(body), body)
