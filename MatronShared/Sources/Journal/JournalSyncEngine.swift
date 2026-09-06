@@ -123,6 +123,10 @@ public actor JournalSyncEngine {
     /// a partial frame must not erase parts an earlier frame carried.
     private var lastSessionStatus: [String: SessionStatusUpdate] = [:]
     private var newConvoContinuations: [UUID: AsyncStream<String>.Continuation] = [:]
+    /// Live-born top-level convos whose auto-open verdict is still waiting
+    /// on their title: the first frame was neither the `convo_meta` that
+    /// carries it nor a message (see `considerAutoOpen`).
+    private var pendingAutoOpen: Set<String> = []
     private var readyWaiters: [CheckedContinuation<Void, Error>] = []
 
     /// One in-flight agent RPC. The verbatim op is kept because `not_ready`
@@ -759,6 +763,30 @@ public actor JournalSyncEngine {
         for continuation in newConvoContinuations.values { continuation.yield(convoID) }
     }
 
+    /// Decides whether a live-born top-level conversation auto-opens, on
+    /// whichever of its frames is in hand:
+    /// - `convo_meta` settles it: a title led by an agent-chat room marker
+    ///   means a room (never opened); anything else is the user's own new
+    ///   session and opens now.
+    /// - a message frame before any meta opens it too — the pre-title
+    ///   behaviour, kept so a bridge that never sends a meta still gets
+    ///   the /start UX.
+    /// - any other frame (session_status, read_marker…) parks the id in
+    ///   `pendingAutoOpen` until one of the above arrives.
+    /// A verdict, either way, retires the id from the pending set.
+    private func considerAutoOpen(_ event: JournalEvent, firstFrame: Bool) {
+        if event.type == JournalEventType.convoMeta {
+            pendingAutoOpen.remove(event.convoID)
+            let title = event.payload["title"] as? String ?? ""
+            if !JournalEventType.isAgentRoomTitle(title) { publishNewConversation(event.convoID) }
+        } else if JournalEventType.messageTypes.contains(event.type) {
+            pendingAutoOpen.remove(event.convoID)
+            publishNewConversation(event.convoID)
+        } else if firstFrame {
+            pendingAutoOpen.insert(event.convoID)
+        }
+    }
+
     private func setState(_ new: SyncConnectionState) {
         guard new != state else { return }
         state = new
@@ -947,10 +975,23 @@ public actor JournalSyncEngine {
                             //      so it closes the race by construction.
                             //   2. semantic — the learned parent linkage,
                             //      kept as the forward-compatible filter.
+                            //   3. agent-chat rooms — born by an agent's
+                            //      `agent_chat_start`, never by the user, and
+                            //      recognisable only by the room marker on the
+                            //      title their `convo_meta` carries (which is
+                            //      not always the first frame: the bridge's
+                            //      session_status can land ahead of it). So
+                            //      the verdict waits for the title — see
+                            //      `considerAutoOpen`. Auto-opening a room
+                            //      yanked the Mac into it the instant it
+                            //      existed and marked its consent card read
+                            //      before the user had seen it (2026-09-06).
                             if isNewConvo, case .running = state,
                                !event.convoID.contains(JournalEventType.childConvoInfix),
                                (try? store.parentConvoID(of: event.convoID)) == nil {
-                                publishNewConversation(event.convoID)
+                                considerAutoOpen(event, firstFrame: true)
+                            } else if !isNewConvo, pendingAutoOpen.contains(event.convoID) {
+                                considerAutoOpen(event, firstFrame: false)
                             }
                         }
                         if store.cursor >= headSeq { setState(.running) }

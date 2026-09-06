@@ -1,4 +1,5 @@
 import Foundation
+import MatronJournal
 
 /// The compact per-conversation tag rendered ahead of chat titles:
 /// `A:bc` — one colored letter for the box, two characters of the agent's
@@ -21,7 +22,7 @@ public enum SessionTag {
     /// title (`↔️ [ab] mac ↔ dev-z`, matron-bridge#225/#228). 🔗 is the
     /// legacy marker rooms minted before #228 still carry — titles are only
     /// rewritten on rename, so both must parse indefinitely.
-    static let roomMarkers = ["↔️ ", "🔗 "]
+    static let roomMarkers = JournalEventType.agentRoomTitleMarkers
 
     /// The bridge's markers that may lead a title ahead of the short:
     /// ↔️/🔗 = multi-agent room (#225), 🐣 = session another agent spawned
