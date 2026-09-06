@@ -28,8 +28,12 @@ enum MarkdownSource {
             // Four columns of indentation make an indented code block, where
             // a definition-shaped line is content — and so is a fence marker.
             if columns(indent) >= 4 {
-                // No quote marker on this line: it exits any quoted fence.
-                if let open = fence, !open.markers.isEmpty { fence = nil }
+                // Indented code at the top level — or, inside a list item,
+                // a continuation line whose indentation is the item's
+                // content offset. Either way its quote markers decide
+                // whether an open quoted fence survives it.
+                let markers = containerPrefix(trimmed).prefix.filter { $0 == ">" }
+                if let open = fence, !markers.hasPrefix(open.markers) { fence = nil }
                 out.append(String(line))
                 continue
             }

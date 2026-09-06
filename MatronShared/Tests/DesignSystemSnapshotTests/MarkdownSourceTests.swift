@@ -110,6 +110,14 @@ final class MarkdownSourceTests: XCTestCase {
                        "an indented line that keeps the quote marker is fence content")
     }
 
+    /// Inside a list item, continuation is expressed as indentation; an
+    /// indented line that still carries the quote marker continues the
+    /// quote and its fence (Bugbot round 5, PR #183).
+    func test_indentedQuoteContinuationKeepsTheFenceOpen() {
+        let body = "- > ```\n    > [x]: a\n  > [x]: b\n  > ```"
+        XCTAssertEqual(MarkdownSource.escapingReferenceDefinitions(body), body)
+    }
+
     /// A nested marker may sit behind up to three spaces of the previous
     /// marker's content indent.
     func test_nestedMarkersBehindLeftoverIndent() {
