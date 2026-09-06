@@ -66,6 +66,27 @@ public struct ModelOption: Equatable, Sendable, Identifiable {
     }
 }
 
+/// One coding agent a bridge offers on its `recent_folders` reply
+/// (`agent_options`): `value` is what the `start` RPC's `agent` param takes,
+/// `label` is what the switch shows. Same shape and rules as `ModelOption`;
+/// a separate type because the two picks mean different things to `start`
+/// (a Codex session takes no Claude model) and must not be mixed up.
+public struct AgentOption: Equatable, Sendable, Identifiable {
+    /// The two agents a bridge can name today, as it spells them.
+    public static let claude = "claude"
+    public static let codex = "codex"
+
+    public var id: String { value }
+    public let value: String
+    /// Never empty — the parser falls back to `value`.
+    public let label: String
+
+    public init(value: String, label: String) {
+        self.value = value
+        self.label = label
+    }
+}
+
 extension RecentFolder {
     /// Row caption: relative last-used, or the never-used convention
     /// (`last_used: null` = the bridge's default workdir on a fresh box).
@@ -139,6 +160,35 @@ public final class NewChatViewModel {
     /// offered option's label when the value is listed, the raw alias
     /// otherwise; nil for a bridge that doesn't say.
     public private(set) var defaultModelLabel: String?
+    /// Which coding agents the box on the folder step can start, in bridge
+    /// order. Empty for a bridge that doesn't send `agent_options` (older
+    /// than the switch), which hides the switch AND keeps `agent` off the
+    /// `start` params — that bridge never offered, so it isn't told.
+    public private(set) var agentOptions: [AgentOption] = []
+    /// The box's `default_agent`: what a start with no `agent` would run.
+    private var defaultAgent: String?
+    /// The user's own pick, kept only while the current box offers it.
+    private var pickedAgent: String?
+    /// The agent `start` names: the user's pick when this box offers it,
+    /// else the box's default, else the first offer. Reads as Claude on a
+    /// bridge that offers nothing, which is what such a bridge runs.
+    public var selectedAgent: String {
+        get {
+            if let pickedAgent, agentOptions.contains(where: { $0.value == pickedAgent }) { return pickedAgent }
+            if let defaultAgent, agentOptions.contains(where: { $0.value == defaultAgent }) { return defaultAgent }
+            return agentOptions.first?.value ?? AgentOption.claude
+        }
+        set { pickedAgent = newValue }
+    }
+    /// One choice is no choice: the switch shows only when there is a second
+    /// agent to switch to.
+    public var agentSwitchVisible: Bool { agentOptions.count > 1 }
+    /// The model picker is Claude-only — Claude aliases mean nothing to a
+    /// Codex session, and the bridge answers `bad_model` to one. Hidden
+    /// (and the pick parked, not dropped) while Codex is selected.
+    public var modelPickerVisible: Bool {
+        !modelOptions.isEmpty && selectedAgent == AgentOption.claude
+    }
     /// Per-box capacity blocks, filled by the roster fan-out as replies
     /// land. Display-only: a missing entry just means a quieter row, never
     /// an unpickable one.
@@ -185,6 +235,9 @@ public final class NewChatViewModel {
     /// The `default_model` learned alongside `modelOptionsCache`, same
     /// lifetime; absent for a box that doesn't send one.
     private var defaultModelCache: [Int64: String] = [:]
+    /// The `agent_options` / `default_agent` learned alongside, same lifetime.
+    private var agentOptionsCache: [Int64: [AgentOption]] = [:]
+    private var defaultAgentCache: [Int64: String] = [:]
     /// Bumped by every fan-out. Cancelling the previous task doesn't stop an
     /// RPC that's already in flight from answering, so each leg carries the
     /// generation it was started for and drops its reply if it's been
@@ -266,6 +319,7 @@ public final class NewChatViewModel {
         // Model offers are per-box, so the step opens on what this box is
         // known to offer — nothing, until its own reply lands.
         adoptModelOptions(modelOptionsCache[agent.id] ?? [], defaultModel: defaultModelCache[agent.id])
+        adoptAgentOptions(agentOptionsCache[agent.id] ?? [], defaultAgent: defaultAgentCache[agent.id])
         // The roster fan-out already asked this box for its folders — render
         // them instantly rather than paying for the same round-trip twice.
         if let cached = folderCache[agent.id] {
@@ -282,11 +336,14 @@ public final class NewChatViewModel {
             recordCapacity(from: reply, agentID: agent.id)
             let offered = Self.parseModelOptions(from: reply)
             let boxDefault = Self.parseDefaultModel(from: reply)
+            let agents = Self.parseAgentOptions(from: reply)
+            let boxDefaultAgent = Self.parseDefaultAgent(from: reply)
             guard Self.sameFolderAgent(phase, agent) else { return } // switched away meanwhile
             switch reply {
             case .ok(let resultData):
                 folders = Self.parseFolders(resultData)
                 adoptModelOptions(offered, defaultModel: boxDefault)
+                adoptAgentOptions(agents, defaultAgent: boxDefaultAgent)
             case .failure(let code, _) where code == "agent_unreachable":
                 // The roster's `connected` was a snapshot; the refusal says
                 // the box has since been idle-stopped — and has already
@@ -384,6 +441,8 @@ public final class NewChatViewModel {
                     folders = Self.parseFolders(resultData)
                     adoptModelOptions(Self.parseModelOptions(from: reply),
                                       defaultModel: Self.parseDefaultModel(from: reply))
+                    adoptAgentOptions(Self.parseAgentOptions(from: reply),
+                                      defaultAgent: Self.parseDefaultAgent(from: reply))
                     return
                 case .failure(let code, _) where code == "agent_unreachable":
                     break // still booting — go around
@@ -445,9 +504,17 @@ public final class NewChatViewModel {
         let trimmed = workdir?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !trimmed.isEmpty { params["workdir"] = trimmed }
         if browserEnabled { params["browser"] = true }
+        // Named whenever the bridge offered agents (so it accepts the key),
+        // even with one offer or the default picked: saying what was shown
+        // beats trusting the box default not to have moved since the reply.
+        // An older bridge that offered nothing isn't sent a key it doesn't
+        // know.
+        if !agentOptions.isEmpty { params["agent"] = selectedAgent }
         // nil is the bridge's own default model, and the bridge distinguishes
         // "no opinion" from any alias it knows — so omit the key entirely.
-        if let selectedModel { params["model"] = selectedModel }
+        // A Codex session takes no Claude alias at all: the pick stays parked
+        // for a flip back, but the bridge would answer `bad_model` to it.
+        if selectedAgent == AgentOption.claude, let selectedModel { params["model"] = selectedModel }
         // A [String: Any] of strings/bools always serializes.
         let paramsData = (try? JSONSerialization.data(withJSONObject: params)) ?? Data("{}".utf8)
         do {
@@ -518,6 +585,8 @@ public final class NewChatViewModel {
         folderCache.removeAll()
         modelOptionsCache.removeAll()
         defaultModelCache.removeAll()
+        agentOptionsCache.removeAll()
+        defaultAgentCache.removeAll()
         // Capacity, unlike folders, is deliberately stale-while-revalidate:
         // the rows keep last-known numbers until the refresh answers, so
         // coming back from the folder step doesn't collapse every three-line
@@ -591,6 +660,8 @@ public final class NewChatViewModel {
         folderCache[agentID] = Self.parseFolders(resultData)
         modelOptionsCache[agentID] = Self.parseModelOptions(obj)
         defaultModelCache[agentID] = Self.parseDefaultModel(obj)
+        agentOptionsCache[agentID] = Self.parseAgentOptions(obj)
+        defaultAgentCache[agentID] = Self.parseDefaultAgent(obj)
         capacityCache.save(capacity, for: agentID, at: now())
     }
 
@@ -607,6 +678,17 @@ public final class NewChatViewModel {
         }
         if let selectedModel, !options.contains(where: { $0.value == selectedModel }) {
             self.selectedModel = nil
+        }
+    }
+
+    /// Points the switch at one box's offer. A pick this box doesn't list is
+    /// dropped (a `bad_agent` waiting to happen, same as a carried-over
+    /// model), and `selectedAgent` falls back to the box's own default.
+    private func adoptAgentOptions(_ options: [AgentOption], defaultAgent: String?) {
+        agentOptions = options
+        self.defaultAgent = defaultAgent
+        if let pickedAgent, !options.contains(where: { $0.value == pickedAgent }) {
+            self.pickedAgent = nil
         }
     }
 
@@ -698,6 +780,43 @@ public final class NewChatViewModel {
         return value
     }
 
+    /// Reads `agent_options` out of a `recent_folders` reply: the coding
+    /// agents a `start` there may name. Optional like every block a bridge
+    /// attaches — absent on a bridge older than the switch. Bridge order is
+    /// kept; the same identity and label rules as `parseModelOptions`.
+    static func parseAgentOptions(from reply: RPCReply) -> [AgentOption] {
+        guard case .ok(let resultData) = reply,
+              let object = (try? JSONSerialization.jsonObject(with: resultData)) as? [String: Any]
+        else { return [] }
+        return parseAgentOptions(object)
+    }
+
+    static func parseAgentOptions(_ replyObject: [String: Any]) -> [AgentOption] {
+        guard let raw = replyObject["agent_options"] as? [[String: Any]] else { return [] }
+        var seen = Set<String>()
+        return raw.compactMap { entry -> AgentOption? in
+            guard let value = entry["value"] as? String, !value.isEmpty,
+                  seen.insert(value).inserted
+            else { return nil }
+            let label = (entry["label"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            return AgentOption(value: value, label: label ?? value)
+        }
+    }
+
+    /// Reads `default_agent`: what a start with no `agent` would run as, so
+    /// the switch opens on it. Optional; nil falls back to the first offer.
+    static func parseDefaultAgent(from reply: RPCReply) -> String? {
+        guard case .ok(let resultData) = reply,
+              let object = (try? JSONSerialization.jsonObject(with: resultData)) as? [String: Any]
+        else { return nil }
+        return parseDefaultAgent(object)
+    }
+
+    static func parseDefaultAgent(_ replyObject: [String: Any]) -> String? {
+        guard let value = replyObject["default_agent"] as? String, !value.isEmpty else { return nil }
+        return value
+    }
+
     static func startErrorCopy(code: String, detail: String?) -> String {
         switch code {
         case "agent_unreachable", "not_ready":
@@ -709,6 +828,10 @@ public final class NewChatViewModel {
             // The offer came from this box's own reply, so this means it has
             // changed its mind since — the default always works.
             return "That box doesn't offer that model — pick another."
+        case "bad_agent":
+            // Same story: the switch only ever shows what this box's own
+            // reply offered, so the box has changed since (Codex uninstalled).
+            return "That box can't start that agent — pick another."
         default:
             return "Couldn't start — \(detail ?? code)."
         }
