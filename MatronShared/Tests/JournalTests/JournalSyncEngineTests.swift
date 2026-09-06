@@ -441,6 +441,89 @@ final class JournalSyncEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    /// An agent-chat room born live must NOT auto-open. The bridge mints a
+    /// room when an agent calls `agent_chat_start`, and its frames land as
+    /// session_status → convo_meta (title led by the room marker `↔️ `) →
+    /// the opening text → the consent card. Auto-opening it yanked the Mac's
+    /// selection into the room the instant it existed and marked the consent
+    /// card read before the user ever saw it (2026-09-06: four rooms went
+    /// "invisible" this way). The engine must hold its decision until the
+    /// title arrives and then skip the room; a normal convo born right after
+    /// still fires, proving the room was filtered rather than delayed.
+    func testLiveBornAgentRoomDoesNotAutoOpen() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1)) // c1 — existing, drives us to running
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.newConversations().makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(50))
+
+        socket.serve(journalLine(2, convo: "room", type: "session_status")) // first frame, no title yet
+        let roomMeta = #"{"kind":"journal","seq":3,"convo_id":"room","ts":3000,"sender":"agent:a","type":"convo_meta","payload":{"title":"↔️ [ab] mac ↔ dev-z","parent_convo_id":null,"agent_device_id":8}}"#
+        socket.serve(roomMeta)                                                // room → must NOT emit
+        socket.serve(journalLine(4, convo: "room"))                           // the opening message → still not
+        socket.serve(journalLine(5, convo: "cLive", type: "convo_meta"))     // normal new convo → emit
+
+        let emitted = await iterator.next()
+        XCTAssertEqual(emitted, "cLive",
+                       "a live-born agent-chat room must not auto-open; only the user's own new session does")
+        await engine.endSync()
+    }
+
+    /// Rooms minted before matron-bridge#228 carry the legacy `🔗 ` marker
+    /// and may arrive with the convo_meta as their very first frame. Same
+    /// rule: never auto-open a room, whichever marker and whichever frame
+    /// comes first.
+    func testLiveBornLegacyRoomMetaFirstDoesNotAutoOpen() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.newConversations().makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(50))
+
+        let roomMeta = #"{"kind":"journal","seq":2,"convo_id":"room","ts":2000,"sender":"agent:a","type":"convo_meta","payload":{"title":"🔗 [ab] mac ↔ dev-z"}}"#
+        socket.serve(roomMeta)                                            // room → must NOT emit
+        socket.serve(journalLine(3, convo: "cLive", type: "convo_meta")) // normal new convo → emit
+
+        let emitted = await iterator.next()
+        XCTAssertEqual(emitted, "cLive", "a legacy-marked room must not auto-open either")
+        await engine.endSync()
+    }
+
+    /// The other side of holding the decision for the title: a genuine new
+    /// session whose first frame is a session_status (not its convo_meta)
+    /// must still auto-open — once the meta lands with a plain title. The
+    /// /start UX must survive the room filter.
+    func testLiveBornSessionWithStatusFirstStillAutoOpensOnMeta() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.newConversations().makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(50))
+
+        socket.serve(journalLine(2, convo: "cTop", type: "session_status")) // first frame, title unknown
+        let topMeta = #"{"kind":"journal","seq":3,"convo_id":"cTop","ts":3000,"sender":"agent:a","type":"convo_meta","payload":{"title":"yearbook-app","parent_convo_id":null,"agent_device_id":8}}"#
+        socket.serve(topMeta)                                                // plain title → emit now
+
+        let emitted = await iterator.next()
+        XCTAssertEqual(emitted, "cTop", "a status-first session must auto-open once its plain-titled meta arrives")
+        await engine.endSync()
+    }
+
     // MARK: Agent RPC correlator
 
     private func sentAgentRequests(_ socket: FakeWebSocketConnection) -> [[String: Any]] {
