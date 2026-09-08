@@ -25,6 +25,12 @@ struct ItemsDrawer: View {
     /// Live drag offset while the close-gesture is tracking; snaps back to
     /// 0 on a drag that didn't clear the close threshold.
     @State private var dragX: CGFloat = 0
+    /// Bumped by every `close()` and by every reopen (`isPresented` going
+    /// true) — the deferred `path = []` task `close()` schedules captures
+    /// this and only clears `path` if it's still the current generation
+    /// (Bugbot: a bare 250ms timer with no token would clear a fresh
+    /// re-push if the drawer closed and reopened within that window).
+    @State private var closeGeneration = 0
 
     var body: some View {
         GeometryReader { geo in
@@ -78,17 +84,27 @@ struct ItemsDrawer: View {
         // No hit-testing (and no layout cost beyond a GeometryReader) while
         // closed — this overlay sits over the entire chat screen.
         .allowsHitTesting(isPresented)
+        // A reopen invalidates any close still winding down its deferred
+        // `path` clear — see `closeGeneration`.
+        .onChange(of: isPresented) { _, newValue in
+            if newValue { closeGeneration += 1 }
+        }
     }
 
     private func close() {
         withAnimation { isPresented = false }
         dragX = 0
+        closeGeneration += 1
+        let generation = closeGeneration
         // Deferred, not synchronous: clearing `path` immediately pops the
         // pushed detail back to the list mid-slide-out, so the close
         // animation visibly flashes the list for a frame before it's gone.
-        // Matches the panel's own 0.22s `.animation(.easeInOut)`.
+        // Matches the panel's own 0.22s `.animation(.easeInOut)`. Guarded
+        // by generation + `!isPresented`: a close-then-reopen within the
+        // 250ms window must not wipe the fresh reopen's `path`.
         Task {
             try? await Task.sleep(for: .milliseconds(250))
+            guard generation == closeGeneration, !isPresented else { return }
             path = []
         }
     }

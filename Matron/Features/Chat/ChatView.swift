@@ -903,34 +903,15 @@ struct ChatView: View {
                 .onEnded { v in
                     guard attachmentPreview == nil, !showItems,
                           !showSessionStatus, !showMediaBrowser, !showSummaries,
+                          itemsVM?.isSupported != false,
                           chatContainerWidth > 0,
                           v.startLocation.x > chatContainerWidth - 24,
-                          v.translation.width < -60
+                          v.translation.width < -60,
+                          abs(v.translation.width) > abs(v.translation.height)
                     else { return }
                     showItems = true
                 }
         )
-        // Task 11: right-edge drawer overlay. `itemsVM`/`session` are both
-        // required — see the `.task` above for why `itemsVM` can still be
-        // `nil` here (dependencies not ready yet).
-        .overlay {
-            if let itemsVM, let session {
-                ItemsDrawer(
-                    isPresented: $showItems,
-                    viewModel: itemsVM,
-                    session: session,
-                    // Bugbot: an origin link back to THIS room used to push
-                    // a second nav entry onto the very chat already showing
-                    // underneath the drawer. `ItemsDrawer`/`ItemDetailHost`
-                    // already close the drawer before this fires — the fix
-                    // here is only to skip the redundant push.
-                    onOpenConversation: { id in
-                        guard id != viewModel.roomID else { return }
-                        navigationPath?.wrappedValue.append(id)
-                    }
-                )
-            }
-        }
         // matron-web's cream timeline gradient sits behind the whole chat
         // column — bubbles (white / cyan) and the composer material all
         // render over the same warm ground.
@@ -1193,6 +1174,35 @@ struct ChatView: View {
         }
         .onChange(of: viewModel.rows.isEmpty) { _, isEmpty in
             chatViewLogger.breadcrumb("rows \(isEmpty ? "EMPTY — warm-up spinner over blank area" : "populated") (items=\(viewModel.items.count))")
+        }
+        // I8: the LAST modifier, deliberately — applied here (after
+        // `.navigationTitle`/`.toolbar` above) rather than back where the
+        // edge-swipe gesture sits, this overlay wraps the whole
+        // toolbar-bearing view instead of a plain content view the nav bar
+        // then draws over. Moved out of the earlier `.overlay` (right after
+        // the edge-swipe `.simultaneousGesture`) once review caught the
+        // scrim rendering BEHIND the nav bar there — the Back/info/media
+        // toolbar buttons stayed tappable straight through the dimming
+        // layer. `itemsVM`/`session` both required — see the `.task` above
+        // for why `itemsVM` can still be `nil` here (dependencies not ready
+        // yet).
+        .overlay {
+            if let itemsVM, let session {
+                ItemsDrawer(
+                    isPresented: $showItems,
+                    viewModel: itemsVM,
+                    session: session,
+                    // Bugbot: an origin link back to THIS room used to push
+                    // a second nav entry onto the very chat already showing
+                    // underneath the drawer. `ItemsDrawer`/`ItemDetailHost`
+                    // already close the drawer before this fires — the fix
+                    // here is only to skip the redundant push.
+                    onOpenConversation: { id in
+                        guard id != viewModel.roomID else { return }
+                        navigationPath?.wrappedValue.append(id)
+                    }
+                )
+            }
         }
     }
 
