@@ -433,17 +433,14 @@ public actor ItemsSync {
                     // invisible until the detail sheet is reopened.
                     // `insertComments` is an upsert, not a replace, so it
                     // can't race-delete anything `refreshItem` also wrote.
-                    try store.upsertItems([r.item])
-                    try store.insertComments([r.comment])
-                    try store.itemOutboxDelete(localID: row.localID)
+                    try store.commitOutboxResult(item: r.item, comment: r.comment, deletingLocalID: row.localID)
                     await refreshItem(id: itemID)
                 case "create":
                     guard let data = row.payloadJSON.data(using: .utf8), let p = try? JSONDecoder().decode(CreatePayload.self, from: data),
                           let kind = ItemKind(rawValue: p.kind) else { try store.itemOutboxDelete(localID: row.localID); continue }
                     let item = try await api.createItem(NewItem(kind: kind, title: p.title, body: p.body, attachments: p.attachments, convoID: p.convoID), idempotencyKey: row.localID)
                     guard !stopped else { return .clean }
-                    try store.upsertItems([item])
-                    try store.itemOutboxDelete(localID: row.localID)
+                    try store.commitOutboxResult(item: item, deletingLocalID: row.localID)
                 default:
                     try store.itemOutboxDelete(localID: row.localID)
                 }
