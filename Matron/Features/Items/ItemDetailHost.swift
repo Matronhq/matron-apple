@@ -1,6 +1,7 @@
 import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
+import CryptoKit
 import MatronChat
 import MatronJournal
 import MatronModels
@@ -41,6 +42,11 @@ struct ItemDetailHost: View {
     /// `ItemCommentComposer` (DesignSystem) only forwards intents — this
     /// host owns the recorder, mirroring `ComposerView`'s own split.
     @State private var recorder = VoiceRecorder()
+    /// blobRefs with an in-flight `open(_:)` fetch — a second tap on the
+    /// same attachment while its bytes are still downloading is a no-op
+    /// instead of a redundant fetch, and drives the `fetchingBar` overlay
+    /// (fix wave part 2, C2/I9).
+    @State private var fetchingBlobRefs: Set<String> = []
 
     private enum AttachmentPreview: Identifiable {
         case image(id: UUID = UUID(), ImageGallery)
@@ -91,6 +97,8 @@ struct ItemDetailHost: View {
                 .overlay(alignment: .bottom) {
                     if case let .recording(start) = recorder.state {
                         recordingBar(start: start, vm: vm)
+                    } else if !fetchingBlobRefs.isEmpty {
+                        fetchingBar
                     }
                 }
                 .task(id: images) { await loadImages(images) }
@@ -202,27 +210,45 @@ struct ItemDetailHost: View {
 
     private func open(_ attachment: TrackerAttachment) {
         guard let deps else { return }
-        let url = mediaURL(for: attachment.blobRef)
+        let blobRef = attachment.blobRef
+        // A second tap while the first fetch is still in flight is a
+        // no-op, not a redundant download (fix wave part 2, C2/I9).
+        guard !fetchingBlobRefs.contains(blobRef) else { return }
+        let url = mediaURL(for: blobRef)
         let media = deps.mediaService(for: session)
         if attachment.isImage {
+            fetchingBlobRefs.insert(blobRef)
             Task {
+                defer { fetchingBlobRefs.remove(blobRef) }
                 guard let sized = await media.sizedImage(for: url) else { return }
-                imageCache[attachment.blobRef] = sized.image
+                imageCache[blobRef] = sized.image
                 attachmentPreview = .image(ImageGallery.single(sized.image, pixelSize: sized.pixelSize))
             }
         } else {
+            let name = attachment.name.isEmpty ? attachment.blobRef : attachment.name
+            // Reuse a temp file already written for this blobRef instead of
+            // spending a network round trip re-fetching bytes we already
+            // have on disk (fix wave part 2, C2/I9) — checked BEFORE
+            // starting the fetch, so a cache hit never touches the network.
+            let cached = Self.cachedFileURL(name: name, blobRef: blobRef)
+            if FileManager.default.fileExists(atPath: cached.path) {
+                attachmentPreview = .file(cached, filename: name)
+                return
+            }
+            fetchingBlobRefs.insert(blobRef)
             Task {
+                defer { fetchingBlobRefs.remove(blobRef) }
                 guard let data = await media.fetchBytes(mxcURL: url) else { return }
-                let name = attachment.name.isEmpty ? attachment.blobRef : attachment.name
-                let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent(name)
-                // Minor fix: `try?` on the write used to swallow disk-full /
-                // sandbox-denial failures and still present a preview sheet
-                // over a file that was never written. do/catch now surfaces
-                // the failure via `vm.error` and skips the preview.
+                // `AttachmentTempFiles.write` (fix wave, item H) — the
+                // shared path-traversal-safe, collision-safe temp-file
+                // writer `ChatViewModel` itself now delegates to, instead
+                // of a hand-rolled `appendingPathComponent(name)` that
+                // trusted a server-supplied filename raw. do/catch: a
+                // write failure surfaces via `vm.error` and never presents
+                // a preview over a file that doesn't exist.
                 do {
-                    try FileManager.default.createDirectory(at: tmp.deletingLastPathComponent(), withIntermediateDirectories: true)
-                    try data.write(to: tmp)
-                    attachmentPreview = .file(tmp, filename: name)
+                    let dest = try AttachmentTempFiles.write(data, name: name, blobRef: blobRef)
+                    attachmentPreview = .file(dest, filename: name)
                 } catch {
                     viewModel?.error = error.localizedDescription
                 }
@@ -230,10 +256,31 @@ struct ItemDetailHost: View {
         }
     }
 
+    /// Mirrors `AttachmentTempFiles.write`'s destination-path formula
+    /// (digest-of-`blobRef` subdirectory + `sanitisedFilename`) without
+    /// writing, so `open(_:)` can check for an existing file before
+    /// spending a fetch. The digest computation itself is `private` inside
+    /// `AttachmentTempFiles` (only `write`/`sanitisedFilename` are public)
+    /// — duplicated here rather than widening that type's public surface
+    /// for one caller; `write`'s own atomic overwrite keeps the two
+    /// formulas from silently drifting apart in any way that would matter
+    /// (same input digests to the same path either way).
+    private static func cachedFileURL(name: String, blobRef: String) -> URL {
+        let digest = SHA256.hash(data: Data(blobRef.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
+        return FileManager.default.temporaryDirectory
+            .appendingPathComponent("matron-attachments", isDirectory: true)
+            .appendingPathComponent(digest, isDirectory: true)
+            .appendingPathComponent(AttachmentTempFiles.sanitisedFilename(name))
+    }
+
     /// Mirrors `ComposerView.stagePhotoData` — resolve the picker's
     /// transferable data, pick a real extension from
     /// `supportedContentTypes` (never trust the abstract PHAsset
-    /// identifier), and submit it as its own comment.
+    /// identifier), and submit it as its own attachment-only comment.
+    /// `submitAttachments` (fix wave, item B) — not `submitComment` —
+    /// because the latter posts whatever's currently sitting in `draft`
+    /// as the attachment's comment body and clears it, silently eating
+    /// whatever the person was still typing.
     private func attachPickedPhoto(_ item: PhotosPickerItem, vm: ItemDetailViewModel) async {
         defer { photoItem = nil }
         do {
@@ -243,7 +290,7 @@ struct ItemDetailHost: View {
             }
             let ext = ComposerView.pickedExtension(for: item.supportedContentTypes)
             let mime = UTType(filenameExtension: ext)?.preferredMIMEType ?? "application/octet-stream"
-            await vm.submitComment(attachments: [(data, "photo-\(UUID().uuidString).\(ext)", mime)])
+            _ = await vm.submitAttachments([(data, "photo-\(UUID().uuidString).\(ext)", mime)])
         } catch {
             vm.error = error.localizedDescription
         }
@@ -256,7 +303,7 @@ struct ItemDetailHost: View {
             do {
                 let data = try Data(contentsOf: url)
                 let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
-                await vm.submitComment(attachments: [(data, url.lastPathComponent, mime)])
+                _ = await vm.submitAttachments([(data, url.lastPathComponent, mime)])
             } catch {
                 vm.error = error.localizedDescription
             }
@@ -291,5 +338,21 @@ struct ItemDetailHost: View {
         }
         .padding()
         .background(.bar)
+    }
+
+    /// Small fetch-in-progress banner for a file-attachment tap (fix wave
+    /// part 2, C2/I9). `AttachmentFile`/`AttachmentImage` are DesignSystem
+    /// leaf views with no per-row loading state to wire up — this is a
+    /// standalone overlay, same slot as `recordingBar`, rather than a
+    /// disabled/spinner state on the tapped row itself.
+    private var fetchingBar: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text("Opening attachment…").font(.footnote).foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.bar, in: Capsule())
+        .padding(.bottom, 8)
     }
 }

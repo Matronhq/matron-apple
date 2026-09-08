@@ -119,7 +119,15 @@ struct ItemsDrawer: View {
                     done: viewModel.sections.done,
                     originTitles: originTitles,
                     isSupported: viewModel.isSupported,
-                    isRefreshing: viewModel.isRefreshing
+                    isRefreshing: viewModel.isRefreshing,
+                    // Fix wave part 2 (item C): surfaces a queued/offline
+                    // "create" outbox row that hasn't landed on the server
+                    // yet — without it a create sheet dismisses into
+                    // apparent nothing until the next successful drain.
+                    pending: viewModel.pendingCreates.map {
+                        ItemsListView.PendingRow(id: $0.id, kind: $0.kind, title: $0.title,
+                                                  isFailed: $0.lastError != nil, error: $0.lastError)
+                    }
                 ),
                 scope: Binding(get: { viewModel.scope }, set: { viewModel.scope = $0 }),
                 convoID: viewModel.convoID,
