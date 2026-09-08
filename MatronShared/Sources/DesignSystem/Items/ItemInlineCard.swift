@@ -81,5 +81,7 @@ public struct ItemInlineCard: View {
             .foregroundStyle(.secondary)
         }
         .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(noteText)
     }
 }
