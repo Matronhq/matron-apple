@@ -228,7 +228,7 @@ final class JournalChatServiceTests: XCTestCase {
         // allowed to land before the needs observation's initial value does
         // (an empty dict until then) — so this loops to the converged state
         // rather than asserting on the very first snapshot, same watchdog
-        // shape as `testChatSummariesCoalesceBurstsToNewestSnapshot`.
+        // shape as `testRenamingABoxRelabelsAnOpenChatList`.
         let store = try makeStore()
         try store.applyJournal(JournalEvent(
             seq: 1, convoID: "c1", ts: Date(), sender: "agent:a", type: "text",

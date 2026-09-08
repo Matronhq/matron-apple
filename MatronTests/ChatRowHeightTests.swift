@@ -15,14 +15,15 @@ final class ChatRowHeightTests: XCTestCase {
 
     private static let width: CGFloat = 361  // iPhone list content width
 
-    private func rowHeight(snippet: String, unread: Int = 0, activity: Date? = Date(timeIntervalSince1970: 1_752_000_000)) -> CGFloat {
+    private func rowHeight(snippet: String, unread: Int = 0, needsUserCount: Int = 0, activity: Date? = Date(timeIntervalSince1970: 1_752_000_000)) -> CGFloat {
         let summary = ChatSummary(
             id: "!row:\(snippet.hashValue):\(unread)",
             title: "studio: Fix the composer",
             bot: BotIdentity(matrixID: "@bot:s", displayName: "Matron", avatarURL: nil),
             lastActivity: activity,
             unreadCount: unread,
-            snippet: snippet
+            snippet: snippet,
+            needsUserCount: needsUserCount
         )
         let host = UIHostingController(rootView: ChatRow(summary: summary))
         let size = host.sizeThatFits(in: CGSize(width: Self.width, height: .greatestFiniteMagnitude))
@@ -62,5 +63,10 @@ final class ChatRowHeightTests: XCTestCase {
                        "unread badge must not change row height")
         XCTAssertEqual(rowHeight(snippet: "plain", unread: 0, activity: nil), reference, accuracy: 0.5,
                        "missing lastActivity must not change row height")
+        // Task 14: the needs-you badge sits alongside the unread badge in
+        // an HStack rather than stacking vertically — with BOTH visible at
+        // once the row must still match the single-badge reference height.
+        XCTAssertEqual(rowHeight(snippet: "plain", unread: 3, needsUserCount: 2), reference, accuracy: 0.5,
+                       "needs-you badge alongside the unread badge must not change row height")
     }
 }
