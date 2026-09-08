@@ -40,10 +40,26 @@ struct ItemsDrawer: View {
                         .frame(width: min(geo.size.width * 0.88, 420))
                         .frame(maxHeight: .infinity)
                         .offset(x: max(dragX, 0))
-                        .gesture(
+                        // `simultaneousGesture`, not `gesture`: an exclusive
+                        // gesture here wins the very first touch anywhere on
+                        // the panel and starves the list/detail's own
+                        // scrolling and a pushed detail's back-swipe. The
+                        // leading-32pt-start + horizontal-dominant guard
+                        // below is what actually keeps it from firing on a
+                        // vertical scroll or a mid-panel horizontal swipe —
+                        // `simultaneous` alone isn't enough, since `onEnded`
+                        // still runs for every recognized drag.
+                        .simultaneousGesture(
                             DragGesture(minimumDistance: 10)
-                                .onChanged { dragX = max($0.translation.width, 0) }
+                                .onChanged { v in
+                                    guard v.startLocation.x < 32, abs(v.translation.width) > abs(v.translation.height) else { return }
+                                    dragX = max(v.translation.width, 0)
+                                }
                                 .onEnded { v in
+                                    guard v.startLocation.x < 32, abs(v.translation.width) > abs(v.translation.height) else {
+                                        withAnimation(.easeOut(duration: 0.18)) { dragX = 0 }
+                                        return
+                                    }
                                     if v.translation.width > 60 {
                                         close()
                                     } else {
@@ -64,7 +80,14 @@ struct ItemsDrawer: View {
     private func close() {
         withAnimation { isPresented = false }
         dragX = 0
-        path = []
+        // Deferred, not synchronous: clearing `path` immediately pops the
+        // pushed detail back to the list mid-slide-out, so the close
+        // animation visibly flashes the list for a frame before it's gone.
+        // Matches the panel's own 0.22s `.animation(.easeInOut)`.
+        Task {
+            try? await Task.sleep(for: .milliseconds(250))
+            path = []
+        }
     }
 
     private var panel: some View {
@@ -95,7 +118,8 @@ struct ItemsDrawer: View {
                 }
             }
             .navigationDestination(for: String.self) { id in
-                ItemDetailHost(itemID: id, session: session, onOpenConversation: { c in close(); onOpenConversation(c) })
+                ItemDetailHost(itemID: id, session: session, currentConvoID: viewModel.convoID,
+                               onOpenConversation: { c in close(); onOpenConversation(c) })
             }
         }
         .background(.background)

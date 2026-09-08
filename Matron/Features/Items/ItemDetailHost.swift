@@ -14,6 +14,10 @@ import MatronDesignSystem
 struct ItemDetailHost: View {
     let itemID: String
     let session: UserSession
+    /// The chat this drawer was opened from (`ItemsPanelViewModel.convoID`)
+    /// — used to hide the "opened from…" origin link when it would just
+    /// point back at the chat already underneath the drawer.
+    let currentConvoID: String
     let onOpenConversation: (String) -> Void
 
     @Environment(\.appDependencies) private var deps
@@ -28,6 +32,12 @@ struct ItemDetailHost: View {
     @State private var photoItem: PhotosPickerItem?
     @State private var showPhotosPicker = false
     @State private var showFileImporter = false
+    /// Paperclip → chooser between the two attach flows, mirroring
+    /// `AttachmentPicker`'s Menu — presenting `PhotosPicker` directly from
+    /// a `Menu` row never shows it (menu dismissal takes the presentation
+    /// context with it, ComposerView's own comment on the same gotcha), so
+    /// this only sets a flag; the picker itself is a sibling modifier.
+    @State private var showAttachChooser = false
     /// `ItemCommentComposer` (DesignSystem) only forwards intents — this
     /// host owns the recorder, mirroring `ComposerView`'s own split.
     @State private var recorder = VoiceRecorder()
@@ -46,12 +56,24 @@ struct ItemDetailHost: View {
     var body: some View {
         Group {
             if let vm = viewModel, let item = vm.item {
+                // Bugbot: the preload previously only walked `item.attachments`
+                // — a comment's own image attachments never resolved, so
+                // `image:` below returned `nil` for every reply photo. This
+                // covers item + every comment, de-duplicated by `blobRef`,
+                // and its `.task(id:)` re-runs whenever `vm.comments` gains a
+                // new attachment-bearing reply.
+                let images = Self.imageAttachments(item: item, comments: vm.comments)
                 ItemDetailView(
                     model: .init(
                         item: item,
                         comments: vm.comments,
                         pending: vm.pendingComments.map(Self.pending),
-                        originTitle: originTitle,
+                        // Bugbot: hide the "opened from…" link when it would
+                        // just point back at the chat already underneath the
+                        // drawer — tapping it would silently no-op the push
+                        // (see ChatView's `onOpenConversation` dedup) with no
+                        // visible feedback, so hiding it is the honest UI.
+                        originTitle: item.originConvoID == currentConvoID ? nil : originTitle,
                         availableResolutions: vm.availableResolutions,
                         isBusy: vm.isBusy
                     ),
@@ -61,7 +83,7 @@ struct ItemDetailHost: View {
                     onOpenLink: { openURL($0) },
                     onOpenConversation: onOpenConversation,
                     onSubmit: { Task { await vm.submitComment(attachments: []) } },
-                    onAttach: { showPhotosPicker = true },
+                    onAttach: { showAttachChooser = true },
                     onVoiceNote: { Task { await startRecording(vm) } },
                     onClose: { resolution in Task { await vm.close(resolution: resolution, comment: nil) } },
                     onReopen: { Task { await vm.reopen() } }
@@ -71,12 +93,20 @@ struct ItemDetailHost: View {
                         recordingBar(start: start, vm: vm)
                     }
                 }
-                .task(id: item.attachments) { await loadImages(item.attachments) }
+                .task(id: images) { await loadImages(images) }
                 .task(id: item.originConvoID) { await loadOriginTitle(item.originConvoID) }
             } else {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+        }
+        // Mirrors `AttachmentPicker`'s chooser — the paperclip previously
+        // jumped straight to `showPhotosPicker`, which left the file-import
+        // flow unreachable from the comment composer entirely (Bugbot).
+        .confirmationDialog("Attach", isPresented: $showAttachChooser) {
+            Button("Photo Library") { showPhotosPicker = true }
+            Button("Choose File…") { showFileImporter = true }
+            Button("Cancel", role: .cancel) {}
         }
         .alert("Tracker", isPresented: Binding(get: { viewModel?.error != nil }, set: { if !$0 { viewModel?.error = nil } })) {
             Button("OK") { viewModel?.error = nil }
@@ -126,6 +156,21 @@ struct ItemDetailHost: View {
         }
     }
 
+    /// Every image attachment worth preloading: the item's own, plus every
+    /// comment's (including pending/queued ones stay out — those resolve
+    /// through the local temp files the composer already staged, not the
+    /// server media path). De-duplicated by `blobRef` since the same image
+    /// could in principle appear twice.
+    private static func imageAttachments(item: TrackerItem, comments: [TrackerComment]) -> [TrackerAttachment] {
+        var seen = Set<String>()
+        var result: [TrackerAttachment] = []
+        for a in item.attachments where a.isImage && seen.insert(a.blobRef).inserted { result.append(a) }
+        for c in comments {
+            for a in c.attachments where a.isImage && seen.insert(a.blobRef).inserted { result.append(a) }
+        }
+        return result
+    }
+
     private static func pending(_ r: ItemOutboxRecord) -> ItemDetailView.PendingComment {
         struct Payload: Decodable { var body: String; var attachments: [TrackerAttachment] }
         let decoded = r.payloadJSON.data(using: .utf8).flatMap { try? JSONDecoder().decode(Payload.self, from: $0) }
@@ -170,9 +215,17 @@ struct ItemDetailHost: View {
                 guard let data = await media.fetchBytes(mxcURL: url) else { return }
                 let name = attachment.name.isEmpty ? attachment.blobRef : attachment.name
                 let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent(name)
-                try? FileManager.default.createDirectory(at: tmp.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try? data.write(to: tmp)
-                attachmentPreview = .file(tmp, filename: name)
+                // Minor fix: `try?` on the write used to swallow disk-full /
+                // sandbox-denial failures and still present a preview sheet
+                // over a file that was never written. do/catch now surfaces
+                // the failure via `vm.error` and skips the preview.
+                do {
+                    try FileManager.default.createDirectory(at: tmp.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try data.write(to: tmp)
+                    attachmentPreview = .file(tmp, filename: name)
+                } catch {
+                    viewModel?.error = error.localizedDescription
+                }
             }
         }
     }

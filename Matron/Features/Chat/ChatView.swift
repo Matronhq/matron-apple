@@ -919,7 +919,15 @@ struct ChatView: View {
                     isPresented: $showItems,
                     viewModel: itemsVM,
                     session: session,
-                    onOpenConversation: { id in navigationPath?.wrappedValue.append(id) }
+                    // Bugbot: an origin link back to THIS room used to push
+                    // a second nav entry onto the very chat already showing
+                    // underneath the drawer. `ItemsDrawer`/`ItemDetailHost`
+                    // already close the drawer before this fires — the fix
+                    // here is only to skip the redundant push.
+                    onOpenConversation: { id in
+                        guard id != viewModel.roomID else { return }
+                        navigationPath?.wrappedValue.append(id)
+                    }
                 )
             }
         }
