@@ -51,12 +51,15 @@ struct ItemsDrawer: View {
                         // still runs for every recognized drag.
                         .simultaneousGesture(
                             DragGesture(minimumDistance: 10)
+                                // Only at the list root: on a pushed detail the same
+                                // leading strip belongs to the system back-swipe, and
+                                // both recognising one touch would pop AND close.
                                 .onChanged { v in
-                                    guard v.startLocation.x < 32, abs(v.translation.width) > abs(v.translation.height) else { return }
+                                    guard path.isEmpty, v.startLocation.x < 32, abs(v.translation.width) > abs(v.translation.height) else { return }
                                     dragX = max(v.translation.width, 0)
                                 }
                                 .onEnded { v in
-                                    guard v.startLocation.x < 32, abs(v.translation.width) > abs(v.translation.height) else {
+                                    guard path.isEmpty, v.startLocation.x < 32, abs(v.translation.width) > abs(v.translation.height) else {
                                         withAnimation(.easeOut(duration: 0.18)) { dragX = 0 }
                                         return
                                     }
