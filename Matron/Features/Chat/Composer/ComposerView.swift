@@ -158,6 +158,12 @@ struct ComposerView: View {
                let draft = ComposerDraftMemory.retrieve(roomID: viewModel.roomID) {
                 viewModel.input = draft
             }
+            // Task 12: subscribe to whether this journal supports the
+            // tracker at all — `canMakeTask` gates on it so the pill
+            // never shows against a server that would reject the create.
+            // Idempotent: a re-appear (e.g. tab switch) calling this again
+            // is a no-op once the subscription is already running.
+            viewModel.startItemsSupport()
         }
         // Capture whatever is in the composer when this view leaves the
         // hierarchy (back-nav to chat list, sheet dismiss, etc.). Empty
@@ -169,6 +175,7 @@ struct ComposerView: View {
             // abort it (discarding the temp file) rather than letting the
             // mic keep capturing with nothing to stop or send it.
             recorder.cancel()
+            viewModel.stopItemsSupport()
         }
     }
 
@@ -192,7 +199,14 @@ struct ComposerView: View {
         // types and clears the field.
         .overlay(alignment: .top) {
             ZStack {
-                if viewModel.canMakeTask {
+                // The palette wins when both could show. `canMakeTask`
+                // already excludes a bare single-token slash draft
+                // (`ComposerViewModel.isSlashCommandDraft`), but the
+                // palette also opens in argument-completion mode for a
+                // fully-typed command plus a partial argument
+                // (`/start ~/re`) — multi-token, so NOT excluded there —
+                // and the pill must not cover that suggestion list.
+                if viewModel.canMakeTask && !viewModel.showPalette {
                     MakeTaskPill { Task { await viewModel.makeTask() } }
                 } else if let notice = viewModel.lastFiledTaskNotice {
                     Text(notice)

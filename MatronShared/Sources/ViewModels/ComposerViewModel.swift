@@ -86,13 +86,37 @@ public final class ComposerViewModel {
     /// view clears it a couple of seconds later.
     public var lastFiledTaskNotice: String?
 
+    /// Whether the journal this room is backed by actually supports the
+    /// tracker (mirrors `ItemsPanelViewModel.isSupported`, fed by the same
+    /// `ItemsSyncing.supportedStream()`). Defaults `true` — optimistic
+    /// until `startItemsSupport()`'s subscription says otherwise, same as
+    /// `ItemsPanelViewModel`, so the pill doesn't flash hidden-then-shown
+    /// on every fresh composer.
+    public private(set) var itemsSupported = true
+    private var itemsSupportTask: Task<Void, Never>?
+
     /// Whether `makeTask()` would do anything — the pill's visibility gate.
-    /// Requires the tracker feature (`items != nil`), the same "is there
-    /// anything to file" content check `canSend` uses, and no send/file
-    /// already in flight.
+    /// Requires the tracker feature (`items != nil`), that the journal
+    /// actually supports it (`itemsSupported`), that the draft isn't a
+    /// slash command (`/start` etc. is a chat command, never a task), the
+    /// same "is there anything to file" content check `canSend` uses, and
+    /// no send/file already in flight.
     public var canMakeTask: Bool {
-        items != nil && !isSending
+        items != nil && itemsSupported && !isSending && !isSlashCommandDraft
             && (!input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !stagedAttachments.isEmpty)
+    }
+
+    /// Whether the trimmed input reads as a slash command rather than task
+    /// content — starts with `/` and is a single whitespace-free token
+    /// (e.g. `/start`, mid-typing `/sta`). A command's ARGUMENTS
+    /// (`/start ~/repo`) are intentionally excluded: once there's a space
+    /// the palette's own single-token check (`showPalette`) has already
+    /// stopped treating it as a bare command either, and free text after
+    /// a slash-looking first word is plausible task content.
+    private var isSlashCommandDraft: Bool {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("/") else { return false }
+        return !trimmed.contains(where: { $0.isWhitespace })
     }
     /// Mac slash palette is also openable via `⌘K`; iOS toggles purely via `/` typing.
     public var palettePinnedOpen: Bool = false
@@ -166,6 +190,36 @@ public final class ComposerViewModel {
         self.sessionStatus = sessionStatus
         self.items = items
         self.itemsUpload = itemsUpload
+    }
+
+    /// Subscribes to `items.supportedStream()` to drive `itemsSupported`
+    /// (mirrors `ItemsPanelViewModel.start()`). No-op when the tracker
+    /// feature is absent (`items == nil`) or the subscription is already
+    /// running — call it as many times as the view appears; only the
+    /// first call does anything. `supportedStream()` is actor-isolated
+    /// (`ItemsSync` is an actor) hence `async`.
+    ///
+    /// There's no deinit-based cancellation here, matching
+    /// `ChatViewModel`'s documented choice: a `@MainActor` class's
+    /// `deinit` is never actor-isolated in Swift 6, so it can't safely
+    /// touch actor-isolated state. Views must call `stopItemsSupport()`
+    /// from their own teardown instead.
+    public func startItemsSupport() {
+        guard itemsSupportTask == nil, let items else { return }
+        itemsSupportTask = Task { [weak self] in
+            let stream = await items.supportedStream()
+            for await v in stream {
+                guard !Task.isCancelled else { return }
+                self?.itemsSupported = v
+            }
+        }
+    }
+
+    /// Cancels the subscription `startItemsSupport()` started. Safe to
+    /// call unconditionally (including when nothing was started).
+    public func stopItemsSupport() {
+        itemsSupportTask?.cancel()
+        itemsSupportTask = nil
     }
 
     /// Whether the slash palette should be visible. True when the input is
@@ -406,12 +460,7 @@ public final class ComposerViewModel {
         // message sent, but the text stayed sitting in the composer (Dan,
         // 2026-07-15, iOS — rare, because it needs a slow enough send).
         let pending = input
-        input = ""
-        stagedAttachments = []
-        lastRecalledValue = nil
-        isNavigatingHistory = false
-        folderSuggestionsSuppressedFor = nil
-        ComposerDraftMemory.forget(roomID: roomID)
+        clearComposerAfterSend()
 
         do {
             if attachments.isEmpty {
@@ -509,15 +558,10 @@ public final class ComposerViewModel {
             }
         }
 
-        // Same clearing sequence `send()` uses on success — see its
-        // comment on why this happens before the round-trip completes.
+        // Same clearing helper `send()` uses on success — see its comment
+        // on why this happens before the round-trip completes.
         let staged = stagedAttachments
-        input = ""
-        stagedAttachments = []
-        lastRecalledValue = nil
-        isNavigatingHistory = false
-        folderSuggestionsSuppressedFor = nil
-        ComposerDraftMemory.forget(roomID: roomID)
+        clearComposerAfterSend()
         staged.forEach { $0.deleteStagedCopy() }
 
         await items.enqueueCreate(
@@ -539,6 +583,21 @@ public final class ComposerViewModel {
         guard input.isEmpty else { return }
         input = pending
         ComposerDraftMemory.store(roomID: roomID, text: pending)
+    }
+
+    /// The optimistic post-action clear shared by `send()` and
+    /// `makeTask()`: wipes the text, the tray, and the history/palette
+    /// bookkeeping that goes with a fresh composer, and forgets the
+    /// per-room draft. Callers snapshot whatever they still need (the
+    /// pending text for `restoreInput`, the staged attachments to delete
+    /// their temp copies) BEFORE calling this — it clears both.
+    private func clearComposerAfterSend() {
+        input = ""
+        stagedAttachments = []
+        lastRecalledValue = nil
+        isNavigatingHistory = false
+        folderSuggestionsSuppressedFor = nil
+        ComposerDraftMemory.forget(roomID: roomID)
     }
 
     /// Uploads staged attachments in order, hanging the caption on the

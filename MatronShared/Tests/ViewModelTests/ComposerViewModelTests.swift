@@ -1402,6 +1402,12 @@ final class ComposerViewModelTests: XCTestCase {
 
     private final class FakeItemsSync: ItemsSyncing, @unchecked Sendable {
         var created: [NewItem] = []
+        /// Live continuation for `supportedStream()`, captured on
+        /// subscribe so a test can push further transitions after
+        /// `startItemsSupport()` — mirrors the real `ItemsSync`, which
+        /// yields the current value immediately then pushes future
+        /// changes on the same continuation.
+        var supportedContinuation: AsyncStream<Bool>.Continuation?
         func refresh(scope: ItemsScope) async {}
         func refreshItem(id: String) async {}
         func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async {}
@@ -1412,7 +1418,12 @@ final class ComposerViewModelTests: XCTestCase {
         // that conformance to satisfy it with no unsafe opt-out). This
         // fake is a plain class, so it satisfies the async requirement
         // trivially with a synchronous body.
-        func supportedStream() async -> AsyncStream<Bool> { AsyncStream { $0.yield(true) } }
+        func supportedStream() async -> AsyncStream<Bool> {
+            AsyncStream { continuation in
+                self.supportedContinuation = continuation
+                continuation.yield(true)
+            }
+        }
     }
 
     @MainActor
@@ -1456,5 +1467,143 @@ final class ComposerViewModelTests: XCTestCase {
         XCTAssertNil(sync.created.first?.attachments.first?.transcript,
                     "a filed task's attachment must never carry a chat transcript")
         XCTAssertTrue(vm.stagedAttachments.isEmpty)
+    }
+
+    /// Controller ruling 2: the pill must hide when the journal doesn't
+    /// support the tracker at all, not just when `items` is nil.
+    /// `itemsSupported` starts optimistic (`true`) and only the
+    /// subscription started by `startItemsSupport()` can flip it —
+    /// mirrors `ItemsPanelViewModelTests.testIsSupportedFollowsSupportedStream`.
+    @MainActor
+    func testCanMakeTask_followsSupportedStream() async throws {
+        let sync = FakeItemsSync()
+        let vm = ComposerViewModel(roomID: "c1", timeline: FakeTimelineService(), commands: [],
+                                   items: sync, itemsUpload: { _, _ in "blob" })
+        vm.input = "ship this"
+        XCTAssertTrue(vm.canMakeTask, "optimistic default before the subscription reports anything")
+
+        vm.startItemsSupport()
+        // Wait for the subscription task to actually reach
+        // `items.supportedStream()` (which stores the continuation)
+        // before pushing further values on it — `vm.itemsSupported` is
+        // already `true` by default, so waiting on THAT alone would pass
+        // trivially before the subscription exists and race the `yield`
+        // below against a `nil` continuation.
+        try await waitUntil { sync.supportedContinuation != nil }
+        XCTAssertTrue(vm.canMakeTask)
+
+        sync.supportedContinuation?.yield(false)
+        try await waitUntil { vm.itemsSupported == false }
+        XCTAssertFalse(vm.canMakeTask, "an unsupported journal must hide the pill even with text staged")
+
+        sync.supportedContinuation?.yield(true)
+        try await waitUntil { vm.itemsSupported }
+        XCTAssertTrue(vm.canMakeTask, "support coming back must re-show the pill")
+    }
+
+    /// `startItemsSupport()` must be idempotent (both composer views call
+    /// it from `.task`, which can re-run on reappear) and
+    /// `stopItemsSupport()` must cancel cleanly even if nothing started
+    /// (a composer with no tracker feature, `items == nil`).
+    @MainActor
+    func testStartItemsSupport_idempotent_stopSafeWithoutStart() async throws {
+        let sync = FakeItemsSync()
+        let vm = ComposerViewModel(roomID: "c1", timeline: FakeTimelineService(), commands: [], items: sync)
+        vm.startItemsSupport()
+        vm.startItemsSupport()
+        try await waitUntil { vm.itemsSupported }
+        vm.stopItemsSupport()
+
+        let noItemsVM = ComposerViewModel(roomID: "c1", timeline: FakeTimelineService(), commands: [])
+        noItemsVM.stopItemsSupport()
+    }
+
+    /// Controller ruling 2 (part two): a bare slash-command draft is a
+    /// chat command, never task content, on both platforms — `canMakeTask`
+    /// itself must say no regardless of what overlay the view happens to
+    /// be showing.
+    @MainActor
+    func testCanMakeTask_falseForSlashCommandDraft() {
+        let sync = FakeItemsSync()
+        let vm = ComposerViewModel(roomID: "c1", timeline: FakeTimelineService(), commands: [],
+                                   items: sync, itemsUpload: { _, _ in "blob" })
+        vm.input = "/start"
+        XCTAssertFalse(vm.canMakeTask, "a bare slash command must never be filed as a task")
+
+        vm.input = "/sta"
+        XCTAssertFalse(vm.canMakeTask, "mid-typing a command is still a command, not task content")
+
+        vm.input = "/start ~/repo and please also fix the thing"
+        XCTAssertTrue(vm.canMakeTask, "a slash-prefixed word followed by real content is plausible task text")
+    }
+
+    /// A first line over 200 characters is truncated for the title, but
+    /// nothing is lost: the full line survives at the top of the body.
+    @MainActor
+    func testMakeTask_truncatesLongFirstLine_keepsItInTheBody() async {
+        let sync = FakeItemsSync()
+        let vm = ComposerViewModel(roomID: "c1", timeline: FakeTimelineService(), commands: [],
+                                   items: sync, itemsUpload: { _, _ in "blob" })
+        let longFirstLine = String(repeating: "x", count: 250)
+        vm.input = "\(longFirstLine)\nsecond line"
+
+        await vm.makeTask()
+
+        let created = try! XCTUnwrap(sync.created.first)
+        XCTAssertEqual(created.title.count, 200)
+        XCTAssertEqual(created.title, String(longFirstLine.prefix(200)))
+        XCTAssertTrue(created.body.hasPrefix(longFirstLine),
+                      "the untruncated first line must survive at the top of the body")
+        XCTAssertTrue(created.body.hasSuffix("second line"))
+    }
+
+    /// A failed attachment upload must leave the composer exactly as the
+    /// user left it — text and staged files intact, including the staged
+    /// copy still on disk — so nothing silently disappears.
+    @MainActor
+    func testMakeTask_uploadFailureMidway_leavesComposerIntact() async throws {
+        let firstURL = try makeTempFile(named: "a.png")
+        let secondURL = try makeTempFile(named: "b.png")
+        let sync = FakeItemsSync()
+        var uploadCount = 0
+        struct UploadFailed: Error {}
+        let vm = ComposerViewModel(
+            roomID: "c1", timeline: FakeTimelineService(), commands: [], items: sync,
+            itemsUpload: { _, _ in
+                uploadCount += 1
+                if uploadCount == 2 { throw UploadFailed() }
+                return "blob-\(uploadCount)"
+            }
+        )
+        await vm.attachFiles([firstURL, secondURL])
+        vm.input = "ship these"
+
+        await vm.makeTask()
+
+        XCTAssertTrue(sync.created.isEmpty, "nothing should be filed on a partial upload failure")
+        XCTAssertNotNil(vm.sendError)
+        XCTAssertEqual(vm.input, "ship these", "the draft must survive an upload failure")
+        XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["a.png", "b.png"],
+                       "both staged attachments must stay in the tray, not just the one that failed")
+        for attachment in vm.stagedAttachments {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: attachment.url.path),
+                          "the staged temp copy must not be deleted when the file was never filed")
+        }
+    }
+}
+
+/// Polls `condition` until it's true or `timeout` elapses, throwing on
+/// timeout instead of failing via a fixed sleep — mirrors
+/// `ItemsPanelViewModelTests`'s helper of the same shape.
+private struct ComposerWaitTimeoutError: Error, CustomStringConvertible {
+    var description: String { "condition not met before timeout" }
+}
+@MainActor
+private func waitUntil(timeout: TimeInterval = 2.0, pollInterval: UInt64 = 5_000_000,
+                       _ condition: () -> Bool) async throws {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !condition() {
+        if Date() >= deadline { throw ComposerWaitTimeoutError() }
+        try await Task.sleep(nanoseconds: pollInterval)
     }
 }
