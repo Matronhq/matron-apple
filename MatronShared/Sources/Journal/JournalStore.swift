@@ -217,7 +217,10 @@ public struct SummaryEntryRecord: Codable, FetchableRecord, PersistableRecord, E
 /// transaction as the event insert — the wedge-proof property.
 public final class JournalStore: @unchecked Sendable {
     private static let logger = os.Logger(subsystem: "chat.matron", category: "journal-store")
-    private let dbQueue: DatabaseQueue
+    // Module-internal (not private): JournalStore+Items.swift extends this
+    // type from a different file for the tracker cache (spec
+    // 2026-09-08-items-tracker-apps task 4) and needs direct access.
+    let dbQueue: DatabaseQueue
     /// See `applyReadTimeSnippetTTL` — memoizes its per-conversation event
     /// sub-queries across the conversation observation's per-commit re-runs.
     private let snippetTTLMemo = SnippetTTLMemo()
@@ -393,6 +396,56 @@ public final class JournalStore: @unchecked Sendable {
         migrator.registerMigration("v8") { db in
             try db.alter(table: "agent") { t in
                 t.add(column: "tag_char", .text)
+            }
+        }
+        // v9: tracker cache (spec 2026-09-08 task-decision-tracker). Filled
+        // from GET /items, never from the event log; the `item` marker
+        // event is only an invalidation signal (ItemsSync).
+        migrator.registerMigration("v9") { db in
+            try db.create(table: "item") { t in
+                t.column("id", .text).primaryKey()
+                t.column("num", .integer).notNull()
+                t.column("kind", .text).notNull()
+                t.column("state", .text).notNull()
+                t.column("resolution", .text)
+                t.column("awaiting", .text)
+                t.column("rank", .double).notNull()
+                t.column("title", .text).notNull()
+                t.column("body", .text).notNull().defaults(to: "")
+                t.column("labels_json", .text).notNull().defaults(to: "[]")
+                t.column("links_json", .text).notNull().defaults(to: "[]")
+                t.column("attachments_json", .text).notNull().defaults(to: "[]")
+                t.column("supersedes", .text)
+                t.column("origin_convo_id", .text).notNull()
+                t.column("created_by", .text).notNull()
+                t.column("created_at", .integer).notNull()
+                t.column("updated_at", .integer).notNull()
+                t.column("closed_at", .integer)
+                t.column("comment_count", .integer).notNull().defaults(to: 0)
+                t.column("last_comment_at", .integer)
+                t.column("has_image", .boolean).notNull().defaults(to: false)
+            }
+            try db.create(index: "item_convo_state", on: "item", columns: ["origin_convo_id", "state"])
+            try db.create(index: "item_state_rank", on: "item", columns: ["state", "rank"])
+            try db.create(table: "item_comment") { t in
+                t.column("id", .text).primaryKey()
+                t.column("item_id", .text).notNull().indexed()
+                t.column("author", .text).notNull()
+                t.column("device_id", .integer).notNull().defaults(to: 0)
+                t.column("kind", .text).notNull()
+                t.column("body", .text).notNull().defaults(to: "")
+                t.column("attachments_json", .text).notNull().defaults(to: "[]")
+                t.column("meta_json", .text)
+                t.column("created_at", .integer).notNull()
+            }
+            try db.create(table: "item_outbox") { t in
+                t.column("local_id", .text).primaryKey()
+                t.column("item_id", .text).indexed()
+                t.column("op", .text).notNull()
+                t.column("payload_json", .text).notNull()
+                t.column("created_at", .integer).notNull()
+                t.column("attempts", .integer).notNull().defaults(to: 0)
+                t.column("last_error", .text)
             }
         }
         return migrator
@@ -1146,6 +1199,11 @@ public final class JournalStore: @unchecked Sendable {
             // Inside the write block — see `insertHistory`'s invalidation note.
             self.snippetTTLMemo.removeAll()
             try db.execute(sql: "DELETE FROM event; DELETE FROM conversation; DELETE FROM meta; DELETE FROM summary_entry;")
+            // Tracker cache (item/item_comment/item_outbox): cleared inline,
+            // in the same transaction, rather than via `wipeItems()` — that
+            // helper opens its own `dbQueue.write`, which would deadlock
+            // nested inside this one.
+            try db.execute(sql: "DELETE FROM item; DELETE FROM item_comment; DELETE FROM item_outbox;")
         }
     }
 
@@ -1442,7 +1500,10 @@ public final class JournalStore: @unchecked Sendable {
         return Self.stream(observation, in: dbQueue)
     }
 
-    private static func stream<Reducer: ValueReducer>(
+    // Module-internal (not private): JournalStore+Items.swift's item
+    // streams (spec 2026-09-08-items-tracker-apps task 4) reuse this from
+    // a different file.
+    static func stream<Reducer: ValueReducer>(
         _ observation: ValueObservation<Reducer>,
         in dbQueue: DatabaseQueue
     ) -> AsyncStream<Reducer.Value> where Reducer.Value: Sendable {
