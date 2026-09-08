@@ -162,6 +162,12 @@ struct MacComposerView: View {
                let draft = ComposerDraftMemory.retrieve(roomID: viewModel.roomID) {
                 viewModel.input = draft
             }
+            // Task 12: subscribe to whether this journal supports the
+            // tracker at all — `canMakeTask` gates on it so the pill
+            // never shows against a server that would reject the create.
+            // Idempotent: a re-appear (sidebar reselect) calling this
+            // again is a no-op once the subscription is already running.
+            viewModel.startItemsSupport()
         }
         // Capture whatever is in the composer when this view leaves the
         // hierarchy (sidebar swap, window close, etc.). Empty input
@@ -182,6 +188,7 @@ struct MacComposerView: View {
             if case .recording = recorder.state { voiceBus?.setRecording(voiceComposerID, start: nil) }
             recorder.cancel()
             voiceBus?.release(voiceComposerID)
+            viewModel.stopItemsSupport()
         }
         // Claimed once the window is known, and only if that window is key
         // (or nothing holds the bus): a composer remounting in a background
