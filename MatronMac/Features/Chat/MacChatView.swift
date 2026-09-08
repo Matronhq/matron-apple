@@ -634,6 +634,19 @@ struct MacChatView: View {
                         stripViewModel: stripViewModel,
                         onOpenSubChat: { openSubChatID = $0; showItemsPane = false },
                         onOpenSpawnRoom: onOpenConversation,
+                        // PR B / Task 13: an inline `.itemMarker` card tap
+                        // opens the items pane straight to that item —
+                        // same "close the other slot" convention as
+                        // `onOpenSubChat` above, and `itemsPaneState` is
+                        // the shared `@Observable` instance both HSplitView
+                        // branches already read `path` from, so setting it
+                        // here is all `MacItemsPane`'s `NavigationStack`
+                        // needs to push (see `MacItemsPaneState`).
+                        onOpenItem: { id in
+                            openSubChatID = nil
+                            showItemsPane = true
+                            itemsPaneState.path = [id]
+                        },
                         onPreviewImage: { url, img in
                             imagePreview = ImagePreview(gallery: ImageGalleries.conversation(
                                 tapped: url, image: img, chatViewModel: viewModel,
@@ -1130,6 +1143,10 @@ private struct MacTimelineListContent: View, Equatable {
     /// `onOpenSubChat` (so `==` ignoring it is safe), and `nil` where there
     /// is nowhere to navigate — the affordance is then omitted, not dead.
     let onOpenSpawnRoom: ((String) -> Void)?
+    /// Opens the items pane to a tapped `.itemMarker`'s item. Fixed per
+    /// screen like `onOpenSpawnRoom`, so `==` ignoring it is safe; `nil`
+    /// where the screen has no items pane (sub-chat panes).
+    let onOpenItem: ((String) -> Void)?
     /// Carries the tapped image's `mxc://` URL alongside the resolved
     /// `Image` so the presenter can look up its native pixel size.
     let onPreviewImage: (URL, Image) -> Void
@@ -1185,6 +1202,7 @@ private struct MacTimelineListContent: View, Equatable {
                     viewModel: viewModel,
                     onOpenSubChat: onOpenSubChat,
                     onOpenSpawnRoom: onOpenSpawnRoom,
+                    onOpenItem: onOpenItem,
                     onPreviewImage: onPreviewImage
                 )
                 .equatable()
@@ -1226,6 +1244,9 @@ private struct MacTimelineRowView: View, Equatable {
     /// so it changes the sidebar selection rather than opening a child pane.
     /// `nil` where there is nowhere to navigate.
     let onOpenSpawnRoom: ((String) -> Void)?
+    /// Opens the items pane to a tapped `.itemMarker`'s item. Fixed per
+    /// screen like `onOpenSpawnRoom`, so `==` ignoring it is safe.
+    let onOpenItem: ((String) -> Void)?
     let onPreviewImage: (URL, Image) -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -1300,6 +1321,7 @@ private struct MacTimelineRowView: View, Equatable {
                         }
                     },
                     onOpenSpawnRoom: onOpenSpawnRoom,
+                    onOpenItem: onOpenItem,
                     convoID: viewModel.roomID,
                     hasMultipleSenders: viewModel.hasMultipleSenders
                 )
@@ -1452,6 +1474,10 @@ struct MacSubChatPane: View {
                             stripViewModel: stripViewModel,
                             onOpenSubChat: onOpenSibling,
                             onOpenSpawnRoom: onOpenSpawnRoom,
+                            // No items pane inside a sub-chat pane — see
+                            // the iOS twin's identical decision for
+                            // `SubChatView`.
+                            onOpenItem: nil,
                             onPreviewImage: { url, img in
                                 imagePreview = MacSubChatImagePreview(gallery: ImageGalleries.conversation(
                                     tapped: url, image: img, chatViewModel: viewModel,

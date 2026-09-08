@@ -210,9 +210,15 @@ final class JournalTimelineMapperTests: XCTestCase {
     /// through to the `default` branch and render as a grey "unsupported
     /// event: item" row in both chat timelines — `ItemsSync` is the real
     /// consumer (it triggers a refetch), not the timeline.
-    func testItemMarkerEventIsSkippedInTimeline() throws {
-        XCTAssertNil(map(event(6, type: "item", payload: ["item_id": "it_1", "num": 1, "kind": "task", "title": "T", "action": "created", "by": "agent"])),
-                     "item marker events carry no renderable content — ItemsSync consumes them, not the timeline")
+    /// PR B / Task 13 superseded the blanket skip: `created`/`closed`
+    /// markers now render as `.itemMarker` (see
+    /// `JournalTimelineMapperItemTests`). `updated` markers still carry
+    /// nothing worth showing inline — they exist purely to invalidate
+    /// `ItemsSync`'s local cache — so they stay hidden, same as
+    /// `reordered`.
+    func testItemMarkerUpdatedIsSkippedInTimeline() throws {
+        XCTAssertNil(map(event(6, type: "item", payload: ["item_id": "it_1", "num": 1, "kind": "task", "title": "T", "action": "updated", "by": "agent"])),
+                     "updated item markers carry no renderable content — ItemsSync consumes them, not the timeline")
     }
 
     func testPromptWithOptions() throws {
