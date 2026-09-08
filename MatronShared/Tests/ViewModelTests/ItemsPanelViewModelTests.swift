@@ -16,7 +16,7 @@ private final class FakeSync: ItemsSyncing, @unchecked Sendable {
     func refreshItem(id: String) async { refetched.append(id) }
     func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async {}
     func enqueueCreate(localID: String, _ new: NewItem) async { created.append(new) }
-    func supportedStream() -> AsyncStream<Bool> { AsyncStream { $0.yield(true) } }
+    func supportedStream() async -> AsyncStream<Bool> { AsyncStream { $0.yield(true) } }
 }
 private final class FakeAPI: ItemsProviding, @unchecked Sendable {
     var rankCalls: [(String, ItemRankChange)] = []; var failRank = false
@@ -84,8 +84,13 @@ final class ItemsPanelViewModelTests: XCTestCase {
         XCTAssertEqual(vm.sections.tasks.map(\.id), ["c", "a", "b"], "reverted")
         XCTAssertNotNil(vm.error)
         api.failRank = false
-        await vm.move(itemID: "a", toIndex: 1)   // between c and b
-        XCTAssertEqual(api.rankCalls.last?.1, ItemRankChange(after: "c", before: "b"))
+        await vm.move(itemID: "b", toIndex: 1)   // [c, a, b] -> [c, b, a]
+        XCTAssertEqual(vm.sections.tasks.map(\.id), ["c", "b", "a"])
+        XCTAssertEqual(api.rankCalls.last?.1, ItemRankChange(after: "c", before: "a"))
+        let callsBeforeNoOp = api.rankCalls.count
+        await vm.move(itemID: "c", toIndex: 0)   // already first: a genuine no-op
+        XCTAssertEqual(api.rankCalls.count, callsBeforeNoOp, "no-op move must not hit the network")
+        XCTAssertEqual(vm.sections.tasks.map(\.id), ["c", "b", "a"])
     }
 
     func testCreateEnqueues() async {

@@ -18,7 +18,7 @@ final class ItemDetailViewModelTests: XCTestCase {
         func refreshItem(id: String) async { refetched.append(id) }
         func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async { comments.append((itemID, body, attachments)) }
         func enqueueCreate(localID: String, _ new: NewItem) async {}
-        func supportedStream() -> AsyncStream<Bool> { AsyncStream { $0.yield(true) } }
+        func supportedStream() async -> AsyncStream<Bool> { AsyncStream { $0.yield(true) } }
     }
     private final class API: ItemsProviding, @unchecked Sendable {
         var uploads: [String] = []; var closes: [(ItemResolution, String?)] = []; var reopens = 0
@@ -57,11 +57,15 @@ final class ItemDetailViewModelTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
     }
 
-    func testCloseReopenReverseAndResolutions() async {
+    func testCloseReopenReverseAndResolutions() async throws {
         let api = API(); let sync = Sync(); let store = Store()
         let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: api, sync: sync)
         vm.start()
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        // Opening the detail sheet must itself trigger a refetch (that's
+        // the only path comments reach the local cache) — poll for it
+        // instead of sleeping blindly, since it races the store streams'
+        // subscription.
+        try await waitUntil { sync.refetched == ["it_1"] }
         store.itemCont?.yield(TrackerItem(id: "it_1", num: 1, kind: .decision, title: "D", originConvoID: "c1"))
         try? await Task.sleep(nanoseconds: 50_000_000)
         XCTAssertEqual(vm.availableResolutions, [.decided, .reversed, .cancelled])
@@ -69,6 +73,21 @@ final class ItemDetailViewModelTests: XCTestCase {
         XCTAssertEqual(api.closes.first?.0, .reversed)
         await vm.reopen()
         XCTAssertEqual(api.reopens, 1)
-        XCTAssertEqual(sync.refetched, ["it_1", "it_1"])
+        XCTAssertEqual(sync.refetched, ["it_1", "it_1", "it_1"])
+    }
+}
+
+/// Polls `condition` until it's true or `timeout` elapses, throwing on
+/// timeout instead of failing via a fixed sleep — used where a fixed sleep
+/// would either be flaky (too short) or slow the suite down (too long).
+private struct WaitTimeoutError: Error, CustomStringConvertible {
+    var description: String { "condition not met before timeout" }
+}
+private func waitUntil(timeout: TimeInterval = 2.0, pollInterval: UInt64 = 5_000_000,
+                       _ condition: () -> Bool) async throws {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !condition() {
+        if Date() >= deadline { throw WaitTimeoutError() }
+        try await Task.sleep(nanoseconds: pollInterval)
     }
 }

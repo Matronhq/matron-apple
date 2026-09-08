@@ -20,15 +20,14 @@ public protocol ItemsSyncing: Sendable {
     func refreshItem(id: String) async
     func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async
     func enqueueCreate(localID: String, _ new: NewItem) async
-    func supportedStream() -> AsyncStream<Bool>
+    // `async` (rather than a plain nonisolated requirement) because
+    // `ItemsSync` is an actor and its `supportedStream()` is
+    // actor-isolated — an async requirement lets that isolated method
+    // satisfy the protocol with no unsafe conformance, and a synchronous
+    // fake still satisfies an async requirement trivially.
+    func supportedStream() async -> AsyncStream<Bool>
 }
-// `ItemsSync` is an actor; its (isolated) `supportedStream()` cannot
-// satisfy `ItemsSyncing`'s nonisolated requirement under strict
-// concurrency checking. `@preconcurrency` defers that check to runtime —
-// safe here because `supportedStream()`'s body only touches actor state
-// through the stream's `onTermination`, which itself hops back onto the
-// actor with `Task { await self.dropSupported(id) }`.
-extension ItemsSync: @preconcurrency ItemsSyncing {}
+extension ItemsSync: ItemsSyncing {}
 
 /// Backs the per-chat / cross-chat items panel (spec: Apps → Panel content).
 /// Reads flow from the local store (`ItemsStoreReading`'s streams); writes
@@ -81,9 +80,10 @@ public final class ItemsPanelViewModel {
         resubscribe()
         supportedTask?.cancel()
         supportedTask = Task { [weak self] in
-            guard let stream = self?.sync.supportedStream() else { return }
+            guard let self else { return }
+            let stream = await self.sync.supportedStream()
             for await v in stream {
-                guard let self, !Task.isCancelled else { return }
+                guard !Task.isCancelled else { return }
                 self.isSupported = v
             }
         }
@@ -126,6 +126,7 @@ public final class ItemsPanelViewModel {
         let moved = reordered.remove(at: from)
         let target = min(max(toIndex, 0), reordered.count)
         reordered.insert(moved, at: target)
+        guard reordered.map(\.id) != before.map(\.id) else { return }
         let change: ItemRankChange
         if target == 0 { change = ItemRankChange(position: "top") }
         else if target == reordered.count - 1 { change = ItemRankChange(position: "bottom") }

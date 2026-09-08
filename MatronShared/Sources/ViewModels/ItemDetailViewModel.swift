@@ -42,6 +42,10 @@ public final class ItemDetailViewModel {
             guard let s = self?.store.itemOutboxStream(itemID: id) else { return }
             for await v in s { guard let self, !Task.isCancelled else { return }; self.pendingComments = v }
         })
+        // Comments only reach the local cache through a refetch — opening
+        // the detail sheet must trigger one, not just rely on whatever the
+        // panel last fetched.
+        Task { [weak self] in await self?.sync.refreshItem(id: id) }
     }
 
     public func stop() { tasks.forEach { $0.cancel() }; tasks = [] }
