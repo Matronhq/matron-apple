@@ -61,6 +61,9 @@ public final class ItemsPanelViewModel {
     public let convoID: String
     public var scope: ItemsScope { didSet { if scope != oldValue { resubscribe() } } }
     public private(set) var sections = Sections()
+    /// Items in THIS conversation awaiting the user — the toolbar badge.
+    /// Scoped to `convoID` regardless of the panel's current `scope`, so
+    /// switching the list to "All" doesn't inflate the chat's badge.
     public private(set) var needsYouCount = 0
     public private(set) var isSupported = true
     public private(set) var isRefreshing = false
@@ -118,7 +121,7 @@ public final class ItemsPanelViewModel {
             for await items in stream {
                 guard let self, !Task.isCancelled else { return }
                 self.sections = Self.sections(from: items)
-                self.needsYouCount = self.sections.needsYou.count
+                self.needsYouCount = self.sections.needsYou.filter { $0.originConvoID == self.convoID }.count
             }
         }
         refreshTask?.cancel()

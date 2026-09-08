@@ -59,6 +59,18 @@ final class ItemsPanelViewModelTests: XCTestCase {
         XCTAssertEqual(s.done.map(\.id), ["y", "x"])
     }
 
+    func testNeedsYouCountIsScopedToThisConversation() async throws {
+        let store = FakeItemsStore(); let sync = FakeSync()
+        let vm = ItemsPanelViewModel(convoID: "c1", store: store, api: FakeAPI(), sync: sync)
+        vm.start()
+        vm.scope = .all
+        try await waitUntil { store.cont != nil }
+        let foreign = TrackerItem(id: "f", num: 9, kind: .question, awaiting: .user, rank: 1, title: "F", originConvoID: "c2")
+        store.cont?.yield([t("q", num: 1, kind: .question, awaiting: .user, rank: 1), foreign])
+        try await waitUntil { vm.sections.needsYou.count == 2 }
+        XCTAssertEqual(vm.needsYouCount, 1, "badge counts only this conversation even in All scope")
+    }
+
     func testStartSubscribesAndRefreshes() async {
         let store = FakeItemsStore(); let sync = FakeSync()
         let vm = ItemsPanelViewModel(convoID: "c1", store: store, api: FakeAPI(), sync: sync)

@@ -52,6 +52,7 @@ public struct ItemsListView: View {
                 }
                 Button(action: onCreate) { Image(systemName: "plus") }
                     .buttonStyle(.plain)
+                    .disabled(!model.isSupported)   // an old journal can't accept the create
                     .accessibilityLabel("New item")
                     .help("New item")
             }
