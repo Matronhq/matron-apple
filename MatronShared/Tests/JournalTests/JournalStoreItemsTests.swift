@@ -72,6 +72,30 @@ final class JournalStoreItemsTests: XCTestCase {
         XCTAssertTrue(try store.itemOutboxPending().isEmpty)
     }
 
+    /// Fix round 1 (CRITICAL #1/#2): the per-scope refresh watermark lives
+    /// in `meta`, keyed independently per scope. `wipeItems()` clearing the
+    /// cache without also clearing these would let a subsequent refresh
+    /// believe it's still caught up on data that no longer exists locally.
+    func testItemsWatermarkIsPerScopeAndClearedByWipeItems() throws {
+        let store = try makeStore()
+        XCTAssertNil(try store.itemsWatermark(scope: .all))
+        XCTAssertNil(try store.itemsWatermark(scope: .convo("c1")))
+
+        try store.setItemsWatermark(Date(timeIntervalSince1970: 100), scope: .all)
+        try store.setItemsWatermark(Date(timeIntervalSince1970: 50), scope: .convo("c1"))
+        XCTAssertEqual(try store.itemsWatermark(scope: .all), Date(timeIntervalSince1970: 100))
+        XCTAssertEqual(try store.itemsWatermark(scope: .convo("c1")), Date(timeIntervalSince1970: 50))
+        // A different convo's key must not collide with "c1"'s.
+        XCTAssertNil(try store.itemsWatermark(scope: .convo("c2")))
+
+        try store.setItemsWatermark(Date(timeIntervalSince1970: 200), scope: .all)
+        XCTAssertEqual(try store.itemsWatermark(scope: .all), Date(timeIntervalSince1970: 200), "re-setting overwrites, not accumulates")
+
+        try store.wipeItems()
+        XCTAssertNil(try store.itemsWatermark(scope: .all))
+        XCTAssertNil(try store.itemsWatermark(scope: .convo("c1")))
+    }
+
     /// Controller ruling (fix round 2): `wipe()` is the `snapshot_required`
     /// replay-gap path, NOT the sign-out path — it must clear the tracker
     /// cache (item, item_comment; both are refetched) but must NOT touch
@@ -83,12 +107,17 @@ final class JournalStoreItemsTests: XCTestCase {
         try store.upsertItems([item("it_1", num: 1)])
         try store.replaceComments(itemID: "it_1", [TrackerComment(id: "ic_1", itemID: "it_1", author: .user, body: "a")])
         try store.itemOutboxInsert(ItemOutboxRecord(localID: "L1", itemID: "it_1", op: "comment", payloadJSON: "{}", createdAt: 1, attempts: 0, lastError: nil))
+        try store.setItemsWatermark(Date(timeIntervalSince1970: 100), scope: .all)
         try store.wipe()
         XCTAssertTrue(try store.items(scope: .all).isEmpty)
         let commentCount = try store.dbQueue.read { db in try ItemCommentRecord.fetchCount(db) }
         XCTAssertEqual(commentCount, 0)
         // The unsent comment's outbox row must survive a replay-gap wipe.
         XCTAssertEqual(try store.itemOutboxPending().map(\.localID), ["L1"])
+        // `wipe()` does a blanket `DELETE FROM meta` (fix round 1): the
+        // watermark must not survive either, or the next refresh would
+        // believe it's caught up on a mirror that was just cleared.
+        XCTAssertNil(try store.itemsWatermark(scope: .all))
     }
 
     /// `wipeOutbox()` is the sign-out path (paired with `wipe()` in

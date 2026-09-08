@@ -22,6 +22,22 @@ private func date(_ v: Int64?) -> Date? { v.map { Date(timeIntervalSince1970: Do
 private func enc<T: Encodable>(_ v: T) -> String { (try? String(data: itemsEncoder.encode(v), encoding: .utf8)) ?? "[]" }
 private func dec<T: Decodable>(_ s: String, _ t: T.Type) -> T? { s.data(using: .utf8).flatMap { try? itemsDecoder.decode(t, from: $0) } }
 
+/// `meta` keys for the per-scope refresh watermark (fix round 1: a shared
+/// GLOBAL `MAX(updated_at)` watermark was wrong on two counts — a `.convo`
+/// refresh using it could skip older items of a convo that had never been
+/// fetched before, and a mid-pagination failure would still leave whatever
+/// partial rows DID land in the `item` table, so a naive "read MAX from the
+/// table" watermark silently believed it was caught up past a gap it never
+/// actually fetched. Each scope gets its own persisted key, and callers
+/// only advance it after a full, successful pagination run — see
+/// `ItemsSync.refresh`.
+private func itemsWatermarkKey(_ scope: ItemsScope) -> String {
+    switch scope {
+    case .all: return "items_watermark_all"
+    case .convo(let id): return "items_watermark_convo_\(id)"
+    }
+}
+
 public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable, Sendable {
     public static let databaseTableName = "item"
     public var id: String; public var num: Int; public var kind: String; public var state: String
@@ -158,6 +174,25 @@ extension JournalStore {
         try dbQueue.read { db in date(try Int64.fetchOne(db, sql: "SELECT MAX(updated_at) FROM item")) }
     }
 
+    /// The persisted refresh watermark for this scope, or `nil` if it has
+    /// never completed a full pagination run (⇒ the next refresh is a full
+    /// fetch). See the doc comment on `itemsWatermarkKey` for why this is
+    /// per-scope rather than a single global value.
+    public func itemsWatermark(scope: ItemsScope) throws -> Date? {
+        try dbQueue.read { db in
+            date(try Int64.fetchOne(db, sql: "SELECT value FROM meta WHERE key = ?", arguments: [itemsWatermarkKey(scope)]))
+        }
+    }
+
+    public func setItemsWatermark(_ value: Date, scope: ItemsScope) throws {
+        try dbQueue.write { db in
+            let msValue: Int64 = ms(value)
+            try db.execute(
+                sql: "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                arguments: [itemsWatermarkKey(scope), msValue])
+        }
+    }
+
     private static func needsUserCountsQuery(_ db: Database) throws -> [String: Int] {
         let rows = try Row.fetchAll(db, sql: "SELECT origin_convo_id AS c, COUNT(*) AS n FROM item WHERE state='open' AND awaiting='user' GROUP BY origin_convo_id")
         return Dictionary(uniqueKeysWithValues: rows.map { ($0["c"] as String, $0["n"] as Int) })
@@ -172,7 +207,11 @@ extension JournalStore {
         Self.stream(ValueObservation.tracking(Self.needsUserCountsQuery), in: dbQueue)
     }
 
-    public func itemOutboxInsert(_ rec: ItemOutboxRecord) throws { try dbQueue.write { db in try rec.insert(db) } }
+    /// `onConflict: .ignore` mirrors the text-message outbox
+    /// (`JournalStore.outboxInsert`) — a duplicate insert of an
+    /// already-queued local id (e.g. a retried UI action) is a silent
+    /// no-op rather than a thrown unique-constraint error.
+    public func itemOutboxInsert(_ rec: ItemOutboxRecord) throws { try dbQueue.write { db in try rec.insert(db, onConflict: .ignore) } }
     public func itemOutboxPending() throws -> [ItemOutboxRecord] {
         try dbQueue.read { db in try ItemOutboxRecord.order(Column("created_at")).fetchAll(db) }
     }
@@ -200,6 +239,14 @@ extension JournalStore {
     public func wipeItems() throws {
         try dbQueue.write { db in
             try ItemCommentRecord.deleteAll(db); try ItemRecord.deleteAll(db); try ItemOutboxRecord.deleteAll(db)
+            // The cache is gone, so any persisted refresh watermark (fix
+            // round 1) is stale too — clearing it forces the next refresh
+            // to be a full fetch rather than a since-watermark one that
+            // would believe it's already caught up on data that no longer
+            // exists locally. `wipe()` (the replay-gap path) doesn't need
+            // an equivalent line: it already does a blanket `DELETE FROM
+            // meta`, which clears these keys along with everything else.
+            try db.execute(sql: "DELETE FROM meta WHERE key = 'items_watermark_all' OR key LIKE 'items_watermark_convo_%'")
         }
     }
 }
