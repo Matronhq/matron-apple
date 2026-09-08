@@ -72,10 +72,6 @@ public final class ItemsPanelViewModel {
     private var itemsTask: Task<Void, Never>?
     private var supportedTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
-    /// The latest raw store snapshot — `move()`'s optimistic patch is
-    /// mirrored here (not just in `sections.tasks`) so anything that ever
-    /// recomputes sections from `allItems` sees the same optimistic order.
-    private var allItems: [TrackerItem] = []
 
     public init(convoID: String, store: any ItemsStoreReading, api: any ItemsProviding, sync: any ItemsSyncing) {
         self.convoID = convoID; self.scope = .convo(convoID); self.store = store; self.api = api; self.sync = sync
@@ -121,7 +117,6 @@ public final class ItemsPanelViewModel {
             guard let stream = self?.store.itemsStream(scope: scope) else { return }
             for await items in stream {
                 guard let self, !Task.isCancelled else { return }
-                self.allItems = items
                 self.sections = Self.sections(from: items)
                 self.needsYouCount = self.sections.needsYou.count
             }
@@ -165,13 +160,11 @@ public final class ItemsPanelViewModel {
         else if target == reordered.count - 1 { change = ItemRankChange(position: "bottom") }
         else { change = ItemRankChange(after: reordered[target - 1].id, before: reordered[target + 1].id) }
         sections.tasks = reordered
-        if let idx = allItems.firstIndex(where: { $0.id == itemID }) { allItems[idx] = patchedMoved }
         do {
             _ = try await api.rankItem(id: itemID, change)
             await sync.refreshItem(id: itemID)
         } catch {
             sections.tasks = before
-            if let idx = allItems.firstIndex(where: { $0.id == itemID }) { allItems[idx] = moved }
             self.error = error.localizedDescription
         }
     }
