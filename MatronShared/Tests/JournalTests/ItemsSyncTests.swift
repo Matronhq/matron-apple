@@ -22,6 +22,13 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
     /// poison rejection while another (different item) in the same drain
     /// pass still succeeds (fix round 1, IMPORTANT #4).
     private var _commentErrorForItemID: [String: Error] = [:]
+    /// Fix wave, item G: when set, the NEXT `commentItem` call suspends on
+    /// `_gate` instead of returning immediately, so a test can call
+    /// `sync.stop()` while a drain is genuinely in flight (rather than
+    /// racing a real network call) and then release it to observe what
+    /// resumes.
+    private var _blockNextComment = false
+    private var _gate: CheckedContinuation<Void, Never>?
 
     var listResponses: [ItemsPage] {
         get { lock.withLock { _listResponses } }
@@ -48,6 +55,24 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
     var commentErrorForItemID: [String: Error] {
         get { lock.withLock { _commentErrorForItemID } }
         set { lock.withLock { _commentErrorForItemID = newValue } }
+    }
+    var blockNextComment: Bool {
+        get { lock.withLock { _blockNextComment } }
+        set { lock.withLock { _blockNextComment = newValue } }
+    }
+    /// True once a `commentItem` call is actually suspended on the gate —
+    /// lets a test wait for the in-flight call to truly be in-flight
+    /// before calling `stop()`, instead of racing a fixed sleep against
+    /// the actor hop.
+    var isGated: Bool { lock.withLock { _gate != nil } }
+    /// Resumes a `commentItem` call currently suspended on the gate, if
+    /// any. A no-op if nothing is waiting (e.g. called before the drain
+    /// actually reached the gated call).
+    func releaseGate() {
+        let cont = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            let c = _gate; _gate = nil; return c
+        }
+        cont?.resume()
     }
 
     func listItems(_ q: ItemsListQuery) async throws -> ItemsPage {
@@ -85,6 +110,14 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
     func updateItem(id: String, _ patch: ItemPatch) async throws -> TrackerItem { fatalError() }
     func commentItem(id: String, body: String, attachments: [TrackerAttachment], idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment) {
         try Task.checkCancellation()
+        let shouldGate = lock.withLock { () -> Bool in
+            guard _blockNextComment else { return false }
+            _blockNextComment = false
+            return true
+        }
+        if shouldGate {
+            await withCheckedContinuation { cont in lock.withLock { _gate = cont } }
+        }
         lock.withLock { _commentCalls.append((id, idempotencyKey ?? "")) }
         if let err = commentErrorForItemID[id] { throw err }
         if failComments { throw JournalAPIError.transport("offline") }
@@ -348,6 +381,49 @@ final class ItemsSyncTests: XCTestCase {
         try await waitUntil { try store.itemOutboxPending().isEmpty }
         XCTAssertEqual(api.commentCalls.map(\.0), ["it_bad", "it_good"], "the poisoned row is dropped, not retried, and does not block the row behind it")
         XCTAssertEqual(try store.item(id: "it_good")?.awaiting, .agent)
+    }
+
+    /// Fix wave, item A: `commentItem`'s response is kept locally
+    /// (`insertComments`) BEFORE the outbox row is deleted and before the
+    /// coalesced `refreshItem` GET that follows — so a reply is never
+    /// invisible just because that follow-up GET happened to fail.
+    /// `FakeItems.item(id:)` throws `.notFound` by default (no `detail`
+    /// entry populated for "it_1"), standing in for that failure.
+    func testCommentSurvivesEvenWhenFollowUpRefreshItemFails() async throws {
+        let api = FakeItems()
+        let (sync, store, _, _) = try make(api: api)
+        try store.itemOutboxInsert(ItemOutboxRecord(localID: "L1", itemID: "it_1", op: "comment", payloadJSON: #"{"body":"hello","attachments":[]}"#, createdAt: 0, attempts: 0, lastError: nil))
+        await sync.drainOutbox()
+        XCTAssertTrue(try store.itemOutboxPending().isEmpty, "the write itself succeeded, so the outbox row is gone")
+        let comments = try await store.dbQueue.read { db in try ItemCommentRecord.fetchAll(db) }.map(\.comment)
+        XCTAssertEqual(comments.map(\.id), ["ic_srv"], "the server-returned comment is kept locally even though the follow-up refreshItem GET failed")
+        XCTAssertEqual(try store.item(id: "it_1")?.title, "Q", "the item snapshot from commentItem's response is also upserted")
+    }
+
+    /// Fix wave, item G: a `stop()` that lands while a drain is genuinely
+    /// suspended mid-network-call must prevent that call's result from
+    /// ever reaching the store, and must not leave a retry scheduled
+    /// behind it.
+    func testStopAbortsInFlightDrainWithoutWriting() async throws {
+        let api = FakeItems()
+        let (sync, store, _, _) = try make(api: api, retryBase: 0.05)
+        try store.itemOutboxInsert(ItemOutboxRecord(localID: "L1", itemID: "it_1", op: "comment", payloadJSON: #"{"body":"x","attachments":[]}"#, createdAt: 0, attempts: 0, lastError: nil))
+        api.blockNextComment = true
+        let drainTask = Task { await sync.drainOutbox() }
+        try await waitUntil { api.isGated }
+        await sync.stop()
+        api.releaseGate()
+        _ = await drainTask.value
+
+        XCTAssertEqual(try store.itemOutboxPending().map(\.localID), ["L1"], "the row is untouched — neither deleted nor attempt-bumped")
+        XCTAssertNil(try store.item(id: "it_1"), "no store write happened after stop()")
+        let comments = try await store.dbQueue.read { db in try ItemCommentRecord.fetchCount(db) }
+        XCTAssertEqual(comments, 0)
+
+        // No retry task exists: wait past what the (fast, 0.05s-based)
+        // backoff would have been and confirm no second attempt fires.
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(api.commentCalls.count, 1, "no retry task exists after a stop() aborts the in-flight call")
     }
 
     private func waitUntil(_ cond: @escaping () throws -> Bool, timeout: TimeInterval = 2) async throws {

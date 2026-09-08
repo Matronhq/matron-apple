@@ -154,7 +154,7 @@ public struct ItemDetailView: View {
     private func commentView(_ c: TrackerComment) -> some View {
         if c.kind == .status {
             VStack(spacing: 2) {
-                Text(statusLine(c)).font(.caption).foregroundStyle(.secondary)
+                if let line = statusLine(c) { Text(line).font(.caption).foregroundStyle(.secondary) }
                 if !c.body.isEmpty { Text(c.body).font(.caption).foregroundStyle(.secondary).italic() }
             }.frame(maxWidth: .infinity)
         } else {
@@ -189,11 +189,29 @@ public struct ItemDetailView: View {
     /// Derives the centred status line from `statusTo` (never the raw body,
     /// per the tracker spec — the raw body only renders as a secondary line
     /// beneath when non-empty, handled by the caller).
-    private func statusLine(_ c: TrackerComment) -> String {
+    ///
+    /// Fix wave, item I: this used to say "reopened" for ANY status row
+    /// whose `to.state` wasn't `.closed` — including a pure awaiting-only
+    /// change (e.g. the agent handing an open item back to the user),
+    /// which was never a reopen at all. "Reopened" now only fires on an
+    /// actual closed→open transition; other non-closing changes describe
+    /// the awaiting change instead, and a status row that changed neither
+    /// (state nor awaiting) renders no line — `nil`, not empty-string, so
+    /// the caller can skip the row instead of showing a blank line above
+    /// a body it already renders separately.
+    private func statusLine(_ c: TrackerComment) -> String? {
         let who = c.author == .user ? "You" : "Agent"
         guard let to = c.statusTo else { return "\(who) updated the item" }
-        if to.state == .closed { return "\(who) closed this" + (to.resolution.map { " as \(ItemGlyph.label($0).lowercased())" } ?? "") }
-        return "\(who) reopened this"
+        if to.state == .closed {
+            return "\(who) closed this" + (to.resolution.map { " as \(ItemGlyph.label($0).lowercased())" } ?? "")
+        }
+        if c.statusFrom?.state == .closed, to.state == .open {
+            return "\(who) reopened this"
+        }
+        if let toAwaiting = to.awaiting, toAwaiting != c.statusFrom?.awaiting {
+            return toAwaiting == .agent ? "Now with the agent" : "Needs you"
+        }
+        return nil
     }
 
     /// A comment queued locally (offline outbox / in-flight send) that

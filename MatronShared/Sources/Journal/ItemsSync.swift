@@ -49,6 +49,16 @@ public actor ItemsSync {
     private var refetchAgain: Set<String> = []
     public private(set) var isSupported = true
     private var supportedContinuations: [UUID: AsyncStream<Bool>.Continuation] = [:]
+    /// Set by `stop()`, cleared by `start()`. Fix wave, item G: `stop()`
+    /// used to just cancel the marker/state/retry `Task`s and return —
+    /// anything already suspended mid-await inside `refresh`,
+    /// `refreshItemOnce` or `drainOnce` (a network call in flight, most
+    /// commonly) would resume once its `await` completed and go right on
+    /// writing to the store, racing whatever `stop()`'s caller does next
+    /// (a sign-out `wipe()`, most commonly). Every write site in those
+    /// three methods re-checks this flag immediately after its await,
+    /// before touching `store`.
+    private var stopped = false
 
     public init(api: any ItemsProviding, store: JournalStore,
                 markers: @escaping @Sendable () -> AsyncStream<(convoID: String, marker: ItemMarkerEvent)>,
@@ -74,6 +84,7 @@ public actor ItemsSync {
     }
 
     public func start() {
+        stopped = false
         guard markerTask == nil else { return }
         let markers = markers()
         markerTask = Task { [weak self] in
@@ -104,10 +115,24 @@ public actor ItemsSync {
         // race caused).
     }
 
-    public func stop() {
-        markerTask?.cancel(); markerTask = nil
-        stateTask?.cancel(); stateTask = nil
-        retryTask?.cancel(); retryTask = nil
+    /// `async` (fix wave, item G): cancelling the marker/state/retry
+    /// `Task`s alone let a suspended in-flight refresh/refetch/drain resume
+    /// after this returned and write to the store — a race with whatever
+    /// the caller does next (typically a sign-out wipe). Awaiting each
+    /// task's `.value` after cancelling it means `stop()` genuinely doesn't
+    /// return until nothing more will happen; combined with the `stopped`
+    /// checks inside `refresh`/`refreshItemOnce`/`drainOnce`, a suspended
+    /// await that resumes with cancellation still pending bails out before
+    /// touching the store instead of completing the write. Both app hosts'
+    /// `AppDependencies` teardowns already call this with `await`, and
+    /// `ItemsSyncing` (the protocol VMs depend on) doesn't expose `stop` at
+    /// all, so this is source-compatible.
+    public func stop() async {
+        stopped = true
+        let mt = markerTask; let st = stateTask; let rt = retryTask
+        markerTask = nil; stateTask = nil; retryTask = nil
+        mt?.cancel(); st?.cancel(); rt?.cancel()
+        await mt?.value; await st?.value; await rt?.value
     }
 
     public func refresh(scope: ItemsScope) async {
@@ -135,6 +160,7 @@ public actor ItemsSync {
         do {
             repeat {
                 let page = try await api.listItems(query)
+                guard !stopped else { return }
                 try store.upsertItems(page.items)
                 for i in page.items where newestSeen == nil || i.updatedAt > newestSeen! { newestSeen = i.updatedAt }
                 pageCount += 1
@@ -195,6 +221,7 @@ public actor ItemsSync {
     private func refreshItemOnce(id: String) async {
         do {
             let r = try await api.item(id: id)
+            guard !stopped else { return }
             try store.upsertItems([r.item])
             try store.replaceComments(itemID: id, r.comments)
             setSupported(true)
@@ -290,7 +317,11 @@ public actor ItemsSync {
         retryTask = nil
         // `stop()` may have landed during the actor hop; a cancelled retry
         // must not drain (it would burn an attempt and reschedule itself).
-        guard !Task.isCancelled else { return }
+        // `stopped` is the same check by another name (fix wave, item G) —
+        // `stop()` now cancels this Task too, but checking the flag
+        // directly here doesn't depend on that cancellation having already
+        // been observed by the time this actor-isolated call runs.
+        guard !Task.isCancelled, !stopped else { return }
         await drainOutbox()
     }
 
@@ -363,23 +394,37 @@ public actor ItemsSync {
         // unproven journal risks exactly the poison-row misclassification
         // #3b fixes for `.notFound` in the first place.
         guard isSupported else { return .paused }
+        guard !stopped else { return .clean }
         guard let rows = try? store.itemOutboxPending() else { return .clean }
         for row in rows {
+            guard !stopped else { return .clean }
             do {
                 switch row.op {
                 case "comment":
                     guard let itemID = row.itemID, let data = row.payloadJSON.data(using: .utf8),
                           let p = try? JSONDecoder().decode(CommentPayload.self, from: data) else { try store.itemOutboxDelete(localID: row.localID); continue }
                     let r = try await api.commentItem(id: itemID, body: p.body, attachments: p.attachments, idempotencyKey: row.localID)
-                    try store.itemOutboxDelete(localID: row.localID)
+                    guard !stopped else { return .clean }
+                    // Keep the posted comment locally BEFORE deleting the
+                    // outbox row and BEFORE the coalesced `refreshItem`
+                    // below (fix wave, item A): `refreshItem` is a plain
+                    // GET that can itself fail (offline blip, journal
+                    // hiccup) — if it does, the row is already gone from
+                    // the outbox, so without this the reply would be
+                    // invisible until the detail sheet is reopened.
+                    // `insertComments` is an upsert, not a replace, so it
+                    // can't race-delete anything `refreshItem` also wrote.
                     try store.upsertItems([r.item])
+                    try store.insertComments([r.comment])
+                    try store.itemOutboxDelete(localID: row.localID)
                     await refreshItem(id: itemID)
                 case "create":
                     guard let data = row.payloadJSON.data(using: .utf8), let p = try? JSONDecoder().decode(CreatePayload.self, from: data),
                           let kind = ItemKind(rawValue: p.kind) else { try store.itemOutboxDelete(localID: row.localID); continue }
                     let item = try await api.createItem(NewItem(kind: kind, title: p.title, body: p.body, attachments: p.attachments, convoID: p.convoID), idempotencyKey: row.localID)
-                    try store.itemOutboxDelete(localID: row.localID)
+                    guard !stopped else { return .clean }
                     try store.upsertItems([item])
+                    try store.itemOutboxDelete(localID: row.localID)
                 default:
                     try store.itemOutboxDelete(localID: row.localID)
                 }

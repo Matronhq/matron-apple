@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import SwiftUI
 import os
@@ -1961,25 +1960,14 @@ public final class ChatViewModel {
         // cache above serves the wrong attachment's bytes (Bugbot,
         // PR #138). The human-friendly basename is preserved for the
         // share/preview label; uniqueness lives in the parent directory.
-        let urlDigest = SHA256.hash(data: Data(mxcURL.absoluteString.utf8))
-            .prefix(8).map { String(format: "%02x", $0) }.joined()
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("matron-attachments", isDirectory: true)
-            .appendingPathComponent(urlDigest, isDirectory: true)
+        // Sanitisation (path-traversal, directory separators — the
+        // filename arrives from attacker-controllable Matrix event
+        // metadata) and the digest-namespaced write both live in
+        // `AttachmentTempFiles` (fix wave, item H) so the items-tracker
+        // hosts can reuse the exact same two mitigations for comment/
+        // create file attachments instead of re-deriving them.
         do {
-            try FileManager.default.createDirectory(
-                at: dir, withIntermediateDirectories: true
-            )
-            // Sanitise the filename: strip directory separators and
-            // parent-dir traversal so a malicious sender can't craft
-            // `../../.ssh/authorized_keys` to escape the temp dir. The
-            // filename arrives from Matrix event metadata, which is
-            // attacker-controllable. We keep the basename for human-
-            // friendly preview / share labels, falling back to a UUID
-            // if sanitisation produces an empty string.
-            let safeFilename = Self.sanitisedAttachmentFilename(filename)
-            let dest = dir.appendingPathComponent(safeFilename)
-            try data.write(to: dest, options: .atomic)
+            let dest = try AttachmentTempFiles.write(data, name: filename, blobRef: mxcURL.absoluteString)
             fileTempURLs[mxcURL] = dest
             return dest
         } catch {
@@ -2011,22 +1999,11 @@ public final class ChatViewModel {
     /// file by accident. Test seam: `internal` so
     /// `ChatViewModelTests` can assert the contract directly without
     /// rendering or hitting disk.
+    /// Delegates to `AttachmentTempFiles.sanitisedFilename` (fix wave, item
+    /// H) — kept as a thin wrapper, not removed, so `ChatViewModelTests`'s
+    /// existing internal-access test seam keeps working unchanged.
     static func sanitisedAttachmentFilename(_ raw: String) -> String {
-        // Last path component drops any leading directory tree the
-        // sender embedded — `Foundation.URL`-style normalisation
-        // collapses `..` / `.` segments along the way.
-        let trimmed = (raw as NSString).lastPathComponent
-        // Replace remaining separators (rare, but `:` on macOS
-        // historically and `\` on Windows-style senders) with `_`.
-        let cleaned = trimmed.replacingOccurrences(of: "/", with: "_")
-                              .replacingOccurrences(of: ":", with: "_")
-        // Reject empty or `.`/`..`-only strings — fall back to a UUID
-        // so the write always lands inside the attachments dir.
-        let stripped = cleaned.trimmingCharacters(in: .whitespaces)
-        if stripped.isEmpty || stripped == "." || stripped == ".." {
-            return UUID().uuidString
-        }
-        return stripped
+        AttachmentTempFiles.sanitisedFilename(raw)
     }
 
     // MARK: - Ask-user prompts (Phase 5 Task 11)

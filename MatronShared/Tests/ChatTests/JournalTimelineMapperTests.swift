@@ -206,6 +206,15 @@ final class JournalTimelineMapperTests: XCTestCase {
                      "convo_meta updates the conversation row, not the timeline")
     }
 
+    /// Fix wave, item E / Bugbot C1: an `item` marker event used to fall
+    /// through to the `default` branch and render as a grey "unsupported
+    /// event: item" row in both chat timelines — `ItemsSync` is the real
+    /// consumer (it triggers a refetch), not the timeline.
+    func testItemMarkerEventIsSkippedInTimeline() throws {
+        XCTAssertNil(map(event(6, type: "item", payload: ["item_id": "it_1", "num": 1, "kind": "task", "title": "T", "action": "created", "by": "agent"])),
+                     "item marker events carry no renderable content — ItemsSync consumes them, not the timeline")
+    }
+
     func testPromptWithOptions() throws {
         let item = try XCTUnwrap(map(event(3, type: "prompt", payload: [
             "question": "Deploy?",

@@ -12,6 +12,8 @@ public protocol ItemsStoreReading: Sendable {
     func itemStream(id: String) -> AsyncStream<TrackerItem?>
     func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]>
     func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]>
+    /// Every queued "create" outbox row, feeding `ItemsPanelViewModel.pendingCreates`.
+    func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]>
 }
 extension JournalStore: ItemsStoreReading {}
 
@@ -58,6 +60,29 @@ public final class ItemsPanelViewModel {
         public var isEmpty: Bool { needsYou.isEmpty && tasks.isEmpty && decisions.isEmpty && done.isEmpty }
     }
 
+    /// A local "create" outbox row that hasn't landed on the server yet
+    /// (fix wave, item C) — without this, an offline/in-flight create is
+    /// invisible: the create sheet dismisses and the row lives only in
+    /// `item_outbox` until the drain succeeds, with no on-screen trace in
+    /// the meantime.
+    public struct PendingItem: Equatable, Identifiable, Sendable {
+        public let id: String
+        public let kind: ItemKind
+        public let title: String
+        public let attempts: Int
+        public let lastError: String?
+        public init(id: String, kind: ItemKind, title: String, attempts: Int, lastError: String?) {
+            self.id = id; self.kind = kind; self.title = title; self.attempts = attempts; self.lastError = lastError
+        }
+    }
+
+    /// Matches `ItemsSync.CreatePayload`'s JSON shape (kind/title/body/
+    /// convoID/attachments) — a private type there, so this decodes the
+    /// same wire shape independently rather than reaching across files for
+    /// a `private` type. Only the fields this VM actually surfaces are
+    /// declared; unknown/absent extra keys are ignored by `Decodable`.
+    private struct PendingCreatePayload: Decodable { var kind: String; var title: String; var convoID: String }
+
     public let convoID: String
     public var scope: ItemsScope { didSet { if scope != oldValue { resubscribe() } } }
     public private(set) var sections = Sections()
@@ -67,12 +92,18 @@ public final class ItemsPanelViewModel {
     public private(set) var needsYouCount = 0
     public private(set) var isSupported = true
     public private(set) var isRefreshing = false
+    /// Creates still sitting in the local outbox, not yet confirmed by the
+    /// server — filtered to `convoID` when `scope` is `.convo`, unfiltered
+    /// when `scope` is `.all` (`scope` is always either `.convo(convoID)`
+    /// or `.all` — see `ItemsListView`'s scope picker).
+    public private(set) var pendingCreates: [PendingItem] = []
     public var error: String?
 
     private let store: any ItemsStoreReading
     private let api: any ItemsProviding
     private let sync: any ItemsSyncing
     private var itemsTask: Task<Void, Never>?
+    private var pendingCreatesTask: Task<Void, Never>?
     private var supportedTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
 
@@ -109,6 +140,7 @@ public final class ItemsPanelViewModel {
 
     public func stop() {
         itemsTask?.cancel(); itemsTask = nil
+        pendingCreatesTask?.cancel(); pendingCreatesTask = nil
         supportedTask?.cancel(); supportedTask = nil
         refreshTask?.cancel(); refreshTask = nil
     }
@@ -122,6 +154,21 @@ public final class ItemsPanelViewModel {
                 guard let self, !Task.isCancelled else { return }
                 self.sections = Self.sections(from: items)
                 self.needsYouCount = self.sections.needsYou.filter { $0.originConvoID == self.convoID }.count
+            }
+        }
+        pendingCreatesTask?.cancel()
+        let convoID = convoID
+        pendingCreatesTask = Task { [weak self] in
+            guard let stream = self?.store.itemOutboxCreatesStream() else { return }
+            for await rows in stream {
+                guard let self, !Task.isCancelled else { return }
+                self.pendingCreates = rows.compactMap { row in
+                    guard let data = row.payloadJSON.data(using: .utf8),
+                          let payload = try? JSONDecoder().decode(PendingCreatePayload.self, from: data),
+                          let kind = ItemKind(rawValue: payload.kind) else { return nil }
+                    if case .convo = scope, payload.convoID != convoID { return nil }
+                    return PendingItem(id: row.localID, kind: kind, title: payload.title, attempts: row.attempts, lastError: row.lastError)
+                }
             }
         }
         refreshTask?.cancel()

@@ -81,6 +81,13 @@ final class ItemsListSnapshotTests: XCTestCase {
             ItemRow(item: t("x1", num: 3, kind: .task, awaiting: nil, title: "Set up CI", state: .closed))
             ItemRow(item: t("t2", num: 14, kind: .task, awaiting: .agent, title: "Write the migration"), showsOrigin: "auth refactor")
             ItemRow(item: t("q2", num: 15, kind: .question, awaiting: .user, title: "Which cache TTL?", image: true), thumbnail: bitmapThumbnail)
+            // Pending "create" rows (fix wave, item C) — `List` doesn't
+            // populate rows in this harness (see the doc comment on
+            // `testPopulatedList`), so — same as the rest of this test —
+            // these are pinned directly in a plain `VStack`, not inside
+            // `ItemsListView`'s actual "Pending" section.
+            PendingItemRow(row: .init(id: "p1", kind: .task, title: "Draft a migration plan", isFailed: false, error: nil))
+            PendingItemRow(row: .init(id: "p2", kind: .question, title: "Which region for the new bucket?", isFailed: true, error: "offline"))
         }
         .frame(width: 360)
         .padding()

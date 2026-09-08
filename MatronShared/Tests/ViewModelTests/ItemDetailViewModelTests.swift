@@ -11,6 +11,7 @@ final class ItemDetailViewModelTests: XCTestCase {
         func itemStream(id: String) -> AsyncStream<TrackerItem?> { AsyncStream { self.itemCont = $0 } }
         func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]> { AsyncStream { self.commentsCont = $0 } }
         func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { $0.yield([]) } }
+        func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { _ in } }
     }
     private final class Sync: ItemsSyncing, @unchecked Sendable {
         var comments: [(String, String, [TrackerAttachment])] = []; var refetched: [String] = []
@@ -89,6 +90,50 @@ final class ItemDetailViewModelTests: XCTestCase {
         XCTAssertNotNil(vm.error)
         XCTAssertEqual(vm.draft, "keep me")
         XCTAssertTrue(sync.comments.isEmpty)
+    }
+
+    /// Fix wave, item B: attaching a file/photo must not post whatever's
+    /// sitting half-written in `draft`, and must not clear it.
+    func testSubmitAttachmentsLeavesDraftIntactAndEnqueuesEmptyBody() async {
+        let api = API(); let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        vm.draft = "still composing this"
+        let ok = await vm.submitAttachments([(Data([1]), "s.png", "image/png")])
+        XCTAssertTrue(ok)
+        XCTAssertEqual(api.uploads, ["image/png"])
+        XCTAssertEqual(sync.comments.first?.1, "", "attachment-only comment has an empty body, not the draft text")
+        XCTAssertEqual(sync.comments.first?.2.first?.blobRef, "blob-1")
+        XCTAssertEqual(vm.draft, "still composing this", "the in-progress draft is left alone")
+    }
+
+    /// Fix wave, item B: a voice note is an attachment-only comment — same
+    /// draft-preserving contract as `submitAttachments` directly.
+    func testSendVoiceNoteLeavesDraftIntact() async throws {
+        let api = API(); let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        vm.draft = "still composing this"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("v-\(UUID()).m4a")
+        try Data([0, 1, 2]).write(to: url)
+        await vm.sendVoiceNote(url: url)
+        XCTAssertEqual(sync.comments.first?.1, "")
+        XCTAssertEqual(vm.draft, "still composing this")
+    }
+
+    /// Fix wave, item F: an upload failure must not destroy the only copy
+    /// of the recording — the old `defer`-based cleanup deleted the temp
+    /// file unconditionally, so a failed upload both showed an error AND
+    /// left nothing to retry.
+    func testSendVoiceNoteUploadFailureKeepsFileAndSetsError() async throws {
+        let api = API(); let sync = Sync()
+        api.failUpload = true
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("v-\(UUID()).m4a")
+        try Data([0, 1, 2]).write(to: url)
+        await vm.sendVoiceNote(url: url)
+        XCTAssertNotNil(vm.error)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "the recording survives a failed upload")
+        XCTAssertTrue(sync.comments.isEmpty)
+        try? FileManager.default.removeItem(at: url)
     }
 
     func testCloseWithCommentPassesCommentThrough() async {

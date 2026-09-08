@@ -154,6 +154,18 @@ extension JournalStore {
         }
     }
 
+    /// Idempotent upsert (`save`, not `insert`) for one or more comments —
+    /// unlike `replaceComments`, this does NOT delete existing rows for the
+    /// affected item(s) first. Used by `ItemsSync`'s outbox drain to keep a
+    /// just-posted reply visible locally the instant the server accepts it,
+    /// without waiting on (or being erased by) the coalesced `refreshItem`
+    /// GET that follows — see the fix-round doc comment on `ItemsSync`'s
+    /// `drainOnce` comment case.
+    public func insertComments(_ comments: [TrackerComment]) throws {
+        guard !comments.isEmpty else { return }
+        try dbQueue.write { db in for c in comments { try ItemCommentRecord(c).save(db) } }
+    }
+
     public func item(id: String) throws -> TrackerItem? {
         try dbQueue.read { db in try ItemRecord.fetchOne(db, key: id)?.item }
     }
@@ -237,6 +249,17 @@ extension JournalStore {
     public func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]> {
         Self.stream(ValueObservation.tracking { db in
             try ItemOutboxRecord.filter(Column("item_id") == itemID).order(Column("created_at")).fetchAll(db)
+        }, in: dbQueue)
+    }
+
+    /// Every queued "create" outbox row (i.e. an item that only exists
+    /// locally, still waiting on the drain), ordered oldest-first. Feeds
+    /// `ItemsPanelViewModel.pendingCreates` (fix wave, item C) — the panel
+    /// decodes each row's payload JSON itself and filters by scope, since
+    /// this store-level stream has no notion of `ItemsScope`.
+    public func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]> {
+        Self.stream(ValueObservation.tracking { db in
+            try ItemOutboxRecord.filter(Column("op") == "create").order(Column("created_at")).fetchAll(db)
         }, in: dbQueue)
     }
     public func itemOutboxMarkAttempt(localID: String, error: String?) throws {

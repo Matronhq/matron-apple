@@ -39,6 +39,45 @@ final class JournalStoreItemsTests: XCTestCase {
         XCTAssertEqual(rows.map(\.id), ["ic_2"]); XCTAssertEqual(rows.first?.body, "b2")
     }
 
+    /// Fix wave, item A: `insertComments` is an upsert (`save`), not a
+    /// `replaceComments`-style delete-then-insert — it must leave existing
+    /// rows for the same item alone.
+    func testInsertCommentsUpsertsWithoutDeletingExisting() throws {
+        let store = try makeStore()
+        try store.upsertItems([item("it_1", num: 1)])
+        try store.replaceComments(itemID: "it_1", [TrackerComment(id: "ic_1", itemID: "it_1", author: .user, body: "a")])
+        try store.insertComments([TrackerComment(id: "ic_2", itemID: "it_1", author: .agent, body: "b")])
+        let rows = try store.dbQueue.read { db in try ItemCommentRecord.fetchAll(db) }
+        XCTAssertEqual(Set(rows.map(\.id)), ["ic_1", "ic_2"], "ic_1 survives — insertComments doesn't delete existing rows")
+
+        // Idempotent: inserting the same id again with new content upserts, not duplicates.
+        try store.insertComments([TrackerComment(id: "ic_2", itemID: "it_1", author: .agent, body: "b-edited")])
+        let rows2 = try store.dbQueue.read { db in try ItemCommentRecord.fetchAll(db) }
+        XCTAssertEqual(rows2.count, 2)
+        XCTAssertEqual(rows2.first { $0.id == "ic_2" }?.body, "b-edited")
+    }
+
+    /// Fix wave, item C: feeds `ItemsPanelViewModel.pendingCreates`. Each
+    /// insert is awaited-through one at a time (rather than firing both
+    /// writes before reading) — `ValueObservation` tracks the whole
+    /// `item_outbox` table region, so a "comment" row insert still
+    /// triggers a recomputation (and its own stream emission); asserting
+    /// on that emission too pins the "comment rows are filtered out"
+    /// behaviour, not just the final state.
+    func testItemOutboxCreatesStreamOnlyYieldsCreateRows() async throws {
+        let store = try makeStore()
+        let stream = store.itemOutboxCreatesStream()
+        var it = stream.makeAsyncIterator()
+        let first = await it.next()
+        XCTAssertEqual(first?.count, 0)
+        try store.itemOutboxInsert(ItemOutboxRecord(localID: "L1", itemID: "it_1", op: "comment", payloadJSON: "{}", createdAt: 1, attempts: 0, lastError: nil))
+        let afterComment = await it.next()
+        XCTAssertEqual(afterComment?.count, 0, "a comment-op row must not appear in the creates-only stream")
+        try store.itemOutboxInsert(ItemOutboxRecord(localID: "L2", itemID: nil, op: "create", payloadJSON: "{}", createdAt: 2, attempts: 0, lastError: nil))
+        let afterCreate = await it.next()
+        XCTAssertEqual(afterCreate?.map(\.localID), ["L2"], "only the create row is yielded")
+    }
+
     func testItemsStreamFiresOnUpsert() async throws {
         let store = try makeStore()
         let stream = store.itemsStream(scope: .convo("c1"))

@@ -5,10 +5,12 @@ import MatronJournal
 
 private final class FakeItemsStore: ItemsStoreReading, @unchecked Sendable {
     var cont: AsyncStream<[TrackerItem]>.Continuation?
+    var createsCont: AsyncStream<[ItemOutboxRecord]>.Continuation?
     func itemsStream(scope: ItemsScope) -> AsyncStream<[TrackerItem]> { AsyncStream { self.cont = $0 } }
     func itemStream(id: String) -> AsyncStream<TrackerItem?> { AsyncStream { _ in } }
     func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]> { AsyncStream { _ in } }
     func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { _ in } }
+    func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { self.createsCont = $0 } }
 }
 private final class FakeSync: ItemsSyncing, @unchecked Sendable {
     var refreshed: [ItemsScope] = []; var created: [NewItem] = []; var refetched: [String] = []
@@ -137,6 +139,38 @@ final class ItemsPanelViewModelTests: XCTestCase {
         store.cont?.yield([t("a", num: 1, rank: 1), t("b", num: 2, rank: 2)])
         try? await Task.sleep(nanoseconds: 50_000_000)
         XCTAssertEqual(vm.sections.tasks.map(\.id), ["a"], "stop() must cancel the store subscription")
+    }
+
+    /// Fix wave, item C: an outbox "create" row emission surfaces as a
+    /// `pendingCreates` entry, filtered to this VM's `convoID` when in
+    /// `.convo` scope.
+    func testPendingCreatesTrackOutboxCreateStream() async throws {
+        let store = FakeItemsStore(); let sync = FakeSync()
+        let vm = ItemsPanelViewModel(convoID: "c1", store: store, api: FakeAPI(), sync: sync)
+        vm.start()
+        try await waitUntil { store.createsCont != nil }
+        let mine = ItemOutboxRecord(localID: "L1", itemID: nil, op: "create",
+                                    payloadJSON: #"{"kind":"task","title":"Do X","body":"","convoID":"c1","attachments":[]}"#,
+                                    createdAt: 0, attempts: 0, lastError: nil)
+        let foreign = ItemOutboxRecord(localID: "L2", itemID: nil, op: "create",
+                                       payloadJSON: #"{"kind":"question","title":"Other chat","body":"","convoID":"c2","attachments":[]}"#,
+                                       createdAt: 1, attempts: 2, lastError: "offline")
+        store.createsCont?.yield([mine, foreign])
+        try await waitUntil { !vm.pendingCreates.isEmpty }
+        XCTAssertEqual(vm.pendingCreates.map(\.id), ["L1"], "convo scope filters to this VM's convoID")
+        XCTAssertEqual(vm.pendingCreates.first?.kind, .task)
+        XCTAssertEqual(vm.pendingCreates.first?.title, "Do X")
+        XCTAssertEqual(vm.pendingCreates.first?.attempts, 0)
+
+        // Switching scope resubscribes onto a fresh `itemOutboxCreatesStream()`
+        // call (a new AsyncStream, a new continuation) — re-yield onto it
+        // once the resubscription has actually happened.
+        vm.scope = .all
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        store.createsCont?.yield([mine, foreign])
+        try await waitUntil { vm.pendingCreates.count == 2 }
+        XCTAssertEqual(Set(vm.pendingCreates.map(\.id)), ["L1", "L2"], "all scope surfaces every pending create")
+        XCTAssertEqual(vm.pendingCreates.first { $0.id == "L2" }?.lastError, "offline")
     }
 
     func testIsSupportedFollowsSupportedStream() async throws {

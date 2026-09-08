@@ -88,10 +88,41 @@ public final class ItemDetailViewModel {
         await sync.enqueueComment(itemID: itemID, localID: UUID().uuidString, body: text, attachments: uploaded)
     }
 
+    /// "Attach a file/photo" — distinct from `submitComment(attachments:)`
+    /// (fix wave, item B): both hosts were calling `submitComment` for a
+    /// bare attachment action too, which posted whatever half-written text
+    /// happened to be sitting in `draft` as that attachment's comment body
+    /// and cleared it out from under the person still composing a reply.
+    /// This uploads and enqueues an attachment-only comment (body `""`)
+    /// without ever reading or clearing `draft`. `sendVoiceNote` is one
+    /// such caller — a voice note is always an attachment-only comment.
+    public func submitAttachments(_ attachments: [(data: Data, name: String, mime: String)]) async -> Bool {
+        guard !attachments.isEmpty else { return true }
+        isBusy = true
+        defer { isBusy = false }
+        var uploaded: [TrackerAttachment] = []
+        do {
+            for a in attachments {
+                let ref = try await api.uploadMedia(a.data, contentType: a.mime)
+                uploaded.append(TrackerAttachment(blobRef: ref, mime: a.mime, name: a.name, size: Int64(a.data.count)))
+            }
+        } catch {
+            self.error = "Couldn't upload an attachment: \(error.localizedDescription)"
+            return false
+        }
+        await sync.enqueueComment(itemID: itemID, localID: UUID().uuidString, body: "", attachments: uploaded)
+        return true
+    }
+
+    /// Deletes the recording file only once `submitAttachments` reports
+    /// the upload actually succeeded (fix wave, item F) — the previous
+    /// `defer`-based cleanup ran unconditionally, so an upload failure
+    /// both showed an error AND destroyed the only copy of the recording,
+    /// leaving nothing to retry.
     public func sendVoiceNote(url: URL) async {
-        defer { try? FileManager.default.removeItem(at: url) }
         guard let data = try? Data(contentsOf: url), !data.isEmpty else { error = "Voice note was empty."; return }
-        await submitComment(attachments: [(data, "voice-note.m4a", "audio/mp4")])
+        let ok = await submitAttachments([(data, "voice-note.m4a", "audio/mp4")])
+        if ok { try? FileManager.default.removeItem(at: url) }
     }
 
     public func close(resolution: ItemResolution, comment: String?) async {
