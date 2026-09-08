@@ -82,9 +82,11 @@ public final class ComposerViewModel {
     /// attachment path goes through `timeline`/`sendAttachments(_:caption:)`
     /// instead, since a filed task is never a chat message.
     private let itemsUpload: ((Data, String) async throws -> String)?
-    /// Transient confirmation shown after a successful `makeTask()`; the
-    /// view clears it a couple of seconds later.
-    public var lastFiledTaskNotice: String?
+    /// Transient confirmation shown after a successful `makeTask()`. The
+    /// VM owns its own 1.8s auto-clear timer (fix wave, item I1,
+    /// `showFiledTaskNotice()`/`noticeTask`) — views just render the
+    /// string, they don't set or clear it themselves.
+    public private(set) var lastFiledTaskNotice: String?
 
     /// Whether the journal this room is backed by actually supports the
     /// tracker (mirrors `ItemsPanelViewModel.isSupported`, fed by the same
@@ -93,7 +95,6 @@ public final class ComposerViewModel {
     /// `ItemsPanelViewModel`, so the pill doesn't flash hidden-then-shown
     /// on every fresh composer.
     public private(set) var itemsSupported = true
-    private var itemsSupportTask: Task<Void, Never>?
 
     /// Whether `makeTask()` would do anything — the pill's visibility gate.
     /// Requires the tracker feature (`items != nil`), that the journal
@@ -192,20 +193,55 @@ public final class ComposerViewModel {
         self.itemsUpload = itemsUpload
     }
 
-    /// Subscribes to `items.supportedStream()` to drive `itemsSupported`
-    /// (mirrors `ItemsPanelViewModel.start()`). No-op when the tracker
-    /// feature is absent (`items == nil`) or the subscription is already
-    /// running — call it as many times as the view appears; only the
-    /// first call does anything. `supportedStream()` is actor-isolated
-    /// (`ItemsSync` is an actor) hence `async`.
+    /// Monotonic token identifying the current tracker-support
+    /// subscription run; bumped by every `startItemsSupport()` call (fix
+    /// wave, item I4). Both composer views are cached VMs that can be
+    /// re-mounted before a stale predecessor's `onDisappear` fires — the
+    /// same remount hazard `ChatViewModel`/`ItemsPanelViewModel` guard
+    /// against with their own `observationGeneration`/`stop(ifGeneration:)`
+    /// pair. Recording the generation `startItemsSupport()` returns and
+    /// passing it to `stopItemsSupport(ifGeneration:)` means a stale
+    /// teardown can never cancel a successor's freshly-started
+    /// subscription.
+    public private(set) var itemsSupportGeneration = 0
+    private var itemsSupportTask: Task<Void, Never>?
+    /// The transient "Filed as a task" toast's own timer (fix wave, item
+    /// I1) — owned here, not the views, so `clearComposerAfterSend()`
+    /// (any subsequent `send()`/`makeTask()`) and a genuine
+    /// `stopItemsSupport()` teardown can both cancel it and clear the
+    /// notice together, instead of each view separately racing a
+    /// `.task { sleep }` against the VM's own state changes.
+    private var noticeTask: Task<Void, Never>?
+
+    /// (Re)starts the `items.supportedStream()` subscription —
+    /// unconditionally, mirroring `ItemsPanelViewModel.start()`: an
+    /// idempotent no-op-while-running shape (the fix-round-1 version of
+    /// this method) leaves a genuinely stopped VM frozen forever if
+    /// nothing ever calls this again, which is exactly the stale-
+    /// `onDisappear` hazard item I4 fixes. No-op beyond bumping the
+    /// generation when the tracker feature is absent (`items == nil`), so
+    /// callers can uniformly pass the return value to
+    /// `stopItemsSupport(ifGeneration:)` either way. `supportedStream()`
+    /// is actor-isolated (`ItemsSync` is an actor) hence `async`.
     ///
     /// There's no deinit-based cancellation here, matching
     /// `ChatViewModel`'s documented choice: a `@MainActor` class's
     /// `deinit` is never actor-isolated in Swift 6, so it can't safely
-    /// touch actor-isolated state. Views must call `stopItemsSupport()`
-    /// from their own teardown instead.
-    public func startItemsSupport() {
-        guard itemsSupportTask == nil, let items else { return }
+    /// touch actor-isolated state. Views must call
+    /// `stopItemsSupport(ifGeneration:)` from their own teardown instead.
+    ///
+    /// Returns the new generation for the caller to record and pass back
+    /// to `stopItemsSupport(ifGeneration:)` — this method has no `await`
+    /// before the generation is bumped, so (unlike `ChatViewModel.start()`,
+    /// which is `async` and documents recording the generation BEFORE
+    /// calling it to avoid a mid-await race) returning it directly here is
+    /// safe and simpler for callers.
+    @discardableResult
+    public func startItemsSupport() -> Int {
+        itemsSupportGeneration += 1
+        itemsSupportTask?.cancel()
+        itemsSupportTask = nil
+        guard let items else { return itemsSupportGeneration }
         itemsSupportTask = Task { [weak self] in
             let stream = await items.supportedStream()
             for await v in stream {
@@ -213,13 +249,44 @@ public final class ComposerViewModel {
                 self?.itemsSupported = v
             }
         }
+        return itemsSupportGeneration
     }
 
-    /// Cancels the subscription `startItemsSupport()` started. Safe to
-    /// call unconditionally (including when nothing was started).
+    /// Stops the subscription only if `generation` still identifies the
+    /// current run — a stale view's `onDisappear` (which can fire AFTER a
+    /// same-room successor's `startItemsSupport()`) becomes a no-op
+    /// instead of killing the fresh subscription. Mirrors
+    /// `ItemsPanelViewModel.stop(ifGeneration:)`.
+    public func stopItemsSupport(ifGeneration generation: Int) {
+        guard generation == itemsSupportGeneration else { return }
+        stopItemsSupport()
+    }
+
+    /// Unconditionally cancels the subscription AND clears any pending
+    /// "Filed as a task" toast (fix wave, item I1) — used for a genuine
+    /// teardown (sign-out, VM deinit path) where nothing should survive.
+    /// Safe to call even when nothing was started.
     public func stopItemsSupport() {
         itemsSupportTask?.cancel()
         itemsSupportTask = nil
+        lastFiledTaskNotice = nil
+        noticeTask?.cancel()
+        noticeTask = nil
+    }
+
+    /// Sets the transient "Filed as a task" confirmation and starts its
+    /// own 1.8s auto-clear timer (fix wave, item I1) — owned here so
+    /// `clearComposerAfterSend()`/`stopItemsSupport()` can cancel it from
+    /// one place instead of the views racing a `.task { sleep }` against
+    /// VM state they don't own.
+    private func showFiledTaskNotice() {
+        lastFiledTaskNotice = "Filed as a task"
+        noticeTask?.cancel()
+        noticeTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_800_000_000)
+            guard !Task.isCancelled else { return }
+            self?.lastFiledTaskNotice = nil
+        }
     }
 
     /// Whether the slash palette should be visible. True when the input is
@@ -504,11 +571,13 @@ public final class ComposerViewModel {
     /// `outgoingAttachmentJSON` in `JournalAPI+Items.swift`), so this path
     /// never touches `timeline`/`sendAttachments(_:caption:)` at all.
     ///
-    /// On success, clears the composer exactly the way `send()` does
-    /// (including forgetting the per-room draft) and sets
-    /// `lastFiledTaskNotice` for the view's transient confirmation. On an
-    /// upload failure, sets `sendError` and leaves the composer intact —
-    /// same recoverable shape as a failed `send()`.
+    /// Only clears the composer (and shows the notice) once
+    /// `items.enqueueCreate` reports the row is actually queued (fix
+    /// wave, item I3) — an upload failure OR a failed enqueue both set
+    /// `sendError` and leave the composer exactly as the user left it,
+    /// same recoverable shape as a failed `send()`. `isSending` covers
+    /// only the upload phase (fix wave, item I2) — see
+    /// `uploadStagedAttachmentsForTask()`'s comment for why.
     public func makeTask() async {
         guard let items, canMakeTask else { return }
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -528,47 +597,66 @@ public final class ComposerViewModel {
             title = String(title.prefix(200))
         }
 
-        isSending = true
-        defer { isSending = false }
+        guard let uploaded = await uploadStagedAttachmentsForTask() else { return }
 
-        var uploaded: [TrackerAttachment] = []
-        if !stagedAttachments.isEmpty {
-            guard let itemsUpload else {
-                sendError = "Attachments can't be filed as a task here."
-                return
-            }
-            do {
-                for attachment in stagedAttachments {
-                    let url = attachment.url
-                    // Off-main file read, same rationale as `sendAttachments`:
-                    // a multi-MB staged file read synchronously on the main
-                    // actor visibly froze the composer.
-                    let data = try await Task.detached(priority: .userInitiated) {
-                        try Data(contentsOf: url)
-                    }.value
-                    let blobRef = try await itemsUpload(data, attachment.mimeType)
-                    uploaded.append(TrackerAttachment(
-                        blobRef: blobRef, mime: attachment.mimeType,
-                        name: attachment.filename, size: Int64(attachment.sizeBytes)
-                    ))
-                }
-            } catch {
-                sendError = "Couldn't upload an attachment: \(error.localizedDescription)"
-                return
-            }
-        }
-
-        // Same clearing helper `send()` uses on success — see its comment
-        // on why this happens before the round-trip completes.
-        let staged = stagedAttachments
-        clearComposerAfterSend()
-        staged.forEach { $0.deleteStagedCopy() }
-
-        await items.enqueueCreate(
+        let queued = await items.enqueueCreate(
             localID: UUID().uuidString,
             NewItem(kind: .task, title: title, body: body, attachments: uploaded, convoID: roomID)
         )
-        lastFiledTaskNotice = "Filed as a task"
+        guard queued else {
+            // Nothing was cleared yet — the composer is still exactly as
+            // the user left it, so there's nothing to restore, only an
+            // error to surface.
+            sendError = "Couldn't file the task — try again."
+            return
+        }
+
+        // Same clearing helper `send()` uses on success — see its comment
+        // on why this happens before showing the confirmation.
+        let staged = stagedAttachments
+        clearComposerAfterSend()
+        staged.forEach { $0.deleteStagedCopy() }
+        showFiledTaskNotice()
+    }
+
+    /// Uploads every staged attachment through `itemsUpload` for
+    /// `makeTask()`, holding `isSending` only for this phase (fix wave,
+    /// item I2) — the pill's `!isSending` gate must not stay locked
+    /// across `enqueueCreate`'s now-detached outbox drain (a network
+    /// round-trip that can take seconds), only across the uploads this
+    /// call actually blocks on. Returns the uploaded `TrackerAttachment`s
+    /// (empty when there was nothing staged), or `nil` with `sendError`
+    /// already set on any failure — stops at the first failed upload,
+    /// mirroring `sendAttachments(_:caption:)`'s same policy for `send()`.
+    private func uploadStagedAttachmentsForTask() async -> [TrackerAttachment]? {
+        guard !stagedAttachments.isEmpty else { return [] }
+        guard let itemsUpload else {
+            sendError = "Attachments can't be filed as a task here."
+            return nil
+        }
+        isSending = true
+        defer { isSending = false }
+        var uploaded: [TrackerAttachment] = []
+        do {
+            for attachment in stagedAttachments {
+                let url = attachment.url
+                // Off-main file read, same rationale as `sendAttachments`:
+                // a multi-MB staged file read synchronously on the main
+                // actor visibly froze the composer.
+                let data = try await Task.detached(priority: .userInitiated) {
+                    try Data(contentsOf: url)
+                }.value
+                let blobRef = try await itemsUpload(data, attachment.mimeType)
+                uploaded.append(TrackerAttachment(
+                    blobRef: blobRef, mime: attachment.mimeType,
+                    name: attachment.filename, size: Int64(attachment.sizeBytes)
+                ))
+            }
+        } catch {
+            sendError = "Couldn't upload an attachment: \(error.localizedDescription)"
+            return nil
+        }
+        return uploaded
     }
 
     /// Puts the user's text back after a failed send — the optimistic clear
@@ -588,9 +676,13 @@ public final class ComposerViewModel {
     /// The optimistic post-action clear shared by `send()` and
     /// `makeTask()`: wipes the text, the tray, and the history/palette
     /// bookkeeping that goes with a fresh composer, and forgets the
-    /// per-room draft. Callers snapshot whatever they still need (the
-    /// pending text for `restoreInput`, the staged attachments to delete
-    /// their temp copies) BEFORE calling this — it clears both.
+    /// per-room draft. Also clears any pending "Filed as a task" toast
+    /// and cancels its timer (fix wave, item I1) — a chat `send()` right
+    /// after a `makeTask()` must retire that confirmation immediately
+    /// rather than let it linger over unrelated, newer composer state.
+    /// Callers snapshot whatever they still need (the pending text for
+    /// `restoreInput`, the staged attachments to delete their temp
+    /// copies) BEFORE calling this — it clears both.
     private func clearComposerAfterSend() {
         input = ""
         stagedAttachments = []
@@ -598,6 +690,9 @@ public final class ComposerViewModel {
         isNavigatingHistory = false
         folderSuggestionsSuppressedFor = nil
         ComposerDraftMemory.forget(roomID: roomID)
+        lastFiledTaskNotice = nil
+        noticeTask?.cancel()
+        noticeTask = nil
     }
 
     /// Uploads staged attachments in order, hanging the caption on the

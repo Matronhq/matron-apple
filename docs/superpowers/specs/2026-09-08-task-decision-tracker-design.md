@@ -368,8 +368,9 @@ field has non-whitespace text (or staged attachments), with the same fade
 and offset as the scroll-to-bottom button. Tapping it files a `task` item on
 the current conversation: title = first line (≤ 200 chars), body = the
 rest, attachments = staged attachments (uploaded first through the existing
-attachment path), then clears the composer. A brief "Filed #14" toast.
-Mac: ⌘⇧T. Never shown for the sub-chat composer in v1.
+attachment path), then clears the composer. A brief "Filed as a task" toast
+(the item's number isn't known yet at enqueue time). Mac: ⌘⇧T. Never shown
+for the sub-chat composer in v1.
 
 ### Inline cards
 

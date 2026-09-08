@@ -18,6 +18,12 @@ struct ComposerView: View {
     @State private var showPhotosPicker = false
     @State private var showFileImporter = false
     @State private var recorder = VoiceRecorder()
+    /// Fix wave, item I4: the generation `startItemsSupport()` returned
+    /// for THIS view instance's subscription — recorded so `onDisappear`
+    /// can pass it to `stopItemsSupport(ifGeneration:)`, which is a no-op
+    /// if a same-room successor view has already started a fresher
+    /// subscription (mirrors `MacChatView`'s `itemsVMStartedGeneration`).
+    @State private var itemsSupportGeneration = 0
 
     /// The text field's padding (all edges). Named so the single-line
     /// height below stays tied to it: if the padding changes, the
@@ -161,9 +167,11 @@ struct ComposerView: View {
             // Task 12: subscribe to whether this journal supports the
             // tracker at all — `canMakeTask` gates on it so the pill
             // never shows against a server that would reject the create.
-            // Idempotent: a re-appear (e.g. tab switch) calling this again
-            // is a no-op once the subscription is already running.
-            viewModel.startItemsSupport()
+            // `startItemsSupport()` always (re)starts (fix wave, item
+            // I4) — recording the generation it returns is what lets
+            // `onDisappear` tell "I'm the one who should stop this" apart
+            // from "a fresher successor view already took over".
+            itemsSupportGeneration = viewModel.startItemsSupport()
         }
         // Capture whatever is in the composer when this view leaves the
         // hierarchy (back-nav to chat list, sheet dismiss, etc.). Empty
@@ -175,7 +183,7 @@ struct ComposerView: View {
             // abort it (discarding the temp file) rather than letting the
             // mic keep capturing with nothing to stop or send it.
             recorder.cancel()
-            viewModel.stopItemsSupport()
+            viewModel.stopItemsSupport(ifGeneration: itemsSupportGeneration)
         }
     }
 
@@ -209,15 +217,16 @@ struct ComposerView: View {
                 if viewModel.canMakeTask && !viewModel.showPalette {
                     MakeTaskPill { Task { await viewModel.makeTask() } }
                 } else if let notice = viewModel.lastFiledTaskNotice {
+                    // Fix wave, item I1: the VM owns the auto-clear timer
+                    // (`showFiledTaskNotice()`/`noticeTask`) — this view
+                    // just renders whatever string is there, it doesn't
+                    // race its own `.task { sleep }` against VM state it
+                    // doesn't own.
                     Text(notice)
                         .font(.caption)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 4)
                         .background(.regularMaterial, in: Capsule())
-                        .task {
-                            try? await Task.sleep(nanoseconds: 1_800_000_000)
-                            viewModel.lastFiledTaskNotice = nil
-                        }
                 }
             }
             .alignmentGuide(.top) { $0[.bottom] + 8 }

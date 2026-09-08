@@ -256,17 +256,28 @@ public actor ItemsSync {
         await drainOutbox()
     }
 
-    public func enqueueCreate(localID: String, _ new: NewItem) async {
+    /// Inserts the outbox row and returns whether that insert succeeded
+    /// (fix wave, item I3) — `false` when stopped or the write throws.
+    /// The drain itself is kicked in the background, NOT awaited (fix
+    /// wave, item I2): the composer's "Make task" flow used to hold
+    /// `isSending` across this whole call, including the drain's network
+    /// round-trip, for a write that's already durable once the outbox row
+    /// lands. `drainOutbox()`'s own retry/backoff loop owns delivery from
+    /// here.
+    @discardableResult
+    public func enqueueCreate(localID: String, _ new: NewItem) async -> Bool {
         // Same race as `enqueueComment` above — see that guard's comment.
-        guard !stopped else { return }
+        guard !stopped else { return false }
         let payload = (try? String(data: JSONEncoder().encode(CreatePayload(kind: new.kind.rawValue, title: new.title, body: new.body, convoID: new.convoID, attachments: new.attachments)), encoding: .utf8)) ?? "{}"
         do {
             try store.itemOutboxInsert(ItemOutboxRecord(localID: localID, itemID: nil, op: "create", payloadJSON: payload,
                                                          createdAt: Int64(Date().timeIntervalSince1970 * 1000), attempts: 0, lastError: nil))
         } catch {
             Self.logger.error("enqueueCreate insert failed for \(localID, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return false
         }
-        await drainOutbox()
+        Task { [weak self] in await self?.drainOutbox() }
+        return true
     }
 
     public func drainOutbox() async {

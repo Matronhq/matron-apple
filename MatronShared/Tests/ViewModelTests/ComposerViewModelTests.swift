@@ -1402,16 +1402,42 @@ final class ComposerViewModelTests: XCTestCase {
 
     private final class FakeItemsSync: ItemsSyncing, @unchecked Sendable {
         var created: [NewItem] = []
+        /// Fix wave, item I3: `enqueueCreate`'s return value — `true`
+        /// (the default, matching the real `ItemsSync` on a healthy
+        /// insert) unless a test wants to pin `makeTask()`'s "insert
+        /// failed, don't clear the composer" path.
+        var enqueueCreateResult = true
         /// Live continuation for `supportedStream()`, captured on
         /// subscribe so a test can push further transitions after
         /// `startItemsSupport()` — mirrors the real `ItemsSync`, which
         /// yields the current value immediately then pushes future
         /// changes on the same continuation.
         var supportedContinuation: AsyncStream<Bool>.Continuation?
+        /// Fix wave, item I2: when set, the NEXT `enqueueCreate` call
+        /// suspends on `enqueueCreateGate` instead of returning
+        /// immediately, so a test can observe `ComposerViewModel.isSending`
+        /// having already cleared while the (fake) enqueue is still in
+        /// flight — mirrors `ItemsSyncTests.FakeItems`'s comment/create
+        /// gates.
+        var blockNextEnqueueCreate = false
+        private var enqueueCreateGate: CheckedContinuation<Void, Never>?
+        var isEnqueueCreateGated: Bool { enqueueCreateGate != nil }
+        func releaseEnqueueCreateGate() {
+            let cont = enqueueCreateGate
+            enqueueCreateGate = nil
+            cont?.resume()
+        }
         func refresh(scope: ItemsScope) async {}
         func refreshItem(id: String) async {}
         func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async {}
-        func enqueueCreate(localID: String, _ new: NewItem) async { created.append(new) }
+        func enqueueCreate(localID: String, _ new: NewItem) async -> Bool {
+            if blockNextEnqueueCreate {
+                blockNextEnqueueCreate = false
+                await withCheckedContinuation { cont in enqueueCreateGate = cont }
+            }
+            created.append(new)
+            return enqueueCreateResult
+        }
         // `ItemsSyncing.supportedStream()` is `async` (an actor-isolated
         // requirement — `ItemsSync.supportedStream()` is itself
         // actor-isolated, so the protocol requirement must be `async` for
@@ -1501,21 +1527,63 @@ final class ComposerViewModelTests: XCTestCase {
         XCTAssertTrue(vm.canMakeTask, "support coming back must re-show the pill")
     }
 
-    /// `startItemsSupport()` must be idempotent (both composer views call
-    /// it from `.task`, which can re-run on reappear) and
-    /// `stopItemsSupport()` must cancel cleanly even if nothing started
-    /// (a composer with no tracker feature, `items == nil`).
+    /// `startItemsSupport()` must be safe to call repeatedly (both
+    /// composer views call it from `.task`, which can re-run on reappear)
+    /// — fix wave, item I4 changed this from an idempotent no-op-while-
+    /// running shape to an unconditional (re)start every call, bumping
+    /// the generation each time. `stopItemsSupport()` (parameterless)
+    /// must also cancel cleanly even if nothing started (a composer with
+    /// no tracker feature, `items == nil`).
     @MainActor
-    func testStartItemsSupport_idempotent_stopSafeWithoutStart() async throws {
+    func testStartItemsSupport_repeatable_stopSafeWithoutStart() async throws {
         let sync = FakeItemsSync()
         let vm = ComposerViewModel(roomID: "c1", timeline: FakeTimelineService(), commands: [], items: sync)
-        vm.startItemsSupport()
-        vm.startItemsSupport()
+        let first = vm.startItemsSupport()
+        let second = vm.startItemsSupport()
+        XCTAssertEqual(second, first + 1, "every call bumps the generation, even back to back")
         try await waitUntil { vm.itemsSupported }
         vm.stopItemsSupport()
 
         let noItemsVM = ComposerViewModel(roomID: "c1", timeline: FakeTimelineService(), commands: [])
+        XCTAssertEqual(noItemsVM.startItemsSupport(), 1, "the generation still bumps even with no tracker feature")
         noItemsVM.stopItemsSupport()
+    }
+
+    /// Fix wave, item I4: a stale view's `onDisappear` (which can fire
+    /// AFTER a same-room successor view's `startItemsSupport()`, the same
+    /// SwiftUI remount hazard `ChatViewModel`/`ItemsPanelViewModel` guard
+    /// against) must not kill the fresh subscription — mirrors
+    /// `ItemsPanelViewModelTests.testStopIfGenerationGuardsAgainstStaleTeardown`,
+    /// including its technique of nulling the fake's shared continuation
+    /// between starts so the `waitUntil` unambiguously observes the
+    /// SECOND subscription's continuation.
+    @MainActor
+    func testStopItemsSupport_ifGeneration_staleCallLeavesFreshSubscriptionAlive() async throws {
+        let sync = FakeItemsSync()
+        let vm = ComposerViewModel(roomID: "c1", timeline: FakeTimelineService(), commands: [], items: sync)
+
+        let first = vm.startItemsSupport()
+        try await waitUntil { sync.supportedContinuation != nil }
+
+        sync.supportedContinuation = nil
+        let second = vm.startItemsSupport()
+        XCTAssertNotEqual(first, second)
+        try await waitUntil { sync.supportedContinuation != nil }
+
+        // A stale surface's teardown (still holding the FIRST generation)
+        // must not cancel the subscription the second startItemsSupport()
+        // just began.
+        vm.stopItemsSupport(ifGeneration: first)
+        sync.supportedContinuation?.yield(false)
+        try await waitUntil { vm.itemsSupported == false }
+
+        // The CURRENT generation's stop, by contrast, actually cancels
+        // it: a later push must no longer move `itemsSupported`.
+        vm.stopItemsSupport(ifGeneration: second)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        sync.supportedContinuation?.yield(true)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(vm.itemsSupported, false, "a matching-generation stop cancels the subscription")
     }
 
     /// Controller ruling 2 (part two): a bare slash-command draft is a
@@ -1589,6 +1657,146 @@ final class ComposerViewModelTests: XCTestCase {
             XCTAssertTrue(FileManager.default.fileExists(atPath: attachment.url.path),
                           "the staged temp copy must not be deleted when the file was never filed")
         }
+    }
+
+    /// Fix wave, item I3: `enqueueCreate` reporting failure (the outbox
+    /// insert itself didn't land) must leave the composer exactly as the
+    /// user left it — nothing was cleared yet at that point in
+    /// `makeTask()` — and surface a distinct error, not silently drop the
+    /// draft.
+    @MainActor
+    func testMakeTask_enqueueCreateFailure_leavesComposerIntact() async {
+        let sync = FakeItemsSync()
+        sync.enqueueCreateResult = false
+        let vm = ComposerViewModel(roomID: "c1", timeline: FakeTimelineService(), commands: [],
+                                   items: sync, itemsUpload: { _, _ in "blob" })
+        vm.input = "Refactor auth\nkeep the public API"
+
+        await vm.makeTask()
+
+        XCTAssertEqual(vm.input, "Refactor auth\nkeep the public API", "nothing was cleared — the insert never landed")
+        XCTAssertEqual(vm.sendError, "Couldn't file the task — try again.")
+        XCTAssertNil(vm.lastFiledTaskNotice, "a failed enqueue must never show the success toast")
+    }
+
+    /// Fix wave, item I2: `isSending` must clear once the uploads finish
+    /// — BEFORE `items.enqueueCreate` resolves, not after — so the pill's
+    /// `!isSending` gate doesn't stay locked across what's now a
+    /// background-drained enqueue. Proven by gating the fake's
+    /// `enqueueCreate` open and observing `isSending` already `false`
+    /// while that call is still suspended.
+    @MainActor
+    func testMakeTask_isSendingClearsBeforeEnqueueCreateResolves() async throws {
+        let url = try makeTempFile(named: "shot.png")
+        let sync = FakeItemsSync()
+        sync.blockNextEnqueueCreate = true
+        let vm = ComposerViewModel(roomID: "c1", timeline: FakeTimelineService(), commands: [],
+                                   items: sync, itemsUpload: { _, _ in "blob" })
+        await vm.attachFiles([url])
+        vm.input = "ship this"
+
+        let task = Task { await vm.makeTask() }
+        try await waitUntil { sync.isEnqueueCreateGated }
+        XCTAssertFalse(vm.isSending, "the upload phase is over — isSending must not still be held across the enqueue")
+        sync.releaseEnqueueCreateGate()
+        await task.value
+        XCTAssertFalse(vm.isSending)
+    }
+
+    /// Fix wave, item I1: the VM owns the "Filed as a task" toast's
+    /// 1.8s auto-clear timer — this pins the timer actually firing (a
+    /// real-time wait, since the duration isn't injectable) rather than
+    /// relying on a view's own `.task { sleep }`, which is what used to
+    /// own this and raced the VM's state independently.
+    @MainActor
+    func testFiledTaskNotice_clearsAfterItsOwnTimer() async {
+        let sync = FakeItemsSync()
+        let vm = ComposerViewModel(roomID: "c1", timeline: FakeTimelineService(), commands: [],
+                                   items: sync, itemsUpload: { _, _ in "blob" })
+        vm.input = "ship this"
+        await vm.makeTask()
+        XCTAssertEqual(vm.lastFiledTaskNotice, "Filed as a task")
+
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        XCTAssertNil(vm.lastFiledTaskNotice, "the VM's own timer must clear the notice without any view involvement")
+    }
+
+    /// Fix wave, item I1: a chat `send()` right after a `makeTask()` must
+    /// retire the "Filed as a task" toast immediately via
+    /// `clearComposerAfterSend()`, not leave it lingering until its own
+    /// timer fires over unrelated, newer composer state.
+    @MainActor
+    func testFiledTaskNotice_clearedImmediatelyByASubsequentSend() async {
+        let sync = FakeItemsSync()
+        let fake = FakeTimelineService()
+        let vm = ComposerViewModel(roomID: "c1", timeline: fake, commands: [],
+                                   items: sync, itemsUpload: { _, _ in "blob" })
+        vm.input = "ship this"
+        await vm.makeTask()
+        XCTAssertEqual(vm.lastFiledTaskNotice, "Filed as a task")
+
+        vm.input = "a real chat message"
+        await vm.send()
+        XCTAssertNil(vm.lastFiledTaskNotice, "send()'s clearComposerAfterSend() must retire a pending toast immediately")
+        XCTAssertEqual(fake.sentText, ["a real chat message"])
+    }
+
+    /// Fix wave, minor (d): `makeTask()` must never touch the chat send
+    /// path at all — a filed task is not a message. `send()`/`sendImage`/
+    /// `sendFile` are the only ways `FakeTimelineService` records
+    /// anything, so all three staying empty is the whole assertion.
+    @MainActor
+    func testMakeTask_sendsNothingThroughTheTimelineService() async throws {
+        let url = try makeTempFile(named: "shot.png")
+        let fake = FakeTimelineService()
+        let sync = FakeItemsSync()
+        let vm = ComposerViewModel(roomID: "c1", timeline: fake, commands: [],
+                                   items: sync, itemsUpload: { _, _ in "blob" })
+        await vm.attachFiles([url])
+        vm.input = "ship this"
+
+        await vm.makeTask()
+
+        XCTAssertTrue(fake.sentText.isEmpty)
+        XCTAssertTrue(fake.sentImages.isEmpty)
+        XCTAssertTrue(fake.sentFiles.isEmpty)
+    }
+
+    /// Fix wave, minor (d): an attachments-only "task" (no text at all)
+    /// falls back to the first attachment's filename as the title —
+    /// otherwise it would file with an empty title.
+    @MainActor
+    func testMakeTask_attachmentsOnly_titleFallsBackToFilename() async throws {
+        let url = try makeTempFile(named: "screenshot.png")
+        let sync = FakeItemsSync()
+        let vm = ComposerViewModel(roomID: "c1", timeline: FakeTimelineService(), commands: [],
+                                   items: sync, itemsUpload: { _, _ in "blob" })
+        await vm.attachFiles([url])
+        XCTAssertTrue(vm.canMakeTask, "an attachment alone is a perfectly good task, same as canSend")
+
+        await vm.makeTask()
+
+        XCTAssertEqual(sync.created.first?.title, "screenshot.png")
+        XCTAssertEqual(sync.created.first?.body, "")
+    }
+
+    /// Fix wave, minor (d): a successful `makeTask()` forgets the per-room
+    /// draft, exactly like a successful `send()` — otherwise re-opening
+    /// the room would restore text that was already filed as a task.
+    @MainActor
+    func testMakeTask_forgetsDraftMemoryOnSuccess() async {
+        ComposerDraftMemory._resetForTesting()
+        let sync = FakeItemsSync()
+        let vm = ComposerViewModel(roomID: "!room:s", timeline: FakeTimelineService(), commands: [],
+                                   items: sync, itemsUpload: { _, _ in "blob" })
+        vm.input = "file me"
+        ComposerDraftMemory.store(roomID: "!room:s", text: "file me")
+        XCTAssertEqual(ComposerDraftMemory.retrieve(roomID: "!room:s"), "file me")
+
+        await vm.makeTask()
+
+        XCTAssertNil(ComposerDraftMemory.retrieve(roomID: "!room:s"),
+                     "a filed task must not leave a ghost draft behind for the next room visit")
     }
 }
 

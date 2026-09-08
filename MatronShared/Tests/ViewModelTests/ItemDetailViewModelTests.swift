@@ -18,7 +18,7 @@ final class ItemDetailViewModelTests: XCTestCase {
         func refresh(scope: ItemsScope) async {}
         func refreshItem(id: String) async { refetched.append(id) }
         func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async { comments.append((itemID, body, attachments)) }
-        func enqueueCreate(localID: String, _ new: NewItem) async {}
+        func enqueueCreate(localID: String, _ new: NewItem) async -> Bool { true }
         func supportedStream() async -> AsyncStream<Bool> { AsyncStream { $0.yield(true) } }
     }
     private final class API: ItemsProviding, @unchecked Sendable {

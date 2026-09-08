@@ -28,6 +28,12 @@ struct MacComposerView: View {
     /// it can re-claim the bus when that window becomes key.
     @State private var voiceComposerID = UUID()
     @State private var hostWindow: NSWindow?
+    /// Fix wave, item I4: the generation `startItemsSupport()` returned
+    /// for THIS view instance's subscription — recorded so `onDisappear`
+    /// can pass it to `stopItemsSupport(ifGeneration:)`, which is a no-op
+    /// if a same-room successor view has already started a fresher
+    /// subscription (mirrors `MacChatView`'s `itemsVMStartedGeneration`).
+    @State private var itemsSupportGeneration = 0
 
     /// Placeholder shown in the empty composer — drawn as a SwiftUI overlay,
     /// since `NSTextView` has no placeholder of its own.
@@ -137,15 +143,16 @@ struct MacComposerView: View {
                     // could ever qualify at once the palette wins.
                     MakeTaskPill { Task { await viewModel.makeTask() } }
                 } else if let notice = viewModel.lastFiledTaskNotice {
+                    // Fix wave, item I1: the VM owns the auto-clear timer
+                    // (`showFiledTaskNotice()`/`noticeTask`) — this view
+                    // just renders whatever string is there, it doesn't
+                    // race its own `.task { sleep }` against VM state it
+                    // doesn't own.
                     Text(notice)
                         .font(.caption)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 4)
                         .background(.regularMaterial, in: Capsule())
-                        .task {
-                            try? await Task.sleep(nanoseconds: 1_800_000_000)
-                            viewModel.lastFiledTaskNotice = nil
-                        }
                 }
             }
             .alignmentGuide(.top) { $0[.bottom] + 4 }
@@ -165,9 +172,11 @@ struct MacComposerView: View {
             // Task 12: subscribe to whether this journal supports the
             // tracker at all — `canMakeTask` gates on it so the pill
             // never shows against a server that would reject the create.
-            // Idempotent: a re-appear (sidebar reselect) calling this
-            // again is a no-op once the subscription is already running.
-            viewModel.startItemsSupport()
+            // `startItemsSupport()` always (re)starts (fix wave, item
+            // I4) — recording the generation it returns is what lets
+            // `onDisappear` tell "I'm the one who should stop this" apart
+            // from "a fresher successor view already took over".
+            itemsSupportGeneration = viewModel.startItemsSupport()
         }
         // Capture whatever is in the composer when this view leaves the
         // hierarchy (sidebar swap, window close, etc.). Empty input
@@ -188,7 +197,7 @@ struct MacComposerView: View {
             if case .recording = recorder.state { voiceBus?.setRecording(voiceComposerID, start: nil) }
             recorder.cancel()
             voiceBus?.release(voiceComposerID)
-            viewModel.stopItemsSupport()
+            viewModel.stopItemsSupport(ifGeneration: itemsSupportGeneration)
         }
         // Claimed once the window is known, and only if that window is key
         // (or nothing holds the bus): a composer remounting in a background

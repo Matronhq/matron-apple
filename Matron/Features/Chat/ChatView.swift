@@ -220,7 +220,16 @@ struct ChatView: View {
     /// Tapping an inline `.itemMarker` card opens the tracker drawer
     /// straight to that item, rather than making the user open the
     /// drawer and find it themselves.
+    ///
+    /// Guarded on `itemsVM` existing (fix wave, minor b): the VM is
+    /// created lazily in the outer `.task` once `deps`/`session` are
+    /// ready, so a marker tap landing before that (a cold app launch
+    /// deep-linking straight into a room, say) would otherwise flip
+    /// `showItems` open onto a drawer with nothing to show — the sheet's
+    /// own `if let itemsVM, let session` guard (~line 1221) would then
+    /// just render nothing behind a dismiss button instead of the item.
     private func openItem(_ itemID: String) {
+        guard itemsVM != nil else { return }
         itemsPath = [itemID]
         showItems = true
     }

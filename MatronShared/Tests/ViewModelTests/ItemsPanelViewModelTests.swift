@@ -19,7 +19,7 @@ private final class FakeSync: ItemsSyncing, @unchecked Sendable {
     func refresh(scope: ItemsScope) async { refreshed.append(scope) }
     func refreshItem(id: String) async { refetched.append(id) }
     func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async {}
-    func enqueueCreate(localID: String, _ new: NewItem) async { created.append(new) }
+    func enqueueCreate(localID: String, _ new: NewItem) async -> Bool { created.append(new); return true }
     func supportedStream() async -> AsyncStream<Bool> {
         let values = supportedValues
         return AsyncStream { c in for v in values { c.yield(v) }; c.finish() }
