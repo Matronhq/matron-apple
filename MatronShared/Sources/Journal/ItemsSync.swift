@@ -118,12 +118,20 @@ public actor ItemsSync {
         if let mark = try? store.itemsWatermark(scope: scope) { query.since = mark.addingTimeInterval(-1) }
         // Newest `updated_at` across every page actually fetched this run.
         // Persisted as the new watermark ONLY if the whole loop completes
-        // without throwing (see the `catch` below) — advancing it on a
-        // partial run would let a later refresh believe it already has
-        // data it never actually fetched, permanently skipping the gap.
+        // without throwing AND without truncating (see `truncated` below)
+        // — advancing it on a partial run would let a later refresh
+        // believe it already has data it never actually fetched,
+        // permanently skipping the gap.
         var newestSeen: Date?
         var seenCursors: Set<String> = []
         var pageCount = 0
+        // Set by either bail-out branch below (fix round 2, IMPORTANT #2):
+        // both the repeated-cursor guard and the page cap fall out through
+        // the ordinary "no more cursor" path, which — before this flag —
+        // still looked like a complete run to the watermark-advance check
+        // that follows the loop, silently reopening the DESC-ordered older
+        // tail as permanently skipped.
+        var truncated = false
         do {
             repeat {
                 let page = try await api.listItems(query)
@@ -132,10 +140,12 @@ public actor ItemsSync {
                 pageCount += 1
                 if let cursor = page.nextCursor, seenCursors.contains(cursor) {
                     Self.logger.error("refresh(\(String(describing: scope), privacy: .public)): nextCursor repeated (\(cursor, privacy: .public)) — stopping pagination")
+                    truncated = true
                     query.cursor = nil
                 } else if pageCount >= Self.maxPages {
                     if page.nextCursor != nil {
                         Self.logger.error("refresh(\(String(describing: scope), privacy: .public)): hit \(Self.maxPages, privacy: .public)-page cap — stopping pagination")
+                        truncated = true
                     }
                     query.cursor = nil
                 } else {
@@ -143,7 +153,7 @@ public actor ItemsSync {
                     query.cursor = page.nextCursor
                 }
             } while query.cursor != nil
-            if let newestSeen {
+            if let newestSeen, !truncated {
                 do {
                     try store.setItemsWatermark(newestSeen, scope: scope)
                 } catch {
@@ -219,14 +229,25 @@ public actor ItemsSync {
         defer { draining = false }
         repeat {
             drainRequested = false
-            if let attempts = await drainOnce() {
+            switch await drainOnce() {
+            case .clean:
+                break // falls through to the `while drainRequested` check below
+            case .retry(let attempts):
                 // Stopped early on a retryable failure: schedule the
                 // backoff retry and stop, even if `drainRequested` got set
                 // while we were mid-attempt (e.g. another caller kicked
                 // `drainOutbox()` during the same failing network call) —
                 // retrying instantly would just fail the same way again.
                 scheduleRetry(afterAttempts: attempts)
-                break
+                return
+            case .paused:
+                // Auth lost, or the routes aren't proven to exist yet
+                // (fix round 2, IMPORTANT #3): stop entirely. No backoff
+                // timer — a successful `refresh` (proving support) or a
+                // fresh sign-in is what unblocks this, not a clock. Also
+                // deliberately does NOT honor `drainRequested`: looping
+                // again here would just hit the same pause immediately.
+                return
             }
         } while drainRequested
     }
@@ -236,34 +257,96 @@ public actor ItemsSync {
         retryTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(max(delay, 0) * 1_000_000_000))
             guard let self, !Task.isCancelled else { return }
-            await self.drainOutbox()
+            await self.retryFired()
         }
     }
 
-    /// `JournalAPIError` cases that mean "this exact request can never
-    /// succeed" (a poison row) vs. "try again later" (offline / transient
-    /// server trouble). Any other `Error` (a decode failure, an unexpected
-    /// throw) is treated as retryable — the safe default for something we
-    /// don't recognize is to not silently drop a user's data.
-    private func isRetryable(_ error: Error) -> Bool {
-        guard let apiError = error as? JournalAPIError else { return true }
+    /// Runs on the actor when the backoff timer fires. Clears `retryTask`
+    /// to `nil` BEFORE calling `drainOutbox()` (fix round 2, CRITICAL #1):
+    /// `drainOutbox()` unconditionally cancels whatever `retryTask`
+    /// currently holds, on the theory that any fresh trigger supersedes a
+    /// pending backoff. Without this indirection, the firing task WAS that
+    /// `retryTask` — calling `drainOutbox()` directly from inside it made
+    /// the drain cancel its own currently-running `Task`, so every network
+    /// call inside made `URLSession` throw `CancellationError` immediately
+    /// (mapped to a retryable `.transport` failure), which scheduled
+    /// another retry that self-cancelled the same way — attempts inflated
+    /// forever and no retry ever actually delivered.
+    private func retryFired() async {
+        retryTask = nil
+        await drainOutbox()
+    }
+
+    /// How a failed outbox request should be handled. Distinct from a
+    /// simple retryable/non-retryable bool (fix round 2, IMPORTANT #3):
+    /// auth/support loss needs a third behavior — leave the row alone and
+    /// stop, rather than either deleting it (poison) or bumping its
+    /// attempt count and scheduling a timed retry (retryable).
+    private enum FailureDisposition {
+        /// Transient (offline, 5xx, 408/429): mark the attempt, stop the
+        /// pass, and let the backoff timer retry it.
+        case retryable
+        /// This exact request can never succeed (409, other 4xx): drop the
+        /// row and keep draining the rest of the queue.
+        case poison
+        /// The device's session/credentials were rejected: leave the row
+        /// queued untouched (no delete, no attempt bump) and stop the pass
+        /// without scheduling a backoff — `wipeOutbox()` on sign-out clears
+        /// these rows, and a fresh sign-in's `.running` drains them if they
+        /// survive.
+        case pause
+    }
+
+    /// `JournalAPIError` cases classified per `FailureDisposition`. Any
+    /// other `Error` (a decode failure, an unexpected throw) is treated as
+    /// retryable — the safe default for something we don't recognize is to
+    /// not silently drop or freeze a user's data.
+    private func disposition(for error: Error) -> FailureDisposition {
+        guard let apiError = error as? JournalAPIError else { return .retryable }
         switch apiError {
-        case .notFound, .conflict, .forbidden, .unauthenticated, .badCredentials:
-            return false
+        case .unauthenticated, .badCredentials, .forbidden:
+            // 401/403-credentials cases (`JournalAPI.swift` maps HTTP 401
+            // → `.unauthenticated` and 403 → `.forbidden`/`.badCredentials`
+            // before this ever sees a raw `.http` status) — a lost or
+            // rejected session, not a permanently-bad request.
+            return .pause
+        case .conflict:
+            return .poison
+        case .notFound:
+            // The journal never deletes items server-side (fix round 2,
+            // IMPORTANT #3b) — a 404 on a write is far likelier "this
+            // journal doesn't have the tracker routes yet" than "the item
+            // was deleted out from under us". Retryable: `refresh` catching
+            // its own `.notFound` is what actually flips `isSupported`
+            // false and pauses the queue (see the `drainOnce` guard).
+            return .retryable
         case .http(let status, _):
-            if status == 408 || status == 429 { return true }
-            return !(400...499).contains(status)
+            if status == 408 || status == 429 { return .retryable }
+            return (400...499).contains(status) ? .poison : .retryable
         case .lockedOut, .rateLimited, .transport:
-            return true
+            return .retryable
         }
     }
 
-    /// Returns the failed row's post-mark attempt count if it stopped early
-    /// on a retryable failure, or `nil` if every pending row was either
-    /// applied or dropped as poison (a non-retryable rejection) — in both
-    /// of the `nil` sub-cases the whole pass completed.
-    private func drainOnce() async -> Int? {
-        guard let rows = try? store.itemOutboxPending() else { return nil }
+    private enum DrainOutcome {
+        /// Every pending row was either applied or dropped as poison — the
+        /// whole pass completed.
+        case clean
+        /// Stopped early on a retryable failure; carries the failed row's
+        /// post-mark attempt count for the backoff calculation.
+        case retry(attempts: Int)
+        /// Stopped early because the routes aren't proven to exist yet
+        /// (`!isSupported`) or a request was rejected on auth grounds.
+        case paused
+    }
+
+    private func drainOnce() async -> DrainOutcome {
+        // Rows wait until a `refresh` proves the tracker routes exist on
+        // this journal (fix round 2, IMPORTANT #3a) — draining against an
+        // unproven journal risks exactly the poison-row misclassification
+        // #3b fixes for `.notFound` in the first place.
+        guard isSupported else { return .paused }
+        guard let rows = try? store.itemOutboxPending() else { return .clean }
         for row in rows {
             do {
                 switch row.op {
@@ -284,7 +367,8 @@ public actor ItemsSync {
                     try store.itemOutboxDelete(localID: row.localID)
                 }
             } catch {
-                if isRetryable(error) {
+                switch disposition(for: error) {
+                case .retryable:
                     do {
                         try store.itemOutboxMarkAttempt(localID: row.localID, error: error.localizedDescription)
                     } catch let markError {
@@ -293,19 +377,23 @@ public actor ItemsSync {
                     // Stop at the first retryable failure: the rest will
                     // fail the same way (offline) and order matters for
                     // comments on one item.
-                    return row.attempts + 1
-                }
-                // Poison row: a non-retryable rejection (404, 409, 4xx)
-                // will never succeed on retry — drop it and keep draining
-                // the rest of the queue instead of blocking behind it.
-                Self.logger.error("outbox row \(row.localID, privacy: .public) rejected non-retryably (\(error.localizedDescription, privacy: .public)) — dropping")
-                do {
-                    try store.itemOutboxDelete(localID: row.localID)
-                } catch let delError {
-                    Self.logger.error("itemOutboxDelete failed for poisoned row \(row.localID, privacy: .public): \(delError.localizedDescription, privacy: .public)")
+                    return .retry(attempts: row.attempts + 1)
+                case .poison:
+                    // A non-retryable rejection (409, other 4xx) will never
+                    // succeed on retry — drop it and keep draining the rest
+                    // of the queue instead of blocking behind it.
+                    Self.logger.error("outbox row \(row.localID, privacy: .public) rejected non-retryably (\(error.localizedDescription, privacy: .public)) — dropping")
+                    do {
+                        try store.itemOutboxDelete(localID: row.localID)
+                    } catch let delError {
+                        Self.logger.error("itemOutboxDelete failed for poisoned row \(row.localID, privacy: .public): \(delError.localizedDescription, privacy: .public)")
+                    }
+                case .pause:
+                    Self.logger.notice("outbox row \(row.localID, privacy: .public) paused (auth/session rejected): \(error.localizedDescription, privacy: .public) — left queued")
+                    return .paused
                 }
             }
         }
-        return nil
+        return .clean
     }
 }

@@ -51,6 +51,12 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
     }
 
     func listItems(_ q: ItemsListQuery) async throws -> ItemsPage {
+        // Fix round 2, CRITICAL #1: a cancelled drain Task must actually
+        // throw here, the way a cancelled `URLSession.data(for:)` would in
+        // production — otherwise a test can't tell a self-cancelling retry
+        // apart from a working one (nothing else in this fake blocks on
+        // real I/O that the runtime would cancel for us).
+        try Task.checkCancellation()
         lock.withLock { _listQueries.append(q) }
         // Two-step lock: first check whether a queued entry exists at all
         // (so an empty queue correctly falls through to the blanket
@@ -69,6 +75,7 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
         return lock.withLock { _listResponses.isEmpty ? ItemsPage(items: [], nextCursor: nil) : _listResponses.removeFirst() }
     }
     func item(id: String) async throws -> (item: TrackerItem, comments: [TrackerComment]) {
+        try Task.checkCancellation()
         guard let d = detail[id] else { throw JournalAPIError.notFound }
         return (d.0, d.1)
     }
@@ -77,6 +84,7 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
     }
     func updateItem(id: String, _ patch: ItemPatch) async throws -> TrackerItem { fatalError() }
     func commentItem(id: String, body: String, attachments: [TrackerAttachment], idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment) {
+        try Task.checkCancellation()
         lock.withLock { _commentCalls.append((id, idempotencyKey ?? "")) }
         if let err = commentErrorForItemID[id] { throw err }
         if failComments { throw JournalAPIError.transport("offline") }
@@ -191,12 +199,25 @@ final class ItemsSyncTests: XCTestCase {
         XCTAssertEqual(try store.item(id: "it_1")?.awaiting, .agent)
     }
 
-    /// IMPORTANT #3: a failed drain schedules exactly one delayed retry
-    /// (`min(60s, retryBase × 2^attempts)`) instead of waiting solely for
-    /// an external trigger. `retryBase` is injected as 0.05s so the test
-    /// doesn't wait out a real backoff, and — critically — `.running` is
-    /// NEVER yielded here, so the outbox draining is proof the retry timer
-    /// (not the reconnect path exercised by the test above) did the work.
+    /// IMPORTANT #3 (fix round 1) / CRITICAL #1 (fix round 2): a failed
+    /// drain schedules exactly one delayed retry (`min(60s, retryBase ×
+    /// 2^attempts)`) instead of waiting solely for an external trigger.
+    /// `retryBase` is injected as 0.05s so the test doesn't wait out a real
+    /// backoff, and — critically — `.running` is NEVER yielded here, so
+    /// the outbox draining is proof the retry timer (not the reconnect
+    /// path exercised by the test above) did the work.
+    ///
+    /// The exact-count assertion (not `>=`) is the regression test for fix
+    /// round 2, CRITICAL #1: the retry Task used to call `drainOutbox()`
+    /// directly on itself, which cancelled its own currently-running
+    /// `Task` (`drainOutbox()` unconditionally cancels whatever
+    /// `retryTask` holds), so — now that `FakeItems`'s methods `try
+    /// Task.checkCancellation()` first, the way a real cancelled
+    /// `URLSession` call would throw — every retry attempt threw
+    /// `CancellationError` immediately, was classified retryable, bumped
+    /// `attempts`, and scheduled ANOTHER self-cancelling retry, forever.
+    /// With that bug, `failComments = false` becoming true again would
+    /// never actually get observed, and this test would time out.
     func testFailedDrainSchedulesBackoffRetry() async throws {
         let api = FakeItems(); api.failComments = true
         let (sync, store, _, _) = try make(api: api, retryBase: 0.05)
@@ -205,8 +226,81 @@ final class ItemsSyncTests: XCTestCase {
         try await waitUntil { try store.itemOutboxRows(itemID: "it_1").first?.attempts == 1 }
         api.failComments = false
         try await waitUntil { try store.itemOutboxPending().isEmpty }
-        XCTAssertGreaterThanOrEqual(api.commentCalls.count, 2, "the scheduled backoff retry, not just the original enqueue, must have redrained")
+        XCTAssertEqual(api.commentCalls.count, 2, "exactly one original attempt + one retry-delivered attempt — no self-cancel retry storm")
         XCTAssertEqual(try store.item(id: "it_1")?.awaiting, .agent)
+    }
+
+    /// Fix round 2, IMPORTANT #2: a truncated pagination run (repeated
+    /// `nextCursor`, or the 50-page cap — same code path) must not persist
+    /// a watermark for the pages that DID land. The journal returns
+    /// `sort=updated` DESC, so bailing out early always leaves an older,
+    /// unfetched tail — persisting a watermark here would make the NEXT
+    /// refresh believe that tail was already covered and skip it forever.
+    func testRepeatedCursorTruncatesPaginationAndLeavesWatermarkUnset() async throws {
+        let api = FakeItems()
+        let loopingPage = ItemsPage(items: [item("a", num: 1, updated: 10)], nextCursor: "loop")
+        api.listResponses = [loopingPage, loopingPage, loopingPage]
+        let (sync, store, _, _) = try make(api: api)
+        await sync.refresh(scope: .all)
+        XCTAssertNil(try store.itemsWatermark(scope: .all), "a truncated pagination run must not persist a watermark")
+        XCTAssertEqual(api.listQueries.count, 2, "stops as soon as the SAME cursor repeats a second time")
+    }
+
+    /// Fix round 2, IMPORTANT #3a: the drain must not attempt outbox rows
+    /// before a `refresh` has proven the tracker routes exist on this
+    /// journal — attempting (and thus mark-attempting or poisoning) rows
+    /// against an unproven journal is exactly the kind of misclassification
+    /// #3b guards against for `.notFound` specifically.
+    func testDrainWaitsForSupportBeforeAttemptingRows() async throws {
+        let api = FakeItems(); api.listError = JournalAPIError.notFound
+        let (sync, store, _, _) = try make(api: api)
+        await sync.refresh(scope: .all) // proves unsupported
+        let supported = await sync.isSupported
+        XCTAssertFalse(supported)
+
+        try store.itemOutboxInsert(ItemOutboxRecord(localID: "L1", itemID: "it_1", op: "comment", payloadJSON: #"{"body":"x","attachments":[]}"#, createdAt: 0, attempts: 0, lastError: nil))
+        await sync.drainOutbox()
+        XCTAssertEqual(try store.itemOutboxRows(itemID: "it_1").first?.attempts, 0, "no attempt is made while unsupported")
+        XCTAssertEqual(api.commentCalls.count, 0, "commentItem is never called while isSupported is false")
+        XCTAssertEqual(try store.itemOutboxPending().count, 1)
+    }
+
+    /// Fix round 2, IMPORTANT #3b: a 404 on a WRITE (comment/create) is
+    /// retryable, not poison — the journal never deletes items
+    /// server-side, so a 404 here is far likelier "this journal doesn't
+    /// have the tracker routes yet" than "the item is really gone". The
+    /// row must survive with its attempt count bumped, not get silently
+    /// dropped the way a genuinely-poisoned 400/409 does.
+    func testNotFoundOnOutboxWriteIsRetryableNotPoison() async throws {
+        let api = FakeItems()
+        api.commentErrorForItemID = ["it_1": JournalAPIError.notFound]
+        let (sync, store, _, _) = try make(api: api)
+        try store.itemOutboxInsert(ItemOutboxRecord(localID: "L1", itemID: "it_1", op: "comment", payloadJSON: #"{"body":"x","attachments":[]}"#, createdAt: 0, attempts: 0, lastError: nil))
+        await sync.drainOutbox()
+        XCTAssertEqual(try store.itemOutboxRows(itemID: "it_1").first?.attempts, 1, "404 is retryable: the row survives with a bumped attempt count, not poisoned")
+        XCTAssertEqual(api.commentCalls.count, 1)
+    }
+
+    /// Fix round 2, IMPORTANT #3c: a rejected session/credentials pauses
+    /// the queue rather than poisoning the row (deleting it) or treating
+    /// it as an ordinary retryable failure (counting an attempt and
+    /// scheduling a timed backoff retry) — sign-out's `wipeOutbox()`
+    /// clears these rows, and a fresh sign-in's `.running` drains them if
+    /// they're still queued.
+    func testAuthRejectionPausesWithoutDeletingCountingOrRetrying() async throws {
+        let api = FakeItems()
+        api.commentErrorForItemID = ["it_1": JournalAPIError.unauthenticated]
+        let (sync, store, _, _) = try make(api: api, retryBase: 0.05)
+        try store.itemOutboxInsert(ItemOutboxRecord(localID: "L1", itemID: "it_1", op: "comment", payloadJSON: #"{"body":"x","attachments":[]}"#, createdAt: 0, attempts: 0, lastError: nil))
+        await sync.drainOutbox()
+        XCTAssertEqual(try store.itemOutboxRows(itemID: "it_1").first?.attempts, 0, "an auth rejection must not count as an attempt")
+        XCTAssertEqual(api.commentCalls.count, 1)
+
+        // No backoff retry gets scheduled — wait well past what the retry
+        // delay would have been and confirm nothing more happened.
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(api.commentCalls.count, 1, "no backoff retry is scheduled on a pause")
+        XCTAssertEqual(try store.itemOutboxPending().count, 1, "the row is left queued, not deleted")
     }
 
     /// IMPORTANT #4: a non-retryable rejection (400) must not block rows
