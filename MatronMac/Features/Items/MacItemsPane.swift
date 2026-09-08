@@ -78,9 +78,10 @@ struct MacItemsPane: View {
                     onSelect: { path.append($0.id) },
                     onMove: { id, index in Task { await viewModel.move(itemID: id, toIndex: index) } },
                     onCreate: { showCreate = true },
-                    onOpenConversation: onOpenConversation)
+                    onOpenConversation: handleOpenConversation)
                 .navigationDestination(for: String.self) { id in
-                    MacItemDetailHost(itemID: id, session: session, onOpenConversation: onOpenConversation)
+                    MacItemDetailHost(itemID: id, session: session, currentConvoID: viewModel.convoID,
+                                       onOpenConversation: handleOpenConversation)
                 }
             }
         }
@@ -99,6 +100,19 @@ struct MacItemsPane: View {
             Button("OK") { viewModel.error = nil }
         } message: {
             Text(viewModel.error ?? "")
+        }
+    }
+
+    /// Bugbot: an "open conversation" tap that targets the chat already
+    /// underneath this pane would just re-select the current room — no
+    /// visible effect other than a confusing no-op. Closing the pane
+    /// instead surfaces that chat immediately, which is what the tap
+    /// actually meant.
+    private func handleOpenConversation(_ id: String) {
+        if id == viewModel.convoID {
+            onClose()
+        } else {
+            onOpenConversation(id)
         }
     }
 }
@@ -152,12 +166,23 @@ struct NewItemSheet: View {
 struct MacItemDetailHost: View {
     let itemID: String
     let session: UserSession
+    /// The chat this pane was opened from (`ItemsPanelViewModel.convoID`)
+    /// — used to hide the "opened from…" origin link when it would just
+    /// point back at the chat already underneath the pane (Bugbot; mirrors
+    /// iOS `ItemDetailHost.currentConvoID`).
+    let currentConvoID: String
     let onOpenConversation: (String) -> Void
     @Environment(\.appDependencies) private var deps
     @State private var viewModel: ItemDetailViewModel?
     @State private var images: [String: Image] = [:]
     @State private var galleryPreview: GalleryPreview?
     @State private var recorder = VoiceRecorder()
+    /// Cached origin-conversation title, loaded once per item via
+    /// `.task(id:)` below — mirrors iOS `ItemDetailHost.originTitle`.
+    /// Previously this was a synchronous full-table `conversationTitles()`
+    /// read on every body re-evaluation; a per-id `conversation(id:)` read,
+    /// cached, is the fix.
+    @State private var originTitle: String?
 
     /// Identifiable wrapper so `.sheet(item:)` has something to key on —
     /// `ImageGallery` itself isn't `Identifiable` (same pattern as
@@ -184,7 +209,12 @@ struct MacItemDetailHost: View {
                                 .init(id: $0.localID, body: pendingBody($0), attachmentCount: pendingAttachments($0),
                                       attempts: $0.attempts, lastError: $0.lastError)
                             },
-                            originTitle: originTitle(item),
+                            // Bugbot: hide the "opened from…" link when it
+                            // would just point back at the chat already
+                            // underneath the pane — tapping it would silently
+                            // no-op (see `handleOpenConversation`), so hiding
+                            // it is the honest UI.
+                            originTitle: item.originConvoID == currentConvoID ? nil : originTitle,
                             availableResolutions: viewModel.availableResolutions, isBusy: viewModel.isBusy),
                         draft: Binding(get: { viewModel.draft }, set: { viewModel.draft = $0 }),
                         image: { images[$0.blobRef] },
@@ -219,6 +249,10 @@ struct MacItemDetailHost: View {
                 images[attachment.blobRef] = image
             }
         }
+        .task(id: item?.originConvoID) {
+            guard let convoID = item?.originConvoID, let deps else { originTitle = nil; return }
+            originTitle = (try? deps.journalStore(for: session).conversation(id: convoID))?.title
+        }
         .onDisappear {
             viewModel?.stop()
             recorder.cancel()
@@ -226,11 +260,6 @@ struct MacItemDetailHost: View {
         .sheet(item: $galleryPreview) { preview in
             AttachmentFullscreenViewer(gallery: preview.gallery, onDismiss: { galleryPreview = nil })
         }
-    }
-
-    private func originTitle(_ item: TrackerItem) -> String? {
-        guard let deps else { return nil }
-        return (try? deps.journalStore(for: session).conversationTitles())?[item.originConvoID]
     }
 
     private func mediaURL(_ a: TrackerAttachment) -> URL {

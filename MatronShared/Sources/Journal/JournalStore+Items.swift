@@ -127,11 +127,18 @@ extension JournalStore {
     /// Every conversation's title, keyed by id (Task 10, apps): feeds the
     /// "All" scope's `originTitles` in `ItemsListView.Model` on the Mac and
     /// iOS items panes. A plain two-column scan — cheap enough to re-run on
-    /// every scope switch, no caching needed.
+    /// every scope switch, no caching needed. Rows with an empty (not yet
+    /// set) title are omitted so a miss in the returned dictionary reads
+    /// the same whether the conversation is unknown or just untitled —
+    /// `ItemsListView`'s "Another chat" fallback covers both.
     public func conversationTitles() throws -> [String: String] {
         try dbQueue.read { db in
             try Row.fetchAll(db, sql: "SELECT id, title FROM conversation")
-                .reduce(into: [String: String]()) { $0[$1["id"]] = $1["title"] }
+                .reduce(into: [String: String]()) { result, row in
+                    let title: String = row["title"]
+                    guard !title.isEmpty else { return }
+                    result[row["id"]] = title
+                }
         }
     }
 
