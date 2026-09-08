@@ -47,12 +47,44 @@ struct MacChatView: View {
     /// Whether the tasks-and-decisions pane (Task 10) is open. Shares the
     /// sub-chat slot with `openSubChatID` — opening either one closes the
     /// other (see the toolbar call site and `onOpenSubChat` below).
-    @State private var showItemsPane = false
+    ///
+    /// I5 (Mac fix wave, part 1): hoisted to `MacChatListView` — the spec
+    /// wants this per-WINDOW, but `MacChatView` itself is torn down and
+    /// rebuilt per conversation (`.id(id)` in
+    /// `MacChatListView.chatDetail`), so a plain `@State` here reset on
+    /// every conversation switch. `itemsPaneOpen` is the caller's binding;
+    /// default `.constant(false)` keeps every other call site (tests,
+    /// previews) compiling unchanged. `showItemsPane` stays as a computed
+    /// proxy so every existing read/write site below is unchanged.
+    var itemsPaneOpen: Binding<Bool> = .constant(false)
+    private var showItemsPane: Bool {
+        get { itemsPaneOpen.wrappedValue }
+        nonmutating set { itemsPaneOpen.wrappedValue = newValue }
+    }
     /// The pane's view model, created lazily in the outer `.task` and kept
     /// running even while the pane is closed so the toolbar's needs-you
     /// badge stays live. Stopped in the outer `onDisappear` alongside
     /// `stripViewModel`.
     @State private var itemsVM: ItemsPanelViewModel?
+    /// I4 (Mac fix wave, part 1): `ItemsPanelViewModel` has no
+    /// `observationGeneration`/`stop(ifGeneration:)` counter of its own
+    /// yet (unlike `viewModel`/`stripViewModel` below) — adding one is
+    /// part 2's MatronShared API-adoption work. Until then this mirrors
+    /// the same generation pattern with LOCAL state: `itemsVMGeneration`
+    /// is bumped every time the outer `.task` runs, and
+    /// `itemsVMStartedGeneration` records which generation THIS view
+    /// instance's running `itemsVM` belongs to, so a stale `onDisappear`
+    /// (a same-identity remount racing the outer `.task`, per this file's
+    /// own comment on `viewModel.stop(ifGeneration:)`) can't stop a VM a
+    /// newer `.task` now owns.
+    @State private var itemsVMGeneration = 0
+    @State private var itemsVMStartedGeneration = 0
+    /// I6 (Mac fix wave, part 1): pane/detail state hoisted out of
+    /// `MacItemsPane`/`MacItemDetailHost` so it survives being rebuilt
+    /// when the window crosses `sideBySideMinWidth` — see
+    /// `MacItemsPaneState`'s doc comment. One instance per `MacChatView`
+    /// lifetime (resets on a genuine room switch, same as `itemsVM`).
+    @State private var itemsPaneState = MacItemsPaneState()
     /// Local text for the in-conversation search bar's field — seeded from
     /// `viewModel.chatSearch?.query`, submitted back via `beginChatSearch`.
     @State private var chatSearchQuery = ""
@@ -385,7 +417,7 @@ struct MacChatView: View {
                         chatColumn
                             .frame(minWidth: 420)
                         MacItemsPane(
-                            viewModel: itemsVM, session: session,
+                            viewModel: itemsVM, session: session, state: itemsPaneState,
                             onOpenConversation: { onOpenConversation?($0) },
                             onClose: { showItemsPane = false }
                         )
@@ -393,7 +425,7 @@ struct MacChatView: View {
                     }
                 } else {
                     MacItemsPane(
-                        viewModel: itemsVM, session: session, showsBackChevron: true,
+                        viewModel: itemsVM, session: session, state: itemsPaneState, showsBackChevron: true,
                         onOpenConversation: { onOpenConversation?($0) },
                         onClose: { showItemsPane = false }
                     )
@@ -402,6 +434,26 @@ struct MacChatView: View {
                 chatColumn
             }
         }
+        // Minor (Mac fix wave, part 1): ⌘⇧I toggles the tasks-and-decisions
+        // pane. Attached HERE (the stable outer view, same reasoning as the
+        // observation lifecycle below) rather than as a toolbar-item
+        // shortcut inside `chatColumn` — `chatColumn` isn't rendered in the
+        // narrow-takeover branch, so a shortcut registered on its toolbar
+        // couldn't close the pane it opened. A hidden button is the
+        // SwiftUI-recommended pattern for a global shortcut with no visible
+        // counterpart of its own (mirrors the ⌘K hidden button on
+        // `chatColumn` below, minus the accessibility hiding concern here
+        // since this one carries no risk of a stray VoiceOver-announced
+        // "button" — it sits outside the rendered branch either way).
+        .background(
+            Button("") {
+                showItemsPane.toggle()
+                if showItemsPane { openSubChatID = nil }
+            }
+            .keyboardShortcut("i", modifiers: [.command, .shift])
+            .opacity(0)
+            .accessibilityHidden(true)
+        )
         // Observation lifecycle lives HERE, on the stable outer view — NOT
         // on `chatColumn`. The pane branches move `chatColumn` between
         // structural identities, and both instances share this view's
@@ -427,11 +479,24 @@ struct MacChatView: View {
             // closed so the toolbar's needs-you badge stays live. Hoisted
             // to the same stable outer view as the strip, for the same
             // reason (see the branch-move comment above this `.task`).
+            //
+            // I4 (Mac fix wave, part 1): this generation is recorded
+            // BEFORE `start()`, same ordering rule as `startedGeneration`
+            // above — see that line's comment. `start()` itself is called
+            // UNCONDITIONALLY (not just on first creation): it's
+            // idempotent (`ItemsPanelViewModel.start()` calls its own
+            // `stop()` before resubscribing), so even a VM a prior,
+            // out-of-order `onDisappear` already stopped comes back to
+            // life on this `.task` run rather than staying frozen — the
+            // original `if itemsVM == nil` guard skipped `start()`
+            // entirely whenever the VM already existed, which is exactly
+            // the failure mode reported.
+            itemsVMGeneration += 1
+            itemsVMStartedGeneration = itemsVMGeneration
             if itemsVM == nil, let deps, let session {
-                let vm = deps.makeItemsPanelViewModel(for: session, convoID: viewModel.roomID)
-                itemsVM = vm
-                vm.start()
+                itemsVM = deps.makeItemsPanelViewModel(for: session, convoID: viewModel.roomID)
             }
+            itemsVM?.start()
             // Small first-paint window: the switch stall was one big
             // layout transaction building the full 120-row window.
             // Paint a short tail first, then settle to steady state
@@ -457,7 +522,22 @@ struct MacChatView: View {
             // stream and freeze the timeline.
             viewModel.stop(ifGeneration: startedGeneration)
             stripViewModel.stop(ifGeneration: stripStartedGeneration)
-            itemsVM?.stop()
+            // I4: local generation guard (see `itemsVMGeneration`'s doc
+            // comment) — only stop if no newer `.task` has since taken
+            // over `itemsVM`.
+            if itemsVMStartedGeneration == itemsVMGeneration {
+                itemsVM?.stop()
+            }
+            // I6: the pane's detail VM/recorder are torn down HERE, not in
+            // `MacItemDetailHost`'s own onDisappear (there isn't one) —
+            // this outer onDisappear only fires on a genuine room-leave,
+            // never on the width-crossing branch move that rebuilds
+            // `MacItemsPane`/`MacItemDetailHost` for the SAME item (see
+            // `MacItemsPaneState`'s doc comment). A real room-leave must
+            // still stop the detail VM's subscriptions and cancel any
+            // in-flight recording.
+            itemsPaneState.detailViewModel?.stop()
+            itemsPaneState.detailRecorder.cancel()
             // Shrink the cached VM's window for the next open — keeping a
             // grown window here is what made switching BACK to a deep-read
             // room re-mount 600+ rows in one transaction (2026-08-21

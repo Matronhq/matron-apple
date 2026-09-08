@@ -43,6 +43,53 @@ struct MacItemsPaneChrome<Content: View>: View {
     }
 }
 
+/// Pane-scoped state hoisted out of `MacItemsPane`/`MacItemDetailHost` (I6,
+/// Mac fix wave part 1). `MacChatView`'s wide (`HSplitView`) and narrow
+/// (takeover) branches used to each construct their OWN `MacItemsPane(...)`
+/// — two separate call sites, hence two separate SwiftUI identities — so
+/// crossing `sideBySideMinWidth` mid-session tore the whole subtree down
+/// and rebuilt it, dropping the navigation stack, the open item's draft
+/// text, and an in-flight voice-note recording.
+///
+/// `MacChatView` now owns ONE instance of this class
+/// (`@State private var itemsPaneState = MacItemsPaneState()`, stable for
+/// the view's own lifetime, i.e. survives width-crossing rebuilds but
+/// resets naturally on a genuine room switch, when `MacChatView` itself is
+/// torn down) and hands it to `MacItemsPane` from both branches, so a
+/// width-crossing rebuild finds all of this already populated instead of
+/// starting from scratch. Detail-VM/recorder teardown lives in
+/// `MacChatView`'s outer `onDisappear` (which does NOT refire on a
+/// width-crossing branch move — see its own comment) rather than in
+/// `MacItemDetailHost`, for the same reason: a host torn down and rebuilt
+/// for the SAME pushed item must not stop the VM out from under its own
+/// rebuild.
+@MainActor @Observable
+final class MacItemsPaneState {
+    var path: [String] = []
+    var showCreate = false
+    var originTitles: [String: String] = [:]
+
+    /// Detail state for whichever item is currently pushed
+    /// (`path.last`). `detailItemID` is the guard `MacItemDetailHost`
+    /// checks before (re)creating `detailViewModel` — matching ids means
+    /// "this is a rebuild of the same push, keep what's here"; a
+    /// mismatch means real navigation to a different item, which tears
+    /// down the old VM and starts a fresh one.
+    var detailItemID: String?
+    var detailViewModel: ItemDetailViewModel?
+    var detailImages: [String: Image] = [:]
+    var detailGalleryPreview: MacItemDetailHost.GalleryPreview?
+    var detailOriginTitle: String?
+    /// One recorder shared across whichever item is open — mirrors the
+    /// single-recorder-per-host design from before hoisting; a user
+    /// switching items mid-recording is an edge case this doesn't newly
+    /// introduce (the original per-host `@State` recorder had the same
+    /// "belongs to whatever's current" property).
+    let detailRecorder = VoiceRecorder()
+
+    init() {}
+}
+
 /// Mac tasks-and-decisions pane (spec 2026-09-08-items-tracker-apps, Task
 /// 10). Shares the sub-chat slot in `MacChatView`: opening it closes an
 /// open sub-chat and vice versa, and both take either the side-by-side
@@ -51,41 +98,36 @@ struct MacItemsPaneChrome<Content: View>: View {
 struct MacItemsPane: View {
     let viewModel: ItemsPanelViewModel
     let session: UserSession
+    /// Owned by `MacChatView`, shared by both layout branches — see
+    /// `MacItemsPaneState`'s doc comment.
+    let state: MacItemsPaneState
     var showsBackChevron = false
     let onOpenConversation: (String) -> Void
     let onClose: () -> Void
     @Environment(\.appDependencies) private var deps
-    /// Pushed item ids — `String` (not `TrackerItem`, which isn't
-    /// `Hashable` the way `NavigationPath` values need to stay cheap to
-    /// diff) so `navigationDestination(for: String.self)` resolves the
-    /// live item from the store rather than carrying a snapshot that could
-    /// go stale while pushed.
-    @State private var path: [String] = []
-    @State private var showCreate = false
-    @State private var originTitles: [String: String] = [:]
 
     var body: some View {
         MacItemsPaneChrome(title: "Tasks & decisions", showsBackChevron: showsBackChevron, onClose: onClose) {
-            NavigationStack(path: $path) {
+            NavigationStack(path: Binding(get: { state.path }, set: { state.path = $0 })) {
                 ItemsListView(
                     model: .init(
                         needsYou: viewModel.sections.needsYou, tasks: viewModel.sections.tasks,
                         decisions: viewModel.sections.decisions, done: viewModel.sections.done,
-                        originTitles: originTitles, isSupported: viewModel.isSupported, isRefreshing: viewModel.isRefreshing),
+                        originTitles: state.originTitles, isSupported: viewModel.isSupported, isRefreshing: viewModel.isRefreshing),
                     scope: Binding(get: { viewModel.scope }, set: { viewModel.scope = $0 }),
                     convoID: viewModel.convoID,
                     thumbnail: { _ in nil },
-                    onSelect: { path.append($0.id) },
+                    onSelect: { state.path.append($0.id) },
                     onMove: { id, index in Task { await viewModel.move(itemID: id, toIndex: index) } },
-                    onCreate: { showCreate = true },
+                    onCreate: { state.showCreate = true },
                     onOpenConversation: handleOpenConversation)
                 .navigationDestination(for: String.self) { id in
                     MacItemDetailHost(itemID: id, session: session, currentConvoID: viewModel.convoID,
-                                       onOpenConversation: handleOpenConversation)
+                                       state: state, onOpenConversation: handleOpenConversation)
                 }
             }
         }
-        .sheet(isPresented: $showCreate) {
+        .sheet(isPresented: Binding(get: { state.showCreate }, set: { state.showCreate = $0 })) {
             NewItemSheet { kind, title, body in Task { await viewModel.create(kind: kind, title: title, body: body) } }
         }
         .task(id: viewModel.scope) {
@@ -94,7 +136,7 @@ struct MacItemsPane: View {
             // 2: no per-conversation round trip, `ItemsListView` already
             // falls back to "Another chat" for a miss).
             guard let deps else { return }
-            originTitles = (try? deps.journalStore(for: session).conversationTitles()) ?? [:]
+            state.originTitles = (try? deps.journalStore(for: session).conversationTitles()) ?? [:]
         }
         .alert("Tracker", isPresented: Binding(get: { viewModel.error != nil }, set: { if !$0 { viewModel.error = nil } })) {
             Button("OK") { viewModel.error = nil }
@@ -153,16 +195,13 @@ struct NewItemSheet: View {
     }
 }
 
-/// Item detail push destination. Owns its own `ItemDetailViewModel`
-/// (`deps.makeItemDetailViewModel`, started in `.task`, stopped in
-/// `onDisappear` — same lifecycle shape as every other Mac detail host),
-/// a small image cache for the attachments `ItemDetailView` asks it to
-/// render synchronously (ruling 3: `MediaService` has no sync peek, so a
-/// `.task(id:)` keyed on the current attachment set fills `images` as
-/// bytes arrive), and a minimal voice-note recorder (ruling 3: the full
-/// composer/hotkey recorder UI is too entangled with `MacComposerView`'s
-/// own state to reuse directly — this wires the same `VoiceRecorder`
-/// engine to a small inline recording bar instead).
+/// Item detail push destination. Reads/writes everything through the
+/// shared `MacItemsPaneState` (I6) rather than owning its own `@State` —
+/// see that type's doc comment for why. `deps.makeItemDetailViewModel` is
+/// called only when `state.detailItemID != itemID` (a genuine navigation
+/// to a different item; a rebuild for the SAME item is a no-op here and
+/// finds everything already populated). Image loading and the voice-note
+/// recorder follow the same "read/write through `state`" shape.
 struct MacItemDetailHost: View {
     let itemID: String
     let session: UserSession
@@ -171,18 +210,9 @@ struct MacItemDetailHost: View {
     /// point back at the chat already underneath the pane (Bugbot; mirrors
     /// iOS `ItemDetailHost.currentConvoID`).
     let currentConvoID: String
+    let state: MacItemsPaneState
     let onOpenConversation: (String) -> Void
     @Environment(\.appDependencies) private var deps
-    @State private var viewModel: ItemDetailViewModel?
-    @State private var images: [String: Image] = [:]
-    @State private var galleryPreview: GalleryPreview?
-    @State private var recorder = VoiceRecorder()
-    /// Cached origin-conversation title, loaded once per item via
-    /// `.task(id:)` below — mirrors iOS `ItemDetailHost.originTitle`.
-    /// Previously this was a synchronous full-table `conversationTitles()`
-    /// read on every body re-evaluation; a per-id `conversation(id:)` read,
-    /// cached, is the fix.
-    @State private var originTitle: String?
 
     /// Identifiable wrapper so `.sheet(item:)` has something to key on —
     /// `ImageGallery` itself isn't `Identifiable` (same pattern as
@@ -192,16 +222,20 @@ struct MacItemDetailHost: View {
         let gallery: ImageGallery
     }
 
+    private var viewModel: ItemDetailViewModel? { state.detailViewModel }
     private var item: TrackerItem? { viewModel?.item }
     private var imageAttachments: [TrackerAttachment] {
         guard let item else { return [] }
         return (item.attachments + (viewModel?.comments.flatMap(\.attachments) ?? [])).filter(\.isImage)
     }
+    private var galleryPreviewBinding: Binding<GalleryPreview?> {
+        Binding(get: { state.detailGalleryPreview }, set: { state.detailGalleryPreview = $0 })
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             Group {
-                if let viewModel, let item {
+                if let viewModel, let item, state.detailItemID == itemID {
                     ItemDetailView(
                         model: .init(
                             item: item, comments: viewModel.comments,
@@ -214,10 +248,10 @@ struct MacItemDetailHost: View {
                             // underneath the pane — tapping it would silently
                             // no-op (see `handleOpenConversation`), so hiding
                             // it is the honest UI.
-                            originTitle: item.originConvoID == currentConvoID ? nil : originTitle,
+                            originTitle: item.originConvoID == currentConvoID ? nil : state.detailOriginTitle,
                             availableResolutions: viewModel.availableResolutions, isBusy: viewModel.isBusy),
                         draft: Binding(get: { viewModel.draft }, set: { viewModel.draft = $0 }),
-                        image: { images[$0.blobRef] },
+                        image: { state.detailImages[$0.blobRef] },
                         onOpenAttachment: { openAttachment($0, in: item) },
                         onOpenLink: { NSWorkspace.shared.open($0) },
                         onOpenConversation: onOpenConversation,
@@ -230,35 +264,62 @@ struct MacItemDetailHost: View {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            if case let .recording(start) = recorder.state {
+            if case let .recording(start) = state.detailRecorder.state {
                 voiceRecordingBar(start: start)
             }
         }
         .navigationTitle("")
-        .task {
-            guard viewModel == nil, let deps else { return }
+        .task(id: itemID) {
+            // I6: only (re)create the detail VM when navigating to a
+            // genuinely different item. A rebuild of this host for the
+            // SAME item (e.g. the width-crossing branch move in
+            // `MacChatView`) must not drop the in-flight draft/recording —
+            // there's no host-local `@State` left to lose; everything
+            // lives on `state`, which survives the rebuild untouched when
+            // this guard is a no-op.
+            guard state.detailItemID != itemID, let deps else { return }
+            state.detailViewModel?.stop()
+            state.detailImages = [:]
+            state.detailOriginTitle = nil
+            state.detailGalleryPreview = nil
             let vm = deps.makeItemDetailViewModel(for: session, itemID: itemID)
-            viewModel = vm
+            state.detailItemID = itemID
+            state.detailViewModel = vm
             vm.start()
         }
         .task(id: imageAttachments.map(\.blobRef)) {
             guard let deps else { return }
             let media = deps.mediaService(for: session)
-            for attachment in imageAttachments where images[attachment.blobRef] == nil {
+            for attachment in imageAttachments where state.detailImages[attachment.blobRef] == nil {
                 guard let image = await media.swiftUIImage(for: mediaURL(attachment)) else { continue }
-                images[attachment.blobRef] = image
+                state.detailImages[attachment.blobRef] = image
             }
         }
         .task(id: item?.originConvoID) {
-            guard let convoID = item?.originConvoID, let deps else { originTitle = nil; return }
-            originTitle = (try? deps.journalStore(for: session).conversation(id: convoID))?.title
+            guard let convoID = item?.originConvoID, let deps else { state.detailOriginTitle = nil; return }
+            state.detailOriginTitle = (try? deps.journalStore(for: session).conversation(id: convoID))?.title
         }
-        .onDisappear {
-            viewModel?.stop()
-            recorder.cancel()
+        // I7: the detail VM's own errors (a failed close/reopen/comment)
+        // were previously never surfaced on Mac — the only alert in this
+        // file is bound to the PANEL VM's `error`. Mirrors iOS
+        // `ItemDetailHost`'s alert, bound to `state.detailViewModel`.
+        .alert("Tracker", isPresented: Binding(
+            get: { state.detailViewModel?.error != nil },
+            set: { if !$0 { state.detailViewModel?.error = nil } }
+        )) {
+            Button("OK") { state.detailViewModel?.error = nil }
+        } message: {
+            Text(state.detailViewModel?.error ?? "")
         }
-        .sheet(item: $galleryPreview) { preview in
-            AttachmentFullscreenViewer(gallery: preview.gallery, onDismiss: { galleryPreview = nil })
+        // No `onDisappear` teardown here on purpose (I6): a width-crossing
+        // rebuild tears this host down and immediately rebuilds it for the
+        // SAME item, and an unconditional stop() here would race that
+        // rebuild's `.task(id: itemID)` (which is a no-op for a matching
+        // id) and kill the VM out from under it. Teardown instead happens
+        // in `MacChatView`'s outer `onDisappear`, which only fires on a
+        // genuine room-leave — see its comment.
+        .sheet(item: galleryPreviewBinding) { preview in
+            AttachmentFullscreenViewer(gallery: preview.gallery, onDismiss: { state.detailGalleryPreview = nil })
         }
     }
 
@@ -278,13 +339,15 @@ struct MacItemDetailHost: View {
     /// image attachments, in thread order); everything else downloads to a
     /// temp file and hands it to the user's default app, mirroring the
     /// chat timeline's file-tap path (`ChatViewModel.writeTempFile` →
-    /// `NSWorkspace.open`).
+    /// `NSWorkspace.open`). C2/I9 (temp-file/attachment code): left as-is
+    /// per the coordinator's instruction — part 2 switches this to a
+    /// shared helper.
     private func openAttachment(_ a: TrackerAttachment, in item: TrackerItem) {
         guard let deps else { return }
         if a.isImage {
             let all = (item.attachments + (viewModel?.comments.flatMap(\.attachments) ?? [])).filter(\.isImage)
             let urls = all.map(mediaURL)
-            galleryPreview = GalleryPreview(gallery: ImageGalleries.urls(urls, tapped: mediaURL(a), deps: deps, session: session))
+            state.detailGalleryPreview = GalleryPreview(gallery: ImageGalleries.urls(urls, tapped: mediaURL(a), deps: deps, session: session))
         } else {
             Task {
                 guard let data = await deps.mediaService(for: session).fetchBytes(mxcURL: mediaURL(a)) else { return }
@@ -318,8 +381,8 @@ struct MacItemDetailHost: View {
     /// `ItemDetailView`'s layout).
     private func startVoiceNote() {
         Task {
-            do { try await recorder.start() }
-            catch { viewModel?.error = error.localizedDescription }
+            do { try await state.detailRecorder.start() }
+            catch { state.detailViewModel?.error = error.localizedDescription }
         }
     }
 
@@ -328,12 +391,12 @@ struct MacItemDetailHost: View {
             Circle().fill(Color.red).frame(width: 10, height: 10)
             Text(start, style: .timer).monospacedDigit()
             Spacer()
-            Button("Cancel") { recorder.cancel() }
+            Button("Cancel") { state.detailRecorder.cancel() }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
             Button {
-                guard let result = recorder.stop() else { return }
-                Task { await viewModel?.sendVoiceNote(url: result.url) }
+                guard let result = state.detailRecorder.stop() else { return }
+                Task { await state.detailViewModel?.sendVoiceNote(url: result.url) }
             } label: {
                 Image(systemName: "arrow.up.circle.fill").font(.title2)
             }

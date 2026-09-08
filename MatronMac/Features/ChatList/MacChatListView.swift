@@ -52,6 +52,13 @@ struct MacChatListView: View {
     @Environment(\.currentSession) private var session
     @State private var selectedSummaryID: ChatSummary.ID?
     @State private var showingNewChat = false
+    /// I5 (Mac fix wave, part 1): whether the tasks-and-decisions pane is
+    /// open. Lives HERE, not in `MacChatView` (which is `.id(id)`-keyed
+    /// per selection and torn down on every conversation switch) — the
+    /// spec wants this per-window, so it must survive a selection change.
+    /// Passed down as a binding; `MacChatView`'s toolbar toggle and its
+    /// sub-chat mutual-exclusion logic keep working unchanged through it.
+    @State private var itemsPaneOpen = false
     /// Phase 6 (Search): the shared search VM, built once the session + index
     /// resolve and the chat list has loaded (so chat-title hits have a snapshot).
     /// A non-empty `searchModel.query` swaps the detail column for
@@ -519,6 +526,10 @@ struct MacChatListView: View {
                     return vmCache.subChatViewModels(
                         for: childID, parentConvoID: parent, deps: deps, session: session)
                 },
+                // I5 (Mac fix wave, part 1): hoisted here so the pane's
+                // open/closed state survives a conversation switch — see
+                // `itemsPaneOpen`'s declaration above.
+                itemsPaneOpen: $itemsPaneOpen,
                 chatTitle: summary?.title ?? "",
                 boxName: summary?.boxName,
                 sessionShort: summary?.sessionShort,

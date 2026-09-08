@@ -190,7 +190,11 @@ struct MacChatToolbar: ToolbarContent {
                 }
                 .help("Tasks & decisions")
                 .accessibilityLabel("Tasks and decisions" + (needsYouCount > 0 ? ", \(needsYouCount) need you" : ""))
-                .keyboardShortcut("i", modifiers: [.command, .shift])
+                // Minor (Mac fix wave, part 1): the shortcut itself moved
+                // to an always-mounted hidden button in `MacChatView` —
+                // this toolbar item lives inside `chatColumn`, which isn't
+                // rendered in the narrow-takeover branch, so a shortcut
+                // registered here couldn't close the pane it opened.
             }
         }
         if !stripViewModel.children.isEmpty {
