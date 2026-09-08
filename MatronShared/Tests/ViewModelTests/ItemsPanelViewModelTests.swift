@@ -19,7 +19,8 @@ private final class FakeSync: ItemsSyncing, @unchecked Sendable {
     func refresh(scope: ItemsScope) async { refreshed.append(scope) }
     func refreshItem(id: String) async { refetched.append(id) }
     func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async {}
-    func enqueueCreate(localID: String, _ new: NewItem) async -> Bool { created.append(new); return true }
+    var createSucceeds = true
+    func enqueueCreate(localID: String, _ new: NewItem) async -> Bool { created.append(new); return createSucceeds }
     func supportedStream() async -> AsyncStream<Bool> {
         let values = supportedValues
         return AsyncStream { c in for v in values { c.yield(v) }; c.finish() }
@@ -124,6 +125,10 @@ final class ItemsPanelViewModelTests: XCTestCase {
         XCTAssertEqual(sync.created.first?.title, "Do X"); XCTAssertEqual(sync.created.first?.convoID, "c1")
         await vm.create(kind: .task, title: "   ", body: "")
         XCTAssertEqual(sync.created.count, 1); XCTAssertNotNil(vm.error)
+        vm.error = nil
+        sync.createSucceeds = false
+        await vm.create(kind: .task, title: "Y", body: "")
+        XCTAssertNotNil(vm.error, "a failed enqueue is surfaced, not swallowed")
     }
 
     func testStopCancelsStream() async {

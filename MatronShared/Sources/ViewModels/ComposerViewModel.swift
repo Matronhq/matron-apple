@@ -102,8 +102,14 @@ public final class ComposerViewModel {
     /// slash command (`/start` etc. is a chat command, never a task), the
     /// same "is there anything to file" content check `canSend` uses, and
     /// no send/file already in flight.
+    /// True from `makeTask()`'s guard until the outbox row is queued (or
+    /// filing fails). `isSending` only covers the upload phase, so without
+    /// this a second tap during the actor hop + GRDB write would file the
+    /// same task twice.
+    public private(set) var isFilingTask = false
+
     public var canMakeTask: Bool {
-        items != nil && itemsSupported && !isSending && !isSlashCommandDraft
+        items != nil && itemsSupported && !isSending && !isFilingTask && !isSlashCommandDraft
             && (!input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !stagedAttachments.isEmpty)
     }
 
@@ -580,6 +586,8 @@ public final class ComposerViewModel {
     /// `uploadStagedAttachmentsForTask()`'s comment for why.
     public func makeTask() async {
         guard let items, canMakeTask else { return }
+        isFilingTask = true
+        defer { isFilingTask = false }
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         let firstBreak = text.firstIndex(of: "\n")
         let firstLine = String(firstBreak.map { text[..<$0] } ?? Substring(text))

@@ -253,6 +253,7 @@ public final class ItemsPanelViewModel {
     public func create(kind: ItemKind, title: String, body: String) async {
         let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty, t.count <= 200 else { error = "Give the item a title (up to 200 characters)."; return }
-        await sync.enqueueCreate(localID: UUID().uuidString, NewItem(kind: kind, title: t, body: body, convoID: convoID))
+        let queued = await sync.enqueueCreate(localID: UUID().uuidString, NewItem(kind: kind, title: t, body: body, convoID: convoID))
+        if !queued { error = "Couldn't file the item — try again." }
     }
 }
