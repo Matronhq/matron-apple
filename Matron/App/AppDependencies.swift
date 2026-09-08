@@ -100,13 +100,18 @@ final class AppDependencies {
         let api: JournalAPI
         let store: JournalStore
         let engine: JournalSyncEngine
+        /// Task 9 (items tracker): keeps the local tracker cache fresh for
+        /// this session. Started right after construction in `core(for:)`;
+        /// stopped alongside the rest of the session's teardown on sign-out.
+        let items: ItemsSync
         /// Background search-history backfill sweep for this session (see
         /// `SearchBackfillCoordinator`). Cancelled on sign-out.
         var backfillTask: Task<Void, Never>?
-        init(api: JournalAPI, store: JournalStore, engine: JournalSyncEngine) {
+        init(api: JournalAPI, store: JournalStore, engine: JournalSyncEngine, items: ItemsSync) {
             self.api = api
             self.store = store
             self.engine = engine
+            self.items = items
         }
     }
 
@@ -179,7 +184,11 @@ final class AppDependencies {
             token: session.accessToken,
             ownSender: "user:\(session.userID)", search: search
         )
-        let core = JournalCore(api: api, store: store, engine: engine)
+        // Task 9 (items tracker): the marker/reconnect streams come straight
+        // off the sync engine (`nonisolated`, so safe to close over here).
+        let items = ItemsSync(api: api, store: store, markers: { engine.itemMarkers() }, connectionStates: { engine.stateStream() })
+        let core = JournalCore(api: api, store: store, engine: engine, items: items)
+        Task { await items.start() }
         core.backfillTask = Self.startBackfill(search: search, api: api, store: store, engine: engine)
         // One-time: box tag letters chosen before they were journal-held
         // move up to the server so they show on every device — and into
@@ -284,6 +293,32 @@ final class AppDependencies {
     /// browser). Same instance the sync engine writes.
     func journalStore(for session: UserSession) -> JournalStore {
         core(for: session).store
+    }
+
+    /// Task 9 (items tracker): the session's `ItemsSync` actor — outbox
+    /// drain, marker refetches, reconnect refresh. One per session, same
+    /// instance the view-model factories below hand out.
+    func itemsSync(for session: UserSession) -> ItemsSync {
+        core(for: session).items
+    }
+
+    /// Read surface for tracker create/comment/close flows that don't need
+    /// the full `ItemsPanelViewModel`/`ItemDetailViewModel` (e.g. a
+    /// standalone create sheet). Same session-scoped `JournalAPI`.
+    func itemsProvider(for session: UserSession) -> any ItemsProviding {
+        core(for: session).api
+    }
+
+    /// Per-chat / cross-chat items panel (spec: Apps → Panel content).
+    @MainActor func makeItemsPanelViewModel(for session: UserSession, convoID: String) -> ItemsPanelViewModel {
+        let c = core(for: session)
+        return ItemsPanelViewModel(convoID: convoID, store: c.store, api: c.api, sync: c.items)
+    }
+
+    /// Item detail sheet/screen.
+    @MainActor func makeItemDetailViewModel(for session: UserSession, itemID: String) -> ItemDetailViewModel {
+        let c = core(for: session)
+        return ItemDetailViewModel(itemID: itemID, store: c.store, api: c.api, sync: c.items)
     }
 
     func pushService(for session: UserSession) -> any PushService {
@@ -433,6 +468,10 @@ final class AppDependencies {
                 // timeout — the engine/store teardown below is what
                 // correctness needs; this is just hygiene.
                 await Self.withTimeout(seconds: 5) { try? await core.api.unregisterPush() }
+                // Task 9 (items tracker): stop the actor's marker/reconnect
+                // tasks BEFORE the wipes below, so nothing it triggers can
+                // write into the store after it's been cleared.
+                await core.items.stop()
                 await core.engine.endSync()          // stop the writer first…
                 try? core.store.wipe()               // …then clear the mirror
                 // The mirror wipe deliberately preserves the outbox (a
@@ -441,6 +480,11 @@ final class AppDependencies {
                 // the next account on this db file must not inherit or
                 // deliver them.
                 try? core.store.wipeOutbox()
+                // Belt-and-braces (`wipe()` already clears `item`/
+                // `item_comment` and `wipeOutbox()` already clears
+                // `item_outbox`): explicit so a future change to either of
+                // those doesn't silently leave tracker rows behind.
+                try? core.store.wipeItems()
             }
             // Phase 6 (Search): wipe the index so the next user can't search
             // the previous user's messages. Inside the awaited teardown so a
