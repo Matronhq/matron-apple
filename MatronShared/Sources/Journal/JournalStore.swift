@@ -1191,20 +1191,25 @@ public final class JournalStore: @unchecked Sendable {
     }
 
     /// Clears the journal mirror (events, conversations, cursor) and the
-    /// tracker cache (item, item_comment, item_outbox) but NOT the
-    /// text-message `outbox` table: this runs on `snapshot_required`
-    /// (replay gap too large), and a mirror wipe must not eat the user's
-    /// unsent messages. Sign-out calls `wipeOutbox()` separately for that.
+    /// tracker cache (item, item_comment) but NOT the outbox tables
+    /// (outbox, item_outbox): this runs on `snapshot_required` (replay gap
+    /// too large), and a mirror wipe must not eat the user's unsent
+    /// messages OR unsent tracker comments/creates — both are refetched or
+    /// replayed independently of the mirror, but the outbox rows are the
+    /// only record of what hasn't gone out yet. Sign-out calls
+    /// `wipeOutbox()` separately for those.
     public func wipe() throws {
         try dbQueue.write { db in
             // Inside the write block — see `insertHistory`'s invalidation note.
             self.snippetTTLMemo.removeAll()
             try db.execute(sql: "DELETE FROM event; DELETE FROM conversation; DELETE FROM meta; DELETE FROM summary_entry;")
-            // Tracker cache (item/item_comment/item_outbox): cleared inline,
-            // in the same transaction, rather than via `wipeItems()` — that
-            // helper opens its own `dbQueue.write`, which would deadlock
-            // nested inside this one.
-            try db.execute(sql: "DELETE FROM item; DELETE FROM item_comment; DELETE FROM item_outbox;")
+            // Tracker cache (item/item_comment only — NOT item_outbox, see
+            // the doc comment above): cleared inline, in the same
+            // transaction, rather than via `wipeItems()` — that helper
+            // opens its own `dbQueue.write`, which would deadlock nested
+            // inside this one, and also clears item_outbox which this path
+            // must not touch.
+            try db.execute(sql: "DELETE FROM item; DELETE FROM item_comment;")
         }
     }
 
@@ -1333,10 +1338,11 @@ public final class JournalStore: @unchecked Sendable {
     }
 
     /// Sign-out hygiene: the next account on this database file must not
-    /// inherit (or send) the previous user's queued messages.
+    /// inherit (or send) the previous user's queued messages or queued
+    /// tracker comments/creates — clears both `outbox` and `item_outbox`.
     public func wipeOutbox() throws {
         try dbQueue.write { db in
-            try db.execute(sql: "DELETE FROM outbox")
+            try db.execute(sql: "DELETE FROM outbox; DELETE FROM item_outbox;")
         }
     }
 

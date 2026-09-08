@@ -72,20 +72,35 @@ final class JournalStoreItemsTests: XCTestCase {
         XCTAssertTrue(try store.itemOutboxPending().isEmpty)
     }
 
-    /// Controller ruling 2: `wipe()` (the full sign-out wipe path, alongside
-    /// `wipeOutbox()`) must also clear the tracker cache, not just the
-    /// event mirror — the next signed-in account must not inherit the
-    /// previous user's items.
-    func testFullWipeAlsoClearsItems() throws {
+    /// Controller ruling (fix round 2): `wipe()` is the `snapshot_required`
+    /// replay-gap path, NOT the sign-out path — it must clear the tracker
+    /// cache (item, item_comment; both are refetched) but must NOT touch
+    /// `item_outbox`, exactly like it already leaves the text-message
+    /// `outbox` alone. Eating unsent tracker comments/creates on a replay
+    /// gap would be the same bug as eating unsent chat messages.
+    func testFullWipeClearsCacheButKeepsItemOutbox() throws {
         let store = try makeStore()
         try store.upsertItems([item("it_1", num: 1)])
         try store.replaceComments(itemID: "it_1", [TrackerComment(id: "ic_1", itemID: "it_1", author: .user, body: "a")])
         try store.itemOutboxInsert(ItemOutboxRecord(localID: "L1", itemID: "it_1", op: "comment", payloadJSON: "{}", createdAt: 1, attempts: 0, lastError: nil))
         try store.wipe()
         XCTAssertTrue(try store.items(scope: .all).isEmpty)
-        XCTAssertTrue(try store.itemOutboxPending().isEmpty)
         let commentCount = try store.dbQueue.read { db in try ItemCommentRecord.fetchCount(db) }
         XCTAssertEqual(commentCount, 0)
+        // The unsent comment's outbox row must survive a replay-gap wipe.
+        XCTAssertEqual(try store.itemOutboxPending().map(\.localID), ["L1"])
+    }
+
+    /// `wipeOutbox()` is the sign-out path (paired with `wipe()` in
+    /// `AppDependencies.signOut()`) and must clear `item_outbox` alongside
+    /// the text-message `outbox` — the next signed-in account must not
+    /// inherit (or send) the previous user's queued tracker comments/creates.
+    func testWipeOutboxClearsItemOutbox() throws {
+        let store = try makeStore()
+        try store.upsertItems([item("it_1", num: 1)])
+        try store.itemOutboxInsert(ItemOutboxRecord(localID: "L1", itemID: "it_1", op: "comment", payloadJSON: "{}", createdAt: 1, attempts: 0, lastError: nil))
+        try store.wipeOutbox()
+        XCTAssertTrue(try store.itemOutboxPending().isEmpty)
     }
 
     func testCommentStatusSnapshotRoundTrips() throws {
