@@ -12,11 +12,16 @@ private final class FakeItemsStore: ItemsStoreReading, @unchecked Sendable {
 }
 private final class FakeSync: ItemsSyncing, @unchecked Sendable {
     var refreshed: [ItemsScope] = []; var created: [NewItem] = []; var refetched: [String] = []
+    /// Values `supportedStream()` yields, in order, on each call.
+    var supportedValues: [Bool] = [true]
     func refresh(scope: ItemsScope) async { refreshed.append(scope) }
     func refreshItem(id: String) async { refetched.append(id) }
     func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async {}
     func enqueueCreate(localID: String, _ new: NewItem) async { created.append(new) }
-    func supportedStream() async -> AsyncStream<Bool> { AsyncStream { $0.yield(true) } }
+    func supportedStream() async -> AsyncStream<Bool> {
+        let values = supportedValues
+        return AsyncStream { c in for v in values { c.yield(v) }; c.finish() }
+    }
 }
 private final class FakeAPI: ItemsProviding, @unchecked Sendable {
     var rankCalls: [(String, ItemRankChange)] = []; var failRank = false
@@ -77,6 +82,11 @@ final class ItemsPanelViewModelTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 50_000_000)
         await vm.move(itemID: "c", toIndex: 0)
         XCTAssertEqual(vm.sections.tasks.map(\.id), ["c", "a", "b"])
+        // Optimistic rank, not just optimistic order: a store emission for
+        // an unrelated row mid-flight must recompute sections into the
+        // same order, which only works if the moved item's rank is
+        // actually ahead of its new neighbour's.
+        XCTAssertLessThan(vm.sections.tasks[0].rank, vm.sections.tasks[1].rank)
         XCTAssertEqual(api.rankCalls.first?.1, ItemRankChange(position: "top"))
         XCTAssertEqual(sync.refetched, ["c"])
         api.failRank = true
@@ -100,5 +110,43 @@ final class ItemsPanelViewModelTests: XCTestCase {
         XCTAssertEqual(sync.created.first?.title, "Do X"); XCTAssertEqual(sync.created.first?.convoID, "c1")
         await vm.create(kind: .task, title: "   ", body: "")
         XCTAssertEqual(sync.created.count, 1); XCTAssertNotNil(vm.error)
+    }
+
+    func testStopCancelsStream() async {
+        let store = FakeItemsStore(); let sync = FakeSync()
+        let vm = ItemsPanelViewModel(convoID: "c1", store: store, api: FakeAPI(), sync: sync)
+        vm.start()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        store.cont?.yield([t("a", num: 1, rank: 1)])
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(vm.sections.tasks.map(\.id), ["a"])
+        vm.stop()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        store.cont?.yield([t("a", num: 1, rank: 1), t("b", num: 2, rank: 2)])
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(vm.sections.tasks.map(\.id), ["a"], "stop() must cancel the store subscription")
+    }
+
+    func testIsSupportedFollowsSupportedStream() async throws {
+        let sync = FakeSync()
+        sync.supportedValues = [true, false]
+        let vm = ItemsPanelViewModel(convoID: "c1", store: FakeItemsStore(), api: FakeAPI(), sync: sync)
+        vm.start()
+        try await waitUntil { vm.isSupported == false }
+    }
+}
+
+/// Polls `condition` until it's true or `timeout` elapses, throwing on
+/// timeout instead of failing via a fixed sleep.
+private struct WaitTimeoutError: Error, CustomStringConvertible {
+    var description: String { "condition not met before timeout" }
+}
+@MainActor
+private func waitUntil(timeout: TimeInterval = 2.0, pollInterval: UInt64 = 5_000_000,
+                       _ condition: () -> Bool) async throws {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !condition() {
+        if Date() >= deadline { throw WaitTimeoutError() }
+        try await Task.sleep(nanoseconds: pollInterval)
     }
 }

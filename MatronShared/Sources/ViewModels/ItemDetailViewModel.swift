@@ -22,6 +22,7 @@ public final class ItemDetailViewModel {
     private let api: any ItemsProviding
     private let sync: any ItemsSyncing
     private var tasks: [Task<Void, Never>] = []
+    private var refreshTask: Task<Void, Never>?
 
     public init(itemID: String, store: any ItemsStoreReading, api: any ItemsProviding, sync: any ItemsSyncing) {
         self.itemID = itemID; self.store = store; self.api = api; self.sync = sync
@@ -45,10 +46,14 @@ public final class ItemDetailViewModel {
         // Comments only reach the local cache through a refetch — opening
         // the detail sheet must trigger one, not just rely on whatever the
         // panel last fetched.
-        Task { [weak self] in await self?.sync.refreshItem(id: id) }
+        refreshTask?.cancel()
+        refreshTask = Task { [weak self] in await self?.sync.refreshItem(id: id) }
     }
 
-    public func stop() { tasks.forEach { $0.cancel() }; tasks = [] }
+    public func stop() {
+        tasks.forEach { $0.cancel() }; tasks = []
+        refreshTask?.cancel(); refreshTask = nil
+    }
 
     public var availableResolutions: [ItemResolution] {
         switch item?.kind {

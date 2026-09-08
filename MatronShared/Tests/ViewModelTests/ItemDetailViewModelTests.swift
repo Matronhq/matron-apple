@@ -22,7 +22,11 @@ final class ItemDetailViewModelTests: XCTestCase {
     }
     private final class API: ItemsProviding, @unchecked Sendable {
         var uploads: [String] = []; var closes: [(ItemResolution, String?)] = []; var reopens = 0
-        func uploadMedia(_ data: Data, contentType: String) async throws -> String { uploads.append(contentType); return "blob-\(uploads.count)" }
+        var failUpload = false
+        func uploadMedia(_ data: Data, contentType: String) async throws -> String {
+            if failUpload { throw JournalAPIError.transport("upload failed") }
+            uploads.append(contentType); return "blob-\(uploads.count)"
+        }
         func closeItem(id: String, resolution: ItemResolution, comment: String?) async throws -> TrackerItem { closes.append((resolution, comment)); return TrackerItem(id: id, num: 1, kind: .task, state: .closed, title: "", originConvoID: "c1") }
         func reopenItem(id: String, comment: String?) async throws -> TrackerItem { reopens += 1; return TrackerItem(id: id, num: 1, kind: .task, title: "", originConvoID: "c1") }
         func listItems(_ query: ItemsListQuery) async throws -> ItemsPage { fatalError() }
@@ -74,6 +78,25 @@ final class ItemDetailViewModelTests: XCTestCase {
         await vm.reopen()
         XCTAssertEqual(api.reopens, 1)
         XCTAssertEqual(sync.refetched, ["it_1", "it_1", "it_1"])
+    }
+
+    func testSubmitUploadFailureSetsErrorAndDoesNotEnqueue() async {
+        let api = API(); let sync = Sync()
+        api.failUpload = true
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        vm.draft = "keep me"
+        await vm.submitComment(attachments: [(Data([1]), "s.png", "image/png")])
+        XCTAssertNotNil(vm.error)
+        XCTAssertEqual(vm.draft, "keep me")
+        XCTAssertTrue(sync.comments.isEmpty)
+    }
+
+    func testCloseWithCommentPassesCommentThrough() async {
+        let api = API(); let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        await vm.close(resolution: .done, comment: "why")
+        XCTAssertEqual(api.closes.first?.0, .done)
+        XCTAssertEqual(api.closes.first?.1, "why")
     }
 }
 

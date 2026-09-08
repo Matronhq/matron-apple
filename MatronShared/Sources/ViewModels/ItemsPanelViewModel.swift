@@ -29,6 +29,20 @@ public protocol ItemsSyncing: Sendable {
 }
 extension ItemsSync: ItemsSyncing {}
 
+/// `TrackerItem.rank` is `let` (the model has no mutation API) — this is
+/// the VM-local way to stage an optimistic rank for a drag reorder ahead
+/// of the server's own recompute, without adding a public setter to the
+/// model just for this one call site.
+private extension TrackerItem {
+    func with(rank: Double) -> TrackerItem {
+        TrackerItem(id: id, num: num, kind: kind, state: state, resolution: resolution, awaiting: awaiting,
+                    rank: rank, title: title, body: body, labels: labels, links: links, attachments: attachments,
+                    supersedes: supersedes, originConvoID: originConvoID, createdBy: createdBy, createdAt: createdAt,
+                    updatedAt: updatedAt, closedAt: closedAt, commentCount: commentCount, lastCommentAt: lastCommentAt,
+                    hasImage: hasImage)
+    }
+}
+
 /// Backs the per-chat / cross-chat items panel (spec: Apps → Panel content).
 /// Reads flow from the local store (`ItemsStoreReading`'s streams); writes
 /// go through `ItemsSyncing`, which owns the outbox and refetch coalescing
@@ -57,6 +71,11 @@ public final class ItemsPanelViewModel {
     private let sync: any ItemsSyncing
     private var itemsTask: Task<Void, Never>?
     private var supportedTask: Task<Void, Never>?
+    private var refreshTask: Task<Void, Never>?
+    /// The latest raw store snapshot — `move()`'s optimistic patch is
+    /// mirrored here (not just in `sections.tasks`) so anything that ever
+    /// recomputes sections from `allItems` sees the same optimistic order.
+    private var allItems: [TrackerItem] = []
 
     public init(convoID: String, store: any ItemsStoreReading, api: any ItemsProviding, sync: any ItemsSyncing) {
         self.convoID = convoID; self.scope = .convo(convoID); self.store = store; self.api = api; self.sync = sync
@@ -77,8 +96,8 @@ public final class ItemsPanelViewModel {
     }
 
     public func start() {
+        stop()
         resubscribe()
-        supportedTask?.cancel()
         supportedTask = Task { [weak self] in
             guard let self else { return }
             let stream = await self.sync.supportedStream()
@@ -92,6 +111,7 @@ public final class ItemsPanelViewModel {
     public func stop() {
         itemsTask?.cancel(); itemsTask = nil
         supportedTask?.cancel(); supportedTask = nil
+        refreshTask?.cancel(); refreshTask = nil
     }
 
     private func resubscribe() {
@@ -101,11 +121,13 @@ public final class ItemsPanelViewModel {
             guard let stream = self?.store.itemsStream(scope: scope) else { return }
             for await items in stream {
                 guard let self, !Task.isCancelled else { return }
+                self.allItems = items
                 self.sections = Self.sections(from: items)
                 self.needsYouCount = self.sections.needsYou.count
             }
         }
-        Task { [weak self] in await self?.refresh() }
+        refreshTask?.cancel()
+        refreshTask = Task { [weak self] in await self?.refresh() }
     }
 
     public func refresh() async {
@@ -125,18 +147,31 @@ public final class ItemsPanelViewModel {
         var reordered = before
         let moved = reordered.remove(at: from)
         let target = min(max(toIndex, 0), reordered.count)
-        reordered.insert(moved, at: target)
+        // Stage a real, ordered `rank` on the moved item — not just a
+        // reordered array — so a store emission that lands while
+        // `rankItem` is still in flight (an unrelated row changing status,
+        // say) recomputes sections from ranks that already agree with the
+        // optimistic order, instead of snapping back to the pre-move rank.
+        let optimisticRank: Double
+        if reordered.isEmpty { optimisticRank = moved.rank }
+        else if target == 0 { optimisticRank = reordered[0].rank - 1024 }
+        else if target == reordered.count { optimisticRank = reordered[reordered.count - 1].rank + 1024 }
+        else { optimisticRank = (reordered[target - 1].rank + reordered[target].rank) / 2 }
+        let patchedMoved = moved.with(rank: optimisticRank)
+        reordered.insert(patchedMoved, at: target)
         guard reordered.map(\.id) != before.map(\.id) else { return }
         let change: ItemRankChange
         if target == 0 { change = ItemRankChange(position: "top") }
         else if target == reordered.count - 1 { change = ItemRankChange(position: "bottom") }
         else { change = ItemRankChange(after: reordered[target - 1].id, before: reordered[target + 1].id) }
         sections.tasks = reordered
+        if let idx = allItems.firstIndex(where: { $0.id == itemID }) { allItems[idx] = patchedMoved }
         do {
             _ = try await api.rankItem(id: itemID, change)
             await sync.refreshItem(id: itemID)
         } catch {
             sections.tasks = before
+            if let idx = allItems.firstIndex(where: { $0.id == itemID }) { allItems[idx] = moved }
             self.error = error.localizedDescription
         }
     }
