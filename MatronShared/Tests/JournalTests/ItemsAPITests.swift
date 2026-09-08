@@ -85,6 +85,23 @@ final class ItemsAPITests: XCTestCase {
         XCTAssertEqual(sent["kind"] as? String, "task"); XCTAssertEqual(sent["convo_id"] as? String, "c1")
     }
 
+    func testCommentItemAccepts201DecodesItemAndCommentAndStripsTranscript() async throws {
+        let commentJSON: [String: Any] = ["id": "ic_2", "item_id": "it_1", "user_id": 1, "author": "user", "device_id": 9, "kind": "comment", "body": "hi", "attachments": [], "meta": NSNull(), "idem_key": NSNull(), "created_at": 1_700_000_002_000]
+        let (api, recorder) = makeStubbedAPI(status: 201, body: ["item": Self.itemJSON, "comment": commentJSON])
+        let attachment = TrackerAttachment(blobRef: "b1", mime: "audio/m4a", name: "note.m4a", size: 42, transcript: "secret transcript")
+        let r = try await api.commentItem(id: "it_1", body: "hi", attachments: [attachment], idempotencyKey: "k2")
+        XCTAssertEqual(r.comment.body, "hi"); XCTAssertEqual(r.item.id, "it_1")
+        let req = try XCTUnwrap(recorder.lastRequest)
+        XCTAssertTrue(req.url?.absoluteString.hasSuffix("/items/it_1/comments") == true)
+        XCTAssertEqual(req.httpMethod, "POST"); XCTAssertEqual(req.value(forHTTPHeaderField: "Idempotency-Key"), "k2")
+        let sent = try JSONSerialization.jsonObject(with: recorder.lastBody!) as! [String: Any]
+        let sentAttachments = try XCTUnwrap(sent["attachments"] as? [[String: Any]])
+        let sentAttachment = try XCTUnwrap(sentAttachments.first)
+        XCTAssertNil(sentAttachment["transcript"])
+        XCTAssertEqual(sentAttachment["blob_ref"] as? String, "b1"); XCTAssertEqual(sentAttachment["mime"] as? String, "audio/m4a")
+        XCTAssertEqual(sentAttachment["name"] as? String, "note.m4a"); XCTAssertEqual(sentAttachment["size"] as? Int, 42)
+    }
+
     func testCloseMapsConflict() async {
         let (api, _) = makeStubbedAPI(status: 409, body: ["error": "conflict"])
         do { _ = try await api.closeItem(id: "it_1", resolution: .done, comment: nil); XCTFail() }
