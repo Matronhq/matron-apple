@@ -18,11 +18,18 @@ final class ItemDetailSnapshotTests: XCTestCase {
             TrackerComment(id: "c2", itemID: "it_1", author: .agent, body: "Noted — wiring it now.", createdAt: .init(timeIntervalSince1970: 1_770_000_200)),
         ]
         let model = ItemDetailView.Model(item: item, comments: comments,
-                                         pending: [.init(id: "L1", body: "Also rename the module", attachmentCount: 0, attempts: 2, lastError: "offline")],
+                                         pending: [.init(id: "L1", body: "Also rename the module", attachmentCount: 0, attempts: 2, lastError: "offline"),
+                                                   .init(id: "L2", body: "Fix the tests too", attachmentCount: 0, attempts: 0, lastError: nil)],
                                          originTitle: "auth refactor", availableResolutions: [.answered, .cancelled], isBusy: false)
-        let view = ItemDetailView(model: model, draft: .constant(""), image: { _ in Image(systemName: "photo") },
+        let view = ItemDetailView(model: model, draft: .constant(""),
+                                  image: { _ in
+                                      Image(size: CGSize(width: 320, height: 200), label: Text("shot")) { ctx in
+                                          ctx.fill(Path(CGRect(origin: .zero, size: CGSize(width: 320, height: 200))), with: .color(.teal))
+                                      }
+                                  },
                                   onOpenAttachment: { _ in }, onOpenLink: { _ in }, onOpenConversation: { _ in },
-                                  onSubmit: {}, onAttach: {}, onVoiceNote: {}, onClose: { _ in }, onReopen: {})
+                                  onSubmit: {}, onAttach: {}, onVoiceNote: {}, onClose: { _ in }, onReopen: {},
+                                  now: Date(timeIntervalSince1970: 1_770_000_600))
             .frame(width: 380, height: 760)
         assertVariants(of: view, named: "ItemDetail_question")
     }
@@ -36,7 +43,8 @@ final class ItemDetailSnapshotTests: XCTestCase {
         let model = ItemDetailView.Model(item: item, comments: [status], pending: [], originTitle: nil, availableResolutions: [], isBusy: false)
         let view = ItemDetailView(model: model, draft: .constant("Draft text"), image: { _ in nil },
                                   onOpenAttachment: { _ in }, onOpenLink: { _ in }, onOpenConversation: { _ in },
-                                  onSubmit: {}, onAttach: {}, onVoiceNote: {}, onClose: { _ in }, onReopen: {})
+                                  onSubmit: {}, onAttach: {}, onVoiceNote: {}, onClose: { _ in }, onReopen: {},
+                                  now: Date(timeIntervalSince1970: 1_770_000_600))
             .frame(width: 380, height: 520)
         assertVariants(of: view, named: "ItemDetail_closedDecision")
     }

@@ -1,4 +1,5 @@
 import SwiftUI
+import Foundation
 import MatronModels
 
 /// Full detail surface for a single tracker item: header, body, item-level
@@ -43,14 +44,20 @@ public struct ItemDetailView: View {
     let onVoiceNote: () -> Void
     let onClose: (ItemResolution) -> Void
     let onReopen: () -> Void
+    /// Reference instant for relative comment-date captions ("5 min ago").
+    /// Defaulted to `Date()` so existing/host call sites stay source-compatible;
+    /// snapshot tests pass a fixed instant so the thread renders deterministically.
+    let now: Date
 
     public init(model: Model, draft: Binding<String>, image: @escaping (TrackerAttachment) -> Image?,
                 onOpenAttachment: @escaping (TrackerAttachment) -> Void, onOpenLink: @escaping (URL) -> Void,
                 onOpenConversation: @escaping (String) -> Void, onSubmit: @escaping () -> Void, onAttach: @escaping () -> Void,
-                onVoiceNote: @escaping () -> Void, onClose: @escaping (ItemResolution) -> Void, onReopen: @escaping () -> Void) {
+                onVoiceNote: @escaping () -> Void, onClose: @escaping (ItemResolution) -> Void, onReopen: @escaping () -> Void,
+                now: Date = Date()) {
         self.model = model; self._draft = draft; self.image = image; self.onOpenAttachment = onOpenAttachment
         self.onOpenLink = onOpenLink; self.onOpenConversation = onOpenConversation; self.onSubmit = onSubmit
         self.onAttach = onAttach; self.onVoiceNote = onVoiceNote; self.onClose = onClose; self.onReopen = onReopen
+        self.now = now
     }
 
     private var item: TrackerItem { model.item }
@@ -152,9 +159,9 @@ public struct ItemDetailView: View {
             }.frame(maxWidth: .infinity)
         } else {
             VStack(alignment: .leading, spacing: 4) {
-                HStack {
+                HStack(spacing: 4) {
                     Text(c.author == .user ? "You" : "Agent").font(.caption.weight(.semibold))
-                    Text(c.createdAt, format: .dateTime.month().day().hour().minute()).font(.caption2).foregroundStyle(.tertiary)
+                    Text("· \(relativeDate(c.createdAt))").font(.caption2).foregroundStyle(.tertiary)
                 }
                 if !c.body.isEmpty { MarkdownText(c.body, theme: .matronMessage) }
                 attachments(c.attachments)
@@ -162,6 +169,21 @@ public struct ItemDetailView: View {
             .padding(10)
             .background(Color.secondary.opacity(c.author == .user ? 0.08 : 0.04), in: RoundedRectangle(cornerRadius: 10))
         }
+    }
+
+    /// Relative caption for a comment's timestamp ("5 min ago"), computed
+    /// against `now` (not the ambient clock) so snapshot tests are
+    /// deterministic. Falls back to an absolute short date once the comment
+    /// is more than 7 days older than `now` — "3 mo. ago" reads worse than
+    /// an actual date once relative units stop being useful at that range.
+    private func relativeDate(_ date: Date) -> String {
+        let sevenDays: TimeInterval = 7 * 24 * 60 * 60
+        if now.timeIntervalSince(date) > sevenDays {
+            return date.formatted(date: .abbreviated, time: .omitted)
+        }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: date, relativeTo: now)
     }
 
     /// Derives the centred status line from `statusTo` (never the raw body,
@@ -183,11 +205,22 @@ public struct ItemDetailView: View {
             Text("You").font(.caption.weight(.semibold))
             if !p.body.isEmpty { Text(p.body) }
             if p.attachmentCount > 0 { Label("\(p.attachmentCount) attachment\(p.attachmentCount == 1 ? "" : "s")", systemImage: "paperclip").font(.caption) }
-            SendStateIndicator(state: p.lastError != nil ? .failed(reason: p.lastError!) : .queued)
+            SendStateIndicator(state: pendingState(p))
         }
         .padding(10)
         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
         .opacity(0.85)
+    }
+
+    /// Maps outbox progress to the shared glyph: a fresh comment that
+    /// hasn't attempted a send yet reads as "Sending…"; once at least one
+    /// attempt has been made without an error it's genuinely waiting on
+    /// connectivity ("Queued"); any recorded error wins and shows the
+    /// retry affordance regardless of attempt count.
+    private func pendingState(_ p: PendingComment) -> SendStateGlyph {
+        if let lastError = p.lastError { return .failed(reason: lastError) }
+        if p.attempts > 0 { return .queued }
+        return .sending
     }
 
     @ViewBuilder
