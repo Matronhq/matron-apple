@@ -240,6 +240,12 @@ public actor ItemsSync {
     private struct CreatePayload: Codable { var kind: String; var title: String; var body: String; var convoID: String; var attachments: [TrackerAttachment] }
 
     public func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async {
+        // An enqueue racing sign-out must not insert after `wipeOutbox()`
+        // has already run (fix wave, item I3) — `stop()` is called before
+        // the wipe, so this flag being set means the outbox is either
+        // already cleared or about to be, and a fresh row landing after
+        // that would survive into the next session's fresh sign-in.
+        guard !stopped else { return }
         let payload = (try? String(data: JSONEncoder().encode(CommentPayload(body: body, attachments: attachments)), encoding: .utf8)) ?? "{}"
         do {
             try store.itemOutboxInsert(ItemOutboxRecord(localID: localID, itemID: itemID, op: "comment", payloadJSON: payload,
@@ -251,6 +257,8 @@ public actor ItemsSync {
     }
 
     public func enqueueCreate(localID: String, _ new: NewItem) async {
+        // Same race as `enqueueComment` above — see that guard's comment.
+        guard !stopped else { return }
         let payload = (try? String(data: JSONEncoder().encode(CreatePayload(kind: new.kind.rawValue, title: new.title, body: new.body, convoID: new.convoID, attachments: new.attachments)), encoding: .utf8)) ?? "{}"
         do {
             try store.itemOutboxInsert(ItemOutboxRecord(localID: localID, itemID: nil, op: "create", payloadJSON: payload,
@@ -429,6 +437,19 @@ public actor ItemsSync {
                     try store.itemOutboxDelete(localID: row.localID)
                 }
             } catch {
+                // A throw can land after `stop()` flipped `stopped` mid-await
+                // (fix wave, item I3): the per-row `guard !stopped` above
+                // this `do` only covers the window BEFORE the network
+                // call/store write starts, not a `stop()` that races in
+                // while it's suspended. Without this recheck, a stale
+                // failure here would still mark an attempt or delete a row
+                // (a write racing whatever `stop()`'s caller does next,
+                // typically a sign-out wipe) and, worse, `.retry` would make
+                // the OUTER `drainOutbox()` schedule a fresh `retryTask`
+                // after `stop()` already awaited the old one to nil —
+                // resurrecting a retry the caller believed was fully torn
+                // down. `.clean` schedules nothing and writes nothing.
+                guard !stopped else { return .clean }
                 switch disposition(for: error) {
                 case .retryable:
                     do {

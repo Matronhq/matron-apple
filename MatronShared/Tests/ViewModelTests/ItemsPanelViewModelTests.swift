@@ -173,6 +173,42 @@ final class ItemsPanelViewModelTests: XCTestCase {
         XCTAssertEqual(vm.pendingCreates.first { $0.id == "L2" }?.lastError, "offline")
     }
 
+    /// I4 (Mac fix wave, part 2): `ItemsPanelViewModel` now owns its own
+    /// `observationGeneration`/`stop(ifGeneration:)` counter (mirrors
+    /// `SubChatStripViewModel`) — a stale host's `onDisappear` (a
+    /// same-identity remount racing a newer `.task`, e.g. the Mac items
+    /// pane's outer `.task`, see that file's `itemsVMStartedGeneration`)
+    /// must not cancel the stream a successor `start()` just began.
+    func testStopIfGenerationGuardsAgainstStaleTeardown() async throws {
+        let store = FakeItemsStore(); let sync = FakeSync()
+        let vm = ItemsPanelViewModel(convoID: "c1", store: store, api: FakeAPI(), sync: sync)
+
+        vm.start()
+        let firstGeneration = vm.observationGeneration
+        try await waitUntil { store.cont != nil }
+
+        store.cont = nil
+        vm.start()
+        let secondGeneration = vm.observationGeneration
+        XCTAssertNotEqual(firstGeneration, secondGeneration)
+        try await waitUntil { store.cont != nil }
+
+        // A stale surface's teardown (still holding the FIRST generation)
+        // must not cancel the stream the second start() just began.
+        vm.stop(ifGeneration: firstGeneration)
+        store.cont?.yield([t("a", num: 1, rank: 1)])
+        try await waitUntil { !vm.sections.tasks.isEmpty }
+        XCTAssertEqual(vm.sections.tasks.map(\.id), ["a"],
+                       "a stale stop(ifGeneration:) must not cancel the successor's stream")
+
+        // The CURRENT generation's stop still cancels it.
+        vm.stop(ifGeneration: secondGeneration)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        store.cont?.yield([t("a", num: 1, rank: 1), t("b", num: 2, rank: 2)])
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(vm.sections.tasks.map(\.id), ["a"], "a matching-generation stop cancels the observation")
+    }
+
     func testIsSupportedFollowsSupportedStream() async throws {
         let sync = FakeSync()
         sync.supportedValues = [true, false]

@@ -136,6 +136,22 @@ final class ItemDetailViewModelTests: XCTestCase {
         try? FileManager.default.removeItem(at: url)
     }
 
+    /// Fix wave, item I4: unlike an upload failure (which keeps the file
+    /// so the SAME data can be retried), an empty/unreadable recording
+    /// will read the same way again — there's nothing worth keeping the
+    /// temp file around for, and the old early return orphaned it.
+    func testSendVoiceNoteEmptyRecordingDeletesFileAndSetsError() async throws {
+        let api = API(); let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("v-\(UUID()).m4a")
+        try Data().write(to: url)
+        await vm.sendVoiceNote(url: url)
+        XCTAssertNotNil(vm.error)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "an empty recording's temp file must not be orphaned")
+        XCTAssertTrue(sync.comments.isEmpty)
+        XCTAssertTrue(api.uploads.isEmpty)
+    }
+
     func testCloseWithCommentPassesCommentThrough() async {
         let api = API(); let sync = Sync()
         let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)

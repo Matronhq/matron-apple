@@ -66,18 +66,14 @@ struct MacChatView: View {
     /// badge stays live. Stopped in the outer `onDisappear` alongside
     /// `stripViewModel`.
     @State private var itemsVM: ItemsPanelViewModel?
-    /// I4 (Mac fix wave, part 1): `ItemsPanelViewModel` has no
-    /// `observationGeneration`/`stop(ifGeneration:)` counter of its own
-    /// yet (unlike `viewModel`/`stripViewModel` below) — adding one is
-    /// part 2's MatronShared API-adoption work. Until then this mirrors
-    /// the same generation pattern with LOCAL state: `itemsVMGeneration`
-    /// is bumped every time the outer `.task` runs, and
-    /// `itemsVMStartedGeneration` records which generation THIS view
-    /// instance's running `itemsVM` belongs to, so a stale `onDisappear`
-    /// (a same-identity remount racing the outer `.task`, per this file's
-    /// own comment on `viewModel.stop(ifGeneration:)`) can't stop a VM a
-    /// newer `.task` now owns.
-    @State private var itemsVMGeneration = 0
+    /// I4 (Mac fix wave, part 2): `ItemsPanelViewModel` now owns its own
+    /// `observationGeneration`/`stop(ifGeneration:)` counter (mirrors
+    /// `viewModel`/`stripViewModel` below, and `SubChatStripViewModel`'s
+    /// own pattern) — `itemsVMStartedGeneration` just records which
+    /// generation THIS view instance's running `itemsVM` belongs to, so a
+    /// stale `onDisappear` (a same-identity remount racing the outer
+    /// `.task`, per this file's own comment on `viewModel.stop(ifGeneration:)`)
+    /// can't stop a VM a newer `.task` now owns.
     @State private var itemsVMStartedGeneration = 0
     /// I6 (Mac fix wave, part 1): pane/detail state hoisted out of
     /// `MacItemsPane`/`MacItemDetailHost` so it survives being rebuilt
@@ -480,22 +476,22 @@ struct MacChatView: View {
             // to the same stable outer view as the strip, for the same
             // reason (see the branch-move comment above this `.task`).
             //
-            // I4 (Mac fix wave, part 1): this generation is recorded
-            // BEFORE `start()`, same ordering rule as `startedGeneration`
-            // above — see that line's comment. `start()` itself is called
-            // UNCONDITIONALLY (not just on first creation): it's
-            // idempotent (`ItemsPanelViewModel.start()` calls its own
-            // `stop()` before resubscribing), so even a VM a prior,
-            // out-of-order `onDisappear` already stopped comes back to
-            // life on this `.task` run rather than staying frozen — the
+            // I4 (Mac fix wave, part 2): the VM must exist before its
+            // generation can be read, so creation comes first here — the
+            // generation is still recorded BEFORE `start()`, same ordering
+            // rule as `startedGeneration` above (see that line's comment).
+            // `start()` itself is called UNCONDITIONALLY (not just on
+            // first creation): it's idempotent (`ItemsPanelViewModel.start()`
+            // calls its own `stop()` before resubscribing), so even a VM a
+            // prior, out-of-order `onDisappear` already stopped comes back
+            // to life on this `.task` run rather than staying frozen — the
             // original `if itemsVM == nil` guard skipped `start()`
             // entirely whenever the VM already existed, which is exactly
             // the failure mode reported.
-            itemsVMGeneration += 1
-            itemsVMStartedGeneration = itemsVMGeneration
             if itemsVM == nil, let deps, let session {
                 itemsVM = deps.makeItemsPanelViewModel(for: session, convoID: viewModel.roomID)
             }
+            itemsVMStartedGeneration = (itemsVM?.observationGeneration ?? 0) + 1
             itemsVM?.start()
             // Small first-paint window: the switch stall was one big
             // layout transaction building the full 120-row window.
@@ -522,12 +518,10 @@ struct MacChatView: View {
             // stream and freeze the timeline.
             viewModel.stop(ifGeneration: startedGeneration)
             stripViewModel.stop(ifGeneration: stripStartedGeneration)
-            // I4: local generation guard (see `itemsVMGeneration`'s doc
-            // comment) — only stop if no newer `.task` has since taken
+            // I4: VM-owned generation guard (see `itemsVMStartedGeneration`'s
+            // doc comment) — only stop if no newer `.task` has since taken
             // over `itemsVM`.
-            if itemsVMStartedGeneration == itemsVMGeneration {
-                itemsVM?.stop()
-            }
+            itemsVM?.stop(ifGeneration: itemsVMStartedGeneration)
             // I6: the pane's detail VM/recorder are torn down HERE, not in
             // `MacItemDetailHost`'s own onDisappear (there isn't one) —
             // this outer onDisappear only fires on a genuine room-leave,
