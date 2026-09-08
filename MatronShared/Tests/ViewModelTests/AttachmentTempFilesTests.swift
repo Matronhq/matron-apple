@@ -9,6 +9,15 @@ final class AttachmentTempFilesTests: XCTestCase {
         XCTAssertEqual(AttachmentTempFiles.sanitisedFilename("../../x"), "x")
         XCTAssertEqual(AttachmentTempFiles.sanitisedFilename("/etc/passwd"), "passwd")
         XCTAssertFalse(AttachmentTempFiles.sanitisedFilename("..").contains("/"))
+        XCTAssertEqual(AttachmentTempFiles.sanitisedFilename(""), AttachmentTempFiles.sanitisedFilename(""), "degenerate names sanitise deterministically")
+    }
+
+    func testEmptyNameRoundTripsThroughExistingFile() throws {
+        let blob = "blob-\(UUID().uuidString)"
+        XCTAssertNil(AttachmentTempFiles.existingFile(name: "", blobRef: blob))
+        let written = try AttachmentTempFiles.write(Data([1]), name: "", blobRef: blob)
+        XCTAssertEqual(AttachmentTempFiles.existingFile(name: "", blobRef: blob), written)
+        XCTAssertEqual(AttachmentTempFiles.destination(name: "..", blobRef: blob), AttachmentTempFiles.destination(name: "..", blobRef: blob))
     }
 
     /// Fix wave, item H: two attachments sharing a display filename must
