@@ -86,6 +86,14 @@ final class MacItemsPaneState {
     /// introduce (the original per-host `@State` recorder had the same
     /// "belongs to whatever's current" property).
     let detailRecorder = VoiceRecorder()
+    /// Fix wave part 2 (C2/I9): non-image attachments already downloaded
+    /// this session, keyed by `blobRef`, so re-opening the same attachment
+    /// doesn't re-fetch over the network — see `MacItemDetailHost.openAttachment`.
+    var detailAttachmentFiles: [String: URL] = [:]
+    /// `blobRef`s currently being fetched — a second tap on the same
+    /// attachment while its first fetch is still in flight is ignored
+    /// rather than starting a duplicate download.
+    var detailFetchingBlobRefs: Set<String> = []
 
     init() {}
 }
@@ -113,7 +121,12 @@ struct MacItemsPane: View {
                     model: .init(
                         needsYou: viewModel.sections.needsYou, tasks: viewModel.sections.tasks,
                         decisions: viewModel.sections.decisions, done: viewModel.sections.done,
-                        originTitles: state.originTitles, isSupported: viewModel.isSupported, isRefreshing: viewModel.isRefreshing),
+                        originTitles: state.originTitles, isSupported: viewModel.isSupported, isRefreshing: viewModel.isRefreshing,
+                        // Fix wave part 2, item C: outbox "create" rows not
+                        // yet confirmed by the server.
+                        pending: viewModel.pendingCreates.map {
+                            ItemsListView.PendingRow(id: $0.id, kind: $0.kind, title: $0.title, isFailed: $0.lastError != nil, error: $0.lastError)
+                        }),
                     scope: Binding(get: { viewModel.scope }, set: { viewModel.scope = $0 }),
                     convoID: viewModel.convoID,
                     thumbnail: { _ in nil },
@@ -256,7 +269,13 @@ struct MacItemDetailHost: View {
                         onOpenLink: { NSWorkspace.shared.open($0) },
                         onOpenConversation: onOpenConversation,
                         onSubmit: { Task { await viewModel.submitComment(attachments: []) } },
-                        onAttach: { pickFiles { files in Task { await viewModel.submitComment(attachments: files) } } },
+                        // Fix wave part 2, item B: attach must post an
+                        // attachment-only comment (empty body, draft
+                        // untouched) via `submitAttachments`, not
+                        // `submitComment(attachments:)` — the Send button
+                        // above keeps owning `submitComment` for the
+                        // draft-as-body path.
+                        onAttach: { pickFiles { urls in Task { await attachFiles(urls) } } },
                         onVoiceNote: { startVoiceNote() },
                         onClose: { r in Task { await viewModel.close(resolution: r, comment: nil) } },
                         onReopen: { Task { await viewModel.reopen() } })
@@ -266,6 +285,13 @@ struct MacItemDetailHost: View {
             }
             if case let .recording(start) = state.detailRecorder.state {
                 voiceRecordingBar(start: start)
+            }
+            // C2/I9: coarse "something is downloading" affordance — not
+            // per-row, since `AttachmentFile`'s row (in `ItemDetailView`,
+            // DesignSystem, out of scope for this file) takes no loading
+            // parameter to hang a per-row spinner off of.
+            if !state.detailFetchingBlobRefs.isEmpty {
+                fetchingBar()
             }
         }
         .navigationTitle("")
@@ -337,39 +363,109 @@ struct MacItemDetailHost: View {
 
     /// Image attachments open the gallery viewer (item + every comment's
     /// image attachments, in thread order); everything else downloads to a
-    /// temp file and hands it to the user's default app, mirroring the
-    /// chat timeline's file-tap path (`ChatViewModel.writeTempFile` →
-    /// `NSWorkspace.open`). C2/I9 (temp-file/attachment code): left as-is
-    /// per the coordinator's instruction — part 2 switches this to a
-    /// shared helper.
+    /// safe temp file (`AttachmentTempFiles.write`, fix wave part 2 item
+    /// H/C2/I9 — namespaced by a digest of `blobRef` so two attachments
+    /// sharing a display name never collide, and the raw name is
+    /// sanitised against path traversal) and hands it to the user's
+    /// default app.
+    ///
+    /// `detailFetchingBlobRefs` guards against a double-click starting a
+    /// second concurrent download of the same attachment, and
+    /// `detailAttachmentFiles` remembers where a blobRef was already
+    /// written this session so re-opening it skips the network fetch
+    /// entirely (re-verified with `fileExists` in case the OS reaped the
+    /// temp dir between launches — the file only needs to survive
+    /// `MacItemsPaneState`'s own lifetime, not longer, so a miss here just
+    /// falls through to a normal re-fetch rather than being an error).
     private func openAttachment(_ a: TrackerAttachment, in item: TrackerItem) {
         guard let deps else { return }
         if a.isImage {
             let all = (item.attachments + (viewModel?.comments.flatMap(\.attachments) ?? [])).filter(\.isImage)
             let urls = all.map(mediaURL)
             state.detailGalleryPreview = GalleryPreview(gallery: ImageGalleries.urls(urls, tapped: mediaURL(a), deps: deps, session: session))
-        } else {
-            Task {
-                guard let data = await deps.mediaService(for: session).fetchBytes(mxcURL: mediaURL(a)) else { return }
-                let url = FileManager.default.temporaryDirectory.appendingPathComponent(a.name.isEmpty ? a.blobRef : a.name)
-                try? data.write(to: url)
+            return
+        }
+        if let cached = state.detailAttachmentFiles[a.blobRef], FileManager.default.fileExists(atPath: cached.path) {
+            NSWorkspace.shared.open(cached)
+            return
+        }
+        guard !state.detailFetchingBlobRefs.contains(a.blobRef) else { return }
+        state.detailFetchingBlobRefs.insert(a.blobRef)
+        Task {
+            defer { state.detailFetchingBlobRefs.remove(a.blobRef) }
+            guard let data = await deps.mediaService(for: session).fetchBytes(mxcURL: mediaURL(a)) else {
+                state.detailViewModel?.error = "Couldn't download \(a.name.isEmpty ? "that attachment" : a.name)."
+                return
+            }
+            do {
+                let url = try AttachmentTempFiles.write(data, name: a.name, blobRef: a.blobRef)
+                state.detailAttachmentFiles[a.blobRef] = url
                 NSWorkspace.shared.open(url)
+            } catch {
+                // Do NOT open on a write failure — there's nothing valid
+                // to hand `NSWorkspace`.
+                state.detailViewModel?.error = error.localizedDescription
             }
         }
     }
 
-    private func pickFiles(_ done: @escaping ([(data: Data, name: String, mime: String)]) -> Void) {
+    /// Hands back the picked URLs only — reading their bytes is the
+    /// caller's job (`attachFiles`), off the main queue.
+    private func pickFiles(_ done: @escaping ([URL]) -> Void) {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.begin { response in
             guard response == .OK else { return }
-            done(panel.urls.compactMap { url in
-                guard let data = try? Data(contentsOf: url) else { return nil }
-                let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
-                return (data, url.lastPathComponent, mime)
-            })
+            done(panel.urls)
         }
+    }
+
+    /// Fix wave part 2 (minor): reads each picked file's bytes off the
+    /// main queue (`Task.detached` — `pickFiles`'s old inline
+    /// `Data(contentsOf:)` in the panel's completion handler ran
+    /// synchronously on main) and caps at 25 MB/file; an oversized file is
+    /// skipped with `vm.error` set rather than silently dropped or
+    /// blocking the UI while it reads. Successfully-read files are handed
+    /// to `submitAttachments` (item B) as one attachment-only comment.
+    private static let maxAttachmentBytes = 25 * 1024 * 1024
+
+    /// `Result`'s failure type must conform to `Error` — a plain `String`
+    /// doesn't, hence this tiny wrapper rather than `Result<Data, String>`.
+    private struct AttachmentReadFailure: Error { let message: String }
+
+    private func attachFiles(_ urls: [URL]) async {
+        guard let viewModel = state.detailViewModel else { return }
+        var staged: [(data: Data, name: String, mime: String)] = []
+        for url in urls {
+            switch await Self.readCapped(url) {
+            case .success(let data):
+                let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+                staged.append((data, url.lastPathComponent, mime))
+            case .failure(let failure):
+                viewModel.error = failure.message
+            }
+        }
+        guard !staged.isEmpty else { return }
+        _ = await viewModel.submitAttachments(staged)
+    }
+
+    /// Off-main file read with a size cap, run via `Task.detached` so the
+    /// synchronous `Data(contentsOf:)` never blocks the main actor this
+    /// view lives on.
+    private static func readCapped(_ url: URL) async -> Result<Data, AttachmentReadFailure> {
+        await Task.detached(priority: .userInitiated) { () -> Result<Data, AttachmentReadFailure> in
+            let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+            let size = attrs?[.size] as? Int
+            if let size, size > maxAttachmentBytes {
+                return .failure(AttachmentReadFailure(message: "\(url.lastPathComponent) is larger than 25 MB and wasn't attached."))
+            }
+            do {
+                return .success(try Data(contentsOf: url))
+            } catch {
+                return .failure(AttachmentReadFailure(message: "Couldn't read \(url.lastPathComponent): \(error.localizedDescription)"))
+            }
+        }.value
     }
 
     /// Starts recording; `voiceRecordingBar` below stops it and hands the
@@ -403,6 +499,18 @@ struct MacItemDetailHost: View {
             .buttonStyle(.plain)
         }
         .padding(10)
+        .background(.bar)
+    }
+
+    /// C2/I9: coarse download-in-progress affordance — see the doc comment
+    /// on `openAttachment` for why this isn't per-row.
+    private func fetchingBar() -> some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text("Downloading attachment…").font(.caption).foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(8)
         .background(.bar)
     }
 }
