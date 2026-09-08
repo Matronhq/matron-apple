@@ -136,11 +136,16 @@ struct MacComposerView: View {
                         onSelectSuggestion: { suggestion in viewModel.selectSuggestion(suggestion) }
                     )
                     .padding(.horizontal)
-                } else if viewModel.canMakeTask {
+                } else if viewModel.canMakeTask && viewModel.sendError == nil {
                     // Task 12: floating "Make task" pill, ⌘⇧T. After the
                     // palette branch — the palette only shows for `/`
                     // input, which can also be non-empty text, so if both
-                    // could ever qualify at once the palette wins.
+                    // could ever qualify at once the palette wins. Also
+                    // gated on `sendError == nil` (bugbot, PR #186): the
+                    // error banner is a separate VStack row directly
+                    // above `composerBar`, and this overlay floats just
+                    // above composerBar's own top edge — without the
+                    // gate the pill would draw right over the banner.
                     MakeTaskPill { Task { await viewModel.makeTask() } }
                 } else if let notice = viewModel.lastFiledTaskNotice {
                     // Fix wave, item I1: the VM owns the auto-clear timer
@@ -157,6 +162,8 @@ struct MacComposerView: View {
             }
             .alignmentGuide(.top) { $0[.bottom] + 4 }
             .animation(.easeInOut(duration: 0.18), value: viewModel.canMakeTask)
+            .animation(.easeInOut(duration: 0.18), value: viewModel.showPalette)
+            .animation(.easeInOut(duration: 0.18), value: viewModel.sendError != nil)
         }
         // Restore any draft the user typed in this room earlier in the
         // session. `.task` runs on view appear; the per-room cache

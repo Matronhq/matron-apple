@@ -207,30 +207,46 @@ struct ComposerView: View {
         // types and clears the field.
         .overlay(alignment: .top) {
             ZStack {
-                // The palette wins when both could show. `canMakeTask`
-                // already excludes a bare single-token slash draft
+                // Neither the pill nor the notice may show while the
+                // palette OR the error banner is up (bugbot, PR #186):
+                // both those are separate VStack rows ABOVE `composerBar`
+                // (the palette pushes it down when stacked; the error
+                // banner is a sibling render right above it either way),
+                // so this floating overlay — anchored 8pt above
+                // `composerBar`'s own top edge — would draw right over
+                // whichever of them is showing if it weren't suppressed
+                // here too. `viewModel.showPalette` is the VM's real
+                // palette-visibility state (there is no separate
+                // view-local flag) — `canMakeTask` already excludes a
+                // bare single-token slash draft
                 // (`ComposerViewModel.isSlashCommandDraft`), but the
-                // palette also opens in argument-completion mode for a
+                // palette ALSO opens in argument-completion mode for a
                 // fully-typed command plus a partial argument
                 // (`/start ~/re`) — multi-token, so NOT excluded there —
-                // and the pill must not cover that suggestion list.
-                if viewModel.canMakeTask && !viewModel.showPalette {
-                    MakeTaskPill { Task { await viewModel.makeTask() } }
-                } else if let notice = viewModel.lastFiledTaskNotice {
-                    // Fix wave, item I1: the VM owns the auto-clear timer
-                    // (`showFiledTaskNotice()`/`noticeTask`) — this view
-                    // just renders whatever string is there, it doesn't
-                    // race its own `.task { sleep }` against VM state it
-                    // doesn't own.
-                    Text(notice)
-                        .font(.caption)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(.regularMaterial, in: Capsule())
+                // which is exactly the case this whole block guards
+                // against.
+                if !viewModel.showPalette && viewModel.sendError == nil {
+                    if viewModel.canMakeTask {
+                        MakeTaskPill { Task { await viewModel.makeTask() } }
+                    } else if let notice = viewModel.lastFiledTaskNotice {
+                        // Fix wave, item I1: the VM owns the auto-clear
+                        // timer (`showFiledTaskNotice()`/`noticeTask`) —
+                        // this view just renders whatever string is
+                        // there, it doesn't race its own
+                        // `.task { sleep }` against VM state it doesn't
+                        // own.
+                        Text(notice)
+                            .font(.caption)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(.regularMaterial, in: Capsule())
+                    }
                 }
             }
             .alignmentGuide(.top) { $0[.bottom] + 8 }
             .animation(.easeInOut(duration: 0.18), value: viewModel.canMakeTask)
+            .animation(.easeInOut(duration: 0.18), value: viewModel.showPalette)
+            .animation(.easeInOut(duration: 0.18), value: viewModel.sendError != nil)
         }
     }
 

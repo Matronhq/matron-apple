@@ -1468,6 +1468,25 @@ final class ComposerViewModelTests: XCTestCase {
         XCTAssertEqual(vm.input, "")
     }
 
+    /// Bugbot, PR #186 (MEDIUM — "stale error after successful file"): a
+    /// successful `makeTask()` must clear `sendError`, same as `send()`
+    /// and `sendVoiceNote()` — otherwise a leftover error banner from an
+    /// earlier failed attempt (or an unrelated failed send) keeps
+    /// floating over a composer that just succeeded.
+    @MainActor
+    func testMakeTask_success_clearsAPriorSendError() async {
+        let sync = FakeItemsSync()
+        let vm = ComposerViewModel(roomID: "c1", timeline: FakeTimelineService(), commands: [],
+                                   items: sync, itemsUpload: { _, _ in "blob" })
+        vm.reportAttachmentError("a stale error from something else")
+        XCTAssertNotNil(vm.sendError)
+        vm.input = "file this"
+
+        await vm.makeTask()
+
+        XCTAssertNil(vm.sendError, "a successful file must clear any stale error, same as send()")
+    }
+
     @MainActor
     func testMakeTaskHiddenWithoutItemsSupport() {
         let vm = ComposerViewModel(roomID: "c1", timeline: FakeTimelineService(), commands: [])
@@ -1625,9 +1644,12 @@ final class ComposerViewModelTests: XCTestCase {
         XCTAssertTrue(created.body.hasSuffix("second line"))
     }
 
-    /// A failed attachment upload must leave the composer exactly as the
-    /// user left it — text and staged files intact, including the staged
-    /// copy still on disk — so nothing silently disappears.
+    /// A failed attachment upload must RESTORE the composer to exactly
+    /// what the user left it as (bugbot, PR #186: `makeTask()` now clears
+    /// optimistically at tap time, same as `send()`, so a failure path
+    /// restores rather than "never touched") — text and staged files
+    /// back, including the staged copy still on disk — so nothing
+    /// silently disappears.
     @MainActor
     func testMakeTask_uploadFailureMidway_leavesComposerIntact() async throws {
         let firstURL = try makeTempFile(named: "a.png")
@@ -1659,11 +1681,86 @@ final class ComposerViewModelTests: XCTestCase {
         }
     }
 
+    /// Bugbot, PR #186 (HIGH — "late composer clear after upload"): text
+    /// typed WHILE the upload round-trip is in flight must survive —
+    /// `makeTask()` now clears from a tap-time SNAPSHOT of `input`, not
+    /// the live property, so anything typed after the tap starts from a
+    /// genuinely empty composer instead of being wiped by a stale
+    /// post-upload clear.
+    @MainActor
+    func testMakeTask_textTypedDuringUpload_survivesTheClear() async throws {
+        let url = try makeTempFile(named: "shot.png")
+        let sync = FakeItemsSync()
+        let gate = SendGate()
+        let vm = ComposerViewModel(
+            roomID: "c1", timeline: FakeTimelineService(), commands: [], items: sync,
+            itemsUpload: { _, _ in
+                await gate.markStarted()
+                await gate.wait()
+                return "blob"
+            }
+        )
+        await vm.attachFiles([url])
+        vm.input = "file this"
+
+        let task = Task { await vm.makeTask() }
+        while await !gate.isStarted() { await Task.yield() }
+        // The optimistic clear has already happened — the field is empty
+        // and ready for new text, same as `send()` mid-flight.
+        XCTAssertEqual(vm.input, "")
+        vm.input = "typed while filing"
+        await gate.open()
+        await task.value
+
+        XCTAssertEqual(sync.created.first?.title, "file this",
+                       "the FILED task's title came from the snapshot taken at tap time")
+        XCTAssertEqual(vm.input, "typed while filing",
+                       "text typed after the tap must survive — it was never part of what got filed")
+    }
+
+    /// Bugbot, PR #186 (HIGH — "late composer clear after upload"): an
+    /// attachment staged WHILE the upload round-trip is in flight must
+    /// not be deleted — the success path only deletes the tap-time
+    /// SNAPSHOT's staged copies, never anything added afterward.
+    @MainActor
+    func testMakeTask_attachmentStagedDuringUpload_isNotDeleted() async throws {
+        let originalURL = try makeTempFile(named: "original.png")
+        let midFlightURL = try makeTempFile(named: "midflight.png")
+        let sync = FakeItemsSync()
+        let gate = SendGate()
+        let vm = ComposerViewModel(
+            roomID: "c1", timeline: FakeTimelineService(), commands: [], items: sync,
+            itemsUpload: { _, _ in
+                await gate.markStarted()
+                await gate.wait()
+                return "blob"
+            }
+        )
+        await vm.attachFiles([originalURL])
+        vm.input = "ship this"
+
+        let task = Task { await vm.makeTask() }
+        while await !gate.isStarted() { await Task.yield() }
+        XCTAssertTrue(vm.stagedAttachments.isEmpty, "the optimistic clear already emptied the tray")
+        await vm.attachFiles([midFlightURL])
+        await gate.open()
+        await task.value
+
+        XCTAssertEqual(sync.created.first?.attachments.map(\.name), ["original.png"],
+                       "only the snapshot's attachment was actually filed")
+        XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["midflight.png"],
+                       "the mid-flight attachment stays staged — it was never part of this filing")
+        let midFlightStagedURL = try XCTUnwrap(vm.stagedAttachments.first?.url)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: midFlightStagedURL.path),
+                      "the mid-flight attachment's temp copy must not be deleted — only the snapshot's copies are")
+    }
+
     /// Fix wave, item I3: `enqueueCreate` reporting failure (the outbox
-    /// insert itself didn't land) must leave the composer exactly as the
-    /// user left it — nothing was cleared yet at that point in
-    /// `makeTask()` — and surface a distinct error, not silently drop the
-    /// draft.
+    /// insert itself didn't land) must RESTORE the composer to what the
+    /// user left it as (bugbot, PR #186: the clear now happens
+    /// optimistically at tap time, so a failed enqueue restores rather
+    /// than "never cleared") and surface a distinct error, not silently
+    /// drop the draft.
     @MainActor
     func testMakeTask_enqueueCreateFailure_leavesComposerIntact() async {
         let sync = FakeItemsSync()
@@ -1674,7 +1771,7 @@ final class ComposerViewModelTests: XCTestCase {
 
         await vm.makeTask()
 
-        XCTAssertEqual(vm.input, "Refactor auth\nkeep the public API", "nothing was cleared — the insert never landed")
+        XCTAssertEqual(vm.input, "Refactor auth\nkeep the public API", "the draft must be restored — the insert never landed")
         XCTAssertEqual(vm.sendError, "Couldn't file the task — try again.")
         XCTAssertNil(vm.lastFiledTaskNotice, "a failed enqueue must never show the success toast")
     }

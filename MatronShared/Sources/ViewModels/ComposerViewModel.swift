@@ -577,18 +577,36 @@ public final class ComposerViewModel {
     /// `outgoingAttachmentJSON` in `JournalAPI+Items.swift`), so this path
     /// never touches `timeline`/`sendAttachments(_:caption:)` at all.
     ///
-    /// Only clears the composer (and shows the notice) once
-    /// `items.enqueueCreate` reports the row is actually queued (fix
-    /// wave, item I3) — an upload failure OR a failed enqueue both set
-    /// `sendError` and leave the composer exactly as the user left it,
-    /// same recoverable shape as a failed `send()`. `isSending` covers
-    /// only the upload phase (fix wave, item I2) — see
-    /// `uploadStagedAttachmentsForTask()`'s comment for why.
+    /// Snapshots `input`/`stagedAttachments` at tap time and clears the
+    /// composer in the SAME tick (bugbot, PR #186) — mirroring `send()`'s
+    /// own optimistic clear. The upload/enqueue round-trip that follows
+    /// can take seconds; clearing only AFTER it finished (the original
+    /// shape) meant text typed and files staged WHILE that round-trip
+    /// was in flight sat in `input`/`stagedAttachments` right up until
+    /// the late clear wiped them — including deleting the temp copy of
+    /// an attachment the user had just staged, which was never uploaded
+    /// or filed at all. Clearing from the SNAPSHOT instead of the live
+    /// properties means anything the user does after the tap starts from
+    /// a genuinely empty composer, exactly like a `send()` in flight.
+    ///
+    /// On success, only the snapshot's staged copies are deleted (never
+    /// anything staged after the tap) and `sendError` is cleared, same as
+    /// `send()`/`sendVoiceNote()`. On an upload OR enqueue failure, the
+    /// snapshot is restored: the attachments are prepended back onto
+    /// whatever is staged now (mirrors `send()`'s
+    /// `AttachmentSendFailure` catch — anything attached during the
+    /// round-trip survives, ahead of the failed ones), and the text is
+    /// restored via `restoreInput(_:)`, which is itself a no-op if the
+    /// user has already started typing something new (same "never
+    /// clobber live keystrokes" rule `send()` uses).
     public func makeTask() async {
         guard let items, canMakeTask else { return }
         isFilingTask = true
         defer { isFilingTask = false }
-        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let pending = input
+        let snapshotAttachments = stagedAttachments
+        let text = pending.trimmingCharacters(in: .whitespacesAndNewlines)
         let firstBreak = text.firstIndex(of: "\n")
         let firstLine = String(firstBreak.map { text[..<$0] } ?? Substring(text))
             .trimmingCharacters(in: .whitespaces)
@@ -596,7 +614,7 @@ public final class ComposerViewModel {
             String(text[text.index(after: $0)...]).trimmingCharacters(in: .whitespacesAndNewlines)
         } ?? ""
 
-        var title = firstLine.isEmpty ? (stagedAttachments.first?.filename ?? "Task") : firstLine
+        var title = firstLine.isEmpty ? (snapshotAttachments.first?.filename ?? "Task") : firstLine
         var body = rest
         if title.count > 200 {
             // The full first line survives at the top of the body — only
@@ -605,39 +623,47 @@ public final class ComposerViewModel {
             title = String(title.prefix(200))
         }
 
-        guard let uploaded = await uploadStagedAttachmentsForTask() else { return }
+        // Clear NOW, before the round-trip — see the doc comment above.
+        clearComposerAfterSend()
+
+        guard let uploaded = await uploadStagedAttachmentsForTask(snapshotAttachments) else {
+            stagedAttachments = snapshotAttachments + stagedAttachments
+            restoreInput(pending)
+            return
+        }
 
         let queued = await items.enqueueCreate(
             localID: UUID().uuidString,
             NewItem(kind: .task, title: title, body: body, attachments: uploaded, convoID: roomID)
         )
         guard queued else {
-            // Nothing was cleared yet — the composer is still exactly as
-            // the user left it, so there's nothing to restore, only an
-            // error to surface.
             sendError = "Couldn't file the task — try again."
+            stagedAttachments = snapshotAttachments + stagedAttachments
+            restoreInput(pending)
             return
         }
 
-        // Same clearing helper `send()` uses on success — see its comment
-        // on why this happens before showing the confirmation.
-        let staged = stagedAttachments
-        clearComposerAfterSend()
-        staged.forEach { $0.deleteStagedCopy() }
+        // Only the SNAPSHOT's staged copies — never anything the user
+        // attached after the tap, which is still sitting untouched in
+        // `stagedAttachments` right now.
+        snapshotAttachments.forEach { $0.deleteStagedCopy() }
+        sendError = nil
         showFiledTaskNotice()
     }
 
-    /// Uploads every staged attachment through `itemsUpload` for
-    /// `makeTask()`, holding `isSending` only for this phase (fix wave,
-    /// item I2) — the pill's `!isSending` gate must not stay locked
-    /// across `enqueueCreate`'s now-detached outbox drain (a network
-    /// round-trip that can take seconds), only across the uploads this
-    /// call actually blocks on. Returns the uploaded `TrackerAttachment`s
-    /// (empty when there was nothing staged), or `nil` with `sendError`
-    /// already set on any failure — stops at the first failed upload,
-    /// mirroring `sendAttachments(_:caption:)`'s same policy for `send()`.
-    private func uploadStagedAttachmentsForTask() async -> [TrackerAttachment]? {
-        guard !stagedAttachments.isEmpty else { return [] }
+    /// Uploads `attachments` (the tap-time snapshot — NOT the live
+    /// `stagedAttachments`, which may already hold newer files by the
+    /// time this returns) through `itemsUpload` for `makeTask()`, holding
+    /// `isSending` only for this phase (fix wave, item I2) — the pill's
+    /// `!isSending` gate must not stay locked across `enqueueCreate`'s
+    /// now-detached outbox drain (a network round-trip that can take
+    /// seconds), only across the uploads this call actually blocks on.
+    /// Returns the uploaded `TrackerAttachment`s (empty when there was
+    /// nothing staged), or `nil` with `sendError` already set on any
+    /// failure — stops at the first failed upload, mirroring
+    /// `sendAttachments(_:caption:)`'s same policy for `send()`.
+    private func uploadStagedAttachmentsForTask(_ attachments: [StagedAttachment]) async -> [TrackerAttachment]? {
+        guard !attachments.isEmpty else { return [] }
         guard let itemsUpload else {
             sendError = "Attachments can't be filed as a task here."
             return nil
@@ -646,7 +672,7 @@ public final class ComposerViewModel {
         defer { isSending = false }
         var uploaded: [TrackerAttachment] = []
         do {
-            for attachment in stagedAttachments {
+            for attachment in attachments {
                 let url = attachment.url
                 // Off-main file read, same rationale as `sendAttachments`:
                 // a multi-MB staged file read synchronously on the main
