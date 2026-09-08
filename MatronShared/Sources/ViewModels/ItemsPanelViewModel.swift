@@ -125,7 +125,19 @@ public final class ItemsPanelViewModel {
         return s
     }
 
+    /// Monotonic token identifying the current observation run; bumped by
+    /// every `start()`. This VM is shared per-room across surfaces (e.g.
+    /// the Mac pane VM survives while the pane is closed, per this file's
+    /// own doc comments), and SwiftUI can run a successor view's
+    /// `.task`/`start()` before a predecessor's `onDisappear` — the same
+    /// remount hazard `ChatViewModel`/`SubChatStripViewModel` guard
+    /// against. Hosts record the generation after their `start()` and pass
+    /// it to `stop(ifGeneration:)` so a stale surface's teardown can never
+    /// cancel a successor's fresh stream.
+    public private(set) var observationGeneration: Int = 0
+
     public func start() {
+        observationGeneration += 1
         stop()
         resubscribe()
         supportedTask = Task { [weak self] in
@@ -136,6 +148,15 @@ public final class ItemsPanelViewModel {
                 self.isSupported = v
             }
         }
+    }
+
+    /// Stops the observation only if `generation` still identifies the
+    /// current run — a stale host's `onDisappear` (which can fire AFTER
+    /// its successor's `start()`) becomes a no-op instead of killing the
+    /// shared stream. Mirrors `SubChatStripViewModel.stop(ifGeneration:)`.
+    public func stop(ifGeneration generation: Int) {
+        guard generation == observationGeneration else { return }
+        stop()
     }
 
     public func stop() {

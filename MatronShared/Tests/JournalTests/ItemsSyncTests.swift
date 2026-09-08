@@ -426,6 +426,49 @@ final class ItemsSyncTests: XCTestCase {
         XCTAssertEqual(api.commentCalls.count, 1, "no retry task exists after a stop() aborts the in-flight call")
     }
 
+    /// Fix wave, item I3: the sibling case to the test above — a resumed
+    /// call that THROWS after `stop()` flipped `stopped` must hit the same
+    /// guard as a successful resume, at the top of the per-row `catch`
+    /// block. Without it, the catch would still mark the attempt (a write
+    /// racing whatever `stop()`'s caller does next) and, for a retryable
+    /// disposition, the OUTER `drainOutbox()` would schedule a fresh
+    /// `retryTask` after `stop()` already awaited the old one to nil.
+    func testStopAbortsInFlightDrainOnThrowWithoutWritingOrRetrying() async throws {
+        let api = FakeItems()
+        let (sync, store, _, _) = try make(api: api, retryBase: 0.05)
+        try store.itemOutboxInsert(ItemOutboxRecord(localID: "L1", itemID: "it_1", op: "comment", payloadJSON: #"{"body":"x","attachments":[]}"#, createdAt: 0, attempts: 0, lastError: nil))
+        api.blockNextComment = true
+        api.commentErrorForItemID = ["it_1": JournalAPIError.transport("offline")]
+        let drainTask = Task { await sync.drainOutbox() }
+        try await waitUntil { api.isGated }
+        await sync.stop()
+        api.releaseGate()
+        _ = await drainTask.value
+
+        let pending = try store.itemOutboxPending()
+        XCTAssertEqual(pending.map(\.localID), ["L1"], "the row is untouched — neither deleted nor attempt-bumped")
+        XCTAssertEqual(pending.first?.attempts, 0, "no attempt marked for a throw that resumes after stop()")
+        XCTAssertNil(pending.first?.lastError)
+
+        // No retry task exists: wait past what the (fast, 0.05s-based)
+        // backoff would have been and confirm no second attempt fires.
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(api.commentCalls.count, 1, "no retry task exists after a post-stop throw")
+    }
+
+    /// Fix wave, item I3: an enqueue racing sign-out must not insert after
+    /// `wipeOutbox()` — both hosts' teardown calls `stop()` before wiping,
+    /// so `stopped` being set is the signal a late-arriving enqueue must
+    /// respect.
+    func testEnqueueAfterStopDoesNotInsertIntoOutbox() async throws {
+        let api = FakeItems()
+        let (sync, store, _, _) = try make(api: api)
+        await sync.stop()
+        await sync.enqueueComment(itemID: "it_1", localID: "L1", body: "x", attachments: [])
+        await sync.enqueueCreate(localID: "L2", NewItem(kind: .task, title: "T", convoID: "c1"))
+        XCTAssertTrue(try store.itemOutboxPending().isEmpty, "an enqueue racing sign-out must not insert after stop()")
+    }
+
     private func waitUntil(_ cond: @escaping () throws -> Bool, timeout: TimeInterval = 2) async throws {
         struct TimeoutError: Error, CustomStringConvertible { var description: String { "waitUntil timed out" } }
         let start = Date()

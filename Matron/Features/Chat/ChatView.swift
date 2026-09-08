@@ -1012,6 +1012,22 @@ struct ChatView: View {
                 .accessibilityLabel("Session info")
             }
         }
+        // I8 follow-up: the `.overlay` drawer below cannot paint over
+        // UIKit's own navigation bar no matter where it sits in the
+        // modifier chain — the earlier "moved to be the LAST modifier"
+        // fix only stopped the scrim from rendering BEHIND the bar; the
+        // bar itself (title, Back, ⓘ, subagents menu) still floats above
+        // the dimming layer and stays tappable. Hide the bar outright
+        // while the drawer is open instead. The drawer supplies its own
+        // "Close" toolbar button plus scrim-tap and edge-drag dismissal,
+        // so hiding the system bar's Back button loses no way out.
+        // `.animation(_:value:)` is what makes `.toolbar(_:for:)` and
+        // `.navigationBarBackButtonHidden` actually transition instead of
+        // popping — paired with the same 0.22s easeInOut the drawer's own
+        // slide-in uses so the bar and the panel move together.
+        .toolbar(showItems ? .hidden : .visible, for: .navigationBar)
+        .navigationBarBackButtonHidden(showItems)
+        .animation(.easeInOut(duration: 0.22), value: showItems)
         .sheet(isPresented: $showSessionStatus, onDismiss: {
             // Present the media browser only after the info sheet is fully
             // gone — flipping it while the sheet is still up is a silent

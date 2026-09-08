@@ -118,9 +118,17 @@ public final class ItemDetailViewModel {
     /// the upload actually succeeded (fix wave, item F) — the previous
     /// `defer`-based cleanup ran unconditionally, so an upload failure
     /// both showed an error AND destroyed the only copy of the recording,
-    /// leaving nothing to retry.
+    /// leaving nothing to retry. The empty/unreadable-recording early
+    /// return (fix wave, item I4) also cleans up: unlike an upload
+    /// failure there's nothing here worth retrying — an empty or
+    /// unreadable file will read the same way again — so leaving it
+    /// behind only orphans a temp file forever.
     public func sendVoiceNote(url: URL) async {
-        guard let data = try? Data(contentsOf: url), !data.isEmpty else { error = "Voice note was empty."; return }
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else {
+            error = "Voice note was empty."
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
         let ok = await submitAttachments([(data, "voice-note.m4a", "audio/mp4")])
         if ok { try? FileManager.default.removeItem(at: url) }
     }
