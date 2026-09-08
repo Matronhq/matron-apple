@@ -130,9 +130,26 @@ struct MacComposerView: View {
                         onSelectSuggestion: { suggestion in viewModel.selectSuggestion(suggestion) }
                     )
                     .padding(.horizontal)
+                } else if viewModel.canMakeTask {
+                    // Task 12: floating "Make task" pill, ⌘⇧T. After the
+                    // palette branch — the palette only shows for `/`
+                    // input, which can also be non-empty text, so if both
+                    // could ever qualify at once the palette wins.
+                    MakeTaskPill { Task { await viewModel.makeTask() } }
+                } else if let notice = viewModel.lastFiledTaskNotice {
+                    Text(notice)
+                        .font(.caption)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(.regularMaterial, in: Capsule())
+                        .task {
+                            try? await Task.sleep(nanoseconds: 1_800_000_000)
+                            viewModel.lastFiledTaskNotice = nil
+                        }
                 }
             }
             .alignmentGuide(.top) { $0[.bottom] + 4 }
+            .animation(.easeInOut(duration: 0.18), value: viewModel.canMakeTask)
         }
         // Restore any draft the user typed in this room earlier in the
         // session. `.task` runs on view appear; the per-room cache

@@ -1,6 +1,7 @@
 import XCTest
 import MatronChat
 import MatronModels
+import MatronJournal
 @testable import MatronViewModels
 
 /// Local mirror of `Tests/ChatTests/FakeTimelineService`. Kept in this file
@@ -1395,5 +1396,65 @@ final class ComposerViewModelTests: XCTestCase {
         vm.paletteMoveDown()
         XCTAssertNil(vm.paletteSelection)
         XCTAssertFalse(vm.confirmPaletteSelection())
+    }
+
+    // MARK: - Make task (Task 12)
+
+    private final class FakeItemsSync: ItemsSyncing, @unchecked Sendable {
+        var created: [NewItem] = []
+        func refresh(scope: ItemsScope) async {}
+        func refreshItem(id: String) async {}
+        func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async {}
+        func enqueueCreate(localID: String, _ new: NewItem) async { created.append(new) }
+        // `ItemsSyncing.supportedStream()` is `async` (an actor-isolated
+        // requirement — `ItemsSync.supportedStream()` is itself
+        // actor-isolated, so the protocol requirement must be `async` for
+        // that conformance to satisfy it with no unsafe opt-out). This
+        // fake is a plain class, so it satisfies the async requirement
+        // trivially with a synchronous body.
+        func supportedStream() async -> AsyncStream<Bool> { AsyncStream { $0.yield(true) } }
+    }
+
+    @MainActor
+    func testMakeTaskFilesFirstLineAsTitleAndClearsComposer() async {
+        let sync = FakeItemsSync()
+        let vm = ComposerViewModel(roomID: "c1", timeline: FakeTimelineService(), commands: [],
+                                   items: sync, itemsUpload: { _, _ in "blob" })
+        XCTAssertFalse(vm.canMakeTask)
+        vm.input = "Refactor auth\nkeep the public API\nand add tests"
+        XCTAssertTrue(vm.canMakeTask)
+        await vm.makeTask()
+        XCTAssertEqual(sync.created.first?.kind, .task)
+        XCTAssertEqual(sync.created.first?.title, "Refactor auth")
+        XCTAssertEqual(sync.created.first?.body, "keep the public API\nand add tests")
+        XCTAssertEqual(sync.created.first?.convoID, "c1")
+        XCTAssertEqual(vm.input, "")
+    }
+
+    @MainActor
+    func testMakeTaskHiddenWithoutItemsSupport() {
+        let vm = ComposerViewModel(roomID: "c1", timeline: FakeTimelineService(), commands: [])
+        vm.input = "x"
+        XCTAssertFalse(vm.canMakeTask)
+    }
+
+    /// Staged attachments must upload through `itemsUpload` (never ride
+    /// along as a chat `transcript`) and the tray must empty exactly like
+    /// a successful `send()`.
+    @MainActor
+    func testMakeTaskUploadsStagedAttachmentsAndClearsTray() async throws {
+        let url = try makeTempFile(named: "shot.png")
+        let sync = FakeItemsSync()
+        let vm = ComposerViewModel(roomID: "c1", timeline: FakeTimelineService(), commands: [],
+                                   items: sync, itemsUpload: { _, _ in "blob" })
+        await vm.attachFiles([url])
+        vm.input = "ship this"
+
+        await vm.makeTask()
+
+        XCTAssertEqual(sync.created.first?.attachments.first?.blobRef, "blob")
+        XCTAssertNil(sync.created.first?.attachments.first?.transcript,
+                    "a filed task's attachment must never carry a chat transcript")
+        XCTAssertTrue(vm.stagedAttachments.isEmpty)
     }
 }

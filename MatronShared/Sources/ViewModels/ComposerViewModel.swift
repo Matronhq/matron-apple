@@ -1,5 +1,6 @@
 import Foundation
 import MatronChat
+import MatronJournal
 import MatronModels
 import UniformTypeIdentifiers
 
@@ -71,6 +72,28 @@ public final class ComposerViewModel {
     public var canSend: Bool {
         !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !stagedAttachments.isEmpty
     }
+
+    /// The items-tracker sync engine, or `nil` when the tracker feature is
+    /// absent from this composer surface — `nil` also hides the "Make
+    /// task" pill entirely (see `canMakeTask`).
+    private let items: (any ItemsSyncing)?
+    /// Uploads one staged attachment's bytes and returns the blob ref the
+    /// tracker stores. Only used by `makeTask()` — `send()`'s own
+    /// attachment path goes through `timeline`/`sendAttachments(_:caption:)`
+    /// instead, since a filed task is never a chat message.
+    private let itemsUpload: ((Data, String) async throws -> String)?
+    /// Transient confirmation shown after a successful `makeTask()`; the
+    /// view clears it a couple of seconds later.
+    public var lastFiledTaskNotice: String?
+
+    /// Whether `makeTask()` would do anything — the pill's visibility gate.
+    /// Requires the tracker feature (`items != nil`), the same "is there
+    /// anything to file" content check `canSend` uses, and no send/file
+    /// already in flight.
+    public var canMakeTask: Bool {
+        items != nil && !isSending
+            && (!input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !stagedAttachments.isEmpty)
+    }
     /// Mac slash palette is also openable via `⌘K`; iOS toggles purely via `/` typing.
     public var palettePinnedOpen: Bool = false
 
@@ -132,13 +155,17 @@ public final class ComposerViewModel {
         timeline: TimelineService,
         commands: [BotCommand],
         recentFolders: RecentStartFolders = RecentStartFolders(),
-        sessionStatus: @escaping @MainActor () -> SessionStatus? = { nil }
+        sessionStatus: @escaping @MainActor () -> SessionStatus? = { nil },
+        items: (any ItemsSyncing)? = nil,
+        itemsUpload: ((Data, String) async throws -> String)? = nil
     ) {
         self.roomID = roomID
         self.timeline = timeline
         self.commands = commands
         self.recentFolders = recentFolders
         self.sessionStatus = sessionStatus
+        self.items = items
+        self.itemsUpload = itemsUpload
     }
 
     /// Whether the slash palette should be visible. True when the input is
@@ -415,6 +442,89 @@ public final class ComposerViewModel {
             sendError = error.localizedDescription
             restoreInput(pending)
         }
+    }
+
+    /// Files the composer's contents as a tracker task instead of sending
+    /// them as a chat message (spec: "Make task"). The first line becomes
+    /// the title, trimmed and capped at 200 characters; the rest becomes
+    /// the body. A first line over 200 characters is truncated for the
+    /// title, but nothing is lost — the untruncated line is kept at the
+    /// top of the body. Staged attachments upload through `itemsUpload`
+    /// and are attached to the new item directly: they must never carry a
+    /// chat `transcript` (only the bridge is allowed to set one — see
+    /// `outgoingAttachmentJSON` in `JournalAPI+Items.swift`), so this path
+    /// never touches `timeline`/`sendAttachments(_:caption:)` at all.
+    ///
+    /// On success, clears the composer exactly the way `send()` does
+    /// (including forgetting the per-room draft) and sets
+    /// `lastFiledTaskNotice` for the view's transient confirmation. On an
+    /// upload failure, sets `sendError` and leaves the composer intact —
+    /// same recoverable shape as a failed `send()`.
+    public func makeTask() async {
+        guard let items, canMakeTask else { return }
+        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let firstBreak = text.firstIndex(of: "\n")
+        let firstLine = String(firstBreak.map { text[..<$0] } ?? Substring(text))
+            .trimmingCharacters(in: .whitespaces)
+        let rest = firstBreak.map {
+            String(text[text.index(after: $0)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        } ?? ""
+
+        var title = firstLine.isEmpty ? (stagedAttachments.first?.filename ?? "Task") : firstLine
+        var body = rest
+        if title.count > 200 {
+            // The full first line survives at the top of the body — only
+            // the title field itself is capped.
+            body = rest.isEmpty ? firstLine : "\(firstLine)\n\(rest)"
+            title = String(title.prefix(200))
+        }
+
+        isSending = true
+        defer { isSending = false }
+
+        var uploaded: [TrackerAttachment] = []
+        if !stagedAttachments.isEmpty {
+            guard let itemsUpload else {
+                sendError = "Attachments can't be filed as a task here."
+                return
+            }
+            do {
+                for attachment in stagedAttachments {
+                    let url = attachment.url
+                    // Off-main file read, same rationale as `sendAttachments`:
+                    // a multi-MB staged file read synchronously on the main
+                    // actor visibly froze the composer.
+                    let data = try await Task.detached(priority: .userInitiated) {
+                        try Data(contentsOf: url)
+                    }.value
+                    let blobRef = try await itemsUpload(data, attachment.mimeType)
+                    uploaded.append(TrackerAttachment(
+                        blobRef: blobRef, mime: attachment.mimeType,
+                        name: attachment.filename, size: Int64(attachment.sizeBytes)
+                    ))
+                }
+            } catch {
+                sendError = "Couldn't upload an attachment: \(error.localizedDescription)"
+                return
+            }
+        }
+
+        // Same clearing sequence `send()` uses on success — see its
+        // comment on why this happens before the round-trip completes.
+        let staged = stagedAttachments
+        input = ""
+        stagedAttachments = []
+        lastRecalledValue = nil
+        isNavigatingHistory = false
+        folderSuggestionsSuppressedFor = nil
+        ComposerDraftMemory.forget(roomID: roomID)
+        staged.forEach { $0.deleteStagedCopy() }
+
+        await items.enqueueCreate(
+            localID: UUID().uuidString,
+            NewItem(kind: .task, title: title, body: body, attachments: uploaded, convoID: roomID)
+        )
+        lastFiledTaskNotice = "Filed as a task"
     }
 
     /// Puts the user's text back after a failed send — the optimistic clear

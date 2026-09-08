@@ -186,6 +186,29 @@ struct ComposerView: View {
             }
             inputRow
         }
+        // Floating "Make task" pill (Task 12), centred above the composer.
+        // Not stacked into layout like the palette above — it must not
+        // shift the timeline every time it appears/disappears as the user
+        // types and clears the field.
+        .overlay(alignment: .top) {
+            ZStack {
+                if viewModel.canMakeTask {
+                    MakeTaskPill { Task { await viewModel.makeTask() } }
+                } else if let notice = viewModel.lastFiledTaskNotice {
+                    Text(notice)
+                        .font(.caption)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(.regularMaterial, in: Capsule())
+                        .task {
+                            try? await Task.sleep(nanoseconds: 1_800_000_000)
+                            viewModel.lastFiledTaskNotice = nil
+                        }
+                }
+            }
+            .alignmentGuide(.top) { $0[.bottom] + 8 }
+            .animation(.easeInOut(duration: 0.18), value: viewModel.canMakeTask)
+        }
     }
 
     private var inputRow: some View {
