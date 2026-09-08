@@ -19,6 +19,9 @@ public enum JournalEventType {
     /// updates the conversation row and is skipped in the timeline.
     public static let convoMeta = "convo_meta"
     public static let summary = "summary"
+    /// Tracker marker (spec 2026-09-08). Deliberately NOT in `messageTypes`:
+    /// it neither bumps unread nor sets the snippet, matching the server.
+    public static let item = "item"
     /// How an agent-spawn consent card ended (matron-journal
     /// `emitSpawnOutcome`). Server-minted, agent-visible, and durable — the
     /// row the spawn card derives its resolved state from.
