@@ -274,6 +274,9 @@ public actor ItemsSync {
     /// forever and no retry ever actually delivered.
     private func retryFired() async {
         retryTask = nil
+        // `stop()` may have landed during the actor hop; a cancelled retry
+        // must not drain (it would burn an attempt and reschedule itself).
+        guard !Task.isCancelled else { return }
         await drainOutbox()
     }
 
