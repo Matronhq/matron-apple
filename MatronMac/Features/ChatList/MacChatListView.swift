@@ -705,7 +705,10 @@ private struct MacChatRow: View {
                 }
             }
             Spacer(minLength: 0)
-            UnreadBadge(count: summary.unreadCount)
+            HStack(spacing: 4) {
+                NeedsYouBadge(count: summary.needsUserCount)
+                UnreadBadge(count: summary.unreadCount)
+            }
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 4)

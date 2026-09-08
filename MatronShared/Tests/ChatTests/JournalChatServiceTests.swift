@@ -1,5 +1,6 @@
 import XCTest
 import MatronJournal
+import MatronModels
 @testable import MatronChat
 
 final class JournalChatServiceTests: XCTestCase {
@@ -217,6 +218,42 @@ final class JournalChatServiceTests: XCTestCase {
         let revoked = JournalChatService.summary(from: ghost, boxNames: two, boxLetters: letters)
         XCTAssertEqual(revoked.roomBoxNames, [])
         XCTAssertEqual(revoked.boxName, "dev-y")
+    }
+
+    func testSummariesCarryNeedsUserCount() async throws {
+        // `needsUserCount` is app-local (the journal has no such endpoint):
+        // it's sourced from `store.needsUserCountsStream()`, its own
+        // observation alongside `conversationsStream()`/`agentRosterStream()`
+        // in `chatSummaries()`. Per the design ruling, the FIRST emission is
+        // allowed to land before the needs observation's initial value does
+        // (an empty dict until then) — so this loops to the converged state
+        // rather than asserting on the very first snapshot, same watchdog
+        // shape as `testChatSummariesCoalesceBurstsToNewestSnapshot`.
+        let store = try makeStore()
+        try store.applyJournal(JournalEvent(
+            seq: 1, convoID: "c1", ts: Date(), sender: "agent:a", type: "text",
+            payloadData: Data(#"{"body":"hi"}"#.utf8)))
+        try store.upsertItems([
+            TrackerItem(id: "q", num: 1, kind: .question, awaiting: .user, title: "Q", originConvoID: "c1"),
+            TrackerItem(id: "t", num: 2, kind: .task, awaiting: .agent, title: "T", originConvoID: "c1"),
+        ])
+        let service = makeService(store, coalesceInterval: .milliseconds(10))
+
+        let result = Task { () -> Int? in
+            for try await summaries in service.chatSummaries() {
+                if let count = summaries.first(where: { $0.id == "c1" })?.needsUserCount, count > 0 {
+                    return count
+                }
+            }
+            return nil
+        }
+        let watchdog = Task {
+            try await Task.sleep(for: .seconds(3))
+            result.cancel()
+        }
+        let count = try await result.value
+        watchdog.cancel()
+        XCTAssertEqual(count, 1, "one open item awaiting the user on c1 should surface as needsUserCount")
     }
 
     func testRenamingABoxRelabelsAnOpenChatList() async throws {
