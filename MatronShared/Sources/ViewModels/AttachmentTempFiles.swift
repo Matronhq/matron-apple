@@ -29,7 +29,10 @@ public enum AttachmentTempFiles {
                               .replacingOccurrences(of: ":", with: "_")
         let stripped = cleaned.trimmingCharacters(in: .whitespaces)
         if stripped.isEmpty || stripped == "." || stripped == ".." {
-            return UUID().uuidString
+            // Deterministic, so `destination`/`existingFile` agree with an
+            // earlier `write` for the same attachment (uniqueness comes
+            // from the per-blob directory, not the basename).
+            return "attachment"
         }
         return stripped
     }
@@ -53,6 +56,9 @@ public enum AttachmentTempFiles {
     /// it (via `existingFile`) to skip a fetch when the file is already on
     /// disk from an earlier tap — one formula, so the two can never drift.
     public static func destination(name: String, blobRef: String) -> URL {
+        // Tracker attachments may carry an empty `name`; fall back to the
+        // blob ref so the path is stable across write → existingFile.
+        let name = name.isEmpty ? blobRef : name
         let digest = SHA256.hash(data: Data(blobRef.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
         return FileManager.default.temporaryDirectory
             .appendingPathComponent("matron-attachments", isDirectory: true)
