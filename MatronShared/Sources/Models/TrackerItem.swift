@@ -6,6 +6,13 @@ public enum ItemResolution: String, Codable, Sendable, CaseIterable { case done,
 public enum ItemAwaiting: String, Codable, Sendable { case user, agent }
 public enum ItemAuthor: String, Codable, Sendable { case user, agent }
 
+/// Which items a list/query covers: one origin conversation, or every
+/// conversation. Lives in Models (not Journal, where it originated) so
+/// DesignSystem views like `ItemsListView` can take a `Binding<ItemsScope>`
+/// without importing MatronJournal — DesignSystem may depend on
+/// Models/Events/Search but never on Journal or ViewModels.
+public enum ItemsScope: Equatable, Hashable, Sendable { case convo(String), all }
+
 private func msDate(_ v: Any?) -> Date? {
     guard let n = v as? NSNumber else { return nil }
     return Date(timeIntervalSince1970: n.doubleValue / 1000)

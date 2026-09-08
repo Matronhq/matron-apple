@@ -123,8 +123,6 @@ public struct ItemOutboxRecord: Codable, FetchableRecord, PersistableRecord, Equ
     }
 }
 
-public enum ItemsScope: Equatable, Hashable, Sendable { case convo(String), all }
-
 extension JournalStore {
     public func upsertItems(_ items: [TrackerItem]) throws {
         guard !items.isEmpty else { return }
