@@ -3,6 +3,7 @@ import Network
 import os
 import MatronModels
 import MatronSearch
+import MatronEvents
 
 public enum JournalSyncError: Error, Equatable, Sendable {
     case offline
@@ -109,6 +110,7 @@ public actor JournalSyncEngine {
 
     private var state: SyncConnectionState = .connecting
     private var stateContinuations: [UUID: AsyncStream<SyncConnectionState>.Continuation] = [:]
+    private var itemMarkerContinuations: [UUID: AsyncStream<(convoID: String, marker: ItemMarkerEvent)>.Continuation] = [:]
     private var ephemeralContinuations: [UUID: (convoID: String, continuation: AsyncStream<EphemeralUpdate>.Continuation)] = [:]
     private var activityContinuations: [UUID: (convoID: String, continuation: AsyncStream<ActivityUpdate>.Continuation)] = [:]
     private var toolStreamContinuations: [UUID: (convoID: String, continuation: AsyncStream<ToolStreamUpdate>.Continuation)] = [:]
@@ -684,6 +686,22 @@ public actor JournalSyncEngine {
         }
     }
 
+    /// Tracker markers (`item` events) as they are applied — the
+    /// invalidation feed for `ItemsSync`. Mirrors `newConversations()`.
+    public nonisolated func itemMarkers() -> AsyncStream<(convoID: String, marker: ItemMarkerEvent)> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerItemMarkers(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in Task { await self.unregisterItemMarkers(id: id) } }
+        }
+    }
+    private func registerItemMarkers(id: UUID, continuation: AsyncStream<(convoID: String, marker: ItemMarkerEvent)>.Continuation) { itemMarkerContinuations[id] = continuation }
+    private func unregisterItemMarkers(id: UUID) { itemMarkerContinuations.removeValue(forKey: id) }
+    private func publishItemMarker(_ event: JournalEvent) {
+        guard event.type == JournalEventType.item, let marker = ItemMarkerEvent.parse(payload: event.payload) else { return }
+        for c in itemMarkerContinuations.values { c.yield((convoID: event.convoID, marker: marker)) }
+    }
+
     /// Per-conversation stream of session-status updates (journal `status`
     /// ephemerals). Mirrors `activities(convoID:)`. The journal replays the
     /// last cached status when the client sends `viewing`, and the engine
@@ -1194,6 +1212,7 @@ public actor JournalSyncEngine {
     /// whose blobRef collides with the replayed one (bugbot "Media confirm
     /// ignores duplicate guard").
     private func didApply(_ event: JournalEvent) {
+        publishItemMarker(event)
         confirmMediaSendIfNeeded(event)
         indexForSearch(event)
     }
@@ -1204,7 +1223,7 @@ public actor JournalSyncEngine {
     /// batch instead of one of each per frame.
     private func didApplyBatch(_ events: [JournalEvent]) {
         guard !events.isEmpty else { return }
-        for event in events { confirmMediaSendIfNeeded(event) }
+        for event in events { publishItemMarker(event); confirmMediaSendIfNeeded(event) }
         guard let search else { return }
         let entries = events.compactMap { event -> SearchIndexEntry? in
             guard let body = event.searchableBody else { return nil }
