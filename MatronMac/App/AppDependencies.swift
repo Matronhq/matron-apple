@@ -54,6 +54,13 @@ final class AppDependencies {
         /// this session. Started right after construction in `core(for:)`;
         /// stopped alongside the rest of the session's teardown on sign-out.
         let items: ItemsSync
+        /// Handle for the `items.start()` kickoff `Task` fired at
+        /// construction. Awaited (not cancelled — `start()` is a quick,
+        /// one-shot subscription setup, not a long-running loop) before
+        /// `items.stop()` in the sign-out teardown, so a not-yet-run start
+        /// can never install its marker/reconnect subscriptions after the
+        /// store wipe.
+        var itemsStartTask: Task<Void, Never>?
         /// Background search-history backfill sweep for this session (see
         /// `SearchBackfillCoordinator`). Cancelled on sign-out.
         var backfillTask: Task<Void, Never>?
@@ -137,7 +144,7 @@ final class AppDependencies {
         // off the sync engine (`nonisolated`, so safe to close over here).
         let items = ItemsSync(api: api, store: store, markers: { engine.itemMarkers() }, connectionStates: { engine.stateStream() })
         let core = JournalCore(api: api, store: store, engine: engine, items: items)
-        Task { await items.start() }
+        core.itemsStartTask = Task { await items.start() }
         core.backfillTask = Self.startBackfill(search: search, api: api, store: store, engine: engine)
         // One-time: box tag letters chosen before they were journal-held
         // move up to the server so they show on every device — and into
@@ -386,9 +393,13 @@ final class AppDependencies {
                 core.backfillTask?.cancel()
                 await core.backfillTask?.value
                 await Self.withTimeout(seconds: 5) { try? await core.api.unregisterPush() }
-                // Task 9 (items tracker): stop the actor's marker/reconnect
-                // tasks BEFORE the wipes below, so nothing it triggers can
-                // write into the store after it's been cleared.
+                // Task 9 (items tracker): await the start kickoff BEFORE
+                // stop() — a not-yet-run start could otherwise install its
+                // marker/reconnect subscriptions after `stop()` already
+                // returned, leaving them live into the wipe below. Then stop
+                // the actor's tasks so nothing it triggers can write into
+                // the store after it's been cleared.
+                await core.itemsStartTask?.value
                 await core.items.stop()
                 await core.engine.endSync()          // stop the writer first…
                 try? core.store.wipe()               // …then clear the mirror
