@@ -161,6 +161,20 @@ public actor ItemsSync {
                 }
             }
             setSupported(true)
+            // A successful refresh is also what proves the tracker routes
+            // exist, which is what unblocks a `.paused` drain (fix round 3,
+            // Bugbot finding on PR #185 ~156): `drainOnce` gates on
+            // `isSupported`, but until now nothing re-kicked the drain
+            // after `isSupported` flipped true outside of `.running` or a
+            // fresh enqueue — a 404-probe-then-recovery (or an
+            // auth-pause-then-refresh) could leave rows queued
+            // indefinitely, waiting for a reconnect or another enqueue that
+            // might not come. `drainOutbox()` is re-entrancy-safe (the
+            // `draining` guard), so calling it here unconditionally is
+            // cheap when there's nothing to do.
+            if let pending = try? store.itemOutboxPending(), !pending.isEmpty {
+                await drainOutbox()
+            }
         } catch JournalAPIError.notFound {
             setSupported(false)
         } catch {

@@ -265,6 +265,38 @@ final class ItemsSyncTests: XCTestCase {
         XCTAssertEqual(try store.itemOutboxPending().count, 1)
     }
 
+    /// Fix round 3 (Bugbot finding on PR #185, ~ItemsSync.swift:156): a
+    /// successful `refresh` — the thing that flips `isSupported` true — must
+    /// itself resume a paused drain, not just publish the flag. Before this
+    /// fix, `drainOnce`'s support gate (added in fix round 2) meant a
+    /// 404-probe-then-recovery (or an auth pause that later clears) left
+    /// rows queued forever unless SOMETHING ELSE happened to also trigger a
+    /// drain — a reconnect (`.running`) or a fresh enqueue. A refresh that
+    /// proves support with no reconnect and no further enqueue must not
+    /// strand rows that were already sitting in the outbox.
+    func testRefreshDrainsOutboxOnceSupportIsProven() async throws {
+        let api = FakeItems(); api.listError = JournalAPIError.notFound
+        let (sync, store, _, _) = try make(api: api)
+        await sync.refresh(scope: .all)
+        let supportedBefore = await sync.isSupported
+        XCTAssertFalse(supportedBefore)
+
+        // Enqueueing while unsupported inserts the row, but `drainOnce`'s
+        // support gate skips actually attempting it.
+        await sync.enqueueComment(itemID: "it_1", localID: "L1", body: "hello", attachments: [])
+        XCTAssertEqual(try store.itemOutboxPending().map(\.localID), ["L1"])
+        XCTAssertEqual(api.commentCalls.count, 0, "the drain never attempted the row while unsupported")
+
+        // The routes now exist. `refresh` succeeding must itself drain the
+        // outbox — no `.running` state is ever yielded in this test, so
+        // `.running`'s own `drainOutbox()` call cannot be what did this.
+        api.listError = nil
+        await sync.refresh(scope: .all)
+        try await waitUntil { try store.itemOutboxPending().isEmpty }
+        XCTAssertEqual(api.commentCalls.count, 1)
+        XCTAssertEqual(try store.item(id: "it_1")?.awaiting, .agent)
+    }
+
     /// Fix round 2, IMPORTANT #3b: a 404 on a WRITE (comment/create) is
     /// retryable, not poison — the journal never deletes items
     /// server-side, so a 404 here is far likelier "this journal doesn't
