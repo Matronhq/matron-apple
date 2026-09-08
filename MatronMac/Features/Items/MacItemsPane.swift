@@ -86,10 +86,6 @@ final class MacItemsPaneState {
     /// introduce (the original per-host `@State` recorder had the same
     /// "belongs to whatever's current" property).
     let detailRecorder = VoiceRecorder()
-    /// Fix wave part 2 (C2/I9): non-image attachments already downloaded
-    /// this session, keyed by `blobRef`, so re-opening the same attachment
-    /// doesn't re-fetch over the network — see `MacItemDetailHost.openAttachment`.
-    var detailAttachmentFiles: [String: URL] = [:]
     /// `blobRef`s currently being fetched — a second tap on the same
     /// attachment while its first fetch is still in flight is ignored
     /// rather than starting a duplicate download.
@@ -370,13 +366,15 @@ struct MacItemDetailHost: View {
     /// default app.
     ///
     /// `detailFetchingBlobRefs` guards against a double-click starting a
-    /// second concurrent download of the same attachment, and
-    /// `detailAttachmentFiles` remembers where a blobRef was already
-    /// written this session so re-opening it skips the network fetch
-    /// entirely (re-verified with `fileExists` in case the OS reaped the
-    /// temp dir between launches — the file only needs to survive
-    /// `MacItemsPaneState`'s own lifetime, not longer, so a miss here just
-    /// falls through to a normal re-fetch rather than being an error).
+    /// second concurrent download of the same attachment.
+    /// `AttachmentTempFiles.existingFile(name:blobRef:)` is the reuse
+    /// check — it recomputes `write`'s own destination formula (one
+    /// source of truth, in `AttachmentTempFiles` itself) and confirms the
+    /// file is still on disk, so a hit skips the network fetch entirely;
+    /// a miss (e.g. the OS reaped the temp dir between launches) just
+    /// falls through to a normal re-fetch rather than being an error. Do
+    /// NOT reconstruct the digest/path formula here — see that function's
+    /// doc comment.
     private func openAttachment(_ a: TrackerAttachment, in item: TrackerItem) {
         guard let deps else { return }
         if a.isImage {
@@ -385,8 +383,8 @@ struct MacItemDetailHost: View {
             state.detailGalleryPreview = GalleryPreview(gallery: ImageGalleries.urls(urls, tapped: mediaURL(a), deps: deps, session: session))
             return
         }
-        if let cached = state.detailAttachmentFiles[a.blobRef], FileManager.default.fileExists(atPath: cached.path) {
-            NSWorkspace.shared.open(cached)
+        if let existing = AttachmentTempFiles.existingFile(name: a.name, blobRef: a.blobRef) {
+            NSWorkspace.shared.open(existing)
             return
         }
         guard !state.detailFetchingBlobRefs.contains(a.blobRef) else { return }
@@ -399,7 +397,6 @@ struct MacItemDetailHost: View {
             }
             do {
                 let url = try AttachmentTempFiles.write(data, name: a.name, blobRef: a.blobRef)
-                state.detailAttachmentFiles[a.blobRef] = url
                 NSWorkspace.shared.open(url)
             } catch {
                 // Do NOT open on a write failure — there's nothing valid
