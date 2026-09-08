@@ -124,6 +124,17 @@ public struct ItemOutboxRecord: Codable, FetchableRecord, PersistableRecord, Equ
 }
 
 extension JournalStore {
+    /// Every conversation's title, keyed by id (Task 10, apps): feeds the
+    /// "All" scope's `originTitles` in `ItemsListView.Model` on the Mac and
+    /// iOS items panes. A plain two-column scan — cheap enough to re-run on
+    /// every scope switch, no caching needed.
+    public func conversationTitles() throws -> [String: String] {
+        try dbQueue.read { db in
+            try Row.fetchAll(db, sql: "SELECT id, title FROM conversation")
+                .reduce(into: [String: String]()) { $0[$1["id"]] = $1["title"] }
+        }
+    }
+
     public func upsertItems(_ items: [TrackerItem]) throws {
         guard !items.isEmpty else { return }
         try dbQueue.write { db in for i in items { try ItemRecord(i).save(db) } }

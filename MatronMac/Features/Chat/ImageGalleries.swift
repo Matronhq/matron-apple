@@ -72,4 +72,27 @@ enum ImageGalleries {
             return ViewerImage(image: sized.image, pixelSize: sized.pixelSize)
         }
     }
+
+    /// Gallery for a tracker item/comment image-attachment tap (Task 10):
+    /// the caller's own plain list of `serverURL/media/<ref>` URLs, in
+    /// caller order, starting at the tapped one. Tracker attachments carry
+    /// no "reaped" signal the way media-browser rows do, so every entry is
+    /// `expired: false` — a genuinely gone blob just fails to load like any
+    /// other transient failure. No `initial` image: the detail host doesn't
+    /// keep a full-size decode around, only the thumbnail-sized cache it
+    /// already used to render the row, so the viewer fetches on open like
+    /// any non-tapped neighbour.
+    @MainActor
+    static func urls(_ urls: [URL], tapped: URL, deps: AppDependencies?, session: UserSession?) -> ImageGallery {
+        let entries = urls.map { ImageGallery.Entry(id: $0.absoluteString, url: $0, expired: false) }
+        let start = entries.firstIndex(where: { $0.url == tapped }) ?? 0
+        guard let deps, let session else {
+            return ImageGallery(entries: entries, startIndex: start, initial: nil, load: { _ in nil })
+        }
+        let media = deps.mediaService(for: session)
+        return ImageGallery(entries: entries, startIndex: start, initial: nil) { url in
+            guard let sized = await media.sizedImage(for: url) else { return nil }
+            return ViewerImage(image: sized.image, pixelSize: sized.pixelSize)
+        }
+    }
 }

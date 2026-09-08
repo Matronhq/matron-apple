@@ -44,6 +44,15 @@ struct MacChatView: View {
     /// strip / switcher; cleared by the pane's close button. Reset per
     /// parent chat because `MacChatView` is rebuilt with `.id(id)`.
     @State private var openSubChatID: String?
+    /// Whether the tasks-and-decisions pane (Task 10) is open. Shares the
+    /// sub-chat slot with `openSubChatID` — opening either one closes the
+    /// other (see the toolbar call site and `onOpenSubChat` below).
+    @State private var showItemsPane = false
+    /// The pane's view model, created lazily in the outer `.task` and kept
+    /// running even while the pane is closed so the toolbar's needs-you
+    /// badge stays live. Stopped in the outer `onDisappear` alongside
+    /// `stripViewModel`.
+    @State private var itemsVM: ItemsPanelViewModel?
     /// Local text for the in-conversation search bar's field — seeded from
     /// `viewModel.chatSearch?.query`, submitted back via `beginChatSearch`.
     @State private var chatSearchQuery = ""
@@ -370,6 +379,25 @@ struct MacChatView: View {
                     // sibling switch re-runs `.task` and starts the new VM.
                     .id(childID)
                 }
+            } else if showItemsPane, let itemsVM, let session {
+                if geo.size.width >= Self.sideBySideMinWidth {
+                    HSplitView {
+                        chatColumn
+                            .frame(minWidth: 420)
+                        MacItemsPane(
+                            viewModel: itemsVM, session: session,
+                            onOpenConversation: { onOpenConversation?($0) },
+                            onClose: { showItemsPane = false }
+                        )
+                        .frame(minWidth: 380)
+                    }
+                } else {
+                    MacItemsPane(
+                        viewModel: itemsVM, session: session, showsBackChevron: true,
+                        onOpenConversation: { onOpenConversation?($0) },
+                        onClose: { showItemsPane = false }
+                    )
+                }
             } else {
                 chatColumn
             }
@@ -395,6 +423,15 @@ struct MacChatView: View {
             startedGeneration = viewModel.observationGeneration + 1
             stripViewModel.start()
             stripStartedGeneration = stripViewModel.observationGeneration
+            // Task 10: the items VM is started even when the pane is
+            // closed so the toolbar's needs-you badge stays live. Hoisted
+            // to the same stable outer view as the strip, for the same
+            // reason (see the branch-move comment above this `.task`).
+            if itemsVM == nil, let deps, let session {
+                let vm = deps.makeItemsPanelViewModel(for: session, convoID: viewModel.roomID)
+                itemsVM = vm
+                vm.start()
+            }
             // Small first-paint window: the switch stall was one big
             // layout transaction building the full 120-row window.
             // Paint a short tail first, then settle to steady state
@@ -420,6 +457,7 @@ struct MacChatView: View {
             // stream and freeze the timeline.
             viewModel.stop(ifGeneration: startedGeneration)
             stripViewModel.stop(ifGeneration: stripStartedGeneration)
+            itemsVM?.stop()
             // Shrink the cached VM's window for the next open — keeping a
             // grown window here is what made switching BACK to a deep-read
             // room re-mount 600+ rows in one transaction (2026-08-21
@@ -491,6 +529,7 @@ struct MacChatView: View {
             // take-over on a narrow window). Hidden when none are running.
             MacRunningSubagentStrip(viewModel: stripViewModel, highlightedID: openSubChatID) { childID in
                 openSubChatID = childID
+                showItemsPane = false
             }
             if viewModel.settledEmpty && viewModel.error == nil {
                 // Settled-empty branch — see iOS `ChatView` and
@@ -513,7 +552,7 @@ struct MacChatView: View {
                     MacTimelineListContent(
                         viewModel: viewModel,
                         stripViewModel: stripViewModel,
-                        onOpenSubChat: { openSubChatID = $0 },
+                        onOpenSubChat: { openSubChatID = $0; showItemsPane = false },
                         onOpenSpawnRoom: onOpenConversation,
                         onPreviewImage: { url, img in
                             imagePreview = ImagePreview(gallery: ImageGalleries.conversation(
@@ -889,7 +928,7 @@ struct MacChatView: View {
                     sessionShort: sessionShort, roomBoxNames: roomBoxNames),
                 status: viewModel.sessionStatus,
                 stripViewModel: stripViewModel,
-                onOpenSubChat: { openSubChatID = $0 },
+                onOpenSubChat: { openSubChatID = $0; showItemsPane = false },
                 onCompact: { Task { await viewModel.sendCommand("/compact") } },
                 showSummaries: $showSummaries,
                 popoverContent: {
@@ -898,7 +937,13 @@ struct MacChatView: View {
                         Task { await viewModel.focus(seq: seq) }
                     })
                 },
-                showMediaBrowser: $showMediaBrowser
+                showMediaBrowser: $showMediaBrowser,
+                showItemsPane: Binding(
+                    get: { showItemsPane },
+                    set: { showItemsPane = $0; if $0 { openSubChatID = nil } }
+                ),
+                needsYouCount: itemsVM?.needsYouCount ?? 0,
+                itemsAvailable: itemsVM?.isSupported ?? true
             )
         }
         // Observation start/stop is hoisted to the outer view in `body` —

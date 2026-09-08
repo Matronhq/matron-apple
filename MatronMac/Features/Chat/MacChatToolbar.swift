@@ -88,6 +88,16 @@ struct MacChatToolbar: ToolbarContent {
     let popoverContent: () -> AnyView
     /// Presents the per-chat media & links browser sheet.
     let showMediaBrowser: Binding<Bool>
+    /// Presents/dismisses `MacItemsPane` (Task 10) in the sub-chat slot.
+    /// Defaults to an inert constant binding, same reasoning as
+    /// `showSummaries`/`showMediaBrowser` above.
+    let showItemsPane: Binding<Bool>
+    /// Live "needs you" count for the badge on the pane's toolbar button.
+    let needsYouCount: Int
+    /// Whether the signed-in journal server supports the tracker at all
+    /// (`ItemsPanelViewModel.isSupported`). `false` hides the button
+    /// entirely rather than showing a permanently-disabled one.
+    let itemsAvailable: Bool
 
     /// One height for all three clusters so the system's content-hugging
     /// glass capsules come out equal and align as a row. Sized to the
@@ -112,7 +122,10 @@ struct MacChatToolbar: ToolbarContent {
         onCompact: @escaping () -> Void,
         showSummaries: Binding<Bool> = .constant(false),
         popoverContent: @escaping () -> AnyView = { AnyView(EmptyView()) },
-        showMediaBrowser: Binding<Bool> = .constant(false)
+        showMediaBrowser: Binding<Bool> = .constant(false),
+        showItemsPane: Binding<Bool> = .constant(false),
+        needsYouCount: Int = 0,
+        itemsAvailable: Bool = true
     ) {
         self.title = title
         self.boxName = boxName
@@ -125,6 +138,9 @@ struct MacChatToolbar: ToolbarContent {
         self.showSummaries = showSummaries
         self.popoverContent = popoverContent
         self.showMediaBrowser = showMediaBrowser
+        self.showItemsPane = showItemsPane
+        self.needsYouCount = needsYouCount
+        self.itemsAvailable = itemsAvailable
     }
 
     var body: some ToolbarContent {
@@ -161,6 +177,21 @@ struct MacChatToolbar: ToolbarContent {
             }
             .help("Media, files & links")
             .accessibilityLabel("Media browser")
+        }
+        if itemsAvailable {
+            ToolbarItem(placement: .primaryAction) {
+                Button { showItemsPane.wrappedValue.toggle() } label: {
+                    Image(systemName: "checklist")
+                        .overlay(alignment: .topTrailing) {
+                            NeedsYouBadge(count: needsYouCount)
+                                .scaleEffect(0.8)
+                                .offset(x: 8, y: -8)
+                        }
+                }
+                .help("Tasks & decisions")
+                .accessibilityLabel("Tasks and decisions" + (needsYouCount > 0 ? ", \(needsYouCount) need you" : ""))
+                .keyboardShortcut("i", modifiers: [.command, .shift])
+            }
         }
         if !stripViewModel.children.isEmpty {
             ToolbarItem(placement: .primaryAction) {
