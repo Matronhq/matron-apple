@@ -70,7 +70,7 @@ as every other table.
 ```sql
 CREATE TABLE IF NOT EXISTS items (
   id               TEXT PRIMARY KEY,          -- 'it_' + 16 hex
-  user_id          TEXT NOT NULL,
+  user_id          INTEGER NOT NULL REFERENCES users(id),
   num              INTEGER NOT NULL,          -- per-user counter, shown as #num
   kind             TEXT NOT NULL CHECK (kind IN ('task','question','decision')),
   state            TEXT NOT NULL CHECK (state IN ('open','closed')),
@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS items (
   links            TEXT NOT NULL DEFAULT '[]',-- JSON array of {url, title?}
   supersedes       TEXT REFERENCES items(id), -- decision that replaced this one
   origin_convo_id  TEXT NOT NULL,
-  origin_device_id TEXT NOT NULL,             -- creator's device (agent or client)
+  origin_device_id INTEGER NOT NULL,          -- creator's device row id (agent or client)
   created_by       TEXT NOT NULL CHECK (created_by IN ('user','agent')),
   created_at       INTEGER NOT NULL,
   updated_at       INTEGER NOT NULL,
@@ -97,9 +97,9 @@ CREATE INDEX IF NOT EXISTS items_updated    ON items(user_id, updated_at);
 CREATE TABLE IF NOT EXISTS item_comments (
   id          TEXT PRIMARY KEY,               -- 'ic_' + 16 hex
   item_id     TEXT NOT NULL REFERENCES items(id),
-  user_id     TEXT NOT NULL,
+  user_id     INTEGER NOT NULL REFERENCES users(id),
   author      TEXT NOT NULL CHECK (author IN ('user','agent')),
-  device_id   TEXT NOT NULL,
+  device_id   INTEGER NOT NULL,
   kind        TEXT NOT NULL CHECK (kind IN ('comment','status')),
   body        TEXT NOT NULL DEFAULT '',       -- Markdown; for 'status' a short generated line
   attachments TEXT NOT NULL DEFAULT '[]',     -- JSON array of {blob_ref, mime, name, size, transcript?}
@@ -108,7 +108,7 @@ CREATE TABLE IF NOT EXISTS item_comments (
 );
 CREATE INDEX IF NOT EXISTS item_comments_item ON item_comments(item_id, created_at);
 
-CREATE TABLE IF NOT EXISTS item_counters (user_id TEXT PRIMARY KEY, next_num INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS item_counters (user_id INTEGER PRIMARY KEY, next_num INTEGER NOT NULL);
 ```
 
 ### Semantics
@@ -133,10 +133,10 @@ CREATE TABLE IF NOT EXISTS item_counters (user_id TEXT PRIMARY KEY, next_num INT
   transaction before applying the move.
 - **`num`** — allocated from `item_counters` inside the create transaction.
 - **Attachments** are ordinary journal blobs uploaded through the existing
-  `POST /media` route; items reference them by `blob_ref`. The reaper never
-  tombstones a blob referenced by an item or comment (`blobs` gains a
-  reference check against both JSON columns; cheap because the reaper
-  already scans per blob).
+  `POST /media` route; items reference them by `blob_ref`. The media reaper
+  only ever reaps blobs joined to `image`/`file` event rows, so an item
+  attachment (referenced from a table, not an event) is never a candidate;
+  a test pins that so a future reaper change cannot regress it.
 - **Voice notes** are a comment with an `audio/*` attachment. The bridge
   transcribes when it consumes the marker (the same path as chat voice
   notes) and writes the text back via `PATCH /items/:id/comments/:cid`
