@@ -43,13 +43,28 @@ public enum AttachmentTempFiles {
     /// callers rely on the OS reaping the temp directory between launches,
     /// matching the original `ChatViewModel.writeTempFile` contract.
     public static func write(_ data: Data, name: String, blobRef: String) throws -> URL {
-        let digest = SHA256.hash(data: Data(blobRef.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("matron-attachments", isDirectory: true)
-            .appendingPathComponent(digest, isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let dest = dir.appendingPathComponent(sanitisedFilename(name))
+        let dest = destination(name: name, blobRef: blobRef)
+        try FileManager.default.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: dest, options: .atomic)
         return dest
+    }
+
+    /// Where `write(_:name:blobRef:)` would put this attachment. Hosts use
+    /// it (via `existingFile`) to skip a fetch when the file is already on
+    /// disk from an earlier tap — one formula, so the two can never drift.
+    public static func destination(name: String, blobRef: String) -> URL {
+        let digest = SHA256.hash(data: Data(blobRef.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
+        return FileManager.default.temporaryDirectory
+            .appendingPathComponent("matron-attachments", isDirectory: true)
+            .appendingPathComponent(digest, isDirectory: true)
+            .appendingPathComponent(sanitisedFilename(name))
+    }
+
+    /// The already-written file for this attachment, if a previous
+    /// `write` left one behind (the OS may reap temp files between
+    /// launches, so callers must still handle `nil`).
+    public static func existingFile(name: String, blobRef: String) -> URL? {
+        let url = destination(name: name, blobRef: blobRef)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 }

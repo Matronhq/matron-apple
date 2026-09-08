@@ -1,7 +1,6 @@
 import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
-import CryptoKit
 import MatronChat
 import MatronJournal
 import MatronModels
@@ -230,8 +229,7 @@ struct ItemDetailHost: View {
             // spending a network round trip re-fetching bytes we already
             // have on disk (fix wave part 2, C2/I9) — checked BEFORE
             // starting the fetch, so a cache hit never touches the network.
-            let cached = Self.cachedFileURL(name: name, blobRef: blobRef)
-            if FileManager.default.fileExists(atPath: cached.path) {
+            if let cached = AttachmentTempFiles.existingFile(name: name, blobRef: blobRef) {
                 attachmentPreview = .file(cached, filename: name)
                 return
             }
@@ -254,23 +252,6 @@ struct ItemDetailHost: View {
                 }
             }
         }
-    }
-
-    /// Mirrors `AttachmentTempFiles.write`'s destination-path formula
-    /// (digest-of-`blobRef` subdirectory + `sanitisedFilename`) without
-    /// writing, so `open(_:)` can check for an existing file before
-    /// spending a fetch. The digest computation itself is `private` inside
-    /// `AttachmentTempFiles` (only `write`/`sanitisedFilename` are public)
-    /// — duplicated here rather than widening that type's public surface
-    /// for one caller; `write`'s own atomic overwrite keeps the two
-    /// formulas from silently drifting apart in any way that would matter
-    /// (same input digests to the same path either way).
-    private static func cachedFileURL(name: String, blobRef: String) -> URL {
-        let digest = SHA256.hash(data: Data(blobRef.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
-        return FileManager.default.temporaryDirectory
-            .appendingPathComponent("matron-attachments", isDirectory: true)
-            .appendingPathComponent(digest, isDirectory: true)
-            .appendingPathComponent(AttachmentTempFiles.sanitisedFilename(name))
     }
 
     /// Mirrors `ComposerView.stagePhotoData` — resolve the picker's
