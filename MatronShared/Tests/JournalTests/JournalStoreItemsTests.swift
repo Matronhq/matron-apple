@@ -87,4 +87,27 @@ final class JournalStoreItemsTests: XCTestCase {
         let commentCount = try store.dbQueue.read { db in try ItemCommentRecord.fetchCount(db) }
         XCTAssertEqual(commentCount, 0)
     }
+
+    func testCommentStatusSnapshotRoundTrips() throws {
+        let store = try makeStore()
+        try store.upsertItems([item("it_1", num: 1)])
+        let from = TrackerItem.StatusSnapshot(state: .open, resolution: nil, awaiting: .agent)
+        let to = TrackerItem.StatusSnapshot(state: .closed, resolution: .done, awaiting: nil)
+        let statusComment = TrackerComment(id: "ic_1", itemID: "it_1", author: .agent, kind: .status, body: "",
+                                           statusFrom: from, statusTo: to)
+        let plainComment = TrackerComment(id: "ic_2", itemID: "it_1", author: .user, body: "just a comment")
+        try store.replaceComments(itemID: "it_1", [statusComment, plainComment])
+
+        let comments = try store.dbQueue.read { db in try ItemCommentRecord.fetchAll(db) }.map(\.comment)
+        let readStatus = comments.first { $0.id == "ic_1" }
+        let readPlain = comments.first { $0.id == "ic_2" }
+
+        XCTAssertEqual(readStatus?.kind, .status)
+        XCTAssertEqual(readStatus?.statusFrom, from)
+        XCTAssertEqual(readStatus?.statusTo, to)
+
+        XCTAssertEqual(readPlain?.kind, .comment)
+        XCTAssertNil(readPlain?.statusFrom)
+        XCTAssertNil(readPlain?.statusTo)
+    }
 }

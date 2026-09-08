@@ -1190,10 +1190,11 @@ public final class JournalStore: @unchecked Sendable {
         }
     }
 
-    /// Clears the journal mirror (events, conversations, cursor) but NOT
-    /// the outbox: this runs on `snapshot_required` (replay gap too large),
-    /// and a mirror wipe must not eat the user's unsent messages. Sign-out
-    /// calls `wipeOutbox()` separately.
+    /// Clears the journal mirror (events, conversations, cursor) and the
+    /// tracker cache (item, item_comment, item_outbox) but NOT the
+    /// text-message `outbox` table: this runs on `snapshot_required`
+    /// (replay gap too large), and a mirror wipe must not eat the user's
+    /// unsent messages. Sign-out calls `wipeOutbox()` separately for that.
     public func wipe() throws {
         try dbQueue.write { db in
             // Inside the write block — see `insertHistory`'s invalidation note.
