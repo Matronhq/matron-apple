@@ -16,7 +16,7 @@ public struct NeedsYouBadge: View {
                 .padding(.horizontal, 6).padding(.vertical, 2)
                 .frame(minWidth: 18)
                 .background(Color.orange, in: Capsule())
-                .accessibilityLabel("\(count) items need you")
+                .accessibilityLabel(count == 1 ? "1 item needs you" : "\(count) items need you")
         }
     }
 }

@@ -40,7 +40,16 @@ public struct ItemRow: View {
             }
             Spacer(minLength: 0)
             if let thumbnail {
-                thumbnail.resizable().scaledToFill().frame(width: 40, height: 40).clipShape(RoundedRectangle(cornerRadius: 6))
+                // `.foregroundStyle` is a no-op on a real bitmap thumbnail
+                // (the common case), but without it a template-rendered
+                // image (e.g. an SF Symbol placeholder passed in while a
+                // real thumbnail is still loading) renders with no tint at
+                // all in this target's default environment — effectively
+                // invisible against a light background. Matches the
+                // `.tertiary` tint used by the `item.hasImage` fallback
+                // below so a loading-placeholder and the no-thumbnail
+                // fallback read the same.
+                thumbnail.resizable().scaledToFill().frame(width: 40, height: 40).clipShape(RoundedRectangle(cornerRadius: 6)).foregroundStyle(.tertiary)
             } else if item.hasImage {
                 Image(systemName: "photo").foregroundStyle(.tertiary).frame(width: 40, height: 40)
             }

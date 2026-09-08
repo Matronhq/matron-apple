@@ -45,6 +45,11 @@ public struct ItemsListView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
+                if model.isRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Refreshing")
+                }
                 Button(action: onCreate) { Image(systemName: "plus") }
                     .buttonStyle(.plain)
                     .accessibilityLabel("New item")
@@ -79,7 +84,7 @@ public struct ItemsListView: View {
             Section(title) {
                 ForEach(items) { item in
                     Button { onSelect(item) } label: {
-                        ItemRow(item: item, showsOrigin: isAll ? (model.originTitles[item.originConvoID] ?? item.originConvoID) : nil,
+                        ItemRow(item: item, showsOrigin: isAll ? (model.originTitles[item.originConvoID] ?? "Another chat") : nil,
                                 thumbnail: thumbnail(item))
                     }
                     .buttonStyle(.plain)
