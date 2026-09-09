@@ -48,9 +48,13 @@ struct CoordinatorTabView: View {
             }
             .navigationDestination(for: String.self) { value in
                 if let route = ItemRoute(pathValue: value) {
-                    ItemDetailHost(itemID: route.id, session: session, currentConvoID: convoID,
+                    // The chat underneath is the nearest non-item entry on
+                    // this stack, falling back to the coordinator root —
+                    // same rule as the Conversations stack (Bugbot, PR #197).
+                    let current = path.last(where: { ItemRoute(pathValue: $0) == nil }) ?? convoID
+                    ItemDetailHost(itemID: route.id, session: session, currentConvoID: current,
                                    onOpenConversation: { target in
-                                       guard target != convoID else { return }
+                                       guard target != current else { return }
                                        path.append(target)
                                    })
                 } else {
@@ -59,6 +63,9 @@ struct CoordinatorTabView: View {
             }
         }
         .environment(\.chatNavigationPath, $path)
+        // A new coordinator (chooser pick, Settings Change/Clear) starts at
+        // its root — anything pushed under the old one is gone (Bugbot, PR #197).
+        .onChange(of: convoID) { _, _ in path = [] }
         .sheet(isPresented: $showingChooser) {
             CoordinatorChooserSheet(deps: deps, session: session) { id in
                 convoID = id

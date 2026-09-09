@@ -34,14 +34,45 @@ final class AppShellNavigation {
     /// a conversation always returns to the chat list (Dan, 2026-08-06).
     /// No-op on the path when the target is already the sole open chat.
     func openChat(_ roomID: String) {
+        if roomID == coordinatorConvoID {
+            // The coordinator has its own tab (spec §5b); never mount it
+            // in Conversations as well — the two ChatViews would share one
+            // cached ChatViewModel and the first to leave would stop the
+            // other's stream (Bugbot, PR #197).
+            tab = .coordinator
+            coordinatorPath = []
+            return
+        }
         tab = .conversations
         if chatPath != [roomID] { chatPath = [roomID] }
+    }
+
+    /// The designated coordinator conversation, mirrored from
+    /// `CoordinatorSetting` by the shell so the rules below can route to
+    /// its tab. `nil` when none is set.
+    var coordinatorConvoID: String?
+
+    /// Chat-list rows push straight onto `chatPath` (`NavigationLink`), so
+    /// a tap on the coordinator's own row lands here: hand it off to the
+    /// Coordinator tab instead of mounting it twice. Returns whether it did.
+    @discardableResult
+    func redirectCoordinatorPush() -> Bool {
+        guard let coordinator = coordinatorConvoID, chatPath == [coordinator] else { return false }
+        chatPath = []
+        tab = .coordinator
+        coordinatorPath = []
+        return true
     }
 
     /// "Open conversation" from a Decisions row or its detail: switch to
     /// Conversations first, then push, in that order and in one
     /// transaction so the push lands in the visible stack (spec §3).
     func openConversation(fromDecisions convoID: String) {
+        if convoID == coordinatorConvoID {
+            tab = .coordinator
+            coordinatorPath = []
+            return
+        }
         tab = .conversations
         if chatPath.last != convoID { chatPath.append(convoID) }
     }

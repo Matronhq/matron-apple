@@ -87,6 +87,11 @@ struct AppShellView: View {
                 nav.openChat(pending)
             }
         }
+        // The nav rules route the coordinator conversation to its own tab
+        // (Bugbot, PR #197): mirror the setting into the nav object, and
+        // hand off a chat-list row push of that conversation.
+        .onChange(of: coordinatorConvoID, initial: true) { _, id in nav.coordinatorConvoID = id }
+        .onChange(of: nav.chatPath) { _, _ in nav.redirectCoordinatorPush() }
         .task { decisionsVM.start() }
         // The Conversations list VM needs to keep running even while
         // another tab shows: the coordinator badge and title read it.

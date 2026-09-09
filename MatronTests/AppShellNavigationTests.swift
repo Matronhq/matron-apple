@@ -73,6 +73,36 @@ final class AppShellNavigationTests: XCTestCase {
         XCTAssertEqual(nav.tab, .decisions)
     }
 
+    /// Bugbot, PR #197: the coordinator conversation must never be mounted
+    /// in Conversations as well — every route to it lands on its tab.
+    func test_coordinatorConversation_alwaysRoutesToItsOwnTab() {
+        let nav = AppShellNavigation()
+        nav.coordinatorConvoID = "!coord:s"
+        nav.coordinatorPath = ["!child:s"]
+        nav.openChat("!coord:s")
+        XCTAssertEqual(nav.tab, .coordinator)
+        XCTAssertEqual(nav.coordinatorPath, [], "a deep link lands at the coordinator root")
+        XCTAssertEqual(nav.chatPath, [])
+        nav.tab = .decisions
+        nav.openConversation(fromDecisions: "!coord:s")
+        XCTAssertEqual(nav.tab, .coordinator)
+        XCTAssertEqual(nav.chatPath, [])
+        // A chat-list row push of the coordinator hands off.
+        nav.tab = .conversations
+        nav.chatPath = ["!coord:s"]
+        XCTAssertTrue(nav.redirectCoordinatorPush())
+        XCTAssertEqual(nav.tab, .coordinator)
+        XCTAssertEqual(nav.chatPath, [])
+        // Any other push is left alone.
+        nav.tab = .conversations
+        nav.chatPath = ["!other:s"]
+        XCTAssertFalse(nav.redirectCoordinatorPush())
+        XCTAssertEqual(nav.chatPath, ["!other:s"])
+        nav.coordinatorConvoID = nil
+        nav.chatPath = ["!coord:s"]
+        XCTAssertFalse(nav.redirectCoordinatorPush(), "no coordinator set: it is an ordinary chat")
+    }
+
     func test_pushDecision_appendsToTheDecisionsStack() {
         let nav = AppShellNavigation()
         nav.pushDecision("it_9")
