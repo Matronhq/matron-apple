@@ -231,7 +231,22 @@ struct ChatView: View {
     private func openItem(_ itemID: String) {
         guard itemsVM != nil else { return }
         itemsPath = [itemID]
-        showItems = true
+        openDrawer()
+    }
+
+    /// The one way `showItems` goes true. The drawer is a
+    /// `.fullScreenCover` (see the presentation below) and this suppresses
+    /// the cover's own bottom-up slide so `ItemsDrawer` can run its
+    /// right-edge slide-in instead; the drawer dismisses itself the same
+    /// way once its slide-out has finished.
+    private func openDrawer() {
+        // Both are required by the cover's `if let itemsVM, let session`
+        // body: presenting with either missing would show an empty, clear
+        // cover with no close control.
+        guard itemsVM != nil, session != nil else { return }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { showItems = true }
     }
 
     /// Widen-then-scroll for a remembered scroll position. The widen
@@ -928,17 +943,16 @@ struct ChatView: View {
                     guard attachmentPreview == nil, !showItems,
                           !showSessionStatus, !showMediaBrowser, !showSummaries,
                           // A missing VM must NOT read as "supported"
-                          // (CodeRabbit, PR #185): `showItems` hides the
-                          // Back button and the overlay needs the VM, so
-                          // opening before it exists would strand the
-                          // screen with no nav bar and no drawer.
+                          // (CodeRabbit, PR #185): the cover's content is
+                          // `if let itemsVM`, so opening before it exists
+                          // would present an empty, clear cover.
                           let itemsVM, itemsVM.isSupported != false,
                           chatContainerWidth > 0,
                           v.startLocation.x > chatContainerWidth - 24,
                           v.translation.width < -60,
                           abs(v.translation.width) > abs(v.translation.height)
                     else { return }
-                    showItems = true
+                    openDrawer()
                 }
         )
         // matron-web's cream timeline gradient sits behind the whole chat
@@ -1019,15 +1033,15 @@ struct ChatView: View {
             // confirmed the journal doesn't support the tracker (a 404 on
             // GET /items) — the same optimistic-until-proven-otherwise
             // default the Mac pane uses. It also needs the VM to EXIST
-            // (CodeRabbit, PR #185): `showItems` hides the Back button and
-            // the drawer overlay is `if let itemsVM`, so a tap before the
-            // outer `.task` has built the VM would strand the screen with
-            // no nav bar and nothing to dismiss. The VM lands on the
-            // first `.task` pass, so the button is at most a frame late.
+            // (CodeRabbit, PR #185): the cover's content is `if let
+            // itemsVM`, so a tap before the outer `.task` has built the VM
+            // would present an empty, clear cover with nothing to dismiss.
+            // The VM lands on the first `.task` pass, so the button is at
+            // most a frame late.
             if let itemsVM, itemsVM.isSupported != false {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        showItems = true
+                        openDrawer()
                     } label: {
                         Image(systemName: "checklist")
                             .overlay(alignment: .topTrailing) {
@@ -1046,22 +1060,6 @@ struct ChatView: View {
                 .accessibilityLabel("Session info")
             }
         }
-        // I8 follow-up: the `.overlay` drawer below cannot paint over
-        // UIKit's own navigation bar no matter where it sits in the
-        // modifier chain — the earlier "moved to be the LAST modifier"
-        // fix only stopped the scrim from rendering BEHIND the bar; the
-        // bar itself (title, Back, ⓘ, subagents menu) still floats above
-        // the dimming layer and stays tappable. Hide the bar outright
-        // while the drawer is open instead. The drawer supplies its own
-        // "Close" toolbar button plus scrim-tap and edge-drag dismissal,
-        // so hiding the system bar's Back button loses no way out.
-        // `.animation(_:value:)` is what makes `.toolbar(_:for:)` and
-        // `.navigationBarBackButtonHidden` actually transition instead of
-        // popping — paired with the same 0.22s easeInOut the drawer's own
-        // slide-in uses so the bar and the panel move together.
-        .toolbar(showItems ? .hidden : .visible, for: .navigationBar)
-        .navigationBarBackButtonHidden(showItems)
-        .animation(.easeInOut(duration: 0.22), value: showItems)
         .sheet(isPresented: $showSessionStatus, onDismiss: {
             // Present the media browser only after the info sheet is fully
             // gone — flipping it while the sheet is still up is a silent
@@ -1225,18 +1223,23 @@ struct ChatView: View {
         .onChange(of: viewModel.rows.isEmpty) { _, isEmpty in
             chatViewLogger.breadcrumb("rows \(isEmpty ? "EMPTY — warm-up spinner over blank area" : "populated") (items=\(viewModel.items.count))")
         }
-        // I8: the LAST modifier, deliberately — applied here (after
-        // `.navigationTitle`/`.toolbar` above) rather than back where the
-        // edge-swipe gesture sits, this overlay wraps the whole
-        // toolbar-bearing view instead of a plain content view the nav bar
-        // then draws over. Moved out of the earlier `.overlay` (right after
-        // the edge-swipe `.simultaneousGesture`) once review caught the
-        // scrim rendering BEHIND the nav bar there — the Back/info/media
-        // toolbar buttons stayed tappable straight through the dimming
-        // layer. `itemsVM`/`session` both required — see the `.task` above
-        // for why `itemsVM` can still be `nil` here (dependencies not ready
-        // yet).
-        .overlay {
+        // The drawer is a clear `.fullScreenCover`, NOT an `.overlay` on
+        // this view (and the nav bar is no longer hidden while it's up).
+        // Two earlier shapes both failed: an `.overlay` renders BEHIND
+        // UIKit's navigation bar, and hiding the bar to compensate was
+        // masking the real defect — `ItemsDrawer` hosts its own
+        // `NavigationStack`, and on iOS 26 a `NavigationStack` mounted
+        // inside a pushed destination of the outer chat stack pops that
+        // outer stack to the chat list the moment it appears (reproduced
+        // in isolation with and without the hidden bar; the "black screen
+        // with a spinner" on re-entry was the re-pushed chat inheriting the
+        // still-hidden bar). A cover is its own presentation context: the
+        // inner stack can't reach the outer one, and the cover paints over
+        // the bar by construction. `openDrawer()` disables the cover's
+        // slide-up so the drawer's own trailing-edge slide is the only
+        // animation. `itemsVM`/`session` both required — see the `.task`
+        // above for why `itemsVM` can still be `nil` here.
+        .fullScreenCover(isPresented: $showItems) {
             if let itemsVM, let session {
                 ItemsDrawer(
                     isPresented: $showItems,
@@ -1253,6 +1256,7 @@ struct ChatView: View {
                         navigationPath?.wrappedValue.append(id)
                     }
                 )
+                .presentationBackground(.clear)
             }
         }
     }
