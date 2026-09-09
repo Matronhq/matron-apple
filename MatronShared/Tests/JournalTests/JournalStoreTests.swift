@@ -68,6 +68,30 @@ final class JournalStoreTests: XCTestCase {
                        "own-text frame in a batch must confirm the queued send")
     }
 
+    func testFlaggedFallbackTextDoesNotConfirmQueuedSend() throws {
+        // Old-client fallback (spec 2026-09-08, "Old-client fallback"): the
+        // journal mirrors a card-worthy item marker as a plain, own-sender
+        // `text` event flagged `fallback_for: "item"`. That mirror is not a
+        // reply to anything a user typed and queued, so it must never be
+        // mistaken for the delivery confirmation of a pending outbox row —
+        // even when its body happens to match by coincidence.
+        let store = try makeStore()
+        try store.outboxInsert(localID: "A", convoID: "c1", body: "📌 New task #3: x")
+        try store.outboxMarkAttempt(localID: "A")
+        XCTAssertEqual(try store.outboxRows(convoID: "c1").count, 1)
+        _ = try store.applyJournalBatch([
+            event(1, sender: "user:dan", payload: [
+                "body": "📌 New task #3: x",
+                "fallback_for": "item",
+                "item_id": "it_3",
+                "num": 3,
+                "action": "created",
+            ]),
+        ])
+        XCTAssertEqual(try store.outboxRows(convoID: "c1").count, 1,
+                       "a flagged fallback text must not confirm an unrelated queued send")
+    }
+
     func testBatchApplyIsAllOrNothingOnInjectedFailure() throws {
         let store = try makeStore()
         store.failApplyForTesting = { $0 == 2 }

@@ -215,6 +215,27 @@ final class JournalTimelineMapperTests: XCTestCase {
                      "item marker events carry no renderable content — ItemsSync consumes them, not the timeline")
     }
 
+    /// Old-client fallback (spec 2026-09-08, "Old-client fallback"): the
+    /// journal mirrors a card-worthy item marker as a plain `text` event so
+    /// pre-tracker clients (which cannot render `item`) still see the turn.
+    /// New clients render the card from the `item` marker itself, so this
+    /// flagged text must be hidden or it would show as a duplicate bubble.
+    func testFlaggedFallbackTextIsSkippedInTimeline() throws {
+        XCTAssertNil(map(event(7, type: "text", payload: [
+            "body": "📌 New task #3: x",
+            "fallback_for": "item",
+            "item_id": "it_3",
+            "num": 3,
+            "action": "created",
+        ])), "a text flagged fallback_for is the old-client mirror of an item marker — new clients render the card, not this")
+    }
+
+    func testUnflaggedTextWithSameBodyIsNotSkipped() throws {
+        let item = try XCTUnwrap(map(event(8, type: "text", payload: ["body": "📌 New task #3: x"])))
+        guard case .text(let body, _) = item.kind else { return XCTFail() }
+        XCTAssertEqual(body, "📌 New task #3: x")
+    }
+
     func testPromptWithOptions() throws {
         let item = try XCTUnwrap(map(event(3, type: "prompt", payload: [
             "question": "Deploy?",

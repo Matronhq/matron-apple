@@ -728,7 +728,13 @@ public final class JournalStore: @unchecked Sendable {
             // outbox delete commit or fail together, so a relaunch can
             // never show a durable duplicate echo beside the delivered
             // message.
+            // Skip the journal's flagged fallback mirror of an item marker
+            // (spec 2026-09-08, "Old-client fallback"): it is a synthetic
+            // echo of a card the user never typed into the composer, so a
+            // coincidental body match must not confirm an unrelated queued
+            // outbox row.
             if event.sender == ownSender, event.type == JournalEventType.text,
+               payload["fallback_for"] == nil,
                let body = payload["body"] as? String {
                 try Self.outboxDeleteFirstMatching(db, convoID: event.convoID, body: body)
             }

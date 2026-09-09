@@ -33,6 +33,15 @@ public enum JournalTimelineMapper {
             return nil
 
         case JournalEventType.text:
+            // Old-client fallback (spec 2026-09-08, "Old-client fallback"):
+            // the journal mirrors a card-worthy item marker as a plain
+            // `text` event, flagged `fallback_for: "item"`, so pre-tracker
+            // clients that cannot render `item` still see the turn. New
+            // clients already render the card from the `item` marker, so
+            // this mirror must be hidden here or it would double up.
+            if payload["fallback_for"] != nil {
+                return nil
+            }
             kind = .text(body: payload["body"] as? String ?? "", formattedHTML: nil)
 
         case JournalEventType.toolOutput:
