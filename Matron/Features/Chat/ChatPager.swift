@@ -48,6 +48,23 @@ final class ChatPagerModel {
             && abs(translation.width) > abs(translation.height)
     }
 
+    /// The page a drag began on. `.scrollPosition` writes the new page back
+    /// MID-drag (Bugbot, PR #194), so `endDrag` judges the swipe-back rule
+    /// against this, not `page` — otherwise a rightward swipe from the
+    /// tasks page reads as "chat page, wide rightward drag" and pops.
+    private var pageAtDragStart: ChatPage?
+
+    func beginDrag() {
+        if pageAtDragStart == nil { pageAtDragStart = page }
+    }
+
+    /// Ends a drag; returns whether it was a swipe back (see `swipeBackPops`).
+    func endDrag(translation: CGSize, startX: CGFloat) -> Bool {
+        let start = pageAtDragStart ?? page
+        pageAtDragStart = nil
+        return Self.swipeBackPops(page: start, translation: translation, startX: startX)
+    }
+
     static func resignFirstResponder() {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
@@ -112,9 +129,9 @@ struct ChatPager<Chat: View, Tasks: View>: View {
             // nowhere to page to anyway (page 0 just rubber-bands).
             .simultaneousGesture(
                 DragGesture(minimumDistance: 20)
+                    .onChanged { _ in model.beginDrag() }
                     .onEnded { v in
-                        if ChatPagerModel.swipeBackPops(page: model.page, translation: v.translation,
-                                                        startX: v.startLocation.x) {
+                        if model.endDrag(translation: v.translation, startX: v.startLocation.x) {
                             onSwipeBack?()
                         }
                     }
