@@ -48,33 +48,99 @@ public struct ItemDetailView: View {
     /// Defaulted to `Date()` so existing/host call sites stay source-compatible;
     /// snapshot tests pass a fixed instant so the thread renders deterministically.
     let now: Date
+    /// Whether the reader had previously scrolled to the bottom of this
+    /// item's thread (`ItemReadMemory.wasAtBottom(itemID:)`, read once by
+    /// the host) — mirrors the chat timeline opening at the tail when the
+    /// reader was following it. Defaulted so existing call sites/snapshot
+    /// tests stay source-compatible.
+    let startsAtBottom: Bool
+    /// Reports whether the comment thread's bottom is currently visible,
+    /// so the host can persist it for next time. Defaulted to `nil` for
+    /// the same reason.
+    let onBottomVisibilityChange: ((Bool) -> Void)?
+
+    /// Whether the comment thread's bottom is currently visible — read by
+    /// the follow-tail `.onChange(of: rowCount)` below, written by
+    /// `.onScrollGeometryChange`'s `action`.
+    @State private var isAtBottom = false
+    /// Guards the initial `startsAtBottom` scroll to firing once per item
+    /// (see `.onAppear`/`.onChange(of: item.id)` below) rather than on
+    /// every body re-evaluation.
+    @State private var hasScrolledToInitialBottom = false
 
     public init(model: Model, draft: Binding<String>, image: @escaping (TrackerAttachment) -> Image?,
                 onOpenAttachment: @escaping (TrackerAttachment) -> Void, onOpenLink: @escaping (URL) -> Void,
                 onOpenConversation: @escaping (String) -> Void, onSubmit: @escaping () -> Void, onAttach: @escaping () -> Void,
                 onVoiceNote: @escaping () -> Void, onClose: @escaping (ItemResolution) -> Void, onReopen: @escaping () -> Void,
-                now: Date = Date()) {
+                now: Date = Date(), startsAtBottom: Bool = false, onBottomVisibilityChange: ((Bool) -> Void)? = nil) {
         self.model = model; self._draft = draft; self.image = image; self.onOpenAttachment = onOpenAttachment
         self.onOpenLink = onOpenLink; self.onOpenConversation = onOpenConversation; self.onSubmit = onSubmit
         self.onAttach = onAttach; self.onVoiceNote = onVoiceNote; self.onClose = onClose; self.onReopen = onReopen
-        self.now = now
+        self.now = now; self.startsAtBottom = startsAtBottom; self.onBottomVisibilityChange = onBottomVisibilityChange
     }
 
     private var item: TrackerItem { model.item }
 
+    /// Stable id the `ScrollViewReader` scrolls to — an invisible spacer
+    /// after the last comment/pending row, not a row's own id, so it
+    /// stays valid even when the thread is empty.
+    private static let bottomAnchorID = "bottom"
+
+    /// Row count driving the follow-tail re-pin below: comments plus
+    /// locally-queued pending ones, since either landing is "the thread
+    /// grew" from the reader's point of view.
+    private var rowCount: Int { model.comments.count + model.pending.count }
+
     public var body: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    header
-                    if !item.labels.isEmpty || !item.links.isEmpty { meta }
-                    if !item.body.isEmpty { MarkdownText(item.body, theme: .matronMessage) }
-                    attachments(item.attachments)
-                    Divider()
-                    ForEach(model.comments) { comment in commentView(comment) }
-                    ForEach(model.pending) { p in pendingView(p) }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        header
+                        if !item.labels.isEmpty || !item.links.isEmpty { meta }
+                        if !item.body.isEmpty { MarkdownText(item.body, theme: .matronMessage) }
+                        attachments(item.attachments)
+                        Divider()
+                        ForEach(model.comments) { comment in commentView(comment) }
+                        ForEach(model.pending) { p in pendingView(p) }
+                        Color.clear.frame(height: 1).id(Self.bottomAnchorID)
+                    }
+                    .padding()
                 }
-                .padding()
+                .onItemThreadBottomVisibilityChange { atBottom in
+                    isAtBottom = atBottom
+                    onBottomVisibilityChange?(atBottom)
+                }
+                .onAppear {
+                    guard startsAtBottom, !hasScrolledToInitialBottom else { return }
+                    hasScrolledToInitialBottom = true
+                    proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+                }
+                // The Mac host swaps items in place — same `ItemDetailView`
+                // call site, new `model.item` — which SwiftUI treats as the
+                // SAME view identity, so `.onAppear` above only fires once
+                // for the whole lifetime, not per item. This re-runs the
+                // initial-scroll decision whenever the item underneath an
+                // unchanged identity actually changes; on iOS, where each
+                // item gets a fresh push (and so a fresh identity), this is
+                // a harmless no-op duplicate of `.onAppear`.
+                .onChange(of: item.id) { _, _ in
+                    hasScrolledToInitialBottom = false
+                    guard startsAtBottom else { return }
+                    hasScrolledToInitialBottom = true
+                    proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+                }
+                // Follow-tail: once the reader has settled at the bottom, a
+                // newly-arrived comment (or a locally-queued pending one)
+                // re-pins the viewport there, mirroring the chat timeline.
+                // `newCount > oldCount` (not just "changed") so a comment
+                // being removed doesn't yank the viewport, and gating on
+                // `hasScrolledToInitialBottom` means this never fires
+                // before the initial placement above has had its say.
+                .onChange(of: rowCount) { oldCount, newCount in
+                    guard hasScrolledToInitialBottom, isAtBottom, newCount > oldCount else { return }
+                    proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+                }
             }
             Divider()
             actionBar
@@ -256,5 +322,29 @@ public struct ItemDetailView: View {
         .disabled(model.isBusy)
         .padding(.horizontal).padding(.vertical, 6)
         .background(.bar)
+    }
+}
+
+private extension View {
+    /// Reports whether a `ScrollView`'s bottom is currently visible, via
+    /// `onScrollGeometryChange` (iOS 18 / macOS 15 — same wave as
+    /// `onUserScrollGesture`'s `onScrollPhaseChange`, see that file). The
+    /// app's real deployment target is 18/15 (`project.yml`), but
+    /// `MatronShared`'s own declared package platforms are more
+    /// conservative (iOS 17 / macOS 14), so this still needs the
+    /// availability guard to typecheck; the `else` branch is a no-op
+    /// (`ItemDetailView.onBottomVisibilityChange` just never fires,
+    /// falling back to the existing "always opens at the top" behaviour).
+    @ViewBuilder
+    func onItemThreadBottomVisibilityChange(action: @escaping (Bool) -> Void) -> some View {
+        if #available(iOS 18.0, macOS 15.0, *) {
+            self.onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 8
+            } action: { _, atBottom in
+                action(atBottom)
+            }
+        } else {
+            self
+        }
     }
 }
