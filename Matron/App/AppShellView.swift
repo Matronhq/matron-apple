@@ -1,4 +1,5 @@
 import SwiftUI
+import MatronChat
 import MatronJournal
 import MatronModels
 import MatronViewModels
@@ -25,6 +26,9 @@ struct AppShellView: View {
     /// Origin conversation titles for the Decisions rows (`conversationTitles()`
     /// is a cheap id→title scan, re-run when the set of origins changes).
     @State private var originTitles: [String: String] = [:]
+    /// The coordinator conversation (spec §5b), live through `@AppStorage`
+    /// on the per-user key so Settings' Change/Clear flip the tab at once.
+    @AppStorage private var coordinatorConvoID: String?
 
     /// `navigation` is optional rather than defaulted to
     /// `AppShellNavigation()`: default-argument expressions are evaluated
@@ -39,10 +43,17 @@ struct AppShellView: View {
         _nav = State(initialValue: navigation ?? AppShellNavigation())
         _chatListVM = State(initialValue: ChatListViewModel(chat: deps.chatService(for: session)))
         _decisionsVM = State(initialValue: deps.makeDecisionsViewModel(for: session))
+        _coordinatorConvoID = AppStorage(CoordinatorSetting.defaultsKey(for: session.userID))
     }
 
     var body: some View {
         TabView(selection: $nav.tab) {
+            coordinatorTab
+                .tabItem { Label("Coordinator", systemImage: "person.crop.circle.badge.checkmark") }
+                // The chat-list unread rule as a dot: any unread activity in
+                // that conversation.
+                .badge(coordinatorHasUnread ? "•" : nil as String?)
+                .tag(AppTab.coordinator)
             conversationsTab
                 .tabItem { Label("Conversations", systemImage: "bubble.left.and.bubble.right") }
                 .tag(AppTab.conversations)
@@ -77,7 +88,24 @@ struct AppShellView: View {
             }
         }
         .task { decisionsVM.start() }
+        // The Conversations list VM needs to keep running even while
+        // another tab shows: the coordinator badge and title read it.
+        // `ChatListViewModel.start()` is idempotent — it cancels any prior
+        // `observationTask` before subscribing — so this and
+        // `ChatListView`'s own `.task { viewModel.start() }` don't race.
+        .task { chatListVM.start() }
         .onDisappear { decisionsVM.stop() }
+        .onDisappear { chatListVM.cancel() }
+    }
+
+    private var coordinatorHasUnread: Bool {
+        guard let id = coordinatorConvoID else { return false }
+        return (chatListVM.groups.flatMap(\.summaries).first { $0.id == id }?.unreadCount ?? 0) > 0
+    }
+
+    private var coordinatorTab: some View {
+        CoordinatorTabView(session: session, deps: deps, chatListVM: chatListVM, vmCache: vmCache,
+                           path: $nav.coordinatorPath, convoID: $coordinatorConvoID)
     }
 
     private var conversationsTab: some View {

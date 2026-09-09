@@ -25,10 +25,10 @@ final class AppShellViewTests: XCTestCase {
         return AppShellView(session: session, deps: AppDependencies(), onSignOut: {}, navigation: navigation)
     }
 
-    func test_shell_showsTwoTabs_atTheRoot() throws {
+    func test_shell_showsThreeTabs_atTheRoot() throws {
         renderInWindow(makeShell(navigation: AppShellNavigation()))
         let bar = try XCTUnwrap(findTabBar(in: window), "TabView must bridge to a UITabBar")
-        XCTAssertEqual(bar.items?.count, 2)
+        XCTAssertEqual(bar.items?.count, 3)
         XCTAssertFalse(bar.isHidden)
         XCTAssertLessThan(bar.frame.minY, window.bounds.maxY, "the bar is on screen at the root")
     }

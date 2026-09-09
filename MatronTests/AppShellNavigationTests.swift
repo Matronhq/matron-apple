@@ -47,4 +47,24 @@ final class AppShellNavigationTests: XCTestCase {
         XCTAssertEqual(nav.decisionsPath, [ItemRoute(id: "it_9")])
         XCTAssertEqual(nav.tab, .conversations, "pushing a decision never changes the tab")
     }
+
+    func test_coordinatorTab_hasItsOwnStack() {
+        let nav = AppShellNavigation()
+        nav.tab = .coordinator
+        nav.push("!child:s", on: .coordinator)
+        XCTAssertEqual(nav.coordinatorPath, ["!child:s"], "a sub-chat opened from the coordinator pushes on coordinatorPath")
+        XCTAssertEqual(nav.chatPath, [], "…not on the Conversations stack")
+        XCTAssertEqual(nav.tab, .coordinator)
+        nav.push(ItemRoute(id: "it_1").pathValue, on: .coordinator)
+        XCTAssertEqual(nav.coordinatorPath, ["!child:s", "item/it_1"])
+    }
+
+    func test_deepLink_leavesTheCoordinatorStackAlone() {
+        let nav = AppShellNavigation()
+        nav.tab = .coordinator
+        nav.coordinatorPath = ["!child:s"]
+        nav.openChat("!r:s")
+        XCTAssertEqual(nav.tab, .conversations)
+        XCTAssertEqual(nav.coordinatorPath, ["!child:s"])
+    }
 }

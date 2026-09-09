@@ -2,7 +2,9 @@ import Foundation
 import Observation
 
 /// The bottom tabs (app shell, spec §3), in bar order.
+/// Left to right in the bar; the app opens on Conversations.
 enum AppTab: Hashable {
+    case coordinator
     case conversations
     case decisions
 }
@@ -19,6 +21,9 @@ final class AppShellNavigation {
     /// and the sub-chat switcher replaces entries in place.
     var chatPath: [String] = []
     var decisionsPath: [ItemRoute] = []
+    /// Coordinator tab stack: sub-chats and items opened from the
+    /// coordinator push here, so back returns to it.
+    var coordinatorPath: [String] = []
 
     init() {}
 
@@ -42,5 +47,15 @@ final class AppShellNavigation {
 
     func pushDecision(_ itemID: String) {
         decisionsPath.append(ItemRoute(id: itemID))
+    }
+
+    /// Push onto a specific tab's stack without changing the selection.
+    /// Decisions takes an `ItemRoute.pathValue` and decodes it.
+    func push(_ value: String, on tab: AppTab) {
+        switch tab {
+        case .conversations: chatPath.append(value)
+        case .coordinator: coordinatorPath.append(value)
+        case .decisions: if let route = ItemRoute(pathValue: value) { decisionsPath.append(route) }
+        }
     }
 }
