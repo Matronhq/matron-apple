@@ -950,7 +950,12 @@ struct ChatView: View {
                     Task { await itemsVM.create(kind: kind, title: title, body: itemBody) }
                 }
             }
-            .alert("Tracker", isPresented: Binding(get: { itemsVM.error != nil }, set: { if !$0 { itemsVM.error = nil } })) {
+            // Both pages stay mounted, so gate on the tasks page being the
+            // one showing — a background refresh failure must not interrupt
+            // the chat page (CodeRabbit, PR #194).
+            .alert("Tracker", isPresented: Binding(
+                get: { pager.page == .tasks && itemsVM.error != nil },
+                set: { if !$0 { itemsVM.error = nil } })) {
                 Button("OK") { itemsVM.error = nil }
             } message: {
                 Text(itemsVM.error ?? "")
