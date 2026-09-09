@@ -14,8 +14,16 @@ public protocol ItemsStoreReading: Sendable {
     func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]>
     /// Every queued "create" outbox row, feeding `ItemsPanelViewModel.pendingCreates`.
     func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]>
+    /// Every conversation's items regardless of the panel's scope — the
+    /// source of `ItemsPanelViewModel.awaitingYou` (app shell, spec §1).
+    /// Defaulted to `itemsStream(scope: .all)` below so `JournalStore`
+    /// needs no new query; fakes override it to drive it separately.
+    func needsUserStream() -> AsyncStream<[TrackerItem]>
 }
 extension JournalStore: ItemsStoreReading {}
+public extension ItemsStoreReading {
+    func needsUserStream() -> AsyncStream<[TrackerItem]> { itemsStream(scope: .all) }
+}
 
 public protocol ItemsSyncing: Sendable {
     func refresh(scope: ItemsScope) async
@@ -93,13 +101,22 @@ public final class ItemsPanelViewModel {
     /// declared; unknown/absent extra keys are ignored by `Decodable`.
     private struct PendingCreatePayload: Decodable { var kind: String; var title: String; var convoID: String }
 
-    public let convoID: String
+    /// The home conversation, or `nil` for the app-wide Decisions instance
+    /// (spec §1): `nil` starts `scope` at `.all`, disables `create` (no
+    /// conversation to file into) and leaves `needsYouCount` at zero.
+    public let convoID: String?
     public var scope: ItemsScope { didSet { if scope != oldValue { resubscribe() } } }
     public private(set) var sections = Sections()
     /// Items in THIS conversation awaiting the user — the toolbar badge.
     /// Scoped to `convoID` regardless of the panel's current `scope`, so
     /// switching the list to "All" doesn't inflate the chat's badge.
     public private(set) var needsYouCount = 0
+    /// Every open item awaiting the user across ALL conversations, newest
+    /// `updatedAt` first — independent of `scope`, fed by its own
+    /// `needsUserStream()` subscription. Backs the Decisions list and the
+    /// tab / nav badge (spec §1, §2).
+    public private(set) var awaitingYou: [TrackerItem] = []
+    public var awaitingYouCount: Int { awaitingYou.count }
     public private(set) var isSupported = true
     public private(set) var isRefreshing = false
     /// Creates still sitting in the local outbox, not yet confirmed by the
@@ -116,9 +133,12 @@ public final class ItemsPanelViewModel {
     private var pendingCreatesTask: Task<Void, Never>?
     private var supportedTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
+    private var awaitingTask: Task<Void, Never>?
 
-    public init(convoID: String, store: any ItemsStoreReading, api: any ItemsProviding, sync: any ItemsSyncing) {
-        self.convoID = convoID; self.scope = .convo(convoID); self.store = store; self.api = api; self.sync = sync
+    public init(convoID: String?, store: any ItemsStoreReading, api: any ItemsProviding, sync: any ItemsSyncing) {
+        self.convoID = convoID
+        self.scope = convoID.map { .convo($0) } ?? .all
+        self.store = store; self.api = api; self.sync = sync
     }
 
     /// Sections rule (spec *Panel content*): `needsYou` = `needsUser` (any
@@ -150,6 +170,13 @@ public final class ItemsPanelViewModel {
         observationGeneration += 1
         stop()
         resubscribe()
+        awaitingTask = Task { [weak self] in
+            guard let stream = self?.store.needsUserStream() else { return }
+            for await items in stream {
+                guard let self, !Task.isCancelled else { return }
+                self.awaitingYou = items.filter(\.needsUser).sorted { $0.updatedAt > $1.updatedAt }
+            }
+        }
         supportedTask = Task { [weak self] in
             guard let self else { return }
             let stream = await self.sync.supportedStream()
@@ -170,6 +197,7 @@ public final class ItemsPanelViewModel {
     }
 
     public func stop() {
+        awaitingTask?.cancel(); awaitingTask = nil
         itemsTask?.cancel(); itemsTask = nil
         pendingCreatesTask?.cancel(); pendingCreatesTask = nil
         supportedTask?.cancel(); supportedTask = nil
@@ -184,11 +212,10 @@ public final class ItemsPanelViewModel {
             for await items in stream {
                 guard let self, !Task.isCancelled else { return }
                 self.sections = Self.sections(from: items)
-                self.needsYouCount = self.sections.needsYou.filter { $0.originConvoID == self.convoID }.count
+                self.needsYouCount = self.convoID.map { home in self.sections.needsYou.filter { $0.originConvoID == home }.count } ?? 0
             }
         }
         pendingCreatesTask?.cancel()
-        let convoID = convoID
         pendingCreatesTask = Task { [weak self] in
             guard let stream = self?.store.itemOutboxCreatesStream() else { return }
             for await rows in stream {
@@ -197,7 +224,7 @@ public final class ItemsPanelViewModel {
                     guard let data = row.payloadJSON.data(using: .utf8),
                           let payload = try? JSONDecoder().decode(PendingCreatePayload.self, from: data),
                           let kind = ItemKind(rawValue: payload.kind) else { return nil }
-                    if case .convo = scope, payload.convoID != convoID { return nil }
+                    if case .convo(let home) = scope, payload.convoID != home { return nil }
                     return PendingItem(id: row.localID, kind: kind, title: payload.title, attempts: row.attempts, lastError: row.lastError)
                 }
             }
@@ -251,6 +278,7 @@ public final class ItemsPanelViewModel {
     }
 
     public func create(kind: ItemKind, title: String, body: String) async {
+        guard let convoID else { error = "Open a chat's tracker to file a new item."; return }
         let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty, t.count <= 200 else { error = "Give the item a title (up to 200 characters)."; return }
         let queued = await sync.enqueueCreate(localID: UUID().uuidString, NewItem(kind: kind, title: t, body: body, convoID: convoID))
