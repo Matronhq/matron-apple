@@ -222,10 +222,16 @@ public actor ItemsSync {
             while refetchAgain.remove(id) != nil {
                 await refreshItemOnce(id: id)
             }
+            // Deregister HERE, with no suspension between the final
+            // `refetchAgain` check and the removal (Bugbot/CodeRabbit,
+            // PR #198): if the owner cleared it after `await run.value`
+            // instead, a joiner arriving in that window would flag
+            // `refetchAgain`, await an already-finished task, and return
+            // with its flag never consumed.
+            inFlightRefetches[id] = nil
         }
         inFlightRefetches[id] = run
         await run.value
-        inFlightRefetches[id] = nil
     }
 
     private func refreshItemOnce(id: String) async {

@@ -27,18 +27,18 @@ public struct ItemDetailView: View {
         public var originTitle: String?
         public var availableResolutions: [ItemResolution]
         public var isBusy: Bool
-        /// Whether `comments` is the loaded thread rather than the pre-refetch
-        /// cache (`ItemDetailViewModel.hasLoadedThread`). While `false` the
-        /// view neither follows the tail nor reports bottom visibility —
-        /// a header-only thread is trivially "at the bottom", and treating
-        /// the initial load as growth would jump an unread item to its end
-        /// and persist it as read-to-end (Bugbot, PR #198). Defaulted to
-        /// `true` so snapshot tests, which hand over a finished thread,
-        /// stay source-compatible.
-        public var threadLoaded: Bool
-        public init(item: TrackerItem, comments: [TrackerComment], pending: [PendingComment], originTitle: String?, availableResolutions: [ItemResolution], isBusy: Bool, threadLoaded: Bool = true) {
+        /// The comment count of the loaded thread, `nil` until the opening
+        /// refetch has completed (`ItemDetailViewModel.loadedCommentCount`).
+        /// Follow-tail only treats growth as a new reply when it starts
+        /// from at least this many rows: a header-only thread is trivially
+        /// "at the bottom", and treating the opening load — or a stale
+        /// replay of it — as growth would jump an unread item to its end
+        /// (Bugbot, PR #198). Defaulted to `nil` so existing call sites and
+        /// snapshot tests stay source-compatible.
+        public var loadedCommentCount: Int?
+        public init(item: TrackerItem, comments: [TrackerComment], pending: [PendingComment], originTitle: String?, availableResolutions: [ItemResolution], isBusy: Bool, loadedCommentCount: Int? = nil) {
             self.item = item; self.comments = comments; self.pending = pending; self.originTitle = originTitle
-            self.availableResolutions = availableResolutions; self.isBusy = isBusy; self.threadLoaded = threadLoaded
+            self.availableResolutions = availableResolutions; self.isBusy = isBusy; self.loadedCommentCount = loadedCommentCount
         }
     }
 
@@ -117,11 +117,6 @@ public struct ItemDetailView: View {
                     .padding()
                 }
                 .onItemThreadBottomVisibilityChange { atBottom in
-                    // Pre-load geometry is the header alone (or a stale
-                    // cache) and says nothing about where the reader is in
-                    // the real thread — ignore it rather than arm the
-                    // follow-tail below or persist a false read-to-end.
-                    guard model.threadLoaded else { return }
                     isAtBottom = atBottom
                     onBottomVisibilityChange?(atBottom)
                 }
@@ -148,7 +143,7 @@ public struct ItemDetailView: View {
                 // `hasScrolledToInitialBottom` means this never fires
                 // before the initial placement above has had its say.
                 .onChange(of: rowCount) { oldCount, newCount in
-                    guard Self.shouldFollowTail(threadLoaded: model.threadLoaded, startsAtBottom: startsAtBottom,
+                    guard Self.shouldFollowTail(loadedCount: model.loadedCommentCount, startsAtBottom: startsAtBottom,
                                                 placed: hasScrolledToInitialBottom, atBottom: isAtBottom,
                                                 oldCount: oldCount, newCount: newCount) else { return }
                     proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
@@ -174,20 +169,25 @@ public struct ItemDetailView: View {
     }
 
     /// The follow-tail decision for a thread that just grew (Bugbot, PR
-    /// #198, rounds 1–3). Only re-pins when the thread had already loaded
-    /// before this growth — so the opening refetch of an unread item is
-    /// never mistaken for a new reply — AND the initial placement has run
-    /// AND the reader was at the bottom AND the thread actually grew (a
-    /// removed comment must not yank the viewport). A `startsAtBottom`
-    /// reader is exempt from the load gate: they asked for the tail,
-    /// `placeInitially` marked them at-bottom before any geometry
-    /// callback, and the cached-then-refetched rows landing during the
-    /// load are exactly what must keep them pinned there (round 3: gating
-    /// them too reopened a read-to-end thread at the top and then stored
-    /// it as unread).
-    static func shouldFollowTail(threadLoaded: Bool, startsAtBottom: Bool, placed: Bool, atBottom: Bool,
+    /// #198, rounds 1–4). Only re-pins when the growth started from a
+    /// thread that was already loaded — `oldCount` at or above
+    /// `loadedCount` — so the opening refetch of an unread item is never
+    /// mistaken for a new reply, whichever SwiftUI update the loaded count
+    /// lands in (same update as the rows: old 0 < loaded 8; a later one:
+    /// loaded still nil) and even if a stale pre-refetch snapshot replays
+    /// afterwards (8→3 shrinks, 3→8 starts below 8). Also requires the
+    /// initial placement to have run, the reader at the bottom, and real
+    /// growth (a removed comment must not yank the viewport). A
+    /// `startsAtBottom` reader is exempt from the load gate: they asked
+    /// for the tail, `placeInitially` marked them at-bottom before any
+    /// geometry callback, and the rows landing during the load are
+    /// exactly what must keep them pinned there.
+    static func shouldFollowTail(loadedCount: Int?, startsAtBottom: Bool, placed: Bool, atBottom: Bool,
                                  oldCount: Int, newCount: Int) -> Bool {
-        (threadLoaded || startsAtBottom) && placed && atBottom && newCount > oldCount
+        guard placed, atBottom, newCount > oldCount else { return false }
+        if startsAtBottom { return true }
+        guard let loadedCount else { return false }
+        return oldCount >= loadedCount
     }
 
     private var statusText: String {

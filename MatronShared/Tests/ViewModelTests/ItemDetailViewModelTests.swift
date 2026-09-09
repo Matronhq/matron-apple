@@ -18,8 +18,16 @@ final class ItemDetailViewModelTests: XCTestCase {
     }
     private final class Sync: ItemsSyncing, @unchecked Sendable {
         var comments: [(String, String, [TrackerAttachment])] = []; var refetched: [String] = []
+        /// When set, `refreshItem` suspends until `releaseRefresh()`.
+        var holdRefresh = false
+        private var refreshGate: CheckedContinuation<Void, Never>?
+        var isHeld: Bool { refreshGate != nil }
+        func releaseRefresh() { let c = refreshGate; refreshGate = nil; c?.resume() }
         func refresh(scope: ItemsScope) async {}
-        func refreshItem(id: String) async { refetched.append(id) }
+        func refreshItem(id: String) async {
+            if holdRefresh { holdRefresh = false; await withCheckedContinuation { refreshGate = $0 } }
+            refetched.append(id)
+        }
         func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async { comments.append((itemID, body, attachments)) }
         func enqueueCreate(localID: String, _ new: NewItem) async -> Bool { true }
         func supportedStream() async -> AsyncStream<Bool> { AsyncStream { $0.yield(true) } }
@@ -41,21 +49,46 @@ final class ItemDetailViewModelTests: XCTestCase {
         func rankItem(id: String, _ change: ItemRankChange) async throws -> TrackerItem { fatalError() }
     }
 
-    func testStartFlipsHasLoadedThreadOnceTheOpeningRefetchCompletes() async throws {
+    func testLoadedCommentCountIsSetFromTheStoreOnceTheOpeningRefetchCompletes() async throws {
         let sync = Sync(); let store = Store()
         // The refetch has landed in the store but its stream delivery is
-        // still in flight: the flag must not run ahead of the thread.
+        // still in flight: the count must not run ahead of the thread.
         store.storedComments = [TrackerComment(id: "ic_1", itemID: "it_1", author: .user, body: "x")]
         let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: API(), sync: sync)
-        XCTAssertFalse(vm.hasLoadedThread)
+        XCTAssertNil(vm.loadedCommentCount)
         vm.start()
-        try await waitUntil { vm.hasLoadedThread }
+        try await waitUntil { vm.loadedCommentCount != nil }
         XCTAssertEqual(sync.refetched, ["it_1"])
-        XCTAssertEqual(vm.comments.map(\.id), ["ic_1"], "comments are read from the store before the flag flips")
-        // Restarting re-arms the guard until the new refetch lands.
+        XCTAssertEqual(vm.comments.map(\.id), ["ic_1"], "comments are read from the store before the count is set")
+        XCTAssertEqual(vm.loadedCommentCount, 1)
+        // Restarting re-arms the gate until the new refetch lands.
         vm.stop()
         vm.start()
-        try await waitUntil { sync.refetched.count == 2 && vm.hasLoadedThread }
+        try await waitUntil { sync.refetched.count == 2 && vm.loadedCommentCount == 1 }
+    }
+
+    /// Bugbot (PR #198, round 4): the comments subscription taken at
+    /// `start()` may still hold a pre-refetch snapshot when the refetch
+    /// completes; it is dropped and re-taken, so that snapshot can never
+    /// overwrite the loaded thread.
+    func testStaleSubscriptionCannotOverwriteTheLoadedThread() async throws {
+        let sync = Sync(); let store = Store()
+        store.storedComments = [TrackerComment(id: "ic_1", itemID: "it_1", author: .user, body: "x"),
+                                TrackerComment(id: "ic_2", itemID: "it_1", author: .agent, body: "y")]
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: API(), sync: sync)
+        sync.holdRefresh = true
+        vm.start()
+        try await waitUntil { store.commentsCont != nil && sync.isHeld }
+        let stale = store.commentsCont!                      // the subscription taken at start()
+        store.commentsCont = nil
+        sync.releaseRefresh()
+        try await waitUntil { vm.loadedCommentCount == 2 }
+        try await waitUntil { store.commentsCont != nil }   // the fresh subscription
+        stale.yield([])                                      // the old one's late, empty snapshot
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(vm.comments.map(\.id), ["ic_1", "ic_2"], "the stale subscription must be ignored")
+        store.commentsCont?.yield(store.storedComments + [TrackerComment(id: "ic_3", itemID: "it_1", author: .user, body: "z")])
+        try await waitUntil { vm.comments.count == 3 }
     }
 
     func testSubmitUploadsThenEnqueuesAndClearsDraft() async {

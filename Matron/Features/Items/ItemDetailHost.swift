@@ -94,7 +94,7 @@ struct ItemDetailHost: View {
                         originTitle: item.originConvoID == currentConvoID ? nil : originTitle,
                         availableResolutions: vm.availableResolutions,
                         isBusy: vm.isBusy,
-                        threadLoaded: vm.hasLoadedThread
+                        loadedCommentCount: vm.loadedCommentCount
                     ),
                     draft: Binding(get: { vm.draft }, set: { vm.draft = $0 }),
                     image: { imageCache[$0.blobRef] },

@@ -279,7 +279,7 @@ struct MacItemDetailHost: View {
                             // it is the honest UI.
                             originTitle: item.originConvoID == currentConvoID ? nil : state.detailOriginTitle,
                             availableResolutions: viewModel.availableResolutions, isBusy: viewModel.isBusy,
-                            threadLoaded: viewModel.hasLoadedThread),
+                            loadedCommentCount: viewModel.loadedCommentCount),
                         draft: Binding(get: { viewModel.draft }, set: { viewModel.draft = $0 }),
                         image: { state.detailImages[$0.blobRef] },
                         onOpenAttachment: { openAttachment($0, in: item) },

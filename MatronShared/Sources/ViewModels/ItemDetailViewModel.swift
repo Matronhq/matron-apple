@@ -17,22 +17,24 @@ public final class ItemDetailViewModel {
     public var draft = ""
     public var error: String?
     public private(set) var isBusy = false
-    /// Whether the opening `refreshItem` has completed — i.e. `comments`
-    /// now reflects the server's thread, not just whatever the local
-    /// cache held (Bugbot, PR #198). `ItemDetailView` refuses to
-    /// follow-tail or report bottom visibility until this flips, so the
-    /// initial comment load never yanks an unread thread to its end.
-    /// Flips on completion whether or not the refetch succeeded: a
-    /// failed refetch leaves the cached thread as the thread. The refetch
-    /// is awaited to its end even when coalesced with one already in
-    /// flight, and `comments` is read straight from the store before the
-    /// flag flips, so the flag never runs ahead of the stream's delivery.
-    public private(set) var hasLoadedThread = false
+    /// The size of the thread once the opening `refreshItem` has completed
+    /// — `nil` until then (Bugbot, PR #198). `ItemDetailView` uses it to
+    /// tell the opening load apart from a new reply: growth whose starting
+    /// count is below this number is the load (or a stale replay of it)
+    /// and must not drag an unread thread to its end. Set on completion
+    /// whether or not the refetch succeeded: a failed refetch leaves the
+    /// cached thread as the thread. The refetch is awaited to its end even
+    /// when coalesced with one already in flight, `comments` is read
+    /// straight from the store before this is set, and the comments stream
+    /// is re-subscribed so a pre-refetch snapshot still in flight on the
+    /// old subscription can never overwrite the loaded thread.
+    public private(set) var loadedCommentCount: Int?
 
     private let store: any ItemsStoreReading
     private let api: any ItemsProviding
     private let sync: any ItemsSyncing
     private var tasks: [Task<Void, Never>] = []
+    private var commentsTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
 
     public init(itemID: String, store: any ItemsStoreReading, api: any ItemsProviding, sync: any ItemsSyncing) {
@@ -46,10 +48,7 @@ public final class ItemDetailViewModel {
             guard let s = self?.store.itemStream(id: id) else { return }
             for await v in s { guard let self, !Task.isCancelled else { return }; self.item = v }
         })
-        tasks.append(Task { [weak self] in
-            guard let s = self?.store.commentsStream(itemID: id) else { return }
-            for await v in s { guard let self, !Task.isCancelled else { return }; self.comments = v }
-        })
+        subscribeComments()
         tasks.append(Task { [weak self] in
             guard let s = self?.store.itemOutboxStream(itemID: id) else { return }
             for await v in s { guard let self, !Task.isCancelled else { return }; self.pendingComments = v }
@@ -58,18 +57,33 @@ public final class ItemDetailViewModel {
         // the detail sheet must trigger one, not just rely on whatever the
         // panel last fetched.
         refreshTask?.cancel()
-        hasLoadedThread = false
+        loadedCommentCount = nil
         refreshTask = Task { [weak self] in
             await self?.sync.refreshItem(id: id)
             guard let self, !Task.isCancelled else { return }
+            // Drop the old subscription first: its `for await` guard sees
+            // the cancellation, so a pre-refetch snapshot it still holds
+            // can no longer land after the loaded thread. The fresh
+            // subscription's first value is the store as it is now.
+            self.subscribeComments()
             if let fresh = try? self.store.comments(itemID: id) { self.comments = fresh }
-            self.hasLoadedThread = true
+            self.loadedCommentCount = self.comments.count
         }
     }
 
     public func stop() {
         tasks.forEach { $0.cancel() }; tasks = []
+        commentsTask?.cancel(); commentsTask = nil
         refreshTask?.cancel(); refreshTask = nil
+    }
+
+    private func subscribeComments() {
+        commentsTask?.cancel()
+        let id = itemID
+        commentsTask = Task { [weak self] in
+            guard let s = self?.store.commentsStream(itemID: id) else { return }
+            for await v in s { guard let self, !Task.isCancelled else { return }; self.comments = v }
+        }
     }
 
     public var availableResolutions: [ItemResolution] {
