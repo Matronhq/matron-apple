@@ -104,4 +104,15 @@ final class ItemsListSnapshotTests: XCTestCase {
     func testNeedsYouBadge() {
         assertVariants(of: HStack { NeedsYouBadge(count: 3); NeedsYouBadge(count: 120); NeedsYouBadge(count: 0) }.padding(), named: "NeedsYouBadge")
     }
+
+    /// App shell (spec §1): with no home conversation the "This chat / All"
+    /// picker is meaningless and is hidden; only the refresh spinner and
+    /// the `+` remain in the header.
+    func testNoConversationHidesScopePicker() {
+        let model = ItemsListView.Model(needsYou: [], tasks: [], decisions: [], done: [], originTitles: [:], isSupported: true, isRefreshing: true)
+        let view = ItemsListView(model: model, scope: .constant(.all), convoID: nil, thumbnail: { _ in nil },
+                                 onSelect: { _ in }, onMove: { _, _ in }, onCreate: {}, onOpenConversation: { _ in })
+            .frame(width: 360, height: 200)
+        assertVariants(of: view, named: "ItemsList_noConvo")
+    }
 }

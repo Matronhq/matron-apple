@@ -38,14 +38,16 @@ public struct ItemsListView: View {
 
     let model: Model
     @Binding var scope: ItemsScope
-    let convoID: String
+    /// The home conversation, or `nil` for the app-wide instance (app
+    /// shell, spec §1) — with no home chat the scope picker is hidden.
+    let convoID: String?
     let thumbnail: (TrackerItem) -> Image?
     let onSelect: (TrackerItem) -> Void
     let onMove: (String, Int) -> Void
     let onCreate: () -> Void
     let onOpenConversation: (String) -> Void
 
-    public init(model: Model, scope: Binding<ItemsScope>, convoID: String, thumbnail: @escaping (TrackerItem) -> Image?,
+    public init(model: Model, scope: Binding<ItemsScope>, convoID: String?, thumbnail: @escaping (TrackerItem) -> Image?,
                 onSelect: @escaping (TrackerItem) -> Void, onMove: @escaping (String, Int) -> Void,
                 onCreate: @escaping () -> Void, onOpenConversation: @escaping (String) -> Void) {
         self.model = model; self._scope = scope; self.convoID = convoID; self.thumbnail = thumbnail
@@ -57,12 +59,16 @@ public struct ItemsListView: View {
     public var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Picker("Scope", selection: Binding(get: { isAll ? 1 : 0 }, set: { scope = $0 == 1 ? .all : .convo(convoID) })) {
-                    Text("This chat").tag(0)
-                    Text("All").tag(1)
+                if let convoID {
+                    Picker("Scope", selection: Binding(get: { isAll ? 1 : 0 }, set: { scope = $0 == 1 ? .all : .convo(convoID) })) {
+                        Text("This chat").tag(0)
+                        Text("All").tag(1)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                } else {
+                    Spacer(minLength: 0)
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
                 if model.isRefreshing {
                     ProgressView()
                         .controlSize(.small)

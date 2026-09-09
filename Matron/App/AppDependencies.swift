@@ -317,9 +317,18 @@ final class AppDependencies {
     }
 
     /// Per-chat / cross-chat items panel (spec: Apps → Panel content).
-    @MainActor func makeItemsPanelViewModel(for session: UserSession, convoID: String) -> ItemsPanelViewModel {
+    /// `convoID: nil` is the app-wide instance — see `makeDecisionsViewModel`.
+    @MainActor func makeItemsPanelViewModel(for session: UserSession, convoID: String?) -> ItemsPanelViewModel {
         let c = core(for: session)
         return ItemsPanelViewModel(convoID: convoID, store: c.store, api: c.api, sync: c.items)
+    }
+
+    /// The one Decisions instance per signed-in session (app shell, spec
+    /// §1): no home conversation, starts in `.all`, feeds the Decisions
+    /// list and the badge. Created and started by the shell, stopped when
+    /// the shell leaves the hierarchy on sign-out.
+    @MainActor func makeDecisionsViewModel(for session: UserSession) -> ItemsPanelViewModel {
+        makeItemsPanelViewModel(for: session, convoID: nil)
     }
 
     /// Item detail sheet/screen.

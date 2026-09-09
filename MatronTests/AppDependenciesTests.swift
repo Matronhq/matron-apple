@@ -197,4 +197,17 @@ final class AppDependenciesTests: XCTestCase {
         XCTAssertEqual(after.count, 0,
                        "both chained teardowns must complete before await returns")
     }
+
+    /// App shell (spec §1): the Decisions instance has no home conversation
+    /// and therefore starts in the cross-conversation scope.
+    func test_makeDecisionsViewModel_hasNoHomeConversation_andStartsInAll() {
+        let deps = AppDependencies()
+        let session = UserSession(userID: "@a:s", deviceID: "D",
+                                  homeserverURL: URL(string: "https://s")!, accessToken: "t")
+        let vm = deps.makeDecisionsViewModel(for: session)
+        XCTAssertNil(vm.convoID)
+        XCTAssertEqual(vm.scope, .all)
+        let perChat = deps.makeItemsPanelViewModel(for: session, convoID: "c1")
+        XCTAssertEqual(perChat.scope, .convo("c1"))
+    }
 }

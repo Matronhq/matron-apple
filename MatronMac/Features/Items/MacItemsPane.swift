@@ -217,8 +217,9 @@ struct MacItemDetailHost: View {
     /// The chat this pane was opened from (`ItemsPanelViewModel.convoID`)
     /// — used to hide the "opened from…" origin link when it would just
     /// point back at the chat already underneath the pane (Bugbot; mirrors
-    /// iOS `ItemDetailHost.currentConvoID`).
-    let currentConvoID: String
+    /// iOS `ItemDetailHost.currentConvoID`). Optional since the app
+    /// shell's Decisions instance has no home conversation (spec §1).
+    let currentConvoID: String?
     let state: MacItemsPaneState
     let onOpenConversation: (String) -> Void
     @Environment(\.appDependencies) private var deps

@@ -16,8 +16,10 @@ struct ItemDetailHost: View {
     let session: UserSession
     /// The chat this drawer was opened from (`ItemsPanelViewModel.convoID`)
     /// — used to hide the "opened from…" origin link when it would just
-    /// point back at the chat already underneath the drawer.
-    let currentConvoID: String
+    /// point back at the chat already underneath the drawer. Optional
+    /// since the app shell's Decisions instance has no home conversation
+    /// (spec §1): with `nil` every origin link is shown.
+    let currentConvoID: String?
     let onOpenConversation: (String) -> Void
 
     @Environment(\.appDependencies) private var deps
