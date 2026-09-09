@@ -374,76 +374,13 @@ struct ChatListView: View {
         }
     }
 
-    /// Builds the `ChatView` destination for a tapped row. Wrapped in a
-    /// helper so `body` stays readable and the `nil`-environment branch
-    /// doesn't leak SwiftUI conditional-content quirks into the main flow.
-    ///
-    /// Resolves the destination's `ChatSummary` from `viewModel.groups`
-    /// by id rather than capturing it at navigation time — see the file
-    /// header for the stale-capture rationale. The lookup can legitimately
-    /// return `nil` for a valid, open room: a conversation the bridge just
-    /// created (`/start`) auto-opens the instant its first frame hits the
-    /// store, but the chat-list snapshot arrives a GRDB `ValueObservation`
-    /// main-hop later — so `currentSummary` is briefly `nil` for a room
-    /// that is very much live. We therefore build the `ChatView` for any
-    /// valid id whenever the session is present; the title falls back to
-    /// empty and fills in live when the snapshot lands (the `ChatView`'s
-    /// `@State` view models and the roomID-keyed timeline persist across
-    /// that re-render). The `Session unavailable` placeholder is reserved
-    /// for the case its copy actually describes — no session / signed out.
-    @ViewBuilder
+    /// Builds the destination for a tapped row. The lookup can legitimately
+    /// return `nil` for a valid, open room — a conversation the bridge just
+    /// created auto-opens before the chat-list snapshot lands — so the
+    /// destination is built for any id whenever the session is present and
+    /// the title fills in live. See `ChatDestinationView`.
     func chatDestination(for id: ChatSummary.ID) -> some View {
-        if let deps, let session {
-            // A subagent child (learned from the store — the id stays
-            // opaque) opens the read-only sub-chat viewer; every other id is
-            // a normal top-level chat. Children reach this destination only
-            // via the running-subagent strip / switcher (they're filtered
-            // from the list and excluded from auto-open), so this branch is
-            // the sub-chat entry point.
-            if let parentConvoID = deps.parentConvoID(of: id, for: session) {
-                let (chatVM, stripVM) = vmCache.subChatViewModels(
-                    for: id, parentConvoID: parentConvoID, deps: deps, session: session)
-                SubChatView(viewModel: chatVM, stripViewModel: stripVM,
-                            childID: id, fallbackTitle: "Subagent")
-                    // Key the viewer's identity to the child. Switching
-                    // siblings REPLACES the path tail (pop-then-push), which
-                    // keeps the destination's structural position — without
-                    // this key SwiftUI reuses the old instance's `@State`,
-                    // so `viewModel` stays the previous child's VM and the
-                    // timeline never changes (only `childID`-derived header
-                    // fields update). Same fix as MacSubChatPane's
-                    // `.id(childID)` (f3eb091).
-                    .id(id)
-            } else {
-                let summary = currentSummary(for: id)
-                let (chatVM, composerVM) = vmCache.viewModels(for: id, deps: deps, session: session)
-                ChatView(
-                    viewModel: chatVM,
-                    composerVM: composerVM,
-                    stripViewModel: vmCache.stripViewModel(forParent: id, deps: deps, session: session),
-                    chatTitle: summary?.title ?? "",
-                    boxName: summary?.boxName,
-                    sessionShort: summary?.sessionShort,
-                    boxShort: summary?.boxShort,
-                    roomBoxNames: summary?.roomBoxNames ?? [],
-                    roomBoxShorts: summary?.roomBoxShorts ?? []
-                )
-                // Key the chat's identity to its room. `openChat` REPLACES
-                // the path ([A] → [B]), which keeps this destination's
-                // structural position — without this key SwiftUI reuses the
-                // old instance's `@State`, so `viewModel`/`composerVM` stay
-                // chat A's while the plain-`let` `chatTitle` updates to
-                // chat B: B's title over A's timeline. Same fix as the
-                // SubChatView branch above and MacSubChatPane (f3eb091).
-                .id(id)
-            }
-        } else {
-            ContentUnavailableView(
-                "Session unavailable",
-                systemImage: "exclamationmark.triangle",
-                description: Text("Sign in again to open this chat.")
-            )
-        }
+        ChatDestinationView(id: id, summary: currentSummary(for: id), vmCache: vmCache)
     }
 
     /// Looks up the current `ChatSummary` for a navigation id across all

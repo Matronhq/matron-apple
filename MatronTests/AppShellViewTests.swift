@@ -39,6 +39,17 @@ final class AppShellViewTests: XCTestCase {
         XCTAssertEqual(nav.tab, .conversations)
     }
 
+    /// Spec §3: the tab bar shows only at the root of each tab — a pushed
+    /// chat carries `.toolbar(.hidden, for: .tabBar)`.
+    func test_pushedChat_hidesTheTabBar() throws {
+        let nav = AppShellNavigation()
+        nav.chatPath = ["!r:s"]
+        renderInWindow(makeShell(navigation: nav))
+        let bar = try XCTUnwrap(findTabBar(in: window))
+        XCTAssertTrue(bar.isHidden || bar.frame.minY >= window.bounds.maxY - 1 || bar.alpha == 0,
+                      "the tab bar must be hidden (or slid off screen) inside a pushed chat")
+    }
+
     // MARK: - helpers
 
     @discardableResult
