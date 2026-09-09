@@ -139,6 +139,26 @@ final class AppShellNavigationTests: XCTestCase {
         XCTAssertEqual(nav.coordinatorPath, ["!other:s"])
     }
 
+    /// Bugbot (PR #197): the stack bindings' setters redirect on the way
+    /// in, so the coordinator id is never stored — a second copy cannot
+    /// mount even for a frame.
+    func test_stackSetters_redirectTheCoordinatorBeforeItIsStored() {
+        let nav = AppShellNavigation()
+        nav.coordinatorConvoID = "!coord:s"
+        nav.tab = .conversations
+        nav.setChatPath(["!other:s", "!coord:s"])
+        XCTAssertEqual(nav.chatPath, ["!other:s"])
+        XCTAssertEqual(nav.tab, .coordinator)
+        nav.setCoordinatorPath(["item/abc", "!coord:s"])
+        XCTAssertEqual(nav.coordinatorPath, [])
+        nav.setCoordinatorPath(["!other:s"])
+        XCTAssertEqual(nav.coordinatorPath, ["!other:s"], "other pushes are stored as-is")
+        nav.tab = .conversations
+        nav.setChatPath(["!other:s", "item/abc"])
+        XCTAssertEqual(nav.chatPath, ["!other:s", "item/abc"])
+        XCTAssertEqual(nav.tab, .conversations)
+    }
+
     func test_pushDecision_appendsToTheDecisionsStack() {
         let nav = AppShellNavigation()
         nav.pushDecision("it_9")

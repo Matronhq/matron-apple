@@ -91,8 +91,6 @@ struct AppShellView: View {
         // (Bugbot, PR #197): mirror the setting into the nav object, and
         // hand off a chat-list row push of that conversation.
         .onChange(of: coordinatorConvoID, initial: true) { _, id in nav.coordinatorConvoID = id }
-        .onChange(of: nav.chatPath) { _, _ in nav.redirectCoordinatorPush() }
-        .onChange(of: nav.coordinatorPath) { _, _ in nav.redirectCoordinatorPush() }
         .task { decisionsVM.start() }
         // The Conversations list VM needs to keep running even while
         // another tab shows: the coordinator badge and title read it.
@@ -109,15 +107,31 @@ struct AppShellView: View {
         return (chatListVM.groups.flatMap(\.summaries).first { $0.id == id }?.unreadCount ?? 0) > 0
     }
 
+    /// Stack bindings whose setters redirect the coordinator id before it
+    /// can mount (see `AppShellNavigation.setChatPath`).
+    private var chatPath: Binding<[String]> {
+        Binding(get: { nav.chatPath }, set: { nav.setChatPath($0) })
+    }
+
+    private var coordinatorPath: Binding<[String]> {
+        Binding(get: { nav.coordinatorPath }, set: { nav.setCoordinatorPath($0) })
+    }
+
     private var coordinatorTab: some View {
         CoordinatorTabView(session: session, deps: deps, chatListVM: chatListVM, vmCache: vmCache,
-                           path: $nav.coordinatorPath, convoID: $coordinatorConvoID)
+                           path: coordinatorPath, convoID: $coordinatorConvoID)
     }
 
     private var conversationsTab: some View {
-        NavigationStack(path: $nav.chatPath) {
+        NavigationStack(path: chatPath) {
             ChatListView(
                 viewModel: chatListVM,
+                // The shell owns this view model's lifetime (its `.task`
+                // above starts it, its `.onDisappear` cancels it): the
+                // Coordinator badge and title read it while this tab is
+                // away, so the list must not cancel it on tab switch
+                // (CodeRabbit, PR #197).
+                ownsViewModel: false,
                 vmCache: vmCache,
                 onSignOut: onSignOut,
                 // A search result / new chat navigates via the path the
@@ -128,7 +142,7 @@ struct AppShellView: View {
         }
         // Lets the running-subagent strip / sub-chat switcher push a child
         // chat or switch siblings on THIS tab's stack.
-        .environment(\.chatNavigationPath, $nav.chatPath)
+        .environment(\.chatNavigationPath, chatPath)
     }
 
     /// Dan, 2026-09-09: swipe between the conversation list and the

@@ -30,6 +30,11 @@ import MatronViewModels
 /// `NewChatSheet` itself lands in Task 14.
 struct ChatListView: View {
     @State var viewModel: ChatListViewModel
+    /// Whether this view starts and cancels `viewModel` itself. The app
+    /// shell shares one `ChatListViewModel` across its tabs and owns its
+    /// lifetime, so it passes `false`; a tab switch must not cancel the
+    /// observation the Coordinator tab is still reading.
+    var ownsViewModel = true
     /// Per-room chat/composer view models, cached for the life of this
     /// screen. `chatDestination(for:)` used to construct fresh instances
     /// on every evaluation, so any remount of the pushed chat view
@@ -228,8 +233,8 @@ struct ChatListView: View {
                 chatDestination(for: id)
             }
         }
-        .task { viewModel.start() }
-        .onDisappear { viewModel.cancel() }
+        .task { if ownsViewModel { viewModel.start() } }
+        .onDisappear { if ownsViewModel { viewModel.cancel() } }
         // Sync connection-state banner. Subscribes to the host's
         // long-lived `stateStream()` and mirrors yields into the local
         // `connectionState` so the banner reacts without bouncing

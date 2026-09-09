@@ -98,6 +98,23 @@ final class AppShellNavigation {
         if chatPath.last != convoID { chatPath.append(convoID) }
     }
 
+    /// The setters behind the two `NavigationStack(path:)` bindings
+    /// (Bugbot, PR #197): a chat-list `NavigationLink` or an origin link
+    /// writes the whole new path here BEFORE anything mounts, so the
+    /// coordinator id is redirected on the way in and a second
+    /// `ChatDestinationView` for it never appears — not even for one
+    /// frame, whose `onDisappear` would stop the stream the Coordinator
+    /// root is showing. Reads still go through `chatPath`/`coordinatorPath`.
+    func setChatPath(_ new: [String]) {
+        chatPath = new
+        redirectCoordinatorPush()
+    }
+
+    func setCoordinatorPath(_ new: [String]) {
+        coordinatorPath = new
+        redirectCoordinatorPush()
+    }
+
     func pushDecision(_ itemID: String) {
         decisionsPath.append(ItemRoute(id: itemID))
     }
