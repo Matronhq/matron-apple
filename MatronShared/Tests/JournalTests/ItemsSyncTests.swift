@@ -497,8 +497,7 @@ final class ItemsSyncTests: XCTestCase {
     }
 
     /// Fix wave, item I3: the insert succeeding is what `enqueueCreate`
-    /// reports — a caller (`ComposerViewModel.makeTask()`) uses this to
-    /// know its task is durably queued.
+    /// reports — callers use this to know their task is durably queued.
     func testEnqueueCreateReturnsTrueOnSuccessfulInsert() async throws {
         let api = FakeItems()
         let (sync, store, _, _) = try make(api: api)
