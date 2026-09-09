@@ -44,7 +44,7 @@ struct NewItemSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Create") {
-                        onCreate(kind, title, itemBody)
+                        onCreate(kind, title.trimmingCharacters(in: .whitespacesAndNewlines), itemBody)
                         dismiss()
                     }
                     .disabled(!canCreate)
