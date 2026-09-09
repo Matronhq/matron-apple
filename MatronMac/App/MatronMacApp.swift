@@ -267,7 +267,7 @@ struct MatronMacApp: App {
             Group {
                 if let session {
                     TabView {
-                        MacDeviceSettingsView(session: session, onSignOut: { signOut(activeSession: session) })
+                        MacDeviceSettingsView(session: session, onSignOut: { signOut(activeSession: session) }, deps: dependencies)
                             .tabItem { Label("General", systemImage: "gearshape") }
                             .environment(\.appLockController, appLock)
                         MacDevicesView(

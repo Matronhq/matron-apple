@@ -71,6 +71,12 @@ struct MacChatListView: View {
     @State private var decisionsPaneState = MacItemsPaneState()
     @State private var selectedDecisionID: String?
     @State private var decisionsOriginTitles: [String: String] = [:]
+    /// The coordinator conversation (spec §5b). `session` arrives through
+    /// the environment, so this can't be an `@AppStorage` with a per-user
+    /// key; it mirrors the defaults key instead and refreshes on every
+    /// `UserDefaults` change (Settings' Change/Clear).
+    @State private var coordinatorConvoID: String?
+    @State private var showingCoordinatorChooser = false
     /// Phase 6 (Search): the shared search VM, built once the session + index
     /// resolve and the chat list has loaded (so chat-title hits have a snapshot).
     /// A non-empty `searchModel.query` swaps the detail column for
@@ -232,11 +238,20 @@ struct MacChatListView: View {
             case .decisions:
                 decisionsDetail
             case .coordinator:
-                // Content lands with the coordinator setting (PR 5).
-                ContentUnavailableView(
-                    "Coordinator",
-                    systemImage: MacNav.coordinator.symbol,
-                    description: Text("Your coordinator conversation will live here."))
+                if let id = coordinatorConvoID, !id.isEmpty {
+                    // The coordinator is an ordinary chat in its own slot; its
+                    // sub-chats open in this column exactly as from the list.
+                    chatDetail(for: id)
+                } else {
+                    ContentUnavailableView {
+                        Label("Coordinator", systemImage: MacNav.coordinator.symbol)
+                    } description: {
+                        Text("Pick one conversation to act as your coordinator. It keeps its own place here; everything else about it stays the same.")
+                    } actions: {
+                        Button("Choose a conversation…") { showingCoordinatorChooser = true }
+                            .buttonStyle(.borderedProminent)
+                    }
+                }
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.findInChat))) { _ in
@@ -324,6 +339,21 @@ struct MacChatListView: View {
         .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showCoordinator))) { _ in nav = .coordinator }
         .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showConversations))) { _ in nav = .conversations }
         .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showDecisions))) { _ in nav = .decisions }
+        .task(id: session?.userID) {
+            coordinatorConvoID = session.map { CoordinatorSetting(userID: $0.userID).convoID } ?? nil
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+            coordinatorConvoID = session.map { CoordinatorSetting(userID: $0.userID).convoID } ?? nil
+        }
+        .sheet(isPresented: $showingCoordinatorChooser) {
+            if let deps, let session {
+                MacCoordinatorChooserSheet(deps: deps, session: session) { id in
+                    CoordinatorSetting(userID: session.userID).convoID = id
+                    coordinatorConvoID = id
+                    showingCoordinatorChooser = false
+                }
+            }
+        }
         // The Decisions VM lives for the session (spec §5b): one instance,
         // started here, feeding both the list and the nav badge.
         .task(id: session?.userID) {
@@ -759,7 +789,7 @@ final class ChatVMCache {
 /// Row view with hover-tint state held locally so it doesn't muddy the
 /// view-model. Keeps the same column composition as the iOS row but with
 /// Mac-appropriate sizing (28pt avatar vs 36pt on iPhone).
-private struct MacChatRow: View {
+struct MacChatRow: View {
     let summary: ChatSummary
     @State private var isHovered = false
 
