@@ -99,9 +99,9 @@ public final class ComposerViewModel {
     /// Whether `makeTask()` would do anything — the pill's visibility gate.
     /// Requires the tracker feature (`items != nil`), that the journal
     /// actually supports it (`itemsSupported`), that the draft isn't a
-    /// slash command (`/start` etc. is a chat command, never a task), the
-    /// same "is there anything to file" content check `canSend` uses, and
-    /// no send/file already in flight.
+    /// chat command (`/start` or `!start` etc. is a chat command, never a
+    /// task), the same "is there anything to file" content check `canSend`
+    /// uses, and no send/file already in flight.
     /// True from `makeTask()`'s guard until the outbox row is queued (or
     /// filing fails). `isSending` only covers the upload phase, so without
     /// this a second tap during the actor hop + GRDB write would file the
@@ -109,20 +109,22 @@ public final class ComposerViewModel {
     public private(set) var isFilingTask = false
 
     public var canMakeTask: Bool {
-        items != nil && itemsSupported && !isSending && !isFilingTask && !isSlashCommandDraft
+        items != nil && itemsSupported && !isSending && !isFilingTask && !isCommandDraft
             && (!input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !stagedAttachments.isEmpty)
     }
 
-    /// Whether the trimmed input reads as a slash command rather than task
-    /// content — starts with `/` and is a single whitespace-free token
-    /// (e.g. `/start`, mid-typing `/sta`). A command's ARGUMENTS
-    /// (`/start ~/repo`) are intentionally excluded: once there's a space
-    /// the palette's own single-token check (`showPalette`) has already
-    /// stopped treating it as a bare command either, and free text after
-    /// a slash-looking first word is plausible task content.
-    private var isSlashCommandDraft: Bool {
+    /// Whether the trimmed input reads as a chat command rather than task
+    /// content — starts with `/` or `!` (the palette's two command
+    /// prefixes, see the prefix checks below) and is a single
+    /// whitespace-free token (e.g. `/start`, `!start`, mid-typing `/sta`).
+    /// A command's ARGUMENTS (`/start ~/repo`) are intentionally excluded:
+    /// once there's a space the palette's own single-token check
+    /// (`showPalette`) has already stopped treating it as a bare command
+    /// either, and free text after a slash/bang-looking first word is
+    /// plausible task content.
+    private var isCommandDraft: Bool {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasPrefix("/") else { return false }
+        guard let first = trimmed.first, first == "/" || first == "!" else { return false }
         return !trimmed.contains(where: { $0.isWhitespace })
     }
     /// Mac slash palette is also openable via `⌘K`; iOS toggles purely via `/` typing.

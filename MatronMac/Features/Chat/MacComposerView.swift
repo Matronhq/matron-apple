@@ -144,10 +144,11 @@ struct MacComposerView: View {
                     // gated on `sendError == nil` (bugbot, PR #186): the
                     // error banner is a separate VStack row directly
                     // above `composerBar`, and this overlay floats just
-                    // above composerBar's own top edge — without the
-                    // gate the pill would draw right over the banner.
+                    // above composerBar's own top edge — without the gate
+                    // the pill (or, in the branch below, the filed-task
+                    // notice) would draw right over the banner.
                     MakeTaskPill { Task { await viewModel.makeTask() } }
-                } else if let notice = viewModel.lastFiledTaskNotice {
+                } else if viewModel.sendError == nil, let notice = viewModel.lastFiledTaskNotice {
                     // Fix wave, item I1: the VM owns the auto-clear timer
                     // (`showFiledTaskNotice()`/`noticeTask`) — this view
                     // just renders whatever string is there, it doesn't

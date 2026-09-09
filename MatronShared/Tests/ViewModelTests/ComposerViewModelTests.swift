@@ -1624,6 +1624,26 @@ final class ComposerViewModelTests: XCTestCase {
         XCTAssertTrue(vm.canMakeTask, "a slash-prefixed word followed by real content is plausible task text")
     }
 
+    /// Bugbot (PR #186): the palette accepts `!` as a second command
+    /// prefix (see `!start` handling elsewhere in this view model), so a
+    /// bang-prefixed draft must be rejected exactly like a slash-prefixed
+    /// one — `canMakeTask` can't file a chat command as a task just
+    /// because it typed `!` instead of `/`.
+    @MainActor
+    func testCanMakeTask_falseForBangCommandDraft() {
+        let sync = FakeItemsSync()
+        let vm = ComposerViewModel(roomID: "c1", timeline: FakeTimelineService(), commands: [],
+                                   items: sync, itemsUpload: { _, _ in "blob" })
+        vm.input = "!start"
+        XCTAssertFalse(vm.canMakeTask, "a bare bang command must never be filed as a task")
+
+        vm.input = "!sta"
+        XCTAssertFalse(vm.canMakeTask, "mid-typing a bang command is still a command, not task content")
+
+        vm.input = "!start ~/repo and please also fix the thing"
+        XCTAssertTrue(vm.canMakeTask, "a bang-prefixed word followed by real content is plausible task text")
+    }
+
     /// A first line over 200 characters is truncated for the title, but
     /// nothing is lost: the full line survives at the top of the body.
     @MainActor
