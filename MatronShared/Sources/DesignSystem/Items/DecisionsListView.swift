@@ -59,11 +59,11 @@ public struct DecisionsListView: View {
             .padding(.horizontal).padding(.vertical, 8)
             #endif
             if model.isSupported == false {
-                ContentUnavailableView("Tracker not available", systemImage: "exclamationmark.triangle",
-                                       description: Text("Update the journal server to use items."))
+                placeholder(ContentUnavailableView("Tracker not available", systemImage: "exclamationmark.triangle",
+                                                   description: Text("Update the journal server to use items.")))
             } else if model.rows.isEmpty {
-                ContentUnavailableView("Nothing needs you", systemImage: "checkmark.seal",
-                                       description: Text("Questions and decisions waiting on you, from every conversation, appear here."))
+                placeholder(ContentUnavailableView("Nothing needs you", systemImage: "checkmark.seal",
+                                                   description: Text("Questions and decisions waiting on you, from every conversation, appear here.")))
             } else {
                 List {
                     ForEach(model.rows) { row in
@@ -85,5 +85,24 @@ public struct DecisionsListView: View {
                 #endif
             }
         }
+    }
+
+    /// The empty / unsupported states. On iOS there is no header refresh
+    /// button (Bugbot, PR #191), so the placeholder sits in a scroll view
+    /// that still answers pull-to-refresh — a stale cache or a journal
+    /// that gains tracker support later would otherwise have no way to
+    /// re-fetch. The Mac keeps its header button in every state.
+    @ViewBuilder
+    private func placeholder<Content: View>(_ content: Content) -> some View {
+        #if os(iOS)
+        GeometryReader { geo in
+            ScrollView {
+                content.frame(width: geo.size.width, height: geo.size.height)
+            }
+            .refreshable { await onRefresh() }
+        }
+        #else
+        content
+        #endif
     }
 }
