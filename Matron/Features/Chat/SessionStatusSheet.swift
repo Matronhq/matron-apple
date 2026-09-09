@@ -1,7 +1,18 @@
 import SwiftUI
+import MatronChat
 import MatronModels
 import MatronViewModels
 import MatronDesignSystem
+
+/// One row in the info sheet's subagents list. A presentation-only mirror
+/// of `SubChatSummary`'s three display fields, so the sheet doesn't have to
+/// hold a chat-service value type just to draw a label — and so tests can
+/// build rows without a `ChatService`.
+struct SubagentEntry: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let isRunning: Bool
+}
 
 /// iOS session-status sheet — surfaced from `ChatView`'s ⓘ toolbar button.
 /// Shows the context-window gauge and the stacked usage bars from the
@@ -21,7 +32,26 @@ struct SessionStatusSheet: View {
     /// `onDismiss`, because presenting a second sheet while this one is
     /// still up is a silent no-op.
     var onOpenMedia: (() -> Void)? = nil
+    /// This chat's subagents (running and finished), oldest first — the
+    /// list that used to be a toolbar `Menu` on `ChatView` (Dan,
+    /// 2026-09-09). Empty ⇒ the section is absent entirely.
+    var subagents: [SubagentEntry] = []
+    /// Ride-along to a subagent's sub-chat, on the same terms as
+    /// `onOpenMedia`: the closure only reports WHICH child was tapped.
+    /// `ChatView` pushes it from the sheet's `onDismiss`, because this
+    /// sheet's `NavigationStack` is its own — a `NavigationLink` here would
+    /// push inside the sheet, not onto the chat's stack.
+    var onOpenSubagent: ((String) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
+
+    /// Projects the strip view model's children onto the sheet's row type.
+    /// A named seam rather than an inline `map` at the call site so the
+    /// field-for-field correspondence is pinned by a test.
+    static func entries(from children: [SubChatSummary]) -> [SubagentEntry] {
+        children.map {
+            SubagentEntry(id: $0.id, title: $0.title, isRunning: $0.isRunning)
+        }
+    }
 
     private var status: SessionStatus? { viewModel.sessionStatus }
 
@@ -58,12 +88,43 @@ struct SessionStatusSheet: View {
                     .padding(.horizontal, 20)
                     .padding(.top, 16)
                 }
+                // Also outside the `hasContent` gate: the children are
+                // known from the strip's own stream, so they must be
+                // reachable before the first `status` frame lands.
+                if !subagents.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Subagents")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        ForEach(subagents) { entry in
+                            Button {
+                                // Order matters: arm the intent, THEN
+                                // dismiss. `ChatView` reads the flag in
+                                // `onDismiss`.
+                                onOpenSubagent?(entry.id)
+                                dismiss()
+                            } label: {
+                                Label(
+                                    entry.title,
+                                    systemImage: entry.isRunning
+                                        ? "circle.dashed" : "checkmark.circle"
+                                )
+                                .lineLimit(1)
+                            }
+                            .accessibilityIdentifier("subagent-row-\(entry.id)")
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 16)
+                }
                 sheetContent
             }
             .navigationTitle("Session")
             .navigationBarTitleDisplayMode(.inline)
         }
-        .presentationDetents([.medium])
+        // `.large` joins `.medium` now the sheet can carry a subagents
+        // list — a chat with several children outgrows the half sheet.
+        .presentationDetents([.medium, .large])
     }
 
     @ViewBuilder
