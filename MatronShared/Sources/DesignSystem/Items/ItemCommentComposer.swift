@@ -99,6 +99,8 @@ public struct ItemCommentComposer: View {
         }
         .disabled(isBusy)
         .padding()
+        // Pull the row down to hide the keyboard (iOS; inert on the Mac).
+        .dragDownDismissesKeyboard()
     }
 
     /// The text field itself: the same growing `TextField(axis: .vertical)`

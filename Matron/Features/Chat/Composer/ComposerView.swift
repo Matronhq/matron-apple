@@ -186,6 +186,10 @@ struct ComposerView: View {
             }
             inputRow
         }
+        // Pull the composer down to hide the keyboard and get the screen
+        // back for reading — the timeline's own interactive dismissal
+        // covers the other gesture (dragging the chat down through it).
+        .dragDownDismissesKeyboard()
     }
 
     private var inputRow: some View {

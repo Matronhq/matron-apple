@@ -76,6 +76,10 @@ public struct ItemDetailView: View {
     /// (see `.onAppear`/`.onChange(of: item.id)` below) rather than on
     /// every body re-evaluation.
     @State private var hasScrolledToInitialBottom = false
+    /// Whether the thread is taller than its viewport — reported by the
+    /// same geometry callback as `isAtBottom`. Gates the jump-to-bottom
+    /// button so a thread that fits on screen never offers a jump.
+    @State private var isScrollable = false
 
     public init(model: Model, draft: Binding<String>, image: @escaping (TrackerAttachment) -> Image?,
                 onOpenAttachment: @escaping (TrackerAttachment) -> Void, onOpenLink: @escaping (URL) -> Void,
@@ -102,6 +106,21 @@ public struct ItemDetailView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
+            #if os(macOS)
+            // The Mac pane has no navigation bar of its own to host the
+            // resolve/reopen menu (its pushes share the window toolbar),
+            // so a slim pinned row above the thread stands in — pinned,
+            // not in the scrolling header, so it stays reachable after
+            // reading to the tail (Bugbot). The iOS host puts the same
+            // control in the navigation bar.
+            HStack {
+                Spacer()
+                ItemResolveControl(isOpen: item.state == .open, resolutions: model.availableResolutions, isBusy: model.isBusy,
+                                   onClose: onClose, onReopen: onReopen)
+                    .menuStyle(.borderlessButton).fixedSize()
+            }
+            .padding(.horizontal, 12).padding(.top, 8)
+            #endif
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
@@ -116,10 +135,29 @@ public struct ItemDetailView: View {
                     }
                     .padding()
                 }
-                .onItemThreadBottomVisibilityChange { atBottom in
-                    isAtBottom = atBottom
-                    onBottomVisibilityChange?(atBottom)
+                .onItemThreadGeometryChange { geometry in
+                    isAtBottom = geometry.atBottom
+                    isScrollable = geometry.scrollable
+                    onBottomVisibilityChange?(geometry.atBottom)
                 }
+                // Dragging the thread down through the keyboard hides it,
+                // as in the chat timeline — the composer row's own
+                // pull-down (`dragDownDismissesKeyboard`) covers the
+                // other place people reach for.
+                .scrollDismissesKeyboard(.interactively)
+                // Floating jump-to-latest, the chat timeline's own
+                // affordance, shown once the reader has scrolled away from
+                // the tail of a thread that actually overflows.
+                .overlay(alignment: .bottomTrailing) {
+                    if Self.showsJumpToBottom(placed: hasScrolledToInitialBottom, scrollable: isScrollable, atBottom: isAtBottom) {
+                        JumpToBottomButton {
+                            isAtBottom = true
+                            withAnimation { proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom) }
+                        }
+                    }
+                }
+                .animation(.easeInOut(duration: 0.18), value: isAtBottom)
+                .animation(.easeInOut(duration: 0.18), value: isScrollable)
                 .onAppear {
                     guard !hasScrolledToInitialBottom else { return }
                     placeInitially(proxy)
@@ -150,9 +188,23 @@ public struct ItemDetailView: View {
                 }
             }
             Divider()
-            actionBar
             ItemCommentComposer(draft: $draft, isBusy: model.isBusy, onSubmit: onSubmit, onAttach: onAttach, onVoiceNote: onVoiceNote)
         }
+        // The chat timeline's cream ground (warm-dark in dark mode) under
+        // thread, action bar and composer alike — an item thread used to
+        // sit on the bare system background, solid black in dark mode,
+        // unlike every other reading surface in the app.
+        .background(MatronTimelineBackground())
+    }
+
+    /// Whether the jump-to-bottom button is offered: only after the
+    /// initial placement has run (so it can't flash during the opening
+    /// scroll), only when the thread overflows its viewport (a short
+    /// thread has nowhere to jump; before the first geometry callback
+    /// `scrollable` is false, which keeps a freshly opened item quiet),
+    /// and only while the reader is away from the bottom.
+    static func showsJumpToBottom(placed: Bool, scrollable: Bool, atBottom: Bool) -> Bool {
+        placed && scrollable && !atBottom
     }
 
     /// The one-time placement decision for an item (Bugbot, PR #198): it
@@ -164,6 +216,14 @@ public struct ItemDetailView: View {
     private func placeInitially(_ proxy: ScrollViewProxy) {
         hasScrolledToInitialBottom = true
         isAtBottom = startsAtBottom
+        // `isScrollable` is deliberately NOT reset here. Geometry only
+        // re-reports when the (atBottom, scrollable) pair actually changes,
+        // so a Mac in-place swap between two overflowing threads would
+        // never restore a cleared flag and the jump button would stay
+        // hidden for good (Bugbot, round 2). Left alone, a swap onto a
+        // thread with different overflow flips it as soon as the new
+        // content is measured — a same-pass update, not a visible flash —
+        // and a swap between like threads has nothing to correct.
         guard startsAtBottom else { return }
         proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
     }
@@ -275,7 +335,8 @@ public struct ItemDetailView: View {
                 attachments(c.attachments)
             }
             .padding(10)
-            .background(Color.secondary.opacity(c.author == .user ? 0.08 : 0.04), in: RoundedRectangle(cornerRadius: 10))
+            .background(c.author == .user ? Color.matronBubbleMe : Color.matronBubbleBot, in: RoundedRectangle(cornerRadius: 10))
+            .shadow(color: .matronBubbleShadow, radius: 2, y: 1)
         }
     }
 
@@ -334,7 +395,8 @@ public struct ItemDetailView: View {
             SendStateIndicator(state: pendingState(p))
         }
         .padding(10)
-        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        .background(Color.matronBubbleMe, in: RoundedRectangle(cornerRadius: 10))
+        .shadow(color: .matronBubbleShadow, radius: 2, y: 1)
         .opacity(0.85)
     }
 
@@ -347,23 +409,6 @@ public struct ItemDetailView: View {
         if let lastError = p.lastError { return .failed(reason: lastError) }
         if p.attempts > 0 { return .queued }
         return .sending
-    }
-
-    @ViewBuilder
-    private var actionBar: some View {
-        HStack {
-            if item.state == .open {
-                Menu {
-                    ForEach(model.availableResolutions, id: \.self) { r in Button(ItemGlyph.label(r)) { onClose(r) } }
-                } label: { Label("Close", systemImage: "checkmark.circle") }
-            } else {
-                Button { onReopen() } label: { Label("Reopen", systemImage: "arrow.uturn.backward.circle") }
-            }
-            Spacer()
-        }
-        .disabled(model.isBusy)
-        .padding(.horizontal).padding(.vertical, 6)
-        .background(.bar)
     }
 }
 
@@ -378,15 +423,24 @@ private extension View {
     /// (`ItemDetailView.onBottomVisibilityChange` just never fires,
     /// falling back to the existing "always opens at the top" behaviour).
     @ViewBuilder
-    func onItemThreadBottomVisibilityChange(action: @escaping (Bool) -> Void) -> some View {
+    func onItemThreadGeometryChange(action: @escaping (ItemThreadGeometry) -> Void) -> some View {
         if #available(iOS 18.0, macOS 15.0, *) {
-            self.onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 8
-            } action: { _, atBottom in
-                action(atBottom)
+            self.onScrollGeometryChange(for: ItemThreadGeometry.self) { geometry in
+                ItemThreadGeometry(
+                    atBottom: geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 8,
+                    scrollable: geometry.contentSize.height > geometry.containerSize.height + 8
+                )
+            } action: { _, geometry in
+                action(geometry)
             }
         } else {
             self
         }
     }
+}
+
+/// The two facts `ItemDetailView` needs from the thread's scroll geometry.
+struct ItemThreadGeometry: Equatable {
+    var atBottom: Bool
+    var scrollable: Bool
 }

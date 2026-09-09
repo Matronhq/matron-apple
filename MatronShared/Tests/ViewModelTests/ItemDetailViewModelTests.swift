@@ -7,13 +7,14 @@ import MatronJournal
 final class ItemDetailViewModelTests: XCTestCase {
     private final class Store: ItemsStoreReading, @unchecked Sendable {
         var itemCont: AsyncStream<TrackerItem?>.Continuation?; var commentsCont: AsyncStream<[TrackerComment]>.Continuation?
+        var outboxCont: AsyncStream<[ItemOutboxRecord]>.Continuation?
         /// What the synchronous read returns — the "store after the refetch".
         var storedComments: [TrackerComment] = []
         func comments(itemID: String) throws -> [TrackerComment] { storedComments }
         func itemsStream(scope: ItemsScope) -> AsyncStream<[TrackerItem]> { AsyncStream { _ in } }
         func itemStream(id: String) -> AsyncStream<TrackerItem?> { AsyncStream { self.itemCont = $0 } }
         func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]> { AsyncStream { self.commentsCont = $0 } }
-        func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { $0.yield([]) } }
+        func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { self.outboxCont = $0; $0.yield([]) } }
         func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { _ in } }
     }
     private final class Sync: ItemsSyncing, @unchecked Sendable {
@@ -115,6 +116,50 @@ final class ItemDetailViewModelTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
     }
 
+    func testQuestionOffersAnsweredOnlyOnceTheUserHasReplied() {
+        XCTAssertEqual(ItemDetailViewModel.resolutions(for: .question, userHasReplied: false), [.cancelled])
+        XCTAssertEqual(ItemDetailViewModel.resolutions(for: .question, userHasReplied: true), [.answered, .cancelled])
+        XCTAssertEqual(ItemDetailViewModel.resolutions(for: .task, userHasReplied: false), [.done, .cancelled])
+        XCTAssertEqual(ItemDetailViewModel.resolutions(for: nil, userHasReplied: true), [])
+    }
+
+    func testUserHasRepliedCountsOnlyTheirOwnComments() async throws {
+        let api = API(); let sync = Sync(); let store = Store()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: api, sync: sync)
+        vm.start()
+        try await waitUntil { sync.refetched == ["it_1"] }
+        store.itemCont?.yield(TrackerItem(id: "it_1", num: 1, kind: .question, awaiting: .user, title: "Q", originConvoID: "c1"))
+        try await waitUntil { vm.item?.kind == .question }
+        XCTAssertEqual(vm.availableResolutions, [.cancelled])
+        // An agent comment and a status row are not a reply from the user.
+        store.commentsCont?.yield([
+            TrackerComment(id: "a", itemID: "it_1", author: .agent, body: "Options are…", createdAt: Date()),
+            TrackerComment(id: "s", itemID: "it_1", author: .user, kind: .status, body: "", createdAt: Date()),
+        ])
+        try await waitUntil { vm.comments.count == 2 }
+        XCTAssertEqual(vm.availableResolutions, [.cancelled])
+        store.commentsCont?.yield([TrackerComment(id: "u", itemID: "it_1", author: .user, body: "Keep it.", createdAt: Date())])
+        try await waitUntil { vm.comments.count == 1 }
+        XCTAssertEqual(vm.availableResolutions, [.answered, .cancelled])
+    }
+
+    /// Bugbot: a reply the user just sent sits in the outbox until the
+    /// thread catches up — it is still their reply, so the question must
+    /// not read as unanswered in the meantime.
+    func testAPendingReplyCountsAsHavingReplied() async throws {
+        let api = API(); let sync = Sync(); let store = Store()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: api, sync: sync)
+        vm.start()
+        try await waitUntil { sync.refetched == ["it_1"] }
+        store.itemCont?.yield(TrackerItem(id: "it_1", num: 1, kind: .question, awaiting: .user, title: "Q", originConvoID: "c1"))
+        try await waitUntil { vm.item?.kind == .question }
+        XCTAssertEqual(vm.availableResolutions, [.cancelled])
+        store.outboxCont?.yield([ItemOutboxRecord(localID: "L1", itemID: "it_1", op: "comment", payloadJSON: "{\"body\":\"Keep it.\",\"attachments\":[]}",
+                                                  createdAt: 0, attempts: 0, lastError: nil)])
+        try await waitUntil { vm.pendingComments.count == 1 }
+        XCTAssertEqual(vm.availableResolutions, [.answered, .cancelled])
+    }
+
     func testCloseReopenReverseAndResolutions() async throws {
         let api = API(); let sync = Sync(); let store = Store()
         let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: api, sync: sync)
@@ -126,7 +171,7 @@ final class ItemDetailViewModelTests: XCTestCase {
         try await waitUntil { sync.refetched == ["it_1"] }
         store.itemCont?.yield(TrackerItem(id: "it_1", num: 1, kind: .decision, title: "D", originConvoID: "c1"))
         try? await Task.sleep(nanoseconds: 50_000_000)
-        XCTAssertEqual(vm.availableResolutions, [.decided, .reversed, .cancelled])
+        XCTAssertEqual(vm.availableResolutions, [.reversed, .decided, .cancelled])
         await vm.reverse()
         XCTAssertEqual(api.closes.first?.0, .reversed)
         await vm.reopen()

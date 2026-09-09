@@ -109,6 +109,16 @@ struct ItemDetailHost: View {
                     startsAtBottom: startsAtBottom,
                     onBottomVisibilityChange: { isAtBottom = $0 }
                 )
+                // Resolve/reopen lives in the navigation bar's top-right
+                // corner, out of the composer's way (see the control's
+                // own doc comment).
+                .toolbar {
+                    ToolbarItem(placement: .primaryAction) {
+                        ItemResolveControl(isOpen: item.state == .open, resolutions: vm.availableResolutions, isBusy: vm.isBusy,
+                                           onClose: { resolution in Task { await vm.close(resolution: resolution, comment: nil) } },
+                                           onReopen: { Task { await vm.reopen() } })
+                    }
+                }
                 .overlay(alignment: .bottom) {
                     if case let .recording(start) = recorder.state {
                         recordingBar(start: start, vm: vm)
