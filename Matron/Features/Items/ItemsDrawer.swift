@@ -14,12 +14,18 @@ import MatronDesignSystem
 /// view only presents it.
 struct ItemsDrawer: View {
     @Binding var isPresented: Bool
+    /// PR B / Task 13: hoisted out of a private `@State` so `ChatView` can
+    /// push an item straight from a tapped inline `.itemMarker` timeline
+    /// card without going through this drawer's own `onSelect`. Owned by
+    /// `ChatView` (survives the drawer's own view identity the same way
+    /// `isPresented` already does), reset to `[]` the same places it
+    /// always was — `close()`'s deferred clear, below.
+    @Binding var path: [String]
     let viewModel: ItemsPanelViewModel
     let session: UserSession
     let onOpenConversation: (String) -> Void
 
     @Environment(\.appDependencies) private var deps
-    @State private var path: [String] = []
     @State private var showCreate = false
     @State private var originTitles: [String: String] = [:]
     /// Live drag offset while the close-gesture is tracking; snaps back to

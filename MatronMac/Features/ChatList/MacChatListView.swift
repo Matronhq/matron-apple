@@ -602,7 +602,11 @@ final class ChatVMCache {
             chat: chat,
             composer: ComposerViewModel(roomID: roomID, timeline: timelineSvc,
                                         commands: BotCommandCatalog.claudeBridge,
-                                        sessionStatus: { [weak chat] in chat?.sessionStatus })
+                                        sessionStatus: { [weak chat] in chat?.sessionStatus },
+                                        items: deps.itemsSync(for: session),
+                                        itemsUpload: { data, mime in
+                                            try await deps.itemsProvider(for: session).uploadMedia(data, contentType: mime)
+                                        })
         )
         entries[roomID] = pair
         order.append(roomID)

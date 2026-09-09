@@ -74,6 +74,11 @@ struct TimelineItemView: View {
     /// to navigate — the Open affordance is then omitted rather than drawn
     /// dead.
     var onOpenSpawnRoom: ((String) -> Void)? = nil
+    /// Opens the tracker item pane/drawer to the tapped `.itemMarker`'s
+    /// item — same "fixed per screen, `nil` where there's nowhere to
+    /// navigate" convention as `onOpenSpawnRoom`. `nil` in previews/tests
+    /// leaves the card tappable but inert rather than crashing.
+    var onOpenItem: ((String) -> Void)? = nil
     /// The conversation this row belongs to — tags live-output sessions in
     /// the shared store so chat teardown can suspend only its own sockets
     /// (`suspendSessions(in:)`). `nil` keeps previews/tests compiling.
@@ -369,6 +374,14 @@ struct TimelineItemView: View {
             .padding(.vertical, 2)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: outcome.displayLine))
+
+        case .itemMarker(_, let marker):
+            HStack {
+                ItemInlineCard(marker: marker) { onOpenItem?(marker.itemID) }
+                    .frame(maxWidth: 360, alignment: .leading)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal)
 
         case .askUserAnswer:
             // `chat.matron.button_response` answers are bookkeeping for

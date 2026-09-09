@@ -217,6 +217,23 @@ struct ChatView: View {
         }
     }
 
+    /// Tapping an inline `.itemMarker` card opens the tracker drawer
+    /// straight to that item, rather than making the user open the
+    /// drawer and find it themselves.
+    ///
+    /// Guarded on `itemsVM` existing (fix wave, minor b): the VM is
+    /// created lazily in the outer `.task` once `deps`/`session` are
+    /// ready, so a marker tap landing before that (a cold app launch
+    /// deep-linking straight into a room, say) would otherwise flip
+    /// `showItems` open onto a drawer with nothing to show — the sheet's
+    /// own `if let itemsVM, let session` guard (~line 1221) would then
+    /// just render nothing behind a dismiss button instead of the item.
+    private func openItem(_ itemID: String) {
+        guard itemsVM != nil else { return }
+        itemsPath = [itemID]
+        showItems = true
+    }
+
     /// Widen-then-scroll for a remembered scroll position. The widen
     /// mounts rows on the NEXT layout pass, and `proxy.scrollTo` only
     /// resolves ids already in the rendered tree — a same-tick scroll
@@ -293,6 +310,12 @@ struct ChatView: View {
     /// `onDisappear` that stops `viewModel`/`stripViewModel`.
     @State private var showItems = false
     @State private var itemsVM: ItemsPanelViewModel?
+    /// PR B / Task 13: the drawer's `NavigationStack` path, hoisted out of
+    /// `ItemsDrawer` (which used to own it as a private `@State`) so an
+    /// inline `.itemMarker` card tap can push straight to the item without
+    /// going through the drawer's own `onSelect`. `onOpenItem` below sets
+    /// both this and `showItems` together.
+    @State private var itemsPath: [String] = []
     /// Width of the chat container the edge-swipe gesture measures against
     /// (see the `.background(GeometryReader …)` below). Not a
     /// `GeometryReader`-wrapped body: the timeline already has its own
@@ -462,6 +485,7 @@ struct ChatView: View {
                         stripViewModel: stripViewModel,
                         onOpenSubChat: nil,
                         onOpenSpawnRoom: openSpawnedRoom,
+                        onOpenItem: openItem,
                         onPreview: { attachmentPreview = $0 },
                         onTapImage: { url, img in
                             attachmentPreview = .image(ImageGalleries.conversation(
@@ -1216,6 +1240,7 @@ struct ChatView: View {
             if let itemsVM, let session {
                 ItemsDrawer(
                     isPresented: $showItems,
+                    path: $itemsPath,
                     viewModel: itemsVM,
                     session: session,
                     // Bugbot: an origin link back to THIS room used to push
@@ -1260,6 +1285,10 @@ private struct TimelineListContent: View, Equatable {
     /// "Open" affordance on a started spawn. Fixed per screen, like
     /// `onOpenSubChat`, so `==` ignoring it is safe.
     let onOpenSpawnRoom: ((String) -> Void)?
+    /// Opens the tracker item pane to the tapped `.itemMarker`'s item.
+    /// Fixed per screen like `onOpenSpawnRoom`, so `==` ignoring it is
+    /// safe; `nil` where the screen has no items pane (sub-chat panes).
+    let onOpenItem: ((String) -> Void)?
     let onPreview: (ChatView.AttachmentPreview) -> Void
     /// Image tap → the screen builds the conversation gallery ONCE here,
     /// at tap time, and stores it in the preview payload. Building it in
@@ -1325,6 +1354,7 @@ private struct TimelineListContent: View, Equatable {
                     viewModel: viewModel,
                     onOpenSubChat: onOpenSubChat,
                     onOpenSpawnRoom: onOpenSpawnRoom,
+                    onOpenItem: onOpenItem,
                     onPreview: onPreview,
                     onTapImage: onTapImage
                 )
@@ -1363,6 +1393,9 @@ private struct TimelineRowView: View, Equatable {
     /// `nil` where there is nowhere to navigate — the affordance is then
     /// omitted rather than drawn dead.
     let onOpenSpawnRoom: ((String) -> Void)?
+    /// Opens the tracker item pane to a tapped `.itemMarker`'s item. Fixed
+    /// per screen like `onOpenSpawnRoom`, so `==` ignoring it is safe.
+    let onOpenItem: ((String) -> Void)?
     let onPreview: (ChatView.AttachmentPreview) -> Void
     /// Image tap → the screen builds the conversation gallery ONCE here,
     /// at tap time, and stores it in the preview payload. Building it in
@@ -1440,6 +1473,7 @@ private struct TimelineRowView: View, Equatable {
                         }
                     },
                     onOpenSpawnRoom: onOpenSpawnRoom,
+                    onOpenItem: onOpenItem,
                     convoID: viewModel.roomID,
                     hasMultipleSenders: viewModel.hasMultipleSenders
                 )
@@ -1592,6 +1626,12 @@ struct SubChatView: View {
                             stripViewModel: stripViewModel,
                             onOpenSubChat: switchTo,
                             onOpenSpawnRoom: openSpawnedRoom,
+                            // No items drawer inside a sub-chat pane — an
+                            // `.itemMarker` card here renders inert (nil
+                            // still gives the card its tappable chrome, the
+                            // tap just does nothing). Same scope decision
+                            // as the Mac twin's `MacSubChatPane`.
+                            onOpenItem: nil,
                             onPreview: { attachmentPreview = $0 },
                             onTapImage: { url, img in
                                 attachmentPreview = .image(ImageGalleries.conversation(

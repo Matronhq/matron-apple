@@ -29,6 +29,12 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
     /// resumes.
     private var _blockNextComment = false
     private var _gate: CheckedContinuation<Void, Never>?
+    /// Fix wave, item I2: the sibling gate for `createItem`, so a test can
+    /// prove `ItemsSync.enqueueCreate` returns before its background
+    /// drain's network call completes — hold this open, call
+    /// `enqueueCreate`, observe it already returned, THEN release.
+    private var _blockNextCreate = false
+    private var _createGate: CheckedContinuation<Void, Never>?
 
     var listResponses: [ItemsPage] {
         get { lock.withLock { _listResponses } }
@@ -74,6 +80,18 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
         }
         cont?.resume()
     }
+    var blockNextCreate: Bool {
+        get { lock.withLock { _blockNextCreate } }
+        set { lock.withLock { _blockNextCreate = newValue } }
+    }
+    /// True once a `createItem` call is actually suspended on its gate.
+    var isCreateGated: Bool { lock.withLock { _createGate != nil } }
+    func releaseCreateGate() {
+        let cont = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            let c = _createGate; _createGate = nil; return c
+        }
+        cont?.resume()
+    }
 
     func listItems(_ q: ItemsListQuery) async throws -> ItemsPage {
         // Fix round 2, CRITICAL #1: a cancelled drain Task must actually
@@ -105,7 +123,15 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
         return (d.0, d.1)
     }
     func createItem(_ new: NewItem, idempotencyKey: String?) async throws -> TrackerItem {
-        TrackerItem(id: "it_new", num: 9, kind: new.kind, title: new.title, originConvoID: new.convoID)
+        let shouldGate = lock.withLock { () -> Bool in
+            guard _blockNextCreate else { return false }
+            _blockNextCreate = false
+            return true
+        }
+        if shouldGate {
+            await withCheckedContinuation { cont in lock.withLock { _createGate = cont } }
+        }
+        return TrackerItem(id: "it_new", num: 9, kind: new.kind, title: new.title, originConvoID: new.convoID)
     }
     func updateItem(id: String, _ patch: ItemPatch) async throws -> TrackerItem { fatalError() }
     func commentItem(id: String, body: String, attachments: [TrackerAttachment], idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment) {
@@ -465,8 +491,41 @@ final class ItemsSyncTests: XCTestCase {
         let (sync, store, _, _) = try make(api: api)
         await sync.stop()
         await sync.enqueueComment(itemID: "it_1", localID: "L1", body: "x", attachments: [])
-        await sync.enqueueCreate(localID: "L2", NewItem(kind: .task, title: "T", convoID: "c1"))
+        let created = await sync.enqueueCreate(localID: "L2", NewItem(kind: .task, title: "T", convoID: "c1"))
+        XCTAssertFalse(created, "fix wave, item I3: enqueueCreate must report failure when stopped")
         XCTAssertTrue(try store.itemOutboxPending().isEmpty, "an enqueue racing sign-out must not insert after stop()")
+    }
+
+    /// Fix wave, item I3: the insert succeeding is what `enqueueCreate`
+    /// reports — a caller (`ComposerViewModel.makeTask()`) uses this to
+    /// know its task is durably queued.
+    func testEnqueueCreateReturnsTrueOnSuccessfulInsert() async throws {
+        let api = FakeItems()
+        let (sync, store, _, _) = try make(api: api)
+        let created = await sync.enqueueCreate(localID: "L1", NewItem(kind: .task, title: "T", convoID: "c1"))
+        XCTAssertTrue(created)
+        XCTAssertEqual(try store.itemOutboxPending().map(\.localID), ["L1"])
+    }
+
+    /// Fix wave, item I2: `enqueueCreate` must return once the row is
+    /// durably inserted, WITHOUT waiting for the drain's network
+    /// round-trip — the composer used to hold `isSending` (and thus block
+    /// the UI) across that whole round-trip for a write that's already
+    /// safe once queued. Proven by gating `createItem` open: if
+    /// `enqueueCreate` awaited the drain (the pre-fix-wave shape), this
+    /// test would hang until the gate was released, never reaching the
+    /// `waitUntil` below.
+    func testEnqueueCreateReturnsBeforeTheBackgroundDrainCompletes() async throws {
+        let api = FakeItems()
+        let (sync, store, _, _) = try make(api: api)
+        api.blockNextCreate = true
+        let created = await sync.enqueueCreate(localID: "L1", NewItem(kind: .task, title: "T", convoID: "c1"))
+        XCTAssertTrue(created, "the insert itself must succeed and return promptly")
+        try await waitUntil { api.isCreateGated }
+        XCTAssertEqual(try store.itemOutboxPending().map(\.localID), ["L1"],
+                       "still pending — the background drain's network call hasn't resolved yet")
+        api.releaseCreateGate()
+        try await waitUntil { try store.itemOutboxPending().isEmpty }
     }
 
     private func waitUntil(_ cond: @escaping () throws -> Bool, timeout: TimeInterval = 2) async throws {

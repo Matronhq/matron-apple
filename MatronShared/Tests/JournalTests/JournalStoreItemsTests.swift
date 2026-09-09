@@ -89,6 +89,16 @@ final class JournalStoreItemsTests: XCTestCase {
         XCTAssertEqual(second?.map(\.id), ["it_1"])
     }
 
+    func testCommitOutboxResultIsOneWrite() throws {
+        let store = try makeStore()
+        try store.itemOutboxInsert(ItemOutboxRecord(localID: "L1", itemID: nil, op: "create", payloadJSON: "{}", createdAt: 1, attempts: 0, lastError: nil))
+        let comment = TrackerComment(id: "ic_1", itemID: "it_1", author: .user, body: "hi")
+        try store.commitOutboxResult(item: item("it_1", num: 1), comment: comment, deletingLocalID: "L1")
+        XCTAssertEqual(try store.item(id: "it_1")?.num, 1)
+        XCTAssertEqual(try store.dbQueue.read { db in try ItemCommentRecord.fetchCount(db) }, 1)
+        XCTAssertTrue(try store.itemOutboxPending().isEmpty)
+    }
+
     func testOutboxLifecycle() throws {
         let store = try makeStore()
         let rec = ItemOutboxRecord(localID: "L1", itemID: "it_1", op: "comment", payloadJSON: "{\"body\":\"x\"}", createdAt: 1, attempts: 0, lastError: nil)

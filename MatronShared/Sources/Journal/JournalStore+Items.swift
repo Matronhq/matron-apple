@@ -271,6 +271,18 @@ extension JournalStore {
         try dbQueue.write { db in _ = try ItemOutboxRecord.deleteOne(db, key: localID) }
     }
 
+    /// One transaction for a drained outbox row: the server's item (and
+    /// comment, for replies) lands in the same write that removes the
+    /// pending row, so the streams never show the item in the "Pending"
+    /// section and its real section for one tick.
+    public func commitOutboxResult(item: TrackerItem, comment: TrackerComment? = nil, deletingLocalID localID: String) throws {
+        try dbQueue.write { db in
+            try ItemRecord(item).save(db)
+            if let comment { try ItemCommentRecord(comment).save(db) }
+            _ = try ItemOutboxRecord.deleteOne(db, key: localID)
+        }
+    }
+
     /// Also invoked inline (not via this method — see its doc comment) from
     /// `wipe()`, the full sign-out wipe. Kept as a standalone public entry
     /// point too so callers that only need the tracker cache cleared

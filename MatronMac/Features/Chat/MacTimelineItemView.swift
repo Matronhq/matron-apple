@@ -56,6 +56,9 @@ struct MacTimelineItemView: View {
                               _ approve: Bool) -> Void)? = nil
     /// Opens the room a started spawn talks in — mirrors the iOS surface.
     var onOpenSpawnRoom: ((String) -> Void)? = nil
+    /// Opens the tracker item pane to the tapped `.itemMarker`'s item —
+    /// mirrors the iOS surface's `onOpenItem`.
+    var onOpenItem: ((String) -> Void)? = nil
     /// The conversation this row belongs to — tags live-output sessions in
     /// the shared store so chat teardown can suspend only its own sockets
     /// (`suspendSessions(in:)`). `nil` keeps previews/tests compiling.
@@ -336,6 +339,14 @@ struct MacTimelineItemView: View {
             .padding(.vertical, 2)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityLabel(for: item, body: outcome.displayLine))
+
+        case .itemMarker(_, let marker):
+            HStack {
+                ItemInlineCard(marker: marker) { onOpenItem?(marker.itemID) }
+                    .frame(maxWidth: 360, alignment: .leading)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal)
 
         case .askUserAnswer:
             // `chat.matron.button_response` answers are bookkeeping for

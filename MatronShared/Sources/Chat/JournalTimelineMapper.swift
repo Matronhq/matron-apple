@@ -21,16 +21,23 @@ public enum JournalTimelineMapper {
         switch event.type {
         case JournalEventType.readMarker, JournalEventType.edit,
              JournalEventType.sessionStatus, JournalEventType.convoMeta,
-             JournalEventType.summary, JournalEventType.item:
-            // `item` (fix wave, item E / Bugbot C1): a tracker marker event
-            // (spec 2026-09-08) carries no renderable content of its own —
-            // `ItemsSync` is the actual consumer (it triggers a refetch of
-            // the item). Before this, it fell through to `default` and
-            // rendered as a grey "unsupported event: item" row in both
-            // chat timelines. PR B / Task 13 replaces this `return nil`
-            // with a real inline card; until then, skip it like the other
-            // non-renderable event types above.
+             JournalEventType.summary:
             return nil
+
+        case JournalEventType.item:
+            // Tracker marker event (spec 2026-09-08). `ItemsSync` is the
+            // side-channel consumer (triggers a refetch of the item) —
+            // this is only about what the timeline SHOWS. `nil` (malformed
+            // payload), `.reordered`, and `.updated` never reach the
+            // timeline: `.reordered`/`.updated` markers exist purely to
+            // invalidate the local cache (see `ItemMarkerEvent`'s doc
+            // comment) and carry nothing worth rendering inline. PR B /
+            // Task 13 — before this the whole `item` type fell into the
+            // skip list above and rendered nothing.
+            guard let marker = ItemMarkerEvent.parse(payload: payload),
+                  marker.action != .reordered, marker.action != .updated
+            else { return nil }
+            kind = .itemMarker(eventID: String(event.seq), marker)
 
         case JournalEventType.text:
             // Old-client fallback (spec 2026-09-08, "Old-client fallback"):

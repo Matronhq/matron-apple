@@ -88,6 +88,12 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         /// status row, and is what makes the consent card's resolved state
         /// derivable rather than remembered: every device sees the same row.
         case spawnOutcomeRow(eventID: String, SpawnOutcome)
+        /// Tracker marker (spec 2026-09-08): created/closed render as a
+        /// compact card, commented/reopened as a one-line note; reordered
+        /// never reaches the timeline. `eventID` is the journal seq —
+        /// there is no underlying Matrix event to correlate against, the
+        /// row exists purely to surface the marker inline.
+        case itemMarker(eventID: String, ItemMarkerEvent)
         /// Transient typing / tool-use indicator (matron-journal `activity`
         /// ephemeral). Not persisted and not part of history — appended as a
         /// trailing overlay row while the agent is thinking or running a
