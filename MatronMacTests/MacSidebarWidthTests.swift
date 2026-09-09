@@ -42,13 +42,39 @@ final class MacSidebarWidthTests: XCTestCase {
             return
         }
         let sidebarWidth = split.arrangedSubviews.first?.frame.width ?? 0
-        XCTAssertEqual(sidebarWidth, 400, accuracy: 1,
-                       "sidebar should open at the 400pt ideal")
+        XCTAssertEqual(sidebarWidth, 400 + MacNavColumn.width, accuracy: 1,
+                       "sidebar should open at the 400pt list ideal plus the 72pt nav column")
         let controller = try XCTUnwrap(split.delegate as? NSSplitViewController)
         let sidebarItem = try XCTUnwrap(controller.splitViewItems.first)
-        XCTAssertEqual(sidebarItem.minimumThickness, 260, accuracy: 1)
-        XCTAssertEqual(sidebarItem.maximumThickness, 600, accuracy: 1)
+        XCTAssertEqual(sidebarItem.minimumThickness, 260 + MacNavColumn.width, accuracy: 1)
+        XCTAssertEqual(sidebarItem.maximumThickness, 600 + MacNavColumn.width, accuracy: 1)
         window.orderOut(nil)
+    }
+
+    /// App shell (spec §5): the nav column is part of the sidebar column,
+    /// so the list still meets its 260pt minimum once the column's 72pt
+    /// are added — and the view opens on Conversations.
+    func test_sidebar_opensOnConversations_withTheNavColumnInside() {
+        let vm = ChatListViewModel(chat: WidthFakeChatActions(snapshots: [[]]))
+        let view = MacChatListView(viewModel: vm)
+        XCTAssertEqual(view.nav, .conversations)
+        XCTAssertEqual(MacNavColumn.width, 72)
+    }
+
+    /// The width triple `body` hands `navigationSplitViewColumnWidth`:
+    /// list 260/400/600 plus the nav column, or the nav column alone when
+    /// Coordinator is selected.
+    func test_sidebarWidths_perNavSelection() {
+        let convos = MacChatListView.sidebarWidths(for: .conversations)
+        XCTAssertEqual(convos.min, 260 + MacNavColumn.width)
+        XCTAssertEqual(convos.ideal, 400 + MacNavColumn.width)
+        XCTAssertEqual(convos.max, 600 + MacNavColumn.width)
+        let decisions = MacChatListView.sidebarWidths(for: .decisions)
+        XCTAssertEqual(decisions.ideal, 400 + MacNavColumn.width)
+        let coordinator = MacChatListView.sidebarWidths(for: .coordinator)
+        XCTAssertEqual(coordinator.min, MacNavColumn.width)
+        XCTAssertEqual(coordinator.ideal, MacNavColumn.width)
+        XCTAssertEqual(coordinator.max, MacNavColumn.width)
     }
 
     private static func findSplitView(in view: NSView?) -> NSSplitView? {
