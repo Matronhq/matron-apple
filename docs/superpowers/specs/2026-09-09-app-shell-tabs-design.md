@@ -111,8 +111,9 @@ the app opens on *Conversations*:
   and in the same transaction, so the push lands in the visible stack.
 - **Coordinator:** its own `NavigationStack(path: $coordinatorPath)`. With
   a coordinator conversation set (§5b) the root is `ChatView` for that
-  conversation, full screen, title as the chat's title, no back button,
-  tab bar hidden as inside any chat. Pushes from it (sub-chats, item
+  conversation, full screen, title as the chat's title, no back button.
+  The tab bar stays visible at this root (it is the only way out of the
+  tab); chats and items pushed from it hide the bar like everywhere else. Pushes from it (sub-chats, item
   detail via `ItemRoute`, origin links) go on `coordinatorPath`, so a chat
   opened from the coordinator is pushed *within* the Coordinator tab and
   back returns to it. Without one set, the root is `CoordinatorSetupView`:
