@@ -903,7 +903,12 @@ struct ChatView: View {
                 .onEnded { v in
                     guard attachmentPreview == nil, !showItems,
                           !showSessionStatus, !showMediaBrowser, !showSummaries,
-                          itemsVM?.isSupported != false,
+                          // A missing VM must NOT read as "supported"
+                          // (CodeRabbit, PR #185): `showItems` hides the
+                          // Back button and the overlay needs the VM, so
+                          // opening before it exists would strand the
+                          // screen with no nav bar and no drawer.
+                          let itemsVM, itemsVM.isSupported != false,
                           chatContainerWidth > 0,
                           v.startLocation.x > chatContainerWidth - 24,
                           v.translation.width < -60,
@@ -988,16 +993,21 @@ struct ChatView: View {
             }
             // Tasks & decisions drawer. Hidden once the panel VM has
             // confirmed the journal doesn't support the tracker (a 404 on
-            // GET /items) — `nil` (VM not created yet) still shows it, same
-            // optimistic-until-proven-otherwise default the Mac pane uses.
-            if itemsVM?.isSupported != false {
+            // GET /items) — the same optimistic-until-proven-otherwise
+            // default the Mac pane uses. It also needs the VM to EXIST
+            // (CodeRabbit, PR #185): `showItems` hides the Back button and
+            // the drawer overlay is `if let itemsVM`, so a tap before the
+            // outer `.task` has built the VM would strand the screen with
+            // no nav bar and nothing to dismiss. The VM lands on the
+            // first `.task` pass, so the button is at most a frame late.
+            if let itemsVM, itemsVM.isSupported != false {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         showItems = true
                     } label: {
                         Image(systemName: "checklist")
                             .overlay(alignment: .topTrailing) {
-                                NeedsYouBadge(count: itemsVM?.needsYouCount ?? 0)
+                                NeedsYouBadge(count: itemsVM.needsYouCount)
                                     .scaleEffect(0.75)
                                     .offset(x: 10, y: -8)
                             }
