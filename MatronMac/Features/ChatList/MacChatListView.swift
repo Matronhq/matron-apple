@@ -59,6 +59,18 @@ struct MacChatListView: View {
     /// Passed down as a binding; `MacChatView`'s toolbar toggle and its
     /// sub-chat mutual-exclusion logic keep working unchanged through it.
     @State private var itemsPaneOpen = false
+    /// App shell (spec §5): which top-level surface the sidebar's nav
+    /// column has selected. Internal (not private) so tests can read the
+    /// default. Also driven by ⌘1/⌘2/⌘3 via the command bus.
+    @State var nav: MacNav = .conversations
+    /// The per-session Decisions view model (`ItemsPanelViewModel(convoID:
+    /// nil)`): created and started once the session resolves, kept
+    /// running whichever entry is selected so the badge is live, stopped
+    /// in `onDisappear` (sign-out tears this view down).
+    @State private var decisionsVM: ItemsPanelViewModel?
+    @State private var decisionsPaneState = MacItemsPaneState()
+    @State private var selectedDecisionID: String?
+    @State private var decisionsOriginTitles: [String: String] = [:]
     /// Phase 6 (Search): the shared search VM, built once the session + index
     /// resolve and the chat list has loaded (so chat-title hits have a snapshot).
     /// A non-empty `searchModel.query` swaps the detail column for
@@ -113,6 +125,10 @@ struct MacChatListView: View {
         // panel covering the chat (Dan, 2026-08-06: "stuck on the search
         // results"). Clearing here swaps the detail back for every selection
         // source; the search-hit handlers' own clear becomes a no-op.
+        // Every path that selects a conversation — sidebar click, deep link,
+        // auto-open, search hit, "Open conversation" from Decisions — means
+        // "show me that chat": bring the Conversations entry forward first.
+        if new != nil { nav = .conversations }
         if new != nil, searchQueryIsEmpty == false {
             searchModel?.query = ""
         }
@@ -124,7 +140,20 @@ struct MacChatListView: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            sidebarColumn
+            HStack(spacing: 0) {
+                MacNavColumn(selection: $nav, decisionsCount: decisionsVM?.awaitingYouCount ?? 0)
+                Divider()
+                switch nav {
+                case .conversations:
+                    sidebarColumn
+                case .decisions:
+                    decisionsColumn
+                case .coordinator:
+                    // Coordinator selected: the list column collapses to the
+                    // nav column alone (the width modifier below shrinks it).
+                    Spacer(minLength: 0)
+                }
+            }
                 // Drop the system sidebar-collapse toolbar button. The
                 // ⌘⇧S menu item / `.toggleSidebar` notification handler
                 // still collapses the sidebar; only the redundant toolbar
@@ -133,9 +162,13 @@ struct MacChatListView: View {
                 // MUST come after `.toolbar(removing: .sidebarToggle)`:
                 // on macOS 26 that modifier masks an inner column-width
                 // preference and the sidebar falls back to the system
-                // default (probe-bisected 2026-07-20). `.frame(idealWidth:)`
-                // doesn't size the column at all.
-                .navigationSplitViewColumnWidth(min: 260, ideal: 400, max: 600)
+                // default (probe-bisected 2026-07-20). The list keeps its
+                // 260/400/600 and the nav column adds its fixed 72 (spec §5);
+                // with Coordinator selected only the nav column remains.
+                .navigationSplitViewColumnWidth(
+                    min: nav == .coordinator ? MacNavColumn.width : 260 + MacNavColumn.width,
+                    ideal: nav == .coordinator ? MacNavColumn.width : 400 + MacNavColumn.width,
+                    max: nav == .coordinator ? MacNavColumn.width : 600 + MacNavColumn.width)
                 .toolbar {
                     // With the sidebar toggle removed the new-chat button
                     // is the only item in the sidebar section and packs
@@ -157,42 +190,53 @@ struct MacChatListView: View {
                     }
                 }
         } detail: {
-            if let searchModel, !searchModel.query.isEmpty {
-                // Phase 6 (Search): a non-empty query replaces the chat detail
-                // with the results panel. Selecting a result clears the query
-                // (restoring the chat detail) and points the sidebar selection
-                // at the chosen room.
-                MacSearchResultsView(
-                    viewModel: searchModel,
-                    onSelectChat: { chat in
-                        listLogger.notice("selection set by search-chat-hit: \(chat.id, privacy: .public)")
-                        selectedSummaryID = chat.id
-                        searchModel.query = ""
-                    },
-                    onSelectMessage: { group in
-                        // Opens the chat with its in-conversation search
-                        // armed: the bar comes up, and the timeline jumps
-                        // to the newest match (paging history back as
-                        // needed — same machinery as a TOC jump).
-                        listLogger.notice("selection set by search-message-hit: \(group.roomID, privacy: .public)")
-                        let query = searchModel.trimmedQuery
-                        selectedSummaryID = group.roomID
-                        searchModel.query = ""
-                        // Only top-level chats get the bar: a hit in a
-                        // subagent child (indexed like any convo, but
-                        // absent from the list snapshot) opens in
-                        // MacSubChatPane, which renders no ChatSearchBar —
-                        // arming there would run an invisible, undismissable
-                        // search (review 2026-08-26).
-                        if let deps, let session,
-                           allChatSummaries.contains(where: { $0.id == group.roomID }) {
-                            let (chat, _) = vmCache.viewModels(for: group.roomID, deps: deps, session: session)
-                            Task { await chat.beginChatSearch(query: query) }
+            switch nav {
+            case .conversations:
+                if let searchModel, !searchModel.query.isEmpty {
+                    // Phase 6 (Search): a non-empty query replaces the chat detail
+                    // with the results panel. Selecting a result clears the query
+                    // (restoring the chat detail) and points the sidebar selection
+                    // at the chosen room.
+                    MacSearchResultsView(
+                        viewModel: searchModel,
+                        onSelectChat: { chat in
+                            listLogger.notice("selection set by search-chat-hit: \(chat.id, privacy: .public)")
+                            selectedSummaryID = chat.id
+                            searchModel.query = ""
+                        },
+                        onSelectMessage: { group in
+                            // Opens the chat with its in-conversation search
+                            // armed: the bar comes up, and the timeline jumps
+                            // to the newest match (paging history back as
+                            // needed — same machinery as a TOC jump).
+                            listLogger.notice("selection set by search-message-hit: \(group.roomID, privacy: .public)")
+                            let query = searchModel.trimmedQuery
+                            selectedSummaryID = group.roomID
+                            searchModel.query = ""
+                            // Only top-level chats get the bar: a hit in a
+                            // subagent child (indexed like any convo, but
+                            // absent from the list snapshot) opens in
+                            // MacSubChatPane, which renders no ChatSearchBar —
+                            // arming there would run an invisible, undismissable
+                            // search (review 2026-08-26).
+                            if let deps, let session,
+                               allChatSummaries.contains(where: { $0.id == group.roomID }) {
+                                let (chat, _) = vmCache.viewModels(for: group.roomID, deps: deps, session: session)
+                                Task { await chat.beginChatSearch(query: query) }
+                            }
                         }
-                    }
-                )
-            } else {
-                detail
+                    )
+                } else {
+                    detail
+                }
+            case .decisions:
+                decisionsDetail
+            case .coordinator:
+                // Content lands with the coordinator setting (PR 5).
+                ContentUnavailableView(
+                    "Coordinator",
+                    systemImage: MacNav.coordinator.symbol,
+                    description: Text("Your coordinator conversation will live here."))
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.findInChat))) { _ in
@@ -276,6 +320,23 @@ struct MacChatListView: View {
                 selectedSummaryID = roomID
             }
         }
+        // ⌘1/⌘2/⌘3 (Commands.swift) — same bus shape as `.toggleSidebar`.
+        .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showCoordinator))) { _ in nav = .coordinator }
+        .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showConversations))) { _ in nav = .conversations }
+        .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showDecisions))) { _ in nav = .decisions }
+        // The Decisions VM lives for the session (spec §5b): one instance,
+        // started here, feeding both the list and the nav badge.
+        .task(id: session?.userID) {
+            guard let deps, let session else { return }
+            decisionsVM?.stop()
+            let vm = deps.makeDecisionsViewModel(for: session)
+            decisionsVM = vm
+            vm.start()
+        }
+        .task(id: decisionsVM?.awaitingYou.map(\.originConvoID) ?? []) {
+            guard let deps, let session else { return }
+            decisionsOriginTitles = (try? deps.journalStore(for: session).conversationTitles()) ?? [:]
+        }
         // Cold-start tap drain (cursor PR #5 third-pass finding): a
         // notification tap that launched the app — `didReceive` fired
         // before this view mounted — would otherwise be lost because
@@ -333,7 +394,12 @@ struct MacChatListView: View {
             }
         }
         #endif
-        .onDisappear { viewModel.cancel() }
+        .onDisappear {
+            viewModel.cancel()
+            decisionsVM?.stop()
+            decisionsPaneState.detailViewModel?.stop()
+            decisionsPaneState.detailRecorder.cancel()
+        }
         // Sync connection-state banner. Subscribes to the host's
         // long-lived `stateStream()` and mirrors yields into the local
         // `connectionState` so the banner reacts without bouncing
@@ -458,6 +524,51 @@ struct MacChatListView: View {
                 await viewModel.refresh()
             }
         }
+    }
+
+    /// Decisions selected (spec §5): the list column is the shared
+    /// `DecisionsListView`; a row selects the detail on the right.
+    @ViewBuilder
+    private var decisionsColumn: some View {
+        if let decisionsVM {
+            DecisionsListView(
+                model: .init(
+                    rows: decisionsVM.awaitingYou.map { .init(item: $0, originTitle: decisionsOriginTitles[$0.originConvoID]) },
+                    isSupported: decisionsVM.isSupported,
+                    isRefreshing: decisionsVM.isRefreshing),
+                onSelect: { selectedDecisionID = $0 },
+                onOpenConversation: openConversationFromDecisions,
+                onRefresh: { await decisionsVM.refresh() }
+            )
+            .alert("Tracker", isPresented: Binding(get: { decisionsVM.error != nil }, set: { if !$0 { decisionsVM.error = nil } })) {
+                Button("OK") { decisionsVM.error = nil }
+            } message: {
+                Text(decisionsVM.error ?? "")
+            }
+        } else {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private var decisionsDetail: some View {
+        if let id = selectedDecisionID, let session {
+            MacItemDetailHost(itemID: id, session: session, currentConvoID: nil,
+                              state: decisionsPaneState, onOpenConversation: openConversationFromDecisions)
+        } else {
+            ContentUnavailableView(
+                "Select an item",
+                systemImage: "checkmark.circle",
+                description: Text("Pick something that needs you from the list."))
+        }
+    }
+
+    /// "Open conversation" from a Decisions row or its detail: switch the
+    /// nav entry, then select that chat (spec §5).
+    private func openConversationFromDecisions(_ convoID: String) {
+        nav = .conversations
+        listLogger.notice("selection set by decisions: \(convoID, privacy: .public)")
+        selectedSummaryID = convoID
     }
 
     /// Detail column. Looks up the full `ChatSummary` from
