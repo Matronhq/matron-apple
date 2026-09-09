@@ -22,10 +22,16 @@ struct SessionStatusSheet: View {
     /// `onDismiss`, because presenting a second sheet while this one is
     /// still up is a silent no-op.
     var onOpenMedia: (() -> Void)? = nil
-    /// This chat's subagents (running and finished), oldest first — the
-    /// list that used to be a toolbar `Menu` on `ChatView` (Dan,
-    /// 2026-09-09). Empty ⇒ the section is absent entirely.
-    var subagents: [SubChatSummary] = []
+    /// Source of this chat's subagents (running and finished), oldest
+    /// first — the list that used to be a toolbar `Menu` on `ChatView`
+    /// (Dan, 2026-09-09). The `@Observable` VM itself, not a copy of its
+    /// `children`: a value snapshot taken in `ChatView`'s `.sheet` closure
+    /// is not observation-tracked, so an open sheet would keep a stale
+    /// list — children arriving or finishing after presentation would
+    /// never show, and the running/finished icons would never flip
+    /// (Bugbot, PR #189). Reading `children` here, in `body`, installs the
+    /// tracking. `nil`/no children ⇒ the section is absent entirely.
+    var strip: SubChatStripViewModel? = nil
     /// Ride-along to a subagent's sub-chat, on the same terms as
     /// `onOpenMedia`: the closure only reports WHICH child was tapped.
     /// `ChatView` pushes it from the sheet's `onDismiss`, because this
@@ -35,6 +41,7 @@ struct SessionStatusSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     private var status: SessionStatus? { viewModel.sessionStatus }
+    private var subagents: [SubChatSummary] { strip?.children ?? [] }
 
     /// Any known part counts — a model-only status (first turn after a
     /// bridge boot whose turn errored before usage arrived) shows the model
@@ -55,6 +62,11 @@ struct SessionStatusSheet: View {
 
     var body: some View {
         NavigationStack {
+            // Scrollable since the subagents list joined: the `.large`
+            // detent is still finite, and a long list would otherwise
+            // clip the lower rows (and the usage content under them)
+            // where they can't be tapped.
+            ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 // Above the gauge/usage content and OUTSIDE the
                 // `hasContent` gate — the media browser is reachable even
@@ -99,6 +111,7 @@ struct SessionStatusSheet: View {
                     .padding(.top, 16)
                 }
                 sheetContent
+            }
             }
             .navigationTitle("Session")
             .navigationBarTitleDisplayMode(.inline)
@@ -178,6 +191,11 @@ struct SessionStatusSheet: View {
                         systemImage: "gauge",
                         description: Text("Appears after the next reply.")
                     )
+                    // Inside a `ScrollView` the placeholder no longer fills
+                    // the sheet on its own; give it room so it still
+                    // reads as the sheet's body rather than a stray row.
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 48)
                 }
             }
     }

@@ -63,6 +63,27 @@ private final class FakeMediaForSubagents: MediaService, @unchecked Sendable {
 /// lives in the two layers above, which are exact. Proving the row's
 /// identifier and its tap belongs to an XCUITest, where a real AX client
 /// exists.
+/// Emits one `children(of:)` snapshot then finishes, so a
+/// `SubChatStripViewModel.start()` task completes and can be awaited.
+private final class FakeChatForSubagents: ChatService, @unchecked Sendable {
+    var childrenToEmit: [SubChatSummary] = []
+    func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
+    func children(of parentConvoID: String) -> AsyncStream<[SubChatSummary]> {
+        let snapshot = childrenToEmit
+        return AsyncStream { continuation in
+            continuation.yield(snapshot)
+            continuation.finish()
+        }
+    }
+    func createChat(with botID: String) async throws -> String { "!stub:server" }
+    func refresh() async throws {}
+    func forceSnapshot() async throws {}
+    func mute(roomID: String) async throws {}
+    func leave(roomID: String) async throws {}
+}
+
 @MainActor
 final class SessionStatusSheetSubagentsTests: XCTestCase {
     private var window: UIWindow!
@@ -80,14 +101,39 @@ final class SessionStatusSheetSubagentsTests: XCTestCase {
                       media: FakeMediaForSubagents())
     }
 
+    /// A started strip VM whose `children` already hold `children`.
+    private func makeStrip(_ children: [SubChatSummary]) async -> SubChatStripViewModel {
+        let chat = FakeChatForSubagents()
+        chat.childrenToEmit = children
+        let strip = SubChatStripViewModel(chat: chat, parentConvoID: "!parent:server")
+        await strip.start().value
+        return strip
+    }
+
+    // MARK: - the observable source
+
+    func test_sheet_readsChildrenFromTheStripViewModel_notASnapshot() async {
+        let strip = await makeStrip([
+            SubChatSummary(id: "!c1:server", title: "sweep the services", isRunning: true),
+        ])
+        let sheet = SessionStatusSheet(viewModel: makeViewModel(), strip: strip)
+
+        // The sheet holds the VM, so whatever `children` says NOW is what
+        // the section renders — no copy taken at construction.
+        XCTAssertEqual(sheet.strip?.children.map(\.id), ["!c1:server"])
+        XCTAssertEqual(sheet.strip?.children.first?.isRunning, true)
+    }
+
     // MARK: - the handoff closure
 
-    func test_onOpenSubagent_reportsTheTappedChildID() {
+    func test_onOpenSubagent_reportsTheTappedChildID() async {
         var captured: [String] = []
+        let strip = await makeStrip([
+            SubChatSummary(id: "!c2:server", title: "read the middleware", isRunning: false),
+        ])
         let sheet = SessionStatusSheet(
             viewModel: makeViewModel(),
-            subagents: [SubChatSummary(id: "!c2:server", title: "read the middleware",
-                                      isRunning: false)],
+            strip: strip,
             onOpenSubagent: { captured.append($0) }
         )
 
@@ -100,19 +146,20 @@ final class SessionStatusSheetSubagentsTests: XCTestCase {
 
     func test_subagentsAndOnOpenSubagent_defaultToAbsent_soOtherCallSitesAreUnaffected() {
         let sheet = SessionStatusSheet(viewModel: makeViewModel())
-        XCTAssertTrue(sheet.subagents.isEmpty)
+        XCTAssertNil(sheet.strip)
         XCTAssertNil(sheet.onOpenSubagent)
     }
 
     // MARK: - rendering
 
-    func test_sheet_withSubagents_rendersWithoutCrashing() {
+    func test_sheet_withSubagents_rendersWithoutCrashing() async {
+        let strip = await makeStrip([
+            SubChatSummary(id: "!c1:server", title: "sweep the services", isRunning: true),
+            SubChatSummary(id: "!c2:server", title: "read the middleware", isRunning: false),
+        ])
         let sheet = SessionStatusSheet(
             viewModel: makeViewModel(),
-            subagents: [
-                SubChatSummary(id: "!c1:server", title: "sweep the services", isRunning: true),
-                SubChatSummary(id: "!c2:server", title: "read the middleware", isRunning: false),
-            ],
+            strip: strip,
             onOpenSubagent: { _ in }
         )
 
