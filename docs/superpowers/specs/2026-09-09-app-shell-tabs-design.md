@@ -27,8 +27,12 @@ land later, and the app has no top-level navigation to hang them on.
 
 ## Goal
 
-- **iOS:** a bottom tab bar with *Conversations* and *Decisions*. Later
-  sub-projects add *Projects* and *Coordinator* to the same bar.
+- **iOS:** a bottom tab bar with *Coordinator*, *Conversations* and
+  *Decisions*. Sub-project 2 adds *Projects* to the same bar.
+- **Coordinator** (both apps, thin version): one designated conversation
+  behind its own tab / nav entry, chosen once in settings. A normal chat
+  today; sub-project 3 puts the memory, scheduled compaction, rules and
+  start-session request card behind the same tab.
 - **Decisions** (both apps): every open item awaiting Dan, across all
   conversations, newest first, with its origin conversation. Nothing else.
   A badge with that count on the tab (iOS) and the nav entry (Mac).
@@ -36,13 +40,13 @@ land later, and the app has no top-level navigation to hang them on.
   and this chat's tracker. Swipe left to reveal, swipe right to return; the
   checklist toolbar button jumps to it. The drawer goes away.
 - **Mac:** a vertical big-icon navigation column, icons with labels, to the
-  left of the conversations list. *Conversations* and *Decisions* now; the
-  later tabs join it. The per-chat tracker pane in the detail column stays.
+  left of the conversations list. *Coordinator*, *Conversations* and
+  *Decisions* now; *Projects* joins it later. The per-chat tracker pane in the detail column stays.
 
 ## Non-goals
 
-- Projects, milestones, Coordinator, and any journal/bridge work (sub-projects
-  2 and 3).
+- Projects, milestones, the coordinator's memory / compaction / rules /
+  request card, and any journal/bridge work (sub-projects 2 and 3).
 - Replacing the summaries TOC (sub-project 2 supersedes it).
 - Android (separate repo; ported afterwards from this spec).
 - Changing what the tracker lists in *All* mode, item detail, comments, the
@@ -92,7 +96,8 @@ Callbacks: `onSelect(itemID)`, `onOpenConversation(convoID)`.
 `Matron/App/MatronApp.swift` line ~52 roots the signed-in branch at
 `NavigationStack(path: $chatPath) { ChatListView(…) }`. That becomes the
 *Conversations* tab of a `TabView(selection: $tab)` with `enum AppTab {
-conversations, decisions }`:
+coordinator, conversations, decisions }`, in that order left to right;
+the app opens on *Conversations*:
 
 - **Conversations:** the existing stack, path, environment injection, and
   every deep-link path (notification tap, new-conversation stream, cold-start
@@ -104,8 +109,17 @@ conversations, decisions }`:
   (from the row's context menu or the detail's origin link) sets `tab =
   .conversations` then appends the convo id to `chatPath`, in that order
   and in the same transaction, so the push lands in the visible stack.
+- **Coordinator:** its own `NavigationStack(path: $coordinatorPath)`. With
+  a coordinator conversation set (§5b) the root is `ChatView` for that
+  conversation, full screen, title as the chat's title, no back button,
+  tab bar hidden as inside any chat. Pushes from it (sub-chats, item
+  detail via `ItemRoute`, origin links) go on `coordinatorPath`, so a chat
+  opened from the coordinator is pushed *within* the Coordinator tab and
+  back returns to it. Without one set, the root is `CoordinatorSetupView`:
+  a short explanation and a button that opens the chooser (§5b).
 - Badge: `.badge(decisionsVM.awaitingYouCount)` on the Decisions tab, hidden
-  at zero.
+  at zero. The Coordinator tab shows the chat-list unread dot rule as a
+  badge (`•`) when that conversation has unread activity.
 - The tab bar is hidden inside a pushed chat (Dan, 2026-09-09) and inside a
   pushed item detail: the chat destination and `ItemDetailHost` carry
   `.toolbar(.hidden, for: .tabBar)`, so the bar shows only at the root of
@@ -160,12 +174,18 @@ conversations, decisions }`:
 line ~126) is a two-column `NavigationSplitView`. The sidebar column gains a
 leading `MacNavColumn`: a fixed-width (72pt) vertical column of large
 icons with labels beneath, in the sidebar's material, separated from the
-list by a hairline. Entries: *Conversations* (`bubble.left.and.bubble.right`)
-and *Decisions* (`checkmark.circle` with a red count badge at its top
+list by a hairline. Entries: *Coordinator* (`person.crop.circle.badge.checkmark`),
+*Conversations* (`bubble.left.and.bubble.right`) and *Decisions* (`checkmark.circle` with a red count badge at its top
 trailing corner, hidden at zero). Selection is `@State var nav: MacNav`
-(`enum MacNav { conversations, decisions }`), also settable by ⌘1/⌘2
+(`enum MacNav { coordinator, conversations, decisions }`), also settable by
+⌘1/⌘2/⌘3
 (added to `MatronMac/App/Commands.swift`).
 
+- **Coordinator selected:** the sidebar list column collapses to the nav
+  column alone and the detail column shows `MacChatView` for the
+  coordinator conversation (or the setup placeholder with the chooser
+  button). Its sub-chats open in the detail column as they do from the
+  list today.
 - **Conversations selected:** the chat list and detail column exactly as
   today, including the per-chat `MacItemsPane` toggle.
 - **Decisions selected:** the sidebar list is `DecisionsListView`; the
@@ -188,7 +208,20 @@ and the queued-message card's *Make task* action; the bang-prefix and
 palette-yield rules that governed the pill go with it. Composer layout
 reclaims the pill's row.
 
-### 6. Data flow and lifetimes
+### 5b. Coordinator conversation setting
+
+`CoordinatorSetting` (MatronShared, `MatronModels`): the convo id of the
+coordinator conversation, stored per signed-in journal user under the
+`UserDefaults` key `coordinator.convoID.<userID>` (same `@AppStorage`
+pattern as `MatronAppearance.storageKey`), `nil` by default. The chooser
+is a sheet listing the user's existing conversations (reusing the chat
+list rows, search box on top) plus a *New coordinator chat…* row that
+opens the existing New Chat sheet and stores the resulting convo id. It
+is reachable from the setup view and from Device Settings (iOS) /
+Settings (Mac) as a *Coordinator* row showing the current chat's title
+with *Change* and *Clear*. Clearing returns the tab to the setup view.
+Nothing else about that conversation changes: it stays in the
+Conversations list, and opening it from there is an ordinary push.
 
 - One `ItemsPanelViewModel(convoID: nil)` per signed-in session, created by
   the shell (`AppShellView` / `MacChatListView`) and started there; it feeds
@@ -230,19 +263,24 @@ reclaims the pill's row.
   layout test that the nav column is present and the list still meets its
   minimum width; ⌘1/⌘2 command tests in `MacCommandsTests`.
 - **iOS:** the chat destination hides the tab bar (`AppShellView` binding
-  test asserting the destination's toolbar visibility for `.tabBar`).
+  test asserting the destination's toolbar visibility for `.tabBar`);
+  Coordinator tab shows setup with no setting and `ChatView` with one;
+  a sub-chat opened from the coordinator pushes on `coordinatorPath`.
+- **Setting (SPM):** `CoordinatorSetting` round-trips per user and clears.
 - **Device (manual):** swipe to tasks and back; leading-edge back swipe on
   page 0 still pops; keyboard drops on page change; VoiceOver reads the
   page change; tab bar absent inside a chat and back at the list.
 
 ## Rollout
 
-Five PRs on `main`, in this order, each green on its own (1–4 stacked):
+Six PRs on `main`, in this order, each green on its own (1–5 stacked):
 
 0. `remove-make-task-pill` — §5a, independent of the rest; can merge first.
 1. `items-vm-all-mode` — §1 view model + `DecisionsListView` (§2) + tests.
 2. `ios-shell-tabs` — §3 + Decisions on iOS.
 3. `ios-tasks-pager` — §4; deletes `ItemsDrawer`.
-4. `mac-nav-column` — §5.
+4. `mac-nav-column` — §5 (Coordinator and Decisions entries).
+5. `coordinator-tab` — §5b setting + chooser, iOS Coordinator tab, Mac
+   Coordinator entry content.
 
 Android follows from the same spec in its own repo.
