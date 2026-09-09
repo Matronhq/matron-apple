@@ -108,16 +108,16 @@ final class ChatListViewBindingTests: XCTestCase {
     /// on `@Environment` deps that only resolve inside a live hierarchy)
     /// and SwiftUI exposes no runtime probe for structural identity, so
     /// this pins the source contract instead: the `ChatView` construction
-    /// inside `chatDestination` must carry `.id(id)`.
+    /// inside `ChatDestinationView.body` must carry `.id(id)`.
     func test_chatDestination_keysTopLevelChatViewIdentityToRoomID() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()  // MatronTests/
             .deletingLastPathComponent()  // repo root
-            .appendingPathComponent("Matron/Features/ChatList/ChatListView.swift")
+            .appendingPathComponent("Matron/Features/ChatList/ChatDestinationView.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
-        guard let funcStart = source.range(of: "func chatDestination(") else {
-            return XCTFail("chatDestination(for:) not found — move this pin alongside any rename")
+        guard let funcStart = source.range(of: "var body: some View") else {
+            return XCTFail("ChatDestinationView.body not found — move this pin alongside any rename")
         }
         let body = String(source[funcStart.upperBound...])
 
@@ -126,7 +126,7 @@ final class ChatListViewBindingTests: XCTestCase {
         let topLevel = try NSRegularExpression(pattern: "(?<!Sub)ChatView\\(")
         let matches = topLevel.matches(in: body, range: NSRange(body.startIndex..., in: body))
         guard let match = matches.last, let start = Range(match.range, in: body) else {
-            return XCTFail("top-level ChatView construction not found in chatDestination")
+            return XCTFail("top-level ChatView construction not found in ChatDestinationView.body")
         }
         let branch = String(body[start.lowerBound...])
         // Scope the assertion to this branch (up to the destination's
@@ -135,7 +135,7 @@ final class ChatListViewBindingTests: XCTestCase {
         XCTAssertTrue(
             scoped.contains(".id(id)"),
             """
-            The top-level ChatView in chatDestination(for:) must be keyed \
+            The top-level ChatView in ChatDestinationView.body must be keyed \
             with .id(id): openChat replaces the path tail in place, and an \
             unkeyed destination keeps the previous chat's @State view models \
             under the new chat's title.

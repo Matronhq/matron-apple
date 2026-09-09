@@ -163,6 +163,8 @@ struct ItemDetailHost: View {
                 FilePreviewSheet(url: url, filename: filename, onDone: { attachmentPreview = nil })
             }
         }
+        // App shell (spec §3): the tab bar shows only at a tab's root.
+        .toolbar(.hidden, for: .tabBar)
     }
 
     /// Every image attachment worth preloading: the item's own, plus every
