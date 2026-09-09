@@ -3,6 +3,13 @@ import MatronModels
 import MatronEvents
 @testable import MatronJournal
 
+private final class Atomic<T>: @unchecked Sendable {
+    private let lock = NSLock(); private var value: T
+    init(_ value: T) { self.value = value }
+    func get() -> T { lock.withLock { value } }
+    func set(_ v: T) { lock.withLock { value = v } }
+}
+
 private final class FakeItems: ItemsProviding, @unchecked Sendable {
     let lock = NSLock()
     private var _listResponses: [ItemsPage] = []
@@ -35,6 +42,12 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
     /// `enqueueCreate`, observe it already returned, THEN release.
     private var _blockNextCreate = false
     private var _createGate: CheckedContinuation<Void, Never>?
+    /// Bugbot (PR #198): the gate for `item(id:)`, so a test can hold one
+    /// refetch open and prove a second, coalesced `refreshItem` for the
+    /// same id awaits it rather than returning at once.
+    private var _blockNextItem = false
+    private var _itemGate: CheckedContinuation<Void, Never>?
+    private var _itemCalls = 0
 
     var listResponses: [ItemsPage] {
         get { lock.withLock { _listResponses } }
@@ -71,6 +84,18 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
     /// before calling `stop()`, instead of racing a fixed sleep against
     /// the actor hop.
     var isGated: Bool { lock.withLock { _gate != nil } }
+    var blockNextItem: Bool {
+        get { lock.withLock { _blockNextItem } }
+        set { lock.withLock { _blockNextItem = newValue } }
+    }
+    var isItemGated: Bool { lock.withLock { _itemGate != nil } }
+    var itemCalls: Int { lock.withLock { _itemCalls } }
+    func releaseItemGate() {
+        let cont = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            let c = _itemGate; _itemGate = nil; return c
+        }
+        cont?.resume()
+    }
     /// Resumes a `commentItem` call currently suspended on the gate, if
     /// any. A no-op if nothing is waiting (e.g. called before the drain
     /// actually reached the gated call).
@@ -119,6 +144,15 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
     }
     func item(id: String) async throws -> (item: TrackerItem, comments: [TrackerComment]) {
         try Task.checkCancellation()
+        let shouldGate = lock.withLock { () -> Bool in
+            _itemCalls += 1
+            guard _blockNextItem else { return false }
+            _blockNextItem = false
+            return true
+        }
+        if shouldGate {
+            await withCheckedContinuation { cont in lock.withLock { _itemGate = cont } }
+        }
         guard let d = detail[id] else { throw JournalAPIError.notFound }
         return (d.0, d.1)
     }
@@ -243,6 +277,29 @@ final class ItemsSyncTests: XCTestCase {
         try await waitUntil { try store.item(id: "it_1") != nil }
         let comments = try await store.dbQueue.read { db in try ItemCommentRecord.fetchCount(db) }
         XCTAssertEqual(comments, 1)
+    }
+
+    /// Bugbot (PR #198): a `refreshItem` that lands while another refetch
+    /// of the same id is in flight must not return until the store holds
+    /// the server's thread — the detail view model reads "returned" as
+    /// "loaded". It waits for the in-flight run, which then runs once more.
+    func testCoalescedRefreshItemAwaitsTheInFlightRun() async throws {
+        let api = FakeItems()
+        api.detail["it_1"] = (item("it_1", num: 1, updated: 5), [TrackerComment(id: "ic_1", itemID: "it_1", author: .user, body: "x")])
+        let (sync, store, _, _) = try make(api: api)
+        await sync.start()
+        api.blockNextItem = true
+        let first = Task { await sync.refreshItem(id: "it_1") }
+        try await waitUntil { api.isItemGated }
+        let secondReturned = Atomic(false)
+        let second = Task { await sync.refreshItem(id: "it_1"); secondReturned.set(true) }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertFalse(secondReturned.get(), "the coalesced caller must wait for the in-flight refetch")
+        api.releaseItemGate()
+        await first.value
+        await second.value
+        XCTAssertEqual(api.itemCalls, 2, "the in-flight run repeats once for the coalesced request")
+        XCTAssertEqual(try store.comments(itemID: "it_1").map(\.id), ["ic_1"])
     }
 
     func testOutboxDrainsOnRunningAndDeletesOnSuccess() async throws {

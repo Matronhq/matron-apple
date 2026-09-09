@@ -148,8 +148,9 @@ public struct ItemDetailView: View {
                 // `hasScrolledToInitialBottom` means this never fires
                 // before the initial placement above has had its say.
                 .onChange(of: rowCount) { oldCount, newCount in
-                    guard Self.shouldFollowTail(threadLoaded: model.threadLoaded, placed: hasScrolledToInitialBottom,
-                                                atBottom: isAtBottom, oldCount: oldCount, newCount: newCount) else { return }
+                    guard Self.shouldFollowTail(threadLoaded: model.threadLoaded, startsAtBottom: startsAtBottom,
+                                                placed: hasScrolledToInitialBottom, atBottom: isAtBottom,
+                                                oldCount: oldCount, newCount: newCount) else { return }
                     proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
                 }
             }
@@ -173,16 +174,20 @@ public struct ItemDetailView: View {
     }
 
     /// The follow-tail decision for a thread that just grew (Bugbot, PR
-    /// #198, rounds 1–2). Only re-pins when the thread had already loaded
+    /// #198, rounds 1–3). Only re-pins when the thread had already loaded
     /// before this growth — so the opening refetch of an unread item is
     /// never mistaken for a new reply — AND the initial placement has run
     /// AND the reader was at the bottom AND the thread actually grew (a
-    /// removed comment must not yank the viewport). `startsAtBottom`
-    /// readers are marked at-bottom by `placeInitially` before any
-    /// geometry callback, so *their* opening load does re-pin: that is
-    /// the "open at the tail" behaviour they asked for.
-    static func shouldFollowTail(threadLoaded: Bool, placed: Bool, atBottom: Bool, oldCount: Int, newCount: Int) -> Bool {
-        threadLoaded && placed && atBottom && newCount > oldCount
+    /// removed comment must not yank the viewport). A `startsAtBottom`
+    /// reader is exempt from the load gate: they asked for the tail,
+    /// `placeInitially` marked them at-bottom before any geometry
+    /// callback, and the cached-then-refetched rows landing during the
+    /// load are exactly what must keep them pinned there (round 3: gating
+    /// them too reopened a read-to-end thread at the top and then stored
+    /// it as unread).
+    static func shouldFollowTail(threadLoaded: Bool, startsAtBottom: Bool, placed: Bool, atBottom: Bool,
+                                 oldCount: Int, newCount: Int) -> Bool {
+        (threadLoaded || startsAtBottom) && placed && atBottom && newCount > oldCount
     }
 
     private var statusText: String {

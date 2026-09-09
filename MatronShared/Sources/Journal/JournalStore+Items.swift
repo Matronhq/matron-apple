@@ -191,6 +191,16 @@ extension JournalStore {
         return Self.stream(observation, in: dbQueue)
     }
 
+    /// One-shot read of an item's thread, in the same order as
+    /// `commentsStream`. Lets a caller that has just awaited a refetch
+    /// pick up the result synchronously instead of racing the stream's
+    /// asynchronous delivery (Bugbot, PR #198).
+    public func comments(itemID: String) throws -> [TrackerComment] {
+        try dbQueue.read { db in
+            try ItemCommentRecord.filter(Column("item_id") == itemID).order(Column("created_at"), Column("id")).fetchAll(db).map(\.comment)
+        }
+    }
+
     public func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]> {
         let observation = ValueObservation.tracking { db in
             try ItemCommentRecord.filter(Column("item_id") == itemID).order(Column("created_at"), Column("id")).fetchAll(db).map(\.comment)

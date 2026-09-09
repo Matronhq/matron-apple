@@ -7,6 +7,9 @@ import MatronJournal
 final class ItemDetailViewModelTests: XCTestCase {
     private final class Store: ItemsStoreReading, @unchecked Sendable {
         var itemCont: AsyncStream<TrackerItem?>.Continuation?; var commentsCont: AsyncStream<[TrackerComment]>.Continuation?
+        /// What the synchronous read returns — the "store after the refetch".
+        var storedComments: [TrackerComment] = []
+        func comments(itemID: String) throws -> [TrackerComment] { storedComments }
         func itemsStream(scope: ItemsScope) -> AsyncStream<[TrackerItem]> { AsyncStream { _ in } }
         func itemStream(id: String) -> AsyncStream<TrackerItem?> { AsyncStream { self.itemCont = $0 } }
         func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]> { AsyncStream { self.commentsCont = $0 } }
@@ -39,12 +42,16 @@ final class ItemDetailViewModelTests: XCTestCase {
     }
 
     func testStartFlipsHasLoadedThreadOnceTheOpeningRefetchCompletes() async throws {
-        let sync = Sync()
-        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: sync)
+        let sync = Sync(); let store = Store()
+        // The refetch has landed in the store but its stream delivery is
+        // still in flight: the flag must not run ahead of the thread.
+        store.storedComments = [TrackerComment(id: "ic_1", itemID: "it_1", author: .user, body: "x")]
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: API(), sync: sync)
         XCTAssertFalse(vm.hasLoadedThread)
         vm.start()
         try await waitUntil { vm.hasLoadedThread }
         XCTAssertEqual(sync.refetched, ["it_1"])
+        XCTAssertEqual(vm.comments.map(\.id), ["ic_1"], "comments are read from the store before the flag flips")
         // Restarting re-arms the guard until the new refetch lands.
         vm.stop()
         vm.start()

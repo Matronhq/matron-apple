@@ -7,26 +7,41 @@ import XCTest
 /// and its opening refetch must not read as a new reply that drags the
 /// viewport to the end.
 final class ItemDetailFollowTailTests: XCTestCase {
+    private func follows(loaded: Bool = true, startsAtBottom: Bool = false, placed: Bool = true, atBottom: Bool = true,
+                         _ old: Int, _ new: Int) -> Bool {
+        ItemDetailView.shouldFollowTail(threadLoaded: loaded, startsAtBottom: startsAtBottom, placed: placed,
+                                        atBottom: atBottom, oldCount: old, newCount: new)
+    }
+
     func test_followsTail_whenLoadedPlacedAtBottomAndGrew() {
-        XCTAssertTrue(ItemDetailView.shouldFollowTail(threadLoaded: true, placed: true, atBottom: true, oldCount: 3, newCount: 4))
+        XCTAssertTrue(follows(3, 4))
     }
 
     func test_openingLoadOfAnUnreadThread_doesNotFollow() {
         // Header-only thread, geometry would say at-bottom, comments arrive
         // from the opening refetch: stays where the reader is.
-        XCTAssertFalse(ItemDetailView.shouldFollowTail(threadLoaded: false, placed: true, atBottom: true, oldCount: 0, newCount: 8))
+        XCTAssertFalse(follows(loaded: false, 0, 8))
+    }
+
+    func test_openingLoadOfAReadToEndThread_doesFollow() {
+        // The reader asked for the tail; the cached rows and then the
+        // refetched ones must keep them pinned there through the load.
+        XCTAssertTrue(follows(loaded: false, startsAtBottom: true, 0, 3))
+        XCTAssertTrue(follows(loaded: false, startsAtBottom: true, 3, 8))
     }
 
     func test_beforeInitialPlacement_doesNotFollow() {
-        XCTAssertFalse(ItemDetailView.shouldFollowTail(threadLoaded: true, placed: false, atBottom: true, oldCount: 0, newCount: 1))
+        XCTAssertFalse(follows(placed: false, 0, 1))
+        XCTAssertFalse(follows(loaded: false, startsAtBottom: true, placed: false, 0, 1))
     }
 
     func test_readerAwayFromBottom_doesNotFollow() {
-        XCTAssertFalse(ItemDetailView.shouldFollowTail(threadLoaded: true, placed: true, atBottom: false, oldCount: 3, newCount: 4))
+        XCTAssertFalse(follows(atBottom: false, 3, 4))
+        XCTAssertFalse(follows(loaded: false, startsAtBottom: true, atBottom: false, 3, 4))
     }
 
     func test_shrinkOrNoChange_doesNotFollow() {
-        XCTAssertFalse(ItemDetailView.shouldFollowTail(threadLoaded: true, placed: true, atBottom: true, oldCount: 4, newCount: 3))
-        XCTAssertFalse(ItemDetailView.shouldFollowTail(threadLoaded: true, placed: true, atBottom: true, oldCount: 4, newCount: 4))
+        XCTAssertFalse(follows(4, 3))
+        XCTAssertFalse(follows(4, 4))
     }
 }

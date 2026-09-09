@@ -23,7 +23,10 @@ public final class ItemDetailViewModel {
     /// follow-tail or report bottom visibility until this flips, so the
     /// initial comment load never yanks an unread thread to its end.
     /// Flips on completion whether or not the refetch succeeded: a
-    /// failed refetch leaves the cached thread as the thread.
+    /// failed refetch leaves the cached thread as the thread. The refetch
+    /// is awaited to its end even when coalesced with one already in
+    /// flight, and `comments` is read straight from the store before the
+    /// flag flips, so the flag never runs ahead of the stream's delivery.
     public private(set) var hasLoadedThread = false
 
     private let store: any ItemsStoreReading
@@ -58,8 +61,9 @@ public final class ItemDetailViewModel {
         hasLoadedThread = false
         refreshTask = Task { [weak self] in
             await self?.sync.refreshItem(id: id)
-            guard !Task.isCancelled else { return }
-            self?.hasLoadedThread = true
+            guard let self, !Task.isCancelled else { return }
+            if let fresh = try? self.store.comments(itemID: id) { self.comments = fresh }
+            self.hasLoadedThread = true
         }
     }
 

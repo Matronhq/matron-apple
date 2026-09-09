@@ -43,9 +43,12 @@ public actor ItemsSync {
     /// and the drain's own inline `refreshItem` after a successful comment
     /// can race for the same item id. Rather than let two concurrent GETs
     /// land their `replaceComments` out of order, a refetch already in
-    /// flight for an id just notes that another pass is wanted and returns;
-    /// the in-flight call runs once more after it finishes.
-    private var inFlightRefetches: Set<String> = []
+    /// flight for an id just notes that another pass is wanted and then
+    /// AWAITS that run (Bugbot, PR #198: callers such as the detail view
+    /// model take "refreshItem returned" to mean "the store now holds the
+    /// server's thread", so an early return would let a stale cache pass
+    /// as loaded); the in-flight run repeats once more after it finishes.
+    private var inFlightRefetches: [String: Task<Void, Never>] = [:]
     private var refetchAgain: Set<String> = []
     public private(set) var isSupported = true
     private var supportedContinuations: [UUID: AsyncStream<Bool>.Continuation] = [:]
@@ -209,13 +212,20 @@ public actor ItemsSync {
     }
 
     public func refreshItem(id: String) async {
-        guard !inFlightRefetches.contains(id) else { refetchAgain.insert(id); return }
-        inFlightRefetches.insert(id)
-        defer { inFlightRefetches.remove(id) }
-        await refreshItemOnce(id: id)
-        while refetchAgain.remove(id) != nil {
-            await refreshItemOnce(id: id)
+        if let running = inFlightRefetches[id] {
+            refetchAgain.insert(id)
+            await running.value
+            return
         }
+        let run = Task { [self] in
+            await refreshItemOnce(id: id)
+            while refetchAgain.remove(id) != nil {
+                await refreshItemOnce(id: id)
+            }
+        }
+        inFlightRefetches[id] = run
+        await run.value
+        inFlightRefetches[id] = nil
     }
 
     private func refreshItemOnce(id: String) async {
