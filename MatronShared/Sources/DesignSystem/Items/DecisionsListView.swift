@@ -79,12 +79,18 @@ public struct DecisionsListView: View {
                 }
                 #if os(iOS)
                 .listStyle(.insetGrouped)
+                .scrollContentBackground(.hidden)
                 .refreshable { await onRefresh() }
                 #else
                 .listStyle(.inset)
                 #endif
             }
         }
+        #if os(iOS)
+        // Same cream ground as the chat and the item thread — the grouped
+        // list's own backdrop is solid black in dark mode.
+        .background(MatronTimelineBackground())
+        #endif
     }
 
     /// The empty / unsupported states. On iOS there is no header refresh

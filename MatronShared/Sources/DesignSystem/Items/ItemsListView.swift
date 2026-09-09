@@ -97,11 +97,17 @@ public struct ItemsListView: View {
                 }
                 #if os(iOS)
                 .listStyle(.insetGrouped)
+                .scrollContentBackground(.hidden)
                 #else
                 .listStyle(.inset)
                 #endif
             }
         }
+        #if os(iOS)
+        // Same cream ground as the chat and the item thread — the grouped
+        // list's own backdrop is solid black in dark mode.
+        .background(MatronTimelineBackground())
+        #endif
     }
 
     /// Above "Needs you" (fix wave, item C): rows the local outbox is

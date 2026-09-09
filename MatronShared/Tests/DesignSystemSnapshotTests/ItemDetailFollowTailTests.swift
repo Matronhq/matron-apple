@@ -58,3 +58,24 @@ final class ItemDetailFollowTailTests: XCTestCase {
         XCTAssertFalse(follows(4, 4))
     }
 }
+
+final class ItemDetailJumpToBottomTests: XCTestCase {
+    func testShownOnlyWhenPlacedScrollableAndAwayFromTheBottom() {
+        XCTAssertTrue(ItemDetailView.showsJumpToBottom(placed: true, scrollable: true, atBottom: false))
+    }
+
+    func testHiddenBeforeInitialPlacement() {
+        XCTAssertFalse(ItemDetailView.showsJumpToBottom(placed: false, scrollable: true, atBottom: false))
+    }
+
+    func testHiddenWhenTheThreadFitsTheViewport() {
+        // A short thread has nowhere to jump to — and before the first
+        // geometry callback `scrollable` is false, so a freshly opened
+        // item never flashes the button.
+        XCTAssertFalse(ItemDetailView.showsJumpToBottom(placed: true, scrollable: false, atBottom: false))
+    }
+
+    func testHiddenAtTheBottom() {
+        XCTAssertFalse(ItemDetailView.showsJumpToBottom(placed: true, scrollable: true, atBottom: true))
+    }
+}

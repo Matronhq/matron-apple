@@ -550,6 +550,9 @@ struct ChatView: View {
             // A conversation shorter than the viewport hugs the
             // composer, chat-standard.
             .defaultScrollAnchor(.bottom, for: .alignment)
+            // Dragging the timeline down through the keyboard hides it
+            // (the composer row's pull-down is the other route).
+            .scrollDismissesKeyboard(.interactively)
             // THE follow-tail mechanism — see `sizeChangeAnchor`: while
             // following, the scroll engine itself keeps the bottom edge
             // pinned through every layout change.
@@ -1654,6 +1657,7 @@ struct SubChatView: View {
                 }
                 .defaultScrollAnchor(.bottom, for: .initialOffset)
                 .defaultScrollAnchor(.bottom, for: .alignment)
+                .scrollDismissesKeyboard(.interactively)
                 // Follow the live tail until the user drags away;
                 // a drag that settles back at the bottom re-arms it.
                 .defaultScrollAnchor(isFollowingTail ? .bottom : nil, for: .sizeChanges)
