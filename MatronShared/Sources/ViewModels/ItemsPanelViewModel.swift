@@ -11,6 +11,10 @@ public protocol ItemsStoreReading: Sendable {
     func itemsStream(scope: ItemsScope) -> AsyncStream<[TrackerItem]>
     func itemStream(id: String) -> AsyncStream<TrackerItem?>
     func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]>
+    /// Synchronous snapshot of `commentsStream`'s current value — read by
+    /// `ItemDetailViewModel` right after its opening refetch returns, so
+    /// `hasLoadedThread` never flips ahead of the thread it vouches for.
+    func comments(itemID: String) throws -> [TrackerComment]
     func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]>
     /// Every queued "create" outbox row, feeding `ItemsPanelViewModel.pendingCreates`.
     func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]>
