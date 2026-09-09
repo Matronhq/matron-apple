@@ -36,7 +36,9 @@ struct ChatListView: View {
     /// rebooted the timeline from zero — blank until the room's first
     /// snapshot re-mapped (seconds for a large room). Mirrors the Mac's
     /// `ChatVMCache` fix for the same 2026-07-13 blank-panel incident.
-    @State private var vmCache = ChatVMCache()
+    /// Injected by `AppShellView` so every tab shares one cache; defaulted
+    /// for previews/tests.
+    @State var vmCache = ChatVMCache()
     @Environment(\.appDependencies) private var deps
     @Environment(\.currentSession) private var session
     @State private var showingNewChat = false

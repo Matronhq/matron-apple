@@ -19,13 +19,6 @@ struct MatronApp: App {
     @State private var dependencies = AppDependencies()
     @State private var session: UserSession?
     @State private var bootstrapDone = false
-    /// Phase 4 Task 6 — chat-list `NavigationStack` path. Hoisted to the
-    /// host so a notification tap (routed via
-    /// `NotificationDelegate.shared.tappedRoomID`) can set the room ID
-    /// and SwiftUI's stack drives the existing
-    /// `ChatListView.navigationDestination(for: ChatSummary.ID.self)`
-    /// branch. `[String]` because `ChatSummary.ID == String`.
-    @State private var chatPath: [String] = []
     /// Drives the scenePhase reconnect nudge below.
     @Environment(\.scenePhase) private var scenePhase
     /// In-app appearance override (System/Light/Dark). Written by the
@@ -49,60 +42,12 @@ struct MatronApp: App {
                     ProgressView("Loading…")
                         .task { await bootstrap() }
                 } else if let session {
-                    NavigationStack(path: $chatPath) {
-                        ChatListView(
-                            viewModel: ChatListViewModel(chat: dependencies.chatService(for: session)),
-                            onSignOut: { signOut() },
-                            // Phase 6 (Search): a search result navigates via
-                            // the stack path the host owns (same mechanism as
-                            // a notification tap).
-                            onOpenChat: { roomID in openChat(roomID) }
-                        )
-                    }
-                    .environment(\.appDependencies, dependencies)
-                    .environment(\.currentSession, session)
+                    AppShellView(session: session, deps: dependencies, onSignOut: { signOut() })
                     // Settings (a sheet off the chat list) reads this to
                     // render the Privacy section — sheets inherit the
                     // presenting hierarchy's environment.
                     .environment(\.appLockController, appLock)
-                    // Lets the running-subagent strip / sub-chat switcher
-                    // push a child chat or switch siblings on the same stack.
-                    .environment(\.chatNavigationPath, $chatPath)
-                    // Notification-tap deep link. The NSE-rewritten
-                    // userInfo carries `room_id`; NotificationDelegate
-                    // publishes that ID and we set it as the navigation
-                    // path so the existing
-                    // `navigationDestination(for: ChatSummary.ID.self)`
-                    // branch in ChatListView pushes the chat. Idempotent
-                    // on duplicate sends.
-                    .onReceive(NotificationDelegate.shared.tappedRoomID) { roomID in
-                        openChat(roomID)
-                    }
                     .task { try? await dependencies.syncService(for: session).start() }
-                    // Auto-open a conversation the bridge just created while
-                    // we're live (e.g. the user sent /start in another chat).
-                    // The engine only emits ids for convos born while running,
-                    // so this won't fire for the cold-start / reconnect
-                    // backlog. Sets the same nav path a notification tap
-                    // uses, so the new chat pushes into view without the
-                    // user hunting for it in the list.
-                    .task(id: session.userID) {
-                        for await roomID in await dependencies.syncService(for: session).newConversations() {
-                            openChat(roomID)
-                        }
-                    }
-                    .task(id: session.userID) {
-                        // Cold-start tap drain: if iOS launched the app
-                        // specifically because the user tapped a
-                        // notification on the lock screen, `didReceive`
-                        // ran before the `.onReceive(tappedRoomID)` above
-                        // subscribed and `PassthroughSubject` dropped the
-                        // value. The delegate buffers such taps in
-                        // `pendingRoomID`; drain it here.
-                        if let pending = NotificationDelegate.shared.consumePendingRoomID() {
-                            openChat(pending)
-                        }
-                    }
                     // Push pipeline: request permission, register for
                     // remote notifications, and wire the delegate's device-
                     // token callback straight to the journal server's
@@ -255,20 +200,6 @@ struct MatronApp: App {
         }
     }
 
-    /// Open a top-level conversation by REPLACING the whole navigation
-    /// path, never appending: notification taps, search results, and
-    /// auto-opened new conversations used to stack chat-on-chat, so the
-    /// back button walked through previous conversations. Back from a
-    /// conversation always returns to the chat list (Dan, 2026-08-06).
-    /// Sub-chat viewers still push onto their parent (`[parent, child]`),
-    /// so back from a subagent pops to its conversation — and a deep link
-    /// arriving while one is open collapses the stack to the target.
-    /// No-op when the target is already the sole open chat, keeping
-    /// duplicate sends idempotent.
-    private func openChat(_ roomID: String) {
-        if chatPath != [roomID] { chatPath = [roomID] }
-    }
-
     /// Restores any persisted journal session (file-backed, keyed
     /// `"matron.journal.session"`); a first launch after this task simply
     /// finds no session and falls through to the SignInView. No migration
@@ -310,10 +241,6 @@ struct MatronApp: App {
         // mid-wipe (bugbot "Stale refresh after sign-out"). The next
         // session's .task installs a fresh closure.
         appDelegate.backgroundRefresh = nil
-        // Drop any deep-linked room from the prior session so the next
-        // sign-in lands at the chat list root, not stranded inside a
-        // (now-inaccessible) prior-account room.
-        chatPath = []
         // Drop any buffered cold-start tap so the next sign-in's task
         // doesn't drain a stale room ID from the prior account.
         NotificationDelegate.shared.clearPendingRoomID()

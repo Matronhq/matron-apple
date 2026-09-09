@@ -1,0 +1,71 @@
+import XCTest
+import SwiftUI
+import UIKit
+import MatronModels
+@testable import Matron
+
+/// App shell (spec §3). Renders the REAL shell in a scene-attached
+/// `UIWindow` (the `SummariesSheetBindingTests` pattern): SwiftUI bridges
+/// `TabView` to a `UITabBarController`, so the tab bar is a genuine
+/// `UITabBar` we can find and inspect, unlike arbitrary body content.
+@MainActor
+final class AppShellViewTests: XCTestCase {
+    private var window: UIWindow!
+
+    override func tearDown() {
+        window?.isHidden = true
+        window?.rootViewController = nil
+        window = nil
+        super.tearDown()
+    }
+
+    private func makeShell(navigation: AppShellNavigation) -> AppShellView {
+        let session = UserSession(userID: "@a:s", deviceID: "D",
+                                  homeserverURL: URL(string: "https://s")!, accessToken: "t")
+        return AppShellView(session: session, deps: AppDependencies(), onSignOut: {}, navigation: navigation)
+    }
+
+    func test_shell_showsTwoTabs_atTheRoot() throws {
+        renderInWindow(makeShell(navigation: AppShellNavigation()))
+        let bar = try XCTUnwrap(findTabBar(in: window), "TabView must bridge to a UITabBar")
+        XCTAssertEqual(bar.items?.count, 2)
+        XCTAssertFalse(bar.isHidden)
+        XCTAssertLessThan(bar.frame.minY, window.bounds.maxY, "the bar is on screen at the root")
+    }
+
+    func test_shell_opensOnConversations() {
+        let nav = AppShellNavigation()
+        renderInWindow(makeShell(navigation: nav))
+        XCTAssertEqual(nav.tab, .conversations)
+    }
+
+    // MARK: - helpers
+
+    @discardableResult
+    func renderInWindow<V: View>(_ view: V) -> UIView {
+        let hosting = UIHostingController(rootView: view)
+        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+            window = UIWindow(windowScene: scene)
+            window.frame = CGRect(x: 0, y: 0, width: 390, height: 700)
+        } else {
+            window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 700))
+        }
+        window.rootViewController = hosting
+        window.makeKeyAndVisible()
+        window.layoutIfNeeded()
+        hosting.view.layoutIfNeeded()
+        for _ in 0..<5 {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            hosting.view.layoutIfNeeded()
+        }
+        return hosting.view
+    }
+
+    func findTabBar(in root: UIView) -> UITabBar? {
+        if let bar = root as? UITabBar { return bar }
+        for sub in root.subviews {
+            if let found = findTabBar(in: sub) { return found }
+        }
+        return nil
+    }
+}
