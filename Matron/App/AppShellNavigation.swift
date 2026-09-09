@@ -1,9 +1,10 @@
 import Foundation
 import Observation
 
-/// The bottom tabs (app shell, spec §3), in bar order.
-/// Left to right in the bar; the app opens on Conversations.
-enum AppTab: Hashable {
+/// The bottom tabs (app shell, spec §3), left to right in the bar — and
+/// `allCases` order is the swipe order too (`AppShellNavigation.swipeRoot`).
+/// The app opens on Conversations.
+enum AppTab: Hashable, CaseIterable {
     case coordinator
     case conversations
     case decisions
@@ -57,5 +58,31 @@ final class AppShellNavigation {
         case .coordinator: coordinatorPath.append(value)
         case .decisions: if let route = ItemRoute(pathValue: value) { decisionsPath.append(route) }
         }
+    }
+
+    /// Whether the selected tab is showing its root (nothing pushed).
+    var isAtRoot: Bool {
+        switch tab {
+        case .coordinator: return coordinatorPath.isEmpty
+        case .conversations: return chatPath.isEmpty
+        case .decisions: return decisionsPath.isEmpty
+        }
+    }
+
+    /// Dan, 2026-09-09: swipe between the conversation list and the
+    /// decisions list. A mostly horizontal drag past 80pt at a tab's ROOT
+    /// moves one tab in bar order (left = next, right = previous). Deeper
+    /// in a stack the chat's own pager and swipe-back own horizontal
+    /// drags, so a non-empty path ignores it. Returns whether the tab
+    /// changed, so the caller can animate only real switches.
+    @discardableResult
+    func swipeRoot(translation: CGSize) -> Bool {
+        guard isAtRoot, abs(translation.width) > 80,
+              abs(translation.width) > abs(translation.height),
+              let index = AppTab.allCases.firstIndex(of: tab) else { return false }
+        let next = translation.width < 0 ? index + 1 : index - 1
+        guard AppTab.allCases.indices.contains(next) else { return false }
+        tab = AppTab.allCases[next]
+        return true
     }
 }

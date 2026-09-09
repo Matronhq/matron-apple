@@ -118,10 +118,21 @@ struct AppShellView: View {
                 // shell owns (same mechanism as a notification tap).
                 onOpenChat: { roomID in nav.openChat(roomID) }
             )
+            .simultaneousGesture(rootSwipe)
         }
         // Lets the running-subagent strip / sub-chat switcher push a child
         // chat or switch siblings on THIS tab's stack.
         .environment(\.chatNavigationPath, $nav.chatPath)
+    }
+
+    /// Dan, 2026-09-09: swipe between the conversation list and the
+    /// decisions list. Attached to each tab's ROOT view only (a pushed
+    /// chat or item covers it), `simultaneous` so the lists keep their
+    /// own vertical scroll; the rule itself is `AppShellNavigation.swipeRoot`.
+    private var rootSwipe: some Gesture {
+        DragGesture(minimumDistance: 20).onEnded { v in
+            withAnimation { _ = nav.swipeRoot(translation: v.translation) }
+        }
     }
 
     private var decisionsTab: some View {
@@ -135,6 +146,7 @@ struct AppShellView: View {
                 onOpenConversation: { nav.openConversation(fromDecisions: $0) },
                 onRefresh: { await decisionsVM.refresh() }
             )
+            .simultaneousGesture(rootSwipe)
             .navigationTitle("Decisions")
             .navigationDestination(for: ItemRoute.self) { route in
                 ItemDetailHost(itemID: route.id, session: session, currentConvoID: nil,

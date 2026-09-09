@@ -41,6 +41,38 @@ final class AppShellNavigationTests: XCTestCase {
         XCTAssertEqual(nav.chatPath, ["!r:s"], "no duplicate push for the chat already on top")
     }
 
+    // Dan, 2026-09-09: swipe between the conversation list and the
+    // decisions list — a horizontal swipe at a tab's ROOT moves one tab
+    // in bar order; deeper in a stack the chat's own pager / swipe-back own
+    // horizontal drags, so a non-empty path ignores it.
+    func test_rootSwipe_left_goesToTheNextTab_andRight_comesBack() {
+        let nav = AppShellNavigation()
+        XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: -120, height: 10)))
+        XCTAssertEqual(nav.tab, .decisions)
+        XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: -120, height: 10)), "nothing to the right of the last tab")
+        XCTAssertEqual(nav.tab, .decisions)
+        XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 120, height: 10)))
+        XCTAssertEqual(nav.tab, .conversations)
+        XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 120, height: 10)), "Coordinator sits to the left of Conversations")
+        XCTAssertEqual(nav.tab, .coordinator)
+        XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: 120, height: 10)), "nothing to the left of the first tab")
+    }
+
+    func test_rootSwipe_ignoresShortOrVerticalDrags_andNonRootStacks() {
+        let nav = AppShellNavigation()
+        XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: -60, height: 0)), "below the threshold")
+        XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: -120, height: 200)), "a list scroll")
+        XCTAssertEqual(nav.tab, .conversations)
+        nav.chatPath = ["!r:s"]
+        XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: -120, height: 0)), "inside a chat the pager owns the drag")
+        XCTAssertEqual(nav.tab, .conversations)
+        nav.chatPath = []
+        nav.tab = .decisions
+        nav.decisionsPath = [ItemRoute(id: "it_1")]
+        XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: 120, height: 0)), "inside an item detail too")
+        XCTAssertEqual(nav.tab, .decisions)
+    }
+
     func test_pushDecision_appendsToTheDecisionsStack() {
         let nav = AppShellNavigation()
         nav.pushDecision("it_9")
