@@ -106,9 +106,11 @@ conversations, decisions }`:
   and in the same transaction, so the push lands in the visible stack.
 - Badge: `.badge(decisionsVM.awaitingYouCount)` on the Decisions tab, hidden
   at zero.
-- The tab bar stays visible inside a pushed chat. Re-tapping the selected
-  Decisions tab pops its stack to root (SwiftUI default for a
-  `NavigationStack` tab).
+- The tab bar is hidden inside a pushed chat (Dan, 2026-09-09) and inside a
+  pushed item detail: the chat destination and `ItemDetailHost` carry
+  `.toolbar(.hidden, for: .tabBar)`, so the bar shows only at the root of
+  each tab. Re-tapping the selected Decisions tab pops its stack to root
+  (SwiftUI default for a `NavigationStack` tab).
 - New `Matron/App/AppShellView.swift` owns `tab`, `decisionsPath`, and the
   decisions view model; `MatronApp` shrinks to bootstrap/sign-in gating.
 
@@ -218,9 +220,11 @@ trailing corner, hidden at zero). Selection is `@State var nav: MacNav`
 - **Mac:** `MacNavColumn` snapshot (badge / no badge); `MacChatListView`
   layout test that the nav column is present and the list still meets its
   minimum width; ⌘1/⌘2 command tests in `MacCommandsTests`.
+- **iOS:** the chat destination hides the tab bar (`AppShellView` binding
+  test asserting the destination's toolbar visibility for `.tabBar`).
 - **Device (manual):** swipe to tasks and back; leading-edge back swipe on
   page 0 still pops; keyboard drops on page change; VoiceOver reads the
-  page change.
+  page change; tab bar absent inside a chat and back at the list.
 
 ## Rollout
 
