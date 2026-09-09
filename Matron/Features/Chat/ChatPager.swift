@@ -34,6 +34,20 @@ final class ChatPagerModel {
         if page == .tasks { resignComposer() }
     }
 
+    /// Dan, 2026-09-09: a swipe right anywhere on the CHAT page goes back
+    /// to the conversation list (Instagram-style), not only from the
+    /// leading edge. Pure so tests can pin the rule. Requires: the chat
+    /// page (on the tasks page a rightward swipe pages back to the chat),
+    /// a rightward, mostly horizontal drag past 80pt, and a start outside
+    /// the leading 44pt — that strip belongs to UIKit's own interactive
+    /// pop gesture, and firing here too would pop twice.
+    static func swipeBackPops(page: ChatPage, translation: CGSize, startX: CGFloat) -> Bool {
+        page == .chat
+            && startX > 44
+            && translation.width > 80
+            && abs(translation.width) > abs(translation.height)
+    }
+
     static func resignFirstResponder() {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
@@ -51,6 +65,9 @@ final class ChatPagerModel {
 struct ChatPager<Chat: View, Tasks: View>: View {
     let model: ChatPagerModel
     let showsTasks: Bool
+    /// Fired for a full-width rightward swipe on the chat page (see
+    /// `ChatPagerModel.swipeBackPops`); `ChatView` pops the outer stack.
+    var onSwipeBack: (() -> Void)? = nil
     @ViewBuilder let chat: () -> Chat
     @ViewBuilder let tasks: () -> Tasks
 
@@ -89,6 +106,19 @@ struct ChatPager<Chat: View, Tasks: View>: View {
             .onChange(of: showsTasks) { _, shows in
                 if !shows { model.handleScrolled(to: .chat) }
             }
+            // Full-width swipe back. `simultaneous` so it never steals the
+            // pager's own paging drag or the vertical timeline scroll; the
+            // rule only fires on the chat page, where a rightward drag has
+            // nowhere to page to anyway (page 0 just rubber-bands).
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 20)
+                    .onEnded { v in
+                        if ChatPagerModel.swipeBackPops(page: model.page, translation: v.translation,
+                                                        startX: v.startLocation.x) {
+                            onSwipeBack?()
+                        }
+                    }
+            )
         }
     }
 }

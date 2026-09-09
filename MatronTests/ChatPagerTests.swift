@@ -40,6 +40,34 @@ final class ChatPagerTests: XCTestCase {
         XCTAssertEqual(resigned, 1)
     }
 
+    // Dan, 2026-09-09: a swipe right anywhere on the chat page goes back
+    // to the conversation list, not only from the leading edge.
+    func test_swipeBack_onlyOnTheChatPage_rightward_horizontal_awayFromTheEdge() {
+        XCTAssertTrue(ChatPagerModel.swipeBackPops(page: .chat, translation: CGSize(width: 120, height: 10), startX: 200))
+        XCTAssertFalse(ChatPagerModel.swipeBackPops(page: .tasks, translation: CGSize(width: 120, height: 10), startX: 200),
+                       "on the tasks page a rightward swipe pages back to the chat instead")
+        XCTAssertFalse(ChatPagerModel.swipeBackPops(page: .chat, translation: CGSize(width: -120, height: 10), startX: 200),
+                       "leftward swipes page to the tracker")
+        XCTAssertFalse(ChatPagerModel.swipeBackPops(page: .chat, translation: CGSize(width: 60, height: 10), startX: 200),
+                       "below the threshold")
+        XCTAssertFalse(ChatPagerModel.swipeBackPops(page: .chat, translation: CGSize(width: 120, height: 200), startX: 200),
+                       "a mostly vertical drag is a timeline scroll")
+        XCTAssertFalse(ChatPagerModel.swipeBackPops(page: .chat, translation: CGSize(width: 120, height: 10), startX: 12),
+                       "the leading-edge zone belongs to UIKit's own back gesture — never pop twice")
+    }
+
+    func test_popChat_removesTheTopEntry_andIgnoresAnEmptyOrMissingPath() {
+        var path: [String] = ["!parent:s", "!child:s"]
+        let binding = Binding(get: { path }, set: { path = $0 })
+        ChatView.popChat(from: binding)
+        XCTAssertEqual(path, ["!parent:s"], "a subagent viewer pops to its parent, not the list")
+        ChatView.popChat(from: binding)
+        XCTAssertEqual(path, [])
+        ChatView.popChat(from: binding)
+        XCTAssertEqual(path, [], "nothing to pop is a no-op")
+        ChatView.popChat(from: nil)
+    }
+
     func test_onSelect_appendsAnItemRouteToTheOuterPath_notALocalStack() {
         var path: [String] = ["!r:s"]
         let binding = Binding(get: { path }, set: { path = $0 })

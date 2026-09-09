@@ -229,6 +229,14 @@ struct ChatView: View {
         path.wrappedValue.append(value)
     }
 
+    /// Pops the top entry of the OUTER chat stack — the full-width swipe
+    /// back (Dan, 2026-09-09). Only the top entry: a subagent viewer pops
+    /// to its parent, a top-level chat to the list. Static for the tests.
+    static func popChat(from path: Binding<[String]>?) {
+        guard let path, !path.wrappedValue.isEmpty else { return }
+        path.wrappedValue.removeLast()
+    }
+
     /// Tapping an inline `.itemMarker` card pushes that item onto the
     /// outer stack straight away — no need to page to the tracker first.
     private func openItem(_ itemID: String) {
@@ -974,7 +982,8 @@ struct ChatView: View {
     }
 
     var body: some View {
-        ChatPager(model: pager, showsTasks: showsTasksPage) {
+        ChatPager(model: pager, showsTasks: showsTasksPage,
+                  onSwipeBack: { Self.popChat(from: navigationPath) }) {
             chatPage
         } tasks: {
             tasksPage
