@@ -71,18 +71,18 @@ struct MacChatListView: View {
     @State private var decisionsPaneState = MacItemsPaneState()
     @State private var selectedDecisionID: String?
     @State private var decisionsOriginTitles: [String: String] = [:]
-    /// The coordinator conversation (spec §5b). `session` arrives through
-    /// the environment, so this can't be an `@AppStorage` with a per-user
-    /// key; it mirrors the defaults key instead and refreshes on every
-    /// `UserDefaults` change (Settings' Change/Clear).
-    @State private var coordinatorConvoID: String?
-    @State private var showingCoordinatorChooser = false
     /// Phase 6 (Search): the shared search VM, built once the session + index
     /// resolve and the chat list has loaded (so chat-title hits have a snapshot).
     /// A non-empty `searchModel.query` swaps the detail column for
     /// `MacSearchResultsView`. `focusSearch` is flipped by ⌘F ("Find in Chat").
     @State private var searchModel: SearchViewModel?
     @State private var focusSearch = false
+    /// The coordinator conversation (spec §5b). `session` arrives through
+    /// the environment, so this can't be an `@AppStorage` with a per-user
+    /// key; it mirrors the defaults key instead and refreshes on every
+    /// `UserDefaults` change (Settings' Change/Clear).
+    @State private var coordinatorConvoID: String?
+    @State private var showingCoordinatorChooser = false
     /// Sidebar visibility toggle — wired to `.matronCommand(.toggleSidebar)`
     /// so the menu-bar item / toolbar button / ⌘⇧S keyboard shortcut all
     /// flip the same state. `.automatic` is the system default (sidebar
@@ -240,9 +240,13 @@ struct MacChatListView: View {
         }
     }
 
-    var body: some View {
+    /// The split view itself — sidebar (nav column + list) and detail —
+    /// kept apart from the two modifier stacks below so each expression
+    /// stays inside Xcode 16.4's type-checker budget on CI (it timed out
+    /// twice on `body` once the nav column landed).
+    private var splitView: some View {
         let widths = Self.sidebarWidths(for: nav)
-        NavigationSplitView(columnVisibility: $columnVisibility) {
+        return NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebarStack
                 // Drop the system sidebar-collapse toolbar button. The
                 // ⌘⇧S menu item / `.toggleSidebar` notification handler
@@ -278,229 +282,250 @@ struct MacChatListView: View {
         } detail: {
             detailContent
         }
-        .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.findInChat))) { _ in
-            focusSearch = true
-        }
-        // Build the shared search VM once the chat list has loaded (so chat-title
-        // hits have a snapshot). Keyed on `groups.isEmpty` so it fires when the
-        // first snapshot lands; the `searchModel == nil` guard keeps it a
-        // one-shot build. Task 12 drops the backfill-progress wiring —
-        // `SearchViewModel` no longer has `observeBackfill(_:)` (Task 11
-        // dropped it on the iOS side of this same journal-stack rewire; the
-        // journal server has no backfill concept to observe).
-        .task(id: viewModel.groups.isEmpty) {
-            guard searchModel == nil, !viewModel.groups.isEmpty,
-                  let search = deps?.search else { return }
-            searchModel = SearchViewModel(search: search, allChats: allChatSummaries)
-        }
-        // Keep the long-lived search VM's chat snapshot current: the toolbar
-        // VM is built once, so without this new rooms and renamed titles never
-        // reach chat-title search or `chatTitle(for:)` until relaunch (bugbot
-        // "Mac chat search snapshot stale"). Keyed on the flattened summaries
-        // because `GroupedSummaries` isn't Equatable.
-        .onChange(of: allChatSummaries) { _, summaries in
-            searchModel?.updateChats(summaries)
-        }
-        // Breadcrumb every selection flip — user click, auto-open,
-        // notification tap, or (the pathological case) the List clearing
-        // its own selection during a snapshot rebuild. Rare + un-gated.
-        // Log bodies live in helper funcs: inline interpolations here
-        // helped tip Xcode 16.4's type-checker budget for this `body`
-        // (CI "unable to type-check in reasonable time" — same class as
-        // the `allChatSummaries` hoist above).
-        .onChange(of: selectedSummaryID, handleSelectionChange)
-        // The search branch swap destroys/remounts the chat detail — log
-        // the flips so a detail remount can be attributed to it.
-        .onChange(of: searchQueryIsEmpty, logDetailSwap)
-        // Toggle Sidebar — menu-bar item (`Commands.swift`), ⌘⇧S, and the
-        // sidebar-toggle toolbar button in `MacChatToolbar` all post the
-        // same notification. Listener flips between `.automatic` (shown)
-        // and `.detailOnly` (collapsed). QA finding #2 — previously the
-        // notification was posted but had no listener, so toggle was a
-        // silent no-op.
-        .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.toggleSidebar))) { _ in
-            columnVisibility = (columnVisibility == .detailOnly) ? .automatic : .detailOnly
-        }
-        // Sign Out — Wave 6 / live-test #1 fix. Previously this listener
-        // lived on `MatronMacApp`'s `WindowGroup`-root `Group { … }`
-        // content. macOS SwiftUI did not reliably re-install the
-        // subscription when the Group's active branch changed type
-        // (sign-in → chat-list), so File → Sign Out silently posted into
-        // the void. Anchoring on this view (the active branch any time a
-        // signed-in user is reachable) is reliable — same shape as
-        // `.toggleSidebar` above, which has always worked. The host owns
-        // the actual side-effect (clear session) via the `onSignOut`
-        // closure so the host's `@State` mutators stay co-located with
-        // the host. The sign-in screen is intentionally not covered: a
-        // user without a session has nothing to sign out of.
-        // File → New Chat (⌘N from the menu bar). The toolbar `+` button
-        // has its own .keyboardShortcut("n", modifiers: .command), but on
-        // macOS the menu-bar's ⌘N takes priority and posts via the
-        // command bus — so without a listener here the menu-bar shortcut
-        // and the menu item itself were silent no-ops (PR #1 cursor[bot]
-        // findings — both Commands.swift and MacChatListView).
-        .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.newChat))) { _ in
-            showingNewChat = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.signOut))) { _ in
-            onSignOut?()
-        }
-        // Phase 4 Task 10 — notification-tap deep link. The Mac notification
-        // handler posts `.matronOpenRoom` with `room_id` in userInfo when
-        // the user taps a notification banner / Notification Center entry;
-        // we route that into the existing sidebar selection state so the
-        // `NavigationSplitView` detail column flips to the matching chat.
-        // `selectedSummaryID` ↔ `selection: $selectedSummaryID` on the
-        // sidebar `List` (line ~374) handles the actual UI flip; this
-        // listener just feeds it the right ID.
-        .onReceive(NotificationCenter.default.publisher(for: .matronOpenRoom)) { note in
-            if let roomID = note.userInfo?[MacNotificationHandler.roomIDKey] as? String {
-                listLogger.notice("selection set by notification-tap: \(roomID, privacy: .public)")
-                showConversation(roomID)
+    }
+
+    /// Menu-bar / command-bus listeners and the search wiring.
+    private func withCommandListeners(_ content: some View) -> some View {
+        content
+            // Only when the search field is mounted (Conversations): the field
+            // consumes the flag in `onChange` and clears it, so a `true` set
+            // while it is absent would stick and turn every later ⌘F into a
+            // no-op (Bugbot, PR #195). `navChanged` clears it on the way out
+            // for the same reason.
+            .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.findInChat))) { _ in
+                guard nav == .conversations else { return }
+                focusSearch = true
             }
-        }
-        // ⌘1/⌘2/⌘3 (Commands.swift) — same bus shape as `.toggleSidebar`.
-        .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showCoordinator))) { _ in nav = .coordinator }
-        .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showConversations))) { _ in nav = .conversations }
-        .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showDecisions))) { _ in nav = .decisions }
-        .task(id: session?.userID) {
-            coordinatorConvoID = session.map { CoordinatorSetting(userID: $0.userID).convoID } ?? nil
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
-            coordinatorConvoID = session.map { CoordinatorSetting(userID: $0.userID).convoID } ?? nil
-        }
-        .sheet(isPresented: $showingCoordinatorChooser) {
-            if let deps, let session {
-                MacCoordinatorChooserSheet(deps: deps, session: session) { id in
-                    CoordinatorSetting(userID: session.userID).convoID = id
-                    coordinatorConvoID = id
-                    showingCoordinatorChooser = false
+            // Build the shared search VM once the chat list has loaded (so chat-title
+            // hits have a snapshot). Keyed on `groups.isEmpty` so it fires when the
+            // first snapshot lands; the `searchModel == nil` guard keeps it a
+            // one-shot build. Task 12 drops the backfill-progress wiring —
+            // `SearchViewModel` no longer has `observeBackfill(_:)` (Task 11
+            // dropped it on the iOS side of this same journal-stack rewire; the
+            // journal server has no backfill concept to observe).
+            .task(id: viewModel.groups.isEmpty) {
+                guard searchModel == nil, !viewModel.groups.isEmpty,
+                      let search = deps?.search else { return }
+                searchModel = SearchViewModel(search: search, allChats: allChatSummaries)
+            }
+            // Keep the long-lived search VM's chat snapshot current: the toolbar
+            // VM is built once, so without this new rooms and renamed titles never
+            // reach chat-title search or `chatTitle(for:)` until relaunch (bugbot
+            // "Mac chat search snapshot stale"). Keyed on the flattened summaries
+            // because `GroupedSummaries` isn't Equatable.
+            .onChange(of: allChatSummaries) { _, summaries in
+                searchModel?.updateChats(summaries)
+            }
+            // Breadcrumb every selection flip — user click, auto-open,
+            // notification tap, or (the pathological case) the List clearing
+            // its own selection during a snapshot rebuild. Rare + un-gated.
+            // Log bodies live in helper funcs: inline interpolations here
+            // helped tip Xcode 16.4's type-checker budget for this `body`
+            // (CI "unable to type-check in reasonable time" — same class as
+            // the `allChatSummaries` hoist above).
+            .onChange(of: selectedSummaryID, handleSelectionChange)
+            // The search branch swap destroys/remounts the chat detail — log
+            // the flips so a detail remount can be attributed to it.
+            .onChange(of: searchQueryIsEmpty, logDetailSwap)
+            // Toggle Sidebar — menu-bar item (`Commands.swift`), ⌘⇧S, and the
+            // sidebar-toggle toolbar button in `MacChatToolbar` all post the
+            // same notification. Listener flips between `.automatic` (shown)
+            // and `.detailOnly` (collapsed). QA finding #2 — previously the
+            // notification was posted but had no listener, so toggle was a
+            // silent no-op.
+            .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.toggleSidebar))) { _ in
+                columnVisibility = (columnVisibility == .detailOnly) ? .automatic : .detailOnly
+            }
+            // Sign Out — Wave 6 / live-test #1 fix. Previously this listener
+            // lived on `MatronMacApp`'s `WindowGroup`-root `Group { … }`
+            // content. macOS SwiftUI did not reliably re-install the
+            // subscription when the Group's active branch changed type
+            // (sign-in → chat-list), so File → Sign Out silently posted into
+            // the void. Anchoring on this view (the active branch any time a
+            // signed-in user is reachable) is reliable — same shape as
+            // `.toggleSidebar` above, which has always worked. The host owns
+            // the actual side-effect (clear session) via the `onSignOut`
+            // closure so the host's `@State` mutators stay co-located with
+            // the host. The sign-in screen is intentionally not covered: a
+            // user without a session has nothing to sign out of.
+            // File → New Chat (⌘N from the menu bar). The toolbar `+` button
+            // has its own .keyboardShortcut("n", modifiers: .command), but on
+            // macOS the menu-bar's ⌘N takes priority and posts via the
+            // command bus — so without a listener here the menu-bar shortcut
+            // and the menu item itself were silent no-ops (PR #1 cursor[bot]
+            // findings — both Commands.swift and MacChatListView).
+            .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.newChat))) { _ in
+                showingNewChat = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.signOut))) { _ in
+                onSignOut?()
+            }
+            // Phase 4 Task 10 — notification-tap deep link. The Mac notification
+            // handler posts `.matronOpenRoom` with `room_id` in userInfo when
+            // the user taps a notification banner / Notification Center entry;
+            // we route that into the existing sidebar selection state so the
+            // `NavigationSplitView` detail column flips to the matching chat.
+            // `selectedSummaryID` ↔ `selection: $selectedSummaryID` on the
+            // sidebar `List` (line ~374) handles the actual UI flip; this
+            // listener just feeds it the right ID.
+            .onReceive(NotificationCenter.default.publisher(for: .matronOpenRoom)) { note in
+                if let roomID = note.userInfo?[MacNotificationHandler.roomIDKey] as? String {
+                    listLogger.notice("selection set by notification-tap: \(roomID, privacy: .public)")
+                    showConversation(roomID)
                 }
             }
-        }
-        // Leaving Decisions through the nav column (Bugbot, PR #195): the
-        // detail host has no teardown of its own (I6 — a same-item rebuild
-        // must keep the draft), so stop its VM and any recording here and
-        // clear the pane's item id so re-entering rebuilds the detail.
-        .onChange(of: nav, navChanged)
-        // The Decisions VM lives for the session (spec §5b): one instance,
-        // started here, feeding both the list and the nav badge.
-        .task(id: session?.userID) {
-            guard let deps, let session else { return }
-            decisionsVM?.stop()
-            let vm = deps.makeDecisionsViewModel(for: session)
-            decisionsVM = vm
-            vm.start()
-        }
-        .task(id: decisionsVM?.awaitingYou.map(\.originConvoID) ?? []) {
-            guard let deps, let session else { return }
-            decisionsOriginTitles = (try? deps.journalStore(for: session).conversationTitles()) ?? [:]
-        }
-        // Cold-start tap drain (cursor PR #5 third-pass finding): a
-        // notification tap that launched the app — `didReceive` fired
-        // before this view mounted — would otherwise be lost because
-        // `NotificationCenter` doesn't replay missed posts. The
-        // handler buffers it; this `.task` drains on first
-        // appearance. Mirrors iOS's `NotificationDelegate.consumePendingRoomID()`
-        // call at `Matron/App/MatronApp.swift:177`.
-        .task {
-            if let pending = MacNotificationHandler.shared.consumePendingRoomID() {
-                listLogger.notice("selection set by cold-start-tap-drain: \(pending, privacy: .public)")
-                showConversation(pending)
+            // ⌘1/⌘2/⌘3 (Commands.swift) — same bus shape as `.toggleSidebar`.
+            .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showCoordinator))) { _ in nav = .coordinator }
+            .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showConversations))) { _ in nav = .conversations }
+            .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showDecisions))) { _ in nav = .decisions }
+            // Leaving Decisions through the nav column (Bugbot, PR #195): the
+            // detail host has no teardown of its own (I6 — a same-item rebuild
+            // must keep the draft), so stop its VM and any recording here and
+            // clear the pane's item id so re-entering rebuilds the detail.
+            .task(id: session?.userID) {
+                coordinatorConvoID = session.map { CoordinatorSetting(userID: $0.userID).convoID } ?? nil
             }
-        }
-        // Wave 6 / live-test #4: dropped `.navigationTitle("Matron")`.
-        // The detail column's `MacChatToolbar` (Task 14d) carries the
-        // chat title in its `.principal` slot, and on macOS the
-        // `NavigationSplitView`'s detail column was rendering "Matron"
-        // as a window-bar label next to the sidebar toggle — visual
-        // duplication next to the bot-room title in the toolbar's
-        // principal slot. Sidebar column's existing `ContentUnavailable`
-        // / list content already conveys "this is the chat list" without
-        // needing a navigation title there either.
-        .sheet(isPresented: $showingNewChat) {
-            // Mac `AppDependencies` is a per-target type, so the sheet
-            // wires off the Mac variant. The placeholder fallback keeps
-            // previews / tests rendering when the environment isn't
-            // populated.
-            if let deps, let session {
-                MacNewChatSheet(deps: deps, session: session,
-                                windowSize: NSApp.keyWindow?.contentLayoutRect.size) { convoID in
-                    showingNewChat = false
-                    // Select the new chat; the newConversations auto-open
-                    // (below) may deliver the same id when the convo_meta
-                    // lands — setting an identical selection is a no-op.
-                    listLogger.notice("selection set by new-chat-sheet: \(convoID, privacy: .public)")
-                    showConversation(convoID)
+            .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+                coordinatorConvoID = session.map { CoordinatorSetting(userID: $0.userID).convoID } ?? nil
+            }
+            .sheet(isPresented: $showingCoordinatorChooser) {
+                if let deps, let session {
+                    MacCoordinatorChooserSheet(deps: deps, session: session) { id in
+                        CoordinatorSetting(userID: session.userID).convoID = id
+                        coordinatorConvoID = id
+                        showingCoordinatorChooser = false
+                    }
                 }
-            } else {
-                MacNewChatPlaceholder(onDismiss: { showingNewChat = false })
             }
-        }
-        .task { viewModel.start() }
-        #if DEBUG
-        // Screenshot-rig hook: MATRON_DEBUG_OPEN_CONVO=<id> selects that
-        // conversation once it syncs in, so an unattended capture can show
-        // a chat without injected clicks. See DebugSnapshot.swift.
-        .task {
-            guard let target = ProcessInfo.processInfo.environment["MATRON_DEBUG_OPEN_CONVO"] else { return }
-            for _ in 0..<100 {
-                if viewModel.groups.contains(where: { $0.summaries.contains(where: { $0.id == target }) }) {
-                    selectedSummaryID = target
-                    return
+            .onChange(of: nav, navChanged)
+    }
+
+    /// Lifecycle: view-model start/stop, decisions VM, sync-state and
+    /// auto-open streams, the New Chat sheet, and the dock badge.
+    private func withLifecycle(_ content: some View) -> some View {
+        content
+            // The Decisions VM lives for the session (spec §5b): one instance,
+            // started here, feeding both the list and the nav badge.
+            .task(id: session?.userID) {
+                guard let deps, let session else { return }
+                decisionsVM?.stop()
+                let vm = deps.makeDecisionsViewModel(for: session)
+                decisionsVM = vm
+                vm.start()
+            }
+            .task(id: decisionsVM?.awaitingYou.map(\.originConvoID) ?? []) {
+                guard let deps, let session else { return }
+                decisionsOriginTitles = (try? deps.journalStore(for: session).conversationTitles()) ?? [:]
+            }
+            // Cold-start tap drain (cursor PR #5 third-pass finding): a
+            // notification tap that launched the app — `didReceive` fired
+            // before this view mounted — would otherwise be lost because
+            // `NotificationCenter` doesn't replay missed posts. The
+            // handler buffers it; this `.task` drains on first
+            // appearance. Mirrors iOS's `NotificationDelegate.consumePendingRoomID()`
+            // call at `Matron/App/MatronApp.swift:177`.
+            .task {
+                if let pending = MacNotificationHandler.shared.consumePendingRoomID() {
+                    listLogger.notice("selection set by cold-start-tap-drain: \(pending, privacy: .public)")
+                    showConversation(pending)
                 }
-                try? await Task.sleep(nanoseconds: 200_000_000)
             }
-        }
-        #endif
-        .onDisappear {
-            viewModel.cancel()
-            decisionsVM?.stop()
-            decisionsPaneState.detailViewModel?.stop()
-            decisionsPaneState.detailRecorder.cancel()
-        }
-        // Sync connection-state banner. Subscribes to the host's
-        // long-lived `stateStream()` and mirrors yields into the local
-        // `connectionState` so the banner reacts without bouncing
-        // through the ViewModel. Keying on `session?.userID` so a
-        // user-switch (sign out + sign back in) recycles the iterator
-        // against the new session's sync service. Mirrors the iOS
-        // ChatListView wiring.
-        .task(id: session?.userID) {
-            guard let deps, let session else { return }
-            let sync = deps.syncService(for: session)
-            for await state in await sync.stateStream() {
-                connectionState = .from(state)
-                // Catch-up counts: the socket IS established there, so a
-                // drop mid-replay should come back as "Reconnecting…".
-                if state == .running || state == .catchingUp { hasEverConnected = true }
+            // Wave 6 / live-test #4: dropped `.navigationTitle("Matron")`.
+            // The detail column's `MacChatToolbar` (Task 14d) carries the
+            // chat title in its `.principal` slot, and on macOS the
+            // `NavigationSplitView`'s detail column was rendering "Matron"
+            // as a window-bar label next to the sidebar toggle — visual
+            // duplication next to the bot-room title in the toolbar's
+            // principal slot. Sidebar column's existing `ContentUnavailable`
+            // / list content already conveys "this is the chat list" without
+            // needing a navigation title there either.
+            .sheet(isPresented: $showingNewChat) {
+                // Mac `AppDependencies` is a per-target type, so the sheet
+                // wires off the Mac variant. The placeholder fallback keeps
+                // previews / tests rendering when the environment isn't
+                // populated.
+                if let deps, let session {
+                    MacNewChatSheet(deps: deps, session: session,
+                                    windowSize: NSApp.keyWindow?.contentLayoutRect.size) { convoID in
+                        showingNewChat = false
+                        // Select the new chat; the newConversations auto-open
+                        // (below) may deliver the same id when the convo_meta
+                        // lands — setting an identical selection is a no-op.
+                        listLogger.notice("selection set by new-chat-sheet: \(convoID, privacy: .public)")
+                        showConversation(convoID)
+                    }
+                } else {
+                    MacNewChatPlaceholder(onDismiss: { showingNewChat = false })
+                }
             }
-        }
-        // Auto-open a conversation the bridge just created while we're live
-        // (e.g. the user sent /start). The engine only emits ids for convos
-        // born while running, so this won't fire for the cold-start /
-        // reconnect backlog. Drives the same `selectedSummaryID` the
-        // notification-tap deep link uses, so the detail column flips to the
-        // new chat without the user hunting for it. Mirrors the iOS host.
-        .task(id: session?.userID) {
-            guard let deps, let session else { return }
-            for await roomID in await deps.syncService(for: session).newConversations() {
-                listLogger.notice("selection set by auto-open: \(roomID, privacy: .public)")
-                showConversation(roomID)
+            .task { viewModel.start() }
+            #if DEBUG
+            // Screenshot-rig hook: MATRON_DEBUG_OPEN_CONVO=<id> selects that
+            // conversation once it syncs in, so an unattended capture can show
+            // a chat without injected clicks. See DebugSnapshot.swift.
+            .task {
+                guard let target = ProcessInfo.processInfo.environment["MATRON_DEBUG_OPEN_CONVO"] else { return }
+                for _ in 0..<100 {
+                    if viewModel.groups.contains(where: { $0.summaries.contains(where: { $0.id == target }) }) {
+                        selectedSummaryID = target
+                        return
+                    }
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                }
             }
-        }
-        // Dock-tile badge mirrors the chat list's running unread total.
-        // `NSApp.dockTile.badgeLabel` accepts a String; `nil` removes
-        // the badge so a zero count produces no overlay. AppKit handles
-        // the rendering — capsule, white text, accent fill — so we
-        // don't need to reproduce the iOS pill visual on the dock side.
-        // No `initial: true` for the same reason as iOS — see
-        // `ChatListView` for the rationale: firing on first appear
-        // with a still-zero `totalUnread` actively clears any badge a
-        // push notification set while the app was backgrounded.
-        .onChange(of: viewModel.totalUnread) { _, newValue in
-            NSApp.dockTile.badgeLabel = newValue > 0 ? "\(newValue)" : nil
-        }
+            #endif
+            .onDisappear {
+                viewModel.cancel()
+                decisionsVM?.stop()
+                decisionsPaneState.detailViewModel?.stop()
+                decisionsPaneState.detailRecorder.cancel()
+            }
+            // Sync connection-state banner. Subscribes to the host's
+            // long-lived `stateStream()` and mirrors yields into the local
+            // `connectionState` so the banner reacts without bouncing
+            // through the ViewModel. Keying on `session?.userID` so a
+            // user-switch (sign out + sign back in) recycles the iterator
+            // against the new session's sync service. Mirrors the iOS
+            // ChatListView wiring.
+            .task(id: session?.userID) {
+                guard let deps, let session else { return }
+                let sync = deps.syncService(for: session)
+                for await state in await sync.stateStream() {
+                    connectionState = .from(state)
+                    // Catch-up counts: the socket IS established there, so a
+                    // drop mid-replay should come back as "Reconnecting…".
+                    if state == .running || state == .catchingUp { hasEverConnected = true }
+                }
+            }
+            // Auto-open a conversation the bridge just created while we're live
+            // (e.g. the user sent /start). The engine only emits ids for convos
+            // born while running, so this won't fire for the cold-start /
+            // reconnect backlog. Drives the same `selectedSummaryID` the
+            // notification-tap deep link uses, so the detail column flips to the
+            // new chat without the user hunting for it. Mirrors the iOS host.
+            .task(id: session?.userID) {
+                guard let deps, let session else { return }
+                for await roomID in await deps.syncService(for: session).newConversations() {
+                    listLogger.notice("selection set by auto-open: \(roomID, privacy: .public)")
+                    showConversation(roomID)
+                }
+            }
+            // Dock-tile badge mirrors the chat list's running unread total.
+            // `NSApp.dockTile.badgeLabel` accepts a String; `nil` removes
+            // the badge so a zero count produces no overlay. AppKit handles
+            // the rendering — capsule, white text, accent fill — so we
+            // don't need to reproduce the iOS pill visual on the dock side.
+            // No `initial: true` for the same reason as iOS — see
+            // `ChatListView` for the rationale: firing on first appear
+            // with a still-zero `totalUnread` actively clears any badge a
+            // push notification set while the app was backgrounded.
+            .onChange(of: viewModel.totalUnread) { _, newValue in
+                NSApp.dockTile.badgeLabel = newValue > 0 ? "\(newValue)" : nil
+            }
+    }
+
+    var body: some View {
+        withLifecycle(withCommandListeners(splitView))
     }
 
     /// Sidebar column wrapper: connection banner (when not `.running`)
@@ -635,6 +660,9 @@ struct MacChatListView: View {
     /// is ALREADY selected (Bugbot, PR #195: the `selectedSummaryID`
     /// `onChange` alone never fires for a same-id assignment).
     private func navChanged(from old: MacNav, to new: MacNav) {
+        // The search field unmounts with Conversations; an unconsumed ⌘F
+        // request must not outlive it (Bugbot, PR #195).
+        if old == .conversations { focusSearch = false }
         guard old == .decisions, new != .decisions else { return }
         decisionsPaneState.detailViewModel?.stop()
         decisionsPaneState.detailViewModel = nil
