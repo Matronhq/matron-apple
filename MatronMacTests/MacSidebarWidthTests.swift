@@ -61,6 +61,22 @@ final class MacSidebarWidthTests: XCTestCase {
         XCTAssertEqual(MacNavColumn.width, 72)
     }
 
+    /// The width triple `body` hands `navigationSplitViewColumnWidth`:
+    /// list 260/400/600 plus the nav column, or the nav column alone when
+    /// Coordinator is selected.
+    func test_sidebarWidths_perNavSelection() {
+        let convos = MacChatListView.sidebarWidths(for: .conversations)
+        XCTAssertEqual(convos.min, 260 + MacNavColumn.width)
+        XCTAssertEqual(convos.ideal, 400 + MacNavColumn.width)
+        XCTAssertEqual(convos.max, 600 + MacNavColumn.width)
+        let decisions = MacChatListView.sidebarWidths(for: .decisions)
+        XCTAssertEqual(decisions.ideal, 400 + MacNavColumn.width)
+        let coordinator = MacChatListView.sidebarWidths(for: .coordinator)
+        XCTAssertEqual(coordinator.min, MacNavColumn.width)
+        XCTAssertEqual(coordinator.ideal, MacNavColumn.width)
+        XCTAssertEqual(coordinator.max, MacNavColumn.width)
+    }
+
     private static func findSplitView(in view: NSView?) -> NSSplitView? {
         guard let view else { return nil }
         if let split = view as? NSSplitView { return split }
