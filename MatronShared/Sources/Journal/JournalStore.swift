@@ -816,8 +816,13 @@ public final class JournalStore: @unchecked Sendable {
             // Without this pass the rows stayed queued forever, re-flushing
             // (idem-deduped, but ghost-echoing) on every reconnect. The
             // `journaledAtMs` guard keeps old replayed history from eating
-            // a fresh queued send with the same body.
-            for e in events where e.sender == ownSender && e.type == JournalEventType.text {
+            // a fresh queued send with the same body. The `fallback_for`
+            // guard mirrors the live path above: the journal's old-client
+            // mirror of an item marker is a synthetic own-sender text the
+            // user never typed, so it must not confirm a queued send either
+            // (Bugbot PR #185, "History path still confirms fallback texts").
+            for e in events where e.sender == ownSender && e.type == JournalEventType.text
+                && e.payload["fallback_for"] == nil {
                 guard let body = e.payload["body"] as? String else { continue }
                 try Self.outboxDeleteFirstMatching(
                     db, convoID: e.convoID, body: body,
