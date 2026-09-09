@@ -79,3 +79,15 @@ final class ItemDetailJumpToBottomTests: XCTestCase {
         XCTAssertFalse(ItemDetailView.showsJumpToBottom(placed: true, scrollable: true, atBottom: true))
     }
 }
+
+final class ItemDetailResolveLabelTests: XCTestCase {
+    func testLabelNamesThePrimaryResolution() {
+        XCTAssertEqual(ItemDetailView.resolveLabel(for: [.done, .cancelled]), "Mark done")
+        XCTAssertEqual(ItemDetailView.resolveLabel(for: [.answered, .cancelled]), "Mark answered")
+        XCTAssertEqual(ItemDetailView.resolveLabel(for: [.reversed, .decided, .cancelled]), "Reverse")
+    }
+
+    func testAnUnansweredQuestionOnlyOffersDismissal() {
+        XCTAssertEqual(ItemDetailView.resolveLabel(for: [.cancelled]), "Dismiss")
+    }
+}

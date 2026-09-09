@@ -115,6 +115,33 @@ final class ItemDetailViewModelTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
     }
 
+    func testQuestionOffersAnsweredOnlyOnceTheUserHasReplied() {
+        XCTAssertEqual(ItemDetailViewModel.resolutions(for: .question, userHasReplied: false), [.cancelled])
+        XCTAssertEqual(ItemDetailViewModel.resolutions(for: .question, userHasReplied: true), [.answered, .cancelled])
+        XCTAssertEqual(ItemDetailViewModel.resolutions(for: .task, userHasReplied: false), [.done, .cancelled])
+        XCTAssertEqual(ItemDetailViewModel.resolutions(for: nil, userHasReplied: true), [])
+    }
+
+    func testUserHasRepliedCountsOnlyTheirOwnComments() async throws {
+        let api = API(); let sync = Sync(); let store = Store()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: api, sync: sync)
+        vm.start()
+        try await waitUntil { sync.refetched == ["it_1"] }
+        store.itemCont?.yield(TrackerItem(id: "it_1", num: 1, kind: .question, awaiting: .user, title: "Q", originConvoID: "c1"))
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(vm.availableResolutions, [.cancelled])
+        // An agent comment and a status row are not a reply from the user.
+        store.commentsCont?.yield([
+            TrackerComment(id: "a", itemID: "it_1", author: .agent, body: "Options are…", createdAt: Date()),
+            TrackerComment(id: "s", itemID: "it_1", author: .user, kind: .status, body: "", createdAt: Date()),
+        ])
+        try await waitUntil { vm.comments.count == 2 }
+        XCTAssertEqual(vm.availableResolutions, [.cancelled])
+        store.commentsCont?.yield([TrackerComment(id: "u", itemID: "it_1", author: .user, body: "Keep it.", createdAt: Date())])
+        try await waitUntil { vm.comments.count == 1 }
+        XCTAssertEqual(vm.availableResolutions, [.answered, .cancelled])
+    }
+
     func testCloseReopenReverseAndResolutions() async throws {
         let api = API(); let sync = Sync(); let store = Store()
         let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: api, sync: sync)
@@ -126,7 +153,7 @@ final class ItemDetailViewModelTests: XCTestCase {
         try await waitUntil { sync.refetched == ["it_1"] }
         store.itemCont?.yield(TrackerItem(id: "it_1", num: 1, kind: .decision, title: "D", originConvoID: "c1"))
         try? await Task.sleep(nanoseconds: 50_000_000)
-        XCTAssertEqual(vm.availableResolutions, [.decided, .reversed, .cancelled])
+        XCTAssertEqual(vm.availableResolutions, [.reversed, .decided, .cancelled])
         await vm.reverse()
         XCTAssertEqual(api.closes.first?.0, .reversed)
         await vm.reopen()

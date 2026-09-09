@@ -86,11 +86,22 @@ public final class ItemDetailViewModel {
         }
     }
 
+    /// The resolutions the person can close this item with, primary
+    /// first. Only outcomes they can honestly claim: a question is
+    /// answered by *replying* (the journal hands it back to the agent,
+    /// which closes it as answered once it has acted), so "Answered" is
+    /// offered only once they have actually replied — before that the
+    /// only honest close is to dismiss it. An open decision is already in
+    /// force, so reversing it leads.
     public var availableResolutions: [ItemResolution] {
-        switch item?.kind {
+        Self.resolutions(for: item?.kind, userHasReplied: comments.contains { $0.author == .user && $0.kind == .comment })
+    }
+
+    static func resolutions(for kind: ItemKind?, userHasReplied: Bool) -> [ItemResolution] {
+        switch kind {
         case .task: return [.done, .cancelled]
-        case .question: return [.answered, .cancelled]
-        case .decision: return [.decided, .reversed, .cancelled]
+        case .question: return userHasReplied ? [.answered, .cancelled] : [.cancelled]
+        case .decision: return [.reversed, .decided, .cancelled]
         case nil: return []
         }
     }

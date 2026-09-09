@@ -202,6 +202,12 @@ public struct ItemDetailView: View {
     private func placeInitially(_ proxy: ScrollViewProxy) {
         hasScrolledToInitialBottom = true
         isAtBottom = startsAtBottom
+        // A Mac in-place swap from a long thread onto a short one would
+        // otherwise carry the old thread's overflow flag into the new one
+        // and offer a jump until geometry catches up (Bugbot) — the very
+        // flash the gate exists to prevent. Geometry re-reports for the
+        // new content.
+        isScrollable = false
         guard startsAtBottom else { return }
         proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
     }
@@ -228,13 +234,20 @@ public struct ItemDetailView: View {
         return oldCount >= loadedCount
     }
 
-    /// The action bar's resolve label per kind — names the outcome the
-    /// primary resolution produces rather than a generic "Close".
-    static func resolveLabel(for kind: ItemKind) -> String {
-        switch kind {
-        case .task: return "Mark done"
-        case .question: return "Mark answered"
-        case .decision: return "Mark decided"
+    /// The action bar's label — names what the *primary* resolution does
+    /// to the item rather than a generic "Close" (which read as "close
+    /// this screen", sitting right above the keyboard). The host decides
+    /// which resolutions are honest to offer (`ItemDetailViewModel.
+    /// availableResolutions`): an unanswered question, for instance, only
+    /// offers a dismissal, because replying is how it gets answered.
+    static func resolveLabel(for resolutions: [ItemResolution]) -> String {
+        switch resolutions.first {
+        case .done: return "Mark done"
+        case .answered: return "Mark answered"
+        case .decided: return "Mark decided"
+        case .reversed: return "Reverse"
+        case .cancelled: return "Dismiss"
+        case nil: return "Close"
         }
     }
 
@@ -403,13 +416,17 @@ public struct ItemDetailView: View {
     private var actionBar: some View {
         HStack {
             if item.state == .open {
-                // "Close" read as "close this screen" sitting right above
-                // the keyboard; the label now says what the menu does to
-                // the item (the menu itself still offers every resolution,
-                // including Cancelled).
-                Menu {
-                    ForEach(model.availableResolutions, id: \.self) { r in Button(ItemGlyph.label(r)) { onClose(r) } }
-                } label: { Label(Self.resolveLabel(for: item.kind), systemImage: "checkmark.circle") }
+                let resolutions = model.availableResolutions
+                let label = Label(Self.resolveLabel(for: resolutions), systemImage: resolutions.first == .cancelled ? "xmark.circle" : "checkmark.circle")
+                if resolutions.count == 1, let only = resolutions.first {
+                    // A single honest outcome is a plain button, not a
+                    // one-entry menu.
+                    Button { onClose(only) } label: { label }
+                } else if !resolutions.isEmpty {
+                    Menu {
+                        ForEach(resolutions, id: \.self) { r in Button(ItemGlyph.label(r)) { onClose(r) } }
+                    } label: { label }
+                }
             } else {
                 Button { onReopen() } label: { Label("Reopen", systemImage: "arrow.uturn.backward.circle") }
             }
