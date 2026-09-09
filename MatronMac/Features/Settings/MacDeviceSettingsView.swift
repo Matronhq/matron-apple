@@ -22,6 +22,9 @@ struct MacDeviceSettingsView: View {
     /// Sign-out action. Optional so previews / tests can omit it and
     /// render the view without a destructive action wired up.
     var onSignOut: (() -> Void)? = nil
+    /// App shell (spec §5b): the Coordinator row's chooser and title lookup.
+    /// Optional so previews/tests render without it.
+    var deps: AppDependencies? = nil
     /// Injected by MatronMacApp; nil in previews/tests hides the section.
     @Environment(\.appLockController) private var appLock
 
@@ -61,6 +64,9 @@ struct MacDeviceSettingsView: View {
                     }
                 }
             }
+            if let deps {
+                MacCoordinatorSettingRow(session: session, deps: deps)
+            }
             Section("Appearance") {
                 // Writes MatronAppearance.storageKey; MatronMacApp's root
                 // @AppStorage observes the same key and applies it via
@@ -90,7 +96,7 @@ struct MacDeviceSettingsView: View {
         }
         .formStyle(.grouped)
         // Tall enough for the Privacy section when biometrics exist.
-        .frame(width: 420, height: 560)
+        .frame(width: 420, height: 640)
         .navigationTitle("Device")
     }
 }

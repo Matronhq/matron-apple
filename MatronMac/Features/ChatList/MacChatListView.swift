@@ -77,6 +77,12 @@ struct MacChatListView: View {
     /// `MacSearchResultsView`. `focusSearch` is flipped by ⌘F ("Find in Chat").
     @State private var searchModel: SearchViewModel?
     @State private var focusSearch = false
+    /// The coordinator conversation (spec §5b). `session` arrives through
+    /// the environment, so this can't be an `@AppStorage` with a per-user
+    /// key; it mirrors the defaults key instead and refreshes on every
+    /// `UserDefaults` change (Settings' Change/Clear).
+    @State private var coordinatorConvoID: String?
+    @State private var showingCoordinatorChooser = false
     /// Sidebar visibility toggle — wired to `.matronCommand(.toggleSidebar)`
     /// so the menu-bar item / toolbar button / ⌘⇧S keyboard shortcut all
     /// flip the same state. `.automatic` is the system default (sidebar
@@ -217,11 +223,20 @@ struct MacChatListView: View {
         case .decisions:
             decisionsDetail
         case .coordinator:
-            // Content lands with the coordinator setting (PR 5).
-            ContentUnavailableView(
-                "Coordinator",
-                systemImage: MacNav.coordinator.symbol,
-                description: Text("Your coordinator conversation will live here."))
+            if let id = coordinatorConvoID, !id.isEmpty {
+                // The coordinator is an ordinary chat in its own slot; its
+                // sub-chats open in this column exactly as from the list.
+                chatDetail(for: id)
+            } else {
+                ContentUnavailableView {
+                    Label("Coordinator", systemImage: MacNav.coordinator.symbol)
+                } description: {
+                    Text("Pick one conversation to act as your coordinator. It keeps its own place here; everything else about it stays the same.")
+                } actions: {
+                    Button("Choose a conversation…") { showingCoordinatorChooser = true }
+                        .buttonStyle(.borderedProminent)
+                }
+            }
         }
     }
 
@@ -367,6 +382,21 @@ struct MacChatListView: View {
             // detail host has no teardown of its own (I6 — a same-item rebuild
             // must keep the draft), so stop its VM and any recording here and
             // clear the pane's item id so re-entering rebuilds the detail.
+            .task(id: session?.userID) {
+                coordinatorConvoID = session.map { CoordinatorSetting(userID: $0.userID).convoID } ?? nil
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+                coordinatorConvoID = session.map { CoordinatorSetting(userID: $0.userID).convoID } ?? nil
+            }
+            .sheet(isPresented: $showingCoordinatorChooser) {
+                if let deps, let session {
+                    MacCoordinatorChooserSheet(deps: deps, session: session) { id in
+                        CoordinatorSetting(userID: session.userID).convoID = id
+                        coordinatorConvoID = id
+                        showingCoordinatorChooser = false
+                    }
+                }
+            }
             .onChange(of: nav, navChanged)
     }
 
@@ -832,7 +862,7 @@ final class ChatVMCache {
 /// Row view with hover-tint state held locally so it doesn't muddy the
 /// view-model. Keeps the same column composition as the iOS row but with
 /// Mac-appropriate sizing (28pt avatar vs 36pt on iPhone).
-private struct MacChatRow: View {
+struct MacChatRow: View {
     let summary: ChatSummary
     @State private var isHovered = false
 

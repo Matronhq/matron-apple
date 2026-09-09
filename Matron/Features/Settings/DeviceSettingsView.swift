@@ -19,6 +19,10 @@ struct DeviceSettingsView: View {
     /// tests render the summary without a live API.
     var agentChatAPI: (any AgentChatProviding)? = nil
     var onSignOut: (() -> Void)? = nil
+    /// App shell (spec §5b): the Coordinator row needs the chat service
+    /// (chooser) and the store (title). Optional so previews/tests render
+    /// without it.
+    var deps: AppDependencies? = nil
     /// Injected by MatronApp; nil in previews/tests hides the section.
     @Environment(\.appLockController) private var appLock
 
@@ -56,6 +60,9 @@ struct DeviceSettingsView: View {
                         }
                     }
                 }
+            }
+            if let deps {
+                CoordinatorSettingRow(session: session, deps: deps)
             }
             // Only offered when the device can actually authenticate —
             // a toggle that can never unlock again would lock the user
