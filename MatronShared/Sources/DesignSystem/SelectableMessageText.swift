@@ -106,6 +106,11 @@ final class MessageCopyTextView: MouseTrackingRescueTextView {
     /// `MarkdownReconstruction`.
     var markdownSource: String = ""
 
+    /// Where `copy(_:)` writes. The app uses the system clipboard; tests
+    /// inject a private named pasteboard so a test run never replaces what
+    /// the developer has on theirs.
+    var pasteboard: NSPasteboard = .general
+
     override func copy(_ sender: Any?) {
         let range = selectedRange()
         // Deterministic no-op on empty selection — `super.copy` with no
@@ -128,7 +133,6 @@ final class MessageCopyTextView: MouseTrackingRescueTextView {
         // Plain text carries the markdown; RTF carries the rendered look so
         // rich-text targets keep formatting.
         let selected = storage.attributedSubstring(from: range)
-        let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.declareTypes([.rtf, .string], owner: nil)
         if let rtf = selected.rtf(
