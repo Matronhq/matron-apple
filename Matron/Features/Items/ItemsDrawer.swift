@@ -7,7 +7,13 @@ import MatronDesignSystem
 /// iOS right-edge drawer for the tracker panel (spec: Apps → Panel
 /// content). A dimming scrim + sliding panel over the whole chat screen,
 /// hosting a `NavigationStack` whose root is `ItemsListView` and whose
-/// push destination is `ItemDetailHost`. Opened by the toolbar `checklist`
+/// push destination is `ItemDetailHost`. Presented by `ChatView` as a
+/// clear `.fullScreenCover` — its own presentation context — because a
+/// `NavigationStack` mounted inside the pushed chat popped the outer chat
+/// stack on iOS 26 (see the cover's comment in `ChatView`). The cover's
+/// system animation is disabled on both ends, so `shown` below drives the
+/// slide-in/out: true on appear, false in `close()`, which then dismisses
+/// the cover once the slide-out has finished. Opened by the toolbar `checklist`
 /// button or a right-edge swipe on the chat container (see `ChatView`);
 /// the `ItemsPanelViewModel` is owned and started by `ChatView` so the
 /// toolbar's `NeedsYouBadge` stays live while the drawer is closed — this
@@ -37,11 +43,14 @@ struct ItemsDrawer: View {
     /// (Bugbot: a bare 250ms timer with no token would clear a fresh
     /// re-push if the drawer closed and reopened within that window).
     @State private var closeGeneration = 0
+    /// Drives the scrim fade + panel slide inside the cover; `isPresented`
+    /// only says whether the cover exists.
+    @State private var shown = false
 
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .trailing) {
-                if isPresented {
+                if shown {
                     Color.black.opacity(0.35)
                         .ignoresSafeArea()
                         .onTapGesture { close() }
@@ -85,32 +94,34 @@ struct ItemsDrawer: View {
                         .transition(.move(edge: .trailing))
                 }
             }
-            .animation(.easeInOut(duration: 0.22), value: isPresented)
+            .animation(.easeInOut(duration: 0.22), value: shown)
         }
-        // No hit-testing (and no layout cost beyond a GeometryReader) while
-        // closed — this overlay sits over the entire chat screen.
-        .allowsHitTesting(isPresented)
-        // A reopen invalidates any close still winding down its deferred
-        // `path` clear — see `closeGeneration`.
-        .onChange(of: isPresented) { _, newValue in
-            if newValue { closeGeneration += 1 }
+        // The cover is presented without its system animation, so the
+        // slide-in starts here, on the first frame the cover exists.
+        .onAppear {
+            closeGeneration += 1
+            withAnimation(.easeInOut(duration: 0.22)) { shown = true }
         }
     }
 
     private func close() {
-        withAnimation { isPresented = false }
+        withAnimation(.easeInOut(duration: 0.22)) { shown = false }
         dragX = 0
         closeGeneration += 1
         let generation = closeGeneration
-        // Deferred, not synchronous: clearing `path` immediately pops the
-        // pushed detail back to the list mid-slide-out, so the close
-        // animation visibly flashes the list for a frame before it's gone.
-        // Matches the panel's own 0.22s `.animation(.easeInOut)`. Guarded
-        // by generation + `!isPresented`: a close-then-reopen within the
-        // 250ms window must not wipe the fresh reopen's `path`.
+        // Deferred, not synchronous: dismissing the cover (or clearing
+        // `path`) immediately would cut the slide-out short — the cover's
+        // own animation is disabled, so it vanishes on the frame
+        // `isPresented` flips, and clearing `path` pops the pushed detail
+        // back to the list mid-slide. Matches the panel's 0.22s
+        // `.animation(.easeInOut)`. Guarded by generation + `shown`: a
+        // `close()` superseded by a newer one must not dismiss twice.
         Task {
             try? await Task.sleep(for: .milliseconds(250))
-            guard generation == closeGeneration, !isPresented else { return }
+            guard generation == closeGeneration, !shown else { return }
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { isPresented = false }
             path = []
         }
     }
