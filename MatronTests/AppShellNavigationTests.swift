@@ -93,6 +93,13 @@ final class AppShellNavigationTests: XCTestCase {
         XCTAssertTrue(nav.redirectCoordinatorPush())
         XCTAssertEqual(nav.tab, .coordinator)
         XCTAssertEqual(nav.chatPath, [])
+        // An origin link from an open chat appends it on top: pop just that
+        // entry and hand off, leaving the chat beneath where it was.
+        nav.tab = .conversations
+        nav.chatPath = ["!other:s", "!coord:s"]
+        XCTAssertTrue(nav.redirectCoordinatorPush())
+        XCTAssertEqual(nav.tab, .coordinator)
+        XCTAssertEqual(nav.chatPath, ["!other:s"])
         // Any other push is left alone.
         nav.tab = .conversations
         nav.chatPath = ["!other:s"]

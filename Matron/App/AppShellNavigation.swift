@@ -52,13 +52,16 @@ final class AppShellNavigation {
     /// its tab. `nil` when none is set.
     var coordinatorConvoID: String?
 
-    /// Chat-list rows push straight onto `chatPath` (`NavigationLink`), so
-    /// a tap on the coordinator's own row lands here: hand it off to the
-    /// Coordinator tab instead of mounting it twice. Returns whether it did.
+    /// Chat-list rows (`NavigationLink`) and origin links from an open
+    /// chat push straight onto `chatPath`, so the coordinator can land on
+    /// TOP of that stack: pop that one entry and hand off to the
+    /// Coordinator tab instead of mounting it twice (Bugbot, PR #197 —
+    /// the entries beneath stay, so back in Conversations is unchanged).
+    /// Returns whether it did.
     @discardableResult
     func redirectCoordinatorPush() -> Bool {
-        guard let coordinator = coordinatorConvoID, chatPath == [coordinator] else { return false }
-        chatPath = []
+        guard let coordinator = coordinatorConvoID, chatPath.last == coordinator else { return false }
+        chatPath.removeLast()
         tab = .coordinator
         coordinatorPath = []
         return true
