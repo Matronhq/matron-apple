@@ -138,22 +138,97 @@ struct MacChatListView: View {
         listLogger.notice("detail column swapped: \(isEmpty ? "search → chat" : "chat → search", privacy: .public)")
     }
 
-    var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            HStack(spacing: 0) {
-                MacNavColumn(selection: $nav, decisionsCount: decisionsVM?.awaitingYouCount ?? 0)
-                Divider()
-                switch nav {
-                case .conversations:
-                    sidebarColumn
-                case .decisions:
-                    decisionsColumn
-                case .coordinator:
-                    // Coordinator selected: the list column collapses to the
-                    // nav column alone (the width modifier below shrinks it).
-                    Spacer(minLength: 0)
-                }
+    /// The sidebar column's content: the fixed nav column plus whichever
+    /// list the selected entry shows. Hoisted out of `body` — with the
+    /// width triple below it tipped Xcode 16.4's type-checker budget on
+    /// CI ("unable to type-check this expression in reasonable time").
+    @ViewBuilder
+    private var sidebarStack: some View {
+        HStack(spacing: 0) {
+            MacNavColumn(selection: $nav, decisionsCount: decisionsVM?.awaitingYouCount ?? 0)
+            Divider()
+            switch nav {
+            case .conversations:
+                sidebarColumn
+            case .decisions:
+                decisionsColumn
+            case .coordinator:
+                // Coordinator selected: the list column collapses to the
+                // nav column alone (the width modifier below shrinks it).
+                Spacer(minLength: 0)
             }
+        }
+    }
+
+    /// Sidebar column min/ideal/max for a nav selection: the list keeps
+    /// its 260/400/600 and the nav column adds its fixed 72 (spec §5);
+    /// with Coordinator selected only the nav column remains. A plain
+    /// function rather than three inline ternaries so `body` stays inside
+    /// the type-checker's budget (see `sidebarStack`).
+    static func sidebarWidths(for nav: MacNav) -> (min: CGFloat, ideal: CGFloat, max: CGFloat) {
+        let column = MacNavColumn.width
+        if nav == .coordinator { return (column, column, column) }
+        return (260 + column, 400 + column, 600 + column)
+    }
+
+    /// The detail column for the selected nav entry. Hoisted out of
+    /// `body` for the same type-checker-budget reason as `sidebarStack`.
+    @ViewBuilder
+    private var detailContent: some View {
+        switch nav {
+        case .conversations:
+            if let searchModel, !searchModel.query.isEmpty {
+                // Phase 6 (Search): a non-empty query replaces the chat detail
+                // with the results panel. Selecting a result clears the query
+                // (restoring the chat detail) and points the sidebar selection
+                // at the chosen room.
+                MacSearchResultsView(
+                    viewModel: searchModel,
+                    onSelectChat: { chat in
+                        listLogger.notice("selection set by search-chat-hit: \(chat.id, privacy: .public)")
+                        selectedSummaryID = chat.id
+                        searchModel.query = ""
+                    },
+                    onSelectMessage: { group in
+                        // Opens the chat with its in-conversation search
+                        // armed: the bar comes up, and the timeline jumps
+                        // to the newest match (paging history back as
+                        // needed — same machinery as a TOC jump).
+                        listLogger.notice("selection set by search-message-hit: \(group.roomID, privacy: .public)")
+                        let query = searchModel.trimmedQuery
+                        selectedSummaryID = group.roomID
+                        searchModel.query = ""
+                        // Only top-level chats get the bar: a hit in a
+                        // subagent child (indexed like any convo, but
+                        // absent from the list snapshot) opens in
+                        // MacSubChatPane, which renders no ChatSearchBar —
+                        // arming there would run an invisible, undismissable
+                        // search (review 2026-08-26).
+                        if let deps, let session,
+                           allChatSummaries.contains(where: { $0.id == group.roomID }) {
+                            let (chat, _) = vmCache.viewModels(for: group.roomID, deps: deps, session: session)
+                            Task { await chat.beginChatSearch(query: query) }
+                        }
+                    }
+                )
+            } else {
+                detail
+            }
+        case .decisions:
+            decisionsDetail
+        case .coordinator:
+            // Content lands with the coordinator setting (PR 5).
+            ContentUnavailableView(
+                "Coordinator",
+                systemImage: MacNav.coordinator.symbol,
+                description: Text("Your coordinator conversation will live here."))
+        }
+    }
+
+    var body: some View {
+        let widths = Self.sidebarWidths(for: nav)
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            sidebarStack
                 // Drop the system sidebar-collapse toolbar button. The
                 // ⌘⇧S menu item / `.toggleSidebar` notification handler
                 // still collapses the sidebar; only the redundant toolbar
@@ -162,13 +237,9 @@ struct MacChatListView: View {
                 // MUST come after `.toolbar(removing: .sidebarToggle)`:
                 // on macOS 26 that modifier masks an inner column-width
                 // preference and the sidebar falls back to the system
-                // default (probe-bisected 2026-07-20). The list keeps its
-                // 260/400/600 and the nav column adds its fixed 72 (spec §5);
-                // with Coordinator selected only the nav column remains.
-                .navigationSplitViewColumnWidth(
-                    min: nav == .coordinator ? MacNavColumn.width : 260 + MacNavColumn.width,
-                    ideal: nav == .coordinator ? MacNavColumn.width : 400 + MacNavColumn.width,
-                    max: nav == .coordinator ? MacNavColumn.width : 600 + MacNavColumn.width)
+                // default (probe-bisected 2026-07-20). Widths per nav
+                // selection come from `sidebarWidths(for:)`.
+                .navigationSplitViewColumnWidth(min: widths.min, ideal: widths.ideal, max: widths.max)
                 .toolbar {
                     // With the sidebar toggle removed the new-chat button
                     // is the only item in the sidebar section and packs
@@ -190,54 +261,7 @@ struct MacChatListView: View {
                     }
                 }
         } detail: {
-            switch nav {
-            case .conversations:
-                if let searchModel, !searchModel.query.isEmpty {
-                    // Phase 6 (Search): a non-empty query replaces the chat detail
-                    // with the results panel. Selecting a result clears the query
-                    // (restoring the chat detail) and points the sidebar selection
-                    // at the chosen room.
-                    MacSearchResultsView(
-                        viewModel: searchModel,
-                        onSelectChat: { chat in
-                            listLogger.notice("selection set by search-chat-hit: \(chat.id, privacy: .public)")
-                            selectedSummaryID = chat.id
-                            searchModel.query = ""
-                        },
-                        onSelectMessage: { group in
-                            // Opens the chat with its in-conversation search
-                            // armed: the bar comes up, and the timeline jumps
-                            // to the newest match (paging history back as
-                            // needed — same machinery as a TOC jump).
-                            listLogger.notice("selection set by search-message-hit: \(group.roomID, privacy: .public)")
-                            let query = searchModel.trimmedQuery
-                            selectedSummaryID = group.roomID
-                            searchModel.query = ""
-                            // Only top-level chats get the bar: a hit in a
-                            // subagent child (indexed like any convo, but
-                            // absent from the list snapshot) opens in
-                            // MacSubChatPane, which renders no ChatSearchBar —
-                            // arming there would run an invisible, undismissable
-                            // search (review 2026-08-26).
-                            if let deps, let session,
-                               allChatSummaries.contains(where: { $0.id == group.roomID }) {
-                                let (chat, _) = vmCache.viewModels(for: group.roomID, deps: deps, session: session)
-                                Task { await chat.beginChatSearch(query: query) }
-                            }
-                        }
-                    )
-                } else {
-                    detail
-                }
-            case .decisions:
-                decisionsDetail
-            case .coordinator:
-                // Content lands with the coordinator setting (PR 5).
-                ContentUnavailableView(
-                    "Coordinator",
-                    systemImage: MacNav.coordinator.symbol,
-                    description: Text("Your coordinator conversation will live here."))
-            }
+            detailContent
         }
         .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.findInChat))) { _ in
             focusSearch = true
