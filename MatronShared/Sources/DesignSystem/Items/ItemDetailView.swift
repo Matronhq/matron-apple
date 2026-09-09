@@ -173,7 +173,6 @@ public struct ItemDetailView: View {
                 }
             }
             Divider()
-            actionBar
             ItemCommentComposer(draft: $draft, isBusy: model.isBusy, onSubmit: onSubmit, onAttach: onAttach, onVoiceNote: onVoiceNote)
         }
         // The chat timeline's cream ground (warm-dark in dark mode) under
@@ -202,12 +201,14 @@ public struct ItemDetailView: View {
     private func placeInitially(_ proxy: ScrollViewProxy) {
         hasScrolledToInitialBottom = true
         isAtBottom = startsAtBottom
-        // A Mac in-place swap from a long thread onto a short one would
-        // otherwise carry the old thread's overflow flag into the new one
-        // and offer a jump until geometry catches up (Bugbot) — the very
-        // flash the gate exists to prevent. Geometry re-reports for the
-        // new content.
-        isScrollable = false
+        // `isScrollable` is deliberately NOT reset here. Geometry only
+        // re-reports when the (atBottom, scrollable) pair actually changes,
+        // so a Mac in-place swap between two overflowing threads would
+        // never restore a cleared flag and the jump button would stay
+        // hidden for good (Bugbot, round 2). Left alone, a swap onto a
+        // thread with different overflow flips it as soon as the new
+        // content is measured — a same-pass update, not a visible flash —
+        // and a swap between like threads has nothing to correct.
         guard startsAtBottom else { return }
         proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
     }
@@ -234,23 +235,6 @@ public struct ItemDetailView: View {
         return oldCount >= loadedCount
     }
 
-    /// The action bar's label — names what the *primary* resolution does
-    /// to the item rather than a generic "Close" (which read as "close
-    /// this screen", sitting right above the keyboard). The host decides
-    /// which resolutions are honest to offer (`ItemDetailViewModel.
-    /// availableResolutions`): an unanswered question, for instance, only
-    /// offers a dismissal, because replying is how it gets answered.
-    static func resolveLabel(for resolutions: [ItemResolution]) -> String {
-        switch resolutions.first {
-        case .done: return "Mark done"
-        case .answered: return "Mark answered"
-        case .decided: return "Mark decided"
-        case .reversed: return "Reverse"
-        case .cancelled: return "Dismiss"
-        case nil: return "Close"
-        }
-    }
-
     private var statusText: String {
         if item.needsUser { return "Needs you" }
         if item.state == .closed { return "Closed" + (item.resolution.map { " · \(ItemGlyph.label($0))" } ?? "") }
@@ -266,6 +250,15 @@ public struct ItemDetailView: View {
                 Text(statusText).font(.caption.weight(.semibold))
                     .padding(.horizontal, 8).padding(.vertical, 3)
                     .background((item.needsUser ? Color.orange : Color.secondary).opacity(0.18), in: Capsule())
+                #if os(macOS)
+                // The Mac pane has no navigation bar of its own to host
+                // this (its pushes share the window toolbar), so the
+                // thread header's top-right corner stands in; the iOS
+                // host puts the same control in the navigation bar.
+                ItemResolveControl(isOpen: item.state == .open, resolutions: model.availableResolutions, isBusy: model.isBusy,
+                                   onClose: onClose, onReopen: onReopen)
+                    .menuStyle(.borderlessButton).fixedSize()
+                #endif
             }
             Text(item.title).font(.title3.weight(.semibold)).textSelection(.enabled)
             if let originTitle = model.originTitle {
@@ -410,31 +403,6 @@ public struct ItemDetailView: View {
         if let lastError = p.lastError { return .failed(reason: lastError) }
         if p.attempts > 0 { return .queued }
         return .sending
-    }
-
-    @ViewBuilder
-    private var actionBar: some View {
-        HStack {
-            if item.state == .open {
-                let resolutions = model.availableResolutions
-                let label = Label(Self.resolveLabel(for: resolutions), systemImage: resolutions.first == .cancelled ? "xmark.circle" : "checkmark.circle")
-                if resolutions.count == 1, let only = resolutions.first {
-                    // A single honest outcome is a plain button, not a
-                    // one-entry menu.
-                    Button { onClose(only) } label: { label }
-                } else if !resolutions.isEmpty {
-                    Menu {
-                        ForEach(resolutions, id: \.self) { r in Button(ItemGlyph.label(r)) { onClose(r) } }
-                    } label: { label }
-                }
-            } else {
-                Button { onReopen() } label: { Label("Reopen", systemImage: "arrow.uturn.backward.circle") }
-            }
-            Spacer()
-        }
-        .disabled(model.isBusy)
-        .padding(.horizontal).padding(.vertical, 6)
-        .background(.bar)
     }
 }
 

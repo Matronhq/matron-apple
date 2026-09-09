@@ -92,9 +92,11 @@ public final class ItemDetailViewModel {
     /// which closes it as answered once it has acted), so "Answered" is
     /// offered only once they have actually replied — before that the
     /// only honest close is to dismiss it. An open decision is already in
-    /// force, so reversing it leads.
+    /// force, so reversing it leads. A reply still in the outbox counts
+    /// (Bugbot): it is the user's, and it will land.
     public var availableResolutions: [ItemResolution] {
-        Self.resolutions(for: item?.kind, userHasReplied: comments.contains { $0.author == .user && $0.kind == .comment })
+        Self.resolutions(for: item?.kind,
+                         userHasReplied: !pendingComments.isEmpty || comments.contains { $0.author == .user && $0.kind == .comment })
     }
 
     static func resolutions(for kind: ItemKind?, userHasReplied: Bool) -> [ItemResolution] {

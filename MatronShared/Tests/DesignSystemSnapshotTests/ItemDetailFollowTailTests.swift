@@ -80,14 +80,12 @@ final class ItemDetailJumpToBottomTests: XCTestCase {
     }
 }
 
-final class ItemDetailResolveLabelTests: XCTestCase {
-    func testLabelNamesThePrimaryResolution() {
-        XCTAssertEqual(ItemDetailView.resolveLabel(for: [.done, .cancelled]), "Mark done")
-        XCTAssertEqual(ItemDetailView.resolveLabel(for: [.answered, .cancelled]), "Mark answered")
-        XCTAssertEqual(ItemDetailView.resolveLabel(for: [.reversed, .decided, .cancelled]), "Reverse")
-    }
-
-    func testAnUnansweredQuestionOnlyOffersDismissal() {
-        XCTAssertEqual(ItemDetailView.resolveLabel(for: [.cancelled]), "Dismiss")
+final class ItemResolveControlLabelTests: XCTestCase {
+    func testEntriesNameTheActNotTheState() {
+        XCTAssertEqual(ItemResolveControl.actionLabel(.done), "Mark done")
+        XCTAssertEqual(ItemResolveControl.actionLabel(.answered), "Mark answered")
+        XCTAssertEqual(ItemResolveControl.actionLabel(.decided), "Mark decided")
+        XCTAssertEqual(ItemResolveControl.actionLabel(.reversed), "Reverse")
+        XCTAssertEqual(ItemResolveControl.actionLabel(.cancelled), "Dismiss")
     }
 }
