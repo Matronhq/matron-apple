@@ -45,8 +45,8 @@ land later, and the app has no top-level navigation to hang them on.
   2 and 3).
 - Replacing the summaries TOC (sub-project 2 supersedes it).
 - Android (separate repo; ported afterwards from this spec).
-- Changing what the tracker lists in *All* mode, item detail, comments, or
-  Make task.
+- Changing what the tracker lists in *All* mode, item detail, comments, the
+  tracker's `+` create sheet, or the queued-card *Make task* action.
 
 ## Design
 
@@ -179,6 +179,15 @@ trailing corner, hidden at zero). Selection is `@State var nav: MacNav`
   `mac_sidebar_width_toolbar_mask` still applies.
 - The sidebar toggle stays removed; the nav column is never collapsible.
 
+### 5a. Remove the Make task pill
+
+The floating *Make task* pill above the composer (`MakeTaskPill`, both
+platforms) is removed (Dan, 2026-09-09: tasks should mostly be made by
+the agent). Filing from the app stays possible through the tracker's `+`
+and the queued-message card's *Make task* action; the bang-prefix and
+palette-yield rules that governed the pill go with it. Composer layout
+reclaims the pill's row.
+
 ### 6. Data flow and lifetimes
 
 - One `ItemsPanelViewModel(convoID: nil)` per signed-in session, created by
@@ -228,8 +237,9 @@ trailing corner, hidden at zero). Selection is `@State var nav: MacNav`
 
 ## Rollout
 
-Four PRs on `main`, stacked in this order, each green on its own:
+Five PRs on `main`, in this order, each green on its own (1–4 stacked):
 
+0. `remove-make-task-pill` — §5a, independent of the rest; can merge first.
 1. `items-vm-all-mode` — §1 view model + `DecisionsListView` (§2) + tests.
 2. `ios-shell-tabs` — §3 + Decisions on iOS.
 3. `ios-tasks-pager` — §4; deletes `ItemsDrawer`.
