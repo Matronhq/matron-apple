@@ -218,6 +218,17 @@ struct ChatView: View {
         }
     }
 
+    /// Pushes a tracker item onto the OUTER chat stack as an `ItemRoute`
+    /// (spec §4) — never a local `NavigationStack`, which pops the outer
+    /// one on iOS 26 (PR #188). Static so `ChatPagerTests` can pin it
+    /// against a bare binding. Idempotent for the item already on top.
+    static func pushItem(_ itemID: String, onto path: Binding<[String]>?) {
+        guard let path else { return }
+        let value = ItemRoute(id: itemID).pathValue
+        guard path.wrappedValue.last != value else { return }
+        path.wrappedValue.append(value)
+    }
+
     /// Tapping an inline `.itemMarker` card opens the tracker drawer
     /// straight to that item, rather than making the user open the
     /// drawer and find it themselves.
