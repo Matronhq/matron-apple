@@ -240,6 +240,10 @@ struct ChatView: View {
     /// right-edge slide-in instead; the drawer dismisses itself the same
     /// way once its slide-out has finished.
     private func openDrawer() {
+        // Both are required by the cover's `if let itemsVM, let session`
+        // body: presenting with either missing would show an empty, clear
+        // cover with no close control.
+        guard itemsVM != nil, session != nil else { return }
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) { showItems = true }

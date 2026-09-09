@@ -104,7 +104,12 @@ struct ItemsDrawer: View {
         }
     }
 
-    private func close() {
+    /// `then` runs after the cover has actually dismissed — origin links
+    /// push onto the *outer* chat `NavigationStack`, and appending to it
+    /// while the cover is still presented is exactly the kind of
+    /// push-behind-a-presentation iOS 26 drops or glitches (Bugbot on
+    /// PR #188). A superseded `close()` never runs its `then`.
+    private func close(then: (() -> Void)? = nil) {
         withAnimation(.easeInOut(duration: 0.22)) { shown = false }
         dragX = 0
         closeGeneration += 1
@@ -123,6 +128,7 @@ struct ItemsDrawer: View {
             transaction.disablesAnimations = true
             withTransaction(transaction) { isPresented = false }
             path = []
+            then?()
         }
     }
 
@@ -152,7 +158,7 @@ struct ItemsDrawer: View {
                 onSelect: { path.append($0.id) },
                 onMove: { id, index in Task { await viewModel.move(itemID: id, toIndex: index) } },
                 onCreate: { showCreate = true },
-                onOpenConversation: { id in close(); onOpenConversation(id) }
+                onOpenConversation: { id in close { onOpenConversation(id) } }
             )
             .navigationTitle("Tasks & decisions")
             .navigationBarTitleDisplayMode(.inline)
@@ -163,7 +169,7 @@ struct ItemsDrawer: View {
             }
             .navigationDestination(for: String.self) { id in
                 ItemDetailHost(itemID: id, session: session, currentConvoID: viewModel.convoID,
-                               onOpenConversation: { c in close(); onOpenConversation(c) })
+                               onOpenConversation: { c in close { onOpenConversation(c) } })
             }
         }
         .background(.background)
