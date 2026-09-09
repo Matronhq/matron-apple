@@ -50,21 +50,39 @@ final class AppShellNavigation {
     /// The designated coordinator conversation, mirrored from
     /// `CoordinatorSetting` by the shell so the rules below can route to
     /// its tab. `nil` when none is set.
-    var coordinatorConvoID: String?
+    var coordinatorConvoID: String? {
+        didSet { if coordinatorConvoID != oldValue { redirectCoordinatorPush() } }
+    }
 
     /// Chat-list rows (`NavigationLink`) and origin links from an open
     /// chat push straight onto `chatPath`, so the coordinator can land on
-    /// TOP of that stack: pop that one entry and hand off to the
-    /// Coordinator tab instead of mounting it twice (Bugbot, PR #197 —
-    /// the entries beneath stay, so back in Conversations is unchanged).
-    /// Returns whether it did.
+    /// that stack: cut the stack back to just below its first entry and
+    /// hand off to the Coordinator tab instead of mounting it twice
+    /// (Bugbot, PR #197 — the entries beneath stay, so back in
+    /// Conversations is unchanged). Anywhere on the stack, not only on
+    /// top: assigning the coordinator to a chat that is ALREADY open (with,
+    /// say, an item detail above it) must evict it too, which is why
+    /// `coordinatorConvoID`'s `didSet` runs this as well as every
+    /// `chatPath` change. An origin link on the Coordinator stack can
+    /// likewise push the coordinator id onto `coordinatorPath`, stacking a
+    /// second copy over the root — that stack is popped to its root. Both
+    /// copies would share one cached `ChatViewModel`, and the first to
+    /// disappear stops the other's stream. Returns whether anything moved.
     @discardableResult
     func redirectCoordinatorPush() -> Bool {
-        guard let coordinator = coordinatorConvoID, chatPath.last == coordinator else { return false }
-        chatPath.removeLast()
-        tab = .coordinator
-        coordinatorPath = []
-        return true
+        guard let coordinator = coordinatorConvoID else { return false }
+        var moved = false
+        if coordinatorPath.contains(coordinator) {
+            coordinatorPath = []
+            moved = true
+        }
+        if let index = chatPath.firstIndex(of: coordinator) {
+            chatPath.removeSubrange(index...)
+            tab = .coordinator
+            coordinatorPath = []
+            moved = true
+        }
+        return moved
     }
 
     /// "Open conversation" from a Decisions row or its detail: switch to

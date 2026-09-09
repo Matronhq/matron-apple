@@ -92,6 +92,7 @@ struct AppShellView: View {
         // hand off a chat-list row push of that conversation.
         .onChange(of: coordinatorConvoID, initial: true) { _, id in nav.coordinatorConvoID = id }
         .onChange(of: nav.chatPath) { _, _ in nav.redirectCoordinatorPush() }
+        .onChange(of: nav.coordinatorPath) { _, _ in nav.redirectCoordinatorPush() }
         .task { decisionsVM.start() }
         // The Conversations list VM needs to keep running even while
         // another tab shows: the coordinator badge and title read it.

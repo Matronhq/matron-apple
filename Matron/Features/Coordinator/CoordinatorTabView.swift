@@ -55,7 +55,10 @@ struct CoordinatorTabView: View {
                     ItemDetailHost(itemID: route.id, session: session, currentConvoID: current,
                                    onOpenConversation: { target in
                                        guard target != current else { return }
-                                       path.append(target)
+                                       // The coordinator itself is this
+                                       // stack's root: pop to it rather than
+                                       // stack a second copy (Bugbot, PR #197).
+                                       if target == convoID { path = [] } else { path.append(target) }
                                    })
                 } else {
                     ChatDestinationView(id: value, summary: summary(for: value), vmCache: vmCache)

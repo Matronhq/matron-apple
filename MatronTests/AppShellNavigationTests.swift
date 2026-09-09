@@ -110,6 +110,35 @@ final class AppShellNavigationTests: XCTestCase {
         XCTAssertFalse(nav.redirectCoordinatorPush(), "no coordinator set: it is an ordinary chat")
     }
 
+    /// Bugbot (PR #197, High): the coordinator must never be mounted twice.
+    /// Assigning it to a chat already on the Conversations stack — even
+    /// with an item detail above it — evicts that chat, and an origin link
+    /// that pushes the coordinator onto its own stack pops to the root.
+    func test_coordinatorIsNeverMountedTwice() {
+        let nav = AppShellNavigation()
+        // Assignment while the chat is open beneath an item detail.
+        nav.tab = .conversations
+        nav.chatPath = ["!other:s", "!coord:s", "item/abc"]
+        nav.coordinatorConvoID = "!coord:s"
+        XCTAssertEqual(nav.tab, .coordinator, "assigning an open chat hands off to its tab")
+        XCTAssertEqual(nav.chatPath, ["!other:s"], "the chat and everything above it leave the Conversations stack")
+        XCTAssertEqual(nav.coordinatorPath, [])
+        // Re-assigning the same id is a no-op.
+        nav.tab = .conversations
+        nav.coordinatorConvoID = "!coord:s"
+        XCTAssertEqual(nav.tab, .conversations)
+        // A second copy pushed onto the Coordinator stack pops to the root.
+        nav.tab = .coordinator
+        nav.coordinatorPath = ["item/abc", "!coord:s"]
+        XCTAssertTrue(nav.redirectCoordinatorPush())
+        XCTAssertEqual(nav.coordinatorPath, [])
+        XCTAssertEqual(nav.tab, .coordinator)
+        // Other chats on the Coordinator stack are fine.
+        nav.coordinatorPath = ["!other:s"]
+        XCTAssertFalse(nav.redirectCoordinatorPush())
+        XCTAssertEqual(nav.coordinatorPath, ["!other:s"])
+    }
+
     func test_pushDecision_appendsToTheDecisionsStack() {
         let nav = AppShellNavigation()
         nav.pushDecision("it_9")
