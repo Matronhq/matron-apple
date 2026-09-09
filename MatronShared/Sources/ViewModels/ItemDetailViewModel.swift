@@ -17,6 +17,14 @@ public final class ItemDetailViewModel {
     public var draft = ""
     public var error: String?
     public private(set) var isBusy = false
+    /// Whether the opening `refreshItem` has completed — i.e. `comments`
+    /// now reflects the server's thread, not just whatever the local
+    /// cache held (Bugbot, PR #198). `ItemDetailView` refuses to
+    /// follow-tail or report bottom visibility until this flips, so the
+    /// initial comment load never yanks an unread thread to its end.
+    /// Flips on completion whether or not the refetch succeeded: a
+    /// failed refetch leaves the cached thread as the thread.
+    public private(set) var hasLoadedThread = false
 
     private let store: any ItemsStoreReading
     private let api: any ItemsProviding
@@ -47,7 +55,12 @@ public final class ItemDetailViewModel {
         // the detail sheet must trigger one, not just rely on whatever the
         // panel last fetched.
         refreshTask?.cancel()
-        refreshTask = Task { [weak self] in await self?.sync.refreshItem(id: id) }
+        hasLoadedThread = false
+        refreshTask = Task { [weak self] in
+            await self?.sync.refreshItem(id: id)
+            guard !Task.isCancelled else { return }
+            self?.hasLoadedThread = true
+        }
     }
 
     public func stop() {

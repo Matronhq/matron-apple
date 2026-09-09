@@ -27,9 +27,18 @@ public struct ItemDetailView: View {
         public var originTitle: String?
         public var availableResolutions: [ItemResolution]
         public var isBusy: Bool
-        public init(item: TrackerItem, comments: [TrackerComment], pending: [PendingComment], originTitle: String?, availableResolutions: [ItemResolution], isBusy: Bool) {
+        /// Whether `comments` is the loaded thread rather than the pre-refetch
+        /// cache (`ItemDetailViewModel.hasLoadedThread`). While `false` the
+        /// view neither follows the tail nor reports bottom visibility —
+        /// a header-only thread is trivially "at the bottom", and treating
+        /// the initial load as growth would jump an unread item to its end
+        /// and persist it as read-to-end (Bugbot, PR #198). Defaulted to
+        /// `true` so snapshot tests, which hand over a finished thread,
+        /// stay source-compatible.
+        public var threadLoaded: Bool
+        public init(item: TrackerItem, comments: [TrackerComment], pending: [PendingComment], originTitle: String?, availableResolutions: [ItemResolution], isBusy: Bool, threadLoaded: Bool = true) {
             self.item = item; self.comments = comments; self.pending = pending; self.originTitle = originTitle
-            self.availableResolutions = availableResolutions; self.isBusy = isBusy
+            self.availableResolutions = availableResolutions; self.isBusy = isBusy; self.threadLoaded = threadLoaded
         }
     }
 
@@ -108,6 +117,11 @@ public struct ItemDetailView: View {
                     .padding()
                 }
                 .onItemThreadBottomVisibilityChange { atBottom in
+                    // Pre-load geometry is the header alone (or a stale
+                    // cache) and says nothing about where the reader is in
+                    // the real thread — ignore it rather than arm the
+                    // follow-tail below or persist a false read-to-end.
+                    guard model.threadLoaded else { return }
                     isAtBottom = atBottom
                     onBottomVisibilityChange?(atBottom)
                 }
@@ -134,7 +148,8 @@ public struct ItemDetailView: View {
                 // `hasScrolledToInitialBottom` means this never fires
                 // before the initial placement above has had its say.
                 .onChange(of: rowCount) { oldCount, newCount in
-                    guard hasScrolledToInitialBottom, isAtBottom, newCount > oldCount else { return }
+                    guard Self.shouldFollowTail(threadLoaded: model.threadLoaded, placed: hasScrolledToInitialBottom,
+                                                atBottom: isAtBottom, oldCount: oldCount, newCount: newCount) else { return }
                     proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
                 }
             }
@@ -152,9 +167,22 @@ public struct ItemDetailView: View {
     /// the first geometry callback has said anything.
     private func placeInitially(_ proxy: ScrollViewProxy) {
         hasScrolledToInitialBottom = true
+        isAtBottom = startsAtBottom
         guard startsAtBottom else { return }
-        isAtBottom = true
         proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+    }
+
+    /// The follow-tail decision for a thread that just grew (Bugbot, PR
+    /// #198, rounds 1–2). Only re-pins when the thread had already loaded
+    /// before this growth — so the opening refetch of an unread item is
+    /// never mistaken for a new reply — AND the initial placement has run
+    /// AND the reader was at the bottom AND the thread actually grew (a
+    /// removed comment must not yank the viewport). `startsAtBottom`
+    /// readers are marked at-bottom by `placeInitially` before any
+    /// geometry callback, so *their* opening load does re-pin: that is
+    /// the "open at the tail" behaviour they asked for.
+    static func shouldFollowTail(threadLoaded: Bool, placed: Bool, atBottom: Bool, oldCount: Int, newCount: Int) -> Bool {
+        threadLoaded && placed && atBottom && newCount > oldCount
     }
 
     private var statusText: String {

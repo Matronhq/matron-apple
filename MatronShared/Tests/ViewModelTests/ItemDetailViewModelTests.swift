@@ -38,6 +38,19 @@ final class ItemDetailViewModelTests: XCTestCase {
         func rankItem(id: String, _ change: ItemRankChange) async throws -> TrackerItem { fatalError() }
     }
 
+    func testStartFlipsHasLoadedThreadOnceTheOpeningRefetchCompletes() async throws {
+        let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: sync)
+        XCTAssertFalse(vm.hasLoadedThread)
+        vm.start()
+        try await waitUntil { vm.hasLoadedThread }
+        XCTAssertEqual(sync.refetched, ["it_1"])
+        // Restarting re-arms the guard until the new refetch lands.
+        vm.stop()
+        vm.start()
+        try await waitUntil { sync.refetched.count == 2 && vm.hasLoadedThread }
+    }
+
     func testSubmitUploadsThenEnqueuesAndClearsDraft() async {
         let api = API(); let sync = Sync()
         let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)

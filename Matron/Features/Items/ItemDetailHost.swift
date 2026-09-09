@@ -93,7 +93,8 @@ struct ItemDetailHost: View {
                         // visible feedback, so hiding it is the honest UI.
                         originTitle: item.originConvoID == currentConvoID ? nil : originTitle,
                         availableResolutions: vm.availableResolutions,
-                        isBusy: vm.isBusy
+                        isBusy: vm.isBusy,
+                        threadLoaded: vm.hasLoadedThread
                     ),
                     draft: Binding(get: { vm.draft }, set: { vm.draft = $0 }),
                     image: { imageCache[$0.blobRef] },
