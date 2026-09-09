@@ -106,6 +106,21 @@ public struct ItemDetailView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
+            #if os(macOS)
+            // The Mac pane has no navigation bar of its own to host the
+            // resolve/reopen menu (its pushes share the window toolbar),
+            // so a slim pinned row above the thread stands in — pinned,
+            // not in the scrolling header, so it stays reachable after
+            // reading to the tail (Bugbot). The iOS host puts the same
+            // control in the navigation bar.
+            HStack {
+                Spacer()
+                ItemResolveControl(isOpen: item.state == .open, resolutions: model.availableResolutions, isBusy: model.isBusy,
+                                   onClose: onClose, onReopen: onReopen)
+                    .menuStyle(.borderlessButton).fixedSize()
+            }
+            .padding(.horizontal, 12).padding(.top, 8)
+            #endif
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
@@ -250,15 +265,6 @@ public struct ItemDetailView: View {
                 Text(statusText).font(.caption.weight(.semibold))
                     .padding(.horizontal, 8).padding(.vertical, 3)
                     .background((item.needsUser ? Color.orange : Color.secondary).opacity(0.18), in: Capsule())
-                #if os(macOS)
-                // The Mac pane has no navigation bar of its own to host
-                // this (its pushes share the window toolbar), so the
-                // thread header's top-right corner stands in; the iOS
-                // host puts the same control in the navigation bar.
-                ItemResolveControl(isOpen: item.state == .open, resolutions: model.availableResolutions, isBusy: model.isBusy,
-                                   onClose: onClose, onReopen: onReopen)
-                    .menuStyle(.borderlessButton).fixedSize()
-                #endif
             }
             Text(item.title).font(.title3.weight(.semibold)).textSelection(.enabled)
             if let originTitle = model.originTitle {
