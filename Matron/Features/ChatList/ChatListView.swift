@@ -41,6 +41,10 @@ struct ChatListView: View {
     @State var vmCache = ChatVMCache()
     @Environment(\.appDependencies) private var deps
     @Environment(\.currentSession) private var session
+    /// This tab's stack, owned by `AppShellView` — an item pushed from a
+    /// chat's tasks page rides it as an `ItemRoute.pathValue`, and the
+    /// item detail's origin link appends a conversation onto it.
+    @Environment(\.chatNavigationPath) private var chatNavigationPath
     @State private var showingNewChat = false
     /// Phase 6 (Search): drives the `.sheet` presenting `SearchView`.
     @State private var showingSearch = false
@@ -217,7 +221,11 @@ struct ChatListView: View {
             }
         }
         .navigationDestination(for: ChatSummary.ID.self) { id in
-            chatDestination(for: id)
+            if let route = ItemRoute(pathValue: id) {
+                itemDestination(route)
+            } else {
+                chatDestination(for: id)
+            }
         }
         .task { viewModel.start() }
         .onDisappear { viewModel.cancel() }
@@ -399,6 +407,26 @@ struct ChatListView: View {
             }
         }
         return nil
+    }
+
+    /// Item detail pushed from a chat's tasks page (spec §4) — it rides the
+    /// same `[String]` stack as `ItemRoute.pathValue`. The chat underneath
+    /// is the nearest non-item entry below it, so the "opened from…" link
+    /// hides when it would only point back at that chat; an origin link
+    /// elsewhere appends the conversation as before.
+    @ViewBuilder
+    private func itemDestination(_ route: ItemRoute) -> some View {
+        if let session {
+            let current = chatNavigationPath?.wrappedValue.last(where: { ItemRoute(pathValue: $0) == nil })
+            ItemDetailHost(itemID: route.id, session: session, currentConvoID: current,
+                           onOpenConversation: { convoID in
+                               guard convoID != current else { return }
+                               chatNavigationPath?.wrappedValue.append(convoID)
+                           })
+        } else {
+            ContentUnavailableView("Session unavailable", systemImage: "exclamationmark.triangle",
+                                   description: Text("Sign in again to open this item."))
+        }
     }
 
     /// Fires a chat-service action without awaiting its result. Used for
