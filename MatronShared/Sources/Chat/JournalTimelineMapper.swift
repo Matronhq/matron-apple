@@ -21,10 +21,27 @@ public enum JournalTimelineMapper {
         switch event.type {
         case JournalEventType.readMarker, JournalEventType.edit,
              JournalEventType.sessionStatus, JournalEventType.convoMeta,
-             JournalEventType.summary:
+             JournalEventType.summary, JournalEventType.item:
+            // `item` (fix wave, item E / Bugbot C1): a tracker marker event
+            // (spec 2026-09-08) carries no renderable content of its own —
+            // `ItemsSync` is the actual consumer (it triggers a refetch of
+            // the item). Before this, it fell through to `default` and
+            // rendered as a grey "unsupported event: item" row in both
+            // chat timelines. PR B / Task 13 replaces this `return nil`
+            // with a real inline card; until then, skip it like the other
+            // non-renderable event types above.
             return nil
 
         case JournalEventType.text:
+            // Old-client fallback (spec 2026-09-08, "Old-client fallback"):
+            // the journal mirrors a card-worthy item marker as a plain
+            // `text` event, flagged `fallback_for: "item"`, so pre-tracker
+            // clients that cannot render `item` still see the turn. New
+            // clients already render the card from the `item` marker, so
+            // this mirror must be hidden here or it would double up.
+            if payload["fallback_for"] != nil {
+                return nil
+            }
             kind = .text(body: payload["body"] as? String ?? "", formattedHTML: nil)
 
         case JournalEventType.toolOutput:

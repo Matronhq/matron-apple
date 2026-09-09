@@ -286,6 +286,20 @@ struct ChatView: View {
     @State private var pendingMediaOpen = false
     /// Tappable title → summaries TOC sheet (jump-to-point navigation).
     @State private var showSummaries = false
+    /// Task 11 (items tracker): right-edge drawer presentation flag and its
+    /// view model. The VM is created and started in `.task` regardless of
+    /// whether the drawer is open — the toolbar's `NeedsYouBadge` needs a
+    /// live `needsYouCount` even while closed — and stopped in the same
+    /// `onDisappear` that stops `viewModel`/`stripViewModel`.
+    @State private var showItems = false
+    @State private var itemsVM: ItemsPanelViewModel?
+    /// Width of the chat container the edge-swipe gesture measures against
+    /// (see the `.background(GeometryReader …)` below). Not a
+    /// `GeometryReader`-wrapped body: the timeline already has its own
+    /// scroll geometry reader, and threading a second one through the
+    /// whole view just for one gesture's edge test would be a bigger
+    /// change than reading the container's own size via a background.
+    @State private var chatContainerWidth: CGFloat = 0
     /// Sheet payload for fullscreen attachment previews. Identifiable
     /// via a per-present UUID so two consecutive taps re-mount the
     /// sheet (and so `.sheet(item:)` doesn't conflate two separate
@@ -865,6 +879,44 @@ struct ChatView: View {
             }
             ComposerView(viewModel: composerVM)
         }
+        // Task 11: measures this container's width for the edge-swipe
+        // gesture below (`chatContainerWidth`) — a plain `.background`
+        // reader rather than wrapping the whole body in a
+        // `GeometryReader`, which would force every child (including the
+        // scroll-perf-sensitive timeline) to re-layout against a proxy.
+        .background(
+            GeometryReader { g in
+                Color.clear
+                    .onAppear { chatContainerWidth = g.size.width }
+                    .onChange(of: g.size.width) { _, newValue in chatContainerWidth = newValue }
+            }
+        )
+        // Right-edge swipe → open the tasks/decisions drawer. `simultaneous`
+        // (not exclusive) so it never steals the timeline's own scroll
+        // gesture or the system back-swipe from the LEADING edge — this one
+        // only fires on a start within 24pt of the TRAILING edge with a
+        // leftward drag, which those never produce. Disabled while an
+        // attachment preview or the drawer itself is up so it can't fight
+        // either sheet's own dismiss gesture.
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 20)
+                .onEnded { v in
+                    guard attachmentPreview == nil, !showItems,
+                          !showSessionStatus, !showMediaBrowser, !showSummaries,
+                          // A missing VM must NOT read as "supported"
+                          // (CodeRabbit, PR #185): `showItems` hides the
+                          // Back button and the overlay needs the VM, so
+                          // opening before it exists would strand the
+                          // screen with no nav bar and no drawer.
+                          let itemsVM, itemsVM.isSupported != false,
+                          chatContainerWidth > 0,
+                          v.startLocation.x > chatContainerWidth - 24,
+                          v.translation.width < -60,
+                          abs(v.translation.width) > abs(v.translation.height)
+                    else { return }
+                    showItems = true
+                }
+        )
         // matron-web's cream timeline gradient sits behind the whole chat
         // column — bubbles (white / cyan) and the composer material all
         // render over the same warm ground.
@@ -939,6 +991,30 @@ struct ChatView: View {
                     .accessibilityLabel("Subagents")
                 }
             }
+            // Tasks & decisions drawer. Hidden once the panel VM has
+            // confirmed the journal doesn't support the tracker (a 404 on
+            // GET /items) — the same optimistic-until-proven-otherwise
+            // default the Mac pane uses. It also needs the VM to EXIST
+            // (CodeRabbit, PR #185): `showItems` hides the Back button and
+            // the drawer overlay is `if let itemsVM`, so a tap before the
+            // outer `.task` has built the VM would strand the screen with
+            // no nav bar and nothing to dismiss. The VM lands on the
+            // first `.task` pass, so the button is at most a frame late.
+            if let itemsVM, itemsVM.isSupported != false {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showItems = true
+                    } label: {
+                        Image(systemName: "checklist")
+                            .overlay(alignment: .topTrailing) {
+                                NeedsYouBadge(count: itemsVM.needsYouCount)
+                                    .scaleEffect(0.75)
+                                    .offset(x: 10, y: -8)
+                            }
+                    }
+                    .accessibilityLabel("Tasks and decisions")
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showSessionStatus = true } label: {
                     Image(systemName: "info.circle")
@@ -946,6 +1022,22 @@ struct ChatView: View {
                 .accessibilityLabel("Session info")
             }
         }
+        // I8 follow-up: the `.overlay` drawer below cannot paint over
+        // UIKit's own navigation bar no matter where it sits in the
+        // modifier chain — the earlier "moved to be the LAST modifier"
+        // fix only stopped the scrim from rendering BEHIND the bar; the
+        // bar itself (title, Back, ⓘ, subagents menu) still floats above
+        // the dimming layer and stays tappable. Hide the bar outright
+        // while the drawer is open instead. The drawer supplies its own
+        // "Close" toolbar button plus scrim-tap and edge-drag dismissal,
+        // so hiding the system bar's Back button loses no way out.
+        // `.animation(_:value:)` is what makes `.toolbar(_:for:)` and
+        // `.navigationBarBackButtonHidden` actually transition instead of
+        // popping — paired with the same 0.22s easeInOut the drawer's own
+        // slide-in uses so the bar and the panel move together.
+        .toolbar(showItems ? .hidden : .visible, for: .navigationBar)
+        .navigationBarBackButtonHidden(showItems)
+        .animation(.easeInOut(duration: 0.22), value: showItems)
         .sheet(isPresented: $showSessionStatus, onDismiss: {
             // Present the media browser only after the info sheet is fully
             // gone — flipping it while the sheet is still up is a silent
@@ -984,6 +1076,17 @@ struct ChatView: View {
             // only starter between here and the call, so current+1 is
             // exactly the generation start() will use.
             startedGeneration = viewModel.observationGeneration + 1
+            // Task 11: created and started here — not lazily on first
+            // drawer open — so the toolbar badge's `needsYouCount` is live
+            // the moment the chat appears, matching the Mac pane's
+            // lifecycle. `stop()` is paired in `onDisappear` below,
+            // unconditionally (this VM has no cross-view cache to race,
+            // unlike `viewModel`/`stripViewModel`).
+            if let deps, let session {
+                let vm = deps.makeItemsPanelViewModel(for: session, convoID: viewModel.roomID)
+                vm.start()
+                itemsVM = vm
+            }
             stripViewModel.start()
             stripStartedGeneration = stripViewModel.observationGeneration
             // Small first-paint window, then settle — splits the open
@@ -1045,6 +1148,11 @@ struct ChatView: View {
             // an unconditional stop() would kill the successor's stream.
             viewModel.stop(ifGeneration: startedGeneration)
             stripViewModel.stop(ifGeneration: stripStartedGeneration)
+            // Task 11: unlike `viewModel`/`stripViewModel`, `itemsVM` is
+            // never cached across remounts (`.task` above always mints a
+            // fresh instance) — this view's own object, so stopping it
+            // unconditionally can't race a successor's stream.
+            itemsVM?.stop()
             // Close live-output viewer sockets behind the departing chat
             // (accumulated output is kept; cards reconnect on re-appear).
             // Scoped to THIS chat's sessions — a global suspend froze
@@ -1092,6 +1200,35 @@ struct ChatView: View {
         }
         .onChange(of: viewModel.rows.isEmpty) { _, isEmpty in
             chatViewLogger.breadcrumb("rows \(isEmpty ? "EMPTY — warm-up spinner over blank area" : "populated") (items=\(viewModel.items.count))")
+        }
+        // I8: the LAST modifier, deliberately — applied here (after
+        // `.navigationTitle`/`.toolbar` above) rather than back where the
+        // edge-swipe gesture sits, this overlay wraps the whole
+        // toolbar-bearing view instead of a plain content view the nav bar
+        // then draws over. Moved out of the earlier `.overlay` (right after
+        // the edge-swipe `.simultaneousGesture`) once review caught the
+        // scrim rendering BEHIND the nav bar there — the Back/info/media
+        // toolbar buttons stayed tappable straight through the dimming
+        // layer. `itemsVM`/`session` both required — see the `.task` above
+        // for why `itemsVM` can still be `nil` here (dependencies not ready
+        // yet).
+        .overlay {
+            if let itemsVM, let session {
+                ItemsDrawer(
+                    isPresented: $showItems,
+                    viewModel: itemsVM,
+                    session: session,
+                    // Bugbot: an origin link back to THIS room used to push
+                    // a second nav entry onto the very chat already showing
+                    // underneath the drawer. `ItemsDrawer`/`ItemDetailHost`
+                    // already close the drawer before this fires — the fix
+                    // here is only to skip the redundant push.
+                    onOpenConversation: { id in
+                        guard id != viewModel.roomID else { return }
+                        navigationPath?.wrappedValue.append(id)
+                    }
+                )
+            }
         }
     }
 

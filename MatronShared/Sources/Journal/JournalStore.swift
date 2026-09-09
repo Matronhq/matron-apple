@@ -217,7 +217,10 @@ public struct SummaryEntryRecord: Codable, FetchableRecord, PersistableRecord, E
 /// transaction as the event insert — the wedge-proof property.
 public final class JournalStore: @unchecked Sendable {
     private static let logger = os.Logger(subsystem: "chat.matron", category: "journal-store")
-    private let dbQueue: DatabaseQueue
+    // Module-internal (not private): JournalStore+Items.swift extends this
+    // type from a different file for the tracker cache (spec
+    // 2026-09-08-items-tracker-apps task 4) and needs direct access.
+    let dbQueue: DatabaseQueue
     /// See `applyReadTimeSnippetTTL` — memoizes its per-conversation event
     /// sub-queries across the conversation observation's per-commit re-runs.
     private let snippetTTLMemo = SnippetTTLMemo()
@@ -393,6 +396,56 @@ public final class JournalStore: @unchecked Sendable {
         migrator.registerMigration("v8") { db in
             try db.alter(table: "agent") { t in
                 t.add(column: "tag_char", .text)
+            }
+        }
+        // v9: tracker cache (spec 2026-09-08 task-decision-tracker). Filled
+        // from GET /items, never from the event log; the `item` marker
+        // event is only an invalidation signal (ItemsSync).
+        migrator.registerMigration("v9") { db in
+            try db.create(table: "item") { t in
+                t.column("id", .text).primaryKey()
+                t.column("num", .integer).notNull()
+                t.column("kind", .text).notNull()
+                t.column("state", .text).notNull()
+                t.column("resolution", .text)
+                t.column("awaiting", .text)
+                t.column("rank", .double).notNull()
+                t.column("title", .text).notNull()
+                t.column("body", .text).notNull().defaults(to: "")
+                t.column("labels_json", .text).notNull().defaults(to: "[]")
+                t.column("links_json", .text).notNull().defaults(to: "[]")
+                t.column("attachments_json", .text).notNull().defaults(to: "[]")
+                t.column("supersedes", .text)
+                t.column("origin_convo_id", .text).notNull()
+                t.column("created_by", .text).notNull()
+                t.column("created_at", .integer).notNull()
+                t.column("updated_at", .integer).notNull()
+                t.column("closed_at", .integer)
+                t.column("comment_count", .integer).notNull().defaults(to: 0)
+                t.column("last_comment_at", .integer)
+                t.column("has_image", .boolean).notNull().defaults(to: false)
+            }
+            try db.create(index: "item_convo_state", on: "item", columns: ["origin_convo_id", "state"])
+            try db.create(index: "item_state_rank", on: "item", columns: ["state", "rank"])
+            try db.create(table: "item_comment") { t in
+                t.column("id", .text).primaryKey()
+                t.column("item_id", .text).notNull().indexed()
+                t.column("author", .text).notNull()
+                t.column("device_id", .integer).notNull().defaults(to: 0)
+                t.column("kind", .text).notNull()
+                t.column("body", .text).notNull().defaults(to: "")
+                t.column("attachments_json", .text).notNull().defaults(to: "[]")
+                t.column("meta_json", .text)
+                t.column("created_at", .integer).notNull()
+            }
+            try db.create(table: "item_outbox") { t in
+                t.column("local_id", .text).primaryKey()
+                t.column("item_id", .text).indexed()
+                t.column("op", .text).notNull()
+                t.column("payload_json", .text).notNull()
+                t.column("created_at", .integer).notNull()
+                t.column("attempts", .integer).notNull().defaults(to: 0)
+                t.column("last_error", .text)
             }
         }
         return migrator
@@ -675,7 +728,13 @@ public final class JournalStore: @unchecked Sendable {
             // outbox delete commit or fail together, so a relaunch can
             // never show a durable duplicate echo beside the delivered
             // message.
+            // Skip the journal's flagged fallback mirror of an item marker
+            // (spec 2026-09-08, "Old-client fallback"): it is a synthetic
+            // echo of a card the user never typed into the composer, so a
+            // coincidental body match must not confirm an unrelated queued
+            // outbox row.
             if event.sender == ownSender, event.type == JournalEventType.text,
+               payload["fallback_for"] == nil,
                let body = payload["body"] as? String {
                 try Self.outboxDeleteFirstMatching(db, convoID: event.convoID, body: body)
             }
@@ -757,8 +816,13 @@ public final class JournalStore: @unchecked Sendable {
             // Without this pass the rows stayed queued forever, re-flushing
             // (idem-deduped, but ghost-echoing) on every reconnect. The
             // `journaledAtMs` guard keeps old replayed history from eating
-            // a fresh queued send with the same body.
-            for e in events where e.sender == ownSender && e.type == JournalEventType.text {
+            // a fresh queued send with the same body. The `fallback_for`
+            // guard mirrors the live path above: the journal's old-client
+            // mirror of an item marker is a synthetic own-sender text the
+            // user never typed, so it must not confirm a queued send either
+            // (Bugbot PR #185, "History path still confirms fallback texts").
+            for e in events where e.sender == ownSender && e.type == JournalEventType.text
+                && e.payload["fallback_for"] == nil {
                 guard let body = e.payload["body"] as? String else { continue }
                 try Self.outboxDeleteFirstMatching(
                     db, convoID: e.convoID, body: body,
@@ -1137,15 +1201,26 @@ public final class JournalStore: @unchecked Sendable {
         }
     }
 
-    /// Clears the journal mirror (events, conversations, cursor) but NOT
-    /// the outbox: this runs on `snapshot_required` (replay gap too large),
-    /// and a mirror wipe must not eat the user's unsent messages. Sign-out
-    /// calls `wipeOutbox()` separately.
+    /// Clears the journal mirror (events, conversations, cursor) and the
+    /// tracker cache (item, item_comment) but NOT the outbox tables
+    /// (outbox, item_outbox): this runs on `snapshot_required` (replay gap
+    /// too large), and a mirror wipe must not eat the user's unsent
+    /// messages OR unsent tracker comments/creates — both are refetched or
+    /// replayed independently of the mirror, but the outbox rows are the
+    /// only record of what hasn't gone out yet. Sign-out calls
+    /// `wipeOutbox()` separately for those.
     public func wipe() throws {
         try dbQueue.write { db in
             // Inside the write block — see `insertHistory`'s invalidation note.
             self.snippetTTLMemo.removeAll()
             try db.execute(sql: "DELETE FROM event; DELETE FROM conversation; DELETE FROM meta; DELETE FROM summary_entry;")
+            // Tracker cache (item/item_comment only — NOT item_outbox, see
+            // the doc comment above): cleared inline, in the same
+            // transaction, rather than via `wipeItems()` — that helper
+            // opens its own `dbQueue.write`, which would deadlock nested
+            // inside this one, and also clears item_outbox which this path
+            // must not touch.
+            try db.execute(sql: "DELETE FROM item; DELETE FROM item_comment;")
         }
     }
 
@@ -1274,10 +1349,11 @@ public final class JournalStore: @unchecked Sendable {
     }
 
     /// Sign-out hygiene: the next account on this database file must not
-    /// inherit (or send) the previous user's queued messages.
+    /// inherit (or send) the previous user's queued messages or queued
+    /// tracker comments/creates — clears both `outbox` and `item_outbox`.
     public func wipeOutbox() throws {
         try dbQueue.write { db in
-            try db.execute(sql: "DELETE FROM outbox")
+            try db.execute(sql: "DELETE FROM outbox; DELETE FROM item_outbox;")
         }
     }
 
@@ -1442,7 +1518,10 @@ public final class JournalStore: @unchecked Sendable {
         return Self.stream(observation, in: dbQueue)
     }
 
-    private static func stream<Reducer: ValueReducer>(
+    // Module-internal (not private): JournalStore+Items.swift's item
+    // streams (spec 2026-09-08-items-tracker-apps task 4) reuse this from
+    // a different file.
+    static func stream<Reducer: ValueReducer>(
         _ observation: ValueObservation<Reducer>,
         in dbQueue: DatabaseQueue
     ) -> AsyncStream<Reducer.Value> where Reducer.Value: Sendable {

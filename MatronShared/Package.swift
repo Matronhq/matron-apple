@@ -170,6 +170,7 @@ let package = Package(
                 "MatronModels",
                 "MatronStorage",
                 "MatronSearch",
+                "MatronEvents",
                 .product(name: "GRDB", package: "GRDB.swift"),
             ],
             path: "Sources/Journal"
@@ -204,6 +205,6 @@ let package = Package(
             path: "Tests/EventsTests"
         ),
         .testTarget(name: "SearchTests", dependencies: ["MatronSearch"], path: "Tests/SearchTests"),
-        .testTarget(name: "JournalTests", dependencies: ["MatronJournal", "MatronModels", "MatronSearch"], path: "Tests/JournalTests"),
+        .testTarget(name: "JournalTests", dependencies: ["MatronJournal", "MatronModels", "MatronSearch", "MatronEvents"], path: "Tests/JournalTests"),
     ]
 )
