@@ -23,9 +23,8 @@ public protocol ItemsSyncing: Sendable {
     func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async
     /// Returns whether the outbox insert itself succeeded (fix wave, item
     /// I3) — `false` when the sync engine is stopped or the local write
-    /// throws. Callers (`ComposerViewModel.makeTask()`) use this to tell
-    /// "your task is queued" apart from "nothing happened, don't clear
-    /// the composer"; delivery to the server is a separate, unawaited
+    /// throws. Callers use this to tell "your item is queued" apart from
+    /// "nothing happened"; delivery to the server is a separate, unawaited
     /// background drain (fix wave, item I2), so a `true` here means only
     /// that the row is durably queued, not that it has reached the
     /// journal yet. `@discardableResult` — most other call sites (outbox
