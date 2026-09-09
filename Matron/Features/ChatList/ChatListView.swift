@@ -165,7 +165,8 @@ struct ChatListView: View {
                         onSignOut: {
                             showingDeviceSettings = false
                             onSignOut?()
-                        }
+                        },
+                        deps: deps
                     )
                         .toolbar {
                             ToolbarItem(placement: .topBarTrailing) {
