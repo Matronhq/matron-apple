@@ -590,6 +590,9 @@ struct MacChatListView: View {
 
     private func showConversation(_ convoID: String) {
         nav = .conversations
+        // A same-id assignment never runs `handleSelectionChange`, so the
+        // search results panel would stay over the chat (Bugbot, PR #195).
+        if searchQueryIsEmpty == false { searchModel?.query = "" }
         selectedSummaryID = convoID
     }
 
