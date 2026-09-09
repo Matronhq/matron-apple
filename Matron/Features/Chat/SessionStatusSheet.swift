@@ -1,4 +1,5 @@
 import SwiftUI
+import MatronChat
 import MatronModels
 import MatronViewModels
 import MatronDesignSystem
@@ -21,9 +22,26 @@ struct SessionStatusSheet: View {
     /// `onDismiss`, because presenting a second sheet while this one is
     /// still up is a silent no-op.
     var onOpenMedia: (() -> Void)? = nil
+    /// Source of this chat's subagents (running and finished), oldest
+    /// first — the list that used to be a toolbar `Menu` on `ChatView`
+    /// (Dan, 2026-09-09). The `@Observable` VM itself, not a copy of its
+    /// `children`: a value snapshot taken in `ChatView`'s `.sheet` closure
+    /// is not observation-tracked, so an open sheet would keep a stale
+    /// list — children arriving or finishing after presentation would
+    /// never show, and the running/finished icons would never flip
+    /// (Bugbot, PR #189). Reading `children` here, in `body`, installs the
+    /// tracking. `nil`/no children ⇒ the section is absent entirely.
+    var strip: SubChatStripViewModel? = nil
+    /// Ride-along to a subagent's sub-chat, on the same terms as
+    /// `onOpenMedia`: the closure only reports WHICH child was tapped.
+    /// `ChatView` pushes it from the sheet's `onDismiss`, because this
+    /// sheet's `NavigationStack` is its own — a `NavigationLink` here would
+    /// push inside the sheet, not onto the chat's stack.
+    var onOpenSubagent: ((String) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
 
     private var status: SessionStatus? { viewModel.sessionStatus }
+    private var subagents: [SubChatSummary] { strip?.children ?? [] }
 
     /// Any known part counts — a model-only status (first turn after a
     /// bridge boot whose turn errored before usage arrived) shows the model
@@ -55,6 +73,30 @@ struct SessionStatusSheet: View {
                     } label: {
                         Label("Media, Files & Links", systemImage: "photo.on.rectangle.angled")
                     }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 16)
+                }
+                // Also outside the `hasContent` gate: the children are
+                // known from the strip's own stream, so they must be
+                // reachable before the first `status` frame lands. A link
+                // to a pushed list, NOT the list inline (Dan, 2026-09-09:
+                // the sheet is for the session info; a long list on top
+                // of it buried the info). The push is inside the sheet's
+                // own stack; a row tap hands the id back to `ChatView`.
+                if !subagents.isEmpty {
+                    NavigationLink {
+                        SubagentsListView(subagents: subagents) { id in
+                            // Order matters: arm the intent, THEN
+                            // dismiss. `ChatView` reads the flag in
+                            // `onDismiss`.
+                            onOpenSubagent?(id)
+                            dismiss()
+                        }
+                    } label: {
+                        Label("Subagents (\(subagents.count))",
+                              systemImage: "arrow.triangle.branch")
+                    }
+                    .accessibilityIdentifier("subagents-link")
                     .padding(.horizontal, 20)
                     .padding(.top, 16)
                 }
@@ -138,5 +180,33 @@ struct SessionStatusSheet: View {
                     )
                 }
             }
+    }
+}
+
+/// The pushed subagents page inside the info sheet: one row per child,
+/// dashed circle while running, check once finished. `onSelect` receives
+/// the child's convo id; the sheet dismisses and `ChatView` pushes it.
+struct SubagentsListView: View {
+    let subagents: [SubChatSummary]
+    let onSelect: (String) -> Void
+
+    var body: some View {
+        List(subagents) { entry in
+            Button {
+                onSelect(entry.id)
+            } label: {
+                Label(
+                    entry.title,
+                    systemImage: entry.isRunning ? "circle.dashed" : "checkmark.circle"
+                )
+                .lineLimit(1)
+                // List Button labels inherit the accent tint; rows should
+                // read as content (see `technique_swiftui_list_button_tint`).
+                .foregroundStyle(Color.primary)
+            }
+            .accessibilityIdentifier("subagent-row-\(entry.id)")
+        }
+        .navigationTitle("Subagents")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }

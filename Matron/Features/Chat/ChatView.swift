@@ -14,7 +14,8 @@ private let chatViewLogger = Logger(subsystem: "chat.matron", category: "ios-cha
 /// iOS chat screen. Hosts a scrollable timeline (LazyVStack rendering each
 /// `TimelineItem` via `TimelineItemView`) above a `ComposerView`. The
 /// navigation toolbar shows the chat title and an info button that
-/// presents a `SessionStatusSheet` (context gauge + usage bars).
+/// presents a `SessionStatusSheet` (context gauge, usage bars, the media
+/// browser link and this chat's subagents).
 ///
 /// `viewModel.start()` runs in `.task`; `viewModel.stop()` runs in
 /// `.onDisappear` to release the AsyncStream's continuation. This mirrors
@@ -316,6 +317,11 @@ struct ChatView: View {
     /// Set by the info sheet's media link; consumed in its `onDismiss` to
     /// present the browser once the sheet slot is free.
     @State private var pendingMediaOpen = false
+    /// Child convo id chosen from the info sheet's subagents list; consumed
+    /// in the same `onDismiss` to push it onto the parent stack. Pushing
+    /// while the sheet is still up races the dismissal animation, and the
+    /// sheet has no access to this view's `navigationPath` regardless.
+    @State private var pendingChildOpen: String?
     /// Tappable title → summaries TOC sheet (jump-to-point navigation).
     @State private var showSummaries = false
     /// Task 11 (items tracker): right-edge drawer presentation flag and its
@@ -999,36 +1005,6 @@ struct ChatView: View {
                 .accessibilityValue(chatContextLine ?? "")
                 .accessibilityHint("Shows conversation summaries")
             }
-            // Back to a single ⓘ (Dan, 2026-08-16 — the ellipsis read as
-            // "menu of stuff", the info sheet IS the chat's utility
-            // surface): it opens `SessionStatusSheet`, which now carries
-            // the media-browser link. Sub-chats keep their own toolbar
-            // menu, shown only when this chat has ANY children (running
-            // or finished) — same conditional as the Mac toolbar. The
-            // running strip hides itself the moment the last subagent
-            // finishes, so without this the only way back into a finished
-            // sub-chat is its timeline card (Dan, 2026-07-15); it cannot
-            // move into the sheet because the links are value-based
-            // `NavigationLink`s that need the parent stack, not the
-            // sheet's own.
-            if !stripViewModel.children.isEmpty {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        ForEach(stripViewModel.children) { child in
-                            NavigationLink(value: child.id) {
-                                Label(
-                                    child.title,
-                                    systemImage: child.isRunning
-                                        ? "circle.dashed" : "checkmark.circle"
-                                )
-                            }
-                        }
-                    } label: {
-                        Image(systemName: "arrow.triangle.branch")
-                    }
-                    .accessibilityLabel("Subagents")
-                }
-            }
             // Tasks & decisions drawer. Hidden once the panel VM has
             // confirmed the journal doesn't support the tracker (a 404 on
             // GET /items) — the same optimistic-until-proven-otherwise
@@ -1053,6 +1029,15 @@ struct ChatView: View {
                     .accessibilityLabel("Tasks and decisions")
                 }
             }
+            // Back to a single ⓘ (Dan, 2026-08-16 — the ellipsis read as
+            // "menu of stuff", the info sheet IS the chat's utility
+            // surface): it opens `SessionStatusSheet`, which carries the
+            // media-browser link AND — since Dan, 2026-09-09 — the list of
+            // this chat's subagents, which used to be its own toolbar
+            // `Menu`. The sheet can't push onto this stack itself, so it
+            // hands the child's id back through `onOpenSubagent` and the
+            // `onDismiss` below appends it — exactly the media-browser
+            // handoff, one surface later.
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showSessionStatus = true } label: {
                     Image(systemName: "info.circle")
@@ -1068,9 +1053,20 @@ struct ChatView: View {
                 pendingMediaOpen = false
                 showMediaBrowser = true
             }
+            // Same deal for a subagent tap: push once the sheet slot is
+            // free. Only ever one of the two is set — each row dismisses
+            // the sheet as it arms its flag.
+            if let id = pendingChildOpen {
+                pendingChildOpen = nil
+                navigationPath?.wrappedValue.append(id)
+            }
         }) {
-            SessionStatusSheet(viewModel: viewModel, boxName: boxName,
-                               onOpenMedia: { pendingMediaOpen = true })
+            SessionStatusSheet(
+                viewModel: viewModel, boxName: boxName,
+                onOpenMedia: { pendingMediaOpen = true },
+                strip: stripViewModel,
+                onOpenSubagent: { id in pendingChildOpen = id }
+            )
         }
         .sheet(isPresented: $showMediaBrowser) {
             MediaBrowserSheet(chatViewModel: viewModel)
