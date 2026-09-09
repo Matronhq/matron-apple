@@ -317,13 +317,18 @@ struct MacChatListView: View {
         .onReceive(NotificationCenter.default.publisher(for: .matronOpenRoom)) { note in
             if let roomID = note.userInfo?[MacNotificationHandler.roomIDKey] as? String {
                 listLogger.notice("selection set by notification-tap: \(roomID, privacy: .public)")
-                selectedSummaryID = roomID
+                showConversation(roomID)
             }
         }
         // ⌘1/⌘2/⌘3 (Commands.swift) — same bus shape as `.toggleSidebar`.
         .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showCoordinator))) { _ in nav = .coordinator }
         .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showConversations))) { _ in nav = .conversations }
         .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showDecisions))) { _ in nav = .decisions }
+        // Leaving Decisions through the nav column (Bugbot, PR #195): the
+        // detail host has no teardown of its own (I6 — a same-item rebuild
+        // must keep the draft), so stop its VM and any recording here and
+        // clear the pane's item id so re-entering rebuilds the detail.
+        .onChange(of: nav, navChanged)
         // The Decisions VM lives for the session (spec §5b): one instance,
         // started here, feeding both the list and the nav badge.
         .task(id: session?.userID) {
@@ -347,7 +352,7 @@ struct MacChatListView: View {
         .task {
             if let pending = MacNotificationHandler.shared.consumePendingRoomID() {
                 listLogger.notice("selection set by cold-start-tap-drain: \(pending, privacy: .public)")
-                selectedSummaryID = pending
+                showConversation(pending)
             }
         }
         // Wave 6 / live-test #4: dropped `.navigationTitle("Matron")`.
@@ -372,7 +377,7 @@ struct MacChatListView: View {
                     // (below) may deliver the same id when the convo_meta
                     // lands — setting an identical selection is a no-op.
                     listLogger.notice("selection set by new-chat-sheet: \(convoID, privacy: .public)")
-                    selectedSummaryID = convoID
+                    showConversation(convoID)
                 }
             } else {
                 MacNewChatPlaceholder(onDismiss: { showingNewChat = false })
@@ -427,7 +432,7 @@ struct MacChatListView: View {
             guard let deps, let session else { return }
             for await roomID in await deps.syncService(for: session).newConversations() {
                 listLogger.notice("selection set by auto-open: \(roomID, privacy: .public)")
-                selectedSummaryID = roomID
+                showConversation(roomID)
             }
         }
         // Dock-tile badge mirrors the chat list's running unread total.
@@ -566,8 +571,25 @@ struct MacChatListView: View {
     /// "Open conversation" from a Decisions row or its detail: switch the
     /// nav entry, then select that chat (spec §5).
     private func openConversationFromDecisions(_ convoID: String) {
-        nav = .conversations
         listLogger.notice("selection set by decisions: \(convoID, privacy: .public)")
+        showConversation(convoID)
+    }
+
+    /// Every "show me that chat" path — notification tap, cold-start drain,
+    /// new-chat sheet, auto-open, Decisions origin link — goes through
+    /// here so the Conversations entry comes forward even when the target
+    /// is ALREADY selected (Bugbot, PR #195: the `selectedSummaryID`
+    /// `onChange` alone never fires for a same-id assignment).
+    private func navChanged(from old: MacNav, to new: MacNav) {
+        guard old == .decisions, new != .decisions else { return }
+        decisionsPaneState.detailViewModel?.stop()
+        decisionsPaneState.detailViewModel = nil
+        decisionsPaneState.detailItemID = nil
+        decisionsPaneState.detailRecorder.cancel()
+    }
+
+    private func showConversation(_ convoID: String) {
+        nav = .conversations
         selectedSummaryID = convoID
     }
 
@@ -659,7 +681,7 @@ struct MacChatListView: View {
                     // `selectedSummaryID` from there.
                     Task { @MainActor in
                         await deps.prepareConversation(for: session, id: roomID)
-                        selectedSummaryID = roomID
+                        showConversation(roomID)
                     }
                 }
             )
