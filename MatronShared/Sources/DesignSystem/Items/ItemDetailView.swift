@@ -112,9 +112,8 @@ public struct ItemDetailView: View {
                     onBottomVisibilityChange?(atBottom)
                 }
                 .onAppear {
-                    guard startsAtBottom, !hasScrolledToInitialBottom else { return }
-                    hasScrolledToInitialBottom = true
-                    proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+                    guard !hasScrolledToInitialBottom else { return }
+                    placeInitially(proxy)
                 }
                 // The Mac host swaps items in place — same `ItemDetailView`
                 // call site, new `model.item` — which SwiftUI treats as the
@@ -125,10 +124,7 @@ public struct ItemDetailView: View {
                 // item gets a fresh push (and so a fresh identity), this is
                 // a harmless no-op duplicate of `.onAppear`.
                 .onChange(of: item.id) { _, _ in
-                    hasScrolledToInitialBottom = false
-                    guard startsAtBottom else { return }
-                    hasScrolledToInitialBottom = true
-                    proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+                    placeInitially(proxy)
                 }
                 // Follow-tail: once the reader has settled at the bottom, a
                 // newly-arrived comment (or a locally-queued pending one)
@@ -146,6 +142,19 @@ public struct ItemDetailView: View {
             actionBar
             ItemCommentComposer(draft: $draft, isBusy: model.isBusy, onSubmit: onSubmit, onAttach: onAttach, onVoiceNote: onVoiceNote)
         }
+    }
+
+    /// The one-time placement decision for an item (Bugbot, PR #198): it
+    /// is made whether or not we scroll — staying at the top still arms
+    /// follow-tail — and a bottom placement also marks the reader as AT
+    /// the bottom straight away, so comments that land after the first
+    /// `scrollTo` (they arrive on their own stream) re-pin the tail before
+    /// the first geometry callback has said anything.
+    private func placeInitially(_ proxy: ScrollViewProxy) {
+        hasScrolledToInitialBottom = true
+        guard startsAtBottom else { return }
+        isAtBottom = true
+        proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
     }
 
     private var statusText: String {

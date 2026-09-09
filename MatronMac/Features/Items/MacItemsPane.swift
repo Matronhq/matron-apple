@@ -296,7 +296,12 @@ struct MacItemDetailHost: View {
                         onClose: { r in Task { await viewModel.close(resolution: r, comment: nil) } },
                         onReopen: { Task { await viewModel.reopen() } },
                         startsAtBottom: state.detailStartsAtBottom,
-                        onBottomVisibilityChange: { state.detailIsAtBottom = $0 })
+                        // Both follow the live position (Bugbot, PR #198): a
+                        // width-crossing rebuild remounts this host for the
+                        // SAME item, and its fresh ItemDetailView must place
+                        // itself where the reader actually is, not where the
+                        // item was first opened.
+                        onBottomVisibilityChange: { state.detailIsAtBottom = $0; state.detailStartsAtBottom = $0 })
                 } else {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }

@@ -137,6 +137,9 @@ struct ItemDetailHost: View {
         }
         .task {
             startsAtBottom = ItemReadMemory().wasAtBottom(itemID: itemID)
+            // Seed from memory (Bugbot, PR #198): a pop before the thread
+            // reports visibility must not overwrite a read-to-end as unread.
+            isAtBottom = startsAtBottom
             guard let deps else { return }
             let vm = deps.makeItemDetailViewModel(for: session, itemID: itemID)
             viewModel = vm
