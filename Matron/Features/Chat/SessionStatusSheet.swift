@@ -62,11 +62,6 @@ struct SessionStatusSheet: View {
 
     var body: some View {
         NavigationStack {
-            // Scrollable since the subagents list joined: the `.large`
-            // detent is still finite, and a long list would otherwise
-            // clip the lower rows (and the usage content under them)
-            // where they can't be tapped.
-            ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 // Above the gauge/usage content and OUTSIDE the
                 // `hasContent` gate — the media browser is reachable even
@@ -83,42 +78,34 @@ struct SessionStatusSheet: View {
                 }
                 // Also outside the `hasContent` gate: the children are
                 // known from the strip's own stream, so they must be
-                // reachable before the first `status` frame lands.
+                // reachable before the first `status` frame lands. A link
+                // to a pushed list, NOT the list inline (Dan, 2026-09-09:
+                // the sheet is for the session info; a long list on top
+                // of it buried the info). The push is inside the sheet's
+                // own stack; a row tap hands the id back to `ChatView`.
                 if !subagents.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Subagents")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                        ForEach(subagents) { entry in
-                            Button {
-                                // Order matters: arm the intent, THEN
-                                // dismiss. `ChatView` reads the flag in
-                                // `onDismiss`.
-                                onOpenSubagent?(entry.id)
-                                dismiss()
-                            } label: {
-                                Label(
-                                    entry.title,
-                                    systemImage: entry.isRunning
-                                        ? "circle.dashed" : "checkmark.circle"
-                                )
-                                .lineLimit(1)
-                            }
-                            .accessibilityIdentifier("subagent-row-\(entry.id)")
+                    NavigationLink {
+                        SubagentsListView(subagents: subagents) { id in
+                            // Order matters: arm the intent, THEN
+                            // dismiss. `ChatView` reads the flag in
+                            // `onDismiss`.
+                            onOpenSubagent?(id)
+                            dismiss()
                         }
+                    } label: {
+                        Label("Subagents (\(subagents.count))",
+                              systemImage: "arrow.triangle.branch")
                     }
+                    .accessibilityIdentifier("subagents-link")
                     .padding(.horizontal, 20)
                     .padding(.top, 16)
                 }
                 sheetContent
             }
-            }
             .navigationTitle("Session")
             .navigationBarTitleDisplayMode(.inline)
         }
-        // `.large` joins `.medium` now the sheet can carry a subagents
-        // list — a chat with several children outgrows the half sheet.
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.medium])
     }
 
     @ViewBuilder
@@ -191,12 +178,35 @@ struct SessionStatusSheet: View {
                         systemImage: "gauge",
                         description: Text("Appears after the next reply.")
                     )
-                    // Inside a `ScrollView` the placeholder no longer fills
-                    // the sheet on its own; give it room so it still
-                    // reads as the sheet's body rather than a stray row.
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 48)
                 }
             }
+    }
+}
+
+/// The pushed subagents page inside the info sheet: one row per child,
+/// dashed circle while running, check once finished. `onSelect` receives
+/// the child's convo id; the sheet dismisses and `ChatView` pushes it.
+struct SubagentsListView: View {
+    let subagents: [SubChatSummary]
+    let onSelect: (String) -> Void
+
+    var body: some View {
+        List(subagents) { entry in
+            Button {
+                onSelect(entry.id)
+            } label: {
+                Label(
+                    entry.title,
+                    systemImage: entry.isRunning ? "circle.dashed" : "checkmark.circle"
+                )
+                .lineLimit(1)
+                // List Button labels inherit the accent tint; rows should
+                // read as content (see `technique_swiftui_list_button_tint`).
+                .foregroundStyle(Color.primary)
+            }
+            .accessibilityIdentifier("subagent-row-\(entry.id)")
+        }
+        .navigationTitle("Subagents")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }

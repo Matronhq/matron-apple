@@ -126,6 +126,16 @@ final class SessionStatusSheetSubagentsTests: XCTestCase {
 
     // MARK: - the handoff closure
 
+    func test_subagentsList_rowTap_reportsTheChildID() {
+        var captured: [String] = []
+        let list = SubagentsListView(
+            subagents: [SubChatSummary(id: "!c1:server", title: "sweep", isRunning: true)],
+            onSelect: { captured.append($0) }
+        )
+        list.onSelect("!c1:server")
+        XCTAssertEqual(captured, ["!c1:server"])
+    }
+
     func test_onOpenSubagent_reportsTheTappedChildID() async {
         var captured: [String] = []
         let strip = await makeStrip([
