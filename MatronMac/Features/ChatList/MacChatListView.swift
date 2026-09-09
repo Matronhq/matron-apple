@@ -263,7 +263,13 @@ struct MacChatListView: View {
         } detail: {
             detailContent
         }
+        // Only when the search field is mounted (Conversations): the field
+        // consumes the flag in `onChange` and clears it, so a `true` set
+        // while it is absent would stick and turn every later ⌘F into a
+        // no-op (Bugbot, PR #195). `navChanged` clears it on the way out
+        // for the same reason.
         .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.findInChat))) { _ in
+            guard nav == .conversations else { return }
             focusSearch = true
         }
         // Build the shared search VM once the chat list has loaded (so chat-title
@@ -605,6 +611,9 @@ struct MacChatListView: View {
     /// is ALREADY selected (Bugbot, PR #195: the `selectedSummaryID`
     /// `onChange` alone never fires for a same-id assignment).
     private func navChanged(from old: MacNav, to new: MacNav) {
+        // The search field unmounts with Conversations; an unconsumed ⌘F
+        // request must not outlive it (Bugbot, PR #195).
+        if old == .conversations { focusSearch = false }
         guard old == .decisions, new != .decisions else { return }
         decisionsPaneState.detailViewModel?.stop()
         decisionsPaneState.detailViewModel = nil
