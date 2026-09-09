@@ -56,6 +56,23 @@ final class ChatPagerTests: XCTestCase {
                        "the leading-edge zone belongs to UIKit's own back gesture — never pop twice")
     }
 
+    /// Bugbot, PR #194: the pager's `.scrollPosition` write-back lands
+    /// `.chat` mid-drag, so a rightward swipe FROM the tasks page must be
+    /// judged against the page the drag started on, or it pops the chat.
+    func test_swipeFromTasksPage_pagesBack_andNeverPops() {
+        let model = ChatPagerModel(resignComposer: {})
+        model.go(to: .tasks)
+        model.beginDrag()
+        model.handleScrolled(to: .chat)   // the scroll view already paged
+        XCTAssertFalse(model.endDrag(translation: CGSize(width: 200, height: 0), startX: 200))
+        XCTAssertEqual(model.page, .chat)
+        // A fresh drag on the chat page pops.
+        model.beginDrag()
+        XCTAssertTrue(model.endDrag(translation: CGSize(width: 200, height: 0), startX: 200))
+        // Without beginDrag the current page is used (defensive).
+        XCTAssertTrue(model.endDrag(translation: CGSize(width: 200, height: 0), startX: 200))
+    }
+
     func test_popChat_removesTheTopEntry_andIgnoresAnEmptyOrMissingPath() {
         var path: [String] = ["!parent:s", "!child:s"]
         let binding = Binding(get: { path }, set: { path = $0 })
