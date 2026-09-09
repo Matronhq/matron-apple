@@ -229,36 +229,10 @@ struct ChatView: View {
         path.wrappedValue.append(value)
     }
 
-    /// Tapping an inline `.itemMarker` card opens the tracker drawer
-    /// straight to that item, rather than making the user open the
-    /// drawer and find it themselves.
-    ///
-    /// Guarded on `itemsVM` existing (fix wave, minor b): the VM is
-    /// created lazily in the outer `.task` once `deps`/`session` are
-    /// ready, so a marker tap landing before that (a cold app launch
-    /// deep-linking straight into a room, say) would otherwise flip
-    /// `showItems` open onto a drawer with nothing to show — the sheet's
-    /// own `if let itemsVM, let session` guard (~line 1221) would then
-    /// just render nothing behind a dismiss button instead of the item.
+    /// Tapping an inline `.itemMarker` card pushes that item onto the
+    /// outer stack straight away — no need to page to the tracker first.
     private func openItem(_ itemID: String) {
-        guard itemsVM != nil else { return }
-        itemsPath = [itemID]
-        openDrawer()
-    }
-
-    /// The one way `showItems` goes true. The drawer is a
-    /// `.fullScreenCover` (see the presentation below) and this suppresses
-    /// the cover's own bottom-up slide so `ItemsDrawer` can run its
-    /// right-edge slide-in instead; the drawer dismisses itself the same
-    /// way once its slide-out has finished.
-    private func openDrawer() {
-        // Both are required by the cover's `if let itemsVM, let session`
-        // body: presenting with either missing would show an empty, clear
-        // cover with no close control.
-        guard itemsVM != nil, session != nil else { return }
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) { showItems = true }
+        Self.pushItem(itemID, onto: navigationPath)
     }
 
     /// Widen-then-scroll for a remembered scroll position. The widen
@@ -335,26 +309,16 @@ struct ChatView: View {
     @State private var pendingChildOpen: String?
     /// Tappable title → summaries TOC sheet (jump-to-point navigation).
     @State private var showSummaries = false
-    /// Task 11 (items tracker): right-edge drawer presentation flag and its
-    /// view model. The VM is created and started in `.task` regardless of
-    /// whether the drawer is open — the toolbar's `NeedsYouBadge` needs a
-    /// live `needsYouCount` even while closed — and stopped in the same
+    /// Tasks page (spec §4). The items VM is created and started in `.task`
+    /// regardless of which page shows — the toolbar's `NeedsYouBadge` needs
+    /// a live `needsYouCount` on the chat page — and stopped in the same
     /// `onDisappear` that stops `viewModel`/`stripViewModel`.
-    @State private var showItems = false
     @State private var itemsVM: ItemsPanelViewModel?
-    /// PR B / Task 13: the drawer's `NavigationStack` path, hoisted out of
-    /// `ItemsDrawer` (which used to own it as a private `@State`) so an
-    /// inline `.itemMarker` card tap can push straight to the item without
-    /// going through the drawer's own `onSelect`. `onOpenItem` below sets
-    /// both this and `showItems` together.
-    @State private var itemsPath: [String] = []
-    /// Width of the chat container the edge-swipe gesture measures against
-    /// (see the `.background(GeometryReader …)` below). Not a
-    /// `GeometryReader`-wrapped body: the timeline already has its own
-    /// scroll geometry reader, and threading a second one through the
-    /// whole view just for one gesture's edge test would be a bigger
-    /// change than reading the container's own size via a background.
-    @State private var chatContainerWidth: CGFloat = 0
+    @State private var pager = ChatPagerModel()
+    @State private var showCreateItem = false
+    /// id→title for the tracker's "All" rows; one cheap store scan per
+    /// scope switch (`conversationTitles()`).
+    @State private var originTitles: [String: String] = [:]
     /// Sheet payload for fullscreen attachment previews. Identifiable
     /// via a per-present UUID so two consecutive taps re-mount the
     /// sheet (and so `.sheet(item:)` doesn't conflate two separate
@@ -439,7 +403,7 @@ struct ChatView: View {
         Self.contextLine(boxName: boxName, workdir: viewModel.sessionStatus?.workdir)
     }
 
-    var body: some View {
+    private var chatPage: some View {
         VStack(spacing: 0) {
             // QA finding #10: surface upstream stream failures (e.g.
             // `SyncReadyError.timeout`) in a banner above the timeline
@@ -935,43 +899,87 @@ struct ChatView: View {
             }
             ComposerView(viewModel: composerVM)
         }
-        // Task 11: measures this container's width for the edge-swipe
-        // gesture below (`chatContainerWidth`) — a plain `.background`
-        // reader rather than wrapping the whole body in a
-        // `GeometryReader`, which would force every child (including the
-        // scroll-perf-sensitive timeline) to re-layout against a proxy.
-        .background(
-            GeometryReader { g in
-                Color.clear
-                    .onAppear { chatContainerWidth = g.size.width }
-                    .onChange(of: g.size.width) { _, newValue in chatContainerWidth = newValue }
-            }
-        )
-        // Right-edge swipe → open the tasks/decisions drawer. `simultaneous`
-        // (not exclusive) so it never steals the timeline's own scroll
-        // gesture or the system back-swipe from the LEADING edge — this one
-        // only fires on a start within 24pt of the TRAILING edge with a
-        // leftward drag, which those never produce. Disabled while an
-        // attachment preview or the drawer itself is up so it can't fight
-        // either sheet's own dismiss gesture.
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 20)
-                .onEnded { v in
-                    guard attachmentPreview == nil, !showItems,
-                          !showSessionStatus, !showMediaBrowser, !showSummaries,
-                          // A missing VM must NOT read as "supported"
-                          // (CodeRabbit, PR #185): the cover's content is
-                          // `if let itemsVM`, so opening before it exists
-                          // would present an empty, clear cover.
-                          let itemsVM, itemsVM.isSupported != false,
-                          chatContainerWidth > 0,
-                          v.startLocation.x > chatContainerWidth - 24,
-                          v.translation.width < -60,
-                          abs(v.translation.width) > abs(v.translation.height)
-                    else { return }
-                    openDrawer()
+    }
+
+    /// Page 1: this conversation's tracker (the existing `itemsVM`, scope
+    /// defaulting to this chat, picker available). No `NavigationStack` of
+    /// its own — item detail is pushed onto the OUTER stack as an
+    /// `ItemRoute` (spec §4; PR #188).
+    @ViewBuilder
+    private var tasksPage: some View {
+        if let itemsVM {
+            ItemsListView(
+                model: .init(
+                    needsYou: itemsVM.sections.needsYou,
+                    tasks: itemsVM.sections.tasks,
+                    decisions: itemsVM.sections.decisions,
+                    done: itemsVM.sections.done,
+                    originTitles: originTitles,
+                    isSupported: itemsVM.isSupported,
+                    isRefreshing: itemsVM.isRefreshing,
+                    // Fix wave part 2 (item C): surfaces a queued/offline
+                    // "create" outbox row that hasn't landed on the server
+                    // yet — without it a create sheet dismisses into
+                    // apparent nothing until the next successful drain.
+                    pending: itemsVM.pendingCreates.map {
+                        ItemsListView.PendingRow(id: $0.id, kind: $0.kind, title: $0.title,
+                                                 isFailed: $0.lastError != nil, error: $0.lastError)
+                    }
+                ),
+                scope: Binding(get: { itemsVM.scope }, set: { itemsVM.scope = $0 }),
+                convoID: itemsVM.convoID,
+                thumbnail: { _ in nil },
+                onSelect: { Self.pushItem($0.id, onto: navigationPath) },
+                onMove: { id, index in Task { await itemsVM.move(itemID: id, toIndex: index) } },
+                onCreate: { showCreateItem = true },
+                onOpenConversation: { id in
+                    // An origin link back to THIS room would push a second
+                    // entry onto the chat already showing — skip it.
+                    guard id != viewModel.roomID else { return }
+                    navigationPath?.wrappedValue.append(id)
                 }
-        )
+            )
+            // `conversationTitles()` — a plain id→title scan, cheap enough
+            // to re-run on every scope switch.
+            .task(id: itemsVM.scope) {
+                guard let deps, let session else { return }
+                originTitles = (try? deps.journalStore(for: session).conversationTitles()) ?? [:]
+            }
+            .sheet(isPresented: $showCreateItem) {
+                NewItemSheet { kind, title, itemBody in
+                    Task { await itemsVM.create(kind: kind, title: title, body: itemBody) }
+                }
+            }
+            .alert("Tracker", isPresented: Binding(get: { itemsVM.error != nil }, set: { if !$0 { itemsVM.error = nil } })) {
+                Button("OK") { itemsVM.error = nil }
+            } message: {
+                Text(itemsVM.error ?? "")
+            }
+        } else {
+            Color.clear
+        }
+    }
+
+    /// Whether the tracker page exists: the VM must exist and the journal
+    /// must not have said "unsupported" (a 404 on GET /items). With one
+    /// page the swipe does nothing (spec §7).
+    private var showsTasksPage: Bool {
+        guard let itemsVM else { return false }
+        return itemsVM.isSupported != false
+    }
+
+    var body: some View {
+        ChatPager(model: pager, showsTasks: showsTasksPage) {
+            chatPage
+        } tasks: {
+            tasksPage
+        }
+        // VoiceOver hears the page change; the announcement names the
+        // page that just arrived.
+        .onChange(of: pager.page) { _, page in
+            UIAccessibility.post(notification: .screenChanged,
+                                 argument: page == .tasks ? "Tasks and decisions" : chatTitle)
+        }
         // matron-web's cream timeline gradient sits behind the whole chat
         // column — bubbles (white / cyan) and the composer material all
         // render over the same warm ground.
@@ -989,55 +997,58 @@ struct ChatView: View {
             // (same gate as the row chip); the path arrives with the first
             // session-status frame, home-abbreviated like the info sheet.
             ToolbarItem(placement: .principal) {
-                Button { showSummaries = true } label: {
-                    VStack(spacing: 1) {
-                        titleText
-                            .font(.headline)
-                            .lineLimit(1)
-                        if let context = chatContextLine {
-                            Text(context)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                if pager.page == .tasks {
+                    Text("Tasks & decisions").font(.headline)
+                } else {
+                    Button { showSummaries = true } label: {
+                        VStack(spacing: 1) {
+                            titleText
+                                .font(.headline)
                                 .lineLimit(1)
-                                // Middle-truncate like the Mac toolbar's
-                                // subtitle: the tail of a path is the part
-                                // worth keeping.
-                                .truncationMode(.middle)
+                            if let context = chatContextLine {
+                                Text(context)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    // Middle-truncate like the Mac toolbar's
+                                    // subtitle: the tail of a path is the part
+                                    // worth keeping.
+                                    .truncationMode(.middle)
+                            }
                         }
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(Self.accessibilityTitle(
+                        chatTitle: chatTitle,
+                        boxName: boxName,
+                        sessionShort: sessionShort,
+                        roomBoxNames: roomBoxNames
+                    ))
+                    .accessibilityValue(chatContextLine ?? "")
+                    .accessibilityHint("Shows conversation summaries")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(Self.accessibilityTitle(
-                    chatTitle: chatTitle,
-                    boxName: boxName,
-                    sessionShort: sessionShort,
-                    roomBoxNames: roomBoxNames
-                ))
-                .accessibilityValue(chatContextLine ?? "")
-                .accessibilityHint("Shows conversation summaries")
             }
-            // Tasks & decisions drawer. Hidden once the panel VM has
-            // confirmed the journal doesn't support the tracker (a 404 on
-            // GET /items) — the same optimistic-until-proven-otherwise
-            // default the Mac pane uses. It also needs the VM to EXIST
-            // (CodeRabbit, PR #185): the cover's content is `if let
-            // itemsVM`, so a tap before the outer `.task` has built the VM
-            // would present an empty, clear cover with nothing to dismiss.
-            // The VM lands on the first `.task` pass, so the button is at
-            // most a frame late.
-            if let itemsVM, itemsVM.isSupported != false {
+            // Tasks page (spec §4). Hidden once the panel VM has confirmed
+            // the journal doesn't support the tracker; on the tasks page the
+            // same slot returns to the chat.
+            if showsTasksPage, let itemsVM {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        openDrawer()
-                    } label: {
-                        Image(systemName: "checklist")
-                            .overlay(alignment: .topTrailing) {
-                                NeedsYouBadge(count: itemsVM.needsYouCount)
-                                    .scaleEffect(0.75)
-                                    .offset(x: 10, y: -8)
-                            }
+                    if pager.page == .tasks {
+                        Button { withAnimation { pager.go(to: .chat) } } label: {
+                            Image(systemName: "bubble.left")
+                        }
+                        .accessibilityLabel("Back to the chat")
+                    } else {
+                        Button { withAnimation { pager.go(to: .tasks) } } label: {
+                            Image(systemName: "checklist")
+                                .overlay(alignment: .topTrailing) {
+                                    NeedsYouBadge(count: itemsVM.needsYouCount)
+                                        .scaleEffect(0.75)
+                                        .offset(x: 10, y: -8)
+                                }
+                        }
+                        .accessibilityLabel("Tasks and decisions")
                     }
-                    .accessibilityLabel("Tasks and decisions")
                 }
             }
             // Back to a single ⓘ (Dan, 2026-08-16 — the ellipsis read as
@@ -1229,42 +1240,6 @@ struct ChatView: View {
         }
         .onChange(of: viewModel.rows.isEmpty) { _, isEmpty in
             chatViewLogger.breadcrumb("rows \(isEmpty ? "EMPTY — warm-up spinner over blank area" : "populated") (items=\(viewModel.items.count))")
-        }
-        // The drawer is a clear `.fullScreenCover`, NOT an `.overlay` on
-        // this view (and the nav bar is no longer hidden while it's up).
-        // Two earlier shapes both failed: an `.overlay` renders BEHIND
-        // UIKit's navigation bar, and hiding the bar to compensate was
-        // masking the real defect — `ItemsDrawer` hosts its own
-        // `NavigationStack`, and on iOS 26 a `NavigationStack` mounted
-        // inside a pushed destination of the outer chat stack pops that
-        // outer stack to the chat list the moment it appears (reproduced
-        // in isolation with and without the hidden bar; the "black screen
-        // with a spinner" on re-entry was the re-pushed chat inheriting the
-        // still-hidden bar). A cover is its own presentation context: the
-        // inner stack can't reach the outer one, and the cover paints over
-        // the bar by construction. `openDrawer()` disables the cover's
-        // slide-up so the drawer's own trailing-edge slide is the only
-        // animation. `itemsVM`/`session` both required — see the `.task`
-        // above for why `itemsVM` can still be `nil` here.
-        .fullScreenCover(isPresented: $showItems) {
-            if let itemsVM, let session {
-                ItemsDrawer(
-                    isPresented: $showItems,
-                    path: $itemsPath,
-                    viewModel: itemsVM,
-                    session: session,
-                    // Bugbot: an origin link back to THIS room used to push
-                    // a second nav entry onto the very chat already showing
-                    // underneath the drawer. `ItemsDrawer`/`ItemDetailHost`
-                    // already close the drawer before this fires — the fix
-                    // here is only to skip the redundant push.
-                    onOpenConversation: { id in
-                        guard id != viewModel.roomID else { return }
-                        navigationPath?.wrappedValue.append(id)
-                    }
-                )
-                .presentationBackground(.clear)
-            }
         }
     }
 
