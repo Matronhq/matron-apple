@@ -28,11 +28,10 @@ private final class FakeMediaForSubagents: MediaService, @unchecked Sendable {
 /// Covers the subagents list that moved out of `ChatView`'s toolbar `Menu`
 /// and into `SessionStatusSheet` (Dan, 2026-09-09).
 ///
-/// Three layers, because only some of this surface is observable from a
-/// unit-test host:
+/// Two layers, because only some of this surface is observable from a
+/// unit-test host (the sheet takes `SubChatSummary` straight from the
+/// strip view model — no projection to pin):
 ///
-///  * `entries(from:)` — the projection `ChatView` feeds the sheet. Pure,
-///    so it's pinned exactly.
 ///  * `onOpenSubagent` — the handoff closure. Invoked directly on the
 ///    constructed view (the `NewChatSheetBindingTests` pattern); this is
 ///    what the row's action calls, one hop away.
@@ -81,35 +80,13 @@ final class SessionStatusSheetSubagentsTests: XCTestCase {
                       media: FakeMediaForSubagents())
     }
 
-    // MARK: - entries(from:)
-
-    func test_entries_mapEveryChildPreservingIdTitleRunningStateAndOrder() {
-        let children = [
-            SubChatSummary(id: "!c1:server", title: "sweep the services", isRunning: true),
-            SubChatSummary(id: "!c2:server", title: "read the middleware", isRunning: false),
-        ]
-
-        let entries = SessionStatusSheet.entries(from: children)
-
-        // Order is load-bearing: `SubChatStripViewModel.children` arrives in
-        // creation order (oldest first) and the section renders it verbatim.
-        XCTAssertEqual(entries, [
-            SubagentEntry(id: "!c1:server", title: "sweep the services", isRunning: true),
-            SubagentEntry(id: "!c2:server", title: "read the middleware", isRunning: false),
-        ])
-    }
-
-    func test_entries_ofNoChildren_isEmpty_soTheSectionDisappears() {
-        XCTAssertTrue(SessionStatusSheet.entries(from: []).isEmpty)
-    }
-
     // MARK: - the handoff closure
 
     func test_onOpenSubagent_reportsTheTappedChildID() {
         var captured: [String] = []
         let sheet = SessionStatusSheet(
             viewModel: makeViewModel(),
-            subagents: [SubagentEntry(id: "!c2:server", title: "read the middleware",
+            subagents: [SubChatSummary(id: "!c2:server", title: "read the middleware",
                                       isRunning: false)],
             onOpenSubagent: { captured.append($0) }
         )
@@ -133,8 +110,8 @@ final class SessionStatusSheetSubagentsTests: XCTestCase {
         let sheet = SessionStatusSheet(
             viewModel: makeViewModel(),
             subagents: [
-                SubagentEntry(id: "!c1:server", title: "sweep the services", isRunning: true),
-                SubagentEntry(id: "!c2:server", title: "read the middleware", isRunning: false),
+                SubChatSummary(id: "!c1:server", title: "sweep the services", isRunning: true),
+                SubChatSummary(id: "!c2:server", title: "read the middleware", isRunning: false),
             ],
             onOpenSubagent: { _ in }
         )

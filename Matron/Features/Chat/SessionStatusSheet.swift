@@ -4,16 +4,6 @@ import MatronModels
 import MatronViewModels
 import MatronDesignSystem
 
-/// One row in the info sheet's subagents list. A presentation-only mirror
-/// of `SubChatSummary`'s three display fields, so the sheet doesn't have to
-/// hold a chat-service value type just to draw a label — and so tests can
-/// build rows without a `ChatService`.
-struct SubagentEntry: Identifiable, Equatable {
-    let id: String
-    let title: String
-    let isRunning: Bool
-}
-
 /// iOS session-status sheet — surfaced from `ChatView`'s ⓘ toolbar button.
 /// Shows the context-window gauge and the stacked usage bars from the
 /// last journal `status` frame; replaces the old bot-profile sheet.
@@ -35,7 +25,7 @@ struct SessionStatusSheet: View {
     /// This chat's subagents (running and finished), oldest first — the
     /// list that used to be a toolbar `Menu` on `ChatView` (Dan,
     /// 2026-09-09). Empty ⇒ the section is absent entirely.
-    var subagents: [SubagentEntry] = []
+    var subagents: [SubChatSummary] = []
     /// Ride-along to a subagent's sub-chat, on the same terms as
     /// `onOpenMedia`: the closure only reports WHICH child was tapped.
     /// `ChatView` pushes it from the sheet's `onDismiss`, because this
@@ -43,15 +33,6 @@ struct SessionStatusSheet: View {
     /// push inside the sheet, not onto the chat's stack.
     var onOpenSubagent: ((String) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
-
-    /// Projects the strip view model's children onto the sheet's row type.
-    /// A named seam rather than an inline `map` at the call site so the
-    /// field-for-field correspondence is pinned by a test.
-    static func entries(from children: [SubChatSummary]) -> [SubagentEntry] {
-        children.map {
-            SubagentEntry(id: $0.id, title: $0.title, isRunning: $0.isRunning)
-        }
-    }
 
     private var status: SessionStatus? { viewModel.sessionStatus }
 

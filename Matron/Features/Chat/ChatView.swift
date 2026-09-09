@@ -1064,7 +1064,7 @@ struct ChatView: View {
             SessionStatusSheet(
                 viewModel: viewModel, boxName: boxName,
                 onOpenMedia: { pendingMediaOpen = true },
-                subagents: SessionStatusSheet.entries(from: stripViewModel.children),
+                subagents: stripViewModel.children,
                 onOpenSubagent: { id in pendingChildOpen = id }
             )
         }
