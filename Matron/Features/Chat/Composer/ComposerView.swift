@@ -18,12 +18,6 @@ struct ComposerView: View {
     @State private var showPhotosPicker = false
     @State private var showFileImporter = false
     @State private var recorder = VoiceRecorder()
-    /// Fix wave, item I4: the generation `startItemsSupport()` returned
-    /// for THIS view instance's subscription — recorded so `onDisappear`
-    /// can pass it to `stopItemsSupport(ifGeneration:)`, which is a no-op
-    /// if a same-room successor view has already started a fresher
-    /// subscription (mirrors `MacChatView`'s `itemsVMStartedGeneration`).
-    @State private var itemsSupportGeneration = 0
 
     /// The text field's padding (all edges). Named so the single-line
     /// height below stays tied to it: if the padding changes, the
@@ -164,14 +158,6 @@ struct ComposerView: View {
                let draft = ComposerDraftMemory.retrieve(roomID: viewModel.roomID) {
                 viewModel.input = draft
             }
-            // Task 12: subscribe to whether this journal supports the
-            // tracker at all — `canMakeTask` gates on it so the pill
-            // never shows against a server that would reject the create.
-            // `startItemsSupport()` always (re)starts (fix wave, item
-            // I4) — recording the generation it returns is what lets
-            // `onDisappear` tell "I'm the one who should stop this" apart
-            // from "a fresher successor view already took over".
-            itemsSupportGeneration = viewModel.startItemsSupport()
         }
         // Capture whatever is in the composer when this view leaves the
         // hierarchy (back-nav to chat list, sheet dismiss, etc.). Empty
@@ -183,7 +169,6 @@ struct ComposerView: View {
             // abort it (discarding the temp file) rather than letting the
             // mic keep capturing with nothing to stop or send it.
             recorder.cancel()
-            viewModel.stopItemsSupport(ifGeneration: itemsSupportGeneration)
         }
     }
 
@@ -200,53 +185,6 @@ struct ComposerView: View {
                 viewModel.removeAttachment(id: id)
             }
             inputRow
-        }
-        // Floating "Make task" pill (Task 12), centred above the composer.
-        // Not stacked into layout like the palette above — it must not
-        // shift the timeline every time it appears/disappears as the user
-        // types and clears the field.
-        .overlay(alignment: .top) {
-            ZStack {
-                // Neither the pill nor the notice may show while the
-                // palette OR the error banner is up (bugbot, PR #186):
-                // both those are separate VStack rows ABOVE `composerBar`
-                // (the palette pushes it down when stacked; the error
-                // banner is a sibling render right above it either way),
-                // so this floating overlay — anchored 8pt above
-                // `composerBar`'s own top edge — would draw right over
-                // whichever of them is showing if it weren't suppressed
-                // here too. `viewModel.showPalette` is the VM's real
-                // palette-visibility state (there is no separate
-                // view-local flag) — `canMakeTask` already excludes a
-                // bare single-token slash draft
-                // (`ComposerViewModel.isSlashCommandDraft`), but the
-                // palette ALSO opens in argument-completion mode for a
-                // fully-typed command plus a partial argument
-                // (`/start ~/re`) — multi-token, so NOT excluded there —
-                // which is exactly the case this whole block guards
-                // against.
-                if !viewModel.showPalette && viewModel.sendError == nil {
-                    if viewModel.canMakeTask {
-                        MakeTaskPill { Task { await viewModel.makeTask() } }
-                    } else if let notice = viewModel.lastFiledTaskNotice {
-                        // Fix wave, item I1: the VM owns the auto-clear
-                        // timer (`showFiledTaskNotice()`/`noticeTask`) —
-                        // this view just renders whatever string is
-                        // there, it doesn't race its own
-                        // `.task { sleep }` against VM state it doesn't
-                        // own.
-                        Text(notice)
-                            .font(.caption)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(.regularMaterial, in: Capsule())
-                    }
-                }
-            }
-            .alignmentGuide(.top) { $0[.bottom] + 8 }
-            .animation(.easeInOut(duration: 0.18), value: viewModel.canMakeTask)
-            .animation(.easeInOut(duration: 0.18), value: viewModel.showPalette)
-            .animation(.easeInOut(duration: 0.18), value: viewModel.sendError != nil)
         }
     }
 
