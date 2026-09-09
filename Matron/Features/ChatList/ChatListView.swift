@@ -540,7 +540,10 @@ struct ChatRow: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
-                UnreadBadge(count: summary.unreadCount)
+                HStack(spacing: 4) {
+                    NeedsYouBadge(count: summary.needsUserCount)
+                    UnreadBadge(count: summary.unreadCount)
+                }
             }
             .fixedSize(horizontal: true, vertical: false)
         }

@@ -69,6 +69,20 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
                     signalCont.yield(())
                 }
             }
+            // App-local: counts of open items awaiting the user, grouped by
+            // origin conversation. Its own observation for the same reason
+            // as `roster` above — a items write touches the `item` table,
+            // which the conversations fetch never reads, so without this
+            // the badge would only update on unrelated conversation churn.
+            // Never `finish()`es the signal, same as `roster`. Ruling: the
+            // FIRST summaries emission must not wait on this — an empty
+            // dict (⇒ needsUserCount 0 everywhere) is fine until it lands.
+            let needs = Task {
+                for await counts in store.needsUserCountsStream() {
+                    inputs.setNeedsUser(counts)
+                    signalCont.yield(())
+                }
+            }
             let consumer = Task {
                 for await _ in signal {
                     guard let records = inputs.records else { continue }
@@ -87,7 +101,11 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
                     // same letter shows on every one of the user's devices.
                     let boxLetters = SessionTag.boxLetters(
                         for: boxNames, overrides: roster.tagChars)
-                    continuation.yield(records.map { Self.summary(from: $0, boxNames: boxNames, boxLetters: boxLetters) })
+                    let needsUser = inputs.needsUser
+                    continuation.yield(records.map {
+                        Self.summary(from: $0, boxNames: boxNames, boxLetters: boxLetters,
+                                     needsUser: needsUser[$0.id] ?? 0)
+                    })
                     try? await Task.sleep(for: interval)
                 }
                 continuation.finish()
@@ -95,6 +113,7 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
             continuation.onTermination = { _ in
                 producer.cancel()
                 roster.cancel()
+                needs.cancel()
                 consumer.cancel()
             }
         }
@@ -102,7 +121,7 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
 
     /// `boxNames` is the id → name map of the user's agent boxes. The chip
     /// gate lives here: fewer than two boxes means no chip on any row.
-    static func summary(from record: ConversationRecord, boxNames: [Int64: String], boxLetters: [Int64: String] = [:]) -> ChatSummary {
+    static func summary(from record: ConversationRecord, boxNames: [Int64: String], boxLetters: [Int64: String] = [:], needsUser: Int = 0) -> ChatSummary {
         let activityMS = record.lastActivityTS ?? (record.createdAt > 0 ? record.createdAt : nil)
         // The bridge bakes a `[bc] ` session short into earned titles —
         // peel it off so rows show the clean title and restyle the short
@@ -124,7 +143,8 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
             // there is more than one box to tell apart.
             boxShort: boxName != nil ? record.agentDeviceID.flatMap { boxLetters[$0] } : nil,
             roomBoxNames: roomTags.map(\.name),
-            roomBoxShorts: roomTags.map(\.letter)
+            roomBoxShorts: roomTags.map(\.letter),
+            needsUserCount: needsUser
         )
     }
 
@@ -211,9 +231,22 @@ private final class SummaryInputs: @unchecked Sendable {
     private var _records: [ConversationRecord]?
     private var _boxNames: [Int64: String]?
     private var _boxTagChars: [Int64: String]?
+    /// Origin-convo-id → open-items-awaiting-user count. Empty (not nil)
+    /// until the needs observation's first value lands — the consumer
+    /// treats "hasn't arrived yet" the same as "nothing needs the user",
+    /// so the first summaries emission never blocks on it.
+    private var _needsUser: [String: Int] = [:]
 
     var records: [ConversationRecord]? {
         lock.withLock { _records }
+    }
+
+    var needsUser: [String: Int] {
+        lock.withLock { _needsUser }
+    }
+
+    func setNeedsUser(_ counts: [String: Int]) {
+        lock.withLock { _needsUser = counts }
     }
 
     /// Both roster maps under ONE lock acquisition — reading them through

@@ -45,6 +45,12 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
     /// order) — what the colored `A↔B` room tag actually prints. The name
     /// array carries the hue, this one the glyphs.
     public let roomBoxShorts: [String]
+    /// Open items on this conversation still awaiting the user, from the
+    /// local items cache (`JournalStore.needsUserCountsStream()`) — the
+    /// journal has no such endpoint, so this is app-local and derived, not
+    /// server-carried like `unreadCount`. Feeds the orange `NeedsYouBadge`
+    /// on chat-list rows, alongside the existing unread pill.
+    public let needsUserCount: Int
 
     public init(
         id: String,
@@ -58,7 +64,8 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
         sessionShort: String? = nil,
         boxShort: String? = nil,
         roomBoxNames: [String] = [],
-        roomBoxShorts: [String] = []
+        roomBoxShorts: [String] = [],
+        needsUserCount: Int = 0
     ) {
         self.id = id
         self.title = title
@@ -72,6 +79,7 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
         self.boxShort = boxShort
         self.roomBoxNames = roomBoxNames
         self.roomBoxShorts = roomBoxShorts
+        self.needsUserCount = needsUserCount
     }
 }
 
