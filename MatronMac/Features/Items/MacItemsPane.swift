@@ -90,6 +90,19 @@ final class MacItemsPaneState {
     /// attachment while its first fetch is still in flight is ignored
     /// rather than starting a duplicate download.
     var detailFetchingBlobRefs: Set<String> = []
+    /// `ItemReadMemory.wasAtBottom(itemID:)` for whichever item is
+    /// currently pushed — read once when `detailItemID` is (re)assigned
+    /// (`.task(id: itemID)`'s guard block) and handed to `ItemDetailView`
+    /// as `startsAtBottom`. Lives here rather than host-local `@State`
+    /// for the same reason `detailItemID` does: `MacItemDetailHost` swaps
+    /// items in place (same `ItemDetailView` call site, new `model.item`),
+    /// which SwiftUI treats as the same view identity, so host-local
+    /// `@State` wouldn't reliably reset per item.
+    var detailStartsAtBottom = false
+    /// Latest bottom-visibility the comment thread reported for the
+    /// currently pushed item (`ItemDetailView.onBottomVisibilityChange`).
+    /// Persisted to `ItemReadMemory` on item-id change and on disappear.
+    var detailIsAtBottom = false
 
     init() {}
 }
@@ -223,6 +236,12 @@ struct MacItemDetailHost: View {
     let state: MacItemsPaneState
     let onOpenConversation: (String) -> Void
     @Environment(\.appDependencies) private var deps
+    /// Hover state for the "Drop here to add" overlay while a drag is over
+    /// the detail pane — mirrors `MacChatView.isDropTargeted`, but scoped
+    /// to this host (no stuck-overlay watchdog: `ComposerDropDelegate`'s
+    /// delegate-based `.onDrop` isn't reused here, so there's no lingering
+    /// drag session to lose `dropExited` — see `attachDroppedFiles(_:)`).
+    @State private var isDropTargeted = false
 
     /// Identifiable wrapper so `.sheet(item:)` has something to key on —
     /// `ImageGallery` itself isn't `Identifiable` (same pattern as
@@ -275,7 +294,9 @@ struct MacItemDetailHost: View {
                         onAttach: { pickFiles { urls in Task { await attachFiles(urls) } } },
                         onVoiceNote: { startVoiceNote() },
                         onClose: { r in Task { await viewModel.close(resolution: r, comment: nil) } },
-                        onReopen: { Task { await viewModel.reopen() } })
+                        onReopen: { Task { await viewModel.reopen() } },
+                        startsAtBottom: state.detailStartsAtBottom,
+                        onBottomVisibilityChange: { state.detailIsAtBottom = $0 })
                 } else {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -301,14 +322,30 @@ struct MacItemDetailHost: View {
             // lives on `state`, which survives the rebuild untouched when
             // this guard is a no-op.
             guard state.detailItemID != itemID, let deps else { return }
+            // Persist the OUTGOING item's read position before swapping —
+            // this host swaps items in place rather than tearing down and
+            // rebuilding (I6), so this guard body is the only reliable
+            // "leaving this item" signal; `.onDisappear` below only fires
+            // on a genuine pane close, not an in-place navigation.
+            if let previousItemID = state.detailItemID {
+                ItemReadMemory().store(itemID: previousItemID, atBottom: state.detailIsAtBottom)
+            }
             state.detailViewModel?.stop()
             state.detailImages = [:]
             state.detailOriginTitle = nil
             state.detailGalleryPreview = nil
             let vm = deps.makeItemDetailViewModel(for: session, itemID: itemID)
             state.detailItemID = itemID
+            state.detailStartsAtBottom = ItemReadMemory().wasAtBottom(itemID: itemID)
+            state.detailIsAtBottom = state.detailStartsAtBottom
             state.detailViewModel = vm
             vm.start()
+        }
+        // Belt-and-braces for the LAST item viewed in a pane close/window
+        // teardown, which the in-place swap above never sees (there's no
+        // "next" item to trigger its guard).
+        .onDisappear {
+            ItemReadMemory().store(itemID: itemID, atBottom: state.detailIsAtBottom)
         }
         .task(id: imageAttachments.map(\.blobRef)) {
             guard let deps else { return }
@@ -334,16 +371,38 @@ struct MacItemDetailHost: View {
         } message: {
             Text(state.detailViewModel?.error ?? "")
         }
-        // No `onDisappear` teardown here on purpose (I6): a width-crossing
+        // No VM-teardown `onDisappear` here on purpose (I6): a width-crossing
         // rebuild tears this host down and immediately rebuilds it for the
         // SAME item, and an unconditional stop() here would race that
         // rebuild's `.task(id: itemID)` (which is a no-op for a matching
         // id) and kill the VM out from under it. Teardown instead happens
         // in `MacChatView`'s outer `onDisappear`, which only fires on a
-        // genuine room-leave — see its comment.
+        // genuine room-leave — see its comment. The `.onDisappear` added
+        // above is unrelated: it only persists `ItemReadMemory`, which is
+        // idempotent and safe to run on every teardown, including a
+        // same-item rebuild.
         .sheet(item: galleryPreviewBinding) { preview in
             AttachmentFullscreenViewer(gallery: preview.gallery, onDismiss: { state.detailGalleryPreview = nil })
         }
+        // Drag-and-drop attachments over the whole detail pane, mirroring
+        // `MacChatView`'s chat-column drop zone (Task: tracker composer
+        // parity). Resolves each provider through `ComposerDropDelegate`'s
+        // shared static loader rather than duplicating it, then posts the
+        // result as an attachment-only comment via the same `attachFiles(_:)`
+        // the paperclip picker uses.
+        .onDrop(of: ComposerDropDelegate.acceptedTypes, isTargeted: $isDropTargeted) { providers in
+            guard !providers.isEmpty else { return false }
+            Task { await attachDroppedFiles(providers) }
+            return true
+        }
+        .overlay {
+            if isDropTargeted {
+                DropHereOverlay(subtitle: "Files and images will be attached to this item")
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: isDropTargeted)
     }
 
     private func mediaURL(_ a: TrackerAttachment) -> URL {
@@ -431,6 +490,26 @@ struct MacItemDetailHost: View {
     /// `Result`'s failure type must conform to `Error` — a plain `String`
     /// doesn't, hence this tiny wrapper rather than `Result<Data, String>`.
     private struct AttachmentReadFailure: Error { let message: String }
+
+    /// Resolves each dropped `NSItemProvider` to a local URL via
+    /// `ComposerDropDelegate`'s shared static loader (the same one the
+    /// chat column's drop zone uses — not duplicated here), then hands the
+    /// successfully-resolved URLs to `attachFiles(_:)`. Mirrors
+    /// `ComposerDropDelegate.performDrop`'s "some good, some bad providers
+    /// still attaches the good ones" behaviour; load failures are silently
+    /// skipped rather than surfaced — `attachFiles`/`readCapped` already
+    /// owns the user-visible error channel for this pane (`viewModel.error`),
+    /// and a provider that fails to resolve to a URL at all never reaches it.
+    private func attachDroppedFiles(_ providers: [NSItemProvider]) async {
+        var urls: [URL] = []
+        for provider in providers {
+            if case .success(let url) = await ComposerDropDelegate.loadURL(from: provider) {
+                urls.append(url)
+            }
+        }
+        guard !urls.isEmpty else { return }
+        await attachFiles(urls)
+    }
 
     private func attachFiles(_ urls: [URL]) async {
         guard let viewModel = state.detailViewModel else { return }

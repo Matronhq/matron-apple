@@ -48,6 +48,17 @@ struct ItemDetailHost: View {
     /// instead of a redundant fetch, and drives the `fetchingBar` overlay
     /// (fix wave part 2, C2/I9).
     @State private var fetchingBlobRefs: Set<String> = []
+    /// `ItemReadMemory.wasAtBottom(itemID:)`, read once in the `.task`
+    /// below (not on every render) and handed to `ItemDetailView` as
+    /// `startsAtBottom`. A fresh push of this destination per item id
+    /// (see `ItemsDrawer`'s `navigationDestination`) gives this `@State`
+    /// a fresh identity per item, unlike the Mac host, which swaps items
+    /// in place and hoists the equivalent state onto `MacItemsPaneState`.
+    @State private var startsAtBottom = false
+    /// Latest bottom-visibility the comment thread reported
+    /// (`ItemDetailView.onBottomVisibilityChange`), persisted to
+    /// `ItemReadMemory` in `.onDisappear`.
+    @State private var isAtBottom = false
 
     private enum AttachmentPreview: Identifiable {
         case image(id: UUID = UUID(), ImageGallery)
@@ -93,7 +104,9 @@ struct ItemDetailHost: View {
                     onAttach: { showAttachChooser = true },
                     onVoiceNote: { Task { await startRecording(vm) } },
                     onClose: { resolution in Task { await vm.close(resolution: resolution, comment: nil) } },
-                    onReopen: { Task { await vm.reopen() } }
+                    onReopen: { Task { await vm.reopen() } },
+                    startsAtBottom: startsAtBottom,
+                    onBottomVisibilityChange: { isAtBottom = $0 }
                 )
                 .overlay(alignment: .bottom) {
                     if case let .recording(start) = recorder.state {
@@ -123,14 +136,24 @@ struct ItemDetailHost: View {
             Text(viewModel?.error ?? "")
         }
         .task {
+            startsAtBottom = ItemReadMemory().wasAtBottom(itemID: itemID)
             guard let deps else { return }
             let vm = deps.makeItemDetailViewModel(for: session, itemID: itemID)
             viewModel = vm
             vm.start()
         }
         .onDisappear {
+            ItemReadMemory().store(itemID: itemID, atBottom: isAtBottom)
             viewModel?.stop()
             recorder.cancel()
+        }
+        // iPad drag-and-drop from Files/Photos, mirroring the Mac detail
+        // pane's `.onDrop` (Task: tracker composer parity). `attachPickedFiles`
+        // already owns security-scoped reading + `submitAttachments`.
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let vm = viewModel, !urls.isEmpty else { return false }
+            Task { await attachPickedFiles(urls, vm: vm) }
+            return true
         }
         .onChange(of: photoItem) { _, newItem in
             guard let newItem, let vm = viewModel else { return }

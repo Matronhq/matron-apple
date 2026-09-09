@@ -1648,6 +1648,12 @@ private struct MacSubChatMiniHeader: View {
 /// `.onDrop`/`ComposerDropDelegate` this overlays (the call site turns
 /// hit-testing off).
 struct DropHereOverlay: View {
+    /// Defaults to the chat column's own copy so every existing call site
+    /// (just the one in `MacChatView`) stays source-compatible; the items
+    /// pane (`MacItemDetailHost`) passes its own wording — attachments
+    /// there land on the item's comment thread, not a message.
+    var subtitle: String = "Files and images will be attached to your message"
+
     var body: some View {
         ZStack {
             Rectangle()
@@ -1663,7 +1669,7 @@ struct DropHereOverlay: View {
                     .font(.system(size: 42, weight: .light))
                 Text("Drop here to add")
                     .font(.title3.weight(.semibold))
-                Text("Files and images will be attached to your message")
+                Text(subtitle)
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
