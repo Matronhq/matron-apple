@@ -23,8 +23,8 @@ struct AppShellView: View {
     /// a room opened from any tab rebinds to the same live view models.
     @State private var vmCache = ChatVMCache()
     @State private var decisionsVM: ItemsPanelViewModel
-    /// Origin conversation titles for the Decisions rows (`conversationTitles()`
-    /// is a cheap id→title scan, re-run when the set of origins changes).
+    /// Origin conversation labels for the Decisions rows (`conversationOriginLabels()`
+    /// is a cheap id→label scan, re-run when the set of origins changes).
     @State private var originTitles: [String: String] = [:]
     /// The coordinator conversation (spec §5b), live through `@AppStorage`
     /// on the per-user key so Settings' Change/Clear flip the tab at once.
@@ -173,7 +173,7 @@ struct AppShellView: View {
                                onOpenConversation: { nav.openConversation(fromDecisions: $0) })
             }
             .task(id: decisionsVM.awaitingYou.map(\.originConvoID)) {
-                originTitles = (try? deps.journalStore(for: session).conversationTitles()) ?? [:]
+                originTitles = (try? deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
             }
             // Refresh failures surface through the VM's `error` — the same
             // alert the tracker uses (spec §7).

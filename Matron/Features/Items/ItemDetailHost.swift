@@ -240,12 +240,12 @@ struct ItemDetailHost: View {
         }
     }
 
-    /// `conversation(id:)` — same cheap per-id store read `ItemsDrawer`
-    /// uses for the list's `originTitles`, no dedicated "title for id" API
-    /// exists (grep confirmed).
+    /// `conversationOriginLabel(id:)` — same cheap per-id store read
+    /// `ItemsDrawer` uses for the list's `originTitles`, naming the box
+    /// alongside the title (item #114).
     private func loadOriginTitle(_ convoID: String) async {
         guard let deps else { originTitle = nil; return }
-        originTitle = (try? deps.journalStore(for: session).conversation(id: convoID))?.title
+        originTitle = try? deps.journalStore(for: session).conversationOriginLabel(id: convoID)
     }
 
     private func open(_ attachment: TrackerAttachment) {

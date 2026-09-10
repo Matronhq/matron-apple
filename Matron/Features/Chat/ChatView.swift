@@ -335,8 +335,8 @@ struct ChatView: View {
     @State private var itemsVM: ItemsPanelViewModel?
     @State private var pager = ChatPagerModel()
     @State private var showCreateItem = false
-    /// id→title for the tracker's "All" rows; one cheap store scan per
-    /// scope switch (`conversationTitles()`).
+    /// id→label for the tracker's "All" rows; one cheap store scan per
+    /// scope switch (`conversationOriginLabels()`).
     @State private var originTitles: [String: String] = [:]
     /// Sheet payload for fullscreen attachment previews. Identifiable
     /// via a per-present UUID so two consecutive taps re-mount the
@@ -961,11 +961,11 @@ struct ChatView: View {
                     navigationPath?.wrappedValue.append(id)
                 }
             )
-            // `conversationTitles()` — a plain id→title scan, cheap enough
-            // to re-run on every scope switch.
+            // `conversationOriginLabels()` — a plain id→label scan, cheap
+            // enough to re-run on every scope switch.
             .task(id: itemsVM.scope) {
                 guard let deps, let session else { return }
-                originTitles = (try? deps.journalStore(for: session).conversationTitles()) ?? [:]
+                originTitles = (try? deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
             }
             .sheet(isPresented: $showCreateItem) {
                 NewItemSheet { kind, title, itemBody in
