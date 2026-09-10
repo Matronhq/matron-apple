@@ -1046,20 +1046,24 @@ public final class ChatViewModel {
         let hits = (try? await search.query(trimmed, roomID: roomID, limit: Self.chatSearchMatchLimit)) ?? []
         let seqs = hits.compactMap { Int64($0.id) }
         chatSearch = ChatSearchState(query: trimmed, matchSeqs: seqs, index: 0)
-        // Every re-query owns the jump machinery from here: a previous
-        // query's parked seq must not fire on the next snapshot after
-        // this one's results replaced it in the bar (Bugbot, PR #172 —
-        // second round: the no-hit path cancelled the in-flight task but
-        // left the park armed).
-        pendingChatSearchFocusSeq = nil
         guard let newest = seqs.first else {
             // A re-query with no hits shows "No matches" — an earlier
             // query's still-paginating deep jump landing after that would
             // scroll the transcript to a match that no longer exists in
-            // the bar (Bugbot, PR #172).
-            focusTask?.cancel()
+            // the bar, and its parked seq must not fire on the next
+            // snapshot either (Bugbot, PR #172, two rounds). Only search's
+            // OWN jump dies here: a last-message jump in flight while the
+            // user types a query that finds nothing keeps going (Bugbot,
+            // PR #202 — see `FocusOwner`).
+            if focusOwner == .search {
+                pendingChatSearchFocusSeq = nil
+                focusTask?.cancel()
+                focusOwner = nil
+            }
             return
         }
+        // A hit supersedes whatever jump was running or parked, whoever
+        // owned it — the user just asked for this one.
         await focusOrPark(seq: newest, owner: .search)
     }
 

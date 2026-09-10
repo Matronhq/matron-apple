@@ -444,6 +444,56 @@ final class ChatViewModelTests: XCTestCase {
         vm.stop()
     }
 
+    /// A search that finds nothing (common right after opening a room from
+    /// grouped search) must not kill a last-message jump that is still
+    /// paginating (Bugbot, PR #202, round two).
+    @MainActor
+    func test_jumpToLastOwnMessage_survivesNoHitSearch() async throws {
+        let fake = BlockingPagingFakeTimelineService(loaded: [row(50, own: false)],
+                                                     olderPages: [[row(3, own: true)]])
+        fake.newestOwnSeq = 3
+        let search = FakeSearchService(hits: [])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService(), search: search)
+        _ = await vm.start()
+
+        let jump = Task { @MainActor in await vm.jumpToLastOwnMessage() }
+        let deadline = Date().addingTimeInterval(2)
+        while !fake.paginateStarted && Date() < deadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(fake.paginateStarted)
+
+        await vm.beginChatSearch(query: "nothing")
+        XCTAssertEqual(vm.chatSearch?.matchSeqs, [], "the bar reports no matches")
+        fake.release()
+        let jumped = await jump.value
+        XCTAssertTrue(jumped)
+        XCTAssertEqual(vm.pendingFocusID, "3", "a no-hit query must not cancel the jump")
+        vm.stop()
+    }
+
+    /// Same for a COLD park: a no-hit query typed before the stream is
+    /// live leaves the parked last-message jump armed, and it fires on the
+    /// first snapshot.
+    @MainActor
+    func test_jumpToLastOwnMessage_coldParkSurvivesNoHitSearch() async throws {
+        let fake = PagingFakeTimelineService(loaded: [row(3, own: true)], olderPages: [])
+        fake.newestOwnSeq = 3
+        let search = FakeSearchService(hits: [])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService(), search: search)
+        _ = await vm.jumpToLastOwnMessage()
+        await vm.beginChatSearch(query: "nothing")
+        XCTAssertNil(vm.pendingFocusID)
+
+        _ = await vm.start()
+        let deadline = Date().addingTimeInterval(2)
+        while vm.pendingFocusID == nil && Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(vm.pendingFocusID, "3")
+        vm.stop()
+    }
+
     /// A hit whose id is not a seq (should never happen — the index only
     /// ever stores seqs) is dropped rather than crashing or derailing
     /// navigation.
