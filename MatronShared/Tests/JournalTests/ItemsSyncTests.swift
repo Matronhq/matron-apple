@@ -48,6 +48,12 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
     private var _blockNextItem = false
     private var _itemGate: CheckedContinuation<Void, Never>?
     private var _itemCalls = 0
+    /// Fix round 3: the gate for `listItems`, so a test can hold one
+    /// `refresh(scope:)` open inside its network call and prove a second,
+    /// concurrent refresh of the same scope joins it instead of issuing a
+    /// second paginated GET.
+    private var _blockNextList = false
+    private var _listGate: CheckedContinuation<Void, Never>?
 
     var listResponses: [ItemsPage] {
         get { lock.withLock { _listResponses } }
@@ -89,6 +95,17 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
         set { lock.withLock { _blockNextItem = newValue } }
     }
     var isItemGated: Bool { lock.withLock { _itemGate != nil } }
+    var blockNextList: Bool {
+        get { lock.withLock { _blockNextList } }
+        set { lock.withLock { _blockNextList = newValue } }
+    }
+    var isListGated: Bool { lock.withLock { _listGate != nil } }
+    func releaseListGate() {
+        let cont = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            let c = _listGate; _listGate = nil; return c
+        }
+        cont?.resume()
+    }
     var itemCalls: Int { lock.withLock { _itemCalls } }
     func releaseItemGate() {
         let cont = lock.withLock { () -> CheckedContinuation<Void, Never>? in
@@ -126,6 +143,14 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
         // real I/O that the runtime would cancel for us).
         try Task.checkCancellation()
         lock.withLock { _listQueries.append(q) }
+        let shouldGateList = lock.withLock { () -> Bool in
+            guard _blockNextList else { return false }
+            _blockNextList = false
+            return true
+        }
+        if shouldGateList {
+            await withCheckedContinuation { cont in lock.withLock { _listGate = cont } }
+        }
         // Two-step lock: first check whether a queued entry exists at all
         // (so an empty queue correctly falls through to the blanket
         // `listError`), THEN pop it. Collapsing this into one `withLock`
@@ -258,6 +283,59 @@ final class ItemsSyncTests: XCTestCase {
         api.listResponses = [ItemsPage(items: [], nextCursor: nil)]
         await sync.refresh(scope: .all)
         XCTAssertNil(api.listQueries.last?.since, "no persisted watermark → next refresh is a full fetch")
+    }
+
+    /// Fix round 3: `refreshItem` has always coalesced per id; `refresh`
+    /// did not, so a reconnect, a pull-to-refresh and a tracker-link miss
+    /// retry arriving together each ran their own full paginated GET.
+    func testConcurrentSameScopeRefreshesShareOneFetch() async throws {
+        let api = FakeItems()
+        api.blockNextList = true
+        let (sync, _, _, _) = try make(api: api)
+
+        let first = Task { await sync.refresh(scope: .all) }
+        // The first call is now genuinely suspended INSIDE the network
+        // call, so the actor is free for the second one to enter and join.
+        while !api.isListGated { await Task.yield() }
+
+        let secondStarted = Atomic(false)
+        let secondFinished = Atomic(false)
+        let second = Task {
+            secondStarted.set(true)
+            await sync.refresh(scope: .all)
+            secondFinished.set(true)
+        }
+        while !secondStarted.get() { await Task.yield() }
+        for _ in 0..<50 { await Task.yield() }
+
+        // If it had NOT joined, it would have issued its own (ungated —
+        // the gate is one-shot) fetch and already returned by now.
+        XCTAssertFalse(secondFinished.get(), "the second caller must await the run already in flight")
+
+        api.releaseListGate()
+        await first.value
+        await second.value
+        XCTAssertEqual(api.listQueries.count, 1, "two concurrent .all refreshes hit the API once")
+
+        // Coalescing is per-run, not a permanent latch: once the run is
+        // done the next refresh fetches again.
+        await sync.refresh(scope: .all)
+        XCTAssertEqual(api.listQueries.count, 2)
+    }
+
+    func testConcurrentDifferentScopesStillFetchIndependently() async throws {
+        let api = FakeItems()
+        api.blockNextList = true
+        let (sync, _, _, _) = try make(api: api)
+
+        let first = Task { await sync.refresh(scope: .all) }
+        while !api.isListGated { await Task.yield() }
+        // A DIFFERENT scope is a different query — it must not be starved
+        // by the in-flight `.all`.
+        await sync.refresh(scope: .convo("c1"))
+        XCTAssertEqual(api.listQueries.count, 2)
+        api.releaseListGate()
+        await first.value
     }
 
     func testNotFoundMarksUnsupported() async throws {

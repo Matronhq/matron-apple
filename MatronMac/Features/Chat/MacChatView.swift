@@ -577,7 +577,7 @@ struct MacChatView: View {
             // `MacItemsPaneState`'s doc comment). A real room-leave must
             // still stop the detail VM's subscriptions and cancel any
             // in-flight recording.
-            itemsPaneState.detailViewModel?.stop()
+            itemsPaneState.releaseAllSlots()
             itemsPaneState.detailRecorder.cancel()
             // Shrink the cached VM's window for the next open — keeping a
             // grown window here is what made switching BACK to a deep-read

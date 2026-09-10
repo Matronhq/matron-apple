@@ -69,42 +69,83 @@ final class MacItemsPaneState {
     var showCreate = false
     var originTitles: [String: String] = [:]
 
-    /// Detail state for whichever item is currently pushed
-    /// (`path.last`). `detailItemID` is the guard `MacItemDetailHost`
-    /// checks before (re)creating `detailViewModel` — matching ids means
-    /// "this is a rebuild of the same push, keep what's here"; a
-    /// mismatch means real navigation to a different item, which tears
-    /// down the old VM and starts a fresh one.
-    var detailItemID: String?
-    var detailViewModel: ItemDetailViewModel?
-    var detailImages: [String: Image] = [:]
-    var detailGalleryPreview: MacItemDetailHost.GalleryPreview?
-    var detailOriginTitle: String?
     /// One recorder shared across whichever item is open — mirrors the
     /// single-recorder-per-host design from before hoisting; a user
     /// switching items mid-recording is an edge case this doesn't newly
     /// introduce (the original per-host `@State` recorder had the same
     /// "belongs to whatever's current" property).
     let detailRecorder = VoiceRecorder()
+
+    /// Detail state, ONE SLOT PER ITEM currently reachable on this surface
+    /// — every item on `path`, or (on the stackless Decisions surface) just
+    /// the selected one.
+    ///
+    /// This was a single slot until item links made the pane a real stack
+    /// (#115). With one slot, pushing #12 over #9 overwrote #9's
+    /// `ItemDetailViewModel`, and Back rebuilt it from scratch — silently
+    /// throwing away the half-typed comment in `ItemDetailViewModel.draft`,
+    /// the only place that text lives. Keyed slots mean a pop finds the
+    /// SAME view model, draft and all.
+    private(set) var slots: [String: MacItemDetailSlot] = [:]
+
+    /// Where released slots persist their read position. Injectable so
+    /// tests exercise slot lifetime without writing to the real defaults.
+    let readMemory: ItemReadMemory
+
+    init(readMemory: ItemReadMemory = ItemReadMemory()) {
+        self.readMemory = readMemory
+    }
+
+    /// This item's slot, created on first push. Never recycles another
+    /// item's — call it from `.task`, not from `body` (it mutates).
+    func slot(for itemID: String) -> MacItemDetailSlot {
+        if let existing = slots[itemID] { return existing }
+        let fresh = MacItemDetailSlot(itemID: itemID)
+        slots[itemID] = fresh
+        return fresh
+    }
+
+    /// Drops every slot whose item is no longer reachable — stopping its
+    /// view model and persisting its read position, the two things the old
+    /// single-slot swap did inline. `retained` is the stack (or, stackless,
+    /// the one selected item).
+    func releaseSlots(keeping retained: Set<String>) {
+        for (id, slot) in slots where !retained.contains(id) {
+            slot.viewModel?.stop()
+            readMemory.store(itemID: id, atBottom: slot.isAtBottom)
+            slots[id] = nil
+        }
+    }
+
+    /// Surface teardown (pane close, window teardown, nav switch).
+    func releaseAllSlots() {
+        releaseSlots(keeping: [])
+    }
+}
+
+/// Everything `MacItemDetailHost` needs for ONE item, so two hosts on the
+/// same stack can't tread on each other. Reference type: hosts read and
+/// write it in place, and `@Observable` so those writes still drive the
+/// view (`MacItemsPaneState`'s own observation stops at the dictionary).
+@MainActor @Observable
+final class MacItemDetailSlot {
+    let itemID: String
+    var viewModel: ItemDetailViewModel?
+    var images: [String: Image] = [:]
+    var galleryPreview: MacItemDetailHost.GalleryPreview?
+    var originTitle: String?
     /// `blobRef`s currently being fetched — a second tap on the same
     /// attachment while its first fetch is still in flight is ignored
     /// rather than starting a duplicate download.
-    var detailFetchingBlobRefs: Set<String> = []
-    /// `ItemReadMemory.wasAtBottom(itemID:)` for whichever item is
-    /// currently pushed — read once when `detailItemID` is (re)assigned
-    /// (`.task(id: itemID)`'s guard block) and handed to `ItemDetailView`
-    /// as `startsAtBottom`. Lives here rather than host-local `@State`
-    /// for the same reason `detailItemID` does: `MacItemDetailHost` swaps
-    /// items in place (same `ItemDetailView` call site, new `model.item`),
-    /// which SwiftUI treats as the same view identity, so host-local
-    /// `@State` wouldn't reliably reset per item.
-    var detailStartsAtBottom = false
-    /// Latest bottom-visibility the comment thread reported for the
-    /// currently pushed item (`ItemDetailView.onBottomVisibilityChange`).
-    /// Persisted to `ItemReadMemory` on item-id change and on disappear.
-    var detailIsAtBottom = false
+    var fetchingBlobRefs: Set<String> = []
+    /// `ItemReadMemory.wasAtBottom(itemID:)`, read once when the slot is
+    /// created and handed to `ItemDetailView` as `startsAtBottom`.
+    var startsAtBottom = false
+    /// Latest bottom-visibility the comment thread reported. Persisted to
+    /// `ItemReadMemory` when the slot is released.
+    var isAtBottom = false
 
-    init() {}
+    init(itemID: String) { self.itemID = itemID }
 }
 
 /// Mac tasks-and-decisions pane (spec 2026-09-08-items-tracker-apps, Task
@@ -157,6 +198,14 @@ struct MacItemsPane: View {
         }
         .sheet(isPresented: Binding(get: { state.showCreate }, set: { state.showCreate = $0 })) {
             NewItemSheet { kind, title, body in Task { await viewModel.create(kind: kind, title: title, body: body) } }
+        }
+        // Slots are kept alive for everything ON the stack so Back restores
+        // an item's view model (and its draft) instead of rebuilding it —
+        // so the stack shrinking is what frees them. Covers the case no
+        // host's `.task` can: popping all the way back to the LIST, where
+        // no detail host is left to run anything.
+        .onChange(of: state.path) { _, path in
+            state.releaseSlots(keeping: Set(path))
         }
         .task(id: viewModel.scope) {
             // Labels for the "All" scope rows come from the local store's
@@ -223,13 +272,15 @@ struct NewItemSheet: View {
     }
 }
 
-/// Item detail push destination. Reads/writes everything through the
-/// shared `MacItemsPaneState` (I6) rather than owning its own `@State` —
-/// see that type's doc comment for why. `deps.makeItemDetailViewModel` is
-/// called only when `state.detailItemID != itemID` (a genuine navigation
-/// to a different item; a rebuild for the SAME item is a no-op here and
-/// finds everything already populated). Image loading and the voice-note
-/// recorder follow the same "read/write through `state`" shape.
+/// Item detail push destination. Reads/writes everything through its slot
+/// in the shared `MacItemsPaneState` (I6) rather than owning its own
+/// `@State` — see that type's doc comment for why.
+/// `deps.makeItemDetailViewModel` is called only when this item's slot
+/// has no view model yet: a rebuild for the SAME item, or a pop back to an
+/// item still on the stack, finds everything already populated (draft
+/// included). Image loading and the voice-note recorder follow the same
+/// "read/write through the slot" shape; the recorder itself stays shared,
+/// one per surface.
 struct MacItemDetailHost: View {
     let itemID: String
     let session: UserSession
@@ -297,20 +348,23 @@ struct MacItemDetailHost: View {
         }
     }
 
-    private var viewModel: ItemDetailViewModel? { state.detailViewModel }
+    /// This host's own slot — `nil` until its `.task` creates it. A
+    /// non-creating read, because `body` must not mutate `state`.
+    private var slot: MacItemDetailSlot? { state.slots[itemID] }
+    private var viewModel: ItemDetailViewModel? { slot?.viewModel }
     private var item: TrackerItem? { viewModel?.item }
     private var imageAttachments: [TrackerAttachment] {
         guard let item else { return [] }
         return (item.attachments + (viewModel?.comments.flatMap(\.attachments) ?? [])).filter(\.isImage)
     }
     private var galleryPreviewBinding: Binding<GalleryPreview?> {
-        Binding(get: { state.detailGalleryPreview }, set: { state.detailGalleryPreview = $0 })
+        Binding(get: { slot?.galleryPreview }, set: { slot?.galleryPreview = $0 })
     }
 
     var body: some View {
         VStack(spacing: 0) {
             Group {
-                if let viewModel, let item, state.detailItemID == itemID {
+                if let slot, let viewModel = slot.viewModel, let item = viewModel.item {
                     ItemDetailView(
                         model: .init(
                             item: item, comments: viewModel.comments,
@@ -323,11 +377,11 @@ struct MacItemDetailHost: View {
                             // underneath the pane — tapping it would silently
                             // no-op (see `handleOpenConversation`), so hiding
                             // it is the honest UI.
-                            originTitle: item.originConvoID == currentConvoID ? nil : state.detailOriginTitle,
+                            originTitle: item.originConvoID == currentConvoID ? nil : slot.originTitle,
                             availableResolutions: viewModel.availableResolutions, isBusy: viewModel.isBusy,
                             loadedCommentCount: viewModel.loadedCommentCount),
                         draft: Binding(get: { viewModel.draft }, set: { viewModel.draft = $0 }),
-                        image: { state.detailImages[$0.blobRef] },
+                        image: { slot.images[$0.blobRef] },
                         onOpenAttachment: { openAttachment($0, in: item) },
                         onOpenLink: { openLink($0) },
                         onOpenConversation: onOpenConversation,
@@ -342,13 +396,13 @@ struct MacItemDetailHost: View {
                         onVoiceNote: { startVoiceNote() },
                         onClose: { r in Task { await viewModel.close(resolution: r, comment: nil) } },
                         onReopen: { Task { await viewModel.reopen() } },
-                        startsAtBottom: state.detailStartsAtBottom,
+                        startsAtBottom: slot.startsAtBottom,
                         // Both follow the live position (Bugbot, PR #198): a
                         // width-crossing rebuild remounts this host for the
                         // SAME item, and its fresh ItemDetailView must place
                         // itself where the reader actually is, not where the
                         // item was first opened.
-                        onBottomVisibilityChange: { state.detailIsAtBottom = $0; state.detailStartsAtBottom = $0 })
+                        onBottomVisibilityChange: { slot.isAtBottom = $0; slot.startsAtBottom = $0 })
                 } else {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -360,7 +414,7 @@ struct MacItemDetailHost: View {
             // per-row, since `AttachmentFile`'s row (in `ItemDetailView`,
             // DesignSystem, out of scope for this file) takes no loading
             // parameter to hang a per-row spinner off of.
-            if !state.detailFetchingBlobRefs.isEmpty {
+            if !(slot?.fetchingBlobRefs.isEmpty ?? true) {
                 fetchingBar()
             }
         }
@@ -383,31 +437,25 @@ struct MacItemDetailHost: View {
             // the stackless Decisions surface, where this host is always
             // the one on screen.
             guard state.path.isEmpty || state.path.last == itemID else { return }
-            // I6: only (re)create the detail VM when navigating to a
-            // genuinely different item. A rebuild of this host for the
-            // SAME item (e.g. the width-crossing branch move in
-            // `MacChatView`) must not drop the in-flight draft/recording —
-            // there's no host-local `@State` left to lose; everything
-            // lives on `state`, which survives the rebuild untouched when
-            // this guard is a no-op.
-            guard state.detailItemID != itemID, let deps else { return }
-            // Persist the OUTGOING item's read position before swapping —
-            // this host swaps items in place rather than tearing down and
-            // rebuilding (I6), so this guard body is the only reliable
-            // "leaving this item" signal; `.onDisappear` below only fires
-            // on a genuine pane close, not an in-place navigation.
-            if let previousItemID = state.detailItemID {
-                ItemReadMemory().store(itemID: previousItemID, atBottom: state.detailIsAtBottom)
-            }
-            state.detailViewModel?.stop()
-            state.detailImages = [:]
-            state.detailOriginTitle = nil
-            state.detailGalleryPreview = nil
+            guard let deps else { return }
+            // Release whatever is no longer reachable: on a stack, every
+            // item still on it survives (that is what makes Back cheap);
+            // on the stackless Decisions surface only the selected item
+            // does, which is exactly the old swap-in-place behaviour.
+            // Releasing persists the outgoing item's read position.
+            state.releaseSlots(keeping: state.path.isEmpty ? [itemID] : Set(state.path))
+            let slot = state.slot(for: itemID)
+            // I6 + item #115: a live view model means either a rebuild of
+            // this same push (the width-crossing branch move in
+            // `MacChatView`) or a pop back to an item still on the stack.
+            // Either way there is nothing to build — and rebuilding would
+            // silently discard `ItemDetailViewModel.draft`, the only place
+            // a half-typed comment lives.
+            guard slot.viewModel == nil else { return }
+            slot.startsAtBottom = state.readMemory.wasAtBottom(itemID: itemID)
+            slot.isAtBottom = slot.startsAtBottom
             let vm = deps.makeItemDetailViewModel(for: session, itemID: itemID)
-            state.detailItemID = itemID
-            state.detailStartsAtBottom = ItemReadMemory().wasAtBottom(itemID: itemID)
-            state.detailIsAtBottom = state.detailStartsAtBottom
-            state.detailViewModel = vm
+            slot.viewModel = vm
             vm.start()
         }
         // Belt-and-braces for the LAST item viewed in a pane close/window
@@ -417,32 +465,34 @@ struct MacItemDetailHost: View {
         // belongs to the item on top, and the activation above has already
         // persisted ours.
         .onDisappear {
-            guard state.detailItemID == itemID else { return }
-            ItemReadMemory().store(itemID: itemID, atBottom: state.detailIsAtBottom)
+            // A pop already released this slot (and stored its position);
+            // a push leaves it alive and owning its own `isAtBottom`.
+            guard let slot else { return }
+            state.readMemory.store(itemID: itemID, atBottom: slot.isAtBottom)
         }
         .task(id: imageAttachments.map(\.blobRef)) {
             guard let deps else { return }
             let media = deps.mediaService(for: session)
-            for attachment in imageAttachments where state.detailImages[attachment.blobRef] == nil {
+            for attachment in imageAttachments where slot?.images[attachment.blobRef] == nil {
                 guard let image = await media.swiftUIImage(for: mediaURL(attachment)) else { continue }
-                state.detailImages[attachment.blobRef] = image
+                slot?.images[attachment.blobRef] = image
             }
         }
         .task(id: item?.originConvoID) {
-            guard let convoID = item?.originConvoID, let deps else { state.detailOriginTitle = nil; return }
-            state.detailOriginTitle = try? deps.journalStore(for: session).conversationOriginLabel(id: convoID)
+            guard let convoID = item?.originConvoID, let deps else { slot?.originTitle = nil; return }
+            slot?.originTitle = try? deps.journalStore(for: session).conversationOriginLabel(id: convoID)
         }
         // I7: the detail VM's own errors (a failed close/reopen/comment)
         // were previously never surfaced on Mac — the only alert in this
         // file is bound to the PANEL VM's `error`. Mirrors iOS
-        // `ItemDetailHost`'s alert, bound to `state.detailViewModel`.
+        // `ItemDetailHost`'s alert, bound to this slot's view model.
         .alert("Tracker", isPresented: Binding(
-            get: { state.detailViewModel?.error != nil },
-            set: { if !$0 { state.detailViewModel?.error = nil } }
+            get: { slot?.viewModel?.error != nil },
+            set: { if !$0 { slot?.viewModel?.error = nil } }
         )) {
-            Button("OK") { state.detailViewModel?.error = nil }
+            Button("OK") { slot?.viewModel?.error = nil }
         } message: {
-            Text(state.detailViewModel?.error ?? "")
+            Text(slot?.viewModel?.error ?? "")
         }
         // No VM-teardown `onDisappear` here on purpose (I6): a width-crossing
         // rebuild tears this host down and immediately rebuilds it for the
@@ -455,7 +505,7 @@ struct MacItemDetailHost: View {
         // idempotent and safe to run on every teardown, including a
         // same-item rebuild.
         .sheet(item: galleryPreviewBinding) { preview in
-            AttachmentFullscreenViewer(gallery: preview.gallery, onDismiss: { state.detailGalleryPreview = nil })
+            AttachmentFullscreenViewer(gallery: preview.gallery, onDismiss: { slot?.galleryPreview = nil })
         }
         // Drag-and-drop attachments over the whole detail pane, mirroring
         // `MacChatView`'s chat-column drop zone (Task: tracker composer
@@ -513,19 +563,19 @@ struct MacItemDetailHost: View {
         if a.isImage {
             let all = (item.attachments + (viewModel?.comments.flatMap(\.attachments) ?? [])).filter(\.isImage)
             let urls = all.map(mediaURL)
-            state.detailGalleryPreview = GalleryPreview(gallery: ImageGalleries.urls(urls, tapped: mediaURL(a), deps: deps, session: session))
+            slot?.galleryPreview = GalleryPreview(gallery: ImageGalleries.urls(urls, tapped: mediaURL(a), deps: deps, session: session))
             return
         }
         if let existing = AttachmentTempFiles.existingFile(name: a.name, blobRef: a.blobRef) {
             NSWorkspace.shared.open(existing)
             return
         }
-        guard !state.detailFetchingBlobRefs.contains(a.blobRef) else { return }
-        state.detailFetchingBlobRefs.insert(a.blobRef)
+        guard let slot, !slot.fetchingBlobRefs.contains(a.blobRef) else { return }
+        slot.fetchingBlobRefs.insert(a.blobRef)
         Task {
-            defer { state.detailFetchingBlobRefs.remove(a.blobRef) }
+            defer { slot.fetchingBlobRefs.remove(a.blobRef) }
             guard let data = await deps.mediaService(for: session).fetchBytes(mxcURL: mediaURL(a)) else {
-                state.detailViewModel?.error = "Couldn't download \(a.name.isEmpty ? "that attachment" : a.name)."
+                slot.viewModel?.error = "Couldn't download \(a.name.isEmpty ? "that attachment" : a.name)."
                 return
             }
             do {
@@ -534,7 +584,7 @@ struct MacItemDetailHost: View {
             } catch {
                 // Do NOT open on a write failure — there's nothing valid
                 // to hand `NSWorkspace`.
-                state.detailViewModel?.error = error.localizedDescription
+                slot.viewModel?.error = error.localizedDescription
             }
         }
     }
@@ -585,7 +635,7 @@ struct MacItemDetailHost: View {
     }
 
     private func attachFiles(_ urls: [URL]) async {
-        guard let viewModel = state.detailViewModel else { return }
+        guard let viewModel = slot?.viewModel else { return }
         var staged: [(data: Data, name: String, mime: String)] = []
         for url in urls {
             switch await Self.readCapped(url) {
@@ -628,7 +678,7 @@ struct MacItemDetailHost: View {
     private func startVoiceNote() {
         Task {
             do { try await state.detailRecorder.start() }
-            catch { state.detailViewModel?.error = error.localizedDescription }
+            catch { slot?.viewModel?.error = error.localizedDescription }
         }
     }
 
@@ -642,7 +692,7 @@ struct MacItemDetailHost: View {
                 .foregroundStyle(.secondary)
             Button {
                 guard let result = state.detailRecorder.stop() else { return }
-                Task { await state.detailViewModel?.sendVoiceNote(url: result.url) }
+                Task { await slot?.viewModel?.sendVoiceNote(url: result.url) }
             } label: {
                 Image(systemName: "arrow.up.circle.fill").font(.title2)
             }

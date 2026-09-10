@@ -50,6 +50,20 @@ public actor ItemsSync {
     /// as loaded); the in-flight run repeats once more after it finishes.
     private var inFlightRefetches: [String: Task<Void, Never>] = [:]
     private var refetchAgain: Set<String> = []
+    /// Per-SCOPE list-refresh coalescing (fix round 3). `refreshItem` has
+    /// always coalesced; `refresh(scope:)` did not, so a reconnect, a panel
+    /// pull-to-refresh and a tracker-link miss retry
+    /// (`TrackerItemLinkResolver`) landing together each ran their own full
+    /// paginated GET over the same rows. Concurrent callers now await the
+    /// run already in flight for that scope.
+    ///
+    /// Deliberately NOT `refetchAgain`-style repeat: a joiner wants "the
+    /// list, freshly fetched", not "a fetch that started strictly after I
+    /// asked". The cost is a narrow window — an item created after the
+    /// running pass issued its request isn't guaranteed to be in it — which
+    /// the link resolver reports honestly as "not on this device yet"
+    /// rather than papering over with a second full fetch per tap.
+    private var inFlightRefreshes: [ItemsScope: Task<Void, Never>] = [:]
     public private(set) var isSupported = true
     private var supportedContinuations: [UUID: AsyncStream<Bool>.Continuation] = [:]
     /// Set by `stop()`, cleared by `start()`. Fix wave, item G: `stop()`
@@ -139,6 +153,23 @@ public actor ItemsSync {
     }
 
     public func refresh(scope: ItemsScope) async {
+        if let running = inFlightRefreshes[scope] {
+            await running.value
+            return
+        }
+        let run = Task { [self] in
+            await refreshOnce(scope: scope)
+            // Deregistered here, with no suspension between the last line
+            // of the run and the removal — same discipline as
+            // `refreshItem`, so a joiner can never await a task that has
+            // already finished AND deregistered.
+            inFlightRefreshes[scope] = nil
+        }
+        inFlightRefreshes[scope] = run
+        await run.value
+    }
+
+    private func refreshOnce(scope: ItemsScope) async {
         var query = ItemsListQuery()
         query.limit = 500
         query.sort = .updated

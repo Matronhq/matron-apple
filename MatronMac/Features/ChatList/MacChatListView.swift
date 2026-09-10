@@ -477,7 +477,7 @@ struct MacChatListView: View {
             .onDisappear {
                 viewModel.cancel()
                 decisionsVM?.stop()
-                decisionsPaneState.detailViewModel?.stop()
+                decisionsPaneState.releaseAllSlots()
                 decisionsPaneState.detailRecorder.cancel()
             }
             // Sync connection-state banner. Subscribes to the host's
@@ -675,9 +675,7 @@ struct MacChatListView: View {
         // request must not outlive it (Bugbot, PR #195).
         if old == .conversations { focusSearch = false }
         guard old == .decisions, new != .decisions else { return }
-        decisionsPaneState.detailViewModel?.stop()
-        decisionsPaneState.detailViewModel = nil
-        decisionsPaneState.detailItemID = nil
+        decisionsPaneState.releaseAllSlots()
         decisionsPaneState.detailRecorder.cancel()
     }
 
