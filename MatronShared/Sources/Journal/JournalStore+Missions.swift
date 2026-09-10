@@ -134,9 +134,14 @@ extension JournalStore {
                 ORDER BY last_milestone_at IS NULL, last_milestone_at DESC, created_at DESC
                 """)
         case .none:
+            // `state DESC` puts 'open' before 'closed' (SQLite: 'closed' <
+            // 'open'). The sole caller (`MissionsListViewModel.start()`)
+            // re-sorts everything through `sections(from:)`, but a future
+            // direct consumer of `missions(state: nil)` must not silently
+            // get closed-first (MINOR-6).
             return SQLRequest<MissionRecord>(sql: """
                 SELECT * FROM mission
-                ORDER BY state, last_milestone_at IS NULL, last_milestone_at DESC, created_at DESC
+                ORDER BY state DESC, last_milestone_at IS NULL, last_milestone_at DESC, created_at DESC
                 """)
         }
     }

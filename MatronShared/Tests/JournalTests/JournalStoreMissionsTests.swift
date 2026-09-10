@@ -66,7 +66,10 @@ final class JournalStoreMissionsTests: XCTestCase {
         // Open, newest milestone first, a mission with no milestone last.
         XCTAssertEqual(try store.missions(state: .open).map(\.id), ["ms_2", "ms_1", "ms_3"])
         XCTAssertEqual(try store.missions(state: .closed).map(\.id), ["ms_4"])
-        XCTAssertEqual(try store.missions(state: nil).count, 4)
+        // state: nil puts every open mission ahead of every closed one
+        // (MINOR-6) — the sole caller re-sorts through `sections(from:)`,
+        // but a direct reader must not see closed-first.
+        XCTAssertEqual(try store.missions(state: nil).map(\.id), ["ms_2", "ms_1", "ms_3", "ms_4"])
         XCTAssertEqual(try store.mission(id: "ms_2")?.needsYou, 2)
         XCTAssertEqual(try store.mission(id: "ms_2")?.lastMilestone?.title, "step")
         XCTAssertEqual(try store.mission(num: 63)?.id, "ms_3")

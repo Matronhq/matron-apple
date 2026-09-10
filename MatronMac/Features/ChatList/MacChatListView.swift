@@ -649,10 +649,7 @@ struct MacChatListView: View {
                 // DIFFERENT item before the re-select commits — a row
                 // click is a navigation like any other (#115, fix round
                 // 8).
-                onSelect: { id in
-                    decisionsPaneState.cancelRecordingIfNavigating(to: id)
-                    selectedDecisionID = id
-                },
+                onSelect: { id in showDecisionsItem(id) },
                 onOpenConversation: openConversationFromDecisions,
                 onRefresh: { await decisionsVM.refresh() }
             )
@@ -681,10 +678,7 @@ struct MacChatListView: View {
                               // thing a row tap does. Everywhere there IS a
                               // stack (the Mac items pane, both iOS
                               // surfaces) the link pushes instead.
-                              onOpenItem: { id in
-                                  decisionsPaneState.cancelRecordingIfNavigating(to: id)
-                                  selectedDecisionID = id
-                              },
+                              onOpenItem: { id in showDecisionsItem(id) },
                               // No navigation stack here — `decisionsPaneState.path`
                               // stays empty, so this host owns its own slot
                               // release and is on screen whenever it exists.
@@ -702,6 +696,17 @@ struct MacChatListView: View {
     private func openConversationFromDecisions(_ convoID: String) {
         listLogger.notice("selection set by decisions: \(convoID, privacy: .public)")
         showConversation(convoID)
+    }
+
+    /// Open a Decisions item — the three-way "select a row / re-select from
+    /// its own detail / arrive from another nav entry" triplet, in one
+    /// place so they cannot diverge (MINOR-9; the mission page's own site
+    /// used to be the one that added `nav = .decisions` and the other two
+    /// didn't).
+    private func showDecisionsItem(_ id: String, switchingNav: Bool = false) {
+        if switchingNav { nav = .decisions }
+        decisionsPaneState.cancelRecordingIfNavigating(to: id)
+        selectedDecisionID = id
     }
 
     @ViewBuilder
@@ -722,9 +727,7 @@ struct MacChatListView: View {
                            onOpenItem: { id in
                                // Missions has no stack of its own on the
                                // Mac; an item opens where every item opens.
-                               nav = .decisions
-                               decisionsPaneState.cancelRecordingIfNavigating(to: id)
-                               selectedDecisionID = id
+                               showDecisionsItem(id, switchingNav: true)
                            },
                            onOpenConversation: showConversation)
         } else {

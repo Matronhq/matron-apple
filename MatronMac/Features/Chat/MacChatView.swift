@@ -1065,6 +1065,9 @@ struct MacChatView: View {
         // title) — mirrors the iOS `ChatView` wiring at
         // `Matron/Features/Chat/ChatView.swift`.
         .task(id: viewModel.roomID) {
+            // Clear the previous room's value first — see the iOS
+            // `ChatView` wiring for why (MINOR-4).
+            missionID = nil
             guard let deps, let session else { return }
             for await id in deps.journalStore(for: session).missionIDStream(convoID: viewModel.roomID) {
                 missionID = id

@@ -70,7 +70,7 @@ public struct MissionNotice: View {
         case .updated: return "🏁 Mission #\(marker.num) renamed\(named)"
         case .closed:
             guard !marker.openItemNums.isEmpty else { return "🏁 Mission #\(marker.num) closed\(named)" }
-            return "🏁 Mission #\(marker.num) closed over " + marker.openItemNums.map { "#\($0)" }.joined(separator: ", ")
+            return "🏁 Mission #\(marker.num)\(named) closed over " + marker.openItemNums.map { "#\($0)" }.joined(separator: ", ")
         }
     }
 

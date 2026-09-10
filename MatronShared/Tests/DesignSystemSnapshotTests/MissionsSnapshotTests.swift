@@ -50,7 +50,7 @@ final class MissionsSnapshotTests: XCTestCase {
         XCTAssertEqual(MissionNotice.text(for: joined), "🏁 Joined mission #61")
         let closed = MissionMarkerEvent(missionID: "ms_1", num: 61, title: "Missions & milestones",
                                         action: .closed, by: .user, openItemNums: [64, 70])
-        XCTAssertEqual(MissionNotice.text(for: closed), "🏁 Mission #61 closed over #64, #70")
+        XCTAssertEqual(MissionNotice.text(for: closed), "🏁 Mission #61 · Missions & milestones closed over #64, #70")
         let updated = MissionMarkerEvent(missionID: "ms_1", num: 61, title: "Renamed", action: .updated, by: .agent)
         XCTAssertEqual(MissionNotice.text(for: updated), "🏁 Mission #61 renamed · Renamed")
     }

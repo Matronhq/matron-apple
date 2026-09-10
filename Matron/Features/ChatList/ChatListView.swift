@@ -448,13 +448,27 @@ struct ChatListView: View {
     /// (Task 9) — rides the same `[String]` stack as `ItemRoute.pathValue`.
     /// A milestone open pushes its conversation onto THIS stack and parks
     /// the jump on that room's cached `ChatViewModel`, same rule as
-    /// `AppShellView.openMilestone` on the Missions tab's own stack.
+    /// `AppShellView.openMilestone` on the Missions tab's own stack. Same
+    /// current-conversation dedupe as `itemDestination` (MINOR-3): the
+    /// PRIMARY flow here is chat X → title tap → mission page → tap a
+    /// milestone posted in X — without the dedupe that pushes a second
+    /// copy of X on top of the mission page instead of popping back to the
+    /// live one already underneath it.
     @ViewBuilder
     private func missionDestination(_ route: MissionRoute) -> some View {
         if let session, let deps {
+            // Same computation `itemDestination` uses: the nearest entry
+            // below that is not itself an item route — a mission route is
+            // always pushed directly from the chat it names, so this lands
+            // on that chat.
+            let current = chatNavigationPath?.wrappedValue.last(where: { ItemRoute(pathValue: $0) == nil })
             MissionDetailHost(missionID: route.id, session: session,
                               onOpenMilestone: { convoID, seq in
-                                  chatNavigationPath?.wrappedValue.append(convoID)
+                                  if convoID == current {
+                                      chatNavigationPath?.wrappedValue.removeLast()
+                                  } else {
+                                      chatNavigationPath?.wrappedValue.append(convoID)
+                                  }
                                   let (chat, _) = vmCache.viewModels(for: convoID, deps: deps, session: session)
                                   Task { await chat.jumpToMilestone(seq: seq) }
                               },
@@ -462,7 +476,11 @@ struct ChatListView: View {
                                   chatNavigationPath?.wrappedValue.append(ItemRoute(id: itemID).pathValue)
                               },
                               onOpenConversation: { convoID in
-                                  chatNavigationPath?.wrappedValue.append(convoID)
+                                  if convoID == current {
+                                      chatNavigationPath?.wrappedValue.removeLast()
+                                  } else {
+                                      chatNavigationPath?.wrappedValue.append(convoID)
+                                  }
                               })
         } else {
             ContentUnavailableView("Session unavailable", systemImage: "exclamationmark.triangle",

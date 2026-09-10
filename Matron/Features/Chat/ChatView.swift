@@ -1090,6 +1090,11 @@ struct ChatView: View {
         // never carries it — so it is nil until the first missions refresh,
         // which is exactly when the affordance should appear.
         .task(id: viewModel.roomID) {
+            // Clear the previous room's value before the new
+            // `ValueObservation` delivers its first (asynchronous) fetch —
+            // otherwise a title tap in that window opens the wrong
+            // mission (MINOR-4).
+            missionID = nil
             guard let deps, let session else { return }
             for await id in deps.journalStore(for: session).missionIDStream(convoID: viewModel.roomID) {
                 missionID = id
