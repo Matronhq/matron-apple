@@ -29,6 +29,18 @@ final class JournalStoreItemsTests: XCTestCase {
         XCTAssertEqual(try store.needsUserCounts(), ["c2": 1])
     }
 
+    /// Item #115: `[#65](matron://item/65)` resolves the tapped NUMBER to a
+    /// local item id before the app navigates.
+    func testItemByNumberFindsTheItemAndMissesCleanly() throws {
+        let store = try makeStore()
+        try store.upsertItems([item("it_1", num: 1), item("it_65", num: 65, convo: "c2")])
+        XCTAssertEqual(try store.item(num: 65)?.id, "it_65")
+        XCTAssertEqual(try store.item(num: 65)?.title, "T65")
+        XCTAssertEqual(try store.item(num: 1)?.id, "it_1")
+        XCTAssertNil(try store.item(num: 999), "an item this device has never synced must miss, not throw")
+        XCTAssertNil(try store.item(num: 0))
+    }
+
     func testCommentsReplaceWholesale() throws {
         let store = try makeStore()
         try store.upsertItems([item("it_1", num: 1)])

@@ -48,6 +48,19 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
     private var _blockNextItem = false
     private var _itemGate: CheckedContinuation<Void, Never>?
     private var _itemCalls = 0
+    /// Fix round 3: the gate for `listItems`, so a test can hold one
+    /// `refresh(scope:)` open inside its network call and prove a second,
+    /// concurrent refresh of the same scope joins it instead of issuing a
+    /// second paginated GET.
+    private var _blockNextList = false
+    /// A QUEUE, not a single slot (item #115, fix round 8): the wipe
+    /// regression test needs two `listItems` calls gated at once (an
+    /// unrelated scope `stop()` genuinely blocks on, and the `.all`
+    /// scope whose live-while-gated registration the old wipe deleted).
+    /// A single slot would have the second gate silently overwrite and
+    /// leak the first's continuation. `releaseListGate()` pops FIFO —
+    /// every pre-existing single-gate-at-a-time test is unaffected.
+    private var _listGates: [CheckedContinuation<Void, Never>] = []
 
     var listResponses: [ItemsPage] {
         get { lock.withLock { _listResponses } }
@@ -89,6 +102,23 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
         set { lock.withLock { _blockNextItem = newValue } }
     }
     var isItemGated: Bool { lock.withLock { _itemGate != nil } }
+    var blockNextList: Bool {
+        get { lock.withLock { _blockNextList } }
+        set { lock.withLock { _blockNextList = newValue } }
+    }
+    var isListGated: Bool { lock.withLock { !_listGates.isEmpty } }
+    /// How many `listItems` calls are CURRENTLY suspended on a gate —
+    /// lets a test wait for a SECOND concurrent gate specifically, not
+    /// just "at least one" (`isListGated` alone can't distinguish that).
+    var listGateCount: Int { lock.withLock { _listGates.count } }
+    /// Releases the OLDEST held gate — a no-op if none is held.
+    func releaseListGate() {
+        let cont = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            guard !_listGates.isEmpty else { return nil }
+            return _listGates.removeFirst()
+        }
+        cont?.resume()
+    }
     var itemCalls: Int { lock.withLock { _itemCalls } }
     func releaseItemGate() {
         let cont = lock.withLock { () -> CheckedContinuation<Void, Never>? in
@@ -126,6 +156,14 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
         // real I/O that the runtime would cancel for us).
         try Task.checkCancellation()
         lock.withLock { _listQueries.append(q) }
+        let shouldGateList = lock.withLock { () -> Bool in
+            guard _blockNextList else { return false }
+            _blockNextList = false
+            return true
+        }
+        if shouldGateList {
+            await withCheckedContinuation { cont in lock.withLock { _listGates.append(cont) } }
+        }
         // Two-step lock: first check whether a queued entry exists at all
         // (so an empty queue correctly falls through to the blanket
         // `listError`), THEN pop it. Collapsing this into one `withLock`
@@ -260,10 +298,267 @@ final class ItemsSyncTests: XCTestCase {
         XCTAssertNil(api.listQueries.last?.since, "no persisted watermark → next refresh is a full fetch")
     }
 
+    /// Fix round 3: `refreshItem` has always coalesced per id; `refresh`
+    /// did not, so a reconnect, a pull-to-refresh and a tracker-link miss
+    /// retry arriving together each ran their own full paginated GET.
+    func testConcurrentSameScopeRefreshesShareOneFetch() async throws {
+        let api = FakeItems()
+        api.blockNextList = true
+        let (sync, _, _, _) = try make(api: api)
+
+        let first = Task { await sync.refresh(scope: .all) }
+        // The first call is now genuinely suspended INSIDE the network
+        // call, so the actor is free for the second one to enter and join.
+        while !api.isListGated { await Task.yield() }
+
+        let secondStarted = Atomic(false)
+        let secondFinished = Atomic(false)
+        let second = Task {
+            secondStarted.set(true)
+            await sync.refresh(scope: .all)
+            secondFinished.set(true)
+        }
+        while !secondStarted.get() { await Task.yield() }
+        for _ in 0..<50 { await Task.yield() }
+
+        // If it had NOT joined, it would have issued its own (ungated —
+        // the gate is one-shot) fetch and already returned by now.
+        XCTAssertFalse(secondFinished.get(), "the second caller must await the run already in flight")
+
+        api.releaseListGate()
+        _ = await first.value
+        _ = await second.value
+        XCTAssertEqual(api.listQueries.count, 1, "two concurrent .all refreshes hit the API once")
+
+        // Coalescing is per-run, not a permanent latch: once the run is
+        // done the next refresh fetches again.
+        await sync.refresh(scope: .all)
+        XCTAssertEqual(api.listQueries.count, 2)
+    }
+
+    /// Item #115, fix round 5: the refresh REPORTS what it did. It still
+    /// swallows the error as far as its own side effects go (banner,
+    /// `isSupported`), but a caller that re-reads the store afterwards has
+    /// to be able to tell "fetched, genuinely absent" from "never fetched".
+    func testRefreshReportsWhatItDid() async throws {
+        let api = FakeItems()
+        api.listResponses = [ItemsPage(items: [item("a", num: 1, updated: 10)], nextCursor: nil)]
+        let (sync, _, _, _) = try make(api: api)
+        let ok = await sync.refresh(scope: .all)
+        XCTAssertEqual(ok, .succeeded)
+
+        // A journal with no tracker routes answered — that is not a fault.
+        api.listError = JournalAPIError.notFound
+        let unsupported = await sync.refresh(scope: .all)
+        XCTAssertEqual(unsupported, .unsupported)
+
+        api.listError = JournalAPIError.transport("offline")
+        let failed = await sync.refresh(scope: .all)
+        guard case .failed(let failure) = failed else { return XCTFail("expected .failed, got \(failed)") }
+        XCTAssertEqual(failure.message, JournalAPIError.transport("offline").localizedDescription,
+                       "the message the user is shown is the underlying error's")
+    }
+
+    /// Every joiner of a COALESCED run must observe the same outcome as the
+    /// owner (item #115, fix round 5). A joiner that got a silent success
+    /// out of a fetch that actually failed would go on to tell the user a
+    /// tapped `#65` "isn't on this device yet" while offline — the exact
+    /// bug the outcome exists to prevent, reintroduced through the round-3
+    /// coalescing.
+    func testCoalescedRefreshJoinersShareTheFailure() async throws {
+        let api = FakeItems()
+        api.listError = JournalAPIError.transport("offline")
+        api.blockNextList = true
+        let (sync, _, _, _) = try make(api: api)
+
+        let first = Task { await sync.refresh(scope: .all) }
+        while !api.isListGated { await Task.yield() }
+
+        let secondStarted = Atomic(false)
+        let second = Task { () -> ItemsRefreshOutcome in
+            secondStarted.set(true)
+            return await sync.refresh(scope: .all)
+        }
+        while !secondStarted.get() { await Task.yield() }
+        for _ in 0..<50 { await Task.yield() }
+
+        api.releaseListGate()
+        let outcomes = [await first.value, await second.value]
+        XCTAssertEqual(api.listQueries.count, 1, "still one fetch for the two callers")
+        for (caller, outcome) in zip(["owner", "joiner"], outcomes) {
+            guard case .failed(let failure) = outcome else {
+                return XCTFail("\(caller) expected .failed, got \(outcome)")
+            }
+            XCTAssertEqual(failure.message, JournalAPIError.transport("offline").localizedDescription)
+        }
+    }
+
+    func testConcurrentDifferentScopesStillFetchIndependently() async throws {
+        let api = FakeItems()
+        api.blockNextList = true
+        let (sync, _, _, _) = try make(api: api)
+
+        let first = Task { await sync.refresh(scope: .all) }
+        while !api.isListGated { await Task.yield() }
+        // A DIFFERENT scope is a different query — it must not be starved
+        // by the in-flight `.all`.
+        await sync.refresh(scope: .convo("c1"))
+        XCTAssertEqual(api.listQueries.count, 2)
+        api.releaseListGate()
+        _ = await first.value
+    }
+
+    /// Item #115, fix round 7 (CodeRabbit Major): `stop()` used to cancel
+    /// and await only the marker/state/retry tasks, leaving any
+    /// `refresh(scope:)` suspended inside `listItems` running. The
+    /// `stopped` flag alone didn't protect it: `refreshOnce`'s guard reads
+    /// `stopped` only when the call RESUMES, and a `start()` racing ahead
+    /// of `stop()`'s own completion (e.g. a caller that fires `start()`
+    /// for a new session without first awaiting the previous `stop()`)
+    /// could reset the flag back to `false` before that resume — so the
+    /// pre-stop fetch's page landed in the store as if it belonged to the
+    /// new session. `stop()` now cancels every in-flight refresh and
+    /// AWAITS it before returning, and — the part that actually closes the
+    /// race below, where `start()` runs WHILE `stop()` is still
+    /// suspended waiting on the gated call — `refreshOnce` bails on that
+    /// specific task's own `Task.isCancelled` (set synchronously inside
+    /// `stop()`, before its first await, so it can never be undone by a
+    /// later `start()` resetting the shared flag).
+    func testStopCancelsInFlightRefreshSoAConcurrentStartCannotLetStaleDataLand() async throws {
+        let api = FakeItems()
+        api.blockNextList = true
+        api.listResponses = [ItemsPage(items: [item("stale", num: 65, updated: 10)], nextCursor: nil)]
+        let (sync, store, _, _) = try make(api: api)
+
+        let owner = Task { await sync.refresh(scope: .all) }
+        while !api.isListGated { await Task.yield() }
+
+        // A joiner arriving while the fetch is gated must see the same
+        // `.stopped` outcome as the owner once `stop()` cancels the run —
+        // neither caller may believe the fetch "worked" or "genuinely
+        // found nothing".
+        let joinerStarted = Atomic(false)
+        let joiner = Task { () -> ItemsRefreshOutcome in
+            joinerStarted.set(true)
+            return await sync.refresh(scope: .all)
+        }
+        while !joinerStarted.get() { await Task.yield() }
+        for _ in 0..<50 { await Task.yield() }
+
+        // `stop()` begins cancelling the in-flight run and then suspends
+        // waiting for it to retire — it cannot complete until the gate
+        // below is released. Fire `start()` for a "new session" right
+        // behind it, WITHOUT first awaiting `stop()` to return, so the
+        // shared `stopped` flag is reset to `false` while the old run is
+        // still suspended. This is the exact window the fix has to close.
+        let stopTask = Task { await sync.stop() }
+        for _ in 0..<50 { await Task.yield() }
+        await sync.start()
+
+        api.releaseListGate()
+        let ownerOutcome = await owner.value
+        let joinerOutcome = await joiner.value
+        await stopTask.value
+
+        XCTAssertEqual(ownerOutcome, .stopped, "start() resetting `stopped` must not make the pre-stop fetch look like it succeeded")
+        XCTAssertEqual(joinerOutcome, .stopped)
+        XCTAssertNil(try store.item(num: 65), "the pre-stop fetch's page must never reach the store, even though start() ran before it resumed")
+
+        // The new session's own refresh behaves normally afterwards.
+        api.listResponses = [ItemsPage(items: [item("fresh", num: 66, updated: 20)], nextCursor: nil)]
+        let fresh = await sync.refresh(scope: .all)
+        XCTAssertEqual(fresh, .succeeded)
+        XCTAssertNil(try store.item(num: 65), "still nothing from the pre-stop task after the new session's own fetch")
+        XCTAssertEqual(try store.item(num: 66)?.id, "fresh")
+    }
+
+    /// Item #115, fix round 8 (reviewer, Important): `stop()` used to end
+    /// with an unconditional `inFlightRefreshes = [:]`, run AFTER
+    /// awaiting every task it had captured and cancelled. That is
+    /// harmless for the tasks it actually captured — each deregisters
+    /// itself with no suspension before returning, so by the time
+    /// `stop()`'s own `await task.value` resumed, that entry was already
+    /// gone. It is NOT harmless for a task `stop()` never captured at
+    /// all: a `start()` + `refresh(scope:.all)` that registers a FRESH
+    /// task while `stop()` is still suspended awaiting something else
+    /// entirely (a different scope, here) sails past the same blanket
+    /// wipe, deleting that live, still-in-flight registration — and a
+    /// third caller arriving afterward sees an empty map and issues a
+    /// DUPLICATE fetch instead of joining the one already running. The
+    /// fix deletes the wipe outright and makes every task's
+    /// self-deregistration check its own identity first
+    /// (`inFlightRefreshes[scope] == run`), so nothing can ever clear a
+    /// DIFFERENT task's registration.
+    ///
+    /// Two gates are held at once here — an unrelated scope `stop()`
+    /// genuinely blocks on, and `.all`'s own fresh registration — which
+    /// is exactly why `FakeItems`' list gate became a queue for this
+    /// round rather than a single slot.
+    func testStopDoesNotWipeATaskRegisteredAfterTheOldOneRetired() async throws {
+        let api = FakeItems()
+        api.blockNextList = true
+        let (sync, _, _, _) = try make(api: api)
+
+        // An UNRELATED scope's refresh, gated inside its own network call
+        // — this is what keeps `stop()` genuinely suspended below,
+        // independent of anything to do with `.all`.
+        let stalling = Task { await sync.refresh(scope: .convo("stalling")) }
+        try await waitUntil { api.isListGated }
+
+        let stopTask = Task { await sync.stop() }
+        for _ in 0..<50 { await Task.yield() }
+
+        // A fresh `.all` refresh, registered and gated WHILE `stop()` is
+        // still suspended awaiting the stalling task above — exactly what
+        // a caller doing `start()` then `refresh(scope:.all)` while
+        // `stop()` is still finishing up looks like. `.all` was never in
+        // flight before this, so this is unambiguously a NEW
+        // registration, not a joiner of anything.
+        api.listResponses = [ItemsPage(items: [item("fresh", num: 66, updated: 20)], nextCursor: nil)]
+        api.blockNextList = true
+        let fresh = Task { () -> ItemsRefreshOutcome in
+            await sync.start()
+            return await sync.refresh(scope: .all)
+        }
+        try await waitUntil { api.listGateCount == 2 }
+
+        // Release ONLY the stalling task's gate — `fresh`'s stays held.
+        // The stalling task resumes, sees its own cancellation and
+        // retires; `stop()`'s `for task in refreshes { await task.value }`
+        // can now complete.
+        api.releaseListGate()
+
+        // Force `stop()` to run to completion NOW, while `fresh` is still
+        // gated (still holding its slot in `inFlightRefreshes`) — exactly
+        // where the old blanket wipe deleted it out from under it.
+        await stopTask.value
+
+        // A third, concurrent caller arriving while `fresh` is STILL
+        // gated must join IT rather than see an empty (wiped) map and
+        // spawn a duplicate fetch.
+        let joinerStarted = Atomic(false)
+        let joiner = Task { () -> ItemsRefreshOutcome in
+            joinerStarted.set(true)
+            return await sync.refresh(scope: .all)
+        }
+        while !joinerStarted.get() { await Task.yield() }
+        for _ in 0..<50 { await Task.yield() }
+
+        api.releaseListGate()
+        let freshOutcome = await fresh.value
+        let joinerOutcome = await joiner.value
+
+        XCTAssertEqual(freshOutcome, .succeeded)
+        XCTAssertEqual(joinerOutcome, .succeeded)
+        XCTAssertEqual(api.listQueries.count, 2,
+                       "one fetch for the stalling (unrelated-scope) task, one for the fresh `.all` task — the joiner shares the fresh task's fetch rather than issuing a third")
+    }
+
     func testNotFoundMarksUnsupported() async throws {
         let api = FakeItems(); api.listError = JournalAPIError.notFound
         let (sync, _, _, _) = try make(api: api)
-        await sync.refresh(scope: .all)
+        let outcome = await sync.refresh(scope: .all)
+        XCTAssertEqual(outcome, .unsupported)
         let supported = await sync.isSupported
         XCTAssertFalse(supported)
     }

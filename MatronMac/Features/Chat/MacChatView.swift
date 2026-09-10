@@ -81,6 +81,12 @@ struct MacChatView: View {
     /// `MacItemsPaneState`'s doc comment. One instance per `MacChatView`
     /// lifetime (resets on a genuine room switch, same as `itemsVM`).
     @State private var itemsPaneState = MacItemsPaneState()
+    /// `[#65](matron://item/65)` taps from any message body (item #115).
+    /// The relay's `action` goes into the environment with a stable closure
+    /// identity (see `TrackerItemLinkRelay`) — every rendered message body
+    /// reads that value — and the navigation happens in `onChange` below
+    /// with current state.
+    @State private var itemLinkRelay = TrackerItemLinkRelay()
     /// Local text for the in-conversation search bar's field — seeded from
     /// `viewModel.chatSearch?.query`, submitted back via `beginChatSearch`.
     @State private var chatSearchQuery = ""
@@ -367,6 +373,26 @@ struct MacChatView: View {
     /// pane below its min, so 820 keeps a small margin above that.
     private static let sideBySideMinWidth: CGFloat = 820
 
+    /// A tapped `matron://item/<n>` link in a message body (item #115),
+    /// resolved by the shared `TrackerItemLinkResolver`. A known item lands
+    /// exactly where an inline `.itemMarker` card does — the items pane,
+    /// pushed straight to that item. A number this device still doesn't
+    /// have after a refresh changes NOTHING on screen (no pane, no path
+    /// reset — the old fallback swapped the reader onto a list that by
+    /// definition lacked the item) and reports itself in the tracker alert.
+    @MainActor private func openTrackerItem(num: Int) async -> TrackerItemLinkOutcome {
+        guard let deps, let session, let itemsVM, itemsVM.isSupported != false else { return .ignore }
+        return await deps.trackerItemLinkOutcome(num: num, session: session)
+    }
+
+    /// The navigation half, run by `trackerItemLinks` only if the tap that
+    /// asked for it is still the latest one (item #115, fix round 5).
+    @MainActor private func showItem(_ id: String) {
+        openSubChatID = nil
+        showItemsPane = true
+        itemsPaneState.path = [id]
+    }
+
     var body: some View {
         GeometryReader { geo in
             if let childID = openSubChatID {
@@ -437,6 +463,13 @@ struct MacChatView: View {
                 chatColumn
             }
         }
+        // Item links (`[#65](matron://item/65)`) tapped in a message body.
+        // Installed once, on the stable outer view, so it covers both the
+        // side-by-side and the narrow-takeover branches. `MacItemDetailHost`
+        // installs its own inside the pane — a link tapped in an ITEM
+        // pushes onto the pane's stack rather than replacing it.
+        .trackerItemLinks(itemLinkRelay, resolve: { await openTrackerItem(num: $0) },
+                          open: { showItem($0) })
         // Minor (Mac fix wave, part 1): ⌘⇧I toggles the tasks-and-decisions
         // pane. Attached HERE (the stable outer view, same reasoning as the
         // observation lifecycle below) rather than as a toolbar-item
@@ -546,8 +579,8 @@ struct MacChatView: View {
             // `MacItemsPaneState`'s doc comment). A real room-leave must
             // still stop the detail VM's subscriptions and cancel any
             // in-flight recording.
-            itemsPaneState.detailViewModel?.stop()
-            itemsPaneState.detailRecorder.cancel()
+            itemsPaneState.releaseAllSlots()
+            itemsPaneState.cancelRecording()
             // Shrink the cached VM's window for the next open — keeping a
             // grown window here is what made switching BACK to a deep-read
             // room re-mount 600+ rows in one transaction (2026-08-21

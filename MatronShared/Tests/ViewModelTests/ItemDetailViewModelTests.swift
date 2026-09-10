@@ -24,7 +24,7 @@ final class ItemDetailViewModelTests: XCTestCase {
         private var refreshGate: CheckedContinuation<Void, Never>?
         var isHeld: Bool { refreshGate != nil }
         func releaseRefresh() { let c = refreshGate; refreshGate = nil; c?.resume() }
-        func refresh(scope: ItemsScope) async {}
+        func refresh(scope: ItemsScope) async -> ItemsRefreshOutcome { .succeeded }
         func refreshItem(id: String) async {
             if holdRefresh { holdRefresh = false; await withCheckedContinuation { refreshGate = $0 } }
             refetched.append(id)

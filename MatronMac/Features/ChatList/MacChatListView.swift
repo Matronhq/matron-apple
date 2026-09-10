@@ -477,8 +477,8 @@ struct MacChatListView: View {
             .onDisappear {
                 viewModel.cancel()
                 decisionsVM?.stop()
-                decisionsPaneState.detailViewModel?.stop()
-                decisionsPaneState.detailRecorder.cancel()
+                decisionsPaneState.releaseAllSlots()
+                decisionsPaneState.cancelRecording()
             }
             // Sync connection-state banner. Subscribes to the host's
             // long-lived `stateStream()` and mirrors yields into the local
@@ -620,7 +620,14 @@ struct MacChatListView: View {
                     rows: decisionsVM.awaitingYou.map { .init(item: $0, originTitle: decisionsOriginTitles[$0.originConvoID]) },
                     isSupported: decisionsVM.isSupported,
                     isRefreshing: decisionsVM.isRefreshing),
-                onSelect: { selectedDecisionID = $0 },
+                // Ends any in-flight recording that belongs to a
+                // DIFFERENT item before the re-select commits — a row
+                // click is a navigation like any other (#115, fix round
+                // 8).
+                onSelect: { id in
+                    decisionsPaneState.cancelRecordingIfNavigating(to: id)
+                    selectedDecisionID = id
+                },
                 onOpenConversation: openConversationFromDecisions,
                 onRefresh: { await decisionsVM.refresh() }
             )
@@ -637,8 +644,26 @@ struct MacChatListView: View {
     @ViewBuilder
     private var decisionsDetail: some View {
         if let id = selectedDecisionID, let session {
+            // The `\.openTrackerItem` host for this surface is
+            // `MacItemDetailHost` itself (item #115) — one install, on the
+            // container that owns the navigation, rather than a wrapper
+            // here re-applying it around every child.
             MacItemDetailHost(itemID: id, session: session, currentConvoID: nil,
-                              state: decisionsPaneState, onOpenConversation: openConversationFromDecisions)
+                              state: decisionsPaneState, onOpenConversation: openConversationFromDecisions,
+                              // Decisions is a two-column list+detail with
+                              // NO navigation stack of its own, so an item
+                              // link genuinely can only re-select — the same
+                              // thing a row tap does. Everywhere there IS a
+                              // stack (the Mac items pane, both iOS
+                              // surfaces) the link pushes instead.
+                              onOpenItem: { id in
+                                  decisionsPaneState.cancelRecordingIfNavigating(to: id)
+                                  selectedDecisionID = id
+                              },
+                              // No navigation stack here — `decisionsPaneState.path`
+                              // stays empty, so this host owns its own slot
+                              // release and is on screen whenever it exists.
+                              surface: .stackless)
         } else {
             ContentUnavailableView(
                 "Select an item",
@@ -664,10 +689,8 @@ struct MacChatListView: View {
         // request must not outlive it (Bugbot, PR #195).
         if old == .conversations { focusSearch = false }
         guard old == .decisions, new != .decisions else { return }
-        decisionsPaneState.detailViewModel?.stop()
-        decisionsPaneState.detailViewModel = nil
-        decisionsPaneState.detailItemID = nil
-        decisionsPaneState.detailRecorder.cancel()
+        decisionsPaneState.releaseAllSlots()
+        decisionsPaneState.cancelRecording()
     }
 
     private func showConversation(_ convoID: String) {

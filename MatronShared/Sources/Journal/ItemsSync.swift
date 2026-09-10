@@ -3,6 +3,44 @@ import os
 import MatronModels
 import MatronEvents
 
+/// Why a `refresh(scope:)` pass could not fetch, in a form that can leave
+/// the actor.
+///
+/// It carries the message rather than the error because the outcome travels
+/// out through a `Task` value (the refresh-coalescing joiners), and `Task`'s
+/// success type must be `Sendable` — `any Error` is not. The concrete error
+/// stays where it was caught: in the log line next to this. What callers
+/// actually need is the sentence to show the user, and `localizedDescription`
+/// is what they were showing anyway.
+public struct ItemsRefreshFailure: Error, LocalizedError, Equatable, Sendable {
+    public let message: String
+    public init(_ error: any Error) { self.message = error.localizedDescription }
+    public init(message: String) { self.message = message }
+    public var errorDescription: String? { message }
+}
+
+/// What a `refresh(scope:)` pass actually did (item #115, fix round 5).
+///
+/// The refresh has always swallowed its own failures — it drives a banner,
+/// not a `throws` — which is right for a banner and wrong for anything that
+/// reads the store afterwards and draws a conclusion from a MISS.
+/// `TrackerItemLinkResolver` did exactly that, and told the user a tapped
+/// `#65` "isn't on this device yet" when the truth was "you're offline".
+public enum ItemsRefreshOutcome: Equatable, Sendable {
+    /// The list was fetched (possibly truncated by the page cap) and the
+    /// store is up to date as far as this pass got.
+    case succeeded
+    /// The journal has no tracker routes (404). Not a transport fault: the
+    /// server answered, and `isSupported` is now false.
+    case unsupported
+    /// `stop()` landed mid-pass (sign-out / teardown), so the run was
+    /// abandoned before writing. Nothing was fetched, but nothing failed
+    /// either — and by definition nobody is left on screen to be told.
+    case stopped
+    /// The fetch (or a store write inside it) threw.
+    case failed(ItemsRefreshFailure)
+}
+
 /// Keeps the local tracker cache fresh (spec: Apps → ItemsSync). Three
 /// triggers refetch: a marker event for an item (refetch that item), a
 /// panel open / explicit refresh (since-watermark list), and a reconnect
@@ -50,6 +88,20 @@ public actor ItemsSync {
     /// as loaded); the in-flight run repeats once more after it finishes.
     private var inFlightRefetches: [String: Task<Void, Never>] = [:]
     private var refetchAgain: Set<String> = []
+    /// Per-SCOPE list-refresh coalescing (fix round 3). `refreshItem` has
+    /// always coalesced; `refresh(scope:)` did not, so a reconnect, a panel
+    /// pull-to-refresh and a tracker-link miss retry
+    /// (`TrackerItemLinkResolver`) landing together each ran their own full
+    /// paginated GET over the same rows. Concurrent callers now await the
+    /// run already in flight for that scope.
+    ///
+    /// Deliberately NOT `refetchAgain`-style repeat: a joiner wants "the
+    /// list, freshly fetched", not "a fetch that started strictly after I
+    /// asked". The cost is a narrow window — an item created after the
+    /// running pass issued its request isn't guaranteed to be in it — which
+    /// the link resolver reports honestly as "not on this device yet"
+    /// rather than papering over with a second full fetch per tap.
+    private var inFlightRefreshes: [ItemsScope: Task<ItemsRefreshOutcome, Never>] = [:]
     public private(set) var isSupported = true
     private var supportedContinuations: [UUID: AsyncStream<Bool>.Continuation] = [:]
     /// Set by `stop()`, cleared by `start()`. Fix wave, item G: `stop()`
@@ -130,15 +182,93 @@ public actor ItemsSync {
     /// `AppDependencies` teardowns already call this with `await`, and
     /// `ItemsSyncing` (the protocol VMs depend on) doesn't expose `stop` at
     /// all, so this is source-compatible.
+    ///
+    /// Item #115, fix round 7: this used to stop only the marker/state/
+    /// retry tasks — any `refresh(scope:)` suspended inside `listItems`
+    /// (an `inFlightRefreshes` entry) was left running. `stopped` alone
+    /// didn't protect it: `refreshOnce`'s guard fires on RESUME, and if a
+    /// caller called `start()` (which resets `stopped = false`) before that
+    /// resume happened, the guard read `stopped` as false again and wrote
+    /// pre-stop data into a session that had already moved on. Now `stop()`
+    /// cancels every in-flight refresh AND awaits it before returning, so
+    /// `start()` can never run until the old task has already taken its
+    /// `Task.isCancelled` exit in `refreshOnce` and deregistered itself.
+    ///
+    /// Fix round 8: every CAPTURED task's own entry is gone by the time
+    /// this returns (self-deregistration, no wipe needed), but the map as
+    /// a whole is not guaranteed empty — a `start()` + `refresh(scope:)`
+    /// racing this method's own suspension can legitimately register a
+    /// brand-new task for some scope while this is still awaiting
+    /// something else, and that entry must survive. See the removed-wipe
+    /// comment below.
     public func stop() async {
         stopped = true
         let mt = markerTask; let st = stateTask; let rt = retryTask
         markerTask = nil; stateTask = nil; retryTask = nil
         mt?.cancel(); st?.cancel(); rt?.cancel()
+        let refreshes = Array(inFlightRefreshes.values)
+        for task in refreshes { task.cancel() }
         await mt?.value; await st?.value; await rt?.value
+        for task in refreshes { _ = await task.value }
+        // No blanket `inFlightRefreshes = [:]` here (item #115, fix round
+        // 8): every refresh task deregisters ITSELF (see `refresh(scope:)`)
+        // with no suspension before returning, so by the time its `.value`
+        // above has resumed, its own entry is already gone — the wipe was
+        // redundant for the tasks this method captured and awaited. It was
+        // actively harmful for anything else: if a `start()` + `refresh()`
+        // ran while this method was suspended on `await task.value` (an
+        // unstructured await releases the actor, so that interleaving is
+        // real), the new task registers a NEW entry under the same scope
+        // key — and the blanket wipe that used to sit here would have
+        // deleted that live, still-running registration out from under
+        // it, leaving it to orphan itself unregistered and letting a
+        // later caller spawn a duplicate fetch instead of joining it.
     }
 
-    public func refresh(scope: ItemsScope) async {
+    /// Runs a list refresh and REPORTS what happened (item #115, fix round
+    /// 5). This used to swallow every outcome: it drives a banner and an
+    /// `isSupported` flag, so nothing needed a return value — until
+    /// `TrackerItemLinkResolver` started using "refreshed, still missing"
+    /// to tell the user an item "isn't on this device yet". Offline, that
+    /// sentence was a lie: the fetch never happened. Callers that only want
+    /// the side effects can still ignore the result.
+    ///
+    /// Joiners of a coalesced run get the SAME outcome as the owner — the
+    /// value comes out of the one shared `Task`, so two taps racing a
+    /// single fetch can't disagree about whether it worked.
+    @discardableResult
+    public func refresh(scope: ItemsScope) async -> ItemsRefreshOutcome {
+        if let running = inFlightRefreshes[scope] {
+            return await running.value
+        }
+        // `run` is captured by the task body it creates (item #115, fix
+        // round 8): the closure only runs after this initializer returns,
+        // so `run` is always set by the time the self-deregistration below
+        // reads it. That identity check — not just "is *a* task registered
+        // for this scope" — is what makes deregistration safe against
+        // `stop()` racing a `start()` + `refresh()`: if `stop()` cancelled
+        // and is awaiting THIS task while a new `refresh(scope:)` call
+        // registers a fresh task under the same scope key, this task must
+        // not delete that newer registration on its way out.
+        var run: Task<ItemsRefreshOutcome, Never>!
+        run = Task { [self] in
+            let outcome = await refreshOnce(scope: scope)
+            // Deregistered here, with no suspension between the last line
+            // of the run and the removal — same discipline as
+            // `refreshItem`, so a joiner can never await a task that has
+            // already finished AND deregistered. Only clear the slot if it
+            // still holds THIS task; if it now holds a different (newer)
+            // task, leave it alone.
+            if inFlightRefreshes[scope] == run {
+                inFlightRefreshes[scope] = nil
+            }
+            return outcome
+        }
+        inFlightRefreshes[scope] = run
+        return await run.value
+    }
+
+    private func refreshOnce(scope: ItemsScope) async -> ItemsRefreshOutcome {
         var query = ItemsListQuery()
         query.limit = 500
         query.sort = .updated
@@ -163,7 +293,12 @@ public actor ItemsSync {
         do {
             repeat {
                 let page = try await api.listItems(query)
-                guard !stopped else { return }
+                // `Task.isCancelled` alongside `stopped` (fix round 7): a
+                // task `stop()` cancelled is checked on its OWN
+                // cancellation flag, which stays true forever for that
+                // task even if a subsequent `start()` resets the shared
+                // `stopped` var before this resumes.
+                guard !stopped, !Task.isCancelled else { return .stopped }
                 try store.upsertItems(page.items)
                 for i in page.items where newestSeen == nil || i.updatedAt > newestSeen! { newestSeen = i.updatedAt }
                 pageCount += 1
@@ -204,10 +339,13 @@ public actor ItemsSync {
             if let pending = try? store.itemOutboxPending(), !pending.isEmpty {
                 await drainOutbox()
             }
+            return .succeeded
         } catch JournalAPIError.notFound {
             setSupported(false)
+            return .unsupported
         } catch {
             Self.logger.warning("refresh failed: \(error.localizedDescription, privacy: .public)")
+            return .failed(ItemsRefreshFailure(error))
         }
     }
 

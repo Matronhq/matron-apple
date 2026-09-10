@@ -254,6 +254,27 @@ struct ChatView: View {
         Self.pushItem(itemID, onto: navigationPath)
     }
 
+    /// A tapped `matron://item/<n>` link in a message body, resolved by the
+    /// shared `TrackerItemLinkResolver` (one local lookup, one
+    /// `refresh(scope: .all)` retry). A known item opens exactly where an
+    /// inline item card opens it. A number this device still doesn't have
+    /// leaves the reader EXACTLY where they were — paging to the tracker
+    /// would cost them their place in the conversation to show them a list
+    /// that by definition doesn't contain the item — and says so in the
+    /// tracker alert instead (item #115, fix round 2).
+    ///
+    /// Answers what the tap should do; `trackerItemLinks` decides whether
+    /// it still MAY (fix round 5 — a slow resolve must not navigate over
+    /// the tap that overtook it).
+    @MainActor private func openTrackerItem(num: Int) async -> TrackerItemLinkOutcome {
+        guard let deps, let session else { return .ignore }
+        let outcome = await deps.trackerItemLinkOutcome(num: num, session: session)
+        if case .explain = outcome {
+            chatViewLogger.notice("item link #\(num, privacy: .public) did not resolve — staying put")
+        }
+        return outcome
+    }
+
     /// Widen-then-scroll for a remembered scroll position. The widen
     /// mounts rows on the NEXT layout pass, and `proxy.scrollTo` only
     /// resolves ids already in the rendered tree — a same-tick scroll
@@ -334,6 +355,11 @@ struct ChatView: View {
     /// `onDisappear` that stops `viewModel`/`stripViewModel`.
     @State private var itemsVM: ItemsPanelViewModel?
     @State private var pager = ChatPagerModel()
+    /// `[#65](matron://item/65)` taps from any message body (item #115).
+    /// The relay's `action` is installed into the environment with a stable
+    /// closure identity (see `TrackerItemLinkRelay`) and the navigation
+    /// itself happens in `onChange` below, with current values.
+    @State private var itemLinkRelay = TrackerItemLinkRelay()
     @State private var showCreateItem = false
     /// id→label for the tracker's "All" rows; one cheap store scan per
     /// scope switch (`conversationOriginLabels()`).
@@ -1002,6 +1028,11 @@ struct ChatView: View {
         } tasks: {
             tasksPage
         }
+        // Item links (`[#65](matron://item/65)`) in any message body on
+        // either page — installed ONCE here, on the pager root, so the chat
+        // page and the tasks page share one host (and one alert).
+        .trackerItemLinks(itemLinkRelay, resolve: { await openTrackerItem(num: $0) },
+                          open: { openItem($0) })
         // VoiceOver hears the page change; the announcement names the
         // page that just arrived.
         .onChange(of: pager.page) { _, page in

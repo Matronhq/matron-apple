@@ -3,6 +3,7 @@ import os
 import SwiftUI
 import MatronAuth
 import MatronChat
+import MatronDesignSystem
 import MatronJournal
 import MatronModels
 import MatronPush
@@ -253,6 +254,32 @@ final class AppDependencies {
     /// instance the view-model factories below hand out.
     func itemsSync(for session: UserSession) -> ItemsSync {
         core(for: session).items
+    }
+
+    /// Item #115: resolves a tapped `[#65](matron://item/65)` link to a
+    /// local item id, with one `refresh(scope: .all)` retry on a miss. One
+    /// per call (a value type over the session's store + sync actor) —
+    /// every link-hosting surface asks for its own.
+    func itemLinkResolver(for session: UserSession) -> TrackerItemLinkResolver {
+        let c = core(for: session)
+        return TrackerItemLinkResolver(store: c.store, sync: c.items)
+    }
+
+    /// The same resolution, expressed in the design system's vocabulary so a
+    /// link-hosting view can hand it straight to `trackerItemLinks`. Lives
+    /// here because this is the one layer that sees BOTH
+    /// `TrackerItemLinkResolver` (MatronViewModels) and
+    /// `TrackerItemLinkOutcome` (MatronDesignSystem); doing the mapping in
+    /// each host instead is how the miss path drifted between surfaces
+    /// before fix round 2. `alertMessage` is `nil` only for `.open`, which
+    /// this switch has already taken.
+    func trackerItemLinkOutcome(num: Int, session: UserSession) async -> TrackerItemLinkOutcome {
+        switch await itemLinkResolver(for: session).resolve(num: num) {
+        case .open(let itemID):
+            return .open(itemID: itemID)
+        case let miss:
+            return .explain(miss.alertMessage(num: num) ?? "Item #\(num) couldn't be opened.")
+        }
     }
 
     /// Read surface for tracker create/comment/close flows that don't need
