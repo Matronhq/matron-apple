@@ -580,7 +580,7 @@ struct MacChatView: View {
             // still stop the detail VM's subscriptions and cancel any
             // in-flight recording.
             itemsPaneState.releaseAllSlots()
-            itemsPaneState.detailRecorder.cancel()
+            itemsPaneState.cancelRecording()
             // Shrink the cached VM's window for the next open — keeping a
             // grown window here is what made switching BACK to a deep-read
             // room re-mount 600+ rows in one transaction (2026-08-21

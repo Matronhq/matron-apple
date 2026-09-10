@@ -395,6 +395,70 @@ final class ItemsSyncTests: XCTestCase {
         _ = await first.value
     }
 
+    /// Item #115, fix round 7 (CodeRabbit Major): `stop()` used to cancel
+    /// and await only the marker/state/retry tasks, leaving any
+    /// `refresh(scope:)` suspended inside `listItems` running. The
+    /// `stopped` flag alone didn't protect it: `refreshOnce`'s guard reads
+    /// `stopped` only when the call RESUMES, and a `start()` racing ahead
+    /// of `stop()`'s own completion (e.g. a caller that fires `start()`
+    /// for a new session without first awaiting the previous `stop()`)
+    /// could reset the flag back to `false` before that resume — so the
+    /// pre-stop fetch's page landed in the store as if it belonged to the
+    /// new session. `stop()` now cancels every in-flight refresh and
+    /// AWAITS it before returning, and — the part that actually closes the
+    /// race below, where `start()` runs WHILE `stop()` is still
+    /// suspended waiting on the gated call — `refreshOnce` bails on that
+    /// specific task's own `Task.isCancelled` (set synchronously inside
+    /// `stop()`, before its first await, so it can never be undone by a
+    /// later `start()` resetting the shared flag).
+    func testStopCancelsInFlightRefreshSoAConcurrentStartCannotLetStaleDataLand() async throws {
+        let api = FakeItems()
+        api.blockNextList = true
+        api.listResponses = [ItemsPage(items: [item("stale", num: 65, updated: 10)], nextCursor: nil)]
+        let (sync, store, _, _) = try make(api: api)
+
+        let owner = Task { await sync.refresh(scope: .all) }
+        while !api.isListGated { await Task.yield() }
+
+        // A joiner arriving while the fetch is gated must see the same
+        // `.stopped` outcome as the owner once `stop()` cancels the run —
+        // neither caller may believe the fetch "worked" or "genuinely
+        // found nothing".
+        let joinerStarted = Atomic(false)
+        let joiner = Task { () -> ItemsRefreshOutcome in
+            joinerStarted.set(true)
+            return await sync.refresh(scope: .all)
+        }
+        while !joinerStarted.get() { await Task.yield() }
+        for _ in 0..<50 { await Task.yield() }
+
+        // `stop()` begins cancelling the in-flight run and then suspends
+        // waiting for it to retire — it cannot complete until the gate
+        // below is released. Fire `start()` for a "new session" right
+        // behind it, WITHOUT first awaiting `stop()` to return, so the
+        // shared `stopped` flag is reset to `false` while the old run is
+        // still suspended. This is the exact window the fix has to close.
+        let stopTask = Task { await sync.stop() }
+        for _ in 0..<50 { await Task.yield() }
+        await sync.start()
+
+        api.releaseListGate()
+        let ownerOutcome = await owner.value
+        let joinerOutcome = await joiner.value
+        await stopTask.value
+
+        XCTAssertEqual(ownerOutcome, .stopped, "start() resetting `stopped` must not make the pre-stop fetch look like it succeeded")
+        XCTAssertEqual(joinerOutcome, .stopped)
+        XCTAssertNil(try store.item(num: 65), "the pre-stop fetch's page must never reach the store, even though start() ran before it resumed")
+
+        // The new session's own refresh behaves normally afterwards.
+        api.listResponses = [ItemsPage(items: [item("fresh", num: 66, updated: 20)], nextCursor: nil)]
+        let fresh = await sync.refresh(scope: .all)
+        XCTAssertEqual(fresh, .succeeded)
+        XCTAssertNil(try store.item(num: 65), "still nothing from the pre-stop task after the new session's own fetch")
+        XCTAssertEqual(try store.item(num: 66)?.id, "fresh")
+    }
+
     func testNotFoundMarksUnsupported() async throws {
         let api = FakeItems(); api.listError = JournalAPIError.notFound
         let (sync, _, _, _) = try make(api: api)

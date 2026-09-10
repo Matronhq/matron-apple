@@ -70,11 +70,32 @@ final class MacItemsPaneState {
     var originTitles: [String: String] = [:]
 
     /// One recorder shared across whichever item is open — mirrors the
-    /// single-recorder-per-host design from before hoisting; a user
-    /// switching items mid-recording is an edge case this doesn't newly
-    /// introduce (the original per-host `@State` recorder had the same
-    /// "belongs to whatever's current" property).
+    /// single-recorder-per-host design from before hoisting.
     let detailRecorder = VoiceRecorder()
+
+    /// The item a recording in `detailRecorder` belongs to, set the moment
+    /// `start()` actually succeeds and read (then cleared) when the bar's
+    /// stop button fires (CodeRabbit Major, #115 fix round 7). Item-link
+    /// navigation (a push in the pane, a re-selection in Decisions) moves
+    /// which item's `MacItemDetailHost` is on screen WITHOUT touching the
+    /// recorder — it is deliberately not cancelled, so a user can navigate
+    /// away and back without losing an in-progress note. Resolving the
+    /// completion against this stored owner, rather than "whichever slot
+    /// is active right now", is what stops a recording begun on item A
+    /// from being attached to item B after such a navigation. If the
+    /// owning slot is gone by the time the recording stops (its item fell
+    /// off the stack), the result is dropped rather than guessed at.
+    var recordingItemID: String?
+
+    /// Cancels any in-flight recording and forgets which item it belonged
+    /// to, in one place — every call site that cancels the recorder
+    /// (teardown, the bar's own Cancel button) needs both halves done
+    /// together, or a stale `recordingItemID` could outlive the recording
+    /// it named.
+    func cancelRecording() {
+        detailRecorder.cancel()
+        recordingItemID = nil
+    }
 
     /// Detail state, ONE SLOT PER ITEM currently reachable on this surface
     /// — every item on `path`, or (on the stackless Decisions surface) just
@@ -711,7 +732,14 @@ struct MacItemDetailHost: View {
     /// `ItemDetailView`'s layout).
     private func startVoiceNote() {
         Task {
-            do { try await state.detailRecorder.start() }
+            do {
+                try await state.detailRecorder.start()
+                // Recorded only AFTER a successful start, so a throw (e.g.
+                // `.alreadyRecording` from a second host's mic tap) never
+                // steals ownership from whichever item is actually
+                // recording (#115, fix round 7).
+                state.recordingItemID = itemID
+            }
             catch { slot?.viewModel?.error = error.localizedDescription }
         }
     }
@@ -721,12 +749,23 @@ struct MacItemDetailHost: View {
             Circle().fill(Color.red).frame(width: 10, height: 10)
             Text(start, style: .timer).monospacedDigit()
             Spacer()
-            Button("Cancel") { state.detailRecorder.cancel() }
+            Button("Cancel") { state.cancelRecording() }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
             Button {
                 guard let result = state.detailRecorder.stop() else { return }
-                Task { await slot?.viewModel?.sendVoiceNote(url: result.url) }
+                // Resolve against the item that OWNS this recording, not
+                // whichever host's button happened to be on screen when
+                // the user tapped stop — an item link or a Decisions
+                // re-selection since `startVoiceNote` moves the active
+                // slot without touching the recorder (#115, fix round 7).
+                // If that item's slot is gone (it fell off the stack
+                // mid-recording), the result is dropped rather than
+                // guessed onto whatever is on screen now.
+                let owningItemID = state.recordingItemID
+                state.recordingItemID = nil
+                guard let owningItemID, let ownerSlot = state.slots[owningItemID] else { return }
+                Task { await ownerSlot.viewModel?.sendVoiceNote(url: result.url) }
             } label: {
                 Image(systemName: "arrow.up.circle.fill").font(.title2)
             }

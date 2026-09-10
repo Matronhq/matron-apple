@@ -478,7 +478,7 @@ struct MacChatListView: View {
                 viewModel.cancel()
                 decisionsVM?.stop()
                 decisionsPaneState.releaseAllSlots()
-                decisionsPaneState.detailRecorder.cancel()
+                decisionsPaneState.cancelRecording()
             }
             // Sync connection-state banner. Subscribes to the host's
             // long-lived `stateStream()` and mirrors yields into the local
@@ -680,7 +680,7 @@ struct MacChatListView: View {
         if old == .conversations { focusSearch = false }
         guard old == .decisions, new != .decisions else { return }
         decisionsPaneState.releaseAllSlots()
-        decisionsPaneState.detailRecorder.cancel()
+        decisionsPaneState.cancelRecording()
     }
 
     private func showConversation(_ convoID: String) {

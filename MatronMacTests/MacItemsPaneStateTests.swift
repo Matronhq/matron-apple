@@ -186,5 +186,70 @@ final class MacItemsPaneStateTests: XCTestCase {
 
         XCTAssertEqual(Set(state.slots.keys), ["B"])
     }
+
+    // MARK: - Recording ownership (#115, fix round 7, CodeRabbit Major)
+    //
+    // `detailRecorder` is one recorder shared by the whole surface, and
+    // item-link navigation (a push in the pane, a re-selection in
+    // Decisions) deliberately does NOT cancel it — a user can follow a
+    // link and come back without losing an in-progress note. What used to
+    // be missing is that the completion resolved against "whichever
+    // slot is active right now" instead of the item the recording
+    // actually started on, so a recording begun on A could be attached to
+    // B after such a navigation. `recordingItemID`, set once at `start()`
+    // and read at stop, is the fix; these pin the state-machine half of it
+    // (the UI plumbing in `MacItemDetailHost` reads/writes the same
+    // property and isn't separately host-testable here).
+
+    /// A recording started on A must still resolve to A's slot after an
+    /// item link pushes B over it and B becomes the on-screen host —
+    /// exactly what both `onOpenItem` callbacks (`MacItemsPane`'s push,
+    /// Decisions' re-selection) do to `path` / the selected id.
+    func test_recordingItemIDSurvivesNavigationAndResolvesToItsOwnerNotTheActiveHost() {
+        let state = makeState()
+
+        state.path = ["A"]
+        let slotA = state.activateSlot(for: "A", surface: .stack)
+        slotA?.viewModel = makeViewModel("A")
+        state.recordingItemID = "A"
+
+        // An item link in A's body pushes B over it — B is now the active
+        // host, but the recording itself is untouched.
+        state.path = ["A", "B"]
+        let slotB = state.activateSlot(for: "B", surface: .stack)
+        slotB?.viewModel = makeViewModel("B")
+
+        XCTAssertEqual(state.recordingItemID, "A", "navigation must not reassign an in-flight recording")
+        guard let owner = state.recordingItemID else { return XCTFail("expected an owner") }
+        XCTAssertTrue(state.slots[owner] === slotA, "the recording resolves to the item it started on")
+        XCTAssertFalse(state.slots[owner] === slotB, "…never to whichever host happens to be active when it stops")
+    }
+
+    /// If the owning item's slot is gone by the time the recording stops
+    /// (popped off the stack mid-recording), the lookup must come back
+    /// nil so the caller drops the result instead of attaching it to
+    /// whatever is on screen now.
+    func test_recordingResolvesToNilWhenItsOwningSlotWasReleased() {
+        let state = makeState()
+        state.path = ["A"]
+        state.activateSlot(for: "A", surface: .stack)?.viewModel = makeViewModel("A")
+        state.recordingItemID = "A"
+
+        state.path = []
+        state.releaseSlots(keeping: Set(state.path))
+
+        XCTAssertNil(state.slots[state.recordingItemID ?? ""],
+                     "A's slot was released — the recorder's result must be dropped, not attached elsewhere")
+    }
+
+    /// `cancelRecording()` is the one place both halves — the recorder and
+    /// the owner it's recording for — are cleared together, so a stale
+    /// `recordingItemID` never survives a cancel or a surface teardown.
+    func test_cancelRecordingClearsTheOwnerAlongsideTheRecorder() {
+        let state = makeState()
+        state.recordingItemID = "A"
+        state.cancelRecording()
+        XCTAssertNil(state.recordingItemID)
+    }
 }
 #endif

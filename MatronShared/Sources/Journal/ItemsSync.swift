@@ -182,12 +182,28 @@ public actor ItemsSync {
     /// `AppDependencies` teardowns already call this with `await`, and
     /// `ItemsSyncing` (the protocol VMs depend on) doesn't expose `stop` at
     /// all, so this is source-compatible.
+    ///
+    /// Item #115, fix round 7: this used to stop only the marker/state/
+    /// retry tasks — any `refresh(scope:)` suspended inside `listItems`
+    /// (an `inFlightRefreshes` entry) was left running. `stopped` alone
+    /// didn't protect it: `refreshOnce`'s guard fires on RESUME, and if a
+    /// caller called `start()` (which resets `stopped = false`) before that
+    /// resume happened, the guard read `stopped` as false again and wrote
+    /// pre-stop data into a session that had already moved on. Now `stop()`
+    /// cancels every in-flight refresh AND awaits it before returning, so
+    /// `start()` can never run until the old task has already taken its
+    /// `Task.isCancelled` exit in `refreshOnce` — the map is empty (every
+    /// task deregisters itself on the way out) by the time this returns.
     public func stop() async {
         stopped = true
         let mt = markerTask; let st = stateTask; let rt = retryTask
         markerTask = nil; stateTask = nil; retryTask = nil
         mt?.cancel(); st?.cancel(); rt?.cancel()
+        let refreshes = Array(inFlightRefreshes.values)
+        for task in refreshes { task.cancel() }
         await mt?.value; await st?.value; await rt?.value
+        for task in refreshes { _ = await task.value }
+        inFlightRefreshes = [:]
     }
 
     /// Runs a list refresh and REPORTS what happened (item #115, fix round
@@ -244,7 +260,12 @@ public actor ItemsSync {
         do {
             repeat {
                 let page = try await api.listItems(query)
-                guard !stopped else { return .stopped }
+                // `Task.isCancelled` alongside `stopped` (fix round 7): a
+                // task `stop()` cancelled is checked on its OWN
+                // cancellation flag, which stays true forever for that
+                // task even if a subsequent `start()` resets the shared
+                // `stopped` var before this resumes.
+                guard !stopped, !Task.isCancelled else { return .stopped }
                 try store.upsertItems(page.items)
                 for i in page.items where newestSeen == nil || i.updatedAt > newestSeen! { newestSeen = i.updatedAt }
                 pageCount += 1
