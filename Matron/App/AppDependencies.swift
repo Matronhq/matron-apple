@@ -374,6 +374,19 @@ final class AppDependencies {
         makeItemsPanelViewModel(for: session, convoID: nil)
     }
 
+    /// The Missions tab's list view model — one per signed-in session,
+    /// created and started by the shell, stopped when the shell leaves.
+    @MainActor func makeMissionsListViewModel(for session: UserSession) -> MissionsListViewModel {
+        let c = core(for: session)
+        return MissionsListViewModel(store: c.store, sync: c.missions)
+    }
+
+    /// One mission page.
+    @MainActor func makeMissionDetailViewModel(for session: UserSession, missionID: String) -> MissionDetailViewModel {
+        let c = core(for: session)
+        return MissionDetailViewModel(missionID: missionID, store: c.store, sync: c.missions)
+    }
+
     /// Item detail sheet/screen.
     @MainActor func makeItemDetailViewModel(for session: UserSession, itemID: String) -> ItemDetailViewModel {
         let c = core(for: session)
