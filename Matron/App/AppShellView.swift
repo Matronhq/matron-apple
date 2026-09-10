@@ -99,6 +99,11 @@ struct AppShellView: View {
         // (Bugbot, PR #197): mirror the setting into the nav object, and
         // hand off a chat-list row push of that conversation.
         .onChange(of: coordinatorConvoID, initial: true) { _, id in nav.coordinatorConvoID = id }
+        // Just the wire: the clamp that walks a selected `.missions` tab
+        // back to Conversations on the false edge lives on
+        // `AppShellNavigation.missionsSupported` itself (MAJOR-2), so it is
+        // testable without this view.
+        .onChange(of: missionsVM.isSupported) { _, supported in nav.missionsSupported = supported }
         .task { decisionsVM.start() }
         // The Conversations list VM needs to keep running even while
         // another tab shows: the coordinator badge and title read it.

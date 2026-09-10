@@ -19,6 +19,29 @@ enum AppTab: Hashable, CaseIterable {
 @MainActor @Observable
 final class AppShellNavigation {
     var tab: AppTab = .conversations
+    /// `false` once `GET /missions` 404s (set by `AppShellView` from
+    /// `MissionsListViewModel.isSupported`) — the Missions tab is then
+    /// absent from the `TabView`, so nothing may select its tag: the root
+    /// swipe consults this (`swipeRoot` walks `Self.tabs(missionsSupported:)`,
+    /// not the unconditional `AppTab.allCases`) and `openMission` no-ops.
+    /// The clamp lives here, in the setter, rather than in a view
+    /// `onChange`, so it is testable without one: a swipe that already
+    /// landed on `.missions` in the window before a 404 answers is walked
+    /// back to Conversations the instant the flag flips false.
+    var missionsSupported = true {
+        didSet {
+            guard missionsSupported != oldValue, !missionsSupported, tab == .missions else { return }
+            tab = .conversations
+        }
+    }
+
+    /// The tabs actually in the bar for a given support state — the same
+    /// set `AppShellView`'s `TabView` renders. `swipeRoot` walks this
+    /// instead of the unconditional `AppTab.allCases`, so it can never
+    /// select a tag with no matching tab.
+    static func tabs(missionsSupported: Bool) -> [AppTab] {
+        missionsSupported ? AppTab.allCases : AppTab.allCases.filter { $0 != .missions }
+    }
     /// Conversations tab stack. `[String]` because `ChatSummary.ID == String`
     /// and the sub-chat switcher replaces entries in place.
     var chatPath: [String] = []
@@ -97,8 +120,10 @@ final class AppShellNavigation {
     }
 
     /// Open a mission from anywhere: select the tab and REPLACE the stack,
-    /// so the page is never stacked on a stale copy of itself.
+    /// so the page is never stacked on a stale copy of itself. No-op on an
+    /// old journal that has no Missions tab to select.
     func openMission(_ missionID: String) {
+        guard missionsSupported else { return }
         tab = .missions
         let route = MissionRoute(id: missionID).pathValue
         if missionsPath != [route] { missionsPath = [route] }
@@ -182,12 +207,13 @@ final class AppShellNavigation {
     /// changed, so the caller can animate only real switches.
     @discardableResult
     func swipeRoot(translation: CGSize) -> Bool {
+        let tabs = Self.tabs(missionsSupported: missionsSupported)
         guard isAtRoot, abs(translation.width) > 80,
               abs(translation.width) > abs(translation.height),
-              let index = AppTab.allCases.firstIndex(of: tab) else { return false }
+              let index = tabs.firstIndex(of: tab) else { return false }
         let next = translation.width < 0 ? index + 1 : index - 1
-        guard AppTab.allCases.indices.contains(next) else { return false }
-        tab = AppTab.allCases[next]
+        guard tabs.indices.contains(next) else { return false }
+        tab = tabs[next]
         return true
     }
 }

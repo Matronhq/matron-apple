@@ -81,4 +81,34 @@ final class MissionsNavigationTests: XCTestCase {
         nav.pushMission("ms_1")
         XCTAssertFalse(nav.isAtRoot)
     }
+
+    /// On an old journal the Missions tab is absent from the `TabView`
+    /// (MAJOR-2): the swipe must walk the three-tab order, never select a
+    /// tag with no matching tab, and flipping unsupported while parked on
+    /// Missions must clamp back to Conversations rather than leave a
+    /// selection the bar can't render.
+    func testSwipeSkipsMissionsAndUnsupportedClampsOffIt() {
+        let nav = AppShellNavigation()
+        nav.missionsSupported = false
+        nav.tab = .coordinator
+        XCTAssertTrue(nav.swipeRoot(translation: .init(width: -120, height: 5)))
+        XCTAssertEqual(nav.tab, .decisions, "Missions is skipped when unsupported")
+        XCTAssertTrue(nav.swipeRoot(translation: .init(width: 120, height: 5)))
+        XCTAssertEqual(nav.tab, .coordinator)
+
+        nav.missionsSupported = true
+        nav.tab = .missions
+        nav.missionsSupported = false
+        XCTAssertEqual(nav.tab, .conversations, "the false edge clamps a selected Missions tab off it")
+    }
+
+    /// `openMission` must not select a tab the bar doesn't render.
+    func testOpenMissionNoOpsWhenUnsupported() {
+        let nav = AppShellNavigation()
+        nav.missionsSupported = false
+        nav.tab = .conversations
+        nav.openMission("ms_1")
+        XCTAssertEqual(nav.tab, .conversations)
+        XCTAssertEqual(nav.missionsPath, [])
+    }
 }
