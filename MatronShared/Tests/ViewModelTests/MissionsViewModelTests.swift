@@ -44,6 +44,7 @@ private final class FakeMissionsSync: MissionsSyncing, @unchecked Sendable {
     private var _refetches: [String] = []
     private var _closes: [(String, String)] = []
     private var _refreshMissionOutcome: MissionsRefreshOutcome = .succeeded
+    private var _refreshOutcome: MissionsRefreshOutcome = .succeeded
     var closeError: Error?
     var supported: [Bool] = [true]
     var refreshes: Int { lock.withLock { _refreshes } }
@@ -55,8 +56,14 @@ private final class FakeMissionsSync: MissionsSyncing, @unchecked Sendable {
         get { lock.withLock { _refreshMissionOutcome } }
         set { lock.withLock { _refreshMissionOutcome = newValue } }
     }
+    /// What the NEXT `refresh()` returns — lets a test simulate a list
+    /// refresh recovering from an earlier failure.
+    var refreshOutcome: MissionsRefreshOutcome {
+        get { lock.withLock { _refreshOutcome } }
+        set { lock.withLock { _refreshOutcome = newValue } }
+    }
 
-    func refresh() async -> MissionsRefreshOutcome { lock.withLock { _refreshes += 1 }; return .succeeded }
+    func refresh() async -> MissionsRefreshOutcome { lock.withLock { _refreshes += 1; return _refreshOutcome } }
     func refreshMission(id: String) async -> MissionsRefreshOutcome {
         lock.withLock { _refetches.append(id) }
         return refreshMissionOutcome
@@ -217,4 +224,91 @@ final class MissionsViewModelTests: XCTestCase {
         vm.stop()
     }
 
+    /// A pull-to-refresh (or reconnect refresh) that succeeds after an
+    /// earlier failure must drop the stale banner — the cache is current
+    /// again, so nothing left on screen should still say otherwise.
+    func testListRefreshClearsStaleErrorOnSuccess() async throws {
+        let store = FakeMissionsStore(); let sync = FakeMissionsSync()
+        let vm = MissionsListViewModel(store: store, sync: sync)
+        sync.refreshOutcome = .failed(MissionsRefreshFailure(message: "offline"))
+        await vm.refresh()
+        XCTAssertEqual(vm.error, "offline")
+
+        sync.refreshOutcome = .succeeded
+        await vm.refresh()
+        XCTAssertNil(vm.error, "a later successful refresh clears the earlier failure's banner")
+    }
+
+    /// Same shape on the detail page's retry path (MAJOR-4): a successful
+    /// refetch after a failure must clear the error it set.
+    func testDetailRefreshClearsStaleErrorOnSuccess() async throws {
+        let store = FakeMissionsStore(); let sync = FakeMissionsSync()
+        let vm = MissionDetailViewModel(missionID: "ms_1", store: store, sync: sync)
+        sync.refreshMissionOutcome = .failed(MissionsRefreshFailure(message: "offline"))
+        await vm.refresh()
+        XCTAssertEqual(vm.error, "offline")
+
+        sync.refreshMissionOutcome = .succeeded
+        await vm.refresh()
+        XCTAssertNil(vm.error, "a later successful refetch clears the earlier failure's banner")
+    }
+
+}
+
+/// `JournalStore.sessionTags(convoIDs:)` restates
+/// `JournalChatService.roomTags` (that one is internal to `MatronChat`,
+/// unreachable from here) so the mission page can tag a milestone's
+/// conversation without a `MatronChat` dependency. Bugbot: it used to
+/// carry only the single-box `run` halves, so a genuine multi-agent room
+/// rendered on the mission page as an owner-box `A:bc` — or nothing at
+/// all, once `MissionDetailView` starts trying `.room` first — instead of
+/// `A↔B:bc`. Same store-backed setup as `JournalChatServiceTests`:
+/// participants round-trip through the real snapshot path into the record
+/// this reads.
+final class JournalStoreSessionTagsRoomTests: XCTestCase {
+    private func makeStore() throws -> JournalStore { try JournalStore(databaseURL: nil, ownSender: "user:dan") }
+
+    func testSessionTagsCarriesRoomHalvesForAGenuineMultiAgentRoomAndFallsBackOtherwise() throws {
+        let store = try makeStore()
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-y"), AgentDTO(id: 9, name: "dev-z")])
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "room", title: "↔️ [ab] mac ↔ dev-z", sessionState: "waiting",
+                            lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 7,
+                            participants: [7, 9]),
+            ConvoSummaryDTO(id: "local", title: "↔️ [cd] mac ↔ mac", sessionState: "waiting",
+                            lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 7,
+                            participants: [7]),
+        ], headSeq: 1)
+
+        let tags = store.sessionTags(convoIDs: ["room", "local"])
+
+        // A genuine multi-box room carries both halves — names in
+        // journal order, letters resolved through the same
+        // `SessionTag.boxLetters` map the chat list uses — so
+        // `MissionDetailView` can render `SessionTagText.room` for it.
+        XCTAssertEqual(tags["room"]?.roomBoxNames, ["dev-y", "dev-z"])
+        XCTAssertEqual(tags["room"]?.roomBoxShorts.count, 2)
+        XCTAssertEqual(tags["room"]?.sessionShort, "ab")
+
+        // A local room's two ends share one box: same gate as the chat
+        // list — no room halves, falls back to the single-box tag.
+        XCTAssertEqual(tags["local"]?.roomBoxNames, [])
+    }
+
+    func testSessionTagsOmitsRoomHalvesForASingleBoxUser() throws {
+        let store = try makeStore()
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-y")])
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "room", title: "↔️ [ab] mac ↔ dev-z", sessionState: "waiting",
+                            lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 7,
+                            participants: [7, 9]),
+        ], headSeq: 1)
+
+        let tags = store.sessionTags(convoIDs: ["room"])
+
+        // Same two-box gate as the single-box tag: one known box means
+        // nothing to disambiguate, so no room halves even though the
+        // conversation itself carries two participant ids.
+        XCTAssertEqual(tags["room"]?.roomBoxNames, [])
+    }
 }

@@ -228,16 +228,22 @@ public struct MissionDetailView: View {
                 HStack(spacing: 8) {
                     RelativeMinuteTimeView(milestone.createdAt).font(.caption2).foregroundStyle(.tertiary)
                     // `SessionTagText` is an enum of `Text` factories, not a
-                    // view: `run` composes the letter (in the box's hue) and
-                    // the `:bc` short into one `Text`, and answers `nil`
-                    // when there is nothing to show. No cached conversation
-                    // ⇒ no `sessionTag` ⇒ nothing rendered, no empty gap.
-                    // Do NOT restyle the result with `.foregroundStyle` —
-                    // that would flatten the per-run box color.
+                    // view: `room` composes one letter per participating
+                    // box (each in its own hue) and the `:bc` short, and
+                    // `run` is the single-box form — the same fallback
+                    // order chat headers and list rows use (Bugbot: this
+                    // row called `run` only, so a room conversation showed
+                    // as an owner-box `A:bc` instead of `A↔B:bc`). Either
+                    // answers `nil` when there is nothing to show. No
+                    // cached conversation ⇒ no `sessionTag` ⇒ nothing
+                    // rendered, no empty gap. Do NOT restyle the result
+                    // with `.foregroundStyle` — that would flatten the
+                    // per-run box color.
                     if let tag = row.sessionTag,
-                       let tagRun = SessionTagText.run(boxLetter: tag.boxLetter, boxName: tag.boxName,
-                                                       sessionShort: tag.sessionShort,
-                                                       colorScheme: colorScheme) {
+                       let tagRun = SessionTagText.room(letters: tag.roomBoxShorts, names: tag.roomBoxNames,
+                                                        sessionShort: tag.sessionShort, colorScheme: colorScheme)
+                        ?? SessionTagText.run(boxLetter: tag.boxLetter, boxName: tag.boxName,
+                                              sessionShort: tag.sessionShort, colorScheme: colorScheme) {
                         tagRun.font(.caption2)
                     }
                 }

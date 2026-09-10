@@ -41,8 +41,13 @@ extension JournalStore: MissionsStoreReading {
     /// internal to `MatronChat` — including its two gates: a box letter
     /// only means something when the user has two or more boxes, and the
     /// session short is peeled off the stored title by
-    /// `SessionTag.splitTitle`. Cheap enough to call on the main actor
-    /// (a handful of indexed row reads), like `conversationOriginLabels()`.
+    /// `SessionTag.splitTitle`. Also restates `JournalChatService.roomTags`
+    /// for a multi-agent room (Bugbot: the mission page used to carry only
+    /// the single-box halves, so a room conversation rendered as an
+    /// owner-box `A:bc` there instead of `A↔B:bc` — chat headers and list
+    /// rows already try `SessionTagText.room` before `.run`). Cheap enough
+    /// to call on the main actor (a handful of indexed row reads), like
+    /// `conversationOriginLabels()`.
     public func sessionTags(convoIDs: Set<String>) -> [String: SessionTagInputs] {
         guard !convoIDs.isEmpty else { return [:] }
         let names = (try? agentNames()) ?? [:]
@@ -53,10 +58,31 @@ extension JournalStore: MissionsStoreReading {
             let boxName = names.count >= 2 ? record.agentDeviceID.flatMap { names[$0] } : nil
             let boxLetter = boxName != nil ? record.agentDeviceID.flatMap { letters[$0] } : nil
             let sessionShort = SessionTag.splitTitle(record.title).sessionShort
-            guard boxLetter != nil || sessionShort != nil else { continue }
-            tags[convoID] = SessionTagInputs(boxLetter: boxLetter, boxName: boxName, sessionShort: sessionShort)
+            let room = Self.roomTags(participantIDs: record.participantIDs, names: names, letters: letters)
+            guard boxLetter != nil || sessionShort != nil || !room.isEmpty else { continue }
+            tags[convoID] = SessionTagInputs(boxLetter: boxLetter, boxName: boxName, sessionShort: sessionShort,
+                                             roomBoxNames: room.map(\.name), roomBoxShorts: room.map(\.letter))
         }
         return tags
+    }
+
+    /// Restates `JournalChatService.roomTags(for:boxNames:boxLetters:)`:
+    /// every participant id resolved to its box name AND display letter,
+    /// deduped by name in journal order, empty unless at least two
+    /// DISTINCT boxes resolve — same two-box gate as the single-box tag,
+    /// so a local room (both ends share one box) or a single-box user
+    /// falls through to `run(...)`.
+    private static func roomTags(
+        participantIDs: [Int64], names: [Int64: String], letters: [Int64: String]
+    ) -> [(name: String, letter: String)] {
+        guard names.count >= 2, participantIDs.count >= 2 else { return [] }
+        var seen = Set<String>()
+        var tags: [(name: String, letter: String)] = []
+        for id in participantIDs {
+            guard let name = names[id], seen.insert(name).inserted else { continue }
+            tags.append((name: name, letter: letters[id] ?? "?"))
+        }
+        return tags.count >= 2 ? tags : []
     }
 }
 
@@ -148,7 +174,13 @@ public final class MissionsListViewModel {
         isRefreshing = true
         defer { isRefreshing = false }
         // A failed refresh leaves the cached tables alone; the banner is the
-        // only visible consequence (spec, Error handling).
-        if case .failed(let failure) = await sync.refresh() { error = failure.message }
+        // only visible consequence (spec, Error handling). A later success
+        // clears that banner instead of leaving it stuck past the failure
+        // that caused it.
+        switch await sync.refresh() {
+        case .succeeded: error = nil
+        case .failed(let failure): error = failure.message
+        case .unsupported, .stopped: break
+        }
     }
 }
