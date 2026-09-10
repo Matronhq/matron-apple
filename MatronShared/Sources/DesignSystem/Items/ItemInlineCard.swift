@@ -17,9 +17,82 @@ public struct ItemInlineCard: View {
 
     public var body: some View {
         switch marker.action {
-        case .created, .closed: card
-        default: note
+        case .created:
+            card
+        case .closed:
+            // The closed card itself is unchanged; a closing comment (body
+            // and/or attachments) renders as its own block underneath, not
+            // inside the card's Button — same reasoning as the note case
+            // below, just without the header-alignment indent since a card
+            // has no single leading text run to line up under.
+            VStack(alignment: .leading, spacing: 6) {
+                card
+                if hasVisibleComment {
+                    commentBlock.padding(.leading, 10)
+                }
+            }
+        default:
+            // `note` renders unchanged when there's nothing to show below
+            // it (design requirement 3) — wrapping it in this VStack adds
+            // no visible spacing when the comment block is absent, since a
+            // single-child VStack has nothing to space against.
+            VStack(alignment: .leading, spacing: 4) {
+                note
+                if hasVisibleComment {
+                    commentBlock.padding(.leading, Self.noteTextIndent)
+                }
+            }
         }
+    }
+
+    /// Whether `marker.comment` has anything worth rendering as a block —
+    /// an empty comment (e.g. a bare status transition) still parses with a
+    /// `Comment` payload but has nothing to show beyond the note/card.
+    private var hasVisibleComment: Bool {
+        guard let comment = marker.comment else { return false }
+        return !comment.body.isEmpty || !comment.attachments.isEmpty
+    }
+
+    /// Leading indent for the comment block under `note`, lining its text
+    /// up under the note's own text rather than its leading glyph — the
+    /// note's icon renders at `.caption2` (~14pt) with 6pt of HStack
+    /// spacing before the text, matching the fixed-width glyph slots used
+    /// elsewhere in the design system (`AskUserSheetBody.glyphSlot`).
+    private static let noteTextIndent: CGFloat = 20
+
+    /// The reply body (in full — no line limit) and one caption line per
+    /// attachment. Deliberately NOT wrapped in a tap gesture: it sits below
+    /// `note`/`card`'s own `Button`, so `[#65](matron://item/65)`-style
+    /// links inside the body (handled by the timeline's `trackerItemLinks`
+    /// modifier higher up the view tree) stay tappable instead of being
+    /// swallowed by a block-wide open gesture.
+    @ViewBuilder
+    private var commentBlock: some View {
+        if let comment = marker.comment {
+            VStack(alignment: .leading, spacing: 3) {
+                if !comment.body.isEmpty {
+                    MarkdownText(comment.body, theme: .matronMessage)
+                }
+                ForEach(comment.attachments, id: \.blobRef) { attachment in
+                    Text(Self.attachmentLine(attachment)).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    /// Pure formatter for one attachment's caption line under a reply —
+    /// public/static so `ItemInlineCardTests` can pin it directly without
+    /// standing up a view.
+    public static func attachmentLine(_ attachment: TrackerAttachment) -> String {
+        let name = attachment.name.isEmpty ? "attachment" : attachment.name
+        if attachment.isAudio {
+            var line = "Voice note: \(name)"
+            if let transcript = attachment.transcript, !transcript.isEmpty {
+                line += " — \(transcript)"
+            }
+            return line
+        }
+        return "Attachment: \(name)"
     }
 
     /// Status pill under the title. Closed markers show "Done" (plus the
