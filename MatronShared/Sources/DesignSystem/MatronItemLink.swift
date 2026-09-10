@@ -258,7 +258,18 @@ private struct TrackerItemLinksModifier: ViewModifier {
     @State private var gate = TrackerItemLinkTapGate()
 
     func body(content: Content) -> some View {
-        content
+        // `relay` is `@Observable`, and Observation only subscribes this
+        // view to a property it reads DURING body evaluation — a read
+        // buried inside the `Binding` getter or the `message:` closure
+        // below doesn't count, because neither is guaranteed to run as part
+        // of this evaluation. Without this line a resolve setting
+        // `relay.alert` after body has already run leaves nothing
+        // subscribed, so the alert can go up with no re-render to show it
+        // (Bugbot, item #115 fix round 6). `pending`, below, already gets
+        // this right via `onChange(of:)`; `alert` now follows the same
+        // discipline.
+        let message = relay.alert
+        return content
             .environment(\.openTrackerItem, relay.action)
             .onChange(of: relay.pending) { _, tap in
                 guard let tap else { return }
@@ -272,11 +283,11 @@ private struct TrackerItemLinksModifier: ViewModifier {
             }
             // Same chrome as every other tracker error (`ItemsPanelViewModel.error`).
             .alert("Tracker", isPresented: Binding(
-                get: { relay.alert != nil },
+                get: { message != nil },
                 set: { if !$0 { relay.alert = nil } })) {
                 Button("OK") { relay.alert = nil }
             } message: {
-                Text(relay.alert ?? "")
+                Text(message ?? "")
             }
     }
 }

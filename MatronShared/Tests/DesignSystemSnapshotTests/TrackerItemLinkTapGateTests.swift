@@ -96,6 +96,32 @@ final class TrackerItemLinkTapGateTests: XCTestCase {
         XCTAssertEqual(applied, [.open(itemID: "id-65")], "one tap, one push — not two")
     }
 
+    /// Pins the contract `TrackerItemLinksModifier` depends on for the miss
+    /// alert: applying an `.explain` outcome (as the modifier's `apply`
+    /// closure does) sets `relay.alert` to that message, and clearing it
+    /// (as the alert's OK button and dismiss binding do) resets it to
+    /// `nil`. SwiftUI's `body` re-render on that write can't be exercised
+    /// by XCTest — this is the behavioural slice that CAN be pinned (Bugbot,
+    /// item #115 fix round 6).
+    func test_explainOutcomeSetsRelayAlert_andClearingItResetsToNil() async {
+        let gate = TrackerItemLinkTapGate()
+        let relay = TrackerItemLinkRelay()
+        let done = expectation(description: "applied")
+
+        gate.begin(TrackerItemLinkTap(num: 65),
+                   resolve: { _ in .explain("Item #65 isn't on this device yet.") },
+                   apply: { outcome in
+                       if case .explain(let message) = outcome { relay.alert = message }
+                       done.fulfill()
+                   })
+        await fulfillment(of: [done], timeout: 2)
+
+        XCTAssertEqual(relay.alert, "Item #65 isn't on this device yet.")
+
+        relay.alert = nil
+        XCTAssertNil(relay.alert)
+    }
+
     /// `.ignore` is the host saying "I couldn't even try" (no session yet, a
     /// link to the item already on screen): it must not clear or set
     /// anything — the gate just applies it and the modifier does nothing.

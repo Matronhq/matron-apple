@@ -25,8 +25,12 @@ extension JournalStore: TrackerItemNumberReading {}
 ///    real item this device simply hasn't synced yet (an agent filed it
 ///    seconds ago, or it belongs to another conversation whose items were
 ///    never fetched).
-/// 3. Still missing → `.notSynced`; a throwing store read, or a refresh
-///    that reported `.failed`, → `.failed`.
+/// 3. Still missing → `.notSynced`. A throwing store read → `.failed`. A
+///    refresh that reported `.failed` gets ONE more local lookup before
+///    reporting the failure: `ItemsSync.refreshOnce` upserts each page as
+///    it fetches, so a later-page error can still leave an earlier page's
+///    item — including the one tapped — already in the store (item #115
+///    fix round 6). Only a miss on THAT lookup too becomes `.failed`.
 ///
 /// What the caller must do with `.notSynced` / `.failed` is as important as
 /// the lookup: **stay exactly where you are** and show the message from
@@ -89,6 +93,18 @@ public struct TrackerItemLinkResolver: Sendable {
         // leave a genuine local miss, so they fall through to `.notSynced`.
         switch await refreshAll() {
         case .failed(let failure):
+            // `ItemsSync.refreshOnce` upserts each page as it arrives and
+            // only THEN fetches the next, so a later page erroring (the
+            // failure this case reports) can still have landed the tapped
+            // item from an earlier page before the fetch gave out. Check
+            // the store before reporting failure — a tap that already
+            // succeeded locally must not show the user a false miss
+            // (Bugbot, item #115 fix round 6).
+            do {
+                if let item = try lookup(num) { return .open(item.id) }
+            } catch {
+                return .failed(error)
+            }
             return .failed(failure)
         case .succeeded, .unsupported, .stopped:
             break

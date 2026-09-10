@@ -123,12 +123,35 @@ final class TrackerItemLinkResolverTests: XCTestCase {
         let failed = await TrackerItemLinkResolver(store: store, sync: offline).resolve(num: 65)
         guard case .failed = failed else { return XCTFail("expected .failed, got \(failed)") }
         XCTAssertEqual(failed.alertMessage(num: 65), "Couldn't open item #65 — the journal said no")
-        XCTAssertEqual(store.reads, [65], "a failed refresh isn't worth a second read")
+        // Round 6: a failed refresh still earns one more local read, in case
+        // an earlier page landed the item before a later page's error —
+        // this store never got it, so the read confirms the miss and the
+        // failure still reports.
+        XCTAssertEqual(store.reads, [65, 65], "the failure path re-checks the store before reporting")
 
         let online = FakeRefreshSync()
         let missed = await TrackerItemLinkResolver(store: store, sync: online).resolve(num: 65)
         guard case .notSynced = missed else { return XCTFail("expected .notSynced, got \(missed)") }
         XCTAssertEqual(missed.alertMessage(num: 65), "Item #65 isn't on this device yet.")
+    }
+
+    /// `ItemsSync.refreshOnce` upserts each page before fetching the next,
+    /// so a later-page transport error can still leave the tapped item
+    /// already in the store from an earlier page. A `.failed` refresh must
+    /// not report failure without checking that first (Bugbot, item #115
+    /// fix round 6).
+    func test_failedRefresh_butItemLandedFromAnEarlierPage_stillOpens() async {
+        let store = FakeNumberStore()
+        let sync = FakeRefreshSync()
+        // Simulates the item landing from an earlier page of the refresh,
+        // moments before a later page fails.
+        sync.onRefresh = { store.present.insert(65) }
+        sync.outcome = .failed(ItemsRefreshFailure(Boom()))
+        let resolution = await TrackerItemLinkResolver(store: store, sync: sync).resolve(num: 65)
+
+        guard case .open(let id) = resolution else { return XCTFail("expected .open, got \(resolution)") }
+        XCTAssertEqual(id, "id-65")
+        XCTAssertEqual(store.reads, [65, 65], "the failure path gets its own re-read, not a third one")
     }
 
     /// A journal with no tracker routes, and a sync stopped mid-tap by a
