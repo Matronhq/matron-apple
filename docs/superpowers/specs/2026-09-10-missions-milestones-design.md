@@ -159,10 +159,12 @@ CREATE INDEX IF NOT EXISTS items_mission         ON items(mission_id, state, awa
   row and is the only anchor. If the marker cannot be appended the
   milestone is not created (the row is rolled back or deleted and the
   request fails 502): a milestone with no anchor is worse than none.
-  Implementation note: the journal's `append()` is a synchronous insert
-  and `appendAndBroadcast` broadcasts after; the plan verifies the split
-  and puts the insert inside the milestone transaction if it can, else
-  insert-row → append → `UPDATE seq` → delete-on-failure.
+  Implementation: `append()` in `src/journal.js` is a synchronous
+  better-sqlite3 transaction (a savepoint when nested), and
+  `appendAndBroadcast` only adds the WS broadcast after it — so the
+  milestone route allocates the number, calls `append()` for the marker,
+  inserts the row with the returned `seq`, all inside one outer
+  transaction, and broadcasts the frame after commit.
 - **Auto-create.** `POST /milestones` on a conversation with no mission
   creates one first, titled from the conversation's current title
   (fallback: "Mission #N"), `created_by` the caller, and reports
@@ -185,9 +187,9 @@ CREATE INDEX IF NOT EXISTS items_mission         ON items(mission_id, state, awa
   milestones, conversations and items whose conversation is private and
   not the agent's are filtered from mission reads; a mission whose
   *origin* conversation is invisible to the caller 404s.
-- **Limits.** Title ≤ 200 chars, body/summary ≤ 32 KiB, ≤ 500 milestones
-  per mission (409 beyond; not a cadence cap, a sanity bound), ≤ 200
-  conversations per mission. Over-limit → 400.
+- **Limits.** Title ≤ 200 chars, body/summary ≤ 32 KiB, ≤ 200
+  conversations per mission. **No cap on milestones per mission** — the
+  cadence is the agent's call. Over-limit → 400.
 
 ## HTTP API (matron-journal, `src/missions-http.js`)
 
@@ -234,7 +236,7 @@ the inline card and the jump target.
   "payload": { "mission_id": "ms_…", "num": 61, "title": "…",
                "action": "created" | "joined" | "updated" | "closed",
                "by": "user" | "agent",
-               "closed_over_open_items": [64, 70] } }
+               "open_item_nums": [64, 70] } }        // only on a user-forced close
 ```
 Appended to the conversation that performed the action (`created`/`joined`
 on that conversation; `updated`/`closed` on the origin conversation). Apps
