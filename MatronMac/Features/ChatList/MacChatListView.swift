@@ -71,6 +71,13 @@ struct MacChatListView: View {
     @State private var decisionsPaneState = MacItemsPaneState()
     @State private var selectedDecisionID: String?
     @State private var decisionsOriginTitles: [String: String] = [:]
+    /// The per-session Missions list view model, started/stopped the same
+    /// way as `decisionsVM` so the nav badge stays live across entries.
+    @State private var missionsVM: MissionsListViewModel?
+    @State private var selectedMissionID: String?
+    /// Set when a mission page was opened from a conversation title, so the
+    /// page can offer a way back to it.
+    @State private var missionBackConvoID: String?
     /// Phase 6 (Search): the shared search VM, built once the session + index
     /// resolve and the chat list has loaded (so chat-title hits have a snapshot).
     /// A non-empty `searchModel.query` swaps the detail column for
@@ -151,11 +158,16 @@ struct MacChatListView: View {
     @ViewBuilder
     private var sidebarStack: some View {
         HStack(spacing: 0) {
-            MacNavColumn(selection: $nav, decisionsCount: decisionsVM?.awaitingYouCount ?? 0)
+            MacNavColumn(selection: $nav,
+                         badges: [.decisions: decisionsVM?.awaitingYouCount ?? 0,
+                                  .missions: missionsVM?.needsYouTotal ?? 0],
+                         missionsSupported: missionsVM?.isSupported ?? true)
             Divider()
             switch nav {
             case .conversations:
                 sidebarColumn
+            case .missions:
+                missionsColumn
             case .decisions:
                 decisionsColumn
             case .coordinator:
@@ -220,6 +232,8 @@ struct MacChatListView: View {
             } else {
                 detail
             }
+        case .missions:
+            missionDetail
         case .decisions:
             decisionsDetail
         case .coordinator:
@@ -417,6 +431,16 @@ struct MacChatListView: View {
                 guard let deps, let session else { return }
                 decisionsOriginTitles = (try? deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
             }
+            // The Missions VM lives for the session too, same reasoning as
+            // decisionsVM above — one instance, feeding both the list and
+            // the nav badge.
+            .task(id: session?.userID) {
+                guard let deps, let session else { return }
+                missionsVM?.stop()
+                let vm = deps.makeMissionsListViewModel(for: session)
+                missionsVM = vm
+                vm.start()
+            }
             // Cold-start tap drain (cursor PR #5 third-pass finding): a
             // notification tap that launched the app — `didReceive` fired
             // before this view mounted — would otherwise be lost because
@@ -477,6 +501,7 @@ struct MacChatListView: View {
             .onDisappear {
                 viewModel.cancel()
                 decisionsVM?.stop()
+                missionsVM?.stop()
                 decisionsPaneState.releaseAllSlots()
                 decisionsPaneState.cancelRecording()
             }
@@ -679,6 +704,53 @@ struct MacChatListView: View {
         showConversation(convoID)
     }
 
+    @ViewBuilder
+    private var missionsColumn: some View {
+        if let missionsVM {
+            MacMissionsColumn(viewModel: missionsVM, onSelect: { selectedMissionID = $0 })
+        } else {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private var missionDetail: some View {
+        if let id = selectedMissionID, let session {
+            MacMissionPage(missionID: id, session: session, backConvoID: missionBackConvoID,
+                           onBack: showConversation,
+                           onOpenMilestone: openMilestone,
+                           onOpenItem: { id in
+                               // Missions has no stack of its own on the
+                               // Mac; an item opens where every item opens.
+                               nav = .decisions
+                               decisionsPaneState.cancelRecordingIfNavigating(to: id)
+                               selectedDecisionID = id
+                           },
+                           onOpenConversation: showConversation)
+        } else {
+            ContentUnavailableView("Select a mission", systemImage: "flag.checkered",
+                                   description: Text("Pick a piece of work from the list."))
+        }
+    }
+
+    /// The mission page for `missionID`, remembering the conversation it was
+    /// opened from so the page can offer a way back.
+    private func showMission(_ missionID: String, from convoID: String?) {
+        missionBackConvoID = convoID
+        selectedMissionID = missionID
+        nav = .missions
+    }
+
+    /// A milestone tap: show its conversation, then park the jump on that
+    /// room's cached view model — `focusOrPark` fires it once the stream is
+    /// live, and a seq that no longer exists lands on the nearest earlier row.
+    private func openMilestone(convoID: String, seq: Int64) {
+        showConversation(convoID)
+        guard let deps, let session else { return }
+        let (chat, _) = vmCache.viewModels(for: convoID, deps: deps, session: session)
+        Task { await chat.jumpToMilestone(seq: seq) }
+    }
+
     /// Every "show me that chat" path — notification tap, cold-start drain,
     /// new-chat sheet, auto-open, Decisions origin link — goes through
     /// here so the Conversations entry comes forward even when the target
@@ -688,6 +760,9 @@ struct MacChatListView: View {
         // The search field unmounts with Conversations; an unconsumed ⌘F
         // request must not outlive it (Bugbot, PR #195).
         if old == .conversations { focusSearch = false }
+        // Clear the back affordance on the way out, so a later visit from
+        // the nav column does not offer a stale "back to the conversation".
+        if old == .missions, new != .missions { missionBackConvoID = nil }
         guard old == .decisions, new != .decisions else { return }
         decisionsPaneState.releaseAllSlots()
         decisionsPaneState.cancelRecording()
@@ -791,7 +866,12 @@ struct MacChatListView: View {
                         await deps.prepareConversation(for: session, id: roomID)
                         showConversation(roomID)
                     }
-                }
+                },
+                // Transcript milestone cards and the toolbar title both
+                // open this conversation's mission, remembering where the
+                // reader came from so `MacMissionPage` can offer a way
+                // back.
+                onOpenMission: { showMission($0, from: id) }
             )
             .id(id)
         } else {

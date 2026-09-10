@@ -79,23 +79,19 @@ struct MacChatToolbar: ToolbarContent {
     /// hidden button lives on `MacChatView`'s stable outer view, for the
     /// same reason the tasks-pane shortcut does (see `showItemsPane`).
     let onJumpToLastOwnMessage: () -> Void
-    /// Presents the summaries TOC popover — the title cluster becomes a
-    /// button that flips this on. Owned by `MacChatView` (this struct
-    /// stays a plain `ToolbarContent` without the view model, so it's
-    /// still property-testable without rendering); defaults to an inert
-    /// constant binding so the existing title/status tests above don't
-    /// need to know about it.
-    let showSummaries: Binding<Bool>
-    /// Builds the popover's content lazily. `AnyView`-erased so this
-    /// struct doesn't need to import `MacSummariesPanel`'s dependencies —
-    /// `MacChatView` supplies the real closure; the default keeps every
-    /// other call site (and the existing tests) compiling unchanged.
-    let popoverContent: () -> AnyView
+    /// The mission this conversation belongs to, or `nil` when it has none
+    /// (or the host hasn't resolved one yet). The title is a button only
+    /// when there is something to open — spec: "With no mission the title
+    /// is not a button" — which is `Self.titleOpensMission(missionID:)`.
+    let missionID: String?
+    /// Opens `missionID`'s page. Inert by default so a toolbar built in a
+    /// test or a preview has nowhere to navigate and doesn't need a host.
+    let onOpenMission: (String) -> Void
     /// Presents the per-chat media & links browser sheet.
     let showMediaBrowser: Binding<Bool>
     /// Presents/dismisses `MacItemsPane` (Task 10) in the sub-chat slot.
     /// Defaults to an inert constant binding, same reasoning as
-    /// `showSummaries`/`showMediaBrowser` above.
+    /// `showMediaBrowser` above.
     let showItemsPane: Binding<Bool>
     /// Live "needs you" count for the badge on the pane's toolbar button.
     let needsYouCount: Int
@@ -113,7 +109,7 @@ struct MacChatToolbar: ToolbarContent {
     /// Explicit init (not the synthesized memberwise one) — a stored
     /// property's own default value is NOT exposed as a defaulted
     /// parameter by Swift's memberwise synthesis; it drops the parameter
-    /// entirely instead. `showSummaries`/`popoverContent` need real
+    /// entirely instead. `missionID`/`onOpenMission` need real
     /// caller-settable defaults so the existing title/status tests and
     /// `MacChatView`'s call site both keep compiling.
     init(
@@ -126,8 +122,8 @@ struct MacChatToolbar: ToolbarContent {
         onOpenSubChat: @escaping (String) -> Void,
         onCompact: @escaping () -> Void,
         onJumpToLastOwnMessage: @escaping () -> Void = {},
-        showSummaries: Binding<Bool> = .constant(false),
-        popoverContent: @escaping () -> AnyView = { AnyView(EmptyView()) },
+        missionID: String? = nil,
+        onOpenMission: @escaping (String) -> Void = { _ in },
         showMediaBrowser: Binding<Bool> = .constant(false),
         showItemsPane: Binding<Bool> = .constant(false),
         needsYouCount: Int = 0,
@@ -142,12 +138,20 @@ struct MacChatToolbar: ToolbarContent {
         self.onOpenSubChat = onOpenSubChat
         self.onCompact = onCompact
         self.onJumpToLastOwnMessage = onJumpToLastOwnMessage
-        self.showSummaries = showSummaries
-        self.popoverContent = popoverContent
+        self.missionID = missionID
+        self.onOpenMission = onOpenMission
         self.showMediaBrowser = showMediaBrowser
         self.showItemsPane = showItemsPane
         self.needsYouCount = needsYouCount
         self.itemsAvailable = itemsAvailable
+    }
+
+    /// Whether the title renders as a button. Only a real mission id counts:
+    /// an empty string is treated as absent rather than producing a button
+    /// that navigates nowhere.
+    static func titleOpensMission(missionID: String?) -> Bool {
+        guard let missionID else { return false }
+        return !missionID.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     var body: some ToolbarContent {
@@ -158,19 +162,21 @@ struct MacChatToolbar: ToolbarContent {
         }
         ToolbarItem(placement: .principal) {
             cluster {
-                // Tappable title → summaries TOC popover (jump-to-point
-                // nav), same affordance as iOS's tappable title → sheet.
-                // `.buttonStyle(.plain)` is mandatory here (see header) —
-                // the default button style breaks the system glass
-                // capsule this cluster renders inside.
-                Button { showSummaries.wrappedValue = true } label: { titleCluster }
-                    .buttonStyle(.plain)
-                    .help("Show conversation summaries")
-                    .accessibilityLabel(accessibilityTitle ?? title)
-                    .accessibilityHint("Shows conversation summaries")
-                    .popover(isPresented: showSummaries, arrowEdge: .bottom) {
-                        popoverContent()
-                    }
+                // Tappable title → this conversation's mission, same
+                // affordance as iOS's tappable title. `.buttonStyle(.plain)`
+                // is mandatory here (see header) — the default button style
+                // breaks the system glass capsule this cluster renders
+                // inside.
+                if Self.titleOpensMission(missionID: missionID), let missionID {
+                    Button { onOpenMission(missionID) } label: { titleCluster }
+                        .buttonStyle(.plain)
+                        .help("Open this conversation's mission")
+                        .accessibilityLabel(accessibilityTitle ?? title)
+                        .accessibilityHint("Opens this conversation's mission")
+                } else {
+                    titleCluster
+                        .accessibilityLabel(accessibilityTitle ?? title)
+                }
             }
         }
         if let limits = status?.limits, !limits.isEmpty {

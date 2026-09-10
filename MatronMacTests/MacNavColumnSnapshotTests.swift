@@ -8,20 +8,20 @@ import XCTest
 final class MacNavColumnSnapshotTests: XCTestCase {
     @MainActor
     func testBadge() {
-        let view = MacNavColumn(selection: .constant(.decisions), decisionsCount: 4)
+        let view = MacNavColumn(selection: .constant(.decisions), badges: [.decisions: 4])
             .frame(height: 320)
         assertVariants(of: view, named: "MacNavColumn_badge")
     }
 
     @MainActor
     func testNoBadge() {
-        let view = MacNavColumn(selection: .constant(.conversations), decisionsCount: 0)
+        let view = MacNavColumn(selection: .constant(.conversations), badges: [:])
             .frame(height: 320)
         assertVariants(of: view, named: "MacNavColumn_noBadge")
     }
 
     func testEntriesInBarOrder() {
-        XCTAssertEqual(MacNav.allCases, [.coordinator, .conversations, .decisions])
+        XCTAssertEqual(MacNav.allCases, [.coordinator, .missions, .decisions, .conversations])
         XCTAssertEqual(MacNav.decisions.symbol, "checkmark.circle")
         XCTAssertEqual(MacNavColumn.width, 72)
     }

@@ -309,14 +309,16 @@ struct MacChatView: View {
         let gallery: ImageGallery
     }
 
-    /// Drives the summaries TOC popover — flipped on by the title cluster
-    /// button in `MacChatToolbar`, off by `MacSummariesPanel.onSelect`
-    /// (and by the system on outside-click dismissal).
-    @State private var showSummaries = false
-
     /// Drives the media, files & links browser sheet — flipped on by the
     /// toolbar button in `MacChatToolbar`.
     @State private var showMediaBrowser = false
+
+    /// Which mission this conversation belongs to (spec: Transcript and
+    /// title). Derived locally from the mission cache — the snapshot never
+    /// carries it — so it is nil until the first missions refresh, which is
+    /// exactly when the title-tap affordance should appear. Mirrors the
+    /// iOS `ChatView` wiring over the same `missionIDStream`.
+    @State private var missionID: String?
 
     let chatTitle: String
     /// Which agent box runs this session, or nil when the user has fewer
@@ -1059,6 +1061,15 @@ struct MacChatView: View {
                 }
             }
         }
+        // Which mission this conversation belongs to (spec: Transcript and
+        // title) — mirrors the iOS `ChatView` wiring at
+        // `Matron/Features/Chat/ChatView.swift`.
+        .task(id: viewModel.roomID) {
+            guard let deps, let session else { return }
+            for await id in deps.journalStore(for: session).missionIDStream(convoID: viewModel.roomID) {
+                missionID = id
+            }
+        }
         .toolbar {
             MacChatToolbar(
                 title: chatTitle,
@@ -1072,13 +1083,8 @@ struct MacChatView: View {
                 onOpenSubChat: { openSubChatID = $0; showItemsPane = false },
                 onCompact: { Task { await viewModel.sendCommand("/compact") } },
                 onJumpToLastOwnMessage: { Task { await viewModel.jumpToLastOwnMessage() } },
-                showSummaries: $showSummaries,
-                popoverContent: {
-                    AnyView(MacSummariesPopoverContent(viewModel: viewModel) { seq in
-                        showSummaries = false
-                        Task { await viewModel.focus(seq: seq) }
-                    })
-                },
+                missionID: missionID,
+                onOpenMission: { onOpenMission?($0) },
                 showMediaBrowser: $showMediaBrowser,
                 showItemsPane: Binding(
                     get: { showItemsPane },
