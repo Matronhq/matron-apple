@@ -55,6 +55,30 @@ final class JournalStoreMissionsTests: XCTestCase {
         XCTAssertNil(row?["mission_num"] as Int?)
     }
 
+    /// Bugbot: the two columns above land NULL on every item already
+    /// cached, but `ItemsSync.refreshOnce` fetches `?since=` its persisted
+    /// watermark — a `since` fetch skips rows the server hasn't touched,
+    /// so an item cached before the upgrade would never gain its mission
+    /// until it changed again. The v10 migration must clear every
+    /// `items_watermark_*` key (mirroring `wipeItems()`'s statement) so
+    /// the FIRST post-upgrade refresh, for every scope, is a full fetch.
+    func testV10ClearsTheItemsWatermarkSoThePostUpgradeRefreshIsAFullFetch() throws {
+        let queue = try DatabaseQueue()
+        try JournalStore.migrator().migrate(queue, upTo: "v9")
+        try queue.write { db in
+            try db.execute(sql: "INSERT INTO meta(key, value) VALUES('items_watermark_all', '1000')")
+            try db.execute(sql: "INSERT INTO meta(key, value) VALUES('items_watermark_convo_c1', '1000')")
+            // An unrelated meta key must survive — the migration clears
+            // only the items-watermark keys, not the whole table.
+            try db.execute(sql: "INSERT INTO meta(key, value) VALUES('unrelated_key', 'keep-me')")
+        }
+        try JournalStore.migrator().migrate(queue)   // up to the head, i.e. v10
+        let keys = try queue.read { db in try String.fetchAll(db, sql: "SELECT key FROM meta") }
+        XCTAssertFalse(keys.contains("items_watermark_all"), "the all-scope watermark must be cleared")
+        XCTAssertFalse(keys.contains("items_watermark_convo_c1"), "a per-conversation watermark must be cleared too")
+        XCTAssertTrue(keys.contains("unrelated_key"), "the migration must not touch unrelated meta rows")
+    }
+
     func testMissionsRoundTripAndSortByLatestMilestone() throws {
         let store = try makeStore()
         try store.upsertMissions([

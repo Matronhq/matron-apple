@@ -508,6 +508,16 @@ public final class JournalStore: @unchecked Sendable {
                 t.add(column: "mission_num", .integer)
             }
             try db.create(index: "item_mission", on: "item", columns: ["mission_id", "state", "awaiting"])
+            // The two new columns above land as NULL on every item row
+            // already cached — `ItemsSync.refreshOnce` fetches `?since=`
+            // its persisted watermark, which skips rows the server hasn't
+            // touched since, so those items would never gain a mission
+            // until each one changes again (Bugbot). Clearing the
+            // watermark keys (same statement `wipeItems()` runs) forces
+            // the very next refresh, for every scope, to be a full
+            // `GET /items` fetch that re-fills `mission_id`/`mission_num`
+            // from the server's current values.
+            try db.execute(sql: "DELETE FROM meta WHERE key = 'items_watermark_all' OR key LIKE 'items_watermark_convo_%'")
         }
         return migrator
     }
