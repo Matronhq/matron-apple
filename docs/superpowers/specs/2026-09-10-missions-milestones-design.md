@@ -74,7 +74,7 @@ agent and app of the same journal user:
 | chat | Cadence: floor not cap (above). No bridge-side refusal of milestones. |
 | #60 | An agent-independent "jump to my last message" control shipped separately (apple #202) — milestones are not the only way back to Dan's input. |
 | #73 | Bridge tools, apps, rollout and testing sections below approved as written. |
-| #74 | An explicit `mission_start` tool (title + goal) is the normal way in; auto-create on the first milestone stays as the safety net for a session that forgot. |
+| #74 | An explicit `mission_start` tool (title + goal) is the only way in. No auto-create: a milestone on a conversation with no mission is rejected and the agent is told to start one — it has far more context for naming the mission than its first milestone could carry. |
 
 ## Data model (matron-journal, `src/db.js`)
 
@@ -144,10 +144,9 @@ CREATE INDEX IF NOT EXISTS items_mission         ON items(mission_id, state, awa
   follows from the shared counter; each table keeps its own
   `UNIQUE (user_id, num)` as a belt. There are no per-mission ordinals.
 - **A conversation has at most one mission.** `conversations.mission_id`
-  is set by: creating a mission from it, `join`, the first milestone
-  posted in it (auto-create, below), or inheritance at creation when
-  `parent_convo_id` is set and the parent has a mission. It is never
-  cleared or changed afterwards (v1).
+  is set by: creating a mission from it, `join`, or inheritance at
+  creation when `parent_convo_id` is set and the parent has a mission. It
+  is never cleared or changed afterwards (v1).
 - **Items follow their conversation.** On item creation
   `items.mission_id` = the origin conversation's `mission_id` (may be
   NULL). Whenever a conversation *gains* a mission, the journal repoints
@@ -166,11 +165,14 @@ CREATE INDEX IF NOT EXISTS items_mission         ON items(mission_id, state, awa
   milestone route allocates the number, calls `append()` for the marker,
   inserts the row with the returned `seq`, all inside one outer
   transaction, and broadcasts the frame after commit.
-- **Auto-create.** `POST /milestones` on a conversation with no mission
-  creates one first, titled from the conversation's current title
-  (fallback: "Mission #N"), `created_by` the caller, and reports
-  `mission.created: true`. A forgotten `mission_start` never loses a
-  milestone. The next `PATCH /missions/:id` can rename it.
+- **No mission, no milestone.** `POST /milestones` on a conversation with
+  no mission is **409** `{blocked_by: 'no_mission'}`; nothing is written.
+  The mission is named by the agent, deliberately, with the whole
+  conversation as context — never inferred from a title or a first
+  checkpoint (#74). The bridge renders the 409 as "this conversation has
+  no mission — call mission_start(title, body) first, then post the
+  milestone again", and the agent's own retry is safe under its
+  idempotency key.
 - **Closing.**
   - Caller is an agent (`who.kind === 'agent'`): if the mission has any
     open item with `awaiting='user'` → **409** `{blocked_by: 'user_items',
@@ -209,7 +211,7 @@ closed), a first write **201**.
 | `PATCH /missions/:id` | `{title?, body?}` | 200 mission (409 if closed) |
 | `POST /missions/:id/join` | `{convo_id}` | 200 mission; 409 if the conversation already has a different mission or the mission is closed. Repoints the conversation's items. |
 | `POST /missions/:id/close` | `{summary}` | 200 mission, or 409 as in *Closing*. |
-| `POST /milestones` | `{convo_id, title, body?, kind}` | 201 `{milestone, mission, created: bool}`; 409 if the conversation's mission is closed. |
+| `POST /milestones` | `{convo_id, title, body?, kind}` | 201 `{milestone, mission}`; 409 `{blocked_by: 'no_mission'}` if the conversation has none, 409 `{blocked_by: 'closed'}` if its mission is closed. |
 | `GET /milestones?convo=<id>` | | `{milestones:[…]}` newest first — the apps' per-conversation view. |
 | `PATCH /items/:id` | gains `mission: id \| "#num" \| null` | existing route; emits the item marker `updated`. |
 
@@ -257,17 +259,17 @@ journal conversation; the agent never passes one.
 | Tool | Args | Journal call | Notes |
 |---|---|---|---|
 | `mission_start` | `title, body?` | `POST /missions` | Returns the mission `#num`. If the conversation already has a mission, returns it as "already in mission #N" and changes nothing (the route's `existing: true`). |
-| `milestone_post` | `title, body?, kind: 'user_input' \| 'progress'` | `POST /milestones` | Returns `#num`, the mission `#num`, and "started mission #N from the conversation title — rename with mission_update" when it auto-created. |
+| `milestone_post` | `title, body?, kind: 'user_input' \| 'progress'` | `POST /milestones` | Returns `#num` and the mission `#num`. A `no_mission` 409 is rendered as "call mission_start first, then post again". |
 | `mission_update` | `title?, body?` | `PATCH /missions/:id` on the conversation's mission | 404-as-text if the conversation has no mission. |
 | `mission_join` | `num` | `POST /missions/:num/join` | Attach this conversation to an existing mission. |
 | `mission_get` | `num?` | `GET /missions/:id` | Default: this conversation's mission. Milestones, open items, conversations — what the coordinator will read later. |
 | `mission_close` | `summary` | `POST /missions/:id/close` | 409 bodies are rendered as text listing the blocking items and what to do ("close each with a resolution, or item_move it"). |
 | `item_move` | `id \| num, mission: num \| null` | `PATCH /items/:id {mission}` | Added to `lib/items-tools.js`. |
 
-`mission_start` is the deliberate way in: name the work and state its goal
-in `body` before the first checkpoint, so the mission page reads as a
-record from its first line. Auto-create on the first milestone is the
-safety net for a session that forgot, not the normal path.
+`mission_start` is the only way in: name the work and state its goal in
+`body` before the first checkpoint, so the mission page reads as a record
+from its first line. There is no auto-create — a milestone with no
+mission is refused with the instruction to start one.
 
 `BRIDGE_CODEX.md` gets the raw-curl equivalents under the existing journal
 base-URL and token discipline (read inside the request, never printed).
@@ -285,8 +287,9 @@ base-URL and token discipline (read inside the request, never printed).
   hours of unattended work should leave a readable trail.
 - Start the mission with `mission_start` (title + goal) as soon as you know
   what the work is — usually right after the user's first substantive
-  input. If you post a milestone first, the mission is created from the
-  conversation title; rename it with `mission_update`.
+  input. Milestones are refused until the conversation has a mission;
+  name it yourself from what you know, then post the milestone again.
+  Rename later with `mission_update` if the work changes shape.
 - Close the mission (`mission_close` with a summary) when the work is done,
   not when the session ends. It refuses while items are open: close each
   with a real resolution, or `item_move` it to the mission it belongs to.
@@ -374,7 +377,8 @@ else changes.
 ## Error handling
 
 - **Journal**: 400 shape/limits, 404 unknown/invisible, 409 state (closed
-  mission, second mission for a conversation, close blocked), 502 marker
+  mission, milestone with no mission, second mission for a conversation,
+  close blocked), 502 marker
   append failure (milestone not created). All 409s carry a machine-readable
   `blocked_by` and the item list where relevant.
 - **Bridge**: tools never throw; a 409 becomes a text result the agent can
@@ -390,8 +394,9 @@ else changes.
 ## Testing
 
 - **Journal** (vitest): shared counter across items/missions/milestones;
-  auto-create on first milestone; inheritance on spawned conversation
-  creation; item repointing on create/join/first-milestone;
+  milestone on a conversation with no mission is 409 `no_mission` and
+  writes nothing; inheritance on spawned conversation creation; item
+  repointing on create/join;
   `PATCH /items mission`; close blocked by user items, by agent items,
   allowed for a device with `closed_over_open_items` recorded; closed
   mission rejects milestones and joins; idempotency replay 200 on both
