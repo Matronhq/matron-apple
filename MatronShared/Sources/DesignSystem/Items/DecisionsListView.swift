@@ -98,6 +98,12 @@ public struct DecisionsListView: View {
     /// that still answers pull-to-refresh — a stale cache or a journal
     /// that gains tracker support later would otherwise have no way to
     /// re-fetch. The Mac keeps its header button in every state.
+    ///
+    /// Both branches fill the column. With rows the `List` does that and
+    /// the header sits at the top; without the fill frame the Mac stack
+    /// shrank to header + placeholder and the column centred the lot, so
+    /// answering the last question dropped "Decisions" to the middle of
+    /// the pane (item #79).
     @ViewBuilder
     private func placeholder<Content: View>(_ content: Content) -> some View {
         #if os(iOS)
@@ -108,7 +114,7 @@ public struct DecisionsListView: View {
             .refreshable { await onRefresh() }
         }
         #else
-        content
+        content.frame(maxWidth: .infinity, maxHeight: .infinity)
         #endif
     }
 }
