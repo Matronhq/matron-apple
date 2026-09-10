@@ -35,19 +35,32 @@ public enum MatronItemLink {
     ///
     /// Strict by design — this parser decides whether a URL a remote agent
     /// wrote gets in-app navigation. Only the canonical form is accepted:
-    /// exactly one path component, all ASCII digits, greater than zero, no
-    /// query and no fragment. Scheme and host compare case-insensitively
-    /// (RFC 3986); everything else must match exactly.
+    /// the path must be exactly `/` followed by ASCII digits greater than
+    /// zero, with no query and no fragment. Scheme and host compare
+    /// case-insensitively (RFC 3986); everything else must match exactly.
+    ///
+    /// The path is matched as a whole string rather than split into
+    /// components, so an empty or trailing segment (`matron://item/65/`,
+    /// `matron://item//65`) is rejected too — splitting while omitting
+    /// empty subsequences quietly accepted both as `#65`.
+    ///
+    /// It reads the path off `URLComponents`, not `URL.path`: the latter
+    /// normalises a trailing slash away (`matron://item/65/` reports as
+    /// `/65`), and it percent-DECODES, which would let `matron://item/%36%35`
+    /// through the digit check. `percentEncodedPath` is the URL as written.
     public static func itemNumber(from url: URL) -> Int? {
-        guard url.scheme?.lowercased() == "matron",
-              url.host?.lowercased() == "item",
-              url.query == nil, url.fragment == nil
+        guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              parts.scheme?.lowercased() == "matron",
+              parts.host?.lowercased() == "item",
+              parts.query == nil, parts.fragment == nil,
+              parts.user == nil, parts.password == nil, parts.port == nil
         else { return nil }
-        let components = url.path.split(separator: "/", omittingEmptySubsequences: true)
-        guard components.count == 1 else { return nil }
-        let digits = components[0]
+        let path = parts.percentEncodedPath
+        guard path.hasPrefix("/") else { return nil }
+        let digits = path.dropFirst()
         // `Int(_:)` alone would accept "+65" / "-5" / " 65"; require plain
         // ASCII digits (and let `Int` reject an overflowing run of them).
+        // This also rejects any second path segment: a "/" is not a digit.
         guard !digits.isEmpty, digits.allSatisfy({ $0.isASCII && $0.isNumber }),
               let number = Int(digits), number > 0
         else { return nil }
@@ -103,6 +116,13 @@ public final class TrackerItemLinkRelay {
     /// the `id` keeps the next tap distinguishable either way.
     public var pending: TrackerItemLinkTap?
 
+    /// Message for the tracker alert when a tap did NOT open anything —
+    /// `TrackerItemLinkResolver.Resolution.alertMessage(num:)`. Set by the
+    /// host, presented (and cleared) by `trackerItemLinks(_:open:)`. The
+    /// alert is the whole point of the miss path: the host stays exactly
+    /// where it was, so without it an unknown number is a dead tap.
+    public var alert: String?
+
     /// The environment action. Same instance for this relay's lifetime.
     @ObservationIgnored public private(set) var action: (Int) -> Void = { _ in }
 
@@ -115,13 +135,59 @@ public final class TrackerItemLinkRelay {
 /// (iOS: pushed onto the chat stack; Mac: the items pane). `nil` — the
 /// default — means no host is installed, and item links are swallowed
 /// rather than handed to the OS.
-public struct OpenTrackerItemKey: EnvironmentKey {
-    public static let defaultValue: ((Int) -> Void)? = nil
+///
+/// Internal: hosts install the value through `trackerItemLinks(_:open:)` or
+/// `\.openTrackerItem`, never through the key itself.
+struct OpenTrackerItemKey: EnvironmentKey {
+    static let defaultValue: ((Int) -> Void)? = nil
 }
 
 extension EnvironmentValues {
     public var openTrackerItem: ((Int) -> Void)? {
         get { self[OpenTrackerItemKey.self] }
         set { self[OpenTrackerItemKey.self] = newValue }
+    }
+}
+
+/// Installs a surface as the host for `matron://item/<n>` links: the
+/// environment action every rendered body reads, the tap → `open` hop, and
+/// the tracker alert the resolver's miss paths surface.
+///
+/// Apply this ONCE, on the host container — not per child. Re-applying it
+/// down the tree pushes a fresh environment value under each subtree for no
+/// gain, and a second alert on the same surface can shadow the first.
+/// Nesting is meaningful only where a genuinely different container takes
+/// over (an item detail pushing onto its OWN stack, say): the innermost
+/// install wins for everything it contains, which is exactly the "push
+/// where the link was tapped" behaviour.
+private struct TrackerItemLinksModifier: ViewModifier {
+    let relay: TrackerItemLinkRelay
+    let open: (Int) async -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.openTrackerItem, relay.action)
+            .onChange(of: relay.pending) { _, tap in
+                guard let tap else { return }
+                Task { @MainActor in await open(tap.num) }
+            }
+            // Same chrome as every other tracker error (`ItemsPanelViewModel.error`).
+            .alert("Tracker", isPresented: Binding(
+                get: { relay.alert != nil },
+                set: { if !$0 { relay.alert = nil } })) {
+                Button("OK") { relay.alert = nil }
+            } message: {
+                Text(relay.alert ?? "")
+            }
+    }
+}
+
+extension View {
+    /// See `TrackerItemLinksModifier`. `open` receives the tapped NUMBER and
+    /// is responsible for resolving it (`TrackerItemLinkResolver`) and either
+    /// navigating or setting `relay.alert`.
+    public func trackerItemLinks(_ relay: TrackerItemLinkRelay,
+                                 open: @escaping (Int) async -> Void) -> some View {
+        modifier(TrackerItemLinksModifier(relay: relay, open: open))
     }
 }

@@ -145,7 +145,13 @@ struct MacItemsPane: View {
                     onOpenConversation: handleOpenConversation)
                 .navigationDestination(for: String.self) { id in
                     MacItemDetailHost(itemID: id, session: session, currentConvoID: viewModel.convoID,
-                                       state: state, onOpenConversation: handleOpenConversation)
+                                       state: state, onOpenConversation: handleOpenConversation,
+                                       // Per-host PUSH: an item link inside
+                                       // an item stacks over it, so Back
+                                       // returns to where the link was
+                                       // tapped (item #115, fix round 2 —
+                                       // this used to REPLACE the path).
+                                       onOpenItem: { state.path.append($0) })
                 }
             }
         }
@@ -235,11 +241,18 @@ struct MacItemDetailHost: View {
     let currentConvoID: String?
     let state: MacItemsPaneState
     let onOpenConversation: (String) -> Void
+    /// Opens ANOTHER tracker item — a `[#12](matron://item/12)` link in this
+    /// item's body, a comment, or a link chip (#115). The surface decides
+    /// what "open" means: the items pane PUSHES onto its own
+    /// `MacItemsPaneState.path` (so Back returns to the item the link was
+    /// tapped in), Decisions re-selects (it has no stack). `nil` leaves item
+    /// links inert — never handed to the OS either way.
+    var onOpenItem: ((String) -> Void)? = nil
     @Environment(\.appDependencies) private var deps
-    /// Installed by whichever surface hosts this pane — `MacChatView` (the
-    /// items pane) or `MacChatListView` (Decisions). Item links in a link
-    /// chip route through it just like the ones in the body do (#115).
-    @Environment(\.openTrackerItem) private var openTrackerItem
+    /// `[#12](matron://item/12)` taps inside this item. This host installs
+    /// its OWN handler (shadowing the surface's) so the link resolves
+    /// against this stack — see `trackerItemLinks` below.
+    @State private var itemLinkRelay = TrackerItemLinkRelay()
     /// Hover state for the "Drop here to add" overlay while a drag is over
     /// the detail pane — mirrors `MacChatView.isDropTargeted`, but scoped
     /// to this host (no stuck-overlay watchdog: `ComposerDropDelegate`'s
@@ -260,9 +273,27 @@ struct MacItemDetailHost: View {
     /// URL reaches `NSWorkspace`, which has no handler for the scheme.
     private func openLink(_ url: URL) {
         switch MatronItemLink.action(for: url) {
-        case .openTrackerItem(let number): openTrackerItem?(number)
+        case .openTrackerItem(let number): Task { await openTrackerItem(num: number) }
         case .swallow: break
         case .system(let url): NSWorkspace.shared.open(url)
+        }
+    }
+
+    /// A tapped `matron://item/<n>` link in this item's body, a comment or a
+    /// link chip, resolved by the shared `TrackerItemLinkResolver`: a known
+    /// number opens through `onOpenItem`, a number this device still doesn't
+    /// have leaves this item exactly where it is and says so in the tracker
+    /// alert (item #115, fix round 2).
+    @MainActor private func openTrackerItem(num: Int) async {
+        guard let deps else { return }
+        switch await deps.itemLinkResolver(for: session).resolve(num: num) {
+        case .open(let id):
+            // A link to the item already on screen is a no-op, not a second
+            // identical push.
+            guard id != itemID else { return }
+            onOpenItem?(id)
+        case let miss:
+            itemLinkRelay.alert = miss.alertMessage(num: num)
         }
     }
 
@@ -334,7 +365,24 @@ struct MacItemDetailHost: View {
             }
         }
         .navigationTitle("")
-        .task(id: itemID) {
+        // Item links inside this item's body / comments / link chips
+        // (#115) — one install for this whole host, shadowing the
+        // surface's so the link resolves against THIS host's navigation.
+        .trackerItemLinks(itemLinkRelay) { await openTrackerItem(num: $0) }
+        // Keyed on the pane's TOP OF STACK as well as this host's own item,
+        // because an item link now PUSHES a second host over this one
+        // (item #115, fix round 2). `.task` does not re-fire when a view
+        // reappears from under a pop, and the detail state on `state` is
+        // single-slot — so without this re-key, going Back would leave the
+        // item underneath rendering its placeholder forever. `state.path`
+        // is `@Observable`, so a push or pop re-evaluates this body and
+        // re-runs the task with a new id.
+        .task(id: "\(itemID)\u{1}\(state.path.last ?? "")") {
+            // Only the item on top owns the single detail slot; a host
+            // buried under a push must not steal it back. An empty path is
+            // the stackless Decisions surface, where this host is always
+            // the one on screen.
+            guard state.path.isEmpty || state.path.last == itemID else { return }
             // I6: only (re)create the detail VM when navigating to a
             // genuinely different item. A rebuild of this host for the
             // SAME item (e.g. the width-crossing branch move in
@@ -364,8 +412,12 @@ struct MacItemDetailHost: View {
         }
         // Belt-and-braces for the LAST item viewed in a pane close/window
         // teardown, which the in-place swap above never sees (there's no
-        // "next" item to trigger its guard).
+        // "next" item to trigger its guard). Guarded because a PUSH also
+        // disappears this host: by then the slot (and `detailIsAtBottom`)
+        // belongs to the item on top, and the activation above has already
+        // persisted ours.
         .onDisappear {
+            guard state.detailItemID == itemID else { return }
             ItemReadMemory().store(itemID: itemID, atBottom: state.detailIsAtBottom)
         }
         .task(id: imageAttachments.map(\.blobRef)) {

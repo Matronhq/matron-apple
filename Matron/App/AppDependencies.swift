@@ -309,6 +309,15 @@ final class AppDependencies {
         core(for: session).items
     }
 
+    /// Item #115: resolves a tapped `[#65](matron://item/65)` link to a
+    /// local item id, with one `refresh(scope: .all)` retry on a miss. One
+    /// per call (a value type over the session's store + sync actor) —
+    /// every link-hosting surface asks for its own.
+    func itemLinkResolver(for session: UserSession) -> TrackerItemLinkResolver {
+        let c = core(for: session)
+        return TrackerItemLinkResolver(store: c.store, sync: c.items)
+    }
+
     /// Read surface for tracker create/comment/close flows that don't need
     /// the full `ItemsPanelViewModel`/`ItemDetailViewModel` (e.g. a
     /// standalone create sheet). Same session-scoped `JournalAPI`.

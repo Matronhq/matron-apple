@@ -143,6 +143,73 @@ final class MessageCopyTextView: MouseTrackingRescueTextView {
         }
         pasteboard.setString(markdown, forType: .string)
     }
+
+    // MARK: - Right-click → "Open Link"
+
+    /// AppKit builds its own "Open Link" item for the context menu and that
+    /// item hands the URL straight to the Launch Services opener — it never
+    /// reaches `textView(_:clickedOnLink:at:)`, so it bypasses
+    /// `MatronItemLink.action(for:)` entirely. On `matron://item/65` that
+    /// means a "no application can open this URL" sheet instead of the
+    /// tracker item (item #115, fix round 2). Swap the item out for one
+    /// that goes through the very same delegate call a left-click does.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event)
+        guard let menu, let (url, charIndex) = link(under: event) else { return menu }
+        return Self.rewritingLinkItems(in: menu, for: url, charIndex: charIndex, target: self)
+    }
+
+    /// The `.link` attribute under a mouse event, with its character index.
+    private func link(under event: NSEvent) -> (URL, Int)? {
+        guard let storage = textStorage, storage.length > 0 else { return nil }
+        let point = convert(event.locationInWindow, from: nil)
+        // Clamp: `characterIndexForInsertion` legitimately returns `length`
+        // for a click past the end, which is not a valid attribute index.
+        let index = min(characterIndexForInsertion(at: point), storage.length - 1)
+        guard index >= 0 else { return nil }
+        switch storage.attribute(.link, at: index, effectiveRange: nil) {
+        case let value as URL: return (value, index)
+        case let value as String: return URL(string: value).map { ($0, index) }
+        default: return nil
+        }
+    }
+
+    /// Pure part of `menu(for:)`, so the policy is testable without a window.
+    ///
+    /// `.system` URLs (http(s) and anything else we have no opinion on) keep
+    /// AppKit's menu verbatim — its "Open Link" is exactly right for those.
+    /// Everything else loses that item, and a `matron://item/<n>` gains an
+    /// in-app opener in its place.
+    static func rewritingLinkItems(in menu: NSMenu, for url: URL, charIndex: Int,
+                                   target: MessageCopyTextView?) -> NSMenu {
+        let action = MatronItemLink.action(for: url)
+        if case .system = action { return menu }
+        // Matched by selector NAME: the item AppKit inserts is built from a
+        // private selector, and reading its name is inspection, not use. A
+        // rename by Apple leaves the (broken) item in place rather than
+        // breaking the build or the rest of the menu.
+        for item in menu.items where item.action.map({ NSStringFromSelector($0).lowercased().contains("openlink") }) == true {
+            menu.removeItem(item)
+        }
+        if case .openTrackerItem(let number) = action {
+            let item = NSMenuItem(title: "Open Item #\(number)",
+                                  action: #selector(MessageCopyTextView.openLinkInApp(_:)),
+                                  keyEquivalent: "")
+            item.target = target
+            item.representedObject = url
+            item.tag = charIndex
+            menu.insertItem(item, at: 0)
+        }
+        return menu
+    }
+
+    /// Routes the replacement menu item through the delegate — the single
+    /// place the link policy lives — so right-click and left-click cannot
+    /// disagree, and no `matron://` URL can reach the OS from either.
+    @objc func openLinkInApp(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        _ = delegate?.textView?(self, clickedOnLink: url, at: sender.tag)
+    }
 }
 
 /// `NSViewRepresentable` wrapping the non-editable, selectable `NSTextView`.

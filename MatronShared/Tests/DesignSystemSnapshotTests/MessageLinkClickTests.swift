@@ -75,6 +75,62 @@ final class MessageLinkClickTests: XCTestCase {
         XCTAssertNil(attributed.attributes(at: range.location, effectiveRange: nil)[.link])
     }
 
+    // MARK: - Right-click → "Open Link"
+
+    /// AppKit's own context-menu item opens the URL through Launch
+    /// Services, never through the delegate — on `matron://item/65` that is
+    /// a "no application" sheet instead of the tracker item. Rebuild the
+    /// menu so the right-click path lands on the same policy the click does.
+    private func appKitLinkMenu() -> NSMenu {
+        let menu = NSMenu()
+        // Same shape AppKit builds: its opener is a private selector, which
+        // this only ever INSPECTS by name.
+        let open = NSMenuItem(title: "Open Link", action: Selector(("_openLinkFromMenu:")), keyEquivalent: "")
+        menu.addItem(open)
+        menu.addItem(NSMenuItem(title: "Copy Link", action: #selector(NSText.copy(_:)), keyEquivalent: ""))
+        return menu
+    }
+
+    func test_contextMenu_replacesOpenLinkForAnItemLink() {
+        let view = MessageCopyTextView()
+        let menu = MessageCopyTextView.rewritingLinkItems(
+            in: appKitLinkMenu(), for: URL(string: "matron://item/65")!, charIndex: 12, target: view)
+
+        XCTAssertEqual(menu.items.map(\.title), ["Open Item #65", "Copy Link"],
+                       "AppKit's Launch-Services opener is gone; ours is first")
+        XCTAssertEqual(menu.items[0].action, #selector(MessageCopyTextView.openLinkInApp(_:)))
+        XCTAssertEqual((menu.items[0].representedObject as? URL)?.absoluteString, "matron://item/65")
+    }
+
+    /// …and performing it reaches the SAME delegate call a click does, so
+    /// there is one policy, not two.
+    func test_contextMenuItem_routesThroughTheClickDelegate() {
+        let (coordinator, externals, items) = makeCoordinator()
+        let view = MessageCopyTextView()
+        view.delegate = coordinator
+        let menu = MessageCopyTextView.rewritingLinkItems(
+            in: appKitLinkMenu(), for: URL(string: "matron://item/65")!, charIndex: 12, target: view)
+
+        view.openLinkInApp(menu.items[0])
+
+        XCTAssertEqual(items(), [65])
+        XCTAssertTrue(externals().isEmpty, "right-click must never hand matron:// to the OS either")
+    }
+
+    func test_contextMenu_dropsOpenLinkForANonItemMatronURL() {
+        let menu = MessageCopyTextView.rewritingLinkItems(
+            in: appKitLinkMenu(), for: URL(string: "matron://link/abc")!, charIndex: 0, target: nil)
+        XCTAssertEqual(menu.items.map(\.title), ["Copy Link"],
+                       "a swallowed scheme offers no way to open it at all")
+    }
+
+    func test_contextMenu_leavesHttpMenuAlone() {
+        let menu = MessageCopyTextView.rewritingLinkItems(
+            in: appKitLinkMenu(), for: URL(string: "https://matron.chat")!, charIndex: 0, target: nil)
+        XCTAssertEqual(menu.items.map(\.title), ["Open Link", "Copy Link"],
+                       "AppKit's Open Link is exactly right for http(s)")
+    }
+
     func test_matrixLink_isStillSwallowed() {
         let (coordinator, externals, items) = makeCoordinator()
         XCTAssertTrue(click(coordinator, URL(string: "mxc://server/abc")!))

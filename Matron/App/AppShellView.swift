@@ -172,11 +172,10 @@ struct AppShellView: View {
                 ItemDetailHost(itemID: route.id, session: session, currentConvoID: nil,
                                onOpenConversation: { nav.openConversation(fromDecisions: $0) },
                                // An item link inside a body/comment pushes
-                               // onto THIS tab's stack; an item this device
-                               // has never synced pops back to the list
-                               // (item #115).
-                               onOpenItem: { nav.pushDecision($0) },
-                               onOpenItemsList: { nav.decisionsPath = [] })
+                               // onto THIS tab's stack (item #115); a number
+                               // this device hasn't synced stays put and
+                               // alerts — the host owns that path.
+                               onOpenItem: { nav.pushDecision($0) })
             }
             .task(id: decisionsVM.awaitingYou.map(\.originConvoID)) {
                 originTitles = (try? deps.journalStore(for: session).conversationOriginLabels()) ?? [:]

@@ -373,19 +373,22 @@ struct MacChatView: View {
     /// pane below its min, so 820 keeps a small margin above that.
     private static let sideBySideMinWidth: CGFloat = 820
 
-    /// A tapped `matron://item/<n>` link in a message body (item #115).
-    /// Lands in the same place an inline `.itemMarker` card does — the
-    /// items pane, pushed straight to that item — and falls back to the
-    /// pane's LIST when this device has never synced item `n`, rather than
-    /// leaving the click dead.
-    private func openTrackerItem(num: Int) {
+    /// A tapped `matron://item/<n>` link in a message body (item #115),
+    /// resolved by the shared `TrackerItemLinkResolver`. A known item lands
+    /// exactly where an inline `.itemMarker` card does — the items pane,
+    /// pushed straight to that item. A number this device still doesn't
+    /// have after a refresh changes NOTHING on screen (no pane, no path
+    /// reset — the old fallback swapped the reader onto a list that by
+    /// definition lacked the item) and reports itself in the tracker alert.
+    @MainActor private func openTrackerItem(num: Int) async {
         guard let deps, let session, let itemsVM, itemsVM.isSupported != false else { return }
-        openSubChatID = nil
-        showItemsPane = true
-        if let item = try? deps.journalStore(for: session).item(num: num) {
-            itemsPaneState.path = [item.id]
-        } else {
-            itemsPaneState.path = []
+        switch await deps.itemLinkResolver(for: session).resolve(num: num) {
+        case .open(let id):
+            openSubChatID = nil
+            showItemsPane = true
+            itemsPaneState.path = [id]
+        case let miss:
+            itemLinkRelay.alert = miss.alertMessage(num: num)
         }
     }
 
@@ -460,13 +463,11 @@ struct MacChatView: View {
             }
         }
         // Item links (`[#65](matron://item/65)`) tapped in a message body.
-        // Installed on the stable outer view so it covers both the
-        // side-by-side and the narrow-takeover branches.
-        .environment(\.openTrackerItem, itemLinkRelay.action)
-        .onChange(of: itemLinkRelay.pending) { _, tap in
-            guard let tap else { return }
-            openTrackerItem(num: tap.num)
-        }
+        // Installed once, on the stable outer view, so it covers both the
+        // side-by-side and the narrow-takeover branches. `MacItemDetailHost`
+        // installs its own inside the pane — a link tapped in an ITEM
+        // pushes onto the pane's stack rather than replacing it.
+        .trackerItemLinks(itemLinkRelay) { await openTrackerItem(num: $0) }
         // Minor (Mac fix wave, part 1): ⌘⇧I toggles the tasks-and-decisions
         // pane. Attached HERE (the stable outer view, same reasoning as the
         // observation lifecycle below) rather than as a toolbar-item

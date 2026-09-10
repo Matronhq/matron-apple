@@ -22,14 +22,11 @@ struct ItemDetailHost: View {
     let currentConvoID: String?
     let onOpenConversation: (String) -> Void
     /// Opens ANOTHER tracker item — a `[#12](matron://item/12)` link inside
-    /// this item's body or one of its comments (item #115) — in the same
-    /// container this host lives in, so "back" still means what it meant.
-    /// `nil` leaves item links inert (never handed to the OS either way).
+    /// this item's body or one of its comments (item #115) — by PUSHING it
+    /// onto the same stack this host sits on, so Back returns to the item
+    /// the link was tapped in. `nil` leaves item links inert (never handed
+    /// to the OS either way).
     var onOpenItem: ((String) -> Void)? = nil
-    /// This surface's item LIST, for a number this device has never synced.
-    /// `nil` where the surface has none to fall back to — an item pushed
-    /// over a chat has the chat below it, not a list.
-    var onOpenItemsList: (() -> Void)? = nil
 
     @Environment(\.appDependencies) private var deps
     @Environment(\.openURL) private var openURL
@@ -74,18 +71,22 @@ struct ItemDetailHost: View {
     @State private var itemLinkRelay = TrackerItemLinkRelay()
 
     /// A tapped `matron://item/<n>` link in this item's body or a comment.
-    /// Same rule as the chat timeline: known number → that item, in this
-    /// same container; unknown → this surface's list, where it has one.
-    private func openTrackerItem(num: Int) {
+    /// Same rule as the chat timeline (`TrackerItemLinkResolver`): a known
+    /// number pushes that item over this one; a number this device doesn't
+    /// have leaves this item on screen and explains itself in the tracker
+    /// alert (item #115, fix round 2 — the old fallback replaced the whole
+    /// stack with a list).
+    @MainActor private func openTrackerItem(num: Int) async {
         guard let deps else { return }
-        guard let item = try? deps.journalStore(for: session).item(num: num) else {
-            onOpenItemsList?()
-            return
+        switch await deps.itemLinkResolver(for: session).resolve(num: num) {
+        case .open(let id):
+            // A link to the item already on screen is a no-op rather than a
+            // second identical push.
+            guard id != itemID else { return }
+            onOpenItem?(id)
+        case let miss:
+            itemLinkRelay.alert = miss.alertMessage(num: num)
         }
-        // A link to the item already on screen is a no-op rather than a
-        // second identical push.
-        guard item.id != itemID else { return }
-        onOpenItem?(item.id)
     }
 
     /// A tapped link chip (`item.links`). Routed through the same policy as
@@ -93,7 +94,7 @@ struct ItemDetailHost: View {
     /// URL is ever handed to the OS, which has no handler for the scheme.
     private func openLink(_ url: URL) {
         switch MatronItemLink.action(for: url) {
-        case .openTrackerItem(let number): openTrackerItem(num: number)
+        case .openTrackerItem(let number): Task { await openTrackerItem(num: number) }
         case .swallow: break
         case .system(let url): openURL(url)
         }
@@ -175,12 +176,10 @@ struct ItemDetailHost: View {
         // Mirrors `AttachmentPicker`'s chooser — the paperclip previously
         // jumped straight to `showPhotosPicker`, which left the file-import
         // flow unreachable from the comment composer entirely (Bugbot).
-        // Item links inside the body / comments (item #115).
-        .environment(\.openTrackerItem, itemLinkRelay.action)
-        .onChange(of: itemLinkRelay.pending) { _, tap in
-            guard let tap else { return }
-            openTrackerItem(num: tap.num)
-        }
+        // Item links inside the body / comments (item #115) — one install
+        // for this whole host, shadowing whatever container it was pushed
+        // from so a link pushes onto THIS stack.
+        .trackerItemLinks(itemLinkRelay) { await openTrackerItem(num: $0) }
         .confirmationDialog("Attach", isPresented: $showAttachChooser) {
             Button("Photo Library") { showPhotosPicker = true }
             Button("Choose File…") { showFileImporter = true }

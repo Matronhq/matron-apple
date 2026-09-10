@@ -254,18 +254,22 @@ struct ChatView: View {
         Self.pushItem(itemID, onto: navigationPath)
     }
 
-    /// A tapped `matron://item/<n>` link in a message body. Resolves the
-    /// number against the local store: a known item opens exactly where an
-    /// inline item card opens it; an unknown one (never synced here, or
-    /// filed on another journal) pages to the tracker list rather than
-    /// dying silently under the finger.
-    private func openTrackerItem(num: Int) {
+    /// A tapped `matron://item/<n>` link in a message body, resolved by the
+    /// shared `TrackerItemLinkResolver` (one local lookup, one
+    /// `refresh(scope: .all)` retry). A known item opens exactly where an
+    /// inline item card opens it. A number this device still doesn't have
+    /// leaves the reader EXACTLY where they were — paging to the tracker
+    /// would cost them their place in the conversation to show them a list
+    /// that by definition doesn't contain the item — and says so in the
+    /// tracker alert instead (item #115, fix round 2).
+    @MainActor private func openTrackerItem(num: Int) async {
         guard let deps, let session else { return }
-        if let item = try? deps.journalStore(for: session).item(num: num) {
-            openItem(item.id)
-        } else if showsTasksPage {
-            chatViewLogger.notice("item link #\(num, privacy: .public) not in the local store — opening the tracker")
-            withAnimation { pager.go(to: .tasks) }
+        switch await deps.itemLinkResolver(for: session).resolve(num: num) {
+        case .open(let itemID):
+            openItem(itemID)
+        case let miss:
+            chatViewLogger.notice("item link #\(num, privacy: .public) did not resolve — staying put")
+            itemLinkRelay.alert = miss.alertMessage(num: num)
         }
     }
 
@@ -1023,13 +1027,9 @@ struct ChatView: View {
             tasksPage
         }
         // Item links (`[#65](matron://item/65)`) in any message body on
-        // either page. One stable closure for the view's lifetime — this
-        // value is read by every rendered message body.
-        .environment(\.openTrackerItem, itemLinkRelay.action)
-        .onChange(of: itemLinkRelay.pending) { _, tap in
-            guard let tap else { return }
-            openTrackerItem(num: tap.num)
-        }
+        // either page — installed ONCE here, on the pager root, so the chat
+        // page and the tasks page share one host (and one alert).
+        .trackerItemLinks(itemLinkRelay) { await openTrackerItem(num: $0) }
         // VoiceOver hears the page change; the announcement names the
         // page that just arrived.
         .onChange(of: pager.page) { _, page in

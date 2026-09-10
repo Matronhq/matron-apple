@@ -42,6 +42,14 @@ final class MatronItemLinkTests: XCTestCase {
             "matron://item/65abc",       // trailing junk
             "matron://items/65",         // wrong host
             "matron://item/65/extra",    // extra path component
+            "matron://item/65/",         // trailing empty segment
+            "matron://item//65",         // leading empty segment
+            "matron://item///",          // nothing but separators
+            "matron://item/65//",        // trailing separators
+            "matron://item/6 5",         // internal space
+            "matron://item/%36%35",      // percent-encoded digits
+            "matron://item:80/65",       // port
+            "matron://dan@item/65",      // userinfo
             "matron://item/-5",          // negative
             "matron://item/0",           // zero is not an item number
             "matron://item/+65",         // signed

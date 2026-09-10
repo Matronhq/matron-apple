@@ -70,10 +70,6 @@ struct MacChatListView: View {
     @State private var decisionsVM: ItemsPanelViewModel?
     @State private var decisionsPaneState = MacItemsPaneState()
     @State private var selectedDecisionID: String?
-    /// `[#12](matron://item/12)` taps inside a Decisions item's body or
-    /// comments (item #115). Stable closure identity for the environment;
-    /// the selection change happens in `onChange` (see the relay's doc).
-    @State private var decisionsItemLinkRelay = TrackerItemLinkRelay()
     @State private var decisionsOriginTitles: [String: String] = [:]
     /// Phase 6 (Search): the shared search VM, built once the session + index
     /// resolve and the chat list has loaded (so chat-title hits have a snapshot).
@@ -640,32 +636,26 @@ struct MacChatListView: View {
 
     @ViewBuilder
     private var decisionsDetail: some View {
-        Group {
-            if let id = selectedDecisionID, let session {
-                MacItemDetailHost(itemID: id, session: session, currentConvoID: nil,
-                                  state: decisionsPaneState, onOpenConversation: openConversationFromDecisions)
-            } else {
-                ContentUnavailableView(
-                    "Select an item",
-                    systemImage: "checkmark.circle",
-                    description: Text("Pick something that needs you from the list."))
-            }
+        if let id = selectedDecisionID, let session {
+            // The `\.openTrackerItem` host for this surface is
+            // `MacItemDetailHost` itself (item #115) — one install, on the
+            // container that owns the navigation, rather than a wrapper
+            // here re-applying it around every child.
+            MacItemDetailHost(itemID: id, session: session, currentConvoID: nil,
+                              state: decisionsPaneState, onOpenConversation: openConversationFromDecisions,
+                              // Decisions is a two-column list+detail with
+                              // NO navigation stack of its own, so an item
+                              // link genuinely can only re-select — the same
+                              // thing a row tap does. Everywhere there IS a
+                              // stack (the Mac items pane, both iOS
+                              // surfaces) the link pushes instead.
+                              onOpenItem: { selectedDecisionID = $0 })
+        } else {
+            ContentUnavailableView(
+                "Select an item",
+                systemImage: "checkmark.circle",
+                description: Text("Pick something that needs you from the list."))
         }
-        // An item link inside a Decisions body/comment selects that item in
-        // this same two-column surface — the way a row tap does (item #115).
-        .environment(\.openTrackerItem, decisionsItemLinkRelay.action)
-        .onChange(of: decisionsItemLinkRelay.pending) { _, tap in
-            guard let tap else { return }
-            openDecisionsItem(num: tap.num)
-        }
-    }
-
-    /// A tapped `matron://item/<n>` link in the Decisions detail. Known
-    /// number → select it (identical to `onSelect` from a row); unknown
-    /// number → clear the selection, which puts the list on its own.
-    private func openDecisionsItem(num: Int) {
-        guard let session, let deps else { return }
-        selectedDecisionID = (try? deps.journalStore(for: session).item(num: num))?.id
     }
 
     /// "Open conversation" from a Decisions row or its detail: switch the

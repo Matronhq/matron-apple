@@ -203,11 +203,16 @@ extension JournalStore {
     /// Lookup by the human-facing item NUMBER (`#65`) rather than its id —
     /// what a tapped `[#65](matron://item/65)` link in a message body has to
     /// resolve (item #115). `nil` when this device has never synced that
-    /// item, which the callers turn into "open the tracker list" rather than
-    /// a dead tap. Numbers are unique per journal, so the first row wins.
+    /// item — `TrackerItemLinkResolver` turns that into one refresh and then
+    /// a "not on this device yet" alert, never a navigation change.
+    ///
+    /// Numbers are unique per journal, so at most one row can match; the
+    /// `id` ordering only makes a theoretical duplicate (two journals'
+    /// items in one store) resolve to the same row every time instead of
+    /// whichever SQLite happened to reach first.
     public func item(num: Int) throws -> TrackerItem? {
         try dbQueue.read { db in
-            try ItemRecord.filter(Column("num") == num).fetchOne(db)?.item
+            try ItemRecord.filter(Column("num") == num).order(Column("id")).fetchOne(db)?.item
         }
     }
 
