@@ -16,13 +16,26 @@ public protocol MissionsStoreReading: Sendable {
     /// The `A:bc` tag halves for one conversation, or `nil` when this
     /// device has no cached row for it (a milestone can name a
     /// conversation that has never synced here — it renders untagged).
+    /// The batch form's one-element caller (MINOR-5).
     func sessionTag(convoID: String) -> SessionTagInputs?
+    /// The `A:bc` tag halves for several conversations, keyed by id, with
+    /// no entry for a conversation this device has no cached row for. The
+    /// box roster and letter overrides are read ONCE for the whole batch,
+    /// not once per conversation — a mission page re-derives every tag on
+    /// every milestone-stream emission, so that part is not irreducible
+    /// the way the per-conversation `conversation(id:)` read is (MINOR-5).
+    func sessionTags(convoIDs: Set<String>) -> [String: SessionTagInputs]
 }
 
 extension JournalStore: MissionsStoreReading {
-    /// Derived from three reads the store already has: the conversation row
-    /// (`conversation(id:)`), the box roster (`agentNames()`) and the
-    /// journal-held tag overrides (`agentTagChars()`). This is the same
+    public func sessionTag(convoID: String) -> SessionTagInputs? {
+        sessionTags(convoIDs: [convoID])[convoID]
+    }
+
+    /// Derived from reads the store already has: the conversation row
+    /// (`conversation(id:)`, one per id), the box roster (`agentNames()`)
+    /// and the journal-held tag overrides (`agentTagChars()`) — the latter
+    /// two hoisted out of the per-conversation loop. This is the same
     /// derivation `JournalChatService.summary(from:boxNames:boxLetters:)`
     /// runs for a chat-list row — restated here because that one is
     /// internal to `MatronChat` — including its two gates: a box letter
@@ -30,15 +43,20 @@ extension JournalStore: MissionsStoreReading {
     /// session short is peeled off the stored title by
     /// `SessionTag.splitTitle`. Cheap enough to call on the main actor
     /// (a handful of indexed row reads), like `conversationOriginLabels()`.
-    public func sessionTag(convoID: String) -> SessionTagInputs? {
-        guard let record = try? conversation(id: convoID) else { return nil }
+    public func sessionTags(convoIDs: Set<String>) -> [String: SessionTagInputs] {
+        guard !convoIDs.isEmpty else { return [:] }
         let names = (try? agentNames()) ?? [:]
         let letters = SessionTag.boxLetters(for: names, overrides: (try? agentTagChars()) ?? [:])
-        let boxName = names.count >= 2 ? record.agentDeviceID.flatMap { names[$0] } : nil
-        let boxLetter = boxName != nil ? record.agentDeviceID.flatMap { letters[$0] } : nil
-        let sessionShort = SessionTag.splitTitle(record.title).sessionShort
-        guard boxLetter != nil || sessionShort != nil else { return nil }
-        return SessionTagInputs(boxLetter: boxLetter, boxName: boxName, sessionShort: sessionShort)
+        var tags: [String: SessionTagInputs] = [:]
+        for convoID in convoIDs {
+            guard let record = try? conversation(id: convoID) else { continue }
+            let boxName = names.count >= 2 ? record.agentDeviceID.flatMap { names[$0] } : nil
+            let boxLetter = boxName != nil ? record.agentDeviceID.flatMap { letters[$0] } : nil
+            let sessionShort = SessionTag.splitTitle(record.title).sessionShort
+            guard boxLetter != nil || sessionShort != nil else { continue }
+            tags[convoID] = SessionTagInputs(boxLetter: boxLetter, boxName: boxName, sessionShort: sessionShort)
+        }
+        return tags
     }
 }
 
@@ -47,7 +65,8 @@ extension JournalStore: MissionsStoreReading {
 public protocol MissionsSyncing: Sendable {
     @discardableResult
     func refresh() async -> MissionsRefreshOutcome
-    func refreshMission(id: String) async
+    @discardableResult
+    func refreshMission(id: String) async -> MissionsRefreshOutcome
     @discardableResult
     func closeMission(id: String, summary: String) async throws -> Mission
     func supportedStream() async -> AsyncStream<Bool>

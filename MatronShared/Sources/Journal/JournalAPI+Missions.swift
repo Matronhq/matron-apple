@@ -71,6 +71,10 @@ extension JournalAPI: MissionsProviding {
         try Self.decodeMissionDetail(try await request(path: "/missions/\(Self.pathSegment(id))"))
     }
 
+    /// `GET /milestones?convo=` — spec-listed read surface, kept and tested
+    /// (`MissionsAPITests`) even though no surface consumes it yet: the
+    /// transcript renders milestones from timeline events and the mission
+    /// page from the detail fetch (MINOR-1).
     public func milestones(convoID: String) async throws -> [Milestone] {
         let obj = try await request(path: "/milestones", query: [.init(name: "convo", value: convoID)])
         return (obj["milestones"] as? [[String: Any]] ?? []).compactMap(Milestone.init(json:))

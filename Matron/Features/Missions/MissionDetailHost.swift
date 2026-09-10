@@ -33,7 +33,8 @@ struct MissionDetailHost: View {
                     onOpenItem: onOpenItem,
                     onOpenConversation: onOpenConversation,
                     onEditCloseSummary: { viewModel.closeSummaryDraft = $0 },
-                    onClose: { Task { await viewModel.close() } })
+                    onClose: { Task { await viewModel.close() } },
+                    onRefresh: { await viewModel.refresh() })
                 .alert("Missions", isPresented: Binding(get: { viewModel.error != nil },
                                                         set: { if !$0 { viewModel.error = nil } })) {
                     Button("OK") { viewModel.error = nil }

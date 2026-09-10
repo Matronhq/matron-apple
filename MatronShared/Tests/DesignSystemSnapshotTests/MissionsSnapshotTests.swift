@@ -55,6 +55,15 @@ final class MissionsSnapshotTests: XCTestCase {
         XCTAssertEqual(MissionNotice.text(for: updated), "🏁 Mission #61 renamed · Renamed")
     }
 
+    /// The close confirmation's title, on the symbol the user actually
+    /// sees rendered (moved off the view model's dead `closeConfirmation`
+    /// property, MINOR-2).
+    func testConfirmationTitleCountsOpenItems() {
+        XCTAssertEqual(MissionDetailView.confirmationTitle(openItems: 0), "Close this mission?")
+        XCTAssertEqual(MissionDetailView.confirmationTitle(openItems: 1), "Close with 1 item still open?")
+        XCTAssertEqual(MissionDetailView.confirmationTitle(openItems: 2), "Close with 2 items still open?")
+    }
+
     func testListModelEmptyState() {
         let empty = MissionsListView.Model(open: [], closed: [], isSupported: true, isRefreshing: false)
         XCTAssertTrue(empty.isEmpty)
@@ -104,7 +113,7 @@ final class MissionsSnapshotTests: XCTestCase {
         assertVariants(of: MissionDetailView(model: model, onToggleUserInputOnly: { _ in },
                                              onOpenMilestone: { _ in }, onOpenItem: { _ in },
                                              onOpenConversation: { _ in }, onEditCloseSummary: { _ in },
-                                             onClose: {})
+                                             onClose: {}, onRefresh: {})
             .frame(width: 420, height: 640), named: "mission-detail")
     }
 

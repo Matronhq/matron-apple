@@ -28,13 +28,6 @@ public final class MissionDetailViewModel {
     public private(set) var isBusy = false
     public var error: String?
 
-    /// The confirmation to show before a close, or `nil` when nothing is
-    /// open and the close needs no extra ceremony.
-    public var closeConfirmation: String? {
-        guard !openItems.isEmpty else { return nil }
-        return "Close with \(openItems.count) item\(openItems.count == 1 ? "" : "s") still open?"
-    }
-
     private let store: any MissionsStoreReading
     private let sync: any MissionsSyncing
     /// Unfiltered, as the store delivered it — `applyFilter` derives
@@ -53,15 +46,13 @@ public final class MissionDetailViewModel {
 
     private func applyFilter() { milestones = Self.filtered(allMilestones, showOnlyUserInput: showOnlyUserInput) }
 
-    /// One store read per DISTINCT conversation in the unfiltered list, so
-    /// toggling "My inputs only" costs nothing and a 40-milestone mission
-    /// posted in three sessions does three reads, not forty.
+    /// One batch read for every DISTINCT conversation in the unfiltered
+    /// list, so toggling "My inputs only" costs nothing, a 40-milestone
+    /// mission posted in three sessions does three conversation reads (not
+    /// forty), and the box roster is read once rather than once per
+    /// conversation on every milestone-stream emission (MINOR-5).
     private func refreshSessionTags() {
-        var tags: [String: SessionTagInputs] = [:]
-        for convoID in Set(allMilestones.map(\.convoID)) {
-            if let tag = store.sessionTag(convoID: convoID) { tags[convoID] = tag }
-        }
-        sessionTags = tags
+        sessionTags = store.sessionTags(convoIDs: Set(allMilestones.map(\.convoID)))
     }
 
     public func start() {
@@ -100,11 +91,20 @@ public final class MissionDetailViewModel {
         refreshTask?.cancel(); refreshTask = nil
     }
 
-    public func refresh() async { await sync.refreshMission(id: missionID) }
+    /// A failed refresh sets `error` — the same alert plumbing `close()`
+    /// already feeds — so a cold open with nothing cached (a milestone
+    /// card tap, a title tap, a `#N`) while the journal is unreachable
+    /// surfaces a retryable message instead of dead-ending on the "not on
+    /// this device yet" placeholder forever (MAJOR-4).
+    public func refresh() async {
+        if case .failed(let failure) = await sync.refreshMission(id: missionID) { error = failure.message }
+    }
 
     /// The user's close. Always permitted server-side, even over open items
     /// — the journal records the override and the close marker names the
-    /// numbers. The host shows `closeConfirmation` first when it is non-nil.
+    /// numbers. The host shows a confirmation first
+    /// (`MissionDetailView.confirmationTitle(openItems:)`) naming how many
+    /// items stay open, when any do.
     public func close() async {
         let summary = closeSummaryDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !summary.isEmpty else {

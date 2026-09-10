@@ -51,7 +51,7 @@ public actor MissionsSync {
     /// joiner AWAITS the run already in flight (callers take "refreshMission
     /// returned" to mean the store now holds the server's page), and the
     /// running pass repeats once more if another was requested meanwhile.
-    private var inFlightRefetches: [String: Task<Void, Never>] = [:]
+    private var inFlightRefetches: [String: Task<MissionsRefreshOutcome, Never>] = [:]
     private var refetchAgain: Set<String> = []
     public private(set) var isSupported = true
     private var supportedContinuations: [UUID: AsyncStream<Bool>.Continuation] = [:]
@@ -169,29 +169,34 @@ public actor MissionsSync {
 
     /// `GET /missions/:id` — the mission row, its milestones, its open items
     /// and its conversations, all written in one pass. Called on a marker
-    /// and whenever a mission page opens.
-    public func refreshMission(id: String) async {
+    /// and whenever a mission page opens. Returns the outcome (MAJOR-4) so
+    /// `MissionDetailViewModel.refresh()` can tell a transport failure from
+    /// a quiet success and surface it — a swallowed failure here, combined
+    /// with the page's optimistic "not on this device yet" placeholder,
+    /// used to be a permanent, un-retryable dead end.
+    @discardableResult
+    public func refreshMission(id: String) async -> MissionsRefreshOutcome {
         if let running = inFlightRefetches[id] {
             refetchAgain.insert(id)
-            await running.value
-            return
+            return await running.value
         }
-        let run = Task { [self] in
-            await refreshMissionOnce(id: id)
-            while refetchAgain.remove(id) != nil { await refreshMissionOnce(id: id) }
+        let run = Task<MissionsRefreshOutcome, Never> { [self] in
+            var outcome = await refreshMissionOnce(id: id)
+            while refetchAgain.remove(id) != nil { outcome = await refreshMissionOnce(id: id) }
             // Deregister here, with no suspension between the final
             // `refetchAgain` check and the removal, so a joiner can never
             // await a task that has already finished AND deregistered.
             inFlightRefetches[id] = nil
+            return outcome
         }
         inFlightRefetches[id] = run
-        await run.value
+        return await run.value
     }
 
-    private func refreshMissionOnce(id: String) async {
+    private func refreshMissionOnce(id: String) async -> MissionsRefreshOutcome {
         do {
             let detail = try await api.mission(id: id)
-            guard !stopped else { return }
+            guard !stopped else { return .stopped }
             try store.upsertMissions([detail.mission])
             try store.replaceMilestones(missionID: detail.mission.id, detail.milestones)
             try store.replaceMissionConversations(missionID: detail.mission.id, detail.conversations)
@@ -200,25 +205,16 @@ public actor MissionsSync {
             // mission page in agreement without a second /items fetch.
             if !detail.items.isEmpty { try store.upsertItems(detail.items) }
             setSupported(true)
+            return .succeeded
         } catch JournalAPIError.notFound {
             // Unknown, or invisible to this caller. Not a support signal —
-            // `refresh()` owns `isSupported`.
+            // `refresh()` owns `isSupported` — and not a failure to surface
+            // either: the page has nothing to retry into.
             Self.logger.notice("mission \(id, privacy: .public) not found or not visible")
+            return .succeeded
         } catch {
             Self.logger.warning("mission refetch \(id, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
-        }
-    }
-
-    /// `GET /milestones?convo=` — the per-conversation view. Merged into the
-    /// same `milestone` table, scoped by the mission the rows name, so the
-    /// mission page and the conversation view never disagree.
-    public func refreshMilestones(convoID: String) async {
-        do {
-            let fetched = try await api.milestones(convoID: convoID)
-            guard !stopped, let missionID = fetched.first?.missionID else { return }
-            await refreshMission(id: missionID)
-        } catch {
-            Self.logger.warning("milestones for \(convoID, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            return .failed(MissionsRefreshFailure(error))
         }
     }
 

@@ -33,6 +33,9 @@ private final class FakeMissionsStore: MissionsStoreReading, @unchecked Sendable
     func itemsStream(missionID: String) -> AsyncStream<[TrackerItem]> { itemsStreamValue }
     func missionConversationsStream(missionID: String) -> AsyncStream<[MissionConversation]> { conversationsStreamValue }
     func sessionTag(convoID: String) -> SessionTagInputs? { tags[convoID] }
+    func sessionTags(convoIDs: Set<String>) -> [String: SessionTagInputs] {
+        tags.filter { convoIDs.contains($0.key) }
+    }
 }
 
 private final class FakeMissionsSync: MissionsSyncing, @unchecked Sendable {
@@ -40,14 +43,24 @@ private final class FakeMissionsSync: MissionsSyncing, @unchecked Sendable {
     private var _refreshes = 0
     private var _refetches: [String] = []
     private var _closes: [(String, String)] = []
+    private var _refreshMissionOutcome: MissionsRefreshOutcome = .succeeded
     var closeError: Error?
     var supported: [Bool] = [true]
     var refreshes: Int { lock.withLock { _refreshes } }
     var refetches: [String] { lock.withLock { _refetches } }
     var closes: [(String, String)] { lock.withLock { _closes } }
+    /// What the NEXT `refreshMission(id:)` returns — lets a test simulate a
+    /// transport failure on the detail fetch (MAJOR-4).
+    var refreshMissionOutcome: MissionsRefreshOutcome {
+        get { lock.withLock { _refreshMissionOutcome } }
+        set { lock.withLock { _refreshMissionOutcome = newValue } }
+    }
 
     func refresh() async -> MissionsRefreshOutcome { lock.withLock { _refreshes += 1 }; return .succeeded }
-    func refreshMission(id: String) async { lock.withLock { _refetches.append(id) } }
+    func refreshMission(id: String) async -> MissionsRefreshOutcome {
+        lock.withLock { _refetches.append(id) }
+        return refreshMissionOutcome
+    }
     func closeMission(id: String, summary: String) async throws -> Mission {
         lock.withLock { _closes.append((id, summary)) }
         if let closeError { throw closeError }
@@ -160,7 +173,7 @@ final class MissionsViewModelTests: XCTestCase {
             TrackerItem(id: "it_2", num: 65, kind: .task, awaiting: .agent, title: "b", originConvoID: "c1"),
         ])
         try await Task.sleep(nanoseconds: 50_000_000)
-        XCTAssertEqual(vm.closeConfirmation, "Close with 2 items still open?")
+        XCTAssertEqual(vm.openItems.count, 2)
         vm.closeSummaryDraft = "  Shipped.  "
         await vm.close()
         XCTAssertEqual(sync.closes.map(\.0), ["ms_1"])
@@ -189,14 +202,19 @@ final class MissionsViewModelTests: XCTestCase {
         vm.stop()
     }
 
-    /// With nothing open the confirmation is skipped entirely.
-    func testNoConfirmationWhenNothingIsOpen() async throws {
+    /// A failed detail refresh must surface — the same alert plumbing
+    /// `close()` failures already feed — rather than leave the page's
+    /// "not on this device yet" placeholder permanent and un-retryable
+    /// (MAJOR-4).
+    func testFailedDetailRefreshSetsError() async throws {
         let store = FakeMissionsStore(); let sync = FakeMissionsSync()
+        sync.refreshMissionOutcome = .failed(MissionsRefreshFailure(message: "offline"))
         let vm = MissionDetailViewModel(missionID: "ms_1", store: store, sync: sync)
         vm.start()
-        store.itemsContinuation.yield([])
         try await Task.sleep(nanoseconds: 50_000_000)
-        XCTAssertNil(vm.closeConfirmation)
+        XCTAssertNotNil(vm.error)
+        XCTAssertNil(vm.mission, "still nothing cached — the placeholder stays, now with a real error to retry against")
         vm.stop()
     }
+
 }

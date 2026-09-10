@@ -117,9 +117,9 @@ final class MissionsSyncTests: XCTestCase {
         api.details = ["ms_1": MissionDetail(mission: mission("ms_1", num: 61), milestones: [], items: [], conversations: [])]
         let (sync, _, _, _) = try make(api: api)
         api.blockNextDetail = true
-        async let first: Void = sync.refreshMission(id: "ms_1")
+        async let first = sync.refreshMission(id: "ms_1")
         try await waitUntil { api.isDetailGated }
-        async let second: Void = sync.refreshMission(id: "ms_1")
+        async let second = sync.refreshMission(id: "ms_1")
         api.releaseDetailGate()
         _ = await (first, second)
         XCTAssertEqual(api.detailCalls.filter { $0 == "ms_1" }.count, 2,

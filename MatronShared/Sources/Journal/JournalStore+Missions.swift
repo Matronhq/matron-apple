@@ -194,6 +194,8 @@ extension JournalStore {
     }
 
     /// The per-conversation view (`GET /milestones?convo=`), newest first.
+    /// Kept and tested even though no surface consumes it yet — same
+    /// reasoning as `JournalAPI.milestones(convoID:)` (MINOR-1).
     public func milestones(convoID: String) throws -> [Milestone] {
         try dbQueue.read { db in
             try MilestoneRecord.filter(Column("convo_id") == convoID).order(Column("seq").desc).fetchAll(db).map(\.milestone)

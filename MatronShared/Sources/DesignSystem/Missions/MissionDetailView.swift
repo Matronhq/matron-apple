@@ -67,6 +67,10 @@ public struct MissionDetailView: View {
     let onOpenConversation: (String) -> Void
     let onEditCloseSummary: (String) -> Void
     let onClose: () -> Void
+    /// Retries the detail fetch — same closure the Missions list's own
+    /// header/pull-to-refresh takes. Wired to the "Try again" action in the
+    /// `mission == nil` placeholder and, on iOS, to `.refreshable` there.
+    let onRefresh: () async -> Void
     @State private var showingClose = false
     /// `SessionTagText` tints a box letter with `BoxChip.textTint(for:in:)`,
     /// which needs the scheme — the same environment read `ChatView`'s
@@ -76,11 +80,11 @@ public struct MissionDetailView: View {
     public init(model: Model, onToggleUserInputOnly: @escaping (Bool) -> Void,
                 onOpenMilestone: @escaping (Milestone) -> Void, onOpenItem: @escaping (String) -> Void,
                 onOpenConversation: @escaping (String) -> Void, onEditCloseSummary: @escaping (String) -> Void,
-                onClose: @escaping () -> Void) {
+                onClose: @escaping () -> Void, onRefresh: @escaping () async -> Void) {
         self.model = model; self.onToggleUserInputOnly = onToggleUserInputOnly
         self.onOpenMilestone = onOpenMilestone; self.onOpenItem = onOpenItem
         self.onOpenConversation = onOpenConversation; self.onEditCloseSummary = onEditCloseSummary
-        self.onClose = onClose
+        self.onClose = onClose; self.onRefresh = onRefresh
     }
 
     public var body: some View {
@@ -136,22 +140,50 @@ public struct MissionDetailView: View {
             #else
             .listStyle(.inset)
             #endif
-            .confirmationDialog(confirmationTitle, isPresented: $showingClose, titleVisibility: .visible) {
+            .confirmationDialog(Self.confirmationTitle(openItems: model.openItems.count),
+                               isPresented: $showingClose, titleVisibility: .visible) {
                 Button("Close mission", role: .destructive) { onClose() }
                 Button("Keep it open", role: .cancel) {}
             } message: {
                 Text("The items stay open and keep their mission. The close is recorded on it.")
             }
         } else {
-            ContentUnavailableView("Mission not on this device yet", systemImage: "flag.checkered",
-                                   description: Text("It will appear once this device syncs it."))
+            missionUnavailable
         }
     }
 
-    private var confirmationTitle: String {
-        model.openItems.isEmpty
+    /// The `mission == nil` leaf: not cached yet, or a refresh just failed.
+    /// A retry action either way — the view model has no way to tell "still
+    /// syncing" from "the last attempt failed" apart from `error` (surfaced
+    /// separately, via the alert both hosts wire), so this placeholder
+    /// always offers a way to try again rather than dead-ending (MAJOR-4).
+    @ViewBuilder
+    private var missionUnavailable: some View {
+        let content = ContentUnavailableView {
+            Label("Mission not on this device yet", systemImage: "flag.checkered")
+        } description: {
+            Text("It will appear once this device syncs it.")
+        } actions: {
+            Button("Try again") { Task { await onRefresh() } }
+        }
+        #if os(iOS)
+        GeometryReader { geo in
+            ScrollView { content.frame(width: geo.size.width, height: geo.size.height) }
+                .refreshable { await onRefresh() }
+        }
+        #else
+        content.frame(maxWidth: .infinity, maxHeight: .infinity)
+        #endif
+    }
+
+    /// The close confirmation's title — what the user actually sees, and
+    /// what the "close confirmation counts" requirement is pinned on now
+    /// (moved from the view model's dead `closeConfirmation` property,
+    /// MINOR-2). `static` so it is testable without a view.
+    public static func confirmationTitle(openItems: Int) -> String {
+        openItems == 0
             ? "Close this mission?"
-            : "Close with \(model.openItems.count) item\(model.openItems.count == 1 ? "" : "s") still open?"
+            : "Close with \(openItems) item\(openItems == 1 ? "" : "s") still open?"
     }
 
     private func header(_ mission: Mission) -> some View {
