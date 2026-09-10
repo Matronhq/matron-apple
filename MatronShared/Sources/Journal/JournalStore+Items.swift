@@ -124,21 +124,51 @@ public struct ItemOutboxRecord: Codable, FetchableRecord, PersistableRecord, Equ
 }
 
 extension JournalStore {
-    /// Every conversation's title, keyed by id (Task 10, apps): feeds the
-    /// "All" scope's `originTitles` in `ItemsListView.Model` on the Mac and
-    /// iOS items panes. A plain two-column scan — cheap enough to re-run on
-    /// every scope switch, no caching needed. Rows with an empty (not yet
-    /// set) title are omitted so a miss in the returned dictionary reads
-    /// the same whether the conversation is unknown or just untitled —
-    /// `ItemsListView`'s "Another chat" fallback covers both.
-    public func conversationTitles() throws -> [String: String] {
+    /// `"<box name> · <title>"` when a conversation has a known, non-empty
+    /// agent box name, else the title alone. The one place this formatting
+    /// happens — `conversationOriginLabels()` and `conversationOriginLabel(id:)`
+    /// both call it, so the list rows and the item-detail origin button can
+    /// never drift apart on separator or fallback rule.
+    private static func originLabel(title: String, agentName: String?) -> String {
+        guard let agentName, !agentName.isEmpty else { return title }
+        return "\(agentName) \u{00B7} \(title)"
+    }
+
+    /// Every conversation's origin label, keyed by id (item #114): feeds
+    /// the "All" scope's `originTitles` in `ItemsListView.Model` on the Mac
+    /// and iOS items panes. A `LEFT JOIN` against `agent` — cheap enough to
+    /// re-run on every scope switch, no caching needed. Rows with an empty
+    /// (not yet set) title are omitted so a miss in the returned dictionary
+    /// reads the same whether the conversation is unknown or just untitled
+    /// — `ItemsListView`'s "Another chat" fallback covers both.
+    public func conversationOriginLabels() throws -> [String: String] {
         try dbQueue.read { db in
-            try Row.fetchAll(db, sql: "SELECT id, title FROM conversation")
+            try Row.fetchAll(db, sql: """
+                SELECT conversation.id AS id, conversation.title AS title, agent.name AS agent_name
+                FROM conversation LEFT JOIN agent ON agent.id = conversation.agent_device_id
+                """)
                 .reduce(into: [String: String]()) { result, row in
                     let title: String = row["title"]
                     guard !title.isEmpty else { return }
-                    result[row["id"]] = title
+                    result[row["id"]] = Self.originLabel(title: title, agentName: row["agent_name"])
                 }
+        }
+    }
+
+    /// Same label as `conversationOriginLabels()`, for one conversation —
+    /// feeds the item-detail origin button (`ItemDetailHost`, `MacItemsPane`).
+    /// `nil` when the conversation is unknown or has an empty title, same
+    /// discipline as the map form.
+    public func conversationOriginLabel(id: String) throws -> String? {
+        try dbQueue.read { db in
+            guard let row = try Row.fetchOne(db, sql: """
+                SELECT conversation.title AS title, agent.name AS agent_name
+                FROM conversation LEFT JOIN agent ON agent.id = conversation.agent_device_id
+                WHERE conversation.id = ?
+                """, arguments: [id]) else { return nil }
+            let title: String = row["title"]
+            guard !title.isEmpty else { return nil }
+            return Self.originLabel(title: title, agentName: row["agent_name"])
         }
     }
 

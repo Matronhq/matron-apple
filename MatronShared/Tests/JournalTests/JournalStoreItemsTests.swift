@@ -203,4 +203,30 @@ final class JournalStoreItemsTests: XCTestCase {
         XCTAssertNil(readPlain?.statusFrom)
         XCTAssertNil(readPlain?.statusTo)
     }
+
+    /// Item #114: the origin label names the box as well as the
+    /// conversation, e.g. "dev-mac · Missions plan", so a tracker row or
+    /// the item-detail origin button reads as "which box, which chat"
+    /// rather than just the chat title.
+    func testConversationOriginLabelsNameTheBox() throws {
+        let store = try makeStore()
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-mac"), AgentDTO(id: 9, name: "")])
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "c1", title: "Missions plan", sessionState: "running", lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 7),
+            ConvoSummaryDTO(id: "c2", title: "No box", sessionState: "running", lastSeq: 1, snippet: "", createdAt: 1),
+            ConvoSummaryDTO(id: "c3", title: "", sessionState: "running", lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 7),
+            ConvoSummaryDTO(id: "c4", title: "Empty agent name", sessionState: "running", lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 9),
+        ], headSeq: 1)
+
+        let labels = try store.conversationOriginLabels()
+        XCTAssertEqual(labels["c1"], "dev-mac \u{00B7} Missions plan", "box present names the box")
+        XCTAssertEqual(labels["c2"], "No box", "no agent on the conversation falls back to the title alone")
+        XCTAssertNil(labels["c3"], "an empty title is omitted from the map, box or not")
+        XCTAssertEqual(labels["c4"], "Empty agent name", "an agent row with an empty name falls back to the title alone")
+
+        XCTAssertEqual(try store.conversationOriginLabel(id: "c1"), "dev-mac \u{00B7} Missions plan")
+        XCTAssertEqual(try store.conversationOriginLabel(id: "c2"), "No box")
+        XCTAssertNil(try store.conversationOriginLabel(id: "c3"), "empty title is nil from the single-id lookup too")
+        XCTAssertNil(try store.conversationOriginLabel(id: "c4-does-not-exist"), "unknown id is nil")
+    }
 }

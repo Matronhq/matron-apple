@@ -415,7 +415,7 @@ struct MacChatListView: View {
             }
             .task(id: decisionsVM?.awaitingYou.map(\.originConvoID) ?? []) {
                 guard let deps, let session else { return }
-                decisionsOriginTitles = (try? deps.journalStore(for: session).conversationTitles()) ?? [:]
+                decisionsOriginTitles = (try? deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
             }
             // Cold-start tap drain (cursor PR #5 third-pass finding): a
             // notification tap that launched the app — `didReceive` fired
