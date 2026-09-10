@@ -353,8 +353,8 @@ base-URL and token discipline (read inside the request, never printed).
   (awaiting-you first) → item detail; then conversations → chat. A user
   "Close mission" action with a summary field; when items are open it
   confirms "Close with N items still open?" and the mission records it.
-- **Empty states**: "No missions yet — an agent starts one with its first
-  milestone" / unsupported server hides the tab.
+- **Empty states**: "No missions yet — an agent starts one with
+  mission_start" / unsupported server hides the tab.
 
 ### Transcript and title
 
