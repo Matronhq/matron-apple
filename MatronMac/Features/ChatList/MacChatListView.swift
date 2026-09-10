@@ -620,7 +620,14 @@ struct MacChatListView: View {
                     rows: decisionsVM.awaitingYou.map { .init(item: $0, originTitle: decisionsOriginTitles[$0.originConvoID]) },
                     isSupported: decisionsVM.isSupported,
                     isRefreshing: decisionsVM.isRefreshing),
-                onSelect: { selectedDecisionID = $0 },
+                // Ends any in-flight recording that belongs to a
+                // DIFFERENT item before the re-select commits — a row
+                // click is a navigation like any other (#115, fix round
+                // 8).
+                onSelect: { id in
+                    decisionsPaneState.cancelRecordingIfNavigating(to: id)
+                    selectedDecisionID = id
+                },
                 onOpenConversation: openConversationFromDecisions,
                 onRefresh: { await decisionsVM.refresh() }
             )
@@ -649,7 +656,10 @@ struct MacChatListView: View {
                               // thing a row tap does. Everywhere there IS a
                               // stack (the Mac items pane, both iOS
                               // surfaces) the link pushes instead.
-                              onOpenItem: { selectedDecisionID = $0 },
+                              onOpenItem: { id in
+                                  decisionsPaneState.cancelRecordingIfNavigating(to: id)
+                                  selectedDecisionID = id
+                              },
                               // No navigation stack here — `decisionsPaneState.path`
                               // stays empty, so this host owns its own slot
                               // release and is on screen whenever it exists.

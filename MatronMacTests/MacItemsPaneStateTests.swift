@@ -228,7 +228,11 @@ final class MacItemsPaneStateTests: XCTestCase {
     /// If the owning item's slot is gone by the time the recording stops
     /// (popped off the stack mid-recording), the lookup must come back
     /// nil so the caller drops the result instead of attaching it to
-    /// whatever is on screen now.
+    /// whatever is on screen now. As of fix round 8, `releaseSlots` itself
+    /// is what makes that true: releasing a slot that OWNS the recording
+    /// cancels it outright (the bar only ever renders on the owning
+    /// host's own item, so a released owner would otherwise leave the
+    /// recording running invisibly rather than merely hidden).
     func test_recordingResolvesToNilWhenItsOwningSlotWasReleased() {
         let state = makeState()
         state.path = ["A"]
@@ -238,8 +242,8 @@ final class MacItemsPaneStateTests: XCTestCase {
         state.path = []
         state.releaseSlots(keeping: Set(state.path))
 
-        XCTAssertNil(state.slots[state.recordingItemID ?? ""],
-                     "A's slot was released — the recorder's result must be dropped, not attached elsewhere")
+        XCTAssertNil(state.recordingItemID, "releasing the owning slot must cancel the recording, not just orphan it")
+        XCTAssertEqual(state.detailRecorder.state, .idle, "the shared recorder itself must have been cancelled, not merely disowned")
     }
 
     /// `cancelRecording()` is the one place both halves — the recorder and
@@ -250,6 +254,51 @@ final class MacItemsPaneStateTests: XCTestCase {
         state.recordingItemID = "A"
         state.cancelRecording()
         XCTAssertNil(state.recordingItemID)
+    }
+
+    // MARK: - Navigation ends a recording that belongs to a different item
+    // (#115, fix round 8, controller ruling: a recording belongs to the
+    // item it was started on, and navigating away from that item ENDS it
+    // visibly — round 7 only fixed where the FINISHED recording landed;
+    // the bar itself kept showing over whatever item was newly on screen,
+    // and stopping it there silently discarded the note since that item
+    // never owned it).
+
+    /// A push (an item link, exactly what `MacItemsPane`'s `onOpenItem`
+    /// does to `path`) away from the item that owns an in-flight
+    /// recording must cancel it, not just leave it running unattributed.
+    func test_navigatingToADifferentItemCancelsAnInFlightRecording() {
+        let state = makeState()
+        state.path = ["A"]
+        state.activateSlot(for: "A", surface: .stack)?.viewModel = makeViewModel("A")
+        state.recordingItemID = "A"
+
+        // Exactly what the `onOpenItem` push callback does before
+        // appending to `path`.
+        state.cancelRecordingIfNavigating(to: "B")
+        state.path = ["A", "B"]
+
+        XCTAssertNil(state.recordingItemID, "a push to a different item must cancel the recording it left behind")
+        XCTAssertEqual(state.detailRecorder.state, .idle)
+    }
+
+    /// The inverse: navigating back to the SAME item a recording already
+    /// belongs to (e.g. re-clicking the current Decisions row) must not
+    /// kill it — nothing has actually been left behind.
+    func test_navigatingToTheSameRecordingItemDoesNotCancel() {
+        let state = makeState()
+        state.recordingItemID = "A"
+        state.cancelRecordingIfNavigating(to: "A")
+        XCTAssertEqual(state.recordingItemID, "A", "a same-item re-navigation must not cancel the recording it owns")
+    }
+
+    /// No recording in flight: navigating anywhere is a no-op as far as
+    /// the recorder is concerned.
+    func test_navigatingWithNoRecordingInFlightIsANoOp() {
+        let state = makeState()
+        state.cancelRecordingIfNavigating(to: "B")
+        XCTAssertNil(state.recordingItemID)
+        XCTAssertEqual(state.detailRecorder.state, .idle)
     }
 }
 #endif

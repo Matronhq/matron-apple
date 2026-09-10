@@ -97,6 +97,20 @@ final class MacItemsPaneState {
         recordingItemID = nil
     }
 
+    /// Called by every navigation that can change which item is on
+    /// screen — a push, an item-link re-select, a Decisions row click —
+    /// BEFORE the navigation itself commits (item #115, fix round 8,
+    /// controller ruling: a recording belongs to the item it started on,
+    /// and navigating away from that item ENDS it visibly). A no-op if
+    /// nothing is recording, or if `itemID` IS the item already being
+    /// recorded — a same-item re-navigation (e.g. re-clicking the
+    /// currently-selected Decisions row) must not kill it out from under
+    /// the user.
+    func cancelRecordingIfNavigating(to itemID: String) {
+        guard let recordingItemID, recordingItemID != itemID else { return }
+        cancelRecording()
+    }
+
     /// Detail state, ONE SLOT PER ITEM currently reachable on this surface
     /// — every item on `path`, or (on the stackless Decisions surface) just
     /// the selected one.
@@ -135,6 +149,15 @@ final class MacItemsPaneState {
             slot.viewModel?.stop()
             readMemory.store(itemID: id, atBottom: slot.isAtBottom)
             slots[id] = nil
+            // A slot released while it owns the in-flight recording (its
+            // item fell off the stack, or a surface re-selected away from
+            // it without going through `cancelRecordingIfNavigating`)
+            // must end that recording rather than leave it running with
+            // no slot left to attach the result to — the bar itself only
+            // renders on the host whose id equals `recordingItemID`, so a
+            // released owner would make the recording invisible, not
+            // merely hidden (#115, fix round 8).
+            if recordingItemID == id { cancelRecording() }
         }
     }
 
@@ -246,7 +269,18 @@ struct MacItemsPane: View {
                                        // returns to where the link was
                                        // tapped (item #115, fix round 2 —
                                        // this used to REPLACE the path).
-                                       onOpenItem: { state.path.append($0) },
+                                       // Ends any in-flight recording that
+                                       // belongs to a DIFFERENT item before
+                                       // the push commits (fix round 8) —
+                                       // `releaseSlots` (driven by the
+                                       // `path` change below) would also
+                                       // catch it, but only after this
+                                       // host has already been asked to
+                                       // draw the newly-pushed item.
+                                       onOpenItem: { id in
+                                           state.cancelRecordingIfNavigating(to: id)
+                                           state.path.append(id)
+                                       },
                                        surface: .stack)
                 }
             }
@@ -465,7 +499,13 @@ struct MacItemDetailHost: View {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            if case let .recording(start) = state.detailRecorder.state {
+            // Gated on THIS host's item owning the recording (#115, fix
+            // round 8) — `detailRecorder.state` alone says nothing about
+            // WHICH item started it, so without this a recording begun on
+            // A rendered its bar over whichever host was on screen when
+            // the state was read, including a host for a completely
+            // different item B.
+            if state.recordingItemID == itemID, case let .recording(start) = state.detailRecorder.state {
                 voiceRecordingBar(start: start)
             }
             // C2/I9: coarse "something is downloading" affordance — not

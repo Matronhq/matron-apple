@@ -192,8 +192,15 @@ public actor ItemsSync {
     /// pre-stop data into a session that had already moved on. Now `stop()`
     /// cancels every in-flight refresh AND awaits it before returning, so
     /// `start()` can never run until the old task has already taken its
-    /// `Task.isCancelled` exit in `refreshOnce` — the map is empty (every
-    /// task deregisters itself on the way out) by the time this returns.
+    /// `Task.isCancelled` exit in `refreshOnce` and deregistered itself.
+    ///
+    /// Fix round 8: every CAPTURED task's own entry is gone by the time
+    /// this returns (self-deregistration, no wipe needed), but the map as
+    /// a whole is not guaranteed empty — a `start()` + `refresh(scope:)`
+    /// racing this method's own suspension can legitimately register a
+    /// brand-new task for some scope while this is still awaiting
+    /// something else, and that entry must survive. See the removed-wipe
+    /// comment below.
     public func stop() async {
         stopped = true
         let mt = markerTask; let st = stateTask; let rt = retryTask
@@ -203,7 +210,19 @@ public actor ItemsSync {
         for task in refreshes { task.cancel() }
         await mt?.value; await st?.value; await rt?.value
         for task in refreshes { _ = await task.value }
-        inFlightRefreshes = [:]
+        // No blanket `inFlightRefreshes = [:]` here (item #115, fix round
+        // 8): every refresh task deregisters ITSELF (see `refresh(scope:)`)
+        // with no suspension before returning, so by the time its `.value`
+        // above has resumed, its own entry is already gone — the wipe was
+        // redundant for the tasks this method captured and awaited. It was
+        // actively harmful for anything else: if a `start()` + `refresh()`
+        // ran while this method was suspended on `await task.value` (an
+        // unstructured await releases the actor, so that interleaving is
+        // real), the new task registers a NEW entry under the same scope
+        // key — and the blanket wipe that used to sit here would have
+        // deleted that live, still-running registration out from under
+        // it, leaving it to orphan itself unregistered and letting a
+        // later caller spawn a duplicate fetch instead of joining it.
     }
 
     /// Runs a list refresh and REPORTS what happened (item #115, fix round
@@ -222,13 +241,27 @@ public actor ItemsSync {
         if let running = inFlightRefreshes[scope] {
             return await running.value
         }
-        let run = Task { [self] in
+        // `run` is captured by the task body it creates (item #115, fix
+        // round 8): the closure only runs after this initializer returns,
+        // so `run` is always set by the time the self-deregistration below
+        // reads it. That identity check — not just "is *a* task registered
+        // for this scope" — is what makes deregistration safe against
+        // `stop()` racing a `start()` + `refresh()`: if `stop()` cancelled
+        // and is awaiting THIS task while a new `refresh(scope:)` call
+        // registers a fresh task under the same scope key, this task must
+        // not delete that newer registration on its way out.
+        var run: Task<ItemsRefreshOutcome, Never>!
+        run = Task { [self] in
             let outcome = await refreshOnce(scope: scope)
             // Deregistered here, with no suspension between the last line
             // of the run and the removal — same discipline as
             // `refreshItem`, so a joiner can never await a task that has
-            // already finished AND deregistered.
-            inFlightRefreshes[scope] = nil
+            // already finished AND deregistered. Only clear the slot if it
+            // still holds THIS task; if it now holds a different (newer)
+            // task, leave it alone.
+            if inFlightRefreshes[scope] == run {
+                inFlightRefreshes[scope] = nil
+            }
             return outcome
         }
         inFlightRefreshes[scope] = run

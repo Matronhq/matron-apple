@@ -53,7 +53,14 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
     /// concurrent refresh of the same scope joins it instead of issuing a
     /// second paginated GET.
     private var _blockNextList = false
-    private var _listGate: CheckedContinuation<Void, Never>?
+    /// A QUEUE, not a single slot (item #115, fix round 8): the wipe
+    /// regression test needs two `listItems` calls gated at once (an
+    /// unrelated scope `stop()` genuinely blocks on, and the `.all`
+    /// scope whose live-while-gated registration the old wipe deleted).
+    /// A single slot would have the second gate silently overwrite and
+    /// leak the first's continuation. `releaseListGate()` pops FIFO —
+    /// every pre-existing single-gate-at-a-time test is unaffected.
+    private var _listGates: [CheckedContinuation<Void, Never>] = []
 
     var listResponses: [ItemsPage] {
         get { lock.withLock { _listResponses } }
@@ -99,10 +106,16 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
         get { lock.withLock { _blockNextList } }
         set { lock.withLock { _blockNextList = newValue } }
     }
-    var isListGated: Bool { lock.withLock { _listGate != nil } }
+    var isListGated: Bool { lock.withLock { !_listGates.isEmpty } }
+    /// How many `listItems` calls are CURRENTLY suspended on a gate —
+    /// lets a test wait for a SECOND concurrent gate specifically, not
+    /// just "at least one" (`isListGated` alone can't distinguish that).
+    var listGateCount: Int { lock.withLock { _listGates.count } }
+    /// Releases the OLDEST held gate — a no-op if none is held.
     func releaseListGate() {
         let cont = lock.withLock { () -> CheckedContinuation<Void, Never>? in
-            let c = _listGate; _listGate = nil; return c
+            guard !_listGates.isEmpty else { return nil }
+            return _listGates.removeFirst()
         }
         cont?.resume()
     }
@@ -149,7 +162,7 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
             return true
         }
         if shouldGateList {
-            await withCheckedContinuation { cont in lock.withLock { _listGate = cont } }
+            await withCheckedContinuation { cont in lock.withLock { _listGates.append(cont) } }
         }
         // Two-step lock: first check whether a queued entry exists at all
         // (so an empty queue correctly falls through to the blanket
@@ -457,6 +470,88 @@ final class ItemsSyncTests: XCTestCase {
         XCTAssertEqual(fresh, .succeeded)
         XCTAssertNil(try store.item(num: 65), "still nothing from the pre-stop task after the new session's own fetch")
         XCTAssertEqual(try store.item(num: 66)?.id, "fresh")
+    }
+
+    /// Item #115, fix round 8 (reviewer, Important): `stop()` used to end
+    /// with an unconditional `inFlightRefreshes = [:]`, run AFTER
+    /// awaiting every task it had captured and cancelled. That is
+    /// harmless for the tasks it actually captured — each deregisters
+    /// itself with no suspension before returning, so by the time
+    /// `stop()`'s own `await task.value` resumed, that entry was already
+    /// gone. It is NOT harmless for a task `stop()` never captured at
+    /// all: a `start()` + `refresh(scope:.all)` that registers a FRESH
+    /// task while `stop()` is still suspended awaiting something else
+    /// entirely (a different scope, here) sails past the same blanket
+    /// wipe, deleting that live, still-in-flight registration — and a
+    /// third caller arriving afterward sees an empty map and issues a
+    /// DUPLICATE fetch instead of joining the one already running. The
+    /// fix deletes the wipe outright and makes every task's
+    /// self-deregistration check its own identity first
+    /// (`inFlightRefreshes[scope] == run`), so nothing can ever clear a
+    /// DIFFERENT task's registration.
+    ///
+    /// Two gates are held at once here — an unrelated scope `stop()`
+    /// genuinely blocks on, and `.all`'s own fresh registration — which
+    /// is exactly why `FakeItems`' list gate became a queue for this
+    /// round rather than a single slot.
+    func testStopDoesNotWipeATaskRegisteredAfterTheOldOneRetired() async throws {
+        let api = FakeItems()
+        api.blockNextList = true
+        let (sync, _, _, _) = try make(api: api)
+
+        // An UNRELATED scope's refresh, gated inside its own network call
+        // — this is what keeps `stop()` genuinely suspended below,
+        // independent of anything to do with `.all`.
+        let stalling = Task { await sync.refresh(scope: .convo("stalling")) }
+        try await waitUntil { api.isListGated }
+
+        let stopTask = Task { await sync.stop() }
+        for _ in 0..<50 { await Task.yield() }
+
+        // A fresh `.all` refresh, registered and gated WHILE `stop()` is
+        // still suspended awaiting the stalling task above — exactly what
+        // a caller doing `start()` then `refresh(scope:.all)` while
+        // `stop()` is still finishing up looks like. `.all` was never in
+        // flight before this, so this is unambiguously a NEW
+        // registration, not a joiner of anything.
+        api.listResponses = [ItemsPage(items: [item("fresh", num: 66, updated: 20)], nextCursor: nil)]
+        api.blockNextList = true
+        let fresh = Task { () -> ItemsRefreshOutcome in
+            await sync.start()
+            return await sync.refresh(scope: .all)
+        }
+        try await waitUntil { api.listGateCount == 2 }
+
+        // Release ONLY the stalling task's gate — `fresh`'s stays held.
+        // The stalling task resumes, sees its own cancellation and
+        // retires; `stop()`'s `for task in refreshes { await task.value }`
+        // can now complete.
+        api.releaseListGate()
+
+        // Force `stop()` to run to completion NOW, while `fresh` is still
+        // gated (still holding its slot in `inFlightRefreshes`) — exactly
+        // where the old blanket wipe deleted it out from under it.
+        await stopTask.value
+
+        // A third, concurrent caller arriving while `fresh` is STILL
+        // gated must join IT rather than see an empty (wiped) map and
+        // spawn a duplicate fetch.
+        let joinerStarted = Atomic(false)
+        let joiner = Task { () -> ItemsRefreshOutcome in
+            joinerStarted.set(true)
+            return await sync.refresh(scope: .all)
+        }
+        while !joinerStarted.get() { await Task.yield() }
+        for _ in 0..<50 { await Task.yield() }
+
+        api.releaseListGate()
+        let freshOutcome = await fresh.value
+        let joinerOutcome = await joiner.value
+
+        XCTAssertEqual(freshOutcome, .succeeded)
+        XCTAssertEqual(joinerOutcome, .succeeded)
+        XCTAssertEqual(api.listQueries.count, 2,
+                       "one fetch for the stalling (unrelated-scope) task, one for the fresh `.all` task — the joiner shares the fresh task's fetch rather than issuing a third")
     }
 
     func testNotFoundMarksUnsupported() async throws {
