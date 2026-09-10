@@ -122,4 +122,49 @@ final class MissionsNavigationTests: XCTestCase {
         XCTAssertEqual(nav.tab, .conversations)
         XCTAssertEqual(nav.missionsPath, [])
     }
+
+    /// Bugbot (bb2cc36 follow-up): the Coordinator mission page's
+    /// `onOpenConversation` — which also fires under a milestone jump,
+    /// via `MissionRouteDestination` — used to no-op whenever the target
+    /// equaled `current` (copied from the `ItemRoute` branch, which has
+    /// no jump to reveal). That left the mission page on screen even
+    /// though `jumpToMilestone` had already fired underneath it: the
+    /// user could never leave the page after a title tap on the SAME
+    /// room. Same-room must instead pop the mission page — mirroring
+    /// `ChatListView.missionDestination`'s `removeLast()` — whether the
+    /// chat underneath is an explicit stack entry or, via the fallback,
+    /// the coordinator root itself.
+    func testCoordinatorMissionSameRoomRoundTripPopsInsteadOfNoOping() {
+        // The mission was pushed directly from the coordinator's root
+        // chat: nothing explicit underneath, so `current` falls back to
+        // `coordinatorConvoID`. A milestone/link back into that same room
+        // must pop the mission page all the way off, landing back on the
+        // (implicit) root — never a no-op.
+        XCTAssertEqual(
+            CoordinatorTabView.missionOpenConversationOutcome(
+                target: "c-coord", current: "c-coord", coordinatorConvoID: "c-coord"),
+            .popMission)
+
+        // The mission was pushed from a DIFFERENT chat, already explicit
+        // on the stack: a link back into THAT chat pops the mission page
+        // to reveal it, same as the Conversations tab.
+        XCTAssertEqual(
+            CoordinatorTabView.missionOpenConversationOutcome(
+                target: "c-other", current: "c-other", coordinatorConvoID: "c-coord"),
+            .popMission)
+
+        // The mission was pushed from a different chat, but the jump
+        // targets the coordinator's OWN room: clear all the way to the
+        // root rather than stack a second copy of it.
+        XCTAssertEqual(
+            CoordinatorTabView.missionOpenConversationOutcome(
+                target: "c-coord", current: "c-other", coordinatorConvoID: "c-coord"),
+            .clearToRoot)
+
+        // A third, unrelated room: push it on top of the mission page.
+        XCTAssertEqual(
+            CoordinatorTabView.missionOpenConversationOutcome(
+                target: "c-third", current: "c-other", coordinatorConvoID: "c-coord"),
+            .push("c-third"))
+    }
 }

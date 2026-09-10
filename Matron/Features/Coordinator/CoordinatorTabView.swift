@@ -30,6 +30,33 @@ struct CoordinatorTabView: View {
         return .chat(convoID)
     }
 
+    /// The outcome of "open conversation" (or a milestone jump — the
+    /// jump itself always fires underneath, via `MissionRouteDestination`)
+    /// from the Coordinator mission page. `target == current` (the chat
+    /// already underneath the mission page, or the coordinator root via
+    /// the `current` fallback) pops the mission page to reveal it —
+    /// mirroring `ChatListView.missionDestination`'s `removeLast()`, and
+    /// the case a plain no-op (copied from the `ItemRoute` branch, which
+    /// has no jump to reveal) left the mission page on screen even though
+    /// `jumpToMilestone` had already fired (Bugbot, PR #209). `target ==
+    /// coordinatorConvoID` but not `current` (the mission was opened from
+    /// a DIFFERENT chat) clears all the way to the root instead of
+    /// stacking a second copy (Bugbot, PR #197). A pure decision so a
+    /// test can pin the coordinator's same-room round trip without a
+    /// live `NavigationStack`.
+    enum MissionConversationOutcome: Equatable {
+        case popMission
+        case clearToRoot
+        case push(String)
+    }
+    static func missionOpenConversationOutcome(
+        target: String, current: String?, coordinatorConvoID: String?
+    ) -> MissionConversationOutcome {
+        if target == current { return .popMission }
+        if target == coordinatorConvoID { return .clearToRoot }
+        return .push(target)
+    }
+
     private func summary(for id: String) -> ChatSummary? {
         chatListVM.groups.flatMap(\.summaries).first { $0.id == id }
     }
@@ -58,11 +85,13 @@ struct CoordinatorTabView: View {
                     MissionRouteDestination(
                         route: mission, session: session, deps: deps, vmCache: vmCache,
                         onOpenConversation: { target in
-                            guard target != current else { return }
-                            // The coordinator itself is this stack's root:
-                            // pop to it rather than stack a second copy
-                            // (Bugbot, PR #197).
-                            if target == convoID { path = [] } else { path.append(target) }
+                            switch Self.missionOpenConversationOutcome(
+                                target: target, current: current, coordinatorConvoID: convoID
+                            ) {
+                            case .popMission: path.removeLast()
+                            case .clearToRoot: path = []
+                            case .push(let id): path.append(id)
+                            }
                         },
                         onOpenItem: { path.append(ItemRoute(id: $0).pathValue) })
                 } else if let route = ItemRoute(pathValue: value) {
