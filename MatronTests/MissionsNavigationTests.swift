@@ -41,6 +41,17 @@ final class MissionsNavigationTests: XCTestCase {
         XCTAssertEqual(nav.missionsPath, ["mission/ms_1", "mission/ms_2"])
     }
 
+    /// Mirrors `ChatView.pushMission(_:onto:)`'s idempotence (Bugbot: a
+    /// double title tap or a second tap of the same mission used to stack
+    /// two identical pages, so Back didn't return to the chat).
+    func testPushMissionNoOpsWhenAlreadyOnTop() {
+        let nav = AppShellNavigation()
+        nav.tab = .missions
+        nav.openMission("ms_1")
+        nav.pushMission("ms_1")
+        XCTAssertEqual(nav.missionsPath, ["mission/ms_1"], "a repeat push of the top mission is a no-op")
+    }
+
     /// A milestone tap hands off to Conversations and pushes, exactly as a
     /// Decisions origin link does — so Back returns to the mission page.
     func testOpenConversationFromMissionsSwitchesTabThenPushes() {

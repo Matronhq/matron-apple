@@ -47,11 +47,29 @@ struct CoordinatorTabView: View {
                 }
             }
             .navigationDestination(for: String.self) { value in
-                if let route = ItemRoute(pathValue: value) {
+                if let mission = MissionRoute(pathValue: value) {
+                    // Same fallback `ItemRoute` uses just below: the chat
+                    // underneath is the nearest non-item entry on this
+                    // stack, falling back to the coordinator root (Bugbot:
+                    // this branch was missing entirely, so a title tap or
+                    // milestone card in the coordinator chat opened the
+                    // mission's id as if it were a conversation).
+                    let current = path.last(where: { !isAnyPathPrefixedRoute($0) }) ?? convoID
+                    MissionRouteDestination(
+                        route: mission, session: session, deps: deps, vmCache: vmCache,
+                        onOpenConversation: { target in
+                            guard target != current else { return }
+                            // The coordinator itself is this stack's root:
+                            // pop to it rather than stack a second copy
+                            // (Bugbot, PR #197).
+                            if target == convoID { path = [] } else { path.append(target) }
+                        },
+                        onOpenItem: { path.append(ItemRoute(id: $0).pathValue) })
+                } else if let route = ItemRoute(pathValue: value) {
                     // The chat underneath is the nearest non-item entry on
                     // this stack, falling back to the coordinator root —
                     // same rule as the Conversations stack (Bugbot, PR #197).
-                    let current = path.last(where: { ItemRoute(pathValue: $0) == nil }) ?? convoID
+                    let current = path.last(where: { !isAnyPathPrefixedRoute($0) }) ?? convoID
                     ItemDetailHost(itemID: route.id, session: session, currentConvoID: current,
                                    onOpenConversation: { target in
                                        guard target != current else { return }

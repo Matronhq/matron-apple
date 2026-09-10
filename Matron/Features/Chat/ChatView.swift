@@ -230,9 +230,15 @@ struct ChatView: View {
     }
 
     /// Static twin of `pushItem` — a mission rides the same `[String]`
-    /// stack the chat itself is mounted on.
+    /// stack the chat itself is mounted on. Idempotent for the mission
+    /// already on top, mirroring `pushItem` (a double title tap or a
+    /// second milestone-card tap for the same mission must not stack two
+    /// identical pages).
     static func pushMission(_ missionID: String, onto path: Binding<[String]>?) {
-        path?.wrappedValue.append(MissionRoute(id: missionID).pathValue)
+        guard let path else { return }
+        let value = MissionRoute(id: missionID).pathValue
+        guard path.wrappedValue.last != value else { return }
+        path.wrappedValue.append(value)
     }
 
     /// Pops the top entry of the OUTER chat stack — the full-width swipe

@@ -55,5 +55,8 @@ struct MissionDetailHost: View {
             vm.start()
         }
         .onDisappear { viewModel?.stop() }
+        // App shell (spec §3): the tab bar shows only at a tab's root, like
+        // ItemDetailHost and ChatDestinationView's pushed (non-root) case.
+        .toolbar(.hidden, for: .tabBar)
     }
 }

@@ -131,8 +131,13 @@ final class AppShellNavigation {
 
     /// Push a mission onto the Missions stack without changing the tab —
     /// e.g. a `#N` that resolves to another mission from a mission page.
+    /// No-op when that mission is already the top entry, mirroring
+    /// `ChatView.pushMission(_:onto:)` — a double tap must not stack two
+    /// identical pages.
     func pushMission(_ missionID: String) {
-        missionsPath.append(MissionRoute(id: missionID).pathValue)
+        let route = MissionRoute(id: missionID).pathValue
+        guard missionsPath.last != route else { return }
+        missionsPath.append(route)
     }
 
     func pushMissionItem(_ itemID: String) {

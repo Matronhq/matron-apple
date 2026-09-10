@@ -32,3 +32,16 @@ extension PathPrefixedRoute {
         self.init(id: id)
     }
 }
+
+/// True when `value` decodes as ANY known `PathPrefixedRoute` rather than
+/// a bare conversation id. A "nearest chat below this route" computation
+/// (`itemDestination`'s and `missionDestination`'s `current`, and their
+/// `CoordinatorTabView` twins) must skip every route kind, not just the
+/// one that existed when it was written — filtering on `ItemRoute` alone
+/// let a `MissionRoute` entry pass as if it were the chat underneath it,
+/// so dedupe pointed at the mission page itself instead of the chat
+/// (Bugbot). One place means a future third route kind cannot repeat the
+/// mistake at only some of the call sites.
+func isAnyPathPrefixedRoute(_ value: String) -> Bool {
+    ItemRoute(pathValue: value) != nil || MissionRoute(pathValue: value) != nil
+}
