@@ -1198,27 +1198,38 @@ public final class JournalStore: @unchecked Sendable {
     /// landing on one would target a row the transcript does not render.
     /// The mirror check reads the payload in Swift rather than via
     /// `json_extract` — the column is a blob, and SQLite's JSON functions
-    /// treat a blob argument as JSONB, not text.
+    /// treat a blob argument as JSONB, not text — so the scan walks own
+    /// rows newest-first in batches until it finds a real message or
+    /// runs out (CodeRabbit, PR #202: a fixed cut-off could be exhausted
+    /// by mirrors alone).
     public func newestOwnMessageSeq(convoID: String) throws -> Int64? {
         try dbQueue.read { db in
-            let candidates = try EventRecord
-                .filter(Column("convo_id") == convoID
-                        && Column("sender") == ownSender
-                        && Self.ownMessageTypes.contains(Column("type")))
-                .order(Column("seq").desc)
-                .limit(Self.ownMessageScanLimit)
-                .fetchAll(db)
-            return candidates.first { $0.journalEvent.payload["fallback_for"] == nil }?.seq
+            var before: Int64?
+            while true {
+                var query = EventRecord
+                    .filter(Column("convo_id") == convoID
+                            && Column("sender") == ownSender
+                            && Self.ownMessageTypes.contains(Column("type")))
+                if let before { query = query.filter(Column("seq") < before) }
+                let batch = try query
+                    .order(Column("seq").desc)
+                    .limit(Self.ownMessageScanBatch)
+                    .fetchAll(db)
+                if let hit = batch.first(where: { $0.journalEvent.payload["fallback_for"] == nil }) {
+                    return hit.seq
+                }
+                guard batch.count == Self.ownMessageScanBatch, let last = batch.last else { return nil }
+                before = last.seq
+            }
         }
     }
 
     /// The event types a person produces from the composer.
     private static let ownMessageTypes = [JournalEventType.text, JournalEventType.image, JournalEventType.file]
-    /// How many newest own rows `newestOwnMessageSeq` inspects before giving
-    /// up on finding one that isn't a fallback mirror. Mirrors are rare —
-    /// one per item marker at most — so a run this long of them is not a
-    /// real conversation.
-    private static let ownMessageScanLimit = 50
+    /// Rows per batch in `newestOwnMessageSeq`'s scan. Mirrors are rare —
+    /// one per item marker at most — so the first batch almost always
+    /// answers; the loop exists for correctness, not throughput.
+    static let ownMessageScanBatch = 50
 
     public func setMuted(_ muted: Bool, convoID: String) throws {
         try dbQueue.write { db in

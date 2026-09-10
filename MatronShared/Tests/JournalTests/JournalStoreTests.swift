@@ -400,6 +400,20 @@ final class JournalStoreTests: XCTestCase {
                      "a conversation the user never wrote in has no target")
     }
 
+    /// More fallback mirrors than one scan batch, all newer than the real
+    /// message: the scan keeps going instead of giving up (CodeRabbit,
+    /// PR #202).
+    func testNewestOwnMessageSeqScansPastABatchOfFallbackMirrors() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, sender: "user:dan", payload: ["body": "real"]))
+        let mirrors = JournalStore.ownMessageScanBatch + 10
+        for seq in 2...(1 + mirrors) {
+            try store.applyJournal(event(Int64(seq), sender: "user:dan",
+                                         payload: ["body": "📌 #\(seq)", "fallback_for": "item"]))
+        }
+        XCTAssertEqual(try store.newestOwnMessageSeq(convoID: "c1"), 1)
+    }
+
     func testEventsStreamAnchoredAtSinceSeq() async throws {
         let store = try makeStore()
         for seq in 1...4 { try store.applyJournal(event(Int64(seq))) }

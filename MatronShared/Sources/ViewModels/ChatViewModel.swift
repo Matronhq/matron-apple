@@ -1060,7 +1060,7 @@ public final class ChatViewModel {
             focusTask?.cancel()
             return
         }
-        await focusOrPark(seq: newest)
+        await focusOrPark(seq: newest, owner: .search)
     }
 
     /// Runs a search jump when the items stream is live; parks it
@@ -1074,7 +1074,8 @@ public final class ChatViewModel {
     /// delivery (`receiveSnapshot`). Shared by `beginChatSearch` and
     /// `stepChatSearch` — the chevrons are tappable in the same
     /// pre-first-snapshot window their bar appears in.
-    private func focusOrPark(seq: Int64) async {
+    private func focusOrPark(seq: Int64, owner: FocusOwner) async {
+        focusOwner = owner
         if hasReceivedFirstSnapshot, observationTask != nil {
             pendingChatSearchFocusSeq = nil
             await focus(seq: seq)
@@ -1083,8 +1084,16 @@ public final class ChatViewModel {
         }
     }
 
-    /// Focus target parked by `beginChatSearch` until the first timeline
-    /// snapshot lands — see the comment at its write site.
+    /// Which feature started the jump `focusOrPark` is running or has
+    /// parked. Dismissing the search bar must abort only search's own
+    /// jump — a "jump to my last message" in flight while the bar happens
+    /// to be up would otherwise die with it (Bugbot, PR #202).
+    private enum FocusOwner { case search, lastOwnMessage }
+    private var focusOwner: FocusOwner?
+
+    /// Focus target parked by `focusOrPark` until the stream is live —
+    /// see the comment at its write site. Shared by in-conversation search
+    /// and the last-own-message jump; `focusOwner` says whose it is.
     private var pendingChatSearchFocusSeq: Int64?
 
     /// Steps to the adjacent match — `older: true` walks up into history
@@ -1095,7 +1104,7 @@ public final class ChatViewModel {
         guard state.matchSeqs.indices.contains(next) else { return }
         state.index = next
         chatSearch = state
-        await focusOrPark(seq: state.matchSeqs[next])
+        await focusOrPark(seq: state.matchSeqs[next], owner: .search)
     }
 
     /// Dismisses the bar. The transcript stays where the user left it —
@@ -1105,8 +1114,11 @@ public final class ChatViewModel {
     /// (Bugbot, PR #172).
     public func endChatSearch() {
         chatSearch = nil
+        // Only search's own jump dies with the bar; see `FocusOwner`.
+        guard focusOwner == .search else { return }
         pendingChatSearchFocusSeq = nil
         focusTask?.cancel()
+        focusOwner = nil
     }
 
     /// Cap on navigable matches per conversation. Far beyond any realistic
@@ -1126,9 +1138,15 @@ public final class ChatViewModel {
     /// this conversation); the view keeps the transcript where it is.
     @discardableResult
     public func jumpToLastOwnMessage() async -> Bool {
+        let wasLive = observationTask != nil
         let mirrorSeq = try? await timeline.newestOwnMessageSeq()
+        // The view left while the mirror was answering (`stop()` ran):
+        // parking now would fire a jump the user no longer wants on the
+        // next open of this room (CodeRabbit, PR #202). A cold tap —
+        // never live — still parks, as intended.
+        if wasLive, observationTask == nil { return false }
         guard let seq = mirrorSeq ?? newestLoadedOwnMessageSeq() else { return false }
-        await focusOrPark(seq: seq)
+        await focusOrPark(seq: seq, owner: .lastOwnMessage)
         return true
     }
 
@@ -1740,6 +1758,11 @@ public final class ChatViewModel {
         historyRefillTask = nil
         focusTask?.cancel()
         focusTask = nil
+        // Leaving the room drops any parked jump, whoever owns it: a
+        // target parked before this view's first snapshot must not fire
+        // on the room's next open, days later.
+        pendingChatSearchFocusSeq = nil
+        focusOwner = nil
         // Leaving the room dismisses the in-conversation search — the VM
         // is cached, and re-opening days later must not resurrect a stale
         // bar whose match list predates everything received since.

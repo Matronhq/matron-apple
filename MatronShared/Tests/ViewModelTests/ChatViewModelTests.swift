@@ -40,10 +40,23 @@ final class PagingFakeTimelineService: TimelineService, @unchecked Sendable {
     /// What `newestOwnMessageSeq()` answers — the journal mirror's view of
     /// the user's last message, which may sit below every loaded page.
     var newestOwnSeq: Int64?
+    /// When set, `newestOwnMessageSeq()` parks on a gate until
+    /// `releaseOwnSeqLookup()` — lets a test tear the VM down WHILE the
+    /// mirror is still answering.
+    var gateOwnSeqLookup = false
+    private(set) var ownSeqLookupStarted = false
+    private var ownSeqGate: CheckedContinuation<Void, Never>?
 
     init(loaded: [TimelineItem], olderPages: [[TimelineItem]]) {
         self.currentItems = loaded
         self.olderPages = olderPages
+    }
+
+    deinit { ownSeqGate?.resume() }
+
+    func releaseOwnSeqLookup() {
+        ownSeqGate?.resume()
+        ownSeqGate = nil
     }
 
     func items() -> AsyncThrowingStream<[TimelineItem], Error> {
@@ -57,7 +70,11 @@ final class PagingFakeTimelineService: TimelineService, @unchecked Sendable {
     func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {}
     func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
     func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
-    func newestOwnMessageSeq() async throws -> Int64? { newestOwnSeq }
+    func newestOwnMessageSeq() async throws -> Int64? {
+        ownSeqLookupStarted = true
+        if gateOwnSeqLookup { await withCheckedContinuation { self.ownSeqGate = $0 } }
+        return newestOwnSeq
+    }
 
     /// Pops the next queued older page (if any) and prepends it to the
     /// currently-loaded items, re-yielding the grown snapshot. Returns
@@ -110,6 +127,9 @@ final class BlockingPagingFakeTimelineService: TimelineService, @unchecked Senda
     func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {}
     func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
     func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
+
+    var newestOwnSeq: Int64?
+    func newestOwnMessageSeq() async throws -> Int64? { newestOwnSeq }
 
     func paginateBackward(requestSize: UInt16) async throws -> Bool {
         paginateStarted = true
@@ -325,6 +345,102 @@ final class ChatViewModelTests: XCTestCase {
             try await Task.sleep(nanoseconds: 20_000_000)
         }
         XCTAssertEqual(vm.pendingFocusID, "3")
+        vm.stop()
+    }
+
+    /// Dismissing the search bar aborts search's jump only. A last-message
+    /// jump paginating while the bar happens to be up lands regardless
+    /// (Bugbot, PR #202).
+    @MainActor
+    func test_jumpToLastOwnMessage_survivesSearchDismiss() async throws {
+        let fake = BlockingPagingFakeTimelineService(loaded: [row(50, own: false)],
+                                                     olderPages: [[row(3, own: true)]])
+        fake.newestOwnSeq = 3
+        let search = FakeSearchService(hits: [
+            SearchHit(id: "50", roomID: "r1", sender: "agent:box",
+                      timestamp: Date(timeIntervalSince1970: 50), snippet: "s"),
+        ])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService(), search: search)
+        _ = await vm.start()
+        await vm.beginChatSearch(query: "m50")   // loaded hit: lands without paginating
+        vm.clearPendingFocus()
+
+        let jump = Task { @MainActor in await vm.jumpToLastOwnMessage() }
+        let deadline = Date().addingTimeInterval(2)
+        while !fake.paginateStarted && Date() < deadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(fake.paginateStarted)
+
+        vm.endChatSearch()
+        fake.release()
+        let jumped = await jump.value
+        XCTAssertTrue(jumped)
+        XCTAssertNil(vm.chatSearch)
+        XCTAssertEqual(vm.pendingFocusID, "3", "the bar's dismissal must not kill the jump")
+        vm.stop()
+    }
+
+    /// Search started AFTER a parked last-message jump owns the park from
+    /// then on: its dismissal clears what it armed, not more.
+    @MainActor
+    func test_jumpToLastOwnMessage_thenSearchDismissLeavesNothingArmed() async throws {
+        let fake = PagingFakeTimelineService(loaded: [row(3, own: true)], olderPages: [])
+        fake.newestOwnSeq = 3
+        let search = FakeSearchService(hits: [
+            SearchHit(id: "3", roomID: "r1", sender: "user:dan",
+                      timestamp: Date(timeIntervalSince1970: 3), snippet: "s"),
+        ])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService(), search: search)
+        _ = await vm.jumpToLastOwnMessage()      // cold: parks
+        await vm.beginChatSearch(query: "m3")    // cold: re-parks under search
+        vm.endChatSearch()
+        _ = await vm.start()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertNil(vm.pendingFocusID, "nothing should fire — search cleared its own park")
+        vm.stop()
+    }
+
+    /// The view leaves (`stop()`) while the mirror is still answering: the
+    /// late answer must not park a jump that fires on the room's next open
+    /// (CodeRabbit, PR #202).
+    @MainActor
+    func test_jumpToLastOwnMessage_lookupLandingAfterStopIsDropped() async throws {
+        let fake = PagingFakeTimelineService(loaded: [row(3, own: true), row(4, own: false)],
+                                             olderPages: [])
+        fake.newestOwnSeq = 3
+        fake.gateOwnSeqLookup = true
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService())
+        _ = await vm.start()
+
+        let jump = Task { @MainActor in await vm.jumpToLastOwnMessage() }
+        let deadline = Date().addingTimeInterval(2)
+        while !fake.ownSeqLookupStarted && Date() < deadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        vm.stop()
+        fake.releaseOwnSeqLookup()
+        let jumped = await jump.value
+        XCTAssertFalse(jumped, "a jump whose view is gone reports nothing to do")
+
+        _ = await vm.start()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertNil(vm.pendingFocusID, "no stale target on the restart")
+        vm.stop()
+    }
+
+    /// A cold park that never got its snapshot is dropped by `stop()`, so
+    /// a room re-opened days later doesn't jump on its own.
+    @MainActor
+    func test_jumpToLastOwnMessage_stopDropsAColdPark() async throws {
+        let fake = PagingFakeTimelineService(loaded: [row(3, own: true)], olderPages: [])
+        fake.newestOwnSeq = 3
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService())
+        _ = await vm.jumpToLastOwnMessage()
+        vm.stop()
+        _ = await vm.start()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertNil(vm.pendingFocusID)
         vm.stop()
     }
 
