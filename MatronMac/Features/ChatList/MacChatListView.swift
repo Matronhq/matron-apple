@@ -649,7 +649,11 @@ struct MacChatListView: View {
                               // thing a row tap does. Everywhere there IS a
                               // stack (the Mac items pane, both iOS
                               // surfaces) the link pushes instead.
-                              onOpenItem: { selectedDecisionID = $0 })
+                              onOpenItem: { selectedDecisionID = $0 },
+                              // No navigation stack here — `decisionsPaneState.path`
+                              // stays empty, so this host owns its own slot
+                              // release and is on screen whenever it exists.
+                              surface: .stackless)
         } else {
             ContentUnavailableView(
                 "Select an item",

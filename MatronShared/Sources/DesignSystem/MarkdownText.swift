@@ -67,14 +67,18 @@ public struct MarkdownText: View {
             if let openItem {
                 openItem(number)
             } else {
-                Self.log.debug("No tracker-item handler installed for \(url.absoluteString, privacy: .public)")
+                // Redacted: never the query — see `MatronItemLink.redactedForLog`.
+                Self.log.debug("No tracker-item handler installed for \(MatronItemLink.redactedForLog(url), privacy: .public)")
             }
             return .handled
         case .swallow:
             // Matrix-internal (`matrix:` / `mxc:`) — swallowed until
-            // permalink + content-URI handling lands. `.handled` keeps the
-            // OS from surfacing a "no handler" error.
-            Self.log.debug("Suppressed in-app open for matrix-internal URL: \(url.absoluteString, privacy: .public)")
+            // permalink + content-URI handling lands — and any `matron://`
+            // we don't understand. `.handled` keeps the OS from surfacing a
+            // "no handler" error. Logged REDACTED: a linkified
+            // `matron://rlink` / `matron://link` carries its pairing secret
+            // in the query, which must never reach the log store.
+            Self.log.debug("Suppressed in-app open for URL: \(MatronItemLink.redactedForLog(url), privacy: .public)")
             return .handled
         case .system:
             // http(s) → the system handler (browser, deep-link app). Any

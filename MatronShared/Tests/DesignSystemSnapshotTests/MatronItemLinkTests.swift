@@ -133,6 +133,36 @@ final class MatronItemLinkTests: XCTestCase {
                        "the visible link text is `#65`")
     }
 
+    // MARK: - Log redaction
+
+    /// Swallowed links are logged, and a linkified pairing URI carries its
+    /// secret in the QUERY (`matron://rlink?…&k=<32-byte offer key>`,
+    /// `matron://link?…&code=…`). The log form keeps scheme, host and path
+    /// and drops everything after them (CodeRabbit, #115 round 4).
+    func test_redactedForLog_stripsQueryAndFragment() {
+        XCTAssertEqual(MatronItemLink.redactedForLog(url("matron://rlink?k=abc#x")), "matron://rlink")
+        XCTAssertEqual(
+            MatronItemLink.redactedForLog(url("matron://rlink?v=2&rid=01JABCDEF&k=c2VjcmV0LWtleQ")),
+            "matron://rlink")
+        XCTAssertEqual(
+            MatronItemLink.redactedForLog(url("matron://link?v=1&server=https%3A%2F%2Fj.example&code=ABCD-1234")),
+            "matron://link")
+        // The diagnostic part — which item, which host — survives.
+        XCTAssertEqual(MatronItemLink.redactedForLog(url("matron://item/65")), "matron://item/65")
+        XCTAssertEqual(MatronItemLink.redactedForLog(url("https://example.com/a/b?token=t#frag")),
+                       "https://example.com/a/b")
+        // No host means the "path" IS the payload (`mailto:`, `matrix:`),
+        // so only the scheme survives.
+        XCTAssertEqual(MatronItemLink.redactedForLog(url("mailto:dan@example.com")), "mailto:…")
+        XCTAssertEqual(MatronItemLink.redactedForLog(url("matrix:u/dan:example.com")), "matrix:…")
+        // Whatever it returns, it must never contain the secret.
+        for raw in ["matron://rlink?k=abc#x", "matron://link?code=ABCD-1234", "https://e.com/?token=t"] {
+            let redacted = MatronItemLink.redactedForLog(url(raw))
+            XCTAssertFalse(redacted.contains("?"), redacted)
+            XCTAssertFalse(redacted.contains("#"), redacted)
+        }
+    }
+
     // MARK: - Tap relay
 
     func test_relay_publishesEachTapSeparately() {

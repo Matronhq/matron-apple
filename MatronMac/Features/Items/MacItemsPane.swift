@@ -121,6 +121,39 @@ final class MacItemsPaneState {
     func releaseAllSlots() {
         releaseSlots(keeping: [])
     }
+
+    /// The slot a detail host's activation should populate, or `nil` when
+    /// that host is NOT on screen and must build nothing.
+    ///
+    /// A pane host's `.task` is keyed on the top of the stack, so popping
+    /// back to the LIST re-fires it for the host that was just popped
+    /// (Bugbot, #115 round 4). Reading "empty path" as "this host is
+    /// visible" was only ever true for the stackless Decisions surface, so
+    /// the two are now told apart explicitly: on a path-driven surface only
+    /// the item on top may activate, and release is left entirely to
+    /// `MacItemsPane`'s `onChange(of: path)` so there is a single owner of
+    /// it. The stackless surface has no path to observe, so its one visible
+    /// host both activates and releases.
+    func activateSlot(for itemID: String, surface: MacItemDetailSurface) -> MacItemDetailSlot? {
+        switch surface {
+        case .stack:
+            guard path.last == itemID else { return nil }
+        case .stackless:
+            releaseSlots(keeping: [itemID])
+        }
+        return slot(for: itemID)
+    }
+}
+
+/// How a `MacItemDetailHost`'s surface navigates — the two are NOT
+/// interchangeable when deciding whether a host is still on screen.
+enum MacItemDetailSurface {
+    /// The items pane: `MacItemsPaneState.path` is a real navigation stack,
+    /// and a host is on screen only while its item is on top of it.
+    case stack
+    /// Decisions (Mac chat list): list + detail, no stack. `path` stays
+    /// empty; the single host is on screen whenever it exists.
+    case stackless
 }
 
 /// Everything `MacItemDetailHost` needs for ONE item, so two hosts on the
@@ -192,7 +225,8 @@ struct MacItemsPane: View {
                                        // returns to where the link was
                                        // tapped (item #115, fix round 2 —
                                        // this used to REPLACE the path).
-                                       onOpenItem: { state.path.append($0) })
+                                       onOpenItem: { state.path.append($0) },
+                                       surface: .stack)
                 }
             }
         }
@@ -299,6 +333,10 @@ struct MacItemDetailHost: View {
     /// tapped in), Decisions re-selects (it has no stack). `nil` leaves item
     /// links inert — never handed to the OS either way.
     var onOpenItem: ((String) -> Void)? = nil
+    /// Whether this host lives on a navigation stack (`MacItemsPane`) or on
+    /// the stackless Decisions surface — see `MacItemDetailSurface`. Drives
+    /// activation: a stack host that is no longer on top must not run.
+    let surface: MacItemDetailSurface
     @Environment(\.appDependencies) private var deps
     /// `[#12](matron://item/12)` taps inside this item. This host installs
     /// its OWN handler (shadowing the surface's) so the link resolves
@@ -426,25 +464,21 @@ struct MacItemDetailHost: View {
         // Keyed on the pane's TOP OF STACK as well as this host's own item,
         // because an item link now PUSHES a second host over this one
         // (item #115, fix round 2). `.task` does not re-fire when a view
-        // reappears from under a pop, and the detail state on `state` is
-        // single-slot — so without this re-key, going Back would leave the
-        // item underneath rendering its placeholder forever. `state.path`
-        // is `@Observable`, so a push or pop re-evaluates this body and
-        // re-runs the task with a new id.
+        // reappears from under a pop, so without this re-key going Back
+        // would leave the item underneath rendering its placeholder
+        // forever. `state.path` is `@Observable`, so a push or pop
+        // re-evaluates this body and re-runs the task with a new id — and
+        // that includes the host being popped, which is why the body's
+        // first job is to ask whether it is still on screen at all.
         .task(id: "\(itemID)\u{1}\(state.path.last ?? "")") {
-            // Only the item on top owns the single detail slot; a host
-            // buried under a push must not steal it back. An empty path is
-            // the stackless Decisions surface, where this host is always
-            // the one on screen.
-            guard state.path.isEmpty || state.path.last == itemID else { return }
-            guard let deps else { return }
-            // Release whatever is no longer reachable: on a stack, every
-            // item still on it survives (that is what makes Back cheap);
-            // on the stackless Decisions surface only the selected item
-            // does, which is exactly the old swap-in-place behaviour.
-            // Releasing persists the outgoing item's read position.
-            state.releaseSlots(keeping: state.path.isEmpty ? [itemID] : Set(state.path))
-            let slot = state.slot(for: itemID)
+            // `activateSlot` decides whether this host is still on screen —
+            // on a stack, only the item on top is, INCLUDING when the pop
+            // that removed this host emptied the path (Bugbot, #115 round
+            // 4: an empty path used to read as "the Decisions surface", so
+            // a popped host resurrected its slot and started a fresh view
+            // model behind the list). It also owns the stackless surface's
+            // release; the pane's own `onChange(of: path)` owns the stack's.
+            guard let slot = state.activateSlot(for: itemID, surface: surface), let deps else { return }
             // I6 + item #115: a live view model means either a rebuild of
             // this same push (the width-crossing branch move in
             // `MacChatView`) or a pop back to an item still on the stack.

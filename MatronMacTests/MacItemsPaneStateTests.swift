@@ -130,6 +130,51 @@ final class MacItemsPaneStateTests: XCTestCase {
         XCTAssertTrue(state.slots.isEmpty)
     }
 
+    /// Popping the pane back to its LIST must not resurrect the host that
+    /// was just popped (Bugbot, #115 round 4). Its `.task` is keyed on the
+    /// top of the stack, so it re-fires with an empty path — which used to
+    /// read as "the stackless Decisions surface, this host is on screen",
+    /// so the host rebuilt its slot and started a fresh view model (store
+    /// streams and a `refreshItem`) behind the list.
+    func test_activationAfterPoppingToTheListBuildsNothing() {
+        let state = makeState()
+
+        // List → A.
+        state.path = ["A"]
+        let slotA = state.activateSlot(for: "A", surface: .stack)
+        XCTAssertNotNil(slotA, "the item on top of the stack activates")
+        slotA?.viewModel = makeViewModel("A")
+
+        // Back to the list. The pane's `onChange(of: path)` is the single
+        // owner of release.
+        state.path = []
+        state.releaseSlots(keeping: Set(state.path))
+        XCTAssertTrue(state.slots.isEmpty)
+
+        // A's host is popped but its task re-fires with the new (empty) path.
+        XCTAssertNil(state.activateSlot(for: "A", surface: .stack),
+                     "a host that is no longer on the path must never activate")
+        XCTAssertTrue(state.slots.isEmpty, "…and must not recreate the slot it was just released from")
+        XCTAssertNil(state.slots["A"]?.viewModel)
+    }
+
+    /// A host buried UNDER a push is equally off screen — the same guard,
+    /// and the stackless surface is unaffected by either.
+    func test_activationIsForTheItemOnTopOnlyAndStacklessAlwaysActivates() {
+        let state = makeState()
+        state.path = ["A", "B"]
+        XCTAssertNil(state.activateSlot(for: "A", surface: .stack), "A is buried under B")
+        XCTAssertNotNil(state.activateSlot(for: "B", surface: .stack))
+
+        // Decisions: no path at all, and the one visible host still runs.
+        let stackless = makeState()
+        XCTAssertTrue(stackless.path.isEmpty)
+        XCTAssertNotNil(stackless.activateSlot(for: "A", surface: .stackless))
+        // …owning its own release, since it has no path to observe.
+        XCTAssertNotNil(stackless.activateSlot(for: "B", surface: .stackless))
+        XCTAssertEqual(Set(stackless.slots.keys), ["B"])
+    }
+
     /// The stackless Decisions surface (empty `path`) keeps exactly one
     /// slot: selecting another item releases the previous one, which is
     /// what the single-slot design used to do by overwriting.

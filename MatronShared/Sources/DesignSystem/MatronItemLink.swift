@@ -86,6 +86,26 @@ public enum MatronItemLink {
             return .system(url)
         }
     }
+
+    /// A URL trimmed to what is safe to write into the unified log:
+    /// `scheme://host` plus the path, never the query or the fragment.
+    ///
+    /// Swallowed links get logged, and a swallowed link is very often a
+    /// linkified pairing URI: `matron://rlink?v=2&rid=…&k=<32-byte offer
+    /// key>` and `matron://link?…&code=XXXX-XXXX` both carry their secret
+    /// in the QUERY. Logging `url.absoluteString` at `.public` put that
+    /// key in the device's log store, readable by anything with log
+    /// access (CodeRabbit, #115 round 4). Path is kept because it is the
+    /// diagnostic part (`/item/65`, a mistyped item number); for an
+    /// opaque URL with no host — where the "path" IS the payload, as in
+    /// `mailto:` — only the scheme survives.
+    public static func redactedForLog(_ url: URL) -> String {
+        guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let scheme = parts.scheme
+        else { return "(unparseable URL)" }
+        guard let host = parts.host, !host.isEmpty else { return "\(scheme):…" }
+        return "\(scheme)://\(host)\(parts.percentEncodedPath)"
+    }
 }
 
 // MARK: - Environment
