@@ -15,10 +15,6 @@ private func ms(_ d: Date?) -> Int64? { d.map { Int64($0.timeIntervalSince1970 *
 private func date(_ v: Int64) -> Date { Date(timeIntervalSince1970: Double(v) / 1000) }
 private func date(_ v: Int64?) -> Date? { v.map { Date(timeIntervalSince1970: Double($0) / 1000) } }
 
-/// The `?since=` watermark for `GET /missions`, advanced only after a fully
-/// successful refresh — same discipline as `items_watermark_all`.
-private let missionsWatermarkKey = "missions_watermark"
-
 public struct MissionRecord: Codable, FetchableRecord, PersistableRecord, Equatable, Sendable {
     public static let databaseTableName = "mission"
     public var id: String; public var num: Int; public var state: String
@@ -251,30 +247,13 @@ extension JournalStore {
         Self.stream(ValueObservation.tracking { db in try Self.missionIDQuery(db, convoID) }, in: dbQueue)
     }
 
-    // MARK: Watermark / wipe
-
-    public func missionsWatermark() throws -> Date? {
-        try dbQueue.read { db in
-            date(try Int64.fetchOne(db, sql: "SELECT value FROM meta WHERE key = ?", arguments: [missionsWatermarkKey]))
-        }
-    }
-
-    public func setMissionsWatermark(_ value: Date) throws {
-        try dbQueue.write { db in
-            let msValue: Int64 = ms(value)
-            try db.execute(sql: "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                           arguments: [missionsWatermarkKey, msValue])
-        }
-    }
+    // MARK: Wipe
 
     /// Sign-out clear for the mission cache alone. `wipe()` clears the same
     /// tables inline (it cannot nest another `dbQueue.write`) — both go
     /// through `wipeMissionTables`, so "the mission cache" is defined once.
     public func wipeMissions() throws {
-        try dbQueue.write { db in
-            try Self.wipeMissionTables(db)
-            try db.execute(sql: "DELETE FROM meta WHERE key = ?", arguments: [missionsWatermarkKey])
-        }
+        try dbQueue.write { db in try Self.wipeMissionTables(db) }
     }
 
     /// The mission cache's three tables, cleared inside a transaction the

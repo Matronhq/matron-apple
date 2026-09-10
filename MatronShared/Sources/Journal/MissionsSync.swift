@@ -141,20 +141,19 @@ public actor MissionsSync {
     }
 
     private func refreshOnce() async -> MissionsRefreshOutcome {
-        var query = MissionsListQuery()
-        // One second of overlap, exactly as the items refresh does: a
-        // strictly-greater `since` can drop a row written in the same
-        // millisecond as the watermark.
-        if let mark = try? store.missionsWatermark() { query.since = mark.addingTimeInterval(-1) }
+        // Full list, unconditionally — unlike `ItemsSync`, the row counts
+        // (`open_items`, `needs_you`, …) are server-side aggregates over
+        // OTHER tables (item, milestone, mission_conversation), not columns
+        // on `mission` itself. A `?since=` filtered on `missions.updated_at`
+        // cannot see an item answered or closed, so the tab badge would go
+        // permanently stale. The list is tens of rows, so a full `GET` on
+        // every connect/tab-open/pull is cheap and always right (spec:
+        // Apps → Shared core, "full GET /missions on connect and reconnect").
+        let query = MissionsListQuery()
         do {
             let missions = try await api.listMissions(query)
             guard !stopped, !Task.isCancelled else { return .stopped }
             try store.upsertMissions(missions)
-            if let newest = missions.map(\.updatedAt).max() {
-                do { try store.setMissionsWatermark(newest) } catch {
-                    Self.logger.error("setMissionsWatermark failed: \(error.localizedDescription, privacy: .public)")
-                }
-            }
             setSupported(true)
             return .succeeded
         } catch JournalAPIError.notFound {

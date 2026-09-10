@@ -159,20 +159,9 @@ final class JournalStoreMissionsTests: XCTestCase {
         try store.upsertMissions([mission("ms_1", num: 61)])
         try store.replaceMilestones(missionID: "ms_1", [milestone("ml_1", mission: "ms_1", num: 62, seq: 1, created: 1)])
         try store.replaceMissionConversations(missionID: "ms_1", [MissionConversation(id: "c1", title: "S", box: nil, state: "idle")])
-        try store.setMissionsWatermark(Date(timeIntervalSince1970: 100))
         try store.wipe()
         XCTAssertEqual(try store.missions(state: nil), [])
         XCTAssertEqual(try store.milestones(missionID: "ms_1"), [])
         XCTAssertEqual(try store.missionConversations(missionID: "ms_1"), [])
-        XCTAssertNil(try store.missionsWatermark())
-    }
-
-    func testMissionsWatermarkRoundTrips() throws {
-        let store = try makeStore()
-        XCTAssertNil(try store.missionsWatermark())
-        try store.setMissionsWatermark(Date(timeIntervalSince1970: 1234))
-        XCTAssertEqual(try store.missionsWatermark(), Date(timeIntervalSince1970: 1234))
-        try store.wipeMissions()
-        XCTAssertNil(try store.missionsWatermark())
     }
 }
