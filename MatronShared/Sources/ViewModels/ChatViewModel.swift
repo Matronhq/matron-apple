@@ -1046,21 +1046,25 @@ public final class ChatViewModel {
         let hits = (try? await search.query(trimmed, roomID: roomID, limit: Self.chatSearchMatchLimit)) ?? []
         let seqs = hits.compactMap { Int64($0.id) }
         chatSearch = ChatSearchState(query: trimmed, matchSeqs: seqs, index: 0)
-        // Every re-query owns the jump machinery from here: a previous
-        // query's parked seq must not fire on the next snapshot after
-        // this one's results replaced it in the bar (Bugbot, PR #172 —
-        // second round: the no-hit path cancelled the in-flight task but
-        // left the park armed).
-        pendingChatSearchFocusSeq = nil
         guard let newest = seqs.first else {
             // A re-query with no hits shows "No matches" — an earlier
             // query's still-paginating deep jump landing after that would
             // scroll the transcript to a match that no longer exists in
-            // the bar (Bugbot, PR #172).
-            focusTask?.cancel()
+            // the bar, and its parked seq must not fire on the next
+            // snapshot either (Bugbot, PR #172, two rounds). Only search's
+            // OWN jump dies here: a last-message jump in flight while the
+            // user types a query that finds nothing keeps going (Bugbot,
+            // PR #202 — see `FocusOwner`).
+            if focusOwner == .search {
+                pendingChatSearchFocusSeq = nil
+                focusTask?.cancel()
+                focusOwner = nil
+            }
             return
         }
-        await focusOrPark(seq: newest)
+        // A hit supersedes whatever jump was running or parked, whoever
+        // owned it — the user just asked for this one.
+        await focusOrPark(seq: newest, owner: .search)
     }
 
     /// Runs a search jump when the items stream is live; parks it
@@ -1074,7 +1078,8 @@ public final class ChatViewModel {
     /// delivery (`receiveSnapshot`). Shared by `beginChatSearch` and
     /// `stepChatSearch` — the chevrons are tappable in the same
     /// pre-first-snapshot window their bar appears in.
-    private func focusOrPark(seq: Int64) async {
+    private func focusOrPark(seq: Int64, owner: FocusOwner) async {
+        focusOwner = owner
         if hasReceivedFirstSnapshot, observationTask != nil {
             pendingChatSearchFocusSeq = nil
             await focus(seq: seq)
@@ -1083,8 +1088,16 @@ public final class ChatViewModel {
         }
     }
 
-    /// Focus target parked by `beginChatSearch` until the first timeline
-    /// snapshot lands — see the comment at its write site.
+    /// Which feature started the jump `focusOrPark` is running or has
+    /// parked. Dismissing the search bar must abort only search's own
+    /// jump — a "jump to my last message" in flight while the bar happens
+    /// to be up would otherwise die with it (Bugbot, PR #202).
+    private enum FocusOwner { case search, lastOwnMessage }
+    private var focusOwner: FocusOwner?
+
+    /// Focus target parked by `focusOrPark` until the stream is live —
+    /// see the comment at its write site. Shared by in-conversation search
+    /// and the last-own-message jump; `focusOwner` says whose it is.
     private var pendingChatSearchFocusSeq: Int64?
 
     /// Steps to the adjacent match — `older: true` walks up into history
@@ -1095,7 +1108,7 @@ public final class ChatViewModel {
         guard state.matchSeqs.indices.contains(next) else { return }
         state.index = next
         chatSearch = state
-        await focusOrPark(seq: state.matchSeqs[next])
+        await focusOrPark(seq: state.matchSeqs[next], owner: .search)
     }
 
     /// Dismisses the bar. The transcript stays where the user left it —
@@ -1105,13 +1118,56 @@ public final class ChatViewModel {
     /// (Bugbot, PR #172).
     public func endChatSearch() {
         chatSearch = nil
+        // Only search's own jump dies with the bar; see `FocusOwner`.
+        guard focusOwner == .search else { return }
         pendingChatSearchFocusSeq = nil
         focusTask?.cancel()
+        focusOwner = nil
     }
 
     /// Cap on navigable matches per conversation. Far beyond any realistic
     /// manual chevron walk; bounds the seq array and the FTS projection.
     private static let chatSearchMatchLimit = 500
+
+    // MARK: Jump to my last message
+
+    /// Scrolls the transcript to the newest message the user themself sent
+    /// (item #60): the one thing scrolling can't find once an agent has run
+    /// unattended for hours. Asks the timeline service first — the journal
+    /// mirror knows the answer across the whole history — and falls back to
+    /// the newest own row already loaded for transports without a mirror.
+    /// Rides the same park-until-live jump as in-conversation search, so a
+    /// tap before the first snapshot lands once the stream is up. Returns
+    /// `false` when there is nothing to land on (the user never wrote in
+    /// this conversation); the view keeps the transcript where it is.
+    @discardableResult
+    public func jumpToLastOwnMessage() async -> Bool {
+        let wasLive = observationTask != nil
+        let mirrorSeq = try? await timeline.newestOwnMessageSeq()
+        // The view left while the mirror was answering (`stop()` ran):
+        // parking now would fire a jump the user no longer wants on the
+        // next open of this room (CodeRabbit, PR #202). A cold tap —
+        // never live — still parks, as intended.
+        if wasLive, observationTask == nil { return false }
+        guard let seq = mirrorSeq ?? newestLoadedOwnMessageSeq() else { return false }
+        await focusOrPark(seq: seq, owner: .lastOwnMessage)
+        return true
+    }
+
+    /// Newest loaded row the user sent from the composer, by seq. A local
+    /// echo's id isn't a seq (`echo:…`) and isn't a landable row either, so
+    /// it's skipped rather than ending the scan.
+    private func newestLoadedOwnMessageSeq() -> Int64? {
+        for item in items.reversed() where item.isOwn {
+            switch item.kind {
+            case .text, .image, .file:
+                if let seq = Int64(item.id) { return seq }
+            default:
+                continue
+            }
+        }
+        return nil
+    }
 
     /// Latest `rows` message id whose seq is `<= seq`, or nil if every
     /// loaded message postdates it. `rows` is ascending (oldest first —
@@ -1706,6 +1762,11 @@ public final class ChatViewModel {
         historyRefillTask = nil
         focusTask?.cancel()
         focusTask = nil
+        // Leaving the room drops any parked jump, whoever owns it: a
+        // target parked before this view's first snapshot must not fire
+        // on the room's next open, days later.
+        pendingChatSearchFocusSeq = nil
+        focusOwner = nil
         // Leaving the room dismisses the in-conversation search — the VM
         // is cached, and re-opening days later must not resurrect a stale
         // bar whose match list predates everything received since.

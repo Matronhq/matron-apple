@@ -109,6 +109,14 @@ public protocol TimelineService: Sendable {
     /// Marks the most recent visible event as read.
     func markAsRead() async throws
 
+    /// Seq of the newest message the user themself sent in this
+    /// conversation, across the whole locally-mirrored history — not just
+    /// the loaded window — or nil when the transport can't say.
+    /// `ChatViewModel.jumpToLastOwnMessage()` asks this before scanning
+    /// loaded rows, so an hours-long agent run can't hide the answer
+    /// behind pagination (item #60).
+    func newestOwnMessageSeq() async throws -> Int64?
+
     /// Retries a pending/failed own-message (the timeline's tap-to-retry
     /// affordance). `itemID` is the timeline item's id. Implementations
     /// without an offline outbox inherit the default no-op.
@@ -165,6 +173,10 @@ public extension TimelineService {
     /// unchanged; `JournalTimelineService` overrides both.
     func retrySend(itemID: String) async {}
     func discardSend(itemID: String) async {}
+
+    /// Default: no mirror to ask — the view model falls back to the rows
+    /// it has loaded. `JournalTimelineService` overrides.
+    func newestOwnMessageSeq() async throws -> Int64? { nil }
 
     /// Defaults: drop the progress handler and forward to the plain sends.
     func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?,

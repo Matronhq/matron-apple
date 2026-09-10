@@ -1067,6 +1067,18 @@ struct ChatView: View {
                     .accessibilityHint("Shows conversation summaries")
                 }
             }
+            // Jump to the newest message the user themself sent (item #60):
+            // the one thing scrolling can't find once an agent has run
+            // unattended for hours. Agent-independent — it needs no mission,
+            // no milestone and no summary model, only the local mirror.
+            if pager.page != .tasks {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { Task { await viewModel.jumpToLastOwnMessage() } } label: {
+                        Image(systemName: "arrow.up.to.line")
+                    }
+                    .accessibilityLabel("Jump to my last message")
+                }
+            }
             // Tasks page (spec §4). Hidden once the panel VM has confirmed
             // the journal doesn't support the tracker; on the tasks page the
             // same slot returns to the chat.
