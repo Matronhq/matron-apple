@@ -22,6 +22,13 @@ public enum JournalEventType {
     /// Tracker marker (spec 2026-09-08). Deliberately NOT in `messageTypes`:
     /// it neither bumps unread nor sets the snippet, matching the server.
     public static let item = "item"
+    /// Mission lifecycle marker (spec 2026-09-10). Like `item`, deliberately
+    /// NOT in `messageTypes`: the journal's `classify()` returns nil for it,
+    /// so it never bumps unread, sets a snippet, or pushes.
+    public static let mission = "mission"
+    /// Milestone marker. Its own `seq` is the milestone's anchor — the row
+    /// IS the jump target. Also outside `messageTypes`, for the same reason.
+    public static let milestone = "milestone"
     /// How an agent-spawn consent card ended (matron-journal
     /// `emitSpawnOutcome`). Server-minted, agent-visible, and durable — the
     /// row the spawn card derives its resolved state from.
