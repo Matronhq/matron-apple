@@ -2072,8 +2072,7 @@ git -c user.name="Dan Barker" -c user.email=dan@yearbookmachine.com commit -m "m
 **Files:**
 - Create: `MatronShared/Sources/ViewModels/MissionsListViewModel.swift`
 - Create: `MatronShared/Sources/ViewModels/MissionDetailViewModel.swift`
-- Create: `MatronShared/Sources/DesignSystem/SessionTagInputs.swift`
-- Modify: `MatronShared/Package.swift` (`MatronViewModels` and the `ViewModelTests` target gain `MatronDesignSystem`)
+- Create: `MatronShared/Sources/Models/SessionTagInputs.swift`
 - Modify: `Matron/App/AppDependencies.swift`, `MatronMac/App/AppDependencies.swift` (factories)
 - Test: `MatronShared/Tests/ViewModelTests/MissionsViewModelTests.swift` (new)
 
@@ -2083,7 +2082,7 @@ git -c user.name="Dan Barker" -c user.email=dan@yearbookmachine.com commit -m "m
 
 **Where the `A:bc` session tag comes from.** A mission page lists milestones posted in several conversations, so each row names its own — the same colored `A:bc` run the chat header and the chat rows draw (`SessionTagText.run(boxLetter:boxName:sessionShort:colorScheme:)`, a `Text` factory, not a view). None of those halves live on a `Milestone`: they are derived from the conversation's cached row plus the box roster. So the store surface grows one read, `sessionTag(convoID:)`, and the detail view model publishes `sessionTags` keyed by conversation id. A conversation this device has never synced simply has no entry — the row then renders with no tag, never a placeholder.
 
-**Layering note (why the view model publishes values, not a view `Model`).** `MissionDetailView.Model` is built in ONE place so the iOS and Mac pages cannot drift — but that place is a convenience `init` on the model itself (Task 7, `MissionDetailView.Model.init(mission:milestones:sessionTags:openItems:conversations:showOnlyUserInput:closeSummary:isBusy:)`), not a computed property on the view model. Two reasons, both structural: `MatronViewModels` is declared as a no-SwiftUI-views target and `MatronDesignSystem` must stay a leaf (a `detailModel` property would make the view model depend on the design system's view types), and this task runs BEFORE the task that defines `MissionDetailView`, so a property returning that type could not compile here. What this task does take on is the design-system dependency for `SessionTagInputs` alone — a plain value type, no views.
+**Layering note (why the view model publishes values, not a view `Model`).** `MissionDetailView.Model` is built in ONE place so the iOS and Mac pages cannot drift — but that place is a convenience `init` on the model itself (Task 7, `MissionDetailView.Model.init(mission:milestones:sessionTags:openItems:conversations:showOnlyUserInput:closeSummary:isBusy:)`), not a computed property on the view model. Two reasons, both structural: `MatronViewModels` is declared as a no-SwiftUI-views target and `MatronDesignSystem` must stay a leaf (a `detailModel` property would make the view model depend on the design system's view types), and this task runs BEFORE the task that defines `MissionDetailView`, so a property returning that type could not compile here. `SessionTagInputs` is a plain value type and lives in `MatronModels`, which every target already depends on — no package dependency changes anywhere in this plan.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2091,7 +2090,6 @@ Create `MatronShared/Tests/ViewModelTests/MissionsViewModelTests.swift`:
 
 ```swift
 import XCTest
-import MatronDesignSystem
 import MatronModels
 import MatronJournal
 @testable import MatronViewModels
@@ -2300,9 +2298,9 @@ final class MissionsViewModelTests: XCTestCase {
 Run: `MATRON_SKIP_SNAPSHOT_TESTS=1 swift test --package-path MatronShared --filter MissionsViewModelTests`
 Expected: FAIL — `cannot find 'MissionsStoreReading' in scope`.
 
-- [ ] **Step 3: Add `SessionTagInputs`, the package dependency, and `MissionsListViewModel.swift`**
+- [ ] **Step 3: Add `SessionTagInputs` and `MissionsListViewModel.swift`**
 
-First create `MatronShared/Sources/DesignSystem/SessionTagInputs.swift`. It sits beside `SessionTagText`, which is an `enum` of `Text` factories (`run(boxLetter:boxName:sessionShort:colorScheme:)`) with nowhere to hang a value:
+First create `MatronShared/Sources/Models/SessionTagInputs.swift` (in `MatronModels`, NOT the design system: view models publish it and `MatronViewModels` must not depend on `MatronDesignSystem`). `SessionTagText` in the design system is an `enum` of `Text` factories (`run(boxLetter:boxName:sessionShort:colorScheme:)`) with nowhere to hang a value, so the value type lives one layer down:
 
 ```swift
 import Foundation
@@ -2325,27 +2323,12 @@ public struct SessionTagInputs: Equatable, Hashable, Sendable {
 }
 ```
 
-Then, in `MatronShared/Package.swift`, add `"MatronDesignSystem"` to the `MatronViewModels` target's dependency list — it is NOT there today, and the target's leading comment says "No SwiftUI Views here — only Foundation + service-layer dependencies", so extend that comment rather than contradicting it:
-
-```swift
-                // Missions (2026-09-10): `MissionDetailViewModel` publishes
-                // `SessionTagInputs` — the value `SessionTagText.run` takes
-                // — so a mission page's milestone rows can carry the same
-                // `A:bc` tag the chat header draws. Value types only; the
-                // rule above still holds, and `MatronDesignSystem` does not
-                // depend on this target, so there is no cycle.
-                "MatronDesignSystem",
-```
-
-Add `"MatronDesignSystem"` to the `ViewModelTests` test target's dependencies too, so the new test file can construct one.
-
 Then create `MatronShared/Sources/ViewModels/MissionsListViewModel.swift`:
 
 ```swift
 import Foundation
 import Observation
 import MatronChat
-import MatronDesignSystem
 import MatronModels
 import MatronJournal
 
@@ -2485,7 +2468,6 @@ public final class MissionsListViewModel {
 ```swift
 import Foundation
 import Observation
-import MatronDesignSystem
 import MatronModels
 import MatronJournal
 
@@ -2638,7 +2620,7 @@ Expected: PASS — `Executed 8 tests, with 0 failures`.
 ```bash
 git add MatronShared/Sources/ViewModels/MissionsListViewModel.swift \
         MatronShared/Sources/ViewModels/MissionDetailViewModel.swift \
-        MatronShared/Sources/DesignSystem/SessionTagInputs.swift MatronShared/Package.swift \
+        MatronShared/Sources/Models/SessionTagInputs.swift \
         Matron/App/AppDependencies.swift MatronMac/App/AppDependencies.swift \
         MatronShared/Tests/ViewModelTests/MissionsViewModelTests.swift
 git -c user.name="Dan Barker" -c user.email=dan@yearbookmachine.com commit -m "missions: list and detail view models" \
@@ -4809,7 +4791,7 @@ Cross-checked every name used across task boundaries:
 - `MissionsSync` surface `refresh()`, `refreshMission(id:)`, `refreshMilestones(convoID:)`, `closeMission(id:summary:)`, `supportedStream()` — Task 5, restated exactly by `MissionsSyncing` in Task 6 (minus `refreshMilestones`, which no view model calls).
 - `MissionsStoreReading`'s five stream methods — Task 6 — match the `JournalStore` methods added in Task 3 by name and signature (`missionsStream(state:)`, `missionStream(id:)`, `milestonesStream(missionID:)`, `itemsStream(missionID:)`, `missionConversationsStream(missionID:)`). Note `itemsStream(missionID:)` is an *overload* of the existing `itemsStream(scope:)`; both live in `JournalStore+Items.swift`.
 - The protocol's sixth member, `sessionTag(convoID:) -> SessionTagInputs?` (Task 6), is the one requirement `JournalStore` does NOT already satisfy: its witness is written in the same `extension JournalStore: MissionsStoreReading` in `MissionsListViewModel.swift`, out of `conversation(id:)`, `agentNames()` and `agentTagChars()` — three shipped public reads. Faked in the tests by a `[String: SessionTagInputs]` dictionary.
-- `SessionTagInputs` (`boxLetter`, `boxName`, `sessionShort`) — created in Task 6 in `MatronDesignSystem`, published by `MissionDetailViewModel.sessionTags` (Task 6), carried on `MissionDetailView.Model.MilestoneRow` (Task 7), and consumed by `SessionTagText.run(boxLetter:boxName:sessionShort:colorScheme:)` — the SHIPPED signature, an enum of `Text` factories, not a view and not a type with an initializer.
+- `SessionTagInputs` (`boxLetter`, `boxName`, `sessionShort`) — created in Task 6 in `MatronModels`, published by `MissionDetailViewModel.sessionTags` (Task 6), carried on `MissionDetailView.Model.MilestoneRow` (Task 7), and consumed by `SessionTagText.run(boxLetter:boxName:sessionShort:colorScheme:)` — the SHIPPED signature, an enum of `Text` factories, not a view and not a type with an initializer.
 - `MissionsListView.Model` (`open`, `closed`, `isSupported`, `isRefreshing`) and `MissionDetailView.Model` (`mission`, `milestones: [MilestoneRow]`, `openItems`, `conversations`, `showOnlyUserInput`, `closeSummary`, `isBusy`) — Task 7 — match the property names the hosts read in Tasks 9 and 10 one for one. Both hosts build the detail model through the single mapping init `Model.init(mission:milestones:sessionTags:openItems:conversations:showOnlyUserInput:closeSummary:isBusy:)`, whose `milestones:` is the view model's plain `[Milestone]` and whose `sessionTags:` is its `[String: SessionTagInputs]`; the `[MilestoneRow]` memberwise init is used only by the Task 7 snapshot fixtures.
 - `MissionDetailView`'s callback order (`onToggleUserInputOnly`, `onOpenMilestone`, `onOpenItem`, `onOpenConversation`, `onEditCloseSummary`, `onClose`) is identical in the Task 7 test, the Task 9 host and the Task 10 host.
 - `ChatViewModel.jumpToMilestone(seq:)` — Task 8 — called in Tasks 9 and 10 with the same label.
