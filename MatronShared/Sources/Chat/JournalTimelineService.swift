@@ -865,6 +865,10 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         }
     }
 
+    public func newestOwnMessageSeq() async throws -> Int64? {
+        try store.newestOwnMessageSeq(convoID: convoID)
+    }
+
     public func markAsRead() async throws {
         guard let maxSeq = try store.maxSeq(convoID: convoID) else { return }
         do {

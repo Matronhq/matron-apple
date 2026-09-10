@@ -37,6 +37,10 @@ final class PagingFakeTimelineService: TimelineService, @unchecked Sendable {
     private(set) var paginateCalls = 0
     private var continuation: AsyncThrowingStream<[TimelineItem], Error>.Continuation?
 
+    /// What `newestOwnMessageSeq()` answers — the journal mirror's view of
+    /// the user's last message, which may sit below every loaded page.
+    var newestOwnSeq: Int64?
+
     init(loaded: [TimelineItem], olderPages: [[TimelineItem]]) {
         self.currentItems = loaded
         self.olderPages = olderPages
@@ -53,6 +57,7 @@ final class PagingFakeTimelineService: TimelineService, @unchecked Sendable {
     func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {}
     func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
     func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
+    func newestOwnMessageSeq() async throws -> Int64? { newestOwnSeq }
 
     /// Pops the next queued older page (if any) and prepends it to the
     /// currently-loaded items, re-yielding the grown snapshot. Returns
@@ -234,6 +239,92 @@ final class ChatViewModelTests: XCTestCase {
 
         vm.endChatSearch()
         XCTAssertNil(vm.chatSearch)
+        vm.stop()
+    }
+
+    // MARK: Jump to my last message (item #60)
+
+    private func row(_ seq: Int, own: Bool) -> TimelineItem {
+        TimelineItem(id: "\(seq)", sender: own ? "user:dan" : "agent:box",
+                     timestamp: Date(timeIntervalSince1970: Double(seq)),
+                     kind: .text(body: "m\(seq)", formattedHTML: nil), isOwn: own)
+    }
+
+    /// The mirror knows the user's last message sits below the loaded
+    /// window; the jump pages backward until it is loaded, exactly like a
+    /// deep search hit.
+    @MainActor
+    func test_jumpToLastOwnMessage_usesServiceSeqAndPaginates() async throws {
+        let fake = PagingFakeTimelineService(loaded: [row(5, own: false), row(6, own: false)],
+                                             olderPages: [[row(3, own: true), row(4, own: false)]])
+        fake.newestOwnSeq = 3
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService())
+        _ = await vm.start()
+
+        let jumped = await vm.jumpToLastOwnMessage()
+        XCTAssertTrue(jumped)
+        XCTAssertEqual(vm.pendingFocusID, "3")
+        XCTAssertEqual(fake.paginateCalls, 1, "pages until the target row is loaded")
+        vm.stop()
+    }
+
+    /// No mirror answer (SDK timelines, or a store that hasn't synced the
+    /// row yet): the newest own row already loaded is the target. A local
+    /// echo (non-numeric id) is not a landable row and is skipped.
+    @MainActor
+    func test_jumpToLastOwnMessage_fallsBackToNewestLoadedOwnRow() async throws {
+        let echo = TimelineItem(id: "echo:abc", sender: "user:dan", timestamp: .now,
+                                kind: .text(body: "sending", formattedHTML: nil), isOwn: true)
+        let fake = PagingFakeTimelineService(
+            loaded: [row(1, own: true), row(2, own: false), row(3, own: true), row(4, own: false), echo],
+            olderPages: [])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService())
+        _ = await vm.start()
+
+        let jumped = await vm.jumpToLastOwnMessage()
+        XCTAssertTrue(jumped)
+        XCTAssertEqual(vm.pendingFocusID, "3")
+        XCTAssertEqual(fake.paginateCalls, 0)
+        vm.stop()
+    }
+
+    /// The user never wrote here (a coordinator-spawned session, say):
+    /// nothing to land on, nothing scrolls.
+    @MainActor
+    func test_jumpToLastOwnMessage_withNoOwnMessageIsNoop() async throws {
+        let fake = PagingFakeTimelineService(loaded: [row(1, own: false), row(2, own: false)],
+                                             olderPages: [])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService())
+        _ = await vm.start()
+
+        let jumped = await vm.jumpToLastOwnMessage()
+        XCTAssertFalse(jumped)
+        XCTAssertNil(vm.pendingFocusID)
+        vm.stop()
+    }
+
+    /// Tapped before the stream is live (cold VM), the jump parks and fires
+    /// off the first snapshot — the same gate in-conversation search uses,
+    /// for the same reason: sampling paginate growth against a dead stream
+    /// falsely latches `reachedHistoryStart`.
+    @MainActor
+    func test_jumpToLastOwnMessage_beforeStartParksUntilLive() async throws {
+        let fake = PagingFakeTimelineService(loaded: [row(3, own: true), row(4, own: false)],
+                                             olderPages: [])
+        fake.newestOwnSeq = 3
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService())
+
+        let jumped = await vm.jumpToLastOwnMessage()
+        XCTAssertTrue(jumped, "a target exists, the jump is merely parked")
+        XCTAssertNil(vm.pendingFocusID, "no jump before the stream is live")
+        XCTAssertFalse(vm.reachedHistoryStart)
+
+        _ = await vm.start()
+        let deadline = Date().addingTimeInterval(2)
+        while vm.pendingFocusID == nil && Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(vm.pendingFocusID, "3")
         vm.stop()
     }
 

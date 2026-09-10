@@ -74,6 +74,11 @@ struct MacChatToolbar: ToolbarContent {
     /// context gauge so the action sits beside the number that motivates
     /// it (Dan, 2026-07-16: "so you don't have to type it").
     let onCompact: () -> Void
+    /// Scrolls the transcript to the newest message the user themself
+    /// sent (item #60) — `ChatViewModel.jumpToLastOwnMessage()`. ⇧⌘U's
+    /// hidden button lives on `MacChatView`'s stable outer view, for the
+    /// same reason the tasks-pane shortcut does (see `showItemsPane`).
+    let onJumpToLastOwnMessage: () -> Void
     /// Presents the summaries TOC popover — the title cluster becomes a
     /// button that flips this on. Owned by `MacChatView` (this struct
     /// stays a plain `ToolbarContent` without the view model, so it's
@@ -120,6 +125,7 @@ struct MacChatToolbar: ToolbarContent {
         stripViewModel: SubChatStripViewModel,
         onOpenSubChat: @escaping (String) -> Void,
         onCompact: @escaping () -> Void,
+        onJumpToLastOwnMessage: @escaping () -> Void = {},
         showSummaries: Binding<Bool> = .constant(false),
         popoverContent: @escaping () -> AnyView = { AnyView(EmptyView()) },
         showMediaBrowser: Binding<Bool> = .constant(false),
@@ -135,6 +141,7 @@ struct MacChatToolbar: ToolbarContent {
         self.stripViewModel = stripViewModel
         self.onOpenSubChat = onOpenSubChat
         self.onCompact = onCompact
+        self.onJumpToLastOwnMessage = onJumpToLastOwnMessage
         self.showSummaries = showSummaries
         self.popoverContent = popoverContent
         self.showMediaBrowser = showMediaBrowser
@@ -170,6 +177,13 @@ struct MacChatToolbar: ToolbarContent {
             ToolbarItem(placement: .primaryAction) {
                 cluster { UsageBarsView(limits: limits, scale: .compact) }
             }
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button(action: onJumpToLastOwnMessage) {
+                Image(systemName: "arrow.up.to.line")
+            }
+            .help("Jump to my last message (⇧⌘U)")
+            .accessibilityLabel("Jump to my last message")
         }
         ToolbarItem(placement: .primaryAction) {
             Button { showMediaBrowser.wrappedValue = true } label: {

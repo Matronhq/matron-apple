@@ -1113,6 +1113,40 @@ public final class ChatViewModel {
     /// manual chevron walk; bounds the seq array and the FTS projection.
     private static let chatSearchMatchLimit = 500
 
+    // MARK: Jump to my last message
+
+    /// Scrolls the transcript to the newest message the user themself sent
+    /// (item #60): the one thing scrolling can't find once an agent has run
+    /// unattended for hours. Asks the timeline service first — the journal
+    /// mirror knows the answer across the whole history — and falls back to
+    /// the newest own row already loaded for transports without a mirror.
+    /// Rides the same park-until-live jump as in-conversation search, so a
+    /// tap before the first snapshot lands once the stream is up. Returns
+    /// `false` when there is nothing to land on (the user never wrote in
+    /// this conversation); the view keeps the transcript where it is.
+    @discardableResult
+    public func jumpToLastOwnMessage() async -> Bool {
+        let mirrorSeq = try? await timeline.newestOwnMessageSeq()
+        guard let seq = mirrorSeq ?? newestLoadedOwnMessageSeq() else { return false }
+        await focusOrPark(seq: seq)
+        return true
+    }
+
+    /// Newest loaded row the user sent from the composer, by seq. A local
+    /// echo's id isn't a seq (`echo:…`) and isn't a landable row either, so
+    /// it's skipped rather than ending the scan.
+    private func newestLoadedOwnMessageSeq() -> Int64? {
+        for item in items.reversed() where item.isOwn {
+            switch item.kind {
+            case .text, .image, .file:
+                if let seq = Int64(item.id) { return seq }
+            default:
+                continue
+            }
+        }
+        return nil
+    }
+
     /// Latest `rows` message id whose seq is `<= seq`, or nil if every
     /// loaded message postdates it. `rows` is ascending (oldest first —
     /// see `applyDerivedRecompute`), so the scan can stop at the first

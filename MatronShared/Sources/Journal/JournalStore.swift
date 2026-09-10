@@ -1189,6 +1189,37 @@ public final class JournalStore: @unchecked Sendable {
         }
     }
 
+    /// Seq of the newest message the user themself sent in `convoID` — a
+    /// `text`, `image` or `file` row from `ownSender` — or nil when they
+    /// never wrote there. The chat view's "jump to my last message"
+    /// control lands on it (item #60). Skips the journal's `fallback_for`
+    /// text mirrors of item markers: those carry the user's sender but
+    /// were never typed, and `JournalTimelineMapper` drops them, so
+    /// landing on one would target a row the transcript does not render.
+    /// The mirror check reads the payload in Swift rather than via
+    /// `json_extract` — the column is a blob, and SQLite's JSON functions
+    /// treat a blob argument as JSONB, not text.
+    public func newestOwnMessageSeq(convoID: String) throws -> Int64? {
+        try dbQueue.read { db in
+            let candidates = try EventRecord
+                .filter(Column("convo_id") == convoID
+                        && Column("sender") == ownSender
+                        && Self.ownMessageTypes.contains(Column("type")))
+                .order(Column("seq").desc)
+                .limit(Self.ownMessageScanLimit)
+                .fetchAll(db)
+            return candidates.first { $0.journalEvent.payload["fallback_for"] == nil }?.seq
+        }
+    }
+
+    /// The event types a person produces from the composer.
+    private static let ownMessageTypes = [JournalEventType.text, JournalEventType.image, JournalEventType.file]
+    /// How many newest own rows `newestOwnMessageSeq` inspects before giving
+    /// up on finding one that isn't a fallback mirror. Mirrors are rare —
+    /// one per item marker at most — so a run this long of them is not a
+    /// real conversation.
+    private static let ownMessageScanLimit = 50
+
     public func setMuted(_ muted: Bool, convoID: String) throws {
         try dbQueue.write { db in
             try db.execute(sql: "UPDATE conversation SET muted = ? WHERE id = ?", arguments: [muted, convoID])

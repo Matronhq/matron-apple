@@ -450,6 +450,15 @@ struct MacChatView: View {
             .opacity(0)
             .accessibilityHidden(true)
         )
+        // ⇧⌘U — jump to my last message (item #60). Same hidden-button
+        // shape and the same home as ⇧⌘I above: the toolbar button sits in
+        // `chatColumn`, which the narrow-takeover branch doesn't render.
+        .background(
+            Button("") { Task { await viewModel.jumpToLastOwnMessage() } }
+                .keyboardShortcut("u", modifiers: [.command, .shift])
+                .opacity(0)
+                .accessibilityHidden(true)
+        )
         // Observation lifecycle lives HERE, on the stable outer view — NOT
         // on `chatColumn`. The pane branches move `chatColumn` between
         // structural identities, and both instances share this view's
@@ -1017,6 +1026,7 @@ struct MacChatView: View {
                 stripViewModel: stripViewModel,
                 onOpenSubChat: { openSubChatID = $0; showItemsPane = false },
                 onCompact: { Task { await viewModel.sendCommand("/compact") } },
+                onJumpToLastOwnMessage: { Task { await viewModel.jumpToLastOwnMessage() } },
                 showSummaries: $showSummaries,
                 popoverContent: {
                     AnyView(MacSummariesPopoverContent(viewModel: viewModel) { seq in

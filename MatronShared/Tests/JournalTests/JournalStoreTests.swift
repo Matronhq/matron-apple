@@ -378,6 +378,28 @@ final class JournalStoreTests: XCTestCase {
         XCTAssertEqual(try store.events(convoID: "c1", beforeSeq: 1, limit: 3).map(\.seq), [])
     }
 
+    /// Item #60 — "jump to my last message". The newest own `text`/`image`/
+    /// `file` row wins; agent rows, read markers and other conversations
+    /// don't count, and neither does the journal's `fallback_for` text
+    /// mirror of an item marker (own sender, never typed, not rendered).
+    func testNewestOwnMessageSeqSkipsAgentRowsMarkersAndFallbackMirrors() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, sender: "user:dan"))
+        try store.applyJournal(event(2))
+        try store.applyJournal(event(3, sender: "user:dan", type: "image",
+                                     payload: ["blob_ref": "b", "name": "x.png"]))
+        try store.applyJournal(event(4))
+        try store.applyJournal(event(5, sender: "user:dan",
+                                     payload: ["body": "📌 #1 filed", "fallback_for": "item"]))
+        try store.applyJournal(event(6, sender: "user:dan", type: "read_marker",
+                                     payload: ["up_to_seq": 5]))
+        try store.applyJournal(event(7, convo: "c2", sender: "user:dan"))
+        XCTAssertEqual(try store.newestOwnMessageSeq(convoID: "c1"), 3)
+        XCTAssertEqual(try store.newestOwnMessageSeq(convoID: "c2"), 7)
+        XCTAssertNil(try store.newestOwnMessageSeq(convoID: "c3"),
+                     "a conversation the user never wrote in has no target")
+    }
+
     func testEventsStreamAnchoredAtSinceSeq() async throws {
         let store = try makeStore()
         for seq in 1...4 { try store.applyJournal(event(Int64(seq))) }
