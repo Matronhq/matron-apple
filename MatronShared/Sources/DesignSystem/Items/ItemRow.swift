@@ -21,6 +21,19 @@ public struct ItemRow: View {
         item.missionNum.map { "#\($0)" }
     }
 
+    /// The row's full VoiceOver announcement. Static and pure so the rule is
+    /// pinned without rendering: `.accessibilityElement(children: .combine)`
+    /// followed by an explicit `.accessibilityLabel(...)` on the same
+    /// container REPLACES the auto-generated combined text — a child's own
+    /// `.accessibilityLabel` (e.g. on the mission chip) never merges in. So
+    /// every fact VoiceOver should announce, including the mission chip,
+    /// must be folded into this one string.
+    public static func accessibilityLabel(for item: TrackerItem) -> String {
+        "\(ItemGlyph.label(item.kind)) \(item.num), \(item.title)"
+            + (item.needsUser ? ", needs you" : "")
+            + (Self.missionChipText(for: item).map { ", mission \($0)" } ?? "")
+    }
+
     public var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: ItemGlyph.symbol(item.kind))
@@ -39,10 +52,9 @@ public struct ItemRow: View {
                 HStack(spacing: 8) {
                     if let origin { Text(origin).font(.caption2).foregroundStyle(.tertiary).lineLimit(1) }
                     if let chip = Self.missionChipText(for: item) {
-                        Label(chip, systemImage: "flag.checkered")
+                        Label(chip, systemImage: MissionGlyph.symbol())
                             .font(.caption2.monospacedDigit())
                             .foregroundStyle(.tertiary)
-                            .accessibilityLabel("Mission \(chip)")
                     }
                     if item.needsUser {
                         Text("Needs you").font(.caption2.weight(.semibold)).foregroundStyle(.orange)
@@ -74,6 +86,6 @@ public struct ItemRow: View {
         }
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(ItemGlyph.label(item.kind)) \(item.num), \(item.title)\(item.needsUser ? ", needs you" : "")")
+        .accessibilityLabel(Self.accessibilityLabel(for: item))
     }
 }
