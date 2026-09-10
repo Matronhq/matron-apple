@@ -191,6 +191,10 @@ let package = Package(
                 "MatronJournal",
                 "MatronModels",
                 .product(name: "SnapshotTesting", package: "swift-snapshot-testing"),
+                // Item #115 pins that a `[#65](matron://item/65)` body
+                // parses as a LINK (destination + `#65` text) on the
+                // MarkdownUI path iOS message bodies render through.
+                .product(name: "MarkdownUI", package: "swift-markdown-ui"),
             ],
             path: "Tests/DesignSystemSnapshotTests"
         ),

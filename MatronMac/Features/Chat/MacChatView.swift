@@ -81,6 +81,12 @@ struct MacChatView: View {
     /// `MacItemsPaneState`'s doc comment. One instance per `MacChatView`
     /// lifetime (resets on a genuine room switch, same as `itemsVM`).
     @State private var itemsPaneState = MacItemsPaneState()
+    /// `[#65](matron://item/65)` taps from any message body (item #115).
+    /// The relay's `action` goes into the environment with a stable closure
+    /// identity (see `TrackerItemLinkRelay`) — every rendered message body
+    /// reads that value — and the navigation happens in `onChange` below
+    /// with current state.
+    @State private var itemLinkRelay = TrackerItemLinkRelay()
     /// Local text for the in-conversation search bar's field — seeded from
     /// `viewModel.chatSearch?.query`, submitted back via `beginChatSearch`.
     @State private var chatSearchQuery = ""
@@ -367,6 +373,22 @@ struct MacChatView: View {
     /// pane below its min, so 820 keeps a small margin above that.
     private static let sideBySideMinWidth: CGFloat = 820
 
+    /// A tapped `matron://item/<n>` link in a message body (item #115).
+    /// Lands in the same place an inline `.itemMarker` card does — the
+    /// items pane, pushed straight to that item — and falls back to the
+    /// pane's LIST when this device has never synced item `n`, rather than
+    /// leaving the click dead.
+    private func openTrackerItem(num: Int) {
+        guard let deps, let session, let itemsVM, itemsVM.isSupported != false else { return }
+        openSubChatID = nil
+        showItemsPane = true
+        if let item = try? deps.journalStore(for: session).item(num: num) {
+            itemsPaneState.path = [item.id]
+        } else {
+            itemsPaneState.path = []
+        }
+    }
+
     var body: some View {
         GeometryReader { geo in
             if let childID = openSubChatID {
@@ -436,6 +458,14 @@ struct MacChatView: View {
             } else {
                 chatColumn
             }
+        }
+        // Item links (`[#65](matron://item/65)`) tapped in a message body.
+        // Installed on the stable outer view so it covers both the
+        // side-by-side and the narrow-takeover branches.
+        .environment(\.openTrackerItem, itemLinkRelay.action)
+        .onChange(of: itemLinkRelay.pending) { _, tap in
+            guard let tap else { return }
+            openTrackerItem(num: tap.num)
         }
         // Minor (Mac fix wave, part 1): ⌘⇧I toggles the tasks-and-decisions
         // pane. Attached HERE (the stable outer view, same reasoning as the

@@ -254,6 +254,21 @@ struct ChatView: View {
         Self.pushItem(itemID, onto: navigationPath)
     }
 
+    /// A tapped `matron://item/<n>` link in a message body. Resolves the
+    /// number against the local store: a known item opens exactly where an
+    /// inline item card opens it; an unknown one (never synced here, or
+    /// filed on another journal) pages to the tracker list rather than
+    /// dying silently under the finger.
+    private func openTrackerItem(num: Int) {
+        guard let deps, let session else { return }
+        if let item = try? deps.journalStore(for: session).item(num: num) {
+            openItem(item.id)
+        } else if showsTasksPage {
+            chatViewLogger.notice("item link #\(num, privacy: .public) not in the local store — opening the tracker")
+            withAnimation { pager.go(to: .tasks) }
+        }
+    }
+
     /// Widen-then-scroll for a remembered scroll position. The widen
     /// mounts rows on the NEXT layout pass, and `proxy.scrollTo` only
     /// resolves ids already in the rendered tree — a same-tick scroll
@@ -334,6 +349,11 @@ struct ChatView: View {
     /// `onDisappear` that stops `viewModel`/`stripViewModel`.
     @State private var itemsVM: ItemsPanelViewModel?
     @State private var pager = ChatPagerModel()
+    /// `[#65](matron://item/65)` taps from any message body (item #115).
+    /// The relay's `action` is installed into the environment with a stable
+    /// closure identity (see `TrackerItemLinkRelay`) and the navigation
+    /// itself happens in `onChange` below, with current values.
+    @State private var itemLinkRelay = TrackerItemLinkRelay()
     @State private var showCreateItem = false
     /// id→label for the tracker's "All" rows; one cheap store scan per
     /// scope switch (`conversationOriginLabels()`).
@@ -1001,6 +1021,14 @@ struct ChatView: View {
             chatPage
         } tasks: {
             tasksPage
+        }
+        // Item links (`[#65](matron://item/65)`) in any message body on
+        // either page. One stable closure for the view's lifetime — this
+        // value is read by every rendered message body.
+        .environment(\.openTrackerItem, itemLinkRelay.action)
+        .onChange(of: itemLinkRelay.pending) { _, tap in
+            guard let tap else { return }
+            openTrackerItem(num: tap.num)
         }
         // VoiceOver hears the page change; the announcement names the
         // page that just arrived.

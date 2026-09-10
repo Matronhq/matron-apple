@@ -146,9 +146,16 @@ final class MessageCopyTextView: MouseTrackingRescueTextView {
 }
 
 /// `NSViewRepresentable` wrapping the non-editable, selectable `NSTextView`.
-private struct SelectableTextViewRepresentable: NSViewRepresentable {
+/// Internal (not `private`) so the link-click policy on its `Coordinator` is
+/// unit-testable without a rendered view.
+struct SelectableTextViewRepresentable: NSViewRepresentable {
     let source: String
     let rendered: MarkdownAttributed.Rendered
+    /// In-app tracker-item opener (item #115), read from the environment
+    /// HERE and handed to the coordinator in `makeNSView`/`updateNSView` —
+    /// an AppKit delegate can't read SwiftUI's environment itself, and a
+    /// global would break per-window/per-chat routing.
+    @Environment(\.openTrackerItem) private var openTrackerItem
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -175,6 +182,7 @@ private struct SelectableTextViewRepresentable: NSViewRepresentable {
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.delegate = context.coordinator
+        context.coordinator.openTrackerItem = openTrackerItem
         // Links are clickable but the body is not editable.
         textView.isAutomaticLinkDetectionEnabled = false
         textView.displaysLinkToolTips = true
@@ -186,6 +194,7 @@ private struct SelectableTextViewRepresentable: NSViewRepresentable {
 
     func updateNSView(_ textView: NSTextView, context: Context) {
         (textView as? MessageCopyTextView)?.markdownSource = source
+        context.coordinator.openTrackerItem = openTrackerItem
         useTextKit1IfTabled(textView)
         // Only touch the storage when the content actually changed (streaming
         // deltas re-emit the same view). Streaming re-emits the same view with
@@ -226,14 +235,21 @@ private struct SelectableTextViewRepresentable: NSViewRepresentable {
         return rendered.size(width: width)
     }
 
-    /// Handles link clicks with the same scheme policy as `MarkdownText`
-    /// (http(s) → system handler, matrix/mxc → swallowed). `MarkdownText.handle`
-    /// is the source of truth for that policy but its `OpenURLAction.Result`
-    /// return type is only meaningful inside SwiftUI's `openURL` environment, so
-    /// the decision is mirrored here directly. Note that matrix/mxc URLs never
-    /// carry a `.link` attribute (see `MarkdownAttributed`), so in practice only
-    /// http(s)/unknown schemes ever reach this delegate.
+    /// Handles link clicks with the same policy as `MarkdownText` — the
+    /// decision itself comes from `MatronItemLink.action(for:)`, which both
+    /// renderers share, because `MarkdownText.handle`'s `OpenURLAction.Result`
+    /// return type is only meaningful inside SwiftUI's `openURL` environment.
+    /// Note that matrix/mxc URLs never carry a `.link` attribute (see
+    /// `MarkdownAttributed`), so in practice only item links, http(s) and
+    /// unknown schemes ever reach this delegate.
     final class Coordinator: NSObject, NSTextViewDelegate {
+        /// Set from the representable's environment on every update.
+        var openTrackerItem: ((Int) -> Void)?
+
+        /// Seam for the external opener so tests can prove a `matron://`
+        /// click never reaches `NSWorkspace`.
+        var openExternally: (URL) -> Void = { NSWorkspace.shared.open($0) }
+
         /// The exact `NSAttributedString` instance last written into the text
         /// view's storage. `MarkdownAttributed.Rendered` is memoised per
         /// source, so identity here is a valid — and O(1) — "content is
@@ -252,13 +268,18 @@ private struct SelectableTextViewRepresentable: NSViewRepresentable {
             default: url = nil
             }
             guard let url else { return false }
-            switch url.scheme?.lowercased() {
-            case "matrix", "mxc":
-                // Swallowed until permalink / content-URI handling lands —
-                // mirrors `MarkdownText.handle(url:)`.
+            switch MatronItemLink.action(for: url) {
+            case .openTrackerItem(let number):
+                // `matron://item/<n>` — opened in-app (item #115), and
+                // swallowed when no host installed a handler. The scheme is
+                // not registered with the OS, so it must never be handed on.
+                openTrackerItem?(number)
+            case .swallow:
+                // matrix/mxc — swallowed until permalink / content-URI
+                // handling lands; mirrors `MarkdownText.handle(url:)`.
                 break
-            default:
-                NSWorkspace.shared.open(url)
+            case .system(let url):
+                openExternally(url)
             }
             // Return `true` either way: we've decided the outcome, so the text
             // view shouldn't also hand the URL to its default opener.

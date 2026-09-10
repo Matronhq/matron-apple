@@ -9,6 +9,9 @@ import MarkdownUI
 /// Link handling policy (QA finding #11):
 ///   - `http(s)` URLs fall through to the system handler so the OS picks the
 ///     user's preferred browser / in-app handler.
+///   - `matron://item/<n>` opens that tracker item through the
+///     `\.openTrackerItem` environment action, and is swallowed when no
+///     host installed one (the scheme is not registered with the OS).
 ///   - Matrix-internal schemes (`matrix:` permalinks, `mxc:` content URIs)
 ///     are swallowed for now and logged at `.debug`. Phase 3 wires
 ///     permalink resolution; until then we'd rather no-op than have the OS
@@ -37,33 +40,47 @@ public struct MarkdownText: View {
         self.cacheParsed = cacheParsed
     }
 
+    /// In-app tracker-item opener (item #115). `nil` outside a host that
+    /// installs one, in which case item links are swallowed rather than
+    /// handed to the OS — the `matron` scheme isn't registered.
+    @Environment(\.openTrackerItem) private var openTrackerItem
+
     public var body: some View {
         Markdown(Self.content(for: raw, cache: cacheParsed))
             .markdownTheme(theme)
             .lineSpacing(lineSpacing)
             .textSelection(.enabled)
             .environment(\.openURL, OpenURLAction { url in
-                Self.handle(url: url)
+                Self.handle(url: url, openItem: openTrackerItem)
             })
     }
 
     /// Routes a URL tap to the system handler or a no-op based on scheme.
     /// `internal` so unit tests can exercise the policy without rendering
     /// the SwiftUI view.
-    static func handle(url: URL) -> OpenURLAction.Result {
-        switch url.scheme?.lowercased() {
-        case "http", "https":
-            // Defer to the system handler (browser, deep-link app).
-            return .systemAction
-        case "matrix", "mxc":
-            // Swallow until Phase 3 lands permalink + content-URI handling.
-            // `.handled` keeps the OS from surfacing a "no handler" error.
+    static func handle(url: URL, openItem: ((Int) -> Void)? = nil) -> OpenURLAction.Result {
+        switch MatronItemLink.action(for: url) {
+        case .openTrackerItem(let number):
+            // `matron://item/<n>` — resolved in-app (item #115). Handled
+            // either way: the scheme is not registered with the OS, so
+            // falling through would surface a "no handler" sheet.
+            if let openItem {
+                openItem(number)
+            } else {
+                Self.log.debug("No tracker-item handler installed for \(url.absoluteString, privacy: .public)")
+            }
+            return .handled
+        case .swallow:
+            // Matrix-internal (`matrix:` / `mxc:`) — swallowed until
+            // permalink + content-URI handling lands. `.handled` keeps the
+            // OS from surfacing a "no handler" error.
             Self.log.debug("Suppressed in-app open for matrix-internal URL: \(url.absoluteString, privacy: .public)")
             return .handled
-        default:
-            // Unknown scheme — fall through to the system so the user
-            // still gets the OS's "no handler" sheet rather than a
-            // silent drop. Aligns with default `OpenURLAction` behaviour.
+        case .system:
+            // http(s) → the system handler (browser, deep-link app). Any
+            // other unknown scheme falls through to the system too, so the
+            // user gets the OS's "no handler" sheet rather than a silent
+            // drop — the default `OpenURLAction` behaviour.
             return .systemAction
         }
     }

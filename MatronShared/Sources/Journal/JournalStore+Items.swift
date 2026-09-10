@@ -200,6 +200,17 @@ extension JournalStore {
         try dbQueue.read { db in try ItemRecord.fetchOne(db, key: id)?.item }
     }
 
+    /// Lookup by the human-facing item NUMBER (`#65`) rather than its id —
+    /// what a tapped `[#65](matron://item/65)` link in a message body has to
+    /// resolve (item #115). `nil` when this device has never synced that
+    /// item, which the callers turn into "open the tracker list" rather than
+    /// a dead tap. Numbers are unique per journal, so the first row wins.
+    public func item(num: Int) throws -> TrackerItem? {
+        try dbQueue.read { db in
+            try ItemRecord.filter(Column("num") == num).fetchOne(db)?.item
+        }
+    }
+
     private static func itemsRequest(_ scope: ItemsScope) -> QueryInterfaceRequest<ItemRecord> {
         switch scope {
         case .all: return ItemRecord.order(Column("rank"), Column("num"))
