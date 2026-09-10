@@ -228,13 +228,22 @@ extension JournalStore {
     /// Which mission a conversation belongs to, derived locally.
     ///
     /// `GET /snapshot` does NOT carry `conversations.mission_id`, so there is
-    /// no column to mirror. Origin first (`missions.origin_convo_id`), then
-    /// any milestone posted in that conversation — which covers `join` and
-    /// inheritance. `nil` until the first missions refresh lands, which is
-    /// exactly when the title-tap affordance should appear.
+    /// no column to mirror. Three lookups, in order: origin
+    /// (`missions.origin_convo_id`); `mission_conversation`, the
+    /// authoritative membership list a detail fetch populates the moment a
+    /// `join` marker or a server-side inheritance names this conversation —
+    /// checking it here means the title-tap affordance appears as soon as
+    /// membership is known, not only once a milestone has actually been
+    /// posted; then any milestone posted in the conversation, which still
+    /// matters as a fallback until the owning mission's own detail fetch
+    /// has ever landed. `nil` until the first missions refresh lands, which
+    /// is exactly when the title-tap affordance should appear.
     private static func missionIDQuery(_ db: Database, _ convoID: String) throws -> String? {
         if let origin = try String.fetchOne(db, sql: "SELECT id FROM mission WHERE origin_convo_id = ? ORDER BY id LIMIT 1", arguments: [convoID]) {
             return origin
+        }
+        if let joined = try String.fetchOne(db, sql: "SELECT mission_id FROM mission_conversation WHERE convo_id = ? ORDER BY mission_id LIMIT 1", arguments: [convoID]) {
+            return joined
         }
         return try String.fetchOne(db, sql: "SELECT mission_id FROM milestone WHERE convo_id = ? ORDER BY seq DESC LIMIT 1", arguments: [convoID])
     }

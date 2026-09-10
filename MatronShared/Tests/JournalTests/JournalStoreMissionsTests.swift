@@ -103,8 +103,9 @@ final class JournalStoreMissionsTests: XCTestCase {
         XCTAssertEqual(try store.milestones(convoID: "nope"), [])
     }
 
-    /// A conversation's mission: origin first, then any milestone posted in
-    /// it (the join / inheritance cases, which the snapshot never carries).
+    /// A conversation's mission: origin first, then `mission_conversation`
+    /// membership, then any milestone posted in it (the join / inheritance
+    /// cases, which the snapshot never carries).
     func testMissionIDForConversationPrefersOriginThenMilestone() throws {
         let store = try makeStore()
         try store.upsertMissions([mission("ms_1", num: 61, convo: "c1")])
@@ -112,6 +113,21 @@ final class JournalStoreMissionsTests: XCTestCase {
         XCTAssertEqual(try store.missionID(convoID: "c1"), "ms_1", "origin conversation")
         XCTAssertEqual(try store.missionID(convoID: "c7"), "ms_1", "joined conversation, learned from its milestone")
         XCTAssertNil(try store.missionID(convoID: "c8"))
+    }
+
+    /// A conversation that joined or inherited a mission is named in
+    /// `mission_conversation` (populated by a detail fetch) before it has
+    /// ever hosted a milestone — MAJOR-3, the title-tap affordance must not
+    /// wait for a checkpoint that may never come.
+    func testMissionIDForAJoinedConversationWithNoMilestoneYet() throws {
+        let store = try makeStore()
+        try store.upsertMissions([mission("ms_1", num: 61, convo: "c1")])
+        try store.replaceMissionConversations(missionID: "ms_1", [
+            MissionConversation(id: "c1", title: "Origin", box: nil, state: "running"),
+            MissionConversation(id: "c9", title: "Joined", box: nil, state: "running"),
+        ])
+        XCTAssertEqual(try store.missionID(convoID: "c9"), "ms_1", "joined, no milestone posted there yet")
+        XCTAssertNil(try store.missionID(convoID: "c10"), "not a member and no milestone either")
     }
 
     func testMissionConversationsAreReplacedWholesale() throws {
