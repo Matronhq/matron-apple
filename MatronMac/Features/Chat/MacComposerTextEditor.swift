@@ -187,6 +187,22 @@ struct MacComposerTextEditor: NSViewRepresentable {
 final class ComposerTextView: MouseTrackingRescueTextView {
     var claimPasteboardAttachments: (() -> Bool)?
 
+    /// The composer owns its undo stack (item #102). `allowsUndo` with no
+    /// manager of its own registered every edit on the WINDOW's shared
+    /// undo manager with this view as the target; the view is rebuilt per
+    /// conversation, so after a switch the next ⌘Z popped an entry whose
+    /// target had been freed and crashed in `_NSUndoStack popAndInvoke`.
+    /// Owning the manager means the stack dies with the view, and ⌘Z with
+    /// focus elsewhere reaches the window's own, empty stack. `deinit`
+    /// clears it anyway so an entry can never outlive its target even if
+    /// something else retains the manager.
+    private let composerUndoManager = UndoManager()
+    override var undoManager: UndoManager? { composerUndoManager }
+
+    deinit {
+        composerUndoManager.removeAllActions()
+    }
+
     /// The extra flavours to advertise as readable, so AppKit *offers* Paste
     /// for a pasteboard we intend to claim. Non-consuming: AppKit asks on
     /// every Edit-menu open and every ⌘V, so this must never stage anything.
