@@ -73,6 +73,15 @@ final class ChatPagerTests: XCTestCase {
         XCTAssertTrue(model.endDrag(translation: CGSize(width: 200, height: 0), startX: 200))
     }
 
+    /// Dan, 2026-09-10: the tasks page's top-left must lead back to the
+    /// conversation. The system back button pops the whole destination and
+    /// lands on the conversation list, so it is suppressed there — and only
+    /// there, since on the chat page popping to the list is exactly right.
+    func test_theTasksPageReplacesTheSystemBackButton_theChatPageKeepsIt() {
+        XCTAssertTrue(ChatView.hidesSystemBackButton(page: .tasks))
+        XCTAssertFalse(ChatView.hidesSystemBackButton(page: .chat))
+    }
+
     func test_popChat_removesTheTopEntry_andIgnoresAnEmptyOrMissingPath() {
         var path: [String] = ["!parent:s", "!child:s"]
         let binding = Binding(get: { path }, set: { path = $0 })

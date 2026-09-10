@@ -237,6 +237,17 @@ struct ChatView: View {
         path.wrappedValue.removeLast()
     }
 
+    /// Whether the navigation bar's own back button is suppressed. The
+    /// tasks page is a page OF this conversation, not a sibling of it, so
+    /// its top-left must lead back to the conversation — the system
+    /// button pops the whole destination and lands on the conversation
+    /// list instead (Dan, 2026-09-10). A leading button that pages back
+    /// takes its place below. Hiding it also hands the leading-edge
+    /// swipe to the pager, which pages back for the same reason.
+    static func hidesSystemBackButton(page: ChatPage) -> Bool {
+        page == .tasks
+    }
+
     /// Tapping an inline `.itemMarker` card pushes that item onto the
     /// outer stack straight away — no need to page to the tracker first.
     private func openItem(_ itemID: String) {
@@ -1006,7 +1017,18 @@ struct ChatView: View {
         // principal item below — dropping it blanks the "< Back" text.
         .navigationTitle(chatTitle)
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(Self.hidesSystemBackButton(page: pager.page))
         .toolbar {
+            // The tasks page's own way back: to the conversation it
+            // belongs to, in the corner every iOS back button lives in.
+            if Self.hidesSystemBackButton(page: pager.page) {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { withAnimation { pager.go(to: .chat) } } label: {
+                        Image(systemName: "chevron.backward")
+                    }
+                    .accessibilityLabel("Back to the chat")
+                }
+            }
             // Tappable title → summaries TOC sheet (jump-to-point nav).
             // Under it, "box · ~/workdir" in small text — which machine and
             // folder this session lives on, readable without opening the
@@ -1048,24 +1070,17 @@ struct ChatView: View {
             // Tasks page (spec §4). Hidden once the panel VM has confirmed
             // the journal doesn't support the tracker; on the tasks page the
             // same slot returns to the chat.
-            if showsTasksPage, let itemsVM {
+            if showsTasksPage, let itemsVM, pager.page != .tasks {
                 ToolbarItem(placement: .topBarTrailing) {
-                    if pager.page == .tasks {
-                        Button { withAnimation { pager.go(to: .chat) } } label: {
-                            Image(systemName: "bubble.left")
-                        }
-                        .accessibilityLabel("Back to the chat")
-                    } else {
-                        Button { withAnimation { pager.go(to: .tasks) } } label: {
-                            Image(systemName: "checklist")
-                                .overlay(alignment: .topTrailing) {
-                                    NeedsYouBadge(count: itemsVM.needsYouCount)
-                                        .scaleEffect(0.75)
-                                        .offset(x: 10, y: -8)
-                                }
-                        }
-                        .accessibilityLabel("Tasks and decisions")
+                    Button { withAnimation { pager.go(to: .tasks) } } label: {
+                        Image(systemName: "checklist")
+                            .overlay(alignment: .topTrailing) {
+                                NeedsYouBadge(count: itemsVM.needsYouCount)
+                                    .scaleEffect(0.75)
+                                    .offset(x: 10, y: -8)
+                            }
                     }
+                    .accessibilityLabel("Tasks and decisions")
                 }
             }
             // Back to a single ⓘ (Dan, 2026-08-16 — the ellipsis read as
