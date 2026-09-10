@@ -25,8 +25,8 @@ extension JournalStore: TrackerItemNumberReading {}
 ///    real item this device simply hasn't synced yet (an agent filed it
 ///    seconds ago, or it belongs to another conversation whose items were
 ///    never fetched).
-/// 3. Still missing → `.notSynced`; a throwing store read or refresh →
-///    `.failed`.
+/// 3. Still missing → `.notSynced`; a throwing store read, or a refresh
+///    that reported `.failed`, → `.failed`.
 ///
 /// What the caller must do with `.notSynced` / `.failed` is as important as
 /// the lookup: **stay exactly where you are** and show the message from
@@ -46,27 +46,27 @@ public struct TrackerItemLinkResolver: Sendable {
         /// refresh. Either it doesn't exist or it belongs to a journal this
         /// device isn't signed in to.
         case notSynced
-        /// The store read or the refresh threw.
+        /// The store read threw, or the refresh came back `.failed` —
+        /// i.e. we genuinely do not know whether this item exists.
         case failed(Error)
     }
 
     private let lookup: @Sendable (Int) throws -> TrackerItem?
-    private let refreshAll: @Sendable () async throws -> Void
+    private let refreshAll: @Sendable () async -> ItemsRefreshOutcome
 
     /// Production wiring: the session's `JournalStore` and its `ItemsSync`.
     public init(store: any TrackerItemNumberReading, sync: any ItemsSyncing) {
         self.lookup = { try store.item(num: $0) }
-        // `ItemsSync.refresh` swallows its own transport errors (it drives a
-        // banner, not a throw), so in production `.failed` only ever comes
-        // from the store read. The seam is `throws` anyway so a future
-        // throwing refresh — or a test — lands in `.failed` rather than
-        // silently reporting `.notSynced` for a network fault.
+        // `ItemsSync.refresh` still swallows its own transport errors as far
+        // as its OWN callers are concerned (it drives a banner, not a
+        // throw) — but since item #115 fix round 5 it REPORTS them, which is
+        // what stops a failed fetch here from being read as "no such item".
         self.refreshAll = { await sync.refresh(scope: .all) }
     }
 
     /// Seam init for tests.
     public init(lookup: @escaping @Sendable (Int) throws -> TrackerItem?,
-                refreshAll: @escaping @Sendable () async throws -> Void) {
+                refreshAll: @escaping @Sendable () async -> ItemsRefreshOutcome) {
         self.lookup = lookup
         self.refreshAll = refreshAll
     }
@@ -80,10 +80,18 @@ public struct TrackerItemLinkResolver: Sendable {
         // One retry, never more: a number that is still missing after a full
         // refresh is not going to appear on a second one, and a link tap
         // must not be able to queue an unbounded run of fetches.
-        do {
-            try await refreshAll()
-        } catch {
-            return .failed(error)
+        //
+        // The OUTCOME of that refresh decides what a second miss means. A
+        // refresh that failed (offline, 500) leaves the store exactly as
+        // stale as it was, so "isn't on this device yet" would be a
+        // fabrication — report the failure instead. `.unsupported` (this
+        // journal has no tracker) and `.stopped` (sign-out mid-tap) both
+        // leave a genuine local miss, so they fall through to `.notSynced`.
+        switch await refreshAll() {
+        case .failed(let failure):
+            return .failed(failure)
+        case .succeeded, .unsupported, .stopped:
+            break
         }
         do {
             if let item = try lookup(num) { return .open(item.id) }

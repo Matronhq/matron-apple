@@ -30,7 +30,12 @@ public extension ItemsStoreReading {
 }
 
 public protocol ItemsSyncing: Sendable {
-    func refresh(scope: ItemsScope) async
+    /// Returns what the pass actually did (item #115, fix round 5) so a
+    /// caller that re-reads the store afterwards can tell "fetched, and it
+    /// really isn't there" from "the fetch failed". `@discardableResult` —
+    /// the panel and the reconnect kick still only want the side effects.
+    @discardableResult
+    func refresh(scope: ItemsScope) async -> ItemsRefreshOutcome
     func refreshItem(id: String) async
     func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async
     /// Returns whether the outbox insert itself succeeded (fix wave, item

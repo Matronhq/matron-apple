@@ -262,15 +262,17 @@ struct ChatView: View {
     /// would cost them their place in the conversation to show them a list
     /// that by definition doesn't contain the item — and says so in the
     /// tracker alert instead (item #115, fix round 2).
-    @MainActor private func openTrackerItem(num: Int) async {
-        guard let deps, let session else { return }
-        switch await deps.itemLinkResolver(for: session).resolve(num: num) {
-        case .open(let itemID):
-            openItem(itemID)
-        case let miss:
+    ///
+    /// Answers what the tap should do; `trackerItemLinks` decides whether
+    /// it still MAY (fix round 5 — a slow resolve must not navigate over
+    /// the tap that overtook it).
+    @MainActor private func openTrackerItem(num: Int) async -> TrackerItemLinkOutcome {
+        guard let deps, let session else { return .ignore }
+        let outcome = await deps.trackerItemLinkOutcome(num: num, session: session)
+        if case .explain = outcome {
             chatViewLogger.notice("item link #\(num, privacy: .public) did not resolve — staying put")
-            itemLinkRelay.alert = miss.alertMessage(num: num)
         }
+        return outcome
     }
 
     /// Widen-then-scroll for a remembered scroll position. The widen
@@ -1029,7 +1031,8 @@ struct ChatView: View {
         // Item links (`[#65](matron://item/65)`) in any message body on
         // either page — installed ONCE here, on the pager root, so the chat
         // page and the tasks page share one host (and one alert).
-        .trackerItemLinks(itemLinkRelay) { await openTrackerItem(num: $0) }
+        .trackerItemLinks(itemLinkRelay, resolve: { await openTrackerItem(num: $0) },
+                          open: { openItem($0) })
         // VoiceOver hears the page change; the announcement names the
         // page that just arrived.
         .onChange(of: pager.page) { _, page in

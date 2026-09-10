@@ -313,14 +313,71 @@ final class ItemsSyncTests: XCTestCase {
         XCTAssertFalse(secondFinished.get(), "the second caller must await the run already in flight")
 
         api.releaseListGate()
-        await first.value
-        await second.value
+        _ = await first.value
+        _ = await second.value
         XCTAssertEqual(api.listQueries.count, 1, "two concurrent .all refreshes hit the API once")
 
         // Coalescing is per-run, not a permanent latch: once the run is
         // done the next refresh fetches again.
         await sync.refresh(scope: .all)
         XCTAssertEqual(api.listQueries.count, 2)
+    }
+
+    /// Item #115, fix round 5: the refresh REPORTS what it did. It still
+    /// swallows the error as far as its own side effects go (banner,
+    /// `isSupported`), but a caller that re-reads the store afterwards has
+    /// to be able to tell "fetched, genuinely absent" from "never fetched".
+    func testRefreshReportsWhatItDid() async throws {
+        let api = FakeItems()
+        api.listResponses = [ItemsPage(items: [item("a", num: 1, updated: 10)], nextCursor: nil)]
+        let (sync, _, _, _) = try make(api: api)
+        let ok = await sync.refresh(scope: .all)
+        XCTAssertEqual(ok, .succeeded)
+
+        // A journal with no tracker routes answered — that is not a fault.
+        api.listError = JournalAPIError.notFound
+        let unsupported = await sync.refresh(scope: .all)
+        XCTAssertEqual(unsupported, .unsupported)
+
+        api.listError = JournalAPIError.transport("offline")
+        let failed = await sync.refresh(scope: .all)
+        guard case .failed(let failure) = failed else { return XCTFail("expected .failed, got \(failed)") }
+        XCTAssertEqual(failure.message, JournalAPIError.transport("offline").localizedDescription,
+                       "the message the user is shown is the underlying error's")
+    }
+
+    /// Every joiner of a COALESCED run must observe the same outcome as the
+    /// owner (item #115, fix round 5). A joiner that got a silent success
+    /// out of a fetch that actually failed would go on to tell the user a
+    /// tapped `#65` "isn't on this device yet" while offline — the exact
+    /// bug the outcome exists to prevent, reintroduced through the round-3
+    /// coalescing.
+    func testCoalescedRefreshJoinersShareTheFailure() async throws {
+        let api = FakeItems()
+        api.listError = JournalAPIError.transport("offline")
+        api.blockNextList = true
+        let (sync, _, _, _) = try make(api: api)
+
+        let first = Task { await sync.refresh(scope: .all) }
+        while !api.isListGated { await Task.yield() }
+
+        let secondStarted = Atomic(false)
+        let second = Task { () -> ItemsRefreshOutcome in
+            secondStarted.set(true)
+            return await sync.refresh(scope: .all)
+        }
+        while !secondStarted.get() { await Task.yield() }
+        for _ in 0..<50 { await Task.yield() }
+
+        api.releaseListGate()
+        let outcomes = [await first.value, await second.value]
+        XCTAssertEqual(api.listQueries.count, 1, "still one fetch for the two callers")
+        for (caller, outcome) in zip(["owner", "joiner"], outcomes) {
+            guard case .failed(let failure) = outcome else {
+                return XCTFail("\(caller) expected .failed, got \(outcome)")
+            }
+            XCTAssertEqual(failure.message, JournalAPIError.transport("offline").localizedDescription)
+        }
     }
 
     func testConcurrentDifferentScopesStillFetchIndependently() async throws {
@@ -335,13 +392,14 @@ final class ItemsSyncTests: XCTestCase {
         await sync.refresh(scope: .convo("c1"))
         XCTAssertEqual(api.listQueries.count, 2)
         api.releaseListGate()
-        await first.value
+        _ = await first.value
     }
 
     func testNotFoundMarksUnsupported() async throws {
         let api = FakeItems(); api.listError = JournalAPIError.notFound
         let (sync, _, _, _) = try make(api: api)
-        await sync.refresh(scope: .all)
+        let outcome = await sync.refresh(scope: .all)
+        XCTAssertEqual(outcome, .unsupported)
         let supported = await sync.isSupported
         XCTAssertFalse(supported)
     }

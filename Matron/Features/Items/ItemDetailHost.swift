@@ -76,17 +76,13 @@ struct ItemDetailHost: View {
     /// have leaves this item on screen and explains itself in the tracker
     /// alert (item #115, fix round 2 — the old fallback replaced the whole
     /// stack with a list).
-    @MainActor private func openTrackerItem(num: Int) async {
-        guard let deps else { return }
-        switch await deps.itemLinkResolver(for: session).resolve(num: num) {
-        case .open(let id):
-            // A link to the item already on screen is a no-op rather than a
-            // second identical push.
-            guard id != itemID else { return }
-            onOpenItem?(id)
-        case let miss:
-            itemLinkRelay.alert = miss.alertMessage(num: num)
-        }
+    @MainActor private func openTrackerItem(num: Int) async -> TrackerItemLinkOutcome {
+        guard let deps else { return .ignore }
+        let outcome = await deps.trackerItemLinkOutcome(num: num, session: session)
+        // A link to the item already on screen is a no-op rather than a
+        // second identical push.
+        if case .open(let id) = outcome, id == itemID { return .ignore }
+        return outcome
     }
 
     /// A tapped link chip (`item.links`). Routed through the same policy as
@@ -94,7 +90,11 @@ struct ItemDetailHost: View {
     /// URL is ever handed to the OS, which has no handler for the scheme.
     private func openLink(_ url: URL) {
         switch MatronItemLink.action(for: url) {
-        case .openTrackerItem(let number): Task { await openTrackerItem(num: number) }
+        // Through the relay, not straight to `openTrackerItem`: a chip tap
+        // is a tap like any other and must share the body's staleness gate
+        // (item #115, fix round 5) — resolving it on the side would let a
+        // chip and a body link race each other.
+        case .openTrackerItem(let number): itemLinkRelay.action(number)
         case .swallow: break
         case .system(let url): openURL(url)
         }
@@ -179,7 +179,8 @@ struct ItemDetailHost: View {
         // Item links inside the body / comments (item #115) — one install
         // for this whole host, shadowing whatever container it was pushed
         // from so a link pushes onto THIS stack.
-        .trackerItemLinks(itemLinkRelay) { await openTrackerItem(num: $0) }
+        .trackerItemLinks(itemLinkRelay, resolve: { await openTrackerItem(num: $0) },
+                          open: { onOpenItem?($0) })
         .confirmationDialog("Attach", isPresented: $showAttachChooser) {
             Button("Photo Library") { showPhotosPicker = true }
             Button("Choose File…") { showFileImporter = true }

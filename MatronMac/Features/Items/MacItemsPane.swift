@@ -362,7 +362,10 @@ struct MacItemDetailHost: View {
     /// URL reaches `NSWorkspace`, which has no handler for the scheme.
     private func openLink(_ url: URL) {
         switch MatronItemLink.action(for: url) {
-        case .openTrackerItem(let number): Task { await openTrackerItem(num: number) }
+        // Through the relay, not straight to `openTrackerItem`: a chip tap
+        // is a tap like any other and must share the body's staleness gate
+        // (item #115, fix round 5).
+        case .openTrackerItem(let number): itemLinkRelay.action(number)
         case .swallow: break
         case .system(let url): NSWorkspace.shared.open(url)
         }
@@ -373,17 +376,13 @@ struct MacItemDetailHost: View {
     /// number opens through `onOpenItem`, a number this device still doesn't
     /// have leaves this item exactly where it is and says so in the tracker
     /// alert (item #115, fix round 2).
-    @MainActor private func openTrackerItem(num: Int) async {
-        guard let deps else { return }
-        switch await deps.itemLinkResolver(for: session).resolve(num: num) {
-        case .open(let id):
-            // A link to the item already on screen is a no-op, not a second
-            // identical push.
-            guard id != itemID else { return }
-            onOpenItem?(id)
-        case let miss:
-            itemLinkRelay.alert = miss.alertMessage(num: num)
-        }
+    @MainActor private func openTrackerItem(num: Int) async -> TrackerItemLinkOutcome {
+        guard let deps else { return .ignore }
+        let outcome = await deps.trackerItemLinkOutcome(num: num, session: session)
+        // A link to the item already on screen is a no-op, not a second
+        // identical push.
+        if case .open(let id) = outcome, id == itemID { return .ignore }
+        return outcome
     }
 
     /// This host's own slot — `nil` until its `.task` creates it. A
@@ -460,7 +459,8 @@ struct MacItemDetailHost: View {
         // Item links inside this item's body / comments / link chips
         // (#115) — one install for this whole host, shadowing the
         // surface's so the link resolves against THIS host's navigation.
-        .trackerItemLinks(itemLinkRelay) { await openTrackerItem(num: $0) }
+        .trackerItemLinks(itemLinkRelay, resolve: { await openTrackerItem(num: $0) },
+                          open: { onOpenItem?($0) })
         // Keyed on the pane's TOP OF STACK as well as this host's own item,
         // because an item link now PUSHES a second host over this one
         // (item #115, fix round 2). `.task` does not re-fire when a view

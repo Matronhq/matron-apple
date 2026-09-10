@@ -380,16 +380,17 @@ struct MacChatView: View {
     /// have after a refresh changes NOTHING on screen (no pane, no path
     /// reset — the old fallback swapped the reader onto a list that by
     /// definition lacked the item) and reports itself in the tracker alert.
-    @MainActor private func openTrackerItem(num: Int) async {
-        guard let deps, let session, let itemsVM, itemsVM.isSupported != false else { return }
-        switch await deps.itemLinkResolver(for: session).resolve(num: num) {
-        case .open(let id):
-            openSubChatID = nil
-            showItemsPane = true
-            itemsPaneState.path = [id]
-        case let miss:
-            itemLinkRelay.alert = miss.alertMessage(num: num)
-        }
+    @MainActor private func openTrackerItem(num: Int) async -> TrackerItemLinkOutcome {
+        guard let deps, let session, let itemsVM, itemsVM.isSupported != false else { return .ignore }
+        return await deps.trackerItemLinkOutcome(num: num, session: session)
+    }
+
+    /// The navigation half, run by `trackerItemLinks` only if the tap that
+    /// asked for it is still the latest one (item #115, fix round 5).
+    @MainActor private func showItem(_ id: String) {
+        openSubChatID = nil
+        showItemsPane = true
+        itemsPaneState.path = [id]
     }
 
     var body: some View {
@@ -467,7 +468,8 @@ struct MacChatView: View {
         // side-by-side and the narrow-takeover branches. `MacItemDetailHost`
         // installs its own inside the pane — a link tapped in an ITEM
         // pushes onto the pane's stack rather than replacing it.
-        .trackerItemLinks(itemLinkRelay) { await openTrackerItem(num: $0) }
+        .trackerItemLinks(itemLinkRelay, resolve: { await openTrackerItem(num: $0) },
+                          open: { showItem($0) })
         // Minor (Mac fix wave, part 1): ⌘⇧I toggles the tasks-and-decisions
         // pane. Attached HERE (the stable outer view, same reasoning as the
         // observation lifecycle below) rather than as a toolbar-item

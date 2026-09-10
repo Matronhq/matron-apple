@@ -21,7 +21,7 @@ private final class NoopItemsStore: ItemsStoreReading, @unchecked Sendable {
 }
 
 private final class NoopItemsSync: ItemsSyncing, @unchecked Sendable {
-    func refresh(scope: ItemsScope) async {}
+    func refresh(scope: ItemsScope) async -> ItemsRefreshOutcome { .succeeded }
     func refreshItem(id: String) async {}
     func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async {}
     func enqueueCreate(localID: String, _ new: NewItem) async -> Bool { true }

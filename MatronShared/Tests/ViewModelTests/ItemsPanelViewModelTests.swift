@@ -21,7 +21,7 @@ private final class FakeSync: ItemsSyncing, @unchecked Sendable {
     var refreshed: [ItemsScope] = []; var created: [NewItem] = []; var refetched: [String] = []
     /// Values `supportedStream()` yields, in order, on each call.
     var supportedValues: [Bool] = [true]
-    func refresh(scope: ItemsScope) async { refreshed.append(scope) }
+    func refresh(scope: ItemsScope) async -> ItemsRefreshOutcome { refreshed.append(scope); return .succeeded }
     func refreshItem(id: String) async { refetched.append(id) }
     func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async {}
     var createSucceeds = true

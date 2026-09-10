@@ -28,8 +28,13 @@ private final class FakeRefreshSync: ItemsSyncing, @unchecked Sendable {
     private(set) var refreshed: [ItemsScope] = []
     /// Runs on each `refresh` — how a test lands the item mid-resolve.
     var onRefresh: () -> Void = {}
+    /// What the refresh reports back (item #115, fix round 5). Default is
+    /// the happy path; a test flips it to `.failed` to stand in for offline.
+    var outcome: ItemsRefreshOutcome = .succeeded
 
-    func refresh(scope: ItemsScope) async { refreshed.append(scope); onRefresh() }
+    func refresh(scope: ItemsScope) async -> ItemsRefreshOutcome {
+        refreshed.append(scope); onRefresh(); return outcome
+    }
     func refreshItem(id: String) async {}
     func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async {}
     func enqueueCreate(localID: String, _ new: NewItem) async -> Bool { true }
@@ -93,10 +98,14 @@ final class TrackerItemLinkResolverTests: XCTestCase {
 
     // MARK: - Seam init
 
-    func test_throwingRefresh_isFailedNotNotSynced() async {
+    func test_failedRefresh_isFailedNotNotSynced() async {
         // A transport fault must not be reported as "this item doesn't
         // exist here" — the user would go looking for a missing item.
-        let resolver = TrackerItemLinkResolver(lookup: { _ in nil }, refreshAll: { throw Boom() })
+        // `ItemsSync.refresh` swallows the throw internally; what it
+        // REPORTS is the whole fix (item #115, fix round 5).
+        let resolver = TrackerItemLinkResolver(
+            lookup: { _ in nil },
+            refreshAll: { .failed(ItemsRefreshFailure(Boom())) })
         let resolution = await resolver.resolve(num: 65)
 
         guard case .failed(let error) = resolution else { return XCTFail("expected .failed, got \(resolution)") }
@@ -104,9 +113,41 @@ final class TrackerItemLinkResolverTests: XCTestCase {
         XCTAssertEqual(resolution.alertMessage(num: 65), "Couldn't open item #65 — the journal said no")
     }
 
+    /// The pair that gives the two messages their meaning: the SAME miss
+    /// reports differently depending on whether the fetch happened.
+    func test_refreshOutcomeDecidesWhichMissTheUserIsTold() async {
+        let store = FakeNumberStore()
+
+        let offline = FakeRefreshSync()
+        offline.outcome = .failed(ItemsRefreshFailure(Boom()))
+        let failed = await TrackerItemLinkResolver(store: store, sync: offline).resolve(num: 65)
+        guard case .failed = failed else { return XCTFail("expected .failed, got \(failed)") }
+        XCTAssertEqual(failed.alertMessage(num: 65), "Couldn't open item #65 — the journal said no")
+        XCTAssertEqual(store.reads, [65], "a failed refresh isn't worth a second read")
+
+        let online = FakeRefreshSync()
+        let missed = await TrackerItemLinkResolver(store: store, sync: online).resolve(num: 65)
+        guard case .notSynced = missed else { return XCTFail("expected .notSynced, got \(missed)") }
+        XCTAssertEqual(missed.alertMessage(num: 65), "Item #65 isn't on this device yet.")
+    }
+
+    /// A journal with no tracker routes, and a sync stopped mid-tap by a
+    /// sign-out, both leave a genuine local miss — not a failure to report.
+    func test_unsupportedOrStoppedRefresh_stillReadsAsNotSynced() async {
+        for outcome in [ItemsRefreshOutcome.unsupported, .stopped] {
+            let sync = FakeRefreshSync()
+            sync.outcome = outcome
+            let resolution = await TrackerItemLinkResolver(store: FakeNumberStore(), sync: sync).resolve(num: 65)
+            guard case .notSynced = resolution else {
+                return XCTFail("expected .notSynced for \(outcome), got \(resolution)")
+            }
+        }
+    }
+
     func test_refreshIsCalledAtMostOncePerResolve_evenAcrossRepeatedTaps() async {
         let refreshes = Counter()
-        let resolver = TrackerItemLinkResolver(lookup: { _ in nil }, refreshAll: { refreshes.bump() })
+        let resolver = TrackerItemLinkResolver(lookup: { _ in nil },
+                                               refreshAll: { refreshes.bump(); return .succeeded })
         _ = await resolver.resolve(num: 65)
         XCTAssertEqual(refreshes.value, 1)
         // A second tap is a second resolve: one more refresh, not a
@@ -118,7 +159,7 @@ final class TrackerItemLinkResolverTests: XCTestCase {
     func test_openResolution_hasNothingToSay() async {
         let resolver = TrackerItemLinkResolver(
             lookup: { TrackerItem(id: "id-\($0)", num: $0, kind: .task, title: "t", originConvoID: "c1") },
-            refreshAll: { XCTFail("no refresh on a hit") })
+            refreshAll: { XCTFail("no refresh on a hit"); return .succeeded })
         let resolution = await resolver.resolve(num: 9)
         XCTAssertNil(resolution.alertMessage(num: 9))
     }

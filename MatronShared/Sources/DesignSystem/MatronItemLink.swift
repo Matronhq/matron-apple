@@ -137,10 +137,13 @@ public final class TrackerItemLinkRelay {
     public var pending: TrackerItemLinkTap?
 
     /// Message for the tracker alert when a tap did NOT open anything —
-    /// `TrackerItemLinkResolver.Resolution.alertMessage(num:)`. Set by the
-    /// host, presented (and cleared) by `trackerItemLinks(_:open:)`. The
-    /// alert is the whole point of the miss path: the host stays exactly
-    /// where it was, so without it an unknown number is a dead tap.
+    /// `TrackerItemLinkResolver.Resolution.alertMessage(num:)`, wrapped in
+    /// a `.explain` outcome. Written and presented (and cleared) by
+    /// `trackerItemLinks(_:resolve:open:)`, never by a host directly, so a
+    /// tap the user has already superseded cannot post its message over the
+    /// current one (item #115, fix round 5). The alert is the whole point of
+    /// the miss path: the host stays exactly where it was, so without it an
+    /// unknown number is a dead tap.
     public var alert: String?
 
     /// The environment action. Same instance for this relay's lifetime.
@@ -156,8 +159,9 @@ public final class TrackerItemLinkRelay {
 /// default — means no host is installed, and item links are swallowed
 /// rather than handed to the OS.
 ///
-/// Internal: hosts install the value through `trackerItemLinks(_:open:)` or
-/// `\.openTrackerItem`, never through the key itself.
+/// Internal: hosts install the value through
+/// `trackerItemLinks(_:resolve:open:)` or `\.openTrackerItem`, never
+/// through the key itself.
 struct OpenTrackerItemKey: EnvironmentKey {
     static let defaultValue: ((Int) -> Void)? = nil
 }
@@ -169,9 +173,74 @@ extension EnvironmentValues {
     }
 }
 
+/// What a resolved `matron://item/<n>` tap should do to the host it was
+/// tapped in. The host's `resolve` closure produces one of these and the
+/// modifier applies it — so navigation, the alert, and the "nothing to do"
+/// case all pass through the SAME staleness check
+/// (`TrackerItemLinkTapGate`).
+///
+/// Deliberately not `TrackerItemLinkResolver.Resolution`: that type lives in
+/// `MatronViewModels`, which this module does not (and should not) depend
+/// on. Hosts map one to the other in a line.
+public enum TrackerItemLinkOutcome: Equatable, Sendable {
+    /// The number resolved to a local item — navigate to it.
+    case open(itemID: String)
+    /// It didn't, and this is what to tell the user in the tracker alert.
+    case explain(String)
+    /// The host couldn't even try (no session / dependencies yet, or the
+    /// tap is a no-op such as a link to the item already on screen). Say
+    /// nothing, change nothing.
+    case ignore
+}
+
+/// Serialises tracker-link taps so only the LATEST one can act.
+///
+/// Every tap starts an independent async resolve, and resolves do not finish
+/// in the order they were started: a miss suspends inside a full
+/// `refresh(scope: .all)` while a tap made a moment later hits the local
+/// store and returns at once. Without this gate the slow first tap would
+/// come back afterwards and either navigate to the OLDER item — silently
+/// undoing the navigation the user just watched happen — or overwrite the
+/// alert with a message about a number they have moved on from (CodeRabbit,
+/// item #115 round 5).
+///
+/// The rule is "last tap wins", enforced at the point of EFFECT rather than
+/// at the point of start: a superseded resolve is cancelled and, whether or
+/// not it notices, its outcome is dropped. `TrackerItemLinkTap.id` is the
+/// identity — two taps on the same number are two different taps, so a
+/// double tap on `#65` still resolves to one navigation.
+@MainActor
+final class TrackerItemLinkTapGate {
+    private var inFlight: Task<Void, Never>?
+    /// The tap allowed to act. Set synchronously in `begin`, so it is
+    /// already the newer tap's id by the time an older resolve returns.
+    private var currentTapID: UUID?
+
+    /// Resolves `tap`, superseding whatever tap was still resolving, and
+    /// applies the outcome only if no newer tap arrived meanwhile.
+    ///
+    /// `resolve` is cancelled on supersession, but the gate does not rely on
+    /// it honouring that: a store read and a network refresh both run to
+    /// completion regardless, which is exactly why the check is on the way
+    /// out and not on the way in.
+    func begin(_ tap: TrackerItemLinkTap,
+               resolve: @escaping (Int) async -> TrackerItemLinkOutcome,
+               apply: @escaping (TrackerItemLinkOutcome) -> Void) {
+        inFlight?.cancel()
+        currentTapID = tap.id
+        inFlight = Task { [weak self] in
+            let outcome = await resolve(tap.num)
+            guard let self, currentTapID == tap.id else { return }
+            inFlight = nil
+            apply(outcome)
+        }
+    }
+}
+
 /// Installs a surface as the host for `matron://item/<n>` links: the
-/// environment action every rendered body reads, the tap → `open` hop, and
-/// the tracker alert the resolver's miss paths surface.
+/// environment action every rendered body reads, the tap → `resolve` hop,
+/// the staleness gate, and the tracker alert the resolver's miss paths
+/// surface.
 ///
 /// Apply this ONCE, on the host container — not per child. Re-applying it
 /// down the tree pushes a fresh environment value under each subtree for no
@@ -182,14 +251,24 @@ extension EnvironmentValues {
 /// where the link was tapped" behaviour.
 private struct TrackerItemLinksModifier: ViewModifier {
     let relay: TrackerItemLinkRelay
-    let open: (Int) async -> Void
+    let resolve: (Int) async -> TrackerItemLinkOutcome
+    let open: (String) -> Void
+    /// One gate per host, for the host's lifetime — it is what remembers
+    /// which tap is current across resolves.
+    @State private var gate = TrackerItemLinkTapGate()
 
     func body(content: Content) -> some View {
         content
             .environment(\.openTrackerItem, relay.action)
             .onChange(of: relay.pending) { _, tap in
                 guard let tap else { return }
-                Task { @MainActor in await open(tap.num) }
+                gate.begin(tap, resolve: resolve) { outcome in
+                    switch outcome {
+                    case .open(let itemID): open(itemID)
+                    case .explain(let message): relay.alert = message
+                    case .ignore: break
+                    }
+                }
             }
             // Same chrome as every other tracker error (`ItemsPanelViewModel.error`).
             .alert("Tracker", isPresented: Binding(
@@ -203,11 +282,18 @@ private struct TrackerItemLinksModifier: ViewModifier {
 }
 
 extension View {
-    /// See `TrackerItemLinksModifier`. `open` receives the tapped NUMBER and
-    /// is responsible for resolving it (`TrackerItemLinkResolver`) and either
-    /// navigating or setting `relay.alert`.
+    /// See `TrackerItemLinksModifier`. `resolve` receives the tapped NUMBER
+    /// and answers what should happen (typically by mapping
+    /// `TrackerItemLinkResolver.Resolution`); `open` performs the host's
+    /// navigation for a resolved item id.
+    ///
+    /// Split in two on purpose (item #115, fix round 5): the async half can
+    /// be superseded by a newer tap, the synchronous half cannot run unless
+    /// its tap is still the current one. A host that navigated inside its
+    /// own async closure would be back to racing itself.
     public func trackerItemLinks(_ relay: TrackerItemLinkRelay,
-                                 open: @escaping (Int) async -> Void) -> some View {
-        modifier(TrackerItemLinksModifier(relay: relay, open: open))
+                                 resolve: @escaping (Int) async -> TrackerItemLinkOutcome,
+                                 open: @escaping (String) -> Void) -> some View {
+        modifier(TrackerItemLinksModifier(relay: relay, resolve: resolve, open: open))
     }
 }
