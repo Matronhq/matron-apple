@@ -66,10 +66,19 @@ final class MatronItemLinkTests: XCTestCase {
                        .system(url("https://matron.chat")))
         XCTAssertEqual(MatronItemLink.action(for: url("mxc://server/abc")), .swallow)
         XCTAssertEqual(MatronItemLink.action(for: url("matrix://room/abc")), .swallow)
-        // A `matron://` URL that is NOT an item link keeps the pre-existing
-        // default policy (unknown scheme → the system's own error sheet).
-        XCTAssertEqual(MatronItemLink.action(for: url("matron://item/abc")),
-                       .system(url("matron://item/abc")))
+    }
+
+    /// No `matron://` URL may ever reach the OS: the scheme is registered
+    /// with nothing, so the system answers with a "no application can open
+    /// this URL" sheet. Malformed item links and linkified pairing URLs are
+    /// swallowed, not passed on.
+    func test_action_swallowsEveryMatronURL() {
+        for string in ["matron://item/abc", "matron://item/", "matron://item/65/extra",
+                       "matron://items/65", "matron://link/abc", "matron://rlink/abc",
+                       "MATRON://whatever"] {
+            XCTAssertEqual(MatronItemLink.action(for: url(string)), .swallow,
+                           "\(string) must be swallowed, never handed to the OS")
+        }
     }
 
     // MARK: - MarkdownText (iOS message bodies + non-timeline Mac contexts)
@@ -86,6 +95,17 @@ final class MatronItemLinkTests: XCTestCase {
         for string in ["https://matron.chat", "mxc://server/abc", "matron://item/abc"] {
             _ = MarkdownText.handle(url: url(string), openItem: handler)
         }
+        XCTAssertTrue(opened.isEmpty)
+    }
+
+    /// `.systemAction` on a `matron://` URL is the bug this guards: SwiftUI
+    /// would hand it to `UIApplication`/`NSWorkspace`, which has no handler
+    /// for the scheme. `OpenURLAction.Result` isn't `Equatable`, so the
+    /// policy itself is pinned in `test_action_swallowsEveryMatronURL` and
+    /// this pins that `handle` asks that policy rather than the raw scheme.
+    func test_handle_malformedItemLink_doesNotReachTheItemHandler() {
+        var opened: [Int] = []
+        _ = MarkdownText.handle(url: url("matron://link/abc"), openItem: { opened.append($0) })
         XCTAssertTrue(opened.isEmpty)
     }
 

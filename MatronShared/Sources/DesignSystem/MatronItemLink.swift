@@ -55,10 +55,17 @@ public enum MatronItemLink {
     }
 
     /// Message-body link policy. `matron://item/<n>` first; then the
-    /// pre-existing scheme policy, unchanged.
+    /// pre-existing scheme policy, unchanged apart from `matron` itself.
     public static func action(for url: URL) -> Action {
         if let number = itemNumber(from: url) { return .openTrackerItem(number) }
         switch url.scheme?.lowercased() {
+        case "matron":
+            // A `matron` URL we don't understand — a malformed item link, or
+            // a pairing `matron://link` / `matron://rlink` that got
+            // linkified. The scheme is registered with NOTHING, so handing
+            // it to the OS earns the user a "no application can open this
+            // URL" sheet: swallow instead.
+            return .swallow
         case "matrix", "mxc":
             // Swallowed until permalink / content-URI handling lands.
             return .swallow

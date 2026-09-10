@@ -573,15 +573,18 @@ enum MarkdownAttributed {
         }
 
         if let link {
-            // Mirror `MarkdownText.handle(url:)`'s policy: matrix-internal
-            // schemes never become clickable links (there's no in-app handler
-            // yet), so they render as plain accent text with no `.link`
-            // attribute. Everything else gets an accent-coloured, underlined,
-            // clickable link.
-            switch link.scheme?.lowercased() {
-            case "matrix", "mxc":
+            // Mirror `MarkdownText.handle(url:)`'s policy, via the same
+            // `MatronItemLink.action(for:)` both renderers share: a URL that
+            // gets swallowed (matrix-internal, and any `matron://` that
+            // isn't an item link) never becomes a clickable link — it would
+            // do nothing under the cursor — so it renders as plain accent
+            // text with no `.link` attribute. Everything the app CAN act on
+            // — `matron://item/<n>` and ordinary web links — gets an
+            // accent-coloured, underlined, clickable link.
+            switch MatronItemLink.action(for: link) {
+            case .swallow:
                 attrs[.foregroundColor] = NSColor.controlAccentColor
-            default:
+            case .openTrackerItem, .system:
                 attrs[.link] = link
                 attrs[.foregroundColor] = NSColor.controlAccentColor
                 attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue

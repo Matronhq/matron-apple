@@ -59,7 +59,13 @@ struct CoordinatorTabView: View {
                                        // stack's root: pop to it rather than
                                        // stack a second copy (Bugbot, PR #197).
                                        if target == convoID { path = [] } else { path.append(target) }
-                                   })
+                                   },
+                                   // An item link inside a body/comment
+                                   // pushes onto this same stack (item
+                                   // #115). No list fallback here: below
+                                   // this sits the coordinator chat, whose
+                                   // tracker is a page inside it.
+                                   onOpenItem: { path.append(ItemRoute(id: $0).pathValue) })
                 } else {
                     ChatDestinationView(id: value, summary: summary(for: value), vmCache: vmCache)
                 }

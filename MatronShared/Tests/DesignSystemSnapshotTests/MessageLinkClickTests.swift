@@ -58,6 +58,23 @@ final class MessageLinkClickTests: XCTestCase {
         XCTAssertTrue(items().isEmpty)
     }
 
+    /// Defense in depth: even if a non-item `matron://` URL somehow carried
+    /// a `.link` attribute, the click must not reach `NSWorkspace`.
+    func test_nonItemMatronLink_isSwallowed() {
+        let (coordinator, externals, items) = makeCoordinator()
+        XCTAssertTrue(click(coordinator, URL(string: "matron://link/abc")!))
+        XCTAssertTrue(externals().isEmpty, "matron:// is registered with nothing")
+        XCTAssertTrue(items().isEmpty)
+    }
+
+    /// …and it doesn't get rendered as a clickable link in the first place.
+    func test_nonItemMatronLinkRendersUnclickable() {
+        let attributed = MarkdownAttributed.attributedString(for: "See [pair](matron://link/abc) now.")
+        let range = (attributed.string as NSString).range(of: "pair")
+        XCTAssertNotEqual(range.location, NSNotFound)
+        XCTAssertNil(attributed.attributes(at: range.location, effectiveRange: nil)[.link])
+    }
+
     func test_matrixLink_isStillSwallowed() {
         let (coordinator, externals, items) = makeCoordinator()
         XCTAssertTrue(click(coordinator, URL(string: "mxc://server/abc")!))

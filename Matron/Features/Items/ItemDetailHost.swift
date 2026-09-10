@@ -21,6 +21,15 @@ struct ItemDetailHost: View {
     /// (spec §1): with `nil` every origin link is shown.
     let currentConvoID: String?
     let onOpenConversation: (String) -> Void
+    /// Opens ANOTHER tracker item — a `[#12](matron://item/12)` link inside
+    /// this item's body or one of its comments (item #115) — in the same
+    /// container this host lives in, so "back" still means what it meant.
+    /// `nil` leaves item links inert (never handed to the OS either way).
+    var onOpenItem: ((String) -> Void)? = nil
+    /// This surface's item LIST, for a number this device has never synced.
+    /// `nil` where the surface has none to fall back to — an item pushed
+    /// over a chat has the chat below it, not a list.
+    var onOpenItemsList: (() -> Void)? = nil
 
     @Environment(\.appDependencies) private var deps
     @Environment(\.openURL) private var openURL
@@ -59,6 +68,36 @@ struct ItemDetailHost: View {
     /// (`ItemDetailView.onBottomVisibilityChange`), persisted to
     /// `ItemReadMemory` in `.onDisappear`.
     @State private var isAtBottom = false
+    /// `[#12](matron://item/12)` taps inside the body or a comment. Stable
+    /// closure identity for the environment; navigation happens in the
+    /// `onChange` below (see `TrackerItemLinkRelay`).
+    @State private var itemLinkRelay = TrackerItemLinkRelay()
+
+    /// A tapped `matron://item/<n>` link in this item's body or a comment.
+    /// Same rule as the chat timeline: known number → that item, in this
+    /// same container; unknown → this surface's list, where it has one.
+    private func openTrackerItem(num: Int) {
+        guard let deps else { return }
+        guard let item = try? deps.journalStore(for: session).item(num: num) else {
+            onOpenItemsList?()
+            return
+        }
+        // A link to the item already on screen is a no-op rather than a
+        // second identical push.
+        guard item.id != itemID else { return }
+        onOpenItem?(item.id)
+    }
+
+    /// A tapped link chip (`item.links`). Routed through the same policy as
+    /// message bodies so an item link works here too — and so no `matron://`
+    /// URL is ever handed to the OS, which has no handler for the scheme.
+    private func openLink(_ url: URL) {
+        switch MatronItemLink.action(for: url) {
+        case .openTrackerItem(let number): openTrackerItem(num: number)
+        case .swallow: break
+        case .system(let url): openURL(url)
+        }
+    }
 
     private enum AttachmentPreview: Identifiable {
         case image(id: UUID = UUID(), ImageGallery)
@@ -99,7 +138,7 @@ struct ItemDetailHost: View {
                     draft: Binding(get: { vm.draft }, set: { vm.draft = $0 }),
                     image: { imageCache[$0.blobRef] },
                     onOpenAttachment: { open($0) },
-                    onOpenLink: { openURL($0) },
+                    onOpenLink: { openLink($0) },
                     onOpenConversation: onOpenConversation,
                     onSubmit: { Task { await vm.submitComment(attachments: []) } },
                     onAttach: { showAttachChooser = true },
@@ -136,6 +175,12 @@ struct ItemDetailHost: View {
         // Mirrors `AttachmentPicker`'s chooser — the paperclip previously
         // jumped straight to `showPhotosPicker`, which left the file-import
         // flow unreachable from the comment composer entirely (Bugbot).
+        // Item links inside the body / comments (item #115).
+        .environment(\.openTrackerItem, itemLinkRelay.action)
+        .onChange(of: itemLinkRelay.pending) { _, tap in
+            guard let tap else { return }
+            openTrackerItem(num: tap.num)
+        }
         .confirmationDialog("Attach", isPresented: $showAttachChooser) {
             Button("Photo Library") { showPhotosPicker = true }
             Button("Choose File…") { showFileImporter = true }

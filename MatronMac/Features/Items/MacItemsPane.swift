@@ -236,6 +236,10 @@ struct MacItemDetailHost: View {
     let state: MacItemsPaneState
     let onOpenConversation: (String) -> Void
     @Environment(\.appDependencies) private var deps
+    /// Installed by whichever surface hosts this pane — `MacChatView` (the
+    /// items pane) or `MacChatListView` (Decisions). Item links in a link
+    /// chip route through it just like the ones in the body do (#115).
+    @Environment(\.openTrackerItem) private var openTrackerItem
     /// Hover state for the "Drop here to add" overlay while a drag is over
     /// the detail pane — mirrors `MacChatView.isDropTargeted`, but scoped
     /// to this host (no stuck-overlay watchdog: `ComposerDropDelegate`'s
@@ -249,6 +253,17 @@ struct MacItemDetailHost: View {
     struct GalleryPreview: Identifiable {
         let id = UUID()
         let gallery: ImageGallery
+    }
+
+    /// A tapped link chip (`item.links`). Routed through the same policy as
+    /// message bodies so an item link works here too — and so no `matron://`
+    /// URL reaches `NSWorkspace`, which has no handler for the scheme.
+    private func openLink(_ url: URL) {
+        switch MatronItemLink.action(for: url) {
+        case .openTrackerItem(let number): openTrackerItem?(number)
+        case .swallow: break
+        case .system(let url): NSWorkspace.shared.open(url)
+        }
     }
 
     private var viewModel: ItemDetailViewModel? { state.detailViewModel }
@@ -283,7 +298,7 @@ struct MacItemDetailHost: View {
                         draft: Binding(get: { viewModel.draft }, set: { viewModel.draft = $0 }),
                         image: { state.detailImages[$0.blobRef] },
                         onOpenAttachment: { openAttachment($0, in: item) },
-                        onOpenLink: { NSWorkspace.shared.open($0) },
+                        onOpenLink: { openLink($0) },
                         onOpenConversation: onOpenConversation,
                         onSubmit: { Task { await viewModel.submitComment(attachments: []) } },
                         // Fix wave part 2, item B: attach must post an

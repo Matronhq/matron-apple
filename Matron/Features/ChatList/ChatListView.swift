@@ -428,6 +428,13 @@ struct ChatListView: View {
                            onOpenConversation: { convoID in
                                guard convoID != current else { return }
                                chatNavigationPath?.wrappedValue.append(convoID)
+                           },
+                           // An item link inside a body/comment rides the
+                           // same stack as this item did (item #115). No
+                           // list fallback: what sits below here is the
+                           // chat, and its tracker is a page INSIDE it.
+                           onOpenItem: { itemID in
+                               chatNavigationPath?.wrappedValue.append(ItemRoute(id: itemID).pathValue)
                            })
         } else {
             ContentUnavailableView("Session unavailable", systemImage: "exclamationmark.triangle",
