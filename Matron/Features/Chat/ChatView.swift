@@ -254,6 +254,12 @@ struct ChatView: View {
         Self.pushItem(itemID, onto: navigationPath)
     }
 
+    /// A tapped milestone card opens its mission on whichever stack this
+    /// chat is mounted in — the same rule `openItem` follows.
+    private func openMission(_ missionID: String) {
+        Self.pushMission(missionID, onto: navigationPath)
+    }
+
     /// A tapped `matron://item/<n>` link in a message body, resolved by the
     /// shared `TrackerItemLinkResolver` (one local lookup, one
     /// `refresh(scope: .all)` retry). A known item opens exactly where an
@@ -527,6 +533,7 @@ struct ChatView: View {
                         onOpenSubChat: nil,
                         onOpenSpawnRoom: openSpawnedRoom,
                         onOpenItem: openItem,
+                        onOpenMission: openMission,
                         onPreview: { attachmentPreview = $0 },
                         onTapImage: { url, img in
                             attachmentPreview = .image(ImageGalleries.conversation(
@@ -1350,6 +1357,11 @@ private struct TimelineListContent: View, Equatable {
     /// Fixed per screen like `onOpenSpawnRoom`, so `==` ignoring it is
     /// safe; `nil` where the screen has no items pane (sub-chat panes).
     let onOpenItem: ((String) -> Void)?
+    /// Opens the mission page to a tapped `.milestoneMarker` /
+    /// `.missionMarker`. Fixed per screen like `onOpenItem`, so `==`
+    /// ignoring it is safe; `nil` where the screen has no mission page
+    /// (sub-chat panes).
+    let onOpenMission: ((String) -> Void)?
     let onPreview: (ChatView.AttachmentPreview) -> Void
     /// Image tap → the screen builds the conversation gallery ONCE here,
     /// at tap time, and stores it in the preview payload. Building it in
@@ -1416,6 +1428,7 @@ private struct TimelineListContent: View, Equatable {
                     onOpenSubChat: onOpenSubChat,
                     onOpenSpawnRoom: onOpenSpawnRoom,
                     onOpenItem: onOpenItem,
+                    onOpenMission: onOpenMission,
                     onPreview: onPreview,
                     onTapImage: onTapImage
                 )
@@ -1457,6 +1470,10 @@ private struct TimelineRowView: View, Equatable {
     /// Opens the tracker item pane to a tapped `.itemMarker`'s item. Fixed
     /// per screen like `onOpenSpawnRoom`, so `==` ignoring it is safe.
     let onOpenItem: ((String) -> Void)?
+    /// Opens the mission page to a tapped `.milestoneMarker` /
+    /// `.missionMarker`. Fixed per screen like `onOpenSpawnRoom`, so `==`
+    /// ignoring it is safe.
+    let onOpenMission: ((String) -> Void)?
     let onPreview: (ChatView.AttachmentPreview) -> Void
     /// Image tap → the screen builds the conversation gallery ONCE here,
     /// at tap time, and stores it in the preview payload. Building it in
@@ -1535,6 +1552,7 @@ private struct TimelineRowView: View, Equatable {
                     },
                     onOpenSpawnRoom: onOpenSpawnRoom,
                     onOpenItem: onOpenItem,
+                    onOpenMission: onOpenMission,
                     convoID: viewModel.roomID,
                     hasMultipleSenders: viewModel.hasMultipleSenders
                 )
@@ -1693,6 +1711,7 @@ struct SubChatView: View {
                             // tap just does nothing). Same scope decision
                             // as the Mac twin's `MacSubChatPane`.
                             onOpenItem: nil,
+                            onOpenMission: nil,
                             onPreview: { attachmentPreview = $0 },
                             onTapImage: { url, img in
                                 attachmentPreview = .image(ImageGalleries.conversation(

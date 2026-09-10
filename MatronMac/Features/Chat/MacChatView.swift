@@ -366,6 +366,10 @@ struct MacChatView: View {
     /// (previews, tests) omits the affordance rather than drawing it dead.
     var onOpenConversation: ((String) -> Void)? = nil
 
+    /// Set by `MacChatListView` — opens the mission page in the detail
+    /// column. `nil` in previews and tests leaves the cards inert.
+    var onOpenMission: ((String) -> Void)? = nil
+
     /// Minimum detail width to show the child sub-chat pane BESIDE the
     /// parent timeline. Below this the child pane takes over the whole
     /// detail area with a back chevron (spec §5). Floor is 800 — the sum of
@@ -690,6 +694,7 @@ struct MacChatView: View {
                             showItemsPane = true
                             itemsPaneState.path = [id]
                         },
+                        onOpenMission: onOpenMission,
                         onPreviewImage: { url, img in
                             imagePreview = ImagePreview(gallery: ImageGalleries.conversation(
                                 tapped: url, image: img, chatViewModel: viewModel,
@@ -1191,6 +1196,11 @@ private struct MacTimelineListContent: View, Equatable {
     /// screen like `onOpenSpawnRoom`, so `==` ignoring it is safe; `nil`
     /// where the screen has no items pane (sub-chat panes).
     let onOpenItem: ((String) -> Void)?
+    /// Opens the mission page to a tapped `.milestoneMarker` /
+    /// `.missionMarker`. Fixed per screen like `onOpenSpawnRoom`, so `==`
+    /// ignoring it is safe; `nil` where the screen has no mission page
+    /// (sub-chat panes).
+    let onOpenMission: ((String) -> Void)?
     /// Carries the tapped image's `mxc://` URL alongside the resolved
     /// `Image` so the presenter can look up its native pixel size.
     let onPreviewImage: (URL, Image) -> Void
@@ -1247,6 +1257,7 @@ private struct MacTimelineListContent: View, Equatable {
                     onOpenSubChat: onOpenSubChat,
                     onOpenSpawnRoom: onOpenSpawnRoom,
                     onOpenItem: onOpenItem,
+                    onOpenMission: onOpenMission,
                     onPreviewImage: onPreviewImage
                 )
                 .equatable()
@@ -1291,6 +1302,10 @@ private struct MacTimelineRowView: View, Equatable {
     /// Opens the items pane to a tapped `.itemMarker`'s item. Fixed per
     /// screen like `onOpenSpawnRoom`, so `==` ignoring it is safe.
     let onOpenItem: ((String) -> Void)?
+    /// Opens the mission page to a tapped `.milestoneMarker` /
+    /// `.missionMarker`. Fixed per screen like `onOpenSpawnRoom`, so `==`
+    /// ignoring it is safe.
+    let onOpenMission: ((String) -> Void)?
     let onPreviewImage: (URL, Image) -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -1366,6 +1381,7 @@ private struct MacTimelineRowView: View, Equatable {
                     },
                     onOpenSpawnRoom: onOpenSpawnRoom,
                     onOpenItem: onOpenItem,
+                    onOpenMission: onOpenMission,
                     convoID: viewModel.roomID,
                     hasMultipleSenders: viewModel.hasMultipleSenders
                 )
@@ -1522,6 +1538,7 @@ struct MacSubChatPane: View {
                             // the iOS twin's identical decision for
                             // `SubChatView`.
                             onOpenItem: nil,
+                            onOpenMission: nil,
                             onPreviewImage: { url, img in
                                 imagePreview = MacSubChatImagePreview(gallery: ImageGalleries.conversation(
                                     tapped: url, image: img, chatViewModel: viewModel,
