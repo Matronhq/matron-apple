@@ -38,4 +38,28 @@ final class MacMissionsNavTests: XCTestCase {
                        [.coordinator, .decisions, .conversations],
                        "an old journal hides the Missions entry entirely")
     }
+
+    /// A sidebar pick carries no originating conversation, so any
+    /// "back to the conversation" affordance left by an earlier title-tap
+    /// open must not survive it (Bugbot: `pickMission` used to leave
+    /// `missionBackConvoID` untouched).
+    func testMissionBackConvoIDClearsOnSidebarPickAndCarriesOnTitleTap() {
+        XCTAssertNil(MacChatListView.missionBackConvoID(for: .sidebarPick))
+        XCTAssertEqual(MacChatListView.missionBackConvoID(for: .titleTap(fromConvoID: "c1")), "c1")
+        XCTAssertNil(MacChatListView.missionBackConvoID(for: .titleTap(fromConvoID: nil)))
+    }
+
+    /// A title tap from the coordinator chat, a mission page's back
+    /// button, a milestone jump into the coordinator room, and "Open
+    /// conversation" for that room all fold through `showConversation` —
+    /// pinning `navForShowingConversation` covers all four call paths
+    /// Bugbot listed at once (the coordinator entry must stay selected,
+    /// mirroring iOS's `AppShellNavigation.openChat`).
+    func testNavForShowingConversationKeepsTheCoordinatorEntryForItsOwnRoom() {
+        XCTAssertEqual(MacChatListView.navForShowingConversation("c-coord", coordinatorConvoID: "c-coord"), .coordinator)
+        XCTAssertEqual(MacChatListView.navForShowingConversation("c-other", coordinatorConvoID: "c-coord"), .conversations)
+        XCTAssertEqual(MacChatListView.navForShowingConversation("c-coord", coordinatorConvoID: nil), .conversations)
+        XCTAssertEqual(MacChatListView.navForShowingConversation("c-coord", coordinatorConvoID: ""), .conversations,
+                       "an empty stored value is no coordinator, same as CoordinatorTabView.root(for:)")
+    }
 }

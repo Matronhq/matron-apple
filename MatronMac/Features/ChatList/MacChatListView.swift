@@ -712,9 +712,36 @@ struct MacChatListView: View {
     @ViewBuilder
     private var missionsColumn: some View {
         if let missionsVM {
-            MacMissionsColumn(viewModel: missionsVM, onSelect: { selectedMissionID = $0 })
+            MacMissionsColumn(viewModel: missionsVM, onSelect: { pickMission($0) })
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    /// A sidebar row pick, as opposed to `showMission(_:from:)`'s
+    /// title-tap open: no originating conversation, so any "back to the
+    /// conversation" affordance a PREVIOUS title-tap open left behind must
+    /// clear here too — `navChanged` only clears it on leaving the
+    /// Missions entry entirely, not on picking a different mission while
+    /// already in it (Bugbot).
+    private func pickMission(_ missionID: String) {
+        missionBackConvoID = Self.missionBackConvoID(for: .sidebarPick)
+        selectedMissionID = missionID
+    }
+
+    /// How a mission page was opened — a sidebar row carries no
+    /// originating conversation; a title tap remembers the one it came
+    /// from. Backs `missionBackConvoID(for:)`, a pure helper so
+    /// `MacMissionsNavTests` can pin the rule without needing live view
+    /// state (`missionBackConvoID` itself is private `@State`).
+    enum MissionOpenSource { case sidebarPick; case titleTap(fromConvoID: String?) }
+
+    /// The back-button conversation id to store for a mission opened via
+    /// `source`.
+    static func missionBackConvoID(for source: MissionOpenSource) -> String? {
+        switch source {
+        case .sidebarPick: return nil
+        case .titleTap(let convoID): return convoID
         }
     }
 
@@ -739,7 +766,7 @@ struct MacChatListView: View {
     /// The mission page for `missionID`, remembering the conversation it was
     /// opened from so the page can offer a way back.
     private func showMission(_ missionID: String, from convoID: String?) {
-        missionBackConvoID = convoID
+        missionBackConvoID = Self.missionBackConvoID(for: .titleTap(fromConvoID: convoID))
         selectedMissionID = missionID
         nav = .missions
     }
@@ -771,8 +798,35 @@ struct MacChatListView: View {
         decisionsPaneState.cancelRecording()
     }
 
+    /// Every path that lands here — a title tap from the coordinator chat
+    /// (via `showMission`'s `onBack`), a mission page's "back to the
+    /// conversation", a milestone jump into the coordinator room
+    /// (`openMilestone`), and "Open conversation" for that room — must
+    /// keep the Coordinator entry selected rather than open the same chat
+    /// under Conversations, mirroring iOS's `AppShellNavigation.openChat`
+    /// coordinator special-case (Bugbot).
+    /// Whether landing on `convoID` should select the Coordinator nav
+    /// entry instead of Conversations — true exactly when it names the
+    /// coordinator's own conversation, mirroring iOS's
+    /// `AppShellNavigation.openChat` coordinator special-case. A pure
+    /// helper so `MacMissionsNavTests` can pin it without live view state
+    /// (`showConversation` itself is private).
+    static func navForShowingConversation(_ convoID: String, coordinatorConvoID: String?) -> MacNav {
+        if let coordinatorConvoID, !coordinatorConvoID.isEmpty, convoID == coordinatorConvoID {
+            return .coordinator
+        }
+        return .conversations
+    }
+
     private func showConversation(_ convoID: String) {
-        nav = .conversations
+        let target = Self.navForShowingConversation(convoID, coordinatorConvoID: coordinatorConvoID)
+        nav = target
+        // The coordinator's own conversation is shown at its fixed nav
+        // entry (`detailContent`'s `.coordinator` case reads
+        // `coordinatorConvoID` directly) — never route it through
+        // Conversations, or through a `selectedSummaryID` assignment that
+        // would leave that entry pointed at it too.
+        guard target != .coordinator else { return }
         // A same-id assignment never runs `handleSelectionChange`, so the
         // search results panel would stay over the chat (Bugbot, PR #195).
         if searchQueryIsEmpty == false { searchModel?.query = "" }
