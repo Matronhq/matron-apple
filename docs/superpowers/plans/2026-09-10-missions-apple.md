@@ -689,7 +689,7 @@ git -c user.name="Dan Barker" -c user.email=dan@yearbookmachine.com commit -m "m
 
 **Interfaces:**
 - Consumes: `Mission`, `Milestone`, `MissionConversation`, `TrackerItem.missionID` (Task 1).
-- Produces on `JournalStore`: `upsertMissions(_:)`, `missions(state:)`, `missionsStream(state:)`, `mission(id:)`, `mission(num:)`, `missionStream(id:)`, `replaceMilestones(missionID:_:)`, `milestones(missionID:)`, `milestonesStream(missionID:)`, `milestones(convoID:)`, `replaceMissionConversations(missionID:_:)`, `missionConversations(missionID:)`, `missionConversationsStream(missionID:)`, `missionID(convoID:)`, `missionIDStream(convoID:)`, `items(missionID:)`, `itemsStream(missionID:)`, `missionsWatermark()`, `setMissionsWatermark(_:)`, `wipeMissions()`. Record types `MissionRecord`, `MilestoneRecord`, `MissionConversationRecord`.
+- Produces on `JournalStore`: `upsertMissions(_:)`, `missions(state:)`, `missionsStream(state:)`, `mission(id:)`, `mission(num:)`, `missionStream(id:)`, `replaceMilestones(missionID:_:)`, `milestones(missionID:)`, `milestonesStream(missionID:)`, `milestones(convoID:)`, `replaceMissionConversations(missionID:_:)`, `missionConversations(missionID:)`, `missionConversationsStream(missionID:)`, `missionID(convoID:)`, `missionIDStream(convoID:)`, `items(missionID:)`, `itemsStream(missionID:)`, `missionsWatermark()`, `setMissionsWatermark(_:)`, `wipeMissions()`, `static wipeMissionTables(_:)` (the one SQL site for clearing the cache, shared with `wipe()`). Record types `MissionRecord`, `MilestoneRecord`, `MissionConversationRecord`.
 
 **`missionID(convoID:)` is derived locally.** `GET /snapshot` does not carry `conversations.mission_id`, so there is no column to mirror. A conversation's mission is whichever local mission it is the origin of, else the mission of any milestone posted in it. Both facts arrive with the missions fetch, so the answer is empty until the first `MissionsSync.refresh()` lands — which is exactly when the title-tap affordance should appear.
 
@@ -951,13 +951,15 @@ In `MatronShared/Sources/Journal/JournalStore.swift`, immediately after the `v9`
         }
 ```
 
-In `wipe()`, extend the tracker-cache line (the same transaction, for the same nested-write reason its comment gives):
+In `wipe()`, extend the tracker-cache line (the same transaction, for the same nested-write reason its comment gives). The table list itself lives in exactly one place — `JournalStore.wipeMissionTables(_:)`, written with the rest of the mission store in step 4 — so `wipe()` and `wipeMissions()` cannot come to clear different sets of tables:
 
 ```swift
             try db.execute(sql: "DELETE FROM item; DELETE FROM item_comment;")
             // Mission cache — same rule as the tracker cache above: cleared
-            // inline so a fresh bootstrap refetches it from GET /missions.
-            try db.execute(sql: "DELETE FROM mission; DELETE FROM milestone; DELETE FROM mission_conversation;")
+            // inline, because this method is already inside `dbQueue.write`
+            // and cannot nest another. One bootstrap later, `GET /missions`
+            // refills it.
+            try Self.wipeMissionTables(db)
 ```
 
 (`wipe()` already does `DELETE FROM meta`, which clears the missions watermark key with it.)
@@ -1235,12 +1237,22 @@ extension JournalStore {
     }
 
     /// Sign-out clear for the mission cache alone. `wipe()` clears the same
-    /// tables inline (it cannot nest another `dbQueue.write`).
+    /// tables inline (it cannot nest another `dbQueue.write`) — both go
+    /// through `wipeMissionTables`, so "the mission cache" is defined once.
     public func wipeMissions() throws {
         try dbQueue.write { db in
-            try db.execute(sql: "DELETE FROM mission; DELETE FROM milestone; DELETE FROM mission_conversation;")
+            try Self.wipeMissionTables(db)
             try db.execute(sql: "DELETE FROM meta WHERE key = ?", arguments: [missionsWatermarkKey])
         }
+    }
+
+    /// The mission cache's three tables, cleared inside a transaction the
+    /// caller already owns. `JournalStore.wipe()` calls it from the middle
+    /// of its own `dbQueue.write`; `wipeMissions()` opens one of its own.
+    /// Internal (same module as `wipe()`), and `static` so neither caller
+    /// needs an instance hop mid-transaction.
+    static func wipeMissionTables(_ db: Database) throws {
+        try db.execute(sql: "DELETE FROM mission; DELETE FROM milestone; DELETE FROM mission_conversation;")
     }
 }
 ```
@@ -1327,7 +1339,7 @@ git -c user.name="Dan Barker" -c user.email=dan@yearbookmachine.com commit -m "m
 
 - [ ] **Step 1: Write the failing test**
 
-Create `MatronShared/Tests/JournalTests/MissionsAPITests.swift`. It uses the same `URLProtocol` stub the existing `ItemsAPITests` use — read that file first and reuse its `stub(...)` helper verbatim; the assertions below only depend on the request path/query and the decoded result.
+Create `MatronShared/Tests/JournalTests/MissionsAPITests.swift`. Where a test needs a stubbed server, copy `ItemsAPITests`' own `makeStubbedAPI(status:body:)` helper (and the `ItemsStubURLProtocol` it drives) rather than inventing a second one — read that file first. The assertions below only depend on the request path/query and the decoded result.
 
 ```swift
 import XCTest
@@ -1995,7 +2007,7 @@ public actor MissionsSync {
 
 - [ ] **Step 5: Wire it into both `AppDependencies`**
 
-Apply the same three edits to `Matron/App/AppDependencies.swift` and `MatronMac/App/AppDependencies.swift` (the two files mirror each other):
+Apply the same three edits to `Matron/App/AppDependencies.swift` and `MatronMac/App/AppDependencies.swift` (the two files mirror each other). The duplication is deliberate: these two files already carry the identical `ItemsSync` wiring — property, construction, teardown — and matching the shipped pattern beats hoisting one of the five parallel blocks into `MatronShared` as a side-effect of this plan.
 
 In `final class JournalCore`, beside `items`:
 
@@ -2060,12 +2072,18 @@ git -c user.name="Dan Barker" -c user.email=dan@yearbookmachine.com commit -m "m
 **Files:**
 - Create: `MatronShared/Sources/ViewModels/MissionsListViewModel.swift`
 - Create: `MatronShared/Sources/ViewModels/MissionDetailViewModel.swift`
+- Create: `MatronShared/Sources/DesignSystem/SessionTagInputs.swift`
+- Modify: `MatronShared/Package.swift` (`MatronViewModels` and the `ViewModelTests` target gain `MatronDesignSystem`)
 - Modify: `Matron/App/AppDependencies.swift`, `MatronMac/App/AppDependencies.swift` (factories)
 - Test: `MatronShared/Tests/ViewModelTests/MissionsViewModelTests.swift` (new)
 
 **Interfaces:**
 - Consumes: the store streams from Task 3, `MissionsSync` from Task 5.
-- Produces: `MissionsStoreReading` and `MissionsSyncing` protocols (so tests fake them, mirroring `ItemsStoreReading`/`ItemsSyncing`); `MissionsListViewModel` (`open`, `closed`, `isSupported`, `isRefreshing`, `error`, `needsYouTotal`, `start()`, `stop()`, `refresh()`, `static sections(from:)`); `MissionDetailViewModel` (`missionID`, `mission`, `milestones`, `showOnlyUserInput`, `openItems`, `conversations`, `closeSummaryDraft`, `isBusy`, `error`, `start()`, `stop()`, `refresh()`, `close()`, `static filtered(_:showOnlyUserInput:)`); factories `makeMissionsListViewModel(for:)` and `makeMissionDetailViewModel(for:missionID:)` on both `AppDependencies`.
+- Produces: `SessionTagInputs` (`boxLetter`, `boxName`, `sessionShort` — the three halves `SessionTagText.run` needs, carried as one value); `MissionsStoreReading` and `MissionsSyncing` protocols (so tests fake them, mirroring `ItemsStoreReading`/`ItemsSyncing`); `MissionsListViewModel` (`open`, `closed`, `isSupported`, `isRefreshing`, `error`, `needsYouTotal`, `start()`, `stop()`, `refresh()`, `static sections(from:)`); `MissionDetailViewModel` (`missionID`, `mission`, `milestones`, `sessionTags`, `showOnlyUserInput`, `openItems`, `conversations`, `closeSummaryDraft`, `closeConfirmation`, `isBusy`, `error`, `start()`, `stop()`, `refresh()`, `close()`, `static filtered(_:showOnlyUserInput:)`); factories `makeMissionsListViewModel(for:)` and `makeMissionDetailViewModel(for:missionID:)` on both `AppDependencies`.
+
+**Where the `A:bc` session tag comes from.** A mission page lists milestones posted in several conversations, so each row names its own — the same colored `A:bc` run the chat header and the chat rows draw (`SessionTagText.run(boxLetter:boxName:sessionShort:colorScheme:)`, a `Text` factory, not a view). None of those halves live on a `Milestone`: they are derived from the conversation's cached row plus the box roster. So the store surface grows one read, `sessionTag(convoID:)`, and the detail view model publishes `sessionTags` keyed by conversation id. A conversation this device has never synced simply has no entry — the row then renders with no tag, never a placeholder.
+
+**Layering note (why the view model publishes values, not a view `Model`).** `MissionDetailView.Model` is built in ONE place so the iOS and Mac pages cannot drift — but that place is a convenience `init` on the model itself (Task 7, `MissionDetailView.Model.init(mission:milestones:sessionTags:openItems:conversations:showOnlyUserInput:closeSummary:isBusy:)`), not a computed property on the view model. Two reasons, both structural: `MatronViewModels` is declared as a no-SwiftUI-views target and `MatronDesignSystem` must stay a leaf (a `detailModel` property would make the view model depend on the design system's view types), and this task runs BEFORE the task that defines `MissionDetailView`, so a property returning that type could not compile here. What this task does take on is the design-system dependency for `SessionTagInputs` alone — a plain value type, no views.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2073,6 +2091,7 @@ Create `MatronShared/Tests/ViewModelTests/MissionsViewModelTests.swift`:
 
 ```swift
 import XCTest
+import MatronDesignSystem
 import MatronModels
 import MatronJournal
 @testable import MatronViewModels
@@ -2097,11 +2116,16 @@ private final class FakeMissionsStore: MissionsStoreReading, @unchecked Sendable
         (conversationsStreamValue, conversationsContinuation) = AsyncStream<[MissionConversation]>.makeStream()
     }
 
+    /// The cached `A:bc` tags, by conversation id. A conversation missing
+    /// from this map is one this device never synced.
+    var tags: [String: SessionTagInputs] = [:]
+
     func missionsStream(state: MissionState?) -> AsyncStream<[Mission]> { missionsStreamValue }
     func missionStream(id: String) -> AsyncStream<Mission?> { missionStreamValue }
     func milestonesStream(missionID: String) -> AsyncStream<[Milestone]> { milestonesStreamValue }
     func itemsStream(missionID: String) -> AsyncStream<[TrackerItem]> { itemsStreamValue }
     func missionConversationsStream(missionID: String) -> AsyncStream<[MissionConversation]> { conversationsStreamValue }
+    func sessionTag(convoID: String) -> SessionTagInputs? { tags[convoID] }
 }
 
 private final class FakeMissionsSync: MissionsSyncing, @unchecked Sendable {
@@ -2120,7 +2144,7 @@ private final class FakeMissionsSync: MissionsSyncing, @unchecked Sendable {
     func closeMission(id: String, summary: String) async throws -> Mission {
         lock.withLock { _closes.append((id, summary)) }
         if let closeError { throw closeError }
-        return Mission(id: id, num: 61, state: .closed, title: "M61", originConvoID: "c1", closeSummary: summary)
+        return Mission(id: id, num: 61, state: .closed, title: "M61", closeSummary: summary, originConvoID: "c1")
     }
     func supportedStream() async -> AsyncStream<Bool> {
         let values = supported
@@ -2189,12 +2213,15 @@ final class MissionsViewModelTests: XCTestCase {
 
     func testDetailRefetchesOnStartAndPublishesEveryStream() async throws {
         let store = FakeMissionsStore(); let sync = FakeMissionsSync()
+        // `c9` is deliberately absent: a milestone posted in a conversation
+        // this device never synced must still render, just without a tag.
+        store.tags = ["c1": SessionTagInputs(boxLetter: "D", boxName: "dev-2", sessionShort: "bc")]
         let vm = MissionDetailViewModel(missionID: "ms_1", store: store, sync: sync)
         vm.start()
         store.missionContinuation.yield(mission("ms_1", num: 61, lastMilestoneAt: 10))
         store.milestonesContinuation.yield([
             Milestone(id: "ml_2", missionID: "ms_1", num: 63, kind: .userInput, title: "Dan said", convoID: "c1", seq: 20),
-            Milestone(id: "ml_1", missionID: "ms_1", num: 62, kind: .progress, title: "landed", convoID: "c1", seq: 10),
+            Milestone(id: "ml_1", missionID: "ms_1", num: 62, kind: .progress, title: "landed", convoID: "c9", seq: 10),
         ])
         store.itemsContinuation.yield([
             TrackerItem(id: "it_1", num: 64, kind: .question, awaiting: .user, title: "needs you", originConvoID: "c1"),
@@ -2206,6 +2233,9 @@ final class MissionsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.openItems.map(\.id), ["it_1"])
         XCTAssertEqual(vm.conversations.map(\.id), ["c1"])
         XCTAssertEqual(sync.refetches, ["ms_1"], "opening a page always refetches it")
+        XCTAssertEqual(vm.sessionTags["c1"]?.boxLetter, "D")
+        XCTAssertEqual(vm.sessionTags["c1"]?.sessionShort, "bc")
+        XCTAssertNil(vm.sessionTags["c9"], "an unsynced conversation carries no tag rather than an empty one")
         vm.showOnlyUserInput = true
         XCTAssertEqual(vm.milestones.map(\.id), ["ml_2"])
         vm.stop()
@@ -2270,11 +2300,52 @@ final class MissionsViewModelTests: XCTestCase {
 Run: `MATRON_SKIP_SNAPSHOT_TESTS=1 swift test --package-path MatronShared --filter MissionsViewModelTests`
 Expected: FAIL — `cannot find 'MissionsStoreReading' in scope`.
 
-- [ ] **Step 3: Write `MatronShared/Sources/ViewModels/MissionsListViewModel.swift`**
+- [ ] **Step 3: Add `SessionTagInputs`, the package dependency, and `MissionsListViewModel.swift`**
+
+First create `MatronShared/Sources/DesignSystem/SessionTagInputs.swift`. It sits beside `SessionTagText`, which is an `enum` of `Text` factories (`run(boxLetter:boxName:sessionShort:colorScheme:)`) with nowhere to hang a value:
+
+```swift
+import Foundation
+
+/// The three halves `SessionTagText.run` needs, carried as one value so a
+/// leaf view can draw a conversation's `A:bc` tag without reaching for a
+/// store. Any half may be missing: single-box users have no letter (the
+/// same gate `BoxChip` uses), and seed titles / pre-#224 conversations
+/// have no session short. A `nil` `SessionTagInputs` means "no tag at
+/// all" — never an empty placeholder.
+public struct SessionTagInputs: Equatable, Hashable, Sendable {
+    public var boxLetter: String?
+    public var boxName: String?
+    public var sessionShort: String?
+    public init(boxLetter: String?, boxName: String?, sessionShort: String?) {
+        self.boxLetter = boxLetter
+        self.boxName = boxName
+        self.sessionShort = sessionShort
+    }
+}
+```
+
+Then, in `MatronShared/Package.swift`, add `"MatronDesignSystem"` to the `MatronViewModels` target's dependency list — it is NOT there today, and the target's leading comment says "No SwiftUI Views here — only Foundation + service-layer dependencies", so extend that comment rather than contradicting it:
+
+```swift
+                // Missions (2026-09-10): `MissionDetailViewModel` publishes
+                // `SessionTagInputs` — the value `SessionTagText.run` takes
+                // — so a mission page's milestone rows can carry the same
+                // `A:bc` tag the chat header draws. Value types only; the
+                // rule above still holds, and `MatronDesignSystem` does not
+                // depend on this target, so there is no cycle.
+                "MatronDesignSystem",
+```
+
+Add `"MatronDesignSystem"` to the `ViewModelTests` test target's dependencies too, so the new test file can construct one.
+
+Then create `MatronShared/Sources/ViewModels/MissionsListViewModel.swift`:
 
 ```swift
 import Foundation
 import Observation
+import MatronChat
+import MatronDesignSystem
 import MatronModels
 import MatronJournal
 
@@ -2287,8 +2358,34 @@ public protocol MissionsStoreReading: Sendable {
     func milestonesStream(missionID: String) -> AsyncStream<[Milestone]>
     func itemsStream(missionID: String) -> AsyncStream<[TrackerItem]>
     func missionConversationsStream(missionID: String) -> AsyncStream<[MissionConversation]>
+    /// The `A:bc` tag halves for one conversation, or `nil` when this
+    /// device has no cached row for it (a milestone can name a
+    /// conversation that has never synced here — it renders untagged).
+    func sessionTag(convoID: String) -> SessionTagInputs?
 }
-extension JournalStore: MissionsStoreReading {}
+
+extension JournalStore: MissionsStoreReading {
+    /// Derived from three reads the store already has: the conversation row
+    /// (`conversation(id:)`), the box roster (`agentNames()`) and the
+    /// journal-held tag overrides (`agentTagChars()`). This is the same
+    /// derivation `JournalChatService.summary(from:boxNames:boxLetters:)`
+    /// runs for a chat-list row — restated here because that one is
+    /// internal to `MatronChat` — including its two gates: a box letter
+    /// only means something when the user has two or more boxes, and the
+    /// session short is peeled off the stored title by
+    /// `SessionTag.splitTitle`. Cheap enough to call on the main actor
+    /// (a handful of indexed row reads), like `conversationOriginLabels()`.
+    public func sessionTag(convoID: String) -> SessionTagInputs? {
+        guard let record = try? conversation(id: convoID) else { return nil }
+        let names = (try? agentNames()) ?? [:]
+        let letters = SessionTag.boxLetters(for: names, overrides: (try? agentTagChars()) ?? [:])
+        let boxName = names.count >= 2 ? record.agentDeviceID.flatMap { names[$0] } : nil
+        let boxLetter = boxName != nil ? record.agentDeviceID.flatMap { letters[$0] } : nil
+        let sessionShort = SessionTag.splitTitle(record.title).sessionShort
+        guard boxLetter != nil || sessionShort != nil else { return nil }
+        return SessionTagInputs(boxLetter: boxLetter, boxName: boxName, sessionShort: sessionShort)
+    }
+}
 
 /// The write/refresh surface, mirroring `ItemsSyncing`. `supportedStream` is
 /// `async` because `MissionsSync` is an actor and the method is isolated.
@@ -2388,6 +2485,7 @@ public final class MissionsListViewModel {
 ```swift
 import Foundation
 import Observation
+import MatronDesignSystem
 import MatronModels
 import MatronJournal
 
@@ -2406,6 +2504,12 @@ public final class MissionDetailViewModel {
     /// Open items in this mission, awaiting-you first (the store's order).
     public private(set) var openItems: [TrackerItem] = []
     public private(set) var conversations: [MissionConversation] = []
+    /// The `A:bc` tag halves for every conversation the milestones name,
+    /// keyed by conversation id — a mission spans several sessions, so each
+    /// row says which one it came from. A conversation this device has not
+    /// cached has no entry, and its rows render untagged (never a
+    /// placeholder). Rebuilt whenever the milestone list changes.
+    public private(set) var sessionTags: [String: SessionTagInputs] = [:]
     public var closeSummaryDraft = ""
     public private(set) var isBusy = false
     public var error: String?
@@ -2435,6 +2539,17 @@ public final class MissionDetailViewModel {
 
     private func applyFilter() { milestones = Self.filtered(allMilestones, showOnlyUserInput: showOnlyUserInput) }
 
+    /// One store read per DISTINCT conversation in the unfiltered list, so
+    /// toggling "My inputs only" costs nothing and a 40-milestone mission
+    /// posted in three sessions does three reads, not forty.
+    private func refreshSessionTags() {
+        var tags: [String: SessionTagInputs] = [:]
+        for convoID in Set(allMilestones.map(\.convoID)) {
+            if let tag = store.sessionTag(convoID: convoID) { tags[convoID] = tag }
+        }
+        sessionTags = tags
+    }
+
     public func start() {
         stop()
         let id = missionID
@@ -2448,6 +2563,7 @@ public final class MissionDetailViewModel {
                 guard let self, !Task.isCancelled else { return }
                 self.allMilestones = v
                 self.applyFilter()
+                self.refreshSessionTags()
             }
         })
         tasks.append(Task { [weak self] in
@@ -2515,13 +2631,14 @@ Beside `makeDecisionsViewModel(for:)` in `Matron/App/AppDependencies.swift` and 
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `MATRON_SKIP_SNAPSHOT_TESTS=1 swift test --package-path MatronShared --filter MissionsViewModelTests`
-Expected: PASS — `Executed 9 tests, with 0 failures`.
+Expected: PASS — `Executed 8 tests, with 0 failures`.
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add MatronShared/Sources/ViewModels/MissionsListViewModel.swift \
         MatronShared/Sources/ViewModels/MissionDetailViewModel.swift \
+        MatronShared/Sources/DesignSystem/SessionTagInputs.swift MatronShared/Package.swift \
         Matron/App/AppDependencies.swift MatronMac/App/AppDependencies.swift \
         MatronShared/Tests/ViewModelTests/MissionsViewModelTests.swift
 git -c user.name="Dan Barker" -c user.email=dan@yearbookmachine.com commit -m "missions: list and detail view models" \
@@ -2541,8 +2658,8 @@ git -c user.name="Dan Barker" -c user.email=dan@yearbookmachine.com commit -m "m
 - Test: `MatronShared/Tests/DesignSystemSnapshotTests/MissionsSnapshotTests.swift` (new)
 
 **Interfaces:**
-- Consumes: `Mission`, `Milestone`, `MissionConversation`, `TrackerItem`, `MilestoneKind` (Task 1); `MilestoneMarkerEvent`, `MissionMarkerEvent` (Task 2); the existing `NeedsYouBadge`, `ItemRow`, `BoxChip`, `MarkdownText`.
-- Produces: `MissionGlyph` (`symbol(_:)`/`label(_:)`/`tint(_:)` over both `MissionState` and `MilestoneKind`); `MissionRowView(mission:)`; `MissionsListView(model:onSelect:onRefresh:)` with `MissionsListView.Model { open, closed, isSupported, isRefreshing }`; `MissionDetailView(model:onOpenMilestone:onOpenItem:onOpenConversation:onClose:)` with `MissionDetailView.Model { mission, milestones, openItems, conversations, showOnlyUserInput, closeSummary, isBusy }`; `MilestoneCard(marker:onOpen:)`; `MissionNotice(marker:onOpen:)`.
+- Consumes: `Mission`, `Milestone`, `MissionConversation`, `TrackerItem`, `MilestoneKind` (Task 1); `MilestoneMarkerEvent`, `MissionMarkerEvent` (Task 2); `SessionTagInputs` (Task 6); the existing `NeedsYouBadge`, `ItemRow`, `BoxChip`, `MarkdownText`, `SessionTagText`.
+- Produces: `MissionGlyph` (`symbol(_:)`/`label(_:)`/`tint(_:)` over both `MissionState` and `MilestoneKind`); `MissionRowView(mission:)`; `MissionsListView(model:onSelect:onRefresh:)` with `MissionsListView.Model { open, closed, isSupported, isRefreshing }`; `MissionDetailView(model:onToggleUserInputOnly:onOpenMilestone:onOpenItem:onOpenConversation:onEditCloseSummary:onClose:)` — seven labels, in that order — with `MissionDetailView.Model { mission, milestones: [MilestoneRow], openItems, conversations, showOnlyUserInput, closeSummary, isBusy }`, its nested `Model.MilestoneRow { milestone, sessionTag: SessionTagInputs? }`, and the mapping init `Model.init(mission:milestones:sessionTags:openItems:conversations:showOnlyUserInput:closeSummary:isBusy:)` that both hosts call; `MilestoneCard(marker:onOpen:)`; `MissionNotice(marker:onOpen:)`.
 
 These are **leaf views** — `MatronDesignSystem` may depend on Models/Events/Search but never on Journal or ViewModels, so every host maps its view model into a `Model` exactly as `DecisionsListView` already requires.
 
@@ -2623,8 +2740,11 @@ final class MissionsSnapshotTests: XCTestCase {
     func testMissionsList() {
         let model = MissionsListView.Model(
             open: [mission],
-            closed: [Mission(id: "ms_0", num: 55, state: .closed, title: "Items tracker", originConvoID: "c0",
-                             closeSummary: "Shipped.", closedBy: .agent,
+            closed: [Mission(id: "ms_0", num: 55, state: .closed, title: "Items tracker",
+                             // Declaration order (Task 1): closeSummary /
+                             // closedBy / closedOverOpenItems come BEFORE
+                             // originConvoID.
+                             closeSummary: "Shipped.", closedBy: .agent, originConvoID: "c0",
                              closedAt: Date(timeIntervalSince1970: 1_600_000_000))],
             isSupported: true, isRefreshing: false)
         assertVariants(of: MissionsListView(model: model, onSelect: { _ in }, onRefresh: {})
@@ -2639,7 +2759,14 @@ final class MissionsSnapshotTests: XCTestCase {
 
     func testMissionDetail() {
         let model = MissionDetailView.Model(
-            mission: mission, milestones: milestones,
+            mission: mission,
+            // One row tagged (its conversation is cached on this device),
+            // one untagged — the two states the page has to draw.
+            milestones: [
+                .init(milestone: milestones[0],
+                      sessionTag: SessionTagInputs(boxLetter: "D", boxName: "dev-2", sessionShort: "bc")),
+                .init(milestone: milestones[1], sessionTag: nil),
+            ],
             openItems: [TrackerItem(id: "it_1", num: 64, kind: .question, awaiting: .user,
                                     title: "Which order for the tabs?", originConvoID: "c1")],
             conversations: [MissionConversation(id: "c1", title: "Session", box: "dev-2", state: "running")],
@@ -2867,19 +2994,55 @@ import MatronModels
 /// the conversations the mission owns, plus the user's close control.
 public struct MissionDetailView: View {
     public struct Model: Equatable {
+        /// One milestone as the page draws it: the record, plus the `A:bc`
+        /// tag of the conversation it was posted in — a mission spans
+        /// several sessions, so each row says which one it came from.
+        /// `nil` when this device has no cached row for that conversation:
+        /// the row then renders with no tag, never a placeholder.
+        public struct MilestoneRow: Identifiable, Equatable {
+            public var milestone: Milestone
+            public var sessionTag: SessionTagInputs?
+            public var id: String { milestone.id }
+            public init(milestone: Milestone, sessionTag: SessionTagInputs? = nil) {
+                self.milestone = milestone
+                self.sessionTag = sessionTag
+            }
+        }
+
         public var mission: Mission?
-        public var milestones: [Milestone]
+        public var milestones: [MilestoneRow]
         public var openItems: [TrackerItem]
         public var conversations: [MissionConversation]
         public var showOnlyUserInput: Bool
         public var closeSummary: String
         public var isBusy: Bool
-        public init(mission: Mission?, milestones: [Milestone], openItems: [TrackerItem],
+        public init(mission: Mission?, milestones: [MilestoneRow], openItems: [TrackerItem],
                     conversations: [MissionConversation], showOnlyUserInput: Bool,
                     closeSummary: String, isBusy: Bool) {
             self.mission = mission; self.milestones = milestones; self.openItems = openItems
             self.conversations = conversations; self.showOnlyUserInput = showOnlyUserInput
             self.closeSummary = closeSummary; self.isBusy = isBusy
+        }
+
+        /// The ONE mapping from a `MissionDetailViewModel`'s published
+        /// values into this model. Both hosts call it — `MissionDetailHost`
+        /// (Task 9) and `MacMissionPage` (Task 10) — so the two platforms'
+        /// mission pages cannot drift. It takes plain values rather than
+        /// the view model itself because `MatronDesignSystem` is a leaf: it
+        /// may depend on Models/Events, never on `MatronViewModels`.
+        public init(mission: Mission?, milestones: [Milestone],
+                    sessionTags: [String: SessionTagInputs], openItems: [TrackerItem],
+                    conversations: [MissionConversation], showOnlyUserInput: Bool,
+                    closeSummary: String, isBusy: Bool) {
+            self.init(mission: mission,
+                      milestones: milestones.map {
+                          MilestoneRow(milestone: $0, sessionTag: sessionTags[$0.convoID])
+                      },
+                      openItems: openItems,
+                      conversations: conversations,
+                      showOnlyUserInput: showOnlyUserInput,
+                      closeSummary: closeSummary,
+                      isBusy: isBusy)
         }
     }
 
@@ -2893,6 +3056,10 @@ public struct MissionDetailView: View {
     let onEditCloseSummary: (String) -> Void
     let onClose: () -> Void
     @State private var showingClose = false
+    /// `SessionTagText` tints a box letter with `BoxChip.textTint(for:in:)`,
+    /// which needs the scheme — the same environment read `ChatView`'s
+    /// header does for its own tag.
+    @Environment(\.colorScheme) private var colorScheme
 
     public init(model: Model, onToggleUserInputOnly: @escaping (Bool) -> Void,
                 onOpenMilestone: @escaping (Milestone) -> Void, onOpenItem: @escaping (String) -> Void,
@@ -2913,8 +3080,8 @@ public struct MissionDetailView: View {
                         Text(model.showOnlyUserInput ? "No milestones from you yet." : "No milestones yet.")
                             .font(.subheadline).foregroundStyle(.secondary)
                     } else {
-                        ForEach(model.milestones) { milestone in
-                            Button { onOpenMilestone(milestone) } label: { milestoneRow(milestone) }
+                        ForEach(model.milestones) { row in
+                            Button { onOpenMilestone(row.milestone) } label: { milestoneRow(row) }
                                 .buttonStyle(.plain).foregroundStyle(Color.primary)
                         }
                     }
@@ -2998,8 +3165,9 @@ public struct MissionDetailView: View {
         }
     }
 
-    private func milestoneRow(_ milestone: Milestone) -> some View {
-        HStack(alignment: .top, spacing: 10) {
+    private func milestoneRow(_ row: Model.MilestoneRow) -> some View {
+        let milestone = row.milestone
+        return HStack(alignment: .top, spacing: 10) {
             Image(systemName: MissionGlyph.symbol(milestone.kind))
                 .font(.caption)
                 .foregroundStyle(MissionGlyph.tint(milestone.kind))
@@ -3015,7 +3183,19 @@ public struct MissionDetailView: View {
                 }
                 HStack(spacing: 8) {
                     RelativeMinuteTimeView(date: milestone.createdAt).font(.caption2).foregroundStyle(.tertiary)
-                    SessionTagText(convoID: milestone.convoID).font(.caption2).foregroundStyle(.tertiary)
+                    // `SessionTagText` is an enum of `Text` factories, not a
+                    // view: `run` composes the letter (in the box's hue) and
+                    // the `:bc` short into one `Text`, and answers `nil`
+                    // when there is nothing to show. No cached conversation
+                    // ⇒ no `sessionTag` ⇒ nothing rendered, no empty gap.
+                    // Do NOT restyle the result with `.foregroundStyle` —
+                    // that would flatten the per-run box color.
+                    if let tag = row.sessionTag,
+                       let tagRun = SessionTagText.run(boxLetter: tag.boxLetter, boxName: tag.boxName,
+                                                       sessionShort: tag.sessionShort,
+                                                       colorScheme: colorScheme) {
+                        tagRun.font(.caption2)
+                    }
                 }
             }
             Spacer(minLength: 0)
@@ -3023,7 +3203,8 @@ public struct MissionDetailView: View {
         }
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(MissionGlyph.label(milestone.kind)) \(milestone.num), \(milestone.title)")
+        .accessibilityLabel("\(MissionGlyph.label(milestone.kind)) \(milestone.num), \(milestone.title)"
+                            + (row.sessionTag?.boxName.map { ", \($0)" } ?? ""))
         .accessibilityHint("Opens the conversation at this point")
     }
 
@@ -3255,21 +3436,51 @@ final class JournalTimelineMapperMissionsTests: XCTestCase {
 }
 ```
 
-Append to `MatronShared/Tests/ViewModelTests/ChatViewModelTests.swift`:
+Append to `MatronShared/Tests/ViewModelTests/ChatViewModelTests.swift`, **inside `final class ChatViewModelTests`** — the two tests use that class's own private `row(_ seq: Int, own: Bool)` helper and the `PagingFakeTimelineService` / `FakeMediaService` fakes declared at the top of that file. (There is no `makeViewModel()` in this file; that helper belongs to `ChatViewModelAgentChatTests`, against a different fake. The suite's own helpers are `row(_:own:)`, `makeVMWithMessages(seqs:)`, `makeVMWithPagedHistory(loaded:olderPages:)` and `makeLongTimelineVM(count:)`.)
 
 ```swift
-    /// A milestone tap before the transcript is live parks and fires on the
-    /// first snapshot — the same mechanism in-conversation search uses.
-    /// Dismissing the search bar must NOT kill it (it is not search's jump).
-    func testMilestoneJumpParksUntilLiveAndSurvivesSearchDismissal() async throws {
-        let (vm, service) = makeViewModel()            // existing helper in this file
+    /// A milestone tap made before the transcript is live parks and fires on
+    /// the first snapshot — the same gate in-conversation search uses, for
+    /// the same reason: sampling paginate growth against a stream nobody is
+    /// subscribed to falsely latches `reachedHistoryStart`. And because the
+    /// jump is owned by `FocusOwner.milestone`, dismissing the search bar
+    /// must not kill it (only search's own jump dies there).
+    @MainActor
+    func test_jumpToMilestone_parksUntilLive_andSurvivesSearchDismissal() async throws {
+        let fake = PagingFakeTimelineService(loaded: [row(120, own: false), row(121, own: false)],
+                                             olderPages: [])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService())
+
         await vm.jumpToMilestone(seq: 120)
-        XCTAssertNil(vm.pendingFocusID, "nothing to land on before the first snapshot")
-        vm.endChatSearch()                              // must not cancel a milestone jump
-        service.emit(messages: (1...200).map { service.textEvent(seq: Int64($0)) })
-        await vm.start()
-        try await Task.sleep(nanoseconds: 100_000_000)
-        XCTAssertEqual(vm.pendingFocusID, "120", "the parked milestone target fired once the stream was live")
+        XCTAssertNil(vm.pendingFocusID, "no jump before the stream is live")
+        XCTAssertFalse(vm.reachedHistoryStart, "a pre-start jump must not latch history-start")
+
+        vm.endChatSearch()
+
+        _ = await vm.start()
+        // The parked jump fires off the first snapshot's Task hop.
+        let deadline = Date().addingTimeInterval(2)
+        while vm.pendingFocusID == nil && Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(vm.pendingFocusID, "120", "the parked milestone jump fired once the stream was live")
+        XCTAssertFalse(vm.reachedHistoryStart)
+        vm.stop()
+    }
+
+    /// The warm case: the stream is already live, so the jump runs at once
+    /// and lands on the milestone marker's own row (its seq IS the row id).
+    @MainActor
+    func test_jumpToMilestone_onALiveStreamLandsImmediately() async throws {
+        let fake = PagingFakeTimelineService(loaded: [row(120, own: false), row(121, own: false)],
+                                             olderPages: [])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService())
+        _ = await vm.start()
+
+        await vm.jumpToMilestone(seq: 121)
+        XCTAssertEqual(vm.pendingFocusID, "121")
+        XCTAssertEqual(fake.paginateCalls, 0, "the target row is already loaded — nothing to page in")
+        vm.stop()
     }
 ```
 
@@ -3444,16 +3655,18 @@ git -c user.name="Dan Barker" -c user.email=dan@yearbookmachine.com commit -m "m
 ### Task 9: iOS — the Missions tab, the mission page, the title tap, and retiring the summaries sheet
 
 **Files:**
+- Create: `Matron/App/PathPrefixedRoute.swift`
 - Create: `Matron/App/MissionRoute.swift`
 - Create: `Matron/Features/Missions/MissionsTabRoot.swift`
 - Create: `Matron/Features/Missions/MissionDetailHost.swift`
+- Modify: `Matron/App/ItemRoute.swift` (adopts the shared protocol; its public surface is unchanged)
 - Modify: `Matron/App/AppShellNavigation.swift`, `Matron/App/AppShellView.swift`, `Matron/Features/Chat/ChatView.swift`, `Matron/Features/ChatList/ChatListView.swift`
 - Delete: `Matron/Features/Chat/SummariesSheet.swift`, `MatronTests/SummariesSheetBindingTests.swift`
 - Test: `MatronTests/AppShellNavigationTests.swift` (extend), `MatronTests/MissionsNavigationTests.swift` (new)
 
 **Interfaces:**
 - Consumes: `MissionsListViewModel`, `MissionDetailViewModel` (Task 6); `MissionsListView`, `MissionDetailView` (Task 7); `ChatViewModel.jumpToMilestone(seq:)` (Task 8).
-- Produces: `MissionRoute` (`pathPrefix = "mission/"`, `pathValue`, `init?(pathValue:)`); `AppTab.missions`; `AppShellNavigation.missionsPath`, `openMission(_:)`, `pushMission(_:)`, `openConversation(fromMissions:)`; `ChatView.pushMission(_:onto:)`; `AppShellView.openMilestone(convoID:seq:)`.
+- Produces: `PathPrefixedRoute` (static `pathPrefix`, `id`, `init(id:)`, with `pathValue` and `init?(pathValue:)` defaulted in an extension); `MissionRoute` (`pathPrefix = "mission/"`) and `ItemRoute` conforming to it; `AppTab.missions`; `AppShellNavigation.missionsPath`, `openMission(_:)`, `pushMission(_:)`, `openConversation(fromMissions:)`; `ChatView.pushMission(_:onto:)`; `AppShellView.openMilestone(convoID:seq:)`.
 
 **Tab order.** The spec fixes the bar as **Coordinator · Missions · Decisions · Conversations**, and `AppTab.allCases` is both the bar order and the root swipe order. That reorders the existing bar (Conversations moves to last); `AppShellNavigationTests`' swipe expectations move with it. The app still *opens* on `.conversations`.
 
@@ -3471,12 +3684,22 @@ final class MissionsNavigationTests: XCTestCase {
         XCTAssertEqual(AppTab.allCases, [.coordinator, .missions, .decisions, .conversations])
     }
 
-    func testMissionRouteRoundTripsAndRejectsAConversationID() {
+    /// Both routes ride the one `PathPrefixedRoute` round-trip, and their
+    /// prefixes are disjoint — which is what lets a single `[String]` stack
+    /// carry conversations, items and missions and decode them by trying
+    /// each route in turn.
+    func testPathPrefixedRoutesRoundTripAndRejectEachOther() {
         XCTAssertEqual(MissionRoute(id: "ms_1").pathValue, "mission/ms_1")
-        XCTAssertEqual(MissionRoute(pathValue: "mission/ms_1")?.id, "ms_1")
-        XCTAssertNil(MissionRoute(pathValue: "ms_1"))
-        XCTAssertNil(MissionRoute(pathValue: "mission/"))
+        XCTAssertEqual(MissionRoute(pathValue: "mission/ms_1"), MissionRoute(id: "ms_1"))
+        XCTAssertEqual(ItemRoute(id: "it_1").pathValue, "item/it_1")
+        XCTAssertEqual(ItemRoute(pathValue: "item/it_1"), ItemRoute(id: "it_1"))
+
+        XCTAssertNil(MissionRoute(pathValue: "ms_1"), "a bare conversation id is not a mission route")
+        XCTAssertNil(ItemRoute(pathValue: "cv_1"), "nor an item route")
+        XCTAssertNil(MissionRoute(pathValue: "mission/"), "an empty id is not a route")
+        XCTAssertNil(ItemRoute(pathValue: "item/"))
         XCTAssertNil(MissionRoute(pathValue: "item/it_1"), "an item route is not a mission route")
+        XCTAssertNil(ItemRoute(pathValue: "mission/ms_1"), "and a mission route is not an item route")
     }
 
     func testOpenMissionSelectsTheTabAndReplacesItsPath() {
@@ -3545,31 +3768,84 @@ Update the existing swipe expectations in `MatronTests/AppShellNavigationTests.s
 Run: `xcodegen generate && xcodebuild test -project Matron.xcodeproj -scheme Matron -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' -only-testing:MatronTests/MissionsNavigationTests CODE_SIGNING_ALLOWED=NO`
 Expected: FAIL to compile — `cannot find 'MissionRoute' in scope`.
 
-- [ ] **Step 3: Add `MissionRoute`**
+- [ ] **Step 3: Add the shared route protocol, then `MissionRoute`**
+
+`MissionRoute` is `ItemRoute` with a different prefix — same id, same
+round-trip, same empty-id guard. Rather than copy the type, hoist the
+shared shape into a protocol and let both adopt it.
+
+Create `Matron/App/PathPrefixedRoute.swift`:
+
+```swift
+import Foundation
+
+/// A typed destination that rides a `[String]` navigation stack as
+/// `"<prefix><id>"`. The chat stacks stay `[String]` (the sub-chat
+/// switcher and `pushSpawnedRoom` rely on array semantics
+/// `NavigationPath` doesn't offer), so anything that is not a
+/// conversation has to encode itself into a string and decode back out.
+/// One protocol means the two routes cannot drift on the prefix
+/// round-trip or the empty-id guard.
+///
+/// Prefixes must be unique across conforming types: a decoder tries each
+/// route in turn (`if let mission = MissionRoute(pathValue: v) … else if
+/// let item = ItemRoute(pathValue: v)`), and a bare conversation id —
+/// which never carries a prefix — falls through both.
+protocol PathPrefixedRoute: Hashable {
+    /// `"item/"`, `"mission/"`. Unique per conforming type.
+    static var pathPrefix: String { get }
+    var id: String { get }
+    init(id: String)
+}
+
+extension PathPrefixedRoute {
+    /// This route as a stack entry.
+    var pathValue: String { Self.pathPrefix + id }
+
+    /// Decodes a stack entry, or `nil` when it is not this route's: no
+    /// prefix (a conversation id), another route's prefix, or an empty id.
+    init?(pathValue: String) {
+        guard pathValue.hasPrefix(Self.pathPrefix) else { return nil }
+        let id = String(pathValue.dropFirst(Self.pathPrefix.count))
+        guard !id.isEmpty else { return nil }
+        self.init(id: id)
+    }
+}
+```
 
 Create `Matron/App/MissionRoute.swift`:
 
 ```swift
 import Foundation
 
-/// A mission page pushed onto a `[String]` navigation stack — the same
-/// convention `ItemRoute` uses, so the Missions stack and the chat stacks
-/// can both carry conversations, items and missions in one array. A
-/// conversation id never carries a prefix.
-struct MissionRoute: Hashable {
+/// A mission page pushed onto a `[String]` navigation stack — the Missions
+/// tab's own stack, or whichever chat stack a milestone card was tapped on.
+struct MissionRoute: PathPrefixedRoute {
     let id: String
     static let pathPrefix = "mission/"
 
     init(id: String) { self.id = id }
+}
+```
 
-    init?(pathValue: String) {
-        guard pathValue.hasPrefix(Self.pathPrefix) else { return nil }
-        let id = String(pathValue.dropFirst(Self.pathPrefix.count))
-        guard !id.isEmpty else { return nil }
-        self.id = id
-    }
+And reduce `Matron/App/ItemRoute.swift` to the same shape — its public
+surface (`ItemRoute(id:)`, `ItemRoute(pathValue:)`, `pathValue`,
+`Hashable`, and the `[ItemRoute]` Decisions stack) is unchanged, so no
+call site moves:
 
-    var pathValue: String { Self.pathPrefix + id }
+```swift
+import Foundation
+
+/// A tracker item pushed onto a navigation stack (app shell, spec §3/§4).
+/// The Decisions tab's stack is `[ItemRoute]`; the chat stacks stay
+/// `[String]`, so on those an item rides as `pathValue` and the `String`
+/// destination decodes it with `init?(pathValue:)` — both defaulted by
+/// `PathPrefixedRoute`. Conversation ids never carry the prefix.
+struct ItemRoute: PathPrefixedRoute {
+    let id: String
+    static let pathPrefix = "item/"
+
+    init(id: String) { self.id = id }
 }
 ```
 
@@ -3690,7 +3966,11 @@ struct MissionDetailHost: View {
         Group {
             if let viewModel {
                 MissionDetailView(
+                    // The mapping itself lives on the model (Task 7) — the
+                    // Mac page calls the same init, so the two platforms'
+                    // pages cannot drift.
                     model: .init(mission: viewModel.mission, milestones: viewModel.milestones,
+                                 sessionTags: viewModel.sessionTags,
                                  openItems: viewModel.openItems, conversations: viewModel.conversations,
                                  showOnlyUserInput: viewModel.showOnlyUserInput,
                                  closeSummary: viewModel.closeSummaryDraft, isBusy: viewModel.isBusy),
@@ -3827,21 +4107,31 @@ git rm Matron/Features/Chat/SummariesSheet.swift MatronTests/SummariesSheetBindi
 
 - [ ] **Step 8: Run the iOS suite to verify it passes**
 
-Run: `xcodegen generate && xcodebuild test -project Matron.xcodeproj -scheme Matron -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' CODE_SIGNING_ALLOWED=NO 2>&1 | tail -30`
-Expected: `Executed N tests, with 0 failures` and `** TEST SUCCEEDED **`.
+Run (no `| tail` — a pipeline replaces `xcodebuild`'s exit code with the pipe's, per Global Constraints):
+
+```bash
+xcodegen generate
+xcodebuild test -project Matron.xcodeproj -scheme Matron \
+  -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
+  CODE_SIGNING_ALLOWED=NO > /tmp/missions-ios-suite.log 2>&1; echo "exit=$?"
+grep -E "Executed [0-9]+ tests" /tmp/missions-ios-suite.log
+```
+
+Expected: `exit=0`, and the grep prints `Executed N tests, with 0 failures` (N covers `MatronTests` including the new `MissionsNavigationTests`). Anything else — a non-zero `exit=`, no matching line at all, or a non-zero failure count — is a failure, however quiet the log looks.
 
 - [ ] **Step 9: Commit**
 
 ```bash
-git add Matron/App/MissionRoute.swift Matron/App/AppShellNavigation.swift Matron/App/AppShellView.swift \
+git add Matron/App/PathPrefixedRoute.swift Matron/App/MissionRoute.swift Matron/App/ItemRoute.swift \
+        Matron/App/AppShellNavigation.swift Matron/App/AppShellView.swift \
         Matron/Features/Missions Matron/Features/Chat/ChatView.swift Matron/Features/ChatList/ChatListView.swift \
         MatronTests/MissionsNavigationTests.swift MatronTests/AppShellNavigationTests.swift \
-        Matron/Features/Chat/SummariesSheet.swift MatronTests/SummariesSheetBindingTests.swift project.yml
+        Matron/Features/Chat/SummariesSheet.swift MatronTests/SummariesSheetBindingTests.swift
 git -c user.name="Dan Barker" -c user.email=dan@yearbookmachine.com commit -m "missions: iOS Missions tab, mission page and title tap; retire the summaries sheet" \
   -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
 
-(`git add` on the deleted paths stages the deletions. `project.yml` is unchanged by this task — drop it from the command if `git status` shows it clean. **Do not stage `Matron/App/Info.plist`.**)
+(`git add` on the deleted paths stages the deletions. `project.yml` is deliberately absent: `xcodegen generate` reads it and never writes it, so this task cannot have changed it — staging it would only sweep in unrelated working-tree edits. **Do not stage `Matron/App/Info.plist`.**)
 
 ---
 
@@ -3851,11 +4141,11 @@ git -c user.name="Dan Barker" -c user.email=dan@yearbookmachine.com commit -m "m
 - Create: `MatronMac/Features/Missions/MacMissionsColumn.swift`, `MatronMac/Features/Missions/MacMissionPage.swift`
 - Modify: `MatronMac/Features/Nav/MacNavColumn.swift`, `MatronMac/Features/ChatList/MacChatListView.swift`, `MatronMac/Features/Chat/MacChatToolbar.swift`, `MatronMac/Features/Chat/MacChatView.swift`
 - Delete: `MatronMac/Features/Chat/MacSummariesPanel.swift`, `MatronMacTests/MacSummariesPanelSnapshotTests.swift`, `MatronMacTests/__Snapshots__/MacSummariesPanelSnapshotTests/`
-- Test: `MatronMacTests/MacMissionsNavTests.swift` (new), `MatronMacTests/MacNavColumnSnapshotTests.swift`, `MatronMacTests/MacSidebarWidthTests.swift`, `MatronMacTests/MacChatToolbarTests.swift`
+- Test: `MatronMacTests/MacMissionsNavTests.swift` (new), `MatronMacTests/MacNavColumnSnapshotTests.swift` (call sites + re-recorded baselines under `MatronMacTests/__Snapshots__/MacNavColumnSnapshotTests/`), `MatronMacTests/MacChatToolbarTests.swift`. `MatronMacTests/MacSidebarWidthTests.swift` needs no edit: it only reads `MacNavColumn.width` and `MacChatListView.sidebarWidths(for:)`, and never constructs a `MacNavColumn`.
 
 **Interfaces:**
 - Consumes: Tasks 6–8.
-- Produces: `MacNav.missions`; `MacNavColumn(selection:badges:)` (replacing `decisionsCount:`); on `MacChatListView`: `missionsColumn`, `missionDetail`, `showMission(_:from:)`, `@State selectedMissionID`, `@State missionBackConvoID`; `MacChatToolbar(onOpenMission:)` replacing `showSummaries:`.
+- Produces: `MacNav.missions`; `MacNavColumn(selection:badges:missionsSupported:)` (replacing `decisionsCount:`, with `missionsSupported` defaulted `true`) plus its statics `badgeCount(_:for:)` and `entries(missionsSupported:)`; on `MacChatListView`: `missionsColumn`, `missionDetail`, `showMission(_:from:)`, `@State selectedMissionID`, `@State missionBackConvoID`; on `MacChatToolbar`: `missionID` and `onOpenMission` (replacing `showSummaries:` and `popoverContent:`) and the pure `static titleOpensMission(missionID:) -> Bool` its body uses to decide button-vs-plain-text.
 
 **Type-checker budget.** `MacChatListView.body` must not gain inline branches — every new switch site goes in the existing hoisted helpers `sidebarStack`, `sidebarWidths(for:)`, `detailContent` and `navChanged(from:to:)`. CI's Xcode has timed out on `body` twice already.
 
@@ -3909,8 +4199,20 @@ final class MacMissionsNavTests: XCTestCase {
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `xcodegen generate && TEST_RUNNER_MATRON_SKIP_SNAPSHOT_TESTS=1 MATRON_APP_SUPPORT_OVERRIDE=/tmp/matron-test-appsupport TEST_RUNNER_MATRON_APP_SUPPORT_OVERRIDE=/tmp/matron-test-appsupport xcodebuild test -project Matron.xcodeproj -scheme MatronMac -destination 'platform=macOS' -only-testing:MatronMacTests/MacMissionsNavTests CODE_SIGNING_ALLOWED=NO 2>&1 | tail -20`
-Expected: FAIL to compile — `type 'MacNav' has no member 'missions'`.
+Run:
+
+```bash
+xcodegen generate
+TEST_RUNNER_MATRON_SKIP_SNAPSHOT_TESTS=1 \
+MATRON_APP_SUPPORT_OVERRIDE=/tmp/matron-test-appsupport \
+TEST_RUNNER_MATRON_APP_SUPPORT_OVERRIDE=/tmp/matron-test-appsupport \
+xcodebuild test -project Matron.xcodeproj -scheme MatronMac -destination 'platform=macOS' \
+  -only-testing:MatronMacTests/MacMissionsNavTests \
+  CODE_SIGNING_ALLOWED=NO > /tmp/missions-mac-navtests.log 2>&1; echo "exit=$?"
+grep -E "Executed [0-9]+ tests" /tmp/missions-mac-navtests.log
+```
+
+Expected: `exit=65` and no `Executed` line — the bundle does not compile yet (`type 'MacNav' has no member 'missions'`, findable with `grep -n "has no member" /tmp/missions-mac-navtests.log`).
 
 - [ ] **Step 3: Extend `MacNavColumn`**
 
@@ -3960,7 +4262,7 @@ Replace `let decisionsCount: Int` with `let badges: [MacNav: Int]` and `let miss
     }
 ```
 
-and drive the `ForEach` from `Self.entries(missionsSupported: missionsSupported)`, the overlay from `Self.badgeCount(badges, for: entry)`, and the accessibility label from the same count (`entry == .missions ? ", \(n) need you" : ", \(n) need you"` — the phrasing is the same for both).
+and drive the `ForEach` from `Self.entries(missionsSupported: missionsSupported)`, the overlay from `Self.badgeCount(badges, for: entry)`, and the accessibility label from the same count — one phrasing for every entry, appended to the entry title: `", \(n) need you"`.
 
 - [ ] **Step 4: Build the Mac hosts**
 
@@ -4031,7 +4333,10 @@ struct MacMissionPage: View {
             }
             if let viewModel {
                 MissionDetailView(
+                    // Same `Model` init the iOS host calls (Task 7) — the
+                    // mapping exists once, so the pages cannot drift.
                     model: .init(mission: viewModel.mission, milestones: viewModel.milestones,
+                                 sessionTags: viewModel.sessionTags,
                                  openItems: viewModel.openItems, conversations: viewModel.conversations,
                                  showOnlyUserInput: viewModel.showOnlyUserInput,
                                  closeSummary: viewModel.closeSummaryDraft, isBusy: viewModel.isBusy),
@@ -4168,29 +4473,47 @@ In `chatDetail(for:)`, pass the two new callbacks to `MacChatView`: `onOpenMissi
 
 - [ ] **Step 6: Title tap on the Mac toolbar; delete the summaries panel**
 
-In `MatronMac/Features/Chat/MacChatToolbar.swift`, replace `let showSummaries: Binding<Bool>` (and its init parameter, defaulted `.constant(false)`) with:
+In `MatronMac/Features/Chat/MacChatToolbar.swift`, replace `let showSummaries: Binding<Bool>` and `let popoverContent: () -> AnyView` — the summaries panel was the only thing that popover ever showed — with the mission the title now opens (drop both init parameters too; add these two, defaulted so the file's other tests keep compiling unchanged):
 
 ```swift
-    /// Opens this conversation's mission page. `nil` — no mission, or no
-    /// host — renders the title as plain text rather than a dead button
-    /// (spec: "With no mission the title is not a button").
-    let onOpenMission: (() -> Void)?
+    /// The mission this conversation belongs to, or `nil` when it has none
+    /// (or the host hasn't resolved one yet). The title is a button only
+    /// when there is something to open — spec: "With no mission the title
+    /// is not a button" — which is `Self.titleOpensMission(missionID:)`.
+    let missionID: String?
+    /// Opens `missionID`'s page. Inert by default so a toolbar built in a
+    /// test or a preview has nowhere to navigate and doesn't need a host.
+    let onOpenMission: (String) -> Void
+```
+
+Add the rule as a pure static, so it is testable without rendering a `ToolbarContent` (which has no init cheap enough to construct in a test — it needs a `SessionStatus`, a `SubChatStripViewModel` and three closures):
+
+```swift
+    /// Whether the title renders as a button. Only a real mission id counts:
+    /// an empty string is treated as absent rather than producing a button
+    /// that navigates nowhere.
+    static func titleOpensMission(missionID: String?) -> Bool {
+        guard let missionID else { return false }
+        return !missionID.trimmingCharacters(in: .whitespaces).isEmpty
+    }
 ```
 
 Replace the `Button { showSummaries.wrappedValue = true } label: { titleCluster }` + `.popover(isPresented: showSummaries, …) { MacSummariesPanel… }` pair with:
 
 ```swift
-                if let onOpenMission {
-                    Button(action: onOpenMission) { titleCluster }
+                if Self.titleOpensMission(missionID: missionID), let missionID {
+                    Button { onOpenMission(missionID) } label: { titleCluster }
                         .buttonStyle(.plain)
                         .help("Open this conversation's mission")
+                        .accessibilityLabel(accessibilityTitle ?? title)
                         .accessibilityHint("Opens this conversation's mission")
                 } else {
                     titleCluster
+                        .accessibilityLabel(accessibilityTitle ?? title)
                 }
 ```
 
-In `MacChatView`, drop `@State private var showSummaries` and the `showSummaries:` argument, and pass `onOpenMission: missionID.map { id in { onOpenMission?(id) } }`.
+In `MacChatView`, drop `@State private var showSummaries` and the `showSummaries:` / `popoverContent:` arguments, and pass `missionID: missionID` (the `@State` filled by the `missionIDStream` task added in step 5) and `onOpenMission: { onOpenMission?($0) }`.
 
 Then delete the retired files:
 
@@ -4199,36 +4522,88 @@ git rm MatronMac/Features/Chat/MacSummariesPanel.swift MatronMacTests/MacSummari
 git rm -r MatronMacTests/__Snapshots__/MacSummariesPanelSnapshotTests
 ```
 
-Update `MatronMacTests/MacChatToolbarTests.swift`: replace `testToolbarCarriesSummariesBinding` with
+Update `MatronMacTests/MacChatToolbarTests.swift`: replace `testToolbarCarriesSummariesBinding` (which pinned the summaries binding that no longer exists) with a test of the rule the body now branches on:
 
 ```swift
-    /// The title is a button only when the conversation has a mission.
-    func testToolbarTitleOpensTheMissionOnlyWhenThereIsOne() {
-        var opened = 0
-        let withMission = MacChatToolbar(title: "Session", onOpenMission: { opened += 1 })
-        withMission.onOpenMission?()
-        XCTAssertEqual(opened, 1)
-        let withoutMission = MacChatToolbar(title: "Session", onOpenMission: nil)
-        XCTAssertNil(withoutMission.onOpenMission)
+    /// The title renders as a button only when the conversation has a
+    /// mission to open — the rule the principal toolbar item branches on.
+    func testTitleOpensTheMissionOnlyWhenThereIsOne() {
+        XCTAssertTrue(MacChatToolbar.titleOpensMission(missionID: "ms_1"))
+        XCTAssertFalse(MacChatToolbar.titleOpensMission(missionID: nil),
+                       "no mission, no button")
+        XCTAssertFalse(MacChatToolbar.titleOpensMission(missionID: ""),
+                       "an empty id would make a button that navigates nowhere")
     }
 ```
 
-(adjust the initializer arguments to whatever `MacChatToolbar`'s other defaulted parameters require — the assertion is only about `onOpenMission`).
+Update `MatronMacTests/MacNavColumnSnapshotTests.swift` for the new initializer — its two `MacNavColumn(...)` constructions (lines 11 and 18 today) become
 
-Update `MatronMacTests/MacNavColumnSnapshotTests.swift` and `MatronMacTests/MacSidebarWidthTests.swift` for the new `MacNavColumn(selection:badges:missionsSupported:)` initializer.
+```swift
+        let view = MacNavColumn(selection: .constant(.decisions), badges: [.decisions: 4])
+```
+
+```swift
+        let view = MacNavColumn(selection: .constant(.conversations), badges: [:])
+```
+
+(`missionsSupported` defaults to `true`, so both baselines show the new entry) — and its `testEntriesInBarOrder` expectation, which today reads `XCTAssertEqual(MacNav.allCases, [.coordinator, .conversations, .decisions])`, becomes the four-case bar order:
+
+```swift
+        XCTAssertEqual(MacNav.allCases, [.coordinator, .missions, .decisions, .conversations])
+```
+
+`MatronMacTests/MacSidebarWidthTests.swift` needs no change: it reads `MacNavColumn.width` and `MacChatListView.sidebarWidths(for:)` and never constructs the view.
 
 - [ ] **Step 7: Re-record the Mac nav snapshots, then run the suite**
 
-Run (records the new nav-column baselines; fails on the first pass by design):
-`xcodegen generate && MATRON_APP_SUPPORT_OVERRIDE=/tmp/matron-test-appsupport TEST_RUNNER_MATRON_APP_SUPPORT_OVERRIDE=/tmp/matron-test-appsupport xcodebuild test -project Matron.xcodeproj -scheme MatronMac -destination 'platform=macOS' -only-testing:MatronMacTests/MacNavColumnSnapshotTests CODE_SIGNING_ALLOWED=NO 2>&1 | tail -20`
-Expected: FAIL with newly written `MatronMacTests/__Snapshots__/MacNavColumnSnapshotTests/*.png`.
+The nav column gains a fourth entry, so its two baselines no longer match and must be re-recorded. Delete them first — `assertVariants` only writes a baseline that is missing:
 
-Run it again unchanged.
-Expected: `Executed N tests, with 0 failures`.
+```bash
+ls MatronMacTests/__Snapshots__/MacNavColumnSnapshotTests/    # 6 PNGs today (2 tests x light/dark/axxxl)
+rm -f MatronMacTests/__Snapshots__/MacNavColumnSnapshotTests/*.png
+```
+
+Then record. Note both `MATRON_APP_SUPPORT_OVERRIDE` variables are set (Global Constraints) and the skip variable is deliberately NOT set — this is one of the two steps that record baselines:
+
+```bash
+xcodegen generate
+MATRON_APP_SUPPORT_OVERRIDE=/tmp/matron-test-appsupport \
+TEST_RUNNER_MATRON_APP_SUPPORT_OVERRIDE=/tmp/matron-test-appsupport \
+xcodebuild test -project Matron.xcodeproj -scheme MatronMac -destination 'platform=macOS' \
+  -only-testing:MatronMacTests/MacNavColumnSnapshotTests \
+  CODE_SIGNING_ALLOWED=NO > /tmp/missions-mac-navcolumn-record.log 2>&1; echo "exit=$?"
+grep -E "Executed [0-9]+ tests" /tmp/missions-mac-navcolumn-record.log
+ls MatronMacTests/__Snapshots__/MacNavColumnSnapshotTests/
+```
+
+Expected: `exit=65`, `Executed 3 tests, with 2 failures` (recording counts as a failure by design), and the 6 PNGs back on disk with the Missions entry in them.
+
+Now verify, same command with a fresh log:
+
+```bash
+MATRON_APP_SUPPORT_OVERRIDE=/tmp/matron-test-appsupport \
+TEST_RUNNER_MATRON_APP_SUPPORT_OVERRIDE=/tmp/matron-test-appsupport \
+xcodebuild test -project Matron.xcodeproj -scheme MatronMac -destination 'platform=macOS' \
+  -only-testing:MatronMacTests/MacNavColumnSnapshotTests \
+  CODE_SIGNING_ALLOWED=NO > /tmp/missions-mac-navcolumn-verify.log 2>&1; echo "exit=$?"
+grep -E "Executed [0-9]+ tests" /tmp/missions-mac-navcolumn-verify.log
+```
+
+Expected: `exit=0` and `Executed 3 tests, with 0 failures`. Open one of the new PNGs and check the Missions flag actually rendered before moving on.
 
 Then the whole Mac suite with snapshots skipped:
-`TEST_RUNNER_MATRON_SKIP_SNAPSHOT_TESTS=1 MATRON_SKIP_SNAPSHOT_TESTS=1 MATRON_APP_SUPPORT_OVERRIDE=/tmp/matron-test-appsupport TEST_RUNNER_MATRON_APP_SUPPORT_OVERRIDE=/tmp/matron-test-appsupport xcodebuild test -project Matron.xcodeproj -scheme MatronMac -destination 'platform=macOS' -only-testing:MatronMacTests CODE_SIGNING_ALLOWED=NO 2>&1 | tail -30`
-Expected: `Executed N tests, with 0 failures` and `** TEST SUCCEEDED **`.
+
+```bash
+TEST_RUNNER_MATRON_SKIP_SNAPSHOT_TESTS=1 MATRON_SKIP_SNAPSHOT_TESTS=1 \
+MATRON_APP_SUPPORT_OVERRIDE=/tmp/matron-test-appsupport \
+TEST_RUNNER_MATRON_APP_SUPPORT_OVERRIDE=/tmp/matron-test-appsupport \
+xcodebuild test -project Matron.xcodeproj -scheme MatronMac -destination 'platform=macOS' \
+  -only-testing:MatronMacTests \
+  CODE_SIGNING_ALLOWED=NO > /tmp/missions-mac-suite.log 2>&1; echo "exit=$?"
+grep -E "Executed [0-9]+ tests" /tmp/missions-mac-suite.log
+```
+
+Expected: `exit=0` and `Executed N tests, with 0 failures`.
 
 - [ ] **Step 8: Commit**
 
@@ -4237,7 +4612,7 @@ git add MatronMac/Features/Missions MatronMac/Features/Nav/MacNavColumn.swift \
         MatronMac/Features/ChatList/MacChatListView.swift MatronMac/Features/Chat/MacChatToolbar.swift \
         MatronMac/Features/Chat/MacChatView.swift MatronMac/Features/Chat/MacSummariesPanel.swift \
         MatronMacTests/MacMissionsNavTests.swift MatronMacTests/MacNavColumnSnapshotTests.swift \
-        MatronMacTests/MacSidebarWidthTests.swift MatronMacTests/MacChatToolbarTests.swift \
+        MatronMacTests/MacChatToolbarTests.swift \
         MatronMacTests/MacSummariesPanelSnapshotTests.swift MatronMacTests/__Snapshots__
 git -c user.name="Dan Barker" -c user.email=dan@yearbookmachine.com commit -m "missions: Mac nav entry, missions column, mission page and title tap" \
   -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
@@ -4420,7 +4795,7 @@ Build and install Release builds per the `technique_mac_install_verification` re
 
 ### 2. Placeholder scan
 
-Checked for "TBD", "TODO", "implement later", "add appropriate error handling", "write tests for the above", "similar to Task N", and steps that describe without showing. None remain. Three places deliberately describe an edit rather than reprinting a large existing file — threading `onOpenMission` through `TimelineListContent` (Task 8), the `MacChatToolbar` initializer's other defaulted arguments (Task 10), and the `MacNavColumn` `ForEach` body (Task 10). Each names the exact file, the exact symbol to copy from (`onOpenItem`, `showSummaries`, `decisionsCount`), and the exact replacement, so the engineer has a mechanical edit rather than a decision.
+Checked for "TBD", "TODO", "implement later", "add appropriate error handling", "write tests for the above", "similar to Task N", and steps that describe without showing. None remain. Three places deliberately describe an edit rather than reprinting a large existing file — threading `onOpenMission` through `TimelineListContent` (Task 8), the `MacChatToolbar` principal item's title branch (Task 10), and the `MacNavColumn` `ForEach` body (Task 10). Each names the exact file, the exact symbol to copy from (`onOpenItem`, `showSummaries`, `decisionsCount`), and the exact replacement, so the engineer has a mechanical edit rather than a decision. Nothing in the plan asks a test to construct a `MacChatToolbar`: the two rules a test cares about are pure statics (`MacChatToolbar.titleOpensMission(missionID:)`, `MacNavColumn.badgeCount(_:for:)` / `entries(missionsSupported:)`).
 
 ### 3. Type consistency
 
@@ -4433,12 +4808,14 @@ Cross-checked every name used across task boundaries:
 - `MissionsProviding` methods `listMissions(_:)`, `mission(id:)`, `milestones(convoID:)`, `closeMission(id:summary:)` — Task 4, faked with the same signatures in Task 5's `FakeMissions`.
 - `MissionsSync` surface `refresh()`, `refreshMission(id:)`, `refreshMilestones(convoID:)`, `closeMission(id:summary:)`, `supportedStream()` — Task 5, restated exactly by `MissionsSyncing` in Task 6 (minus `refreshMilestones`, which no view model calls).
 - `MissionsStoreReading`'s five stream methods — Task 6 — match the `JournalStore` methods added in Task 3 by name and signature (`missionsStream(state:)`, `missionStream(id:)`, `milestonesStream(missionID:)`, `itemsStream(missionID:)`, `missionConversationsStream(missionID:)`). Note `itemsStream(missionID:)` is an *overload* of the existing `itemsStream(scope:)`; both live in `JournalStore+Items.swift`.
-- `MissionsListView.Model` (`open`, `closed`, `isSupported`, `isRefreshing`) and `MissionDetailView.Model` (`mission`, `milestones`, `openItems`, `conversations`, `showOnlyUserInput`, `closeSummary`, `isBusy`) — Task 7 — match the property names the hosts read in Tasks 9 and 10 one for one.
+- The protocol's sixth member, `sessionTag(convoID:) -> SessionTagInputs?` (Task 6), is the one requirement `JournalStore` does NOT already satisfy: its witness is written in the same `extension JournalStore: MissionsStoreReading` in `MissionsListViewModel.swift`, out of `conversation(id:)`, `agentNames()` and `agentTagChars()` — three shipped public reads. Faked in the tests by a `[String: SessionTagInputs]` dictionary.
+- `SessionTagInputs` (`boxLetter`, `boxName`, `sessionShort`) — created in Task 6 in `MatronDesignSystem`, published by `MissionDetailViewModel.sessionTags` (Task 6), carried on `MissionDetailView.Model.MilestoneRow` (Task 7), and consumed by `SessionTagText.run(boxLetter:boxName:sessionShort:colorScheme:)` — the SHIPPED signature, an enum of `Text` factories, not a view and not a type with an initializer.
+- `MissionsListView.Model` (`open`, `closed`, `isSupported`, `isRefreshing`) and `MissionDetailView.Model` (`mission`, `milestones: [MilestoneRow]`, `openItems`, `conversations`, `showOnlyUserInput`, `closeSummary`, `isBusy`) — Task 7 — match the property names the hosts read in Tasks 9 and 10 one for one. Both hosts build the detail model through the single mapping init `Model.init(mission:milestones:sessionTags:openItems:conversations:showOnlyUserInput:closeSummary:isBusy:)`, whose `milestones:` is the view model's plain `[Milestone]` and whose `sessionTags:` is its `[String: SessionTagInputs]`; the `[MilestoneRow]` memberwise init is used only by the Task 7 snapshot fixtures.
 - `MissionDetailView`'s callback order (`onToggleUserInputOnly`, `onOpenMilestone`, `onOpenItem`, `onOpenConversation`, `onEditCloseSummary`, `onClose`) is identical in the Task 7 test, the Task 9 host and the Task 10 host.
 - `ChatViewModel.jumpToMilestone(seq:)` — Task 8 — called in Tasks 9 and 10 with the same label.
 - `TimelineItem.Kind.milestoneMarker` / `.missionMarker` — Task 8 — same spelling in the mapper, both renderers and both shell tests.
-- `onOpenMission: ((String) -> Void)?` — one name on `TimelineItemView`, `MacTimelineItemView`, `MacChatView` and `MacChatToolbar` (where it is `(() -> Void)?`, since the toolbar already knows which conversation it is titling — the only intentional shape difference, called out at its definition).
-- `MissionRoute.pathPrefix = "mission/"` vs `ItemRoute.pathPrefix = "item/"` — disjoint, so the Task 9 `navigationDestination` decoder is unambiguous, and `MissionRoute(pathValue: "item/it_1")` returns `nil` (pinned by a test).
+- `onOpenMission: ((String) -> Void)?` — one name on `TimelineItemView`, `MacTimelineItemView` and `MacChatView`. On `MacChatToolbar` the pair is `missionID: String?` + `onOpenMission: (String) -> Void` (non-optional, inert by default): the toolbar decides button-vs-text from `titleOpensMission(missionID:)` rather than from a nil closure, so the rule is a pure function a test can call. Called out at both definitions.
+- `MissionRoute.pathPrefix = "mission/"` vs `ItemRoute.pathPrefix = "item/"` — both from the shared `PathPrefixedRoute` (Task 9), which owns `pathValue` and `init?(pathValue:)` once. Disjoint prefixes, so the Task 9 `navigationDestination` decoder is unambiguous and each route rejects the other's value (pinned in both directions by `testPathPrefixedRoutesRoundTripAndRejectEachOther`). `ItemRoute`'s public surface is unchanged, so `[ItemRoute]` decisions stacks and every existing call site compile untouched.
 - `MacNavColumn.badgeCount(_:for:)` / `entries(missionsSupported:)` — Task 10 — used by the same file's `ForEach` and pinned by `MacMissionsNavTests`.
 
 ## Conflicts resolved (spec vs the journal's shipped contract)
