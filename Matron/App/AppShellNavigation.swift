@@ -6,8 +6,9 @@ import Observation
 /// The app opens on Conversations.
 enum AppTab: Hashable, CaseIterable {
     case coordinator
-    case conversations
+    case missions
     case decisions
+    case conversations
 }
 
 /// Navigation state of the signed-in shell: the selected tab and each
@@ -25,6 +26,9 @@ final class AppShellNavigation {
     /// Coordinator tab stack: sub-chats and items opened from the
     /// coordinator push here, so back returns to it.
     var coordinatorPath: [String] = []
+    /// Missions tab stack: `MissionRoute.pathValue` entries, plus
+    /// `ItemRoute.pathValue` for an item opened from a mission page.
+    var missionsPath: [String] = []
 
     init() {}
 
@@ -89,6 +93,36 @@ final class AppShellNavigation {
     /// Conversations first, then push, in that order and in one
     /// transaction so the push lands in the visible stack (spec §3).
     func openConversation(fromDecisions convoID: String) {
+        handOffToConversations(convoID)
+    }
+
+    /// Open a mission from anywhere: select the tab and REPLACE the stack,
+    /// so the page is never stacked on a stale copy of itself.
+    func openMission(_ missionID: String) {
+        tab = .missions
+        let route = MissionRoute(id: missionID).pathValue
+        if missionsPath != [route] { missionsPath = [route] }
+    }
+
+    /// Push a mission onto the Missions stack without changing the tab —
+    /// e.g. a `#N` that resolves to another mission from a mission page.
+    func pushMission(_ missionID: String) {
+        missionsPath.append(MissionRoute(id: missionID).pathValue)
+    }
+
+    func pushMissionItem(_ itemID: String) {
+        missionsPath.append(ItemRoute(id: itemID).pathValue)
+    }
+
+    /// "Open the conversation" from a Missions row or a milestone: switch to
+    /// Conversations first, then push, in that order and in one transaction
+    /// so the push lands in the visible stack.
+    func openConversation(fromMissions convoID: String) { handOffToConversations(convoID) }
+
+    /// Shared body of `openConversation(fromDecisions:)` and
+    /// `openConversation(fromMissions:)` — one rule, so the two entry points
+    /// cannot drift on the coordinator special case.
+    private func handOffToConversations(_ convoID: String) {
         if convoID == coordinatorConvoID {
             tab = .coordinator
             coordinatorPath = []
@@ -126,6 +160,7 @@ final class AppShellNavigation {
         case .conversations: chatPath.append(value)
         case .coordinator: coordinatorPath.append(value)
         case .decisions: if let route = ItemRoute(pathValue: value) { decisionsPath.append(route) }
+        case .missions: missionsPath.append(value)
         }
     }
 
@@ -135,6 +170,7 @@ final class AppShellNavigation {
         case .coordinator: return coordinatorPath.isEmpty
         case .conversations: return chatPath.isEmpty
         case .decisions: return decisionsPath.isEmpty
+        case .missions: return missionsPath.isEmpty
         }
     }
 

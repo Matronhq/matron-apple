@@ -227,7 +227,9 @@ struct ChatListView: View {
             }
         }
         .navigationDestination(for: ChatSummary.ID.self) { id in
-            if let route = ItemRoute(pathValue: id) {
+            if let mission = MissionRoute(pathValue: id) {
+                missionDestination(mission)
+            } else if let route = ItemRoute(pathValue: id) {
                 itemDestination(route)
             } else {
                 chatDestination(for: id)
@@ -439,6 +441,32 @@ struct ChatListView: View {
         } else {
             ContentUnavailableView("Session unavailable", systemImage: "exclamationmark.triangle",
                                    description: Text("Sign in again to open this item."))
+        }
+    }
+
+    /// Mission page pushed from a chat's title tap or a milestone card
+    /// (Task 9) — rides the same `[String]` stack as `ItemRoute.pathValue`.
+    /// A milestone open pushes its conversation onto THIS stack and parks
+    /// the jump on that room's cached `ChatViewModel`, same rule as
+    /// `AppShellView.openMilestone` on the Missions tab's own stack.
+    @ViewBuilder
+    private func missionDestination(_ route: MissionRoute) -> some View {
+        if let session, let deps {
+            MissionDetailHost(missionID: route.id, session: session,
+                              onOpenMilestone: { convoID, seq in
+                                  chatNavigationPath?.wrappedValue.append(convoID)
+                                  let (chat, _) = vmCache.viewModels(for: convoID, deps: deps, session: session)
+                                  Task { await chat.jumpToMilestone(seq: seq) }
+                              },
+                              onOpenItem: { itemID in
+                                  chatNavigationPath?.wrappedValue.append(ItemRoute(id: itemID).pathValue)
+                              },
+                              onOpenConversation: { convoID in
+                                  chatNavigationPath?.wrappedValue.append(convoID)
+                              })
+        } else {
+            ContentUnavailableView("Session unavailable", systemImage: "exclamationmark.triangle",
+                                   description: Text("Sign in again to open this mission."))
         }
     }
 

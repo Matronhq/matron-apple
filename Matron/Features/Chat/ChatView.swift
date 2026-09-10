@@ -229,6 +229,12 @@ struct ChatView: View {
         path.wrappedValue.append(value)
     }
 
+    /// Static twin of `pushItem` — a mission rides the same `[String]`
+    /// stack the chat itself is mounted on.
+    static func pushMission(_ missionID: String, onto path: Binding<[String]>?) {
+        path?.wrappedValue.append(MissionRoute(id: missionID).pathValue)
+    }
+
     /// Pops the top entry of the OUTER chat stack — the full-width swipe
     /// back (Dan, 2026-09-09). Only the top entry: a subagent viewer pops
     /// to its parent, a top-level chat to the list. Static for the tests.
@@ -353,8 +359,11 @@ struct ChatView: View {
     /// while the sheet is still up races the dismissal animation, and the
     /// sheet has no access to this view's `navigationPath` regardless.
     @State private var pendingChildOpen: String?
-    /// Tappable title → summaries TOC sheet (jump-to-point navigation).
-    @State private var showSummaries = false
+    /// Which mission this conversation belongs to (spec: Transcript and
+    /// title). Derived locally from the mission cache — the snapshot
+    /// never carries it — so it is nil until the first missions refresh,
+    /// which is exactly when the affordance should appear.
+    @State private var missionID: String?
     /// Tasks page (spec §4). The items VM is created and started in `.task`
     /// regardless of which page shows — the toolbar's `NeedsYouBadge` needs
     /// a live `needsYouCount` on the chat page — and stopped in the same
@@ -452,6 +461,26 @@ struct ChatView: View {
 
     private var chatContextLine: String? {
         Self.contextLine(boxName: boxName, workdir: viewModel.sessionStatus?.workdir)
+    }
+
+    /// The principal toolbar item's content — the title plus the small
+    /// "box · ~/workdir" subtitle. Shared by the mission-button branch and
+    /// the plain (no-mission) branch so the two cannot drift.
+    private var titleStack: some View {
+        VStack(spacing: 1) {
+            titleText
+                .font(.headline)
+                .lineLimit(1)
+            if let context = chatContextLine {
+                Text(context)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    // Middle-truncate like the Mac toolbar's subtitle: the
+                    // tail of a path is the part worth keeping.
+                    .truncationMode(.middle)
+            }
+        }
     }
 
     private var chatPage: some View {
@@ -1056,6 +1085,16 @@ struct ChatView: View {
         .navigationTitle(chatTitle)
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(Self.hidesSystemBackButton(page: pager.page))
+        // Which mission this conversation belongs to (spec: Transcript and
+        // title). Derived locally from the mission cache — the snapshot
+        // never carries it — so it is nil until the first missions refresh,
+        // which is exactly when the affordance should appear.
+        .task(id: viewModel.roomID) {
+            guard let deps, let session else { return }
+            for await id in deps.journalStore(for: session).missionIDStream(convoID: viewModel.roomID) {
+                missionID = id
+            }
+        }
         .toolbar {
             // The tasks page's own way back: to the conversation it
             // belongs to, in the corner every iOS back button lives in.
@@ -1067,42 +1106,37 @@ struct ChatView: View {
                     .accessibilityLabel("Back to the chat")
                 }
             }
-            // Tappable title → summaries TOC sheet (jump-to-point nav).
-            // Under it, "box · ~/workdir" in small text — which machine and
-            // folder this session lives on, readable without opening the
-            // info sheet (Dan, 2026-08-16). Box comes from the list summary
-            // (same gate as the row chip); the path arrives with the first
-            // session-status frame, home-abbreviated like the info sheet.
+            // Tappable title → this conversation's mission (spec: Transcript
+            // and title). Under it, "box · ~/workdir" in small text — which
+            // machine and folder this session lives on, readable without
+            // opening the info sheet (Dan, 2026-08-16). Box comes from the
+            // list summary (same gate as the row chip); the path arrives
+            // with the first session-status frame, home-abbreviated like
+            // the info sheet. With no mission the title is not a button
+            // (spec) — same content, just inert.
             ToolbarItem(placement: .principal) {
                 if pager.page == .tasks {
                     Text("Tasks & decisions").font(.headline)
+                } else if let missionID {
+                    Button { openMission(missionID) } label: { titleStack }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(Self.accessibilityTitle(
+                            chatTitle: chatTitle,
+                            boxName: boxName,
+                            sessionShort: sessionShort,
+                            roomBoxNames: roomBoxNames
+                        ))
+                        .accessibilityValue(chatContextLine ?? "")
+                        .accessibilityHint("Opens this conversation's mission")
                 } else {
-                    Button { showSummaries = true } label: {
-                        VStack(spacing: 1) {
-                            titleText
-                                .font(.headline)
-                                .lineLimit(1)
-                            if let context = chatContextLine {
-                                Text(context)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                    // Middle-truncate like the Mac toolbar's
-                                    // subtitle: the tail of a path is the part
-                                    // worth keeping.
-                                    .truncationMode(.middle)
-                            }
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(Self.accessibilityTitle(
-                        chatTitle: chatTitle,
-                        boxName: boxName,
-                        sessionShort: sessionShort,
-                        roomBoxNames: roomBoxNames
-                    ))
-                    .accessibilityValue(chatContextLine ?? "")
-                    .accessibilityHint("Shows conversation summaries")
+                    titleStack
+                        .accessibilityLabel(Self.accessibilityTitle(
+                            chatTitle: chatTitle,
+                            boxName: boxName,
+                            sessionShort: sessionShort,
+                            roomBoxNames: roomBoxNames
+                        ))
+                        .accessibilityValue(chatContextLine ?? "")
                 }
             }
             // Jump to the newest message the user themself sent (item #60):
@@ -1174,9 +1208,6 @@ struct ChatView: View {
         }
         .sheet(isPresented: $showMediaBrowser) {
             MediaBrowserSheet(chatViewModel: viewModel)
-        }
-        .sheet(isPresented: $showSummaries) {
-            SummariesSheet(viewModel: viewModel)
         }
         .task {
             // (Scroll-memory restore lives on the ScrollView inside the
