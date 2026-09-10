@@ -112,14 +112,20 @@ final class AppDependencies {
         /// can never install its marker/reconnect subscriptions after the
         /// store wipe.
         var itemsStartTask: Task<Void, Never>?
+        /// Keeps the local mission cache fresh for this session (spec
+        /// 2026-09-10). Started right after construction, stopped with the
+        /// rest of the session's teardown on sign-out.
+        let missions: MissionsSync
+        var missionsStartTask: Task<Void, Never>?
         /// Background search-history backfill sweep for this session (see
         /// `SearchBackfillCoordinator`). Cancelled on sign-out.
         var backfillTask: Task<Void, Never>?
-        init(api: JournalAPI, store: JournalStore, engine: JournalSyncEngine, items: ItemsSync) {
+        init(api: JournalAPI, store: JournalStore, engine: JournalSyncEngine, items: ItemsSync, missions: MissionsSync) {
             self.api = api
             self.store = store
             self.engine = engine
             self.items = items
+            self.missions = missions
         }
     }
 
@@ -195,8 +201,11 @@ final class AppDependencies {
         // Task 9 (items tracker): the marker/reconnect streams come straight
         // off the sync engine (`nonisolated`, so safe to close over here).
         let items = ItemsSync(api: api, store: store, markers: { engine.itemMarkers() }, connectionStates: { engine.stateStream() })
-        let core = JournalCore(api: api, store: store, engine: engine, items: items)
+        let missions = MissionsSync(api: api, store: store, markers: { engine.missionMarkers() },
+                                    connectionStates: { engine.stateStream() })
+        let core = JournalCore(api: api, store: store, engine: engine, items: items, missions: missions)
         core.itemsStartTask = Task { await items.start() }
+        core.missionsStartTask = Task { await missions.start() }
         core.backfillTask = Self.startBackfill(search: search, api: api, store: store, engine: engine)
         // One-time: box tag letters chosen before they were journal-held
         // move up to the server so they show on every device — and into
@@ -308,6 +317,13 @@ final class AppDependencies {
     /// instance the view-model factories below hand out.
     func itemsSync(for session: UserSession) -> ItemsSync {
         core(for: session).items
+    }
+
+    /// The session's `MissionsSync` actor — marker refetches and the
+    /// reconnect list refresh. One per session, same instance the view-model
+    /// factories hand out.
+    func missionsSync(for session: UserSession) -> MissionsSync {
+        core(for: session).missions
     }
 
     /// Item #115: resolves a tapped `[#65](matron://item/65)` link to a
@@ -519,6 +535,11 @@ final class AppDependencies {
                 // the store after it's been cleared.
                 await core.itemsStartTask?.value
                 await core.items.stop()
+                // Same discipline as `items`: await the start kickoff
+                // before stop() so a not-yet-run start cannot install its
+                // marker/reconnect subscriptions after the store is wiped.
+                await core.missionsStartTask?.value
+                await core.missions.stop()
                 await core.engine.endSync()          // stop the writer first…
                 try? core.store.wipe()               // …then clear the mirror
                 // The mirror wipe deliberately preserves the outbox (a
