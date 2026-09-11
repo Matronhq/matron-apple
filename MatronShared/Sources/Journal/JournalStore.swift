@@ -781,13 +781,30 @@ public final class JournalStore: @unchecked Sendable {
     /// seq)`, `sweepChunkSize` rows per chunk) so a large backlog doesn't
     /// hold one long read transaction.
     ///
-    /// `cutoff` is normally the full `now − retentionWindow` instant — the
-    /// same value `applyRetention(now:)` would tombstone up to — but if
-    /// `Task.isCancelled` bails the scan at a chunk boundary, `cutoff` is
-    /// only the timestamp of the last row actually seen, so a caller that
-    /// records this cutoff as the new watermark (only after successfully
-    /// removing `seqs` from the index) never claims coverage it doesn't
-    /// have — the next call resumes exactly where this one stopped.
+    /// `cutoff` is the full `now − retentionWindow` instant — the same
+    /// value `applyRetention(now:)` would tombstone up to — but ONLY when
+    /// the scan actually ran to completion.
+    ///
+    /// On `Task.isCancelled`, this records NOTHING: `cutoff` falls back to
+    /// the watermark the scan started from, so a caller that persists it
+    /// via `recordSearchRetirement` writes back exactly what was already
+    /// there — a pure no-op — and the next call re-scans this same,
+    /// still-fully-outstanding range from scratch. The `seqs` collected
+    /// before cancellation are still returned (harmless to remove from the
+    /// search index; idempotent, and they get re-reported and re-removed
+    /// next pass regardless).
+    ///
+    /// A cutoff derived from the last row actually seen was tried and
+    /// reverted (re-review of PR #212, round 2A): a chunk fetch that
+    /// returned a FULL `sweepChunkSize` never proves every row sharing that
+    /// row's `ts` was fetched — same-millisecond ties are routine (a batch
+    /// apply stamps many rows at once) — so persisting that `ts` as the new
+    /// watermark could permanently orphan un-fetched siblings past it, since
+    /// a resumed scan seeds `afterSeq = Int64.max` and so never revisits
+    /// ties AT the watermark. `sweepTombstones` already treats cancellation
+    /// this same way — persist nothing, let the next call redo the work —
+    /// and there is no cost to matching it here: `pendingSearchRetirements`
+    /// is read-only, so "redo the work" is just a re-scan, not a re-write.
     public func pendingSearchRetirements(now: Date = Date()) throws -> (seqs: [Int64], cutoff: Date) {
         let cutoffMs = Int64(now.timeIntervalSince1970 * 1000) - Int64(EventTombstone.retentionWindow * 1000)
         let types = [JournalEventType.toolOutput, JournalEventType.diff]
@@ -799,14 +816,14 @@ public final class JournalStore: @unchecked Sendable {
         // Same "watermark past our own cutoff means no coverage for THIS
         // call's range" rule as `sweepTombstones` — see its comment.
         if afterTS > cutoffMs { afterTS = 0 }
+        // The value the scan STARTED from — what a cancelled scan reports
+        // back as `cutoff`, below.
+        let startTS = afterTS
         var afterSeq = Int64.max
         var seqs: [Int64] = []
-        var lastVisitedTS: Int64?
         while true {
             if Task.isCancelled {
-                let cutoff = lastVisitedTS.map { Date(timeIntervalSince1970: Double($0) / 1000) }
-                    ?? Date(timeIntervalSince1970: Double(afterTS) / 1000)
-                return (seqs, cutoff)
+                return (seqs, Date(timeIntervalSince1970: Double(startTS) / 1000))
             }
             let chunk: [(seq: Int64, ts: Int64)] = try dbQueue.read { db in
                 var arguments: [DatabaseValueConvertible] = types
@@ -824,7 +841,6 @@ public final class JournalStore: @unchecked Sendable {
             seqs.append(contentsOf: chunk.map { $0.seq })
             afterTS = last.ts
             afterSeq = last.seq
-            lastVisitedTS = last.ts
         }
         return (seqs, Date(timeIntervalSince1970: Double(cutoffMs) / 1000))
     }

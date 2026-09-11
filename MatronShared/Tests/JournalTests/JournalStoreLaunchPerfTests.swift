@@ -629,6 +629,10 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
     /// `cutoff` must reflect only what was actually scanned — never the
     /// full retention cutoff, or a caller recording it would claim coverage
     /// it doesn't have.
+    /// Re-review round (PR #212): a cancelled scan must persist NOTHING — no
+    /// cutoff past what the scan started from — matching `sweepTombstones`'s
+    /// own cancellation discipline. See `pendingSearchRetirements`'s doc
+    /// comment for why a cutoff derived from the last row seen is unsafe.
     func testPendingSearchRetirementsStopsAtTheNextChunkBoundaryWhenCancelled() async throws {
         let store = try makeStore()
         let insertAt = Date(timeIntervalSince1970: 1)
@@ -645,13 +649,41 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
         }
         let pending = try await handle.value
         XCTAssertEqual(pending.seqs, [], "a scan cancelled before its first chunk must find nothing")
-        XCTAssertLessThan(pending.cutoff, now.addingTimeInterval(-EventTombstone.retentionWindow),
-                          "a cancelled scan's cutoff must not claim the full retention cutoff")
+        XCTAssertEqual(pending.cutoff, Date(timeIntervalSince1970: 0),
+                       "a cancelled scan must record nothing — cutoff falls back to the watermark it started from (absent here)")
 
-        // An uncancelled pass over the same, still-fully-unscanned range
-        // must still find everything — cancellation must not leave a gap.
+        // `recordSearchRetirement(upTo:)` after a cancelled pass must be a
+        // pure no-op: it writes back exactly the watermark that was already
+        // there (absent), so an uncancelled pass over the same,
+        // still-fully-outstanding range finds everything again.
+        try store.recordSearchRetirement(upTo: pending.cutoff)
         let resumed = try store.pendingSearchRetirements(now: now)
-        XCTAssertEqual(resumed.seqs.count, 1200)
+        XCTAssertEqual(resumed.seqs.count, 1200, "a cancelled scan must not have lost or hidden any rows")
+    }
+
+    /// Re-review round (PR #212): 1200 rows sharing ONE `ts` (a batch apply
+    /// stamps many rows at exactly the same millisecond, routinely) must
+    /// ALL be visited in a single uncancelled call, proving the keyset
+    /// `(ts, seq)` paging walks ties by `seq` rather than a chunk boundary
+    /// silently dropping same-`ts` siblings.
+    func testPendingSearchRetirementsVisitsAllSameTimestampSiblingsAcrossChunkBoundaries() throws {
+        let store = try makeStore()
+        let sharedTS = Date(timeIntervalSince1970: 1)
+        let events = (1...1200).map { seq in
+            event(Int64(seq), type: JournalEventType.toolOutput,
+                  payload: ["command": "c\(seq)", "live_log": true, "snippet": "out"], ts: sharedTS)
+        }
+        try store.insertHistory(events, now: sharedTS)
+        let now = sharedTS.addingTimeInterval(31 * 24 * 3600)
+
+        let pending = try store.pendingSearchRetirements(now: now)
+        XCTAssertEqual(pending.seqs.sorted(), Array(1...1200),
+                       "every row sharing the tie timestamp must be visited, not just the first chunk")
+        XCTAssertGreaterThanOrEqual(pending.cutoff, sharedTS)
+
+        try store.recordSearchRetirement(upTo: pending.cutoff)
+        let after = try store.pendingSearchRetirements(now: now)
+        XCTAssertEqual(after.seqs, [], "the watermark must now cover every tied sibling")
     }
 
     func testMaintenanceLastRunRoundTripsToTheSecond() throws {
