@@ -947,6 +947,19 @@ public final class JournalStore: @unchecked Sendable {
             if c.lastSeq > existing.lastSeq {
                 existing.lastSeq = c.lastSeq
                 existing.snippet = c.snippet
+                // Deliberately NOT touched here: `lastMessageType` /
+                // `expiredSnippet` are refreshed only when the events they
+                // derive from replay through `applyOne` (M5). A `/snapshot`
+                // refresh can therefore advance `snippet` to newer wire
+                // content while these two columns still describe whichever
+                // local event was applied last, until catch-up replays the
+                // rest — a window where a conversation whose newest
+                // activity is >24 h old can show a stale `"$ command"` stub
+                // over the fresher snippet. This matches pre-v11 behaviour
+                // exactly (the old `newestMessageSeq` also read only local
+                // events), so it's not a regression, just an existing
+                // exception to "the derived columns are maintained on
+                // write" worth having on the record.
             }
             // Without this a snapshot refresh could advance the snippet but
             // leave the displayed "last activity" time frozen at whatever
