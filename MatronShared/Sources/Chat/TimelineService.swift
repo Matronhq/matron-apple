@@ -138,10 +138,6 @@ public protocol TimelineService: Sendable {
     /// (which the staleness sweep can clear mid-turn); drives the floating
     /// stop button.
     func sessionState() -> AsyncStream<String>
-
-    /// TOC summary entries for this conversation, newest-first. Re-yields on
-    /// every change. Default: empty forever (fakes and non-journal backends).
-    func summaryEntriesStream() -> AsyncStream<[ConversationSummaryEntry]>
 }
 
 public extension TimelineService {
@@ -160,12 +156,6 @@ public extension TimelineService {
     /// Default: no session-state source, same immediately-finished shape
     /// as `sessionStatus()`.
     func sessionState() -> AsyncStream<String> {
-        AsyncStream { $0.finish() }
-    }
-
-    /// Default: no summary source, same immediately-finished shape as
-    /// `sessionStatus()`/`sessionState()`.
-    func summaryEntriesStream() -> AsyncStream<[ConversationSummaryEntry]> {
         AsyncStream { $0.finish() }
     }
 
