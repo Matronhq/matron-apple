@@ -426,11 +426,12 @@ struct MacChatListView: View {
                 }
             }
             .onChange(of: nav, navChanged)
-            // Flattens `Bool??` (optional VM × optional isSupported) to
-            // `Bool?` before the `!= false` comparison in
-            // `setMissionsSupported` — nil either way means "not proven
-            // false", never coerced with `??` into a premature answer.
-            .onChange(of: missionsVM?.isSupported ?? nil) { _, supported in setMissionsSupported(supported != false) }
+            // Optional chaining through `missionsVM?` already flattens to
+            // a plain `Bool?` (fix round 3, N4: the earlier `?? nil` was
+            // a no-op) — nil either way means "not proven false," never
+            // coerced with `??` into a premature answer, so it reaches
+            // `setMissionsSupported`'s `!= false` comparison untouched.
+            .onChange(of: missionsVM?.isSupported) { _, supported in setMissionsSupported(supported != false) }
     }
 
     /// Lifecycle: view-model start/stop, decisions VM, sync-state and
