@@ -261,6 +261,13 @@ public actor MissionsSync {
         let mission = try await api.closeMission(id: id, summary: summary)
         guard !stopped else { return mission }
         try store.upsertMissions([mission])
+        // Fix round 5 (Bugbot): same reasoning as `refreshMissionOnce`'s
+        // insert — an in-flight list GET issued before this close landed
+        // can still be holding the OLDER, still-open snapshot when it
+        // returns; without protecting this id, that (now stale) response
+        // would overwrite the just-closed row. No suspension between the
+        // upsert above and this insert.
+        protectedSinceListStart.insert(mission.id)
         return mission
     }
 }

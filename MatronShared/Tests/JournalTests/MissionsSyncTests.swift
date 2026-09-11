@@ -296,6 +296,33 @@ final class MissionsSyncTests: XCTestCase {
         await sync.stop()
     }
 
+    /// Fix round 5 (Bugbot): `closeMission` upserted the returned row but
+    /// never protected its id — an in-flight list GET issued before the
+    /// close landed can still be holding the OLDER, still-open snapshot
+    /// when it returns, reverting the just-closed row. Mirrors the H1
+    /// race test, but for the close path instead of a detail refresh.
+    func testCloseSurvivesAStaleInFlightListRefresh() async throws {
+        let api = FakeMissions()
+        api.details = ["ms_1": MissionDetail(mission: mission("ms_1", num: 61), milestones: [], items: [], conversations: [])]
+        // Still "open" in the gated response — a snapshot taken before
+        // the close landed.
+        api.list = [mission("ms_1", num: 61)]
+        let (sync, store, _, _) = try make(api: api)
+        api.blockNextList = true
+        let listTask = Task { await sync.refresh() }
+        try await waitUntil { api.isListGated }
+        let closed = try await sync.closeMission(id: "ms_1", summary: "Done.")
+        XCTAssertEqual(closed.state, .closed)
+        XCTAssertEqual(try store.mission(id: "ms_1")?.state, .closed,
+                       "the close must land before the stale list response is even released")
+        api.releaseListGate()
+        let listOutcome = await listTask.value
+        XCTAssertEqual(listOutcome, .succeeded)
+        XCTAssertEqual(try store.mission(id: "ms_1")?.state, .closed,
+                       "the closed mission must survive the now-stale, still-open list response")
+        await sync.stop()
+    }
+
     /// Polls a condition rather than sleeping a fixed interval.
     private func waitUntil(timeout: TimeInterval = 2, _ condition: () async throws -> Bool) async throws {
         let deadline = Date().addingTimeInterval(timeout)
