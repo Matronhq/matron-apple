@@ -89,6 +89,7 @@ struct ChatListView: View {
 
     var body: some View {
         chatListContent
+        .onAppear { LaunchTimeline.shared.mark(.firstListPaint) }
         .navigationTitle("Chats")
         .toolbar {
             // Connection state rides inline in the nav bar's leading edge so

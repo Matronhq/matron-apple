@@ -207,7 +207,15 @@ final class AppDependencies {
         if let existing = cores[session.userID] { return existing }
         let api = JournalAPI(serverURL: session.homeserverURL, token: session.accessToken)
         let dbURL = journalDirectory.appendingPathComponent("\(session.userID).sqlite")
-        let store = try! JournalStore(databaseURL: dbURL, ownSender: "user:\(session.userID)")
+        LaunchTimeline.shared.beginStoreOpen()
+        let store = try! JournalStore(databaseURL: dbURL, ownSender: "user:\(session.userID)")  // unchanged
+        LaunchTimeline.shared.endStoreOpen()
+        // Nested inside the store-open interval: present on the one launch
+        // that ran v11, absent on every later one. That contrast is the
+        // headline result of this whole plan, so it has to be visible.
+        if let migration = store.lastMigrationDuration {
+            LaunchTimeline.shared.recordMigration(migration)
+        }
         // One read, used for both: on a locked background launch this is nil
         // and stays nil for this core until `adoptSearch` fills it in.
         let search = self.search

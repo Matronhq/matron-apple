@@ -239,6 +239,13 @@ public final class JournalStore: @unchecked Sendable {
     let dbQueue: DatabaseQueue
     private let ownSender: String
 
+    /// How long the schema migration took during this store's open, or `nil`
+    /// when every migration was already applied. Published rather than
+    /// reported: `AppDependencies` turns it into the launch timeline's
+    /// nested `migration` interval, so this module keeps no dependency on
+    /// the timeline and writes no `UserDefaults` (see the plan's R7).
+    public private(set) var lastMigrationDuration: Duration?
+
     public init(databaseURL: URL?, ownSender: String) throws {
         self.ownSender = ownSender
         if let url = databaseURL {
@@ -268,7 +275,18 @@ public final class JournalStore: @unchecked Sendable {
         } else {
             dbQueue = try DatabaseQueue()
         }
-        try Self.migrator().migrate(dbQueue)
+        // Migrations run synchronously here, before any caller can read the
+        // store, so the one launch that runs v11 pays its index build and
+        // backfill up front. `ContinuousClock` (not `Date`) because this is
+        // an elapsed-time measurement: it cannot be skewed by an NTP step
+        // landing mid-migration.
+        let migrator = Self.migrator()
+        let applied = (try? dbQueue.read { try migrator.appliedIdentifiers($0) }) ?? []
+        let hasPending = migrator.migrations.contains { !applied.contains($0) }
+        let clock = ContinuousClock()
+        let began = clock.now
+        try migrator.migrate(dbQueue)
+        lastMigrationDuration = hasPending ? clock.now - began : nil
     }
 
     /// The full schema migration chain. Static (rather than inline in

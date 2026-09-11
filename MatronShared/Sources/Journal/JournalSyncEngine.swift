@@ -824,6 +824,9 @@ public actor JournalSyncEngine {
         if case .running = new {
             readyWaiters.forEach { $0.resume() }
             readyWaiters = []
+            // First time the replay reaches the live cursor — `mark` keeps
+            // the first value, so later reconnects do not overwrite it.
+            LaunchTimeline.shared.mark(.catchUpComplete)
             // Caught up with the live cursor: the disk is free again, so the
             // sweeper may run. `runIfDue` is watermark-gated, so the
             // reconnects that also land here cost one `meta` read.
