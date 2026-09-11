@@ -57,4 +57,12 @@ final class DiffCardSnapshotTests: XCTestCase {
         assertVariants(of: DiffCard(event: sampleEvent(viewer: nil)).frame(width: 420),
                        named: "no_viewer_url")
     }
+
+    func test_expired_showsTheNotStoredNotice() {
+        let expired = DiffEvent(filePath: "/w/Sources/A.swift", displayPath: "Sources/A.swift",
+                                viewerURL: nil, tool: "Edit", label: nil, diff: "",
+                                added: 2, removed: 1, truncated: false, newFile: false,
+                                expired: true)
+        assertVariants(of: DiffCard(event: expired).frame(width: 420), named: "expired")
+    }
 }

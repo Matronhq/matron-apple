@@ -59,7 +59,15 @@ public struct DiffCard: View {
 
         VStack(alignment: .leading, spacing: 8) {
             header
-            if !visible.isEmpty {
+            if event.expired {
+                // Local retention (spec §3.4) or a server tombstone: the
+                // header still names the file and its counts, so the row
+                // stays useful — only the body is gone. Same treatment
+                // ToolCallCard already gives an expired tool output.
+                Text("Diff no longer stored on this device")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if !visible.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     Text(renderedVisible(visible, memo: memo))
                         .font(.system(.caption, design: .monospaced))
@@ -69,13 +77,13 @@ public struct DiffCard: View {
                 .background(TerminalStyle.background)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
             }
-            if hidden > 0 {
+            if hidden > 0, !event.expired {
                 Button { expanded = true } label: {
                     Text("+\(hidden) more line\(hidden == 1 ? "" : "s")")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-            } else if expanded && event.truncated {
+            } else if expanded && event.truncated && !event.expired {
                 Text("… diff truncated")
                     .font(.caption2).foregroundStyle(.secondary)
             }
