@@ -10,8 +10,22 @@ import MatronViewModels
 /// rooms. The cache pattern mirrors `syncCache` / `timelineCache`.
 @MainActor
 final class AppDependenciesTests: XCTestCase {
+    /// Held so `tearDown()` can stop the session's background maintenance
+    /// sweeper — every test method assigns its own `AppDependencies()` here
+    /// rather than a local `let` (M1 — the identical Mac defect fixed in
+    /// `MacAppDependenciesTests`: a leaked `JournalMaintenance` 10 s timer
+    /// otherwise outlives the test method). See
+    /// `AppDependencies.stopMaintenanceForTests()`.
+    private var deps: AppDependencies!
+
+    override func tearDown() async throws {
+        await deps?.stopMaintenanceForTests()
+        deps = nil
+        try await super.tearDown()
+    }
+
     func test_mediaService_isCached_perSession() {
-        let deps = AppDependencies()
+        deps = AppDependencies()
         let session = UserSession(
             userID: "@a:s", deviceID: "D",
             homeserverURL: URL(string: "https://s")!, accessToken: "t"
@@ -28,7 +42,7 @@ final class AppDependenciesTests: XCTestCase {
     }
 
     func test_mediaService_isDistinct_perUser() {
-        let deps = AppDependencies()
+        deps = AppDependencies()
         let s1 = UserSession(userID: "@a:s", deviceID: "D",
                              homeserverURL: URL(string: "https://s")!, accessToken: "t")
         let s2 = UserSession(userID: "@b:s", deviceID: "D",
@@ -51,7 +65,7 @@ final class AppDependenciesTests: XCTestCase {
     /// (16). Visiting `limit + 1` distinct rooms must evict the oldest;
     /// the `limit + 1`-th room must remain cached.
     func test_timelineCache_evictsOldestEntry_whenLimitExceeded() {
-        let deps = AppDependencies()
+        deps = AppDependencies()
         let session = UserSession(
             userID: "@a:s", deviceID: "D",
             homeserverURL: URL(string: "https://s")!, accessToken: "t"
@@ -89,7 +103,7 @@ final class AppDependenciesTests: XCTestCase {
     /// originally-first-cached room is the one evicted, regardless of
     /// how many times it was re-fetched after.
     func test_timelineCache_reaccessDoesNotPromote_evictionIsFIFO() {
-        let deps = AppDependencies()
+        deps = AppDependencies()
         let session = UserSession(
             userID: "@a:s", deviceID: "D",
             homeserverURL: URL(string: "https://s")!, accessToken: "t"
@@ -122,7 +136,7 @@ final class AppDependenciesTests: XCTestCase {
     /// first core opens. A fresh login resyncs from a server snapshot, so
     /// the clean slate costs nothing.
     func test_wipeLocalDataForFreshLogin_removesStrayJournalMirror_andEmptiesSearch() async throws {
-        let deps = AppDependencies()
+        deps = AppDependencies()
 
         // A leftover per-user SQLite mirror a crashed teardown left behind.
         let stray = deps.journalStoreDirectory.appendingPathComponent("@ghost:s.sqlite")
@@ -158,7 +172,7 @@ final class AppDependenciesTests: XCTestCase {
     /// teardown gate seam that `AppDependencies` doesn't expose — see the
     /// task report. This pins the await-actually-waits invariant.
     func test_awaitPendingTeardown_waitsForSignOutSearchWipe() async throws {
-        let deps = AppDependencies()
+        deps = AppDependencies()
         let search = try XCTUnwrap(deps.search)
         let term = "teardown\(UUID().uuidString.prefix(8))"
         try await search.index(roomID: "!r:s", eventID: "$1", sender: "@a:s",
@@ -183,7 +197,7 @@ final class AppDependenciesTests: XCTestCase {
     /// coverable here: `AppDependencies()` exposes no injection seam that could
     /// hold teardown #1 mid-flight while a second sign-out races the await.
     func test_consecutiveSignOuts_bothTeardownsCompleteUnderAwait() async throws {
-        let deps = AppDependencies()
+        deps = AppDependencies()
         let search = try XCTUnwrap(deps.search)
         let term = "chain\(UUID().uuidString.prefix(8))"
         try await search.index(roomID: "!r:s", eventID: "$1", sender: "@a:s",
@@ -201,7 +215,7 @@ final class AppDependenciesTests: XCTestCase {
     /// App shell (spec §1): the Decisions instance has no home conversation
     /// and therefore starts in the cross-conversation scope.
     func test_makeDecisionsViewModel_hasNoHomeConversation_andStartsInAll() {
-        let deps = AppDependencies()
+        deps = AppDependencies()
         let session = UserSession(userID: "@a:s", deviceID: "D",
                                   homeserverURL: URL(string: "https://s")!, accessToken: "t")
         let vm = deps.makeDecisionsViewModel(for: session)
