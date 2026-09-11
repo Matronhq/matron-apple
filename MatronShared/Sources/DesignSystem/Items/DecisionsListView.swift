@@ -66,7 +66,7 @@ public struct DecisionsListView: View {
                                                    description: Text("Questions and decisions waiting on you, from every conversation, appear here.")))
             } else {
                 List {
-                    ForEach(model.rows) { row in
+                    ForEach(Array(model.rows.enumerated()), id: \.element.id) { index, row in
                         Button { onSelect(row.item.id) } label: {
                             ItemRow(item: row.item, showsOrigin: row.originTitle ?? "Another chat")
                         }
@@ -75,6 +75,20 @@ public struct DecisionsListView: View {
                         .contextMenu {
                             Button("Open conversation") { onOpenConversation(row.item.originConvoID) }
                         }
+                        // Full-width separators are a Mac-only affordance;
+                        // iOS keeps its insetGrouped style and default row
+                        // insets. `ItemRow` itself stays untouched since
+                        // `ItemsListView` also renders it. `macInboxRow`
+                        // zeroes the list row insets, so the vertical
+                        // breathing room `ItemRow` doesn't provide itself
+                        // has to be added back here.
+                        #if os(macOS)
+                        .padding(.vertical, 6)
+                        // The gutter is part of the row: without this the
+                        // strip beside the separator would not hit-test.
+                        .contentShape(Rectangle())
+                        .macInboxRow(hideTopSeparator: index == 0)
+                        #endif
                     }
                 }
                 #if os(iOS)
@@ -82,7 +96,12 @@ public struct DecisionsListView: View {
                 .scrollContentBackground(.hidden)
                 .refreshable { await onRefresh() }
                 #else
-                .listStyle(.inset)
+                // `.inset` insets the separators; `.plain` draws one
+                // hairline per row edge-to-edge, like Mail.
+                .listStyle(.plain)
+                // `.plain` paints an opaque list background; hide it so the
+                // column keeps the same material backdrop as Conversations.
+                .scrollContentBackground(.hidden)
                 #endif
             }
         }

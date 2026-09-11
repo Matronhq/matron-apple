@@ -51,14 +51,18 @@ public struct MissionsListView: View {
                 List {
                     if !model.open.isEmpty {
                         Section("Open") {
-                            ForEach(model.open) { mission in row(mission) }
+                            ForEach(Array(model.open.enumerated()), id: \.element.id) { index, mission in
+                                row(mission, hideTopSeparator: index == 0)
+                            }
                         }
                     }
                     if !model.closed.isEmpty {
                         Section(isExpanded: $showClosed) {
-                            ForEach(model.closed) { mission in row(mission) }
+                            ForEach(Array(model.closed.enumerated()), id: \.element.id) { index, mission in
+                                row(mission, hideTopSeparator: index == 0)
+                            }
                         } header: {
-                            Text("Closed (\(model.closed.count))")
+                            closedHeader
                         }
                     }
                 }
@@ -67,7 +71,12 @@ public struct MissionsListView: View {
                 .scrollContentBackground(.hidden)
                 .refreshable { await onRefresh() }
                 #else
-                .listStyle(.sidebar)
+                // `.sidebar`/`.inset` inset or hide separators; `.plain`
+                // draws one hairline per row edge-to-edge, like Mail.
+                .listStyle(.plain)
+                // `.plain` paints an opaque list background; hide it so the
+                // column keeps the same material backdrop as Conversations.
+                .scrollContentBackground(.hidden)
                 #endif
             }
         }
@@ -76,11 +85,42 @@ public struct MissionsListView: View {
         #endif
     }
 
-    private func row(_ mission: Mission) -> some View {
+    /// `hideTopSeparator` drops the hairline above a section's first row —
+    /// it would otherwise double the header's own bottom line. Full-width
+    /// separators are a Mac-only affordance; iOS keeps its sidebar style
+    /// and default row insets.
+    /// The `.sidebar` style draws the disclosure chevron `Section(isExpanded:)`
+    /// needs; the Mac list is `.plain`, which draws none, so there the
+    /// header is the toggle (a11y id `missions.closedToggle`).
+    @ViewBuilder
+    private var closedHeader: some View {
+        #if os(macOS)
+        Button { withAnimation { showClosed.toggle() } } label: {
+            HStack {
+                Text("Closed (\(model.closed.count))")
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .rotationEffect(.degrees(showClosed ? 90 : 0))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("missions.closedToggle")
+        .accessibilityLabel(showClosed ? "Hide closed missions" : "Show closed missions")
+        #else
+        Text("Closed (\(model.closed.count))")
+        #endif
+    }
+
+    private func row(_ mission: Mission, hideTopSeparator: Bool) -> some View {
         Button { onSelect(mission.id) } label: { MissionRowView(mission: mission) }
             .buttonStyle(.plain)
             // iOS List Buttons inherit the accent tint unless reset.
             .foregroundStyle(Color.primary)
+            #if os(macOS)
+            .macInboxRow(hideTopSeparator: hideTopSeparator)
+            #endif
     }
 
     /// Same shape as `DecisionsListView.placeholder`: on iOS the empty
