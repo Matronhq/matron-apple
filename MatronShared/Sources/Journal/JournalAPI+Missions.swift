@@ -1,5 +1,8 @@
 import Foundation
+import os
 import MatronModels
+
+private let missionsAPILogger = Logger(subsystem: "chat.matron", category: "missions-api")
 
 public struct MissionsListQuery: Equatable, Sendable {
     /// Omitted means "both states" — the journal has no `state=any`.
@@ -31,11 +34,27 @@ public struct MissionDetail: Equatable, Sendable {
     }
 }
 
+/// `decodeMissions`' result: the rows that decoded, plus the ids of any
+/// that didn't (fix round 2, addendum — Bugbot on #216). A dropped row's
+/// id still names a real, previously-cached mission; `MissionsSync`
+/// folds `droppedIDs` into the same protected set it already keeps
+/// detail-refreshed ids in, so a decode failure on this device (a field
+/// this build doesn't understand yet, say) can never masquerade as "the
+/// server stopped returning it" and get the authoritative replace to
+/// delete it.
+public struct MissionsListDecode: Equatable, Sendable {
+    public let missions: [Mission]
+    public let droppedIDs: [String]
+    public init(missions: [Mission], droppedIDs: [String]) {
+        self.missions = missions; self.droppedIDs = droppedIDs
+    }
+}
+
 /// The read surface the apps need, plus the one write they are allowed:
 /// a USER close. Creating, joining, renaming and moving items are agent-only
 /// (bridge tools) and deliberately absent.
 public protocol MissionsProviding: Sendable {
-    func listMissions(_ query: MissionsListQuery) async throws -> [Mission]
+    func listMissions(_ query: MissionsListQuery) async throws -> MissionsListDecode
     func mission(id: String) async throws -> MissionDetail
     func milestones(convoID: String) async throws -> [Milestone]
     func closeMission(id: String, summary: String) async throws -> Mission
@@ -43,9 +62,40 @@ public protocol MissionsProviding: Sendable {
 
 extension JournalAPI: MissionsProviding {
     /// Internal (not private) so `MissionsAPITests` can pin the decoding
-    /// without standing up an HTTP stub for every shape.
-    static func decodeMissions(_ obj: [String: Any]) -> [Mission] {
-        (obj["missions"] as? [[String: Any]] ?? []).compactMap(Mission.init(json:))
+    /// without standing up an HTTP stub for every shape. Lenient on
+    /// individual rows on purpose — CodeRabbit #209 asked for a malformed
+    /// row to fail the whole response, but the controller ruling keeps
+    /// this the way `decodeMission`'s siblings (`items`, `milestones`,
+    /// `conversations`) already behave: one bad row must not blank the
+    /// entire list. The drop is logged, and (fix round 2, addendum) its
+    /// id — when the row has one — is returned in `droppedIDs` so the
+    /// caller can protect it from being read as "gone."
+    ///
+    /// The TOP-LEVEL `missions` key is a different failure mode (fix
+    /// round 2, L1): absent or not an array means the response itself is
+    /// malformed, not merely one bad row, and an authoritative replace
+    /// must not treat that as "the server says there are now zero
+    /// missions" — so this throws instead of defaulting to `[]`. A
+    /// present-but-empty array is a legitimate "no missions" answer and
+    /// still decodes.
+    static func decodeMissions(_ obj: [String: Any]) throws -> MissionsListDecode {
+        guard let rows = obj["missions"] as? [Any] else {
+            throw JournalAPIError.transport("malformed missions response")
+        }
+        var missions: [Mission] = []
+        var droppedIDs: [String] = []
+        for element in rows {
+            let row = element as? [String: Any]
+            if let row, let mission = Mission(json: row) {
+                missions.append(mission)
+                continue
+            }
+            let id = row?["id"] as? String
+            let num = (row?["num"] as? Int).map(String.init) ?? "?"
+            missionsAPILogger.error("dropped malformed mission row id=\(id ?? "?", privacy: .public) num=\(num, privacy: .public)")
+            if let id { droppedIDs.append(id) }
+        }
+        return MissionsListDecode(missions: missions, droppedIDs: droppedIDs)
     }
 
     static func decodeMission(_ obj: [String: Any]) throws -> Mission {
@@ -63,8 +113,8 @@ extension JournalAPI: MissionsProviding {
             conversations: (obj["conversations"] as? [[String: Any]] ?? []).compactMap(MissionConversation.init(json:)))
     }
 
-    public func listMissions(_ query: MissionsListQuery) async throws -> [Mission] {
-        Self.decodeMissions(try await request(path: "/missions", query: query.queryItems))
+    public func listMissions(_ query: MissionsListQuery) async throws -> MissionsListDecode {
+        try Self.decodeMissions(try await request(path: "/missions", query: query.queryItems))
     }
 
     public func mission(id: String) async throws -> MissionDetail {

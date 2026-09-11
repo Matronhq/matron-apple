@@ -1110,6 +1110,11 @@ struct ChatView: View {
             missionID = nil
             guard let deps, let session else { return }
             for await id in deps.journalStore(for: session).missionIDStream(convoID: viewModel.roomID) {
+                // Cancellation ends a pending `next()` call but does not
+                // undo a value already returned — without this guard the
+                // old task's write can land after the new task's `nil`
+                // above, leaving a stale mission id (CodeRabbit #209).
+                guard !Task.isCancelled else { return }
                 missionID = id
             }
         }

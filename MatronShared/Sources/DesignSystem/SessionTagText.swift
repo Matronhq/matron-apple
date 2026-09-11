@@ -70,6 +70,35 @@ public enum SessionTagText {
             + Text(short).foregroundStyle(.primary)
     }
 
+    /// Plain-text mirror of `room`/`run`'s room-first fallback, for sites
+    /// that need the same tag as a VoiceOver label rather than a colored
+    /// `Text` run (CodeRabbit #209: `MissionDetailView`'s milestone row
+    /// announced only `boxName`, omitting the other room boxes and the
+    /// session short a multi-agent room's visual tag carries). Speaks box
+    /// NAMES, not the single-letter glyphs the visual run draws (fix
+    /// round 2, H3: the first version spoke "d", "↔" — box letters and a
+    /// separator glyph meant to be read, not heard). `nil` when there is
+    /// nothing to show, same as `room`/`run`.
+    public static func plainLabel(
+        boxName: String?,
+        sessionShort: String?,
+        roomBoxNames: [String] = []
+    ) -> String? {
+        // Mirrors `room(...)`'s own gate exactly (fix round 3, N2): that
+        // Text-producing branch requires at least 2 names, so a single
+        // `roomBoxNames` entry falls through to the single-box `boxName`
+        // there too — this branch must agree, or VoiceOver speaks a
+        // "room" label the eye never sees.
+        let names = roomBoxNames.count >= 2 ? roomBoxNames : [boxName].compactMap { $0 }
+        let joinedNames = names.isEmpty ? nil : names.joined(separator: ", ")
+        switch (joinedNames, sessionShort) {
+        case (nil, nil): return nil
+        case (let n?, nil): return n
+        case (nil, let s?): return s
+        case (let n?, let s?): return "\(n), \(s)"
+        }
+    }
+
     /// The full title line: room tag first, single-box tag second, bare
     /// title last — one composition shared by every place a tagged title
     /// renders (list rows, chat headers, search results), so the fallback

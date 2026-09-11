@@ -50,7 +50,12 @@ public struct MissionRowView: View {
         .padding(.vertical, 6)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Mission \(mission.num), \(mission.title)\(mission.needsYou > 0 ? ", \(mission.needsYou) need you" : "")")
+        .accessibilityLabel(
+            "Mission \(mission.num), \(mission.title)"
+            + (mission.needsYou > 0
+               ? ", \(mission.needsYou) \(mission.needsYou == 1 ? "item needs" : "items need") you"
+               : "")
+        )
     }
 
     /// `#num ·` — leads the meta line in both the has-milestone and

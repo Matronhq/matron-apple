@@ -151,6 +151,54 @@ extension JournalStore {
         try dbQueue.write { db in for m in missions { try MissionRecord(m).save(db) } }
     }
 
+    /// The full-list refresh's write (`MissionsSync.refreshOnce`) IS
+    /// authoritative — `GET /missions` always answers with the complete
+    /// set — so unlike `upsertMissions` (used by the detail/marker path,
+    /// which only ever touches one mission at a time) a mission cached
+    /// locally but absent from `missions` no longer exists for this
+    /// device and must not linger (CodeRabbit #209 MAJOR). One
+    /// transaction: upsert the given rows, then delete every cached
+    /// `mission` row outside that set along with its dependent cache rows
+    /// — `milestone`/`mission_conversation` have no `ON DELETE CASCADE`
+    /// (plain columns, no FK declared in the v10 migration), so those two
+    /// tables are swept explicitly.
+    ///
+    /// `protectedIDs` (fix round 2, H1): a list `GET` can be in flight
+    /// when a mission that didn't exist yet at request time is created
+    /// and a marker-driven `refreshMission(id:)` detail fetch for it
+    /// completes FIRST — without an exclusion, this call then sees that
+    /// mission absent from `missions` (the list response predates it)
+    /// and deletes the row the detail fetch just wrote, milestones and
+    /// conversations included. `MissionsSync` passes the ids it has
+    /// upserted via the detail path since this list fetch started, so
+    /// they survive the stale-id sweep even though `missions` doesn't
+    /// name them.
+    public func replaceMissions(_ missions: [Mission], keeping protectedIDs: Set<String> = []) throws {
+        try dbQueue.write { db in
+            let ids = Set(missions.map(\.id)).union(protectedIDs)
+            // Fix round 3, N3: `protectedIDs` keeps a protected id from
+            // being DELETED, but a stale list row for it was still
+            // upserted here on top of whatever a concurrent detail fetch
+            // (or a user close) just wrote — reverting the row to the
+            // older snapshot until the next refresh. Skip the upsert for
+            // any id this call is protecting; its already-cached row is
+            // the newer one.
+            for m in missions where !protectedIDs.contains(m.id) { try MissionRecord(m).save(db) }
+            let staleIDs = try String.fetchAll(
+                db, MissionRecord.filter(!ids.contains(Column("id"))).select(Column("id"), as: String.self))
+            guard !staleIDs.isEmpty else { return }
+            try MissionRecord.filter(keys: staleIDs).deleteAll(db)
+            try MilestoneRecord.filter(staleIDs.contains(Column("mission_id"))).deleteAll(db)
+            try MissionConversationRecord.filter(staleIDs.contains(Column("mission_id"))).deleteAll(db)
+            // Fix round 2, L2: tracker rows must stop pointing at a
+            // mission that no longer exists in the cache, or a mission-
+            // page item lookup (`items(missionID:)`) and the item's own
+            // `missionID`/`missionNum` badge resolve a dangling id.
+            try ItemRecord.filter(staleIDs.contains(Column("mission_id")))
+                .updateAll(db, Column("mission_id").set(to: nil as String?), Column("mission_num").set(to: nil as Int?))
+        }
+    }
+
     public func missions(state: MissionState?) throws -> [Mission] {
         try dbQueue.read { db in try Self.missionsRequest(state).fetchAll(db).map(\.mission) }
     }

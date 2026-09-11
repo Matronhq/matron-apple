@@ -12,7 +12,10 @@ struct MacMissionsColumn: View {
     var body: some View {
         MissionsListView(
             model: .init(open: viewModel.open, closed: viewModel.closed,
-                         isSupported: viewModel.isSupported, isRefreshing: viewModel.isRefreshing),
+                         // Not proven false yet ⇒ treated as supported,
+                         // same as every other `isSupported` consumer
+                         // (CodeRabbit #209 fix round 2, H2).
+                         isSupported: viewModel.isSupported != false, isRefreshing: viewModel.isRefreshing),
             onSelect: onSelect,
             onRefresh: { await viewModel.refresh() })
         .alert("Missions", isPresented: Binding(get: { viewModel.error != nil },

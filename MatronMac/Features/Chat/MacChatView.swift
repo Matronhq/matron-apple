@@ -1076,6 +1076,8 @@ struct MacChatView: View {
             missionID = nil
             guard let deps, let session else { return }
             for await id in deps.journalStore(for: session).missionIDStream(convoID: viewModel.roomID) {
+                // See the iOS `ChatView` wiring for why (CodeRabbit #209).
+                guard !Task.isCancelled else { return }
                 missionID = id
             }
         }
