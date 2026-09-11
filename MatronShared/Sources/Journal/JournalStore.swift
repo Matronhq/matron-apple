@@ -294,6 +294,22 @@ public final class JournalStore: @unchecked Sendable {
         lastMigrationDuration = hasPending ? clock.now - began : nil
     }
 
+    /// Adds `column` to `table` unless it is already there. GRDB records
+    /// applied migrations by NAME, not by inspecting the schema — a device
+    /// that reached the same column under a different migration history
+    /// (renamed/renumbered migration, or a hand-patched DB) has the column
+    /// on disk but no matching entry in `grdb_migrations`, so the plain
+    /// `t.add(column:)` this replaces would re-run and fail with "duplicate
+    /// column", turning the `try!` store open into a launch crash loop
+    /// (tracker #216). Every additive migration below must call this
+    /// instead of adding a column directly.
+    static func addColumnIfMissing(_ db: Database, table: String, column: String, _ type: Database.ColumnType) throws {
+        guard try !db.columns(in: table).contains(where: { $0.name == column }) else { return }
+        try db.alter(table: table) { t in
+            t.add(column: column, type)
+        }
+    }
+
     /// The full schema migration chain. Static (rather than inline in
     /// `init`) so tests can freeze a database at an intermediate version
     /// with `migrate(_:upTo:)` and prove a later migration's work against
@@ -301,7 +317,7 @@ public final class JournalStore: @unchecked Sendable {
     static func migrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
         migrator.registerMigration("v1") { db in
-            try db.create(table: "conversation") { t in
+            try db.create(table: "conversation", options: [.ifNotExists]) { t in
                 t.column("id", .text).primaryKey()
                 t.column("title", .text).notNull().defaults(to: "")
                 t.column("session_state", .text).notNull().defaults(to: "running")
@@ -314,7 +330,7 @@ public final class JournalStore: @unchecked Sendable {
                 t.column("read_up_to_seq", .integer).notNull().defaults(to: 0)
                 t.column("unread_count", .integer).notNull().defaults(to: 0)
             }
-            try db.create(table: "event") { t in
+            try db.create(table: "event", options: [.ifNotExists]) { t in
                 t.column("seq", .integer).primaryKey()
                 t.column("convo_id", .text).notNull().indexed()
                 t.column("ts", .integer).notNull()
@@ -322,7 +338,7 @@ public final class JournalStore: @unchecked Sendable {
                 t.column("type", .text).notNull()
                 t.column("payload", .blob).notNull()
             }
-            try db.create(table: "meta") { t in
+            try db.create(table: "meta", options: [.ifNotExists]) { t in
                 t.column("key", .text).primaryKey()
                 t.column("value", .text).notNull()
             }
@@ -334,16 +350,14 @@ public final class JournalStore: @unchecked Sendable {
         // journal keeps every conversation and simply treats them all as
         // top-level until the bridge starts publishing children.
         migrator.registerMigration("v2") { db in
-            try db.alter(table: "conversation") { t in
-                t.add(column: "parent_convo_id", .text)
-            }
-            try db.create(indexOn: "conversation", columns: ["parent_convo_id"])
+            try Self.addColumnIfMissing(db, table: "conversation", column: "parent_convo_id", .text)
+            try db.create(indexOn: "conversation", columns: ["parent_convo_id"], options: .ifNotExists)
         }
         // v3: offline send queue. Text sends that can't reach the server
         // yet persist here (surviving relaunch and the snapshot_required
         // mirror wipe — see `wipe()`) and flush FIFO on reconnect.
         migrator.registerMigration("v3") { db in
-            try db.create(table: "outbox") { t in
+            try db.create(table: "outbox", options: [.ifNotExists]) { t in
                 t.column("local_id", .text).primaryKey()
                 t.column("convo_id", .text).notNull().indexed()
                 t.column("body", .text).notNull()
@@ -356,7 +370,7 @@ public final class JournalStore: @unchecked Sendable {
         // v4: TOC summary entries — one row per bridge summary pass, derived
         // from `summary` journal events. seq doubles as the transcript anchor.
         migrator.registerMigration("v4") { db in
-            try db.create(table: "summary_entry") { t in
+            try db.create(table: "summary_entry", options: [.ifNotExists]) { t in
                 t.column("convo_id", .text).notNull().indexed()
                 t.column("seq", .integer).notNull()
                 t.column("toc", .text).notNull()
@@ -371,10 +385,8 @@ public final class JournalStore: @unchecked Sendable {
         // Additive: existing rows keep NULL and simply render no chip until
         // the next snapshot fills them in.
         migrator.registerMigration("v5") { db in
-            try db.alter(table: "conversation") { t in
-                t.add(column: "agent_device_id", .integer)
-            }
-            try db.create(table: "agent") { t in
+            try Self.addColumnIfMissing(db, table: "conversation", column: "agent_device_id", .integer)
+            try db.create(table: "agent", options: [.ifNotExists]) { t in
                 t.column("id", .integer).primaryKey()
                 t.column("name", .text).notNull()
             }
@@ -385,9 +397,7 @@ public final class JournalStore: @unchecked Sendable {
         // existing rows keep NULL and chip as before until the next
         // snapshot / membership convo_meta fills them in.
         migrator.registerMigration("v6") { db in
-            try db.alter(table: "conversation") { t in
-                t.add(column: "participants", .text)
-            }
+            try Self.addColumnIfMissing(db, table: "conversation", column: "participants", .text)
         }
         // v7: backfill summary_entry from `summary` events already in the
         // local mirror. v4 created the table but only the live apply path
@@ -419,15 +429,13 @@ public final class JournalStore: @unchecked Sendable {
         // re-using the name on an installed device would silently skip this
         // column (GRDB records the identifier, not the body).
         migrator.registerMigration("v8") { db in
-            try db.alter(table: "agent") { t in
-                t.add(column: "tag_char", .text)
-            }
+            try Self.addColumnIfMissing(db, table: "agent", column: "tag_char", .text)
         }
         // v9: tracker cache (spec 2026-09-08 task-decision-tracker). Filled
         // from GET /items, never from the event log; the `item` marker
         // event is only an invalidation signal (ItemsSync).
         migrator.registerMigration("v9") { db in
-            try db.create(table: "item") { t in
+            try db.create(table: "item", options: [.ifNotExists]) { t in
                 t.column("id", .text).primaryKey()
                 t.column("num", .integer).notNull()
                 t.column("kind", .text).notNull()
@@ -450,9 +458,9 @@ public final class JournalStore: @unchecked Sendable {
                 t.column("last_comment_at", .integer)
                 t.column("has_image", .boolean).notNull().defaults(to: false)
             }
-            try db.create(index: "item_convo_state", on: "item", columns: ["origin_convo_id", "state"])
-            try db.create(index: "item_state_rank", on: "item", columns: ["state", "rank"])
-            try db.create(table: "item_comment") { t in
+            try db.create(index: "item_convo_state", on: "item", columns: ["origin_convo_id", "state"], options: .ifNotExists)
+            try db.create(index: "item_state_rank", on: "item", columns: ["state", "rank"], options: .ifNotExists)
+            try db.create(table: "item_comment", options: [.ifNotExists]) { t in
                 t.column("id", .text).primaryKey()
                 t.column("item_id", .text).notNull().indexed()
                 t.column("author", .text).notNull()
@@ -463,7 +471,7 @@ public final class JournalStore: @unchecked Sendable {
                 t.column("meta_json", .text)
                 t.column("created_at", .integer).notNull()
             }
-            try db.create(table: "item_outbox") { t in
+            try db.create(table: "item_outbox", options: [.ifNotExists]) { t in
                 t.column("local_id", .text).primaryKey()
                 t.column("item_id", .text).indexed()
                 t.column("op", .text).notNull()
@@ -481,7 +489,7 @@ public final class JournalStore: @unchecked Sendable {
         // privacy boundary, so a marker is never a source of truth for a
         // name (MissionsSync).
         migrator.registerMigration("v10") { db in
-            try db.create(table: "mission") { t in
+            try db.create(table: "mission", options: [.ifNotExists]) { t in
                 t.column("id", .text).primaryKey()
                 t.column("num", .integer).notNull()
                 t.column("state", .text).notNull()
@@ -503,9 +511,9 @@ public final class JournalStore: @unchecked Sendable {
                 t.column("milestone_count", .integer).notNull().defaults(to: 0)
                 t.column("last_milestone_json", .text)
             }
-            try db.create(index: "mission_state_activity", on: "mission", columns: ["state", "last_milestone_at"])
-            try db.create(index: "mission_origin", on: "mission", columns: ["origin_convo_id"])
-            try db.create(table: "milestone") { t in
+            try db.create(index: "mission_state_activity", on: "mission", columns: ["state", "last_milestone_at"], options: .ifNotExists)
+            try db.create(index: "mission_origin", on: "mission", columns: ["origin_convo_id"], options: .ifNotExists)
+            try db.create(table: "milestone", options: [.ifNotExists]) { t in
                 t.column("id", .text).primaryKey()
                 t.column("mission_id", .text).notNull()
                 t.column("num", .integer).notNull()
@@ -518,9 +526,9 @@ public final class JournalStore: @unchecked Sendable {
                 t.column("created_by", .text).notNull()
                 t.column("created_at", .integer).notNull()
             }
-            try db.create(index: "milestone_mission", on: "milestone", columns: ["mission_id", "created_at"])
-            try db.create(index: "milestone_convo", on: "milestone", columns: ["convo_id", "seq"])
-            try db.create(table: "mission_conversation") { t in
+            try db.create(index: "milestone_mission", on: "milestone", columns: ["mission_id", "created_at"], options: .ifNotExists)
+            try db.create(index: "milestone_convo", on: "milestone", columns: ["convo_id", "seq"], options: .ifNotExists)
+            try db.create(table: "mission_conversation", options: [.ifNotExists]) { t in
                 t.column("mission_id", .text).notNull()
                 t.column("convo_id", .text).notNull()
                 t.column("title", .text).notNull().defaults(to: "")
@@ -528,11 +536,9 @@ public final class JournalStore: @unchecked Sendable {
                 t.column("state", .text).notNull().defaults(to: "")
                 t.primaryKey(["mission_id", "convo_id"])
             }
-            try db.alter(table: "item") { t in
-                t.add(column: "mission_id", .text)
-                t.add(column: "mission_num", .integer)
-            }
-            try db.create(index: "item_mission", on: "item", columns: ["mission_id", "state", "awaiting"])
+            try Self.addColumnIfMissing(db, table: "item", column: "mission_id", .text)
+            try Self.addColumnIfMissing(db, table: "item", column: "mission_num", .integer)
+            try db.create(index: "item_mission", on: "item", columns: ["mission_id", "state", "awaiting"], options: .ifNotExists)
             // The two new columns above land as NULL on every item row
             // already cached — `ItemsSync.refreshOnce` fetches `?since=`
             // its persisted watermark, which skips rows the server hasn't
@@ -563,11 +569,9 @@ public final class JournalStore: @unchecked Sendable {
         // `LaunchTimeline` records it as a nested `migration` interval so
         // the number on the phone is known rather than guessed.
         migrator.registerMigration("v11") { db in
-            try db.create(index: "event_type_ts", on: "event", columns: ["type", "ts"])
-            try db.alter(table: "conversation") { t in
-                t.add(column: "last_message_type", .text)
-                t.add(column: "expired_snippet", .text)
-            }
+            try db.create(index: "event_type_ts", on: "event", columns: ["type", "ts"], options: .ifNotExists)
+            try Self.addColumnIfMissing(db, table: "conversation", column: "last_message_type", .text)
+            try Self.addColumnIfMissing(db, table: "conversation", column: "expired_snippet", .text)
             let placeholders = JournalEventType.messageTypes.map { _ in "?" }.joined(separator: ",")
             let messageTypes = Array(JournalEventType.messageTypes)
             for id in try String.fetchAll(db, sql: "SELECT id FROM conversation") {
