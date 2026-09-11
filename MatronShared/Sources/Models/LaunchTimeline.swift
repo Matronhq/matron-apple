@@ -25,8 +25,9 @@ public struct LaunchRecord: Codable, Equatable, Sendable {
 /// Process-wide launch recorder: `OSSignposter` intervals for Instruments,
 /// one `os.Logger` line per mark so `log show` / `devicectl` gives the
 /// numbers on a phone without Instruments, and the whole record persisted to
-/// `UserDefaults` so Settings › Storage can show the LAST launch (the
-/// current one is not finished when the user opens Settings).
+/// `UserDefaults` on every mark (not at process exit), so Settings › Storage
+/// can show THIS launch — the one the user is in when they open Settings —
+/// rather than the previous one (R13; see `currentLaunch`'s doc below).
 ///
 /// Before this existed there was no launch instrumentation anywhere in the
 /// app, so which cost dominated on the phone was guesswork.
