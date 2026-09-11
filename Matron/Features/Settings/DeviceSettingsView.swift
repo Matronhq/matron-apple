@@ -71,20 +71,6 @@ struct DeviceSettingsView: View {
                 Section("Storage") {
                     StorageSettingsRows(model: storage)
                 }
-                .task {
-                    // On demand only: two file stats and two COUNT(*)s, off
-                    // the main actor, when the user opens this screen.
-                    let sizes = await StoreDiagnostics.sizes(
-                        store: deps.journalStore(for: session), searchURL: deps.searchStoreURL)
-                    storage = StorageSettingsRows.Model(
-                        journalBytes: sizes.journalBytes,
-                        searchBytes: sizes.searchBytes,
-                        events: sizes.eventCount,
-                        conversations: sizes.conversationCount,
-                        launchText: LaunchTimeline.summary(LaunchTimeline.currentLaunch()),
-                        maintenanceText: StoreDiagnostics.lastMaintenanceText(
-                            sizes.lastMaintenance, now: Date()))
-                }
             }
             // Only offered when the device can actually authenticate —
             // a toggle that can never unlock again would lock the user
@@ -120,5 +106,24 @@ struct DeviceSettingsView: View {
             }
         }
         .navigationTitle("Device")
+        .task {
+            // On demand only: two file stats and two COUNT(*)s, off the
+            // main actor, when the user opens this screen. Attached to the
+            // `Form`, not the `Storage` `Section` — there is no precedent
+            // elsewhere in the app for `.task` on a `Section`, and this way
+            // the read starts as soon as the screen appears regardless of
+            // scroll position.
+            guard let deps else { return }
+            let sizes = await StoreDiagnostics.sizes(
+                store: deps.journalStore(for: session), searchURL: deps.searchStoreURL)
+            storage = StorageSettingsRows.Model(
+                journalBytes: sizes.journalBytes,
+                searchBytes: sizes.searchBytes,
+                events: sizes.eventCount,
+                conversations: sizes.conversationCount,
+                launchText: LaunchTimeline.summary(LaunchTimeline.currentLaunch()),
+                maintenanceText: StoreDiagnostics.lastMaintenanceText(
+                    sizes.lastMaintenance, now: Date()))
+        }
     }
 }

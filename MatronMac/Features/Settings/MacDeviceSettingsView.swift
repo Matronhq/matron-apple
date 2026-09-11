@@ -75,20 +75,6 @@ struct MacDeviceSettingsView: View {
                 Section("Storage") {
                     StorageSettingsRows(model: storage)
                 }
-                .task {
-                    // On demand only: two file stats and two COUNT(*)s, off
-                    // the main actor, when the user opens this screen.
-                    let sizes = await StoreDiagnostics.sizes(
-                        store: deps.journalStore(for: session), searchURL: deps.searchStoreURL)
-                    storage = StorageSettingsRows.Model(
-                        journalBytes: sizes.journalBytes,
-                        searchBytes: sizes.searchBytes,
-                        events: sizes.eventCount,
-                        conversations: sizes.conversationCount,
-                        launchText: LaunchTimeline.summary(LaunchTimeline.currentLaunch()),
-                        maintenanceText: StoreDiagnostics.lastMaintenanceText(
-                            sizes.lastMaintenance, now: Date()))
-                }
             }
             Section("Appearance") {
                 // Writes MatronAppearance.storageKey; MatronMacApp's root
@@ -122,6 +108,25 @@ struct MacDeviceSettingsView: View {
         // the Storage section's five rows.
         .frame(width: 420, height: 760)
         .navigationTitle("Device")
+        .task {
+            // On demand only: two file stats and two COUNT(*)s, off the
+            // main actor, when the user opens this screen. Attached to the
+            // `Form`, not the `Storage` `Section` — there is no precedent
+            // elsewhere in the app for `.task` on a `Section`, and this way
+            // the read starts as soon as the screen appears regardless of
+            // scroll position.
+            guard let deps else { return }
+            let sizes = await StoreDiagnostics.sizes(
+                store: deps.journalStore(for: session), searchURL: deps.searchStoreURL)
+            storage = StorageSettingsRows.Model(
+                journalBytes: sizes.journalBytes,
+                searchBytes: sizes.searchBytes,
+                events: sizes.eventCount,
+                conversations: sizes.conversationCount,
+                launchText: LaunchTimeline.summary(LaunchTimeline.currentLaunch()),
+                maintenanceText: StoreDiagnostics.lastMaintenanceText(
+                    sizes.lastMaintenance, now: Date()))
+        }
     }
 }
 #endif
