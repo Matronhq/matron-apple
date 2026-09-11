@@ -269,17 +269,6 @@ public final class JournalStore: @unchecked Sendable {
             dbQueue = try DatabaseQueue()
         }
         try Self.migrator().migrate(dbQueue)
-        // Boot-time TTL sweep, mirroring the server's expire-logs job
-        // (matron-journal docs/protocol.md Retention): a cached live_log
-        // snippet must not outlive the 24h TTL just because this device
-        // never re-synced the row. Best-effort — a failed sweep must not
-        // block opening the store (the mapper's render-time TTL guard keeps
-        // the DISPLAY correct either way; the sweep is what cleans the disk).
-        do {
-            try purgeExpiredToolOutputSnippets()
-        } catch {
-            Self.logger.error("tool-output TTL sweep failed: \(error.localizedDescription, privacy: .public)")
-        }
     }
 
     /// The full schema migration chain. Static (rather than inline in

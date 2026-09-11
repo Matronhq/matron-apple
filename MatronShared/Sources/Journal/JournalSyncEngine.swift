@@ -71,6 +71,12 @@ public actor JournalSyncEngine {
     /// directly. Same late-attach shape as `search`; only ever goes
     /// nil → non-nil.
     private var backfill: SearchBackfillCoordinator?
+    /// Background store housekeeping for this session. Attached after
+    /// construction (it is built from the same store) and poked when the
+    /// first catch-up reaches the live cursor — the "whichever comes first"
+    /// half of the first-run rule, with `JournalMaintenance.start()`'s 10 s
+    /// timer as the other half.
+    private var maintenance: JournalMaintenance?
     private let backoffBaseSeconds: Double
 
     private var runTask: Task<Void, Never>?
@@ -197,6 +203,11 @@ public actor JournalSyncEngine {
     public func attachBackfillCoordinator(_ coordinator: SearchBackfillCoordinator) {
         guard backfill == nil else { return }
         backfill = coordinator
+    }
+
+    public func attachMaintenance(_ sweeper: JournalMaintenance) {
+        guard maintenance == nil else { return }
+        maintenance = sweeper
     }
 
     // MARK: Lifecycle
@@ -813,6 +824,18 @@ public actor JournalSyncEngine {
         if case .running = new {
             readyWaiters.forEach { $0.resume() }
             readyWaiters = []
+            // Caught up with the live cursor: the disk is free again, so the
+            // sweeper may run. `runIfDue` is watermark-gated, so the
+            // reconnects that also land here cost one `meta` read.
+            //
+            // R14: this is the replay REACHING the live cursor, which is
+            // spec §3.6's `catchUpComplete` rather than literally §3.4's
+            // "first catch-up batch applied". Benign — `start()`'s 10 s
+            // timer normally fires first, and whichever wins, the other is a
+            // no-op against the same watermark.
+            if let maintenance {
+                Task(priority: .utility) { await maintenance.runIfDue() }
+            }
         }
     }
 
@@ -1278,7 +1301,7 @@ public actor JournalSyncEngine {
 
     private func indexForSearch(_ event: JournalEvent) {
         guard let search else { return }
-        // Body extraction lives in `JournalEvent.searchableBody` (shared with
+        // Body extraction lives in `JournalEvent.searchableBody(now:)` (shared with
         // paginateBackward and the history backfill) so the three feeders
         // can't drift — see SearchBackfill.swift.
         guard let body = event.searchableBody() else { return }

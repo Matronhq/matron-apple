@@ -109,6 +109,9 @@ struct MatronMacApp: App {
                     // is the Mac equivalent of iOS's `scenePhase == .active`.
                     .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                         Task { await (dependencies.syncService(for: session) as? JournalSyncEngine)?.nudge() }
+                        Task(priority: .utility) {
+                            await dependencies.journalMaintenance(for: session).runIfDue()
+                        }
                         appLock.noteBecameActive()
                         // Foreground re-prompt parity with iOS: returning
                         // to a still-locked app offers auth again instead

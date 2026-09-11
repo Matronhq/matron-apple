@@ -70,12 +70,21 @@ final class AppDependencies {
         /// Background search-history backfill sweep for this session (see
         /// `SearchBackfillCoordinator`). Cancelled on sign-out.
         var backfillTask: Task<Void, Never>?
-        init(api: JournalAPI, store: JournalStore, engine: JournalSyncEngine, items: ItemsSync, missions: MissionsSync) {
+        /// Background store housekeeping (TTL + retention sweeps and the
+        /// matching search removal). Replaces the sweep `JournalStore.init`
+        /// used to run on the launch path.
+        let maintenance: JournalMaintenance
+        /// Handle for the `maintenance.start()` kickoff — awaited before
+        /// `stop()` in the sign-out teardown, same rule as `itemsStartTask`.
+        var maintenanceStartTask: Task<Void, Never>?
+        init(api: JournalAPI, store: JournalStore, engine: JournalSyncEngine, items: ItemsSync, missions: MissionsSync,
+             maintenance: JournalMaintenance) {
             self.api = api
             self.store = store
             self.engine = engine
             self.items = items
             self.missions = missions
+            self.maintenance = maintenance
         }
     }
 
@@ -152,10 +161,16 @@ final class AppDependencies {
         let items = ItemsSync(api: api, store: store, markers: { engine.itemMarkers() }, connectionStates: { engine.stateStream() })
         let missions = MissionsSync(api: api, store: store, markers: { engine.missionMarkers() },
                                     connectionStates: { engine.stateStream() })
-        let core = JournalCore(api: api, store: store, engine: engine, items: items, missions: missions)
+        let maintenance = JournalMaintenance(store: store, search: search)
+        let core = JournalCore(api: api, store: store, engine: engine, items: items, missions: missions,
+                                maintenance: maintenance)
         core.itemsStartTask = Task { await items.start() }
         core.missionsStartTask = Task { await missions.start() }
         core.backfillTask = Self.startBackfill(search: search, api: api, store: store, engine: engine)
+        core.maintenanceStartTask = Task {
+            await engine.attachMaintenance(maintenance)
+            await maintenance.start()
+        }
         // One-time: box tag letters chosen before they were journal-held
         // move up to the server so they show on every device — and into
         // the local mirror first, so they keep painting while the push is
@@ -256,6 +271,12 @@ final class AppDependencies {
     /// browser). Same instance the sync engine writes.
     func journalStore(for session: UserSession) -> JournalStore {
         core(for: session).store
+    }
+
+    /// The session's background sweeper — the app-foreground trigger calls
+    /// `runIfDue()` on it.
+    func journalMaintenance(for session: UserSession) -> JournalMaintenance {
+        core(for: session).maintenance
     }
 
     /// Task 9 (items tracker): the session's `ItemsSync` actor — outbox
@@ -457,6 +478,15 @@ final class AppDependencies {
                 // writes landing after the wipe would resurrect them.
                 core.backfillTask?.cancel()
                 await core.backfillTask?.value
+                // Two separate hazards, both real:
+                //  - a not-yet-run start would arm the hourly timer AFTER
+                //    teardown, so await the kickoff first;
+                //  - a pass already suspended in `search.removeAll(…)` would
+                //    resume after the wipe below and re-stamp
+                //    `maintenance_last_run` on an empty `meta`, so `stop()`
+                //    awaits it (see `JournalMaintenance.stop`).
+                await core.maintenanceStartTask?.value
+                await core.maintenance.stop()
                 await Self.withTimeout(seconds: 5) { try? await core.api.unregisterPush() }
                 // Task 9 (items tracker): await the start kickoff BEFORE
                 // stop() — a not-yet-run start could otherwise install its
