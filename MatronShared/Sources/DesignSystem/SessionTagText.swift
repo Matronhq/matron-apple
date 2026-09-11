@@ -84,7 +84,12 @@ public enum SessionTagText {
         sessionShort: String?,
         roomBoxNames: [String] = []
     ) -> String? {
-        let names = roomBoxNames.isEmpty ? [boxName].compactMap { $0 } : roomBoxNames
+        // Mirrors `room(...)`'s own gate exactly (fix round 3, N2): that
+        // Text-producing branch requires at least 2 names, so a single
+        // `roomBoxNames` entry falls through to the single-box `boxName`
+        // there too — this branch must agree, or VoiceOver speaks a
+        // "room" label the eye never sees.
+        let names = roomBoxNames.count >= 2 ? roomBoxNames : [boxName].compactMap { $0 }
         let joinedNames = names.isEmpty ? nil : names.joined(separator: ", ")
         switch (joinedNames, sessionShort) {
         case (nil, nil): return nil
