@@ -1,14 +1,14 @@
 import SwiftUI
 
 /// Floating "stop the current turn" affordance for the chat timeline.
-/// Shown as an overlay in the top-trailing corner while the bot's
-/// activity indicator is live (an agent turn is running); tapping
-/// invokes `action`, which the host binds to sending the bridge's
-/// `!esc` interrupt. Same shape language AND tint as
-/// `JumpToBottomButton` so the two floating chat controls read as one
-/// family — this one sits on the opposite end of the same trailing
-/// edge. (Red was tried first; Dan preferred the neutral tint,
-/// 2026-08-05.)
+/// Hosted inside `ChatTopTrailingControls`, which owns the top-trailing
+/// placement and padding; shown while the bot's activity indicator is
+/// live (an agent turn is running); tapping invokes `action`, which the
+/// host binds to sending the bridge's `!esc` interrupt. Same shape
+/// language AND tint as `JumpToBottomButton` so the floating chat
+/// controls read as one family — this one sits on the opposite end of
+/// the same trailing edge. (Red was tried first; Dan preferred the
+/// neutral tint, 2026-08-05.)
 public struct StopTurnButton: View {
     private let action: () -> Void
 
@@ -27,8 +27,6 @@ public struct StopTurnButton: View {
         .help("Stop the current turn")
         .accessibilityLabel("Stop the current turn")
         .accessibilityIdentifier("chat.stopTurn")
-        .padding(.trailing, 16)
-        .padding(.top, 8)
         .transition(.scale.combined(with: .opacity))
     }
 }
