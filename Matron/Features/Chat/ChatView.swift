@@ -968,22 +968,29 @@ struct ChatView: View {
                     }
                 }
             }
-            // Floating stop — solid for the whole turn: `isTurnRunning`
+            // Floating top-trailing controls: Stop above "jump to my last
+            // message" — or jump alone, in Stop's slot, once no turn is
+            // running. Stop is solid for the whole turn: `isTurnRunning`
             // (durable session_state, flipped at turn start/end) carries
             // it; the ephemeral activity label is OR-ed in as a fast
             // path in case a session_state frame is missed. Sends the
             // bridge's !esc interrupt as an ordinary own-message, so
-            // delivery shows in the timeline itself.
+            // delivery shows in the timeline itself. Jump is "the one
+            // thing scrolling can't find" (item #60) — agent-independent,
+            // needs no mission, no milestone, no summary model, only the
+            // local mirror.
             .overlay(alignment: .topTrailing) {
-                MinDisplayDuration(while: viewModel.isTurnRunning || viewModel.activityLabel != nil) { visible in
-                    if visible {
-                        StopTurnButton {
-                            Task { await viewModel.sendCommand("!esc") }
-                        }
-                    }
+                MinDisplayDuration(while: viewModel.isTurnRunning || viewModel.activityLabel != nil) { stopVisible in
+                    ChatTopTrailingControls(
+                        showsStop: stopVisible,
+                        showsJump: ChatTopTrailingControls.showsJump(
+                            isFollowingTail: isFollowingTail,
+                            isTasksPage: pager.page == .tasks
+                        ),
+                        onStop: { Task { await viewModel.sendCommand("!esc") } },
+                        onJump: { Task { await viewModel.jumpToLastOwnMessage() } }
+                    )
                 }
-                .animation(.easeInOut(duration: 0.18),
-                           value: viewModel.isTurnRunning || viewModel.activityLabel != nil)
             }
             }
             }
@@ -1148,18 +1155,6 @@ struct ChatView: View {
                             roomBoxNames: roomBoxNames
                         ))
                         .accessibilityValue(chatContextLine ?? "")
-                }
-            }
-            // Jump to the newest message the user themself sent (item #60):
-            // the one thing scrolling can't find once an agent has run
-            // unattended for hours. Agent-independent — it needs no mission,
-            // no milestone and no summary model, only the local mirror.
-            if pager.page != .tasks {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { Task { await viewModel.jumpToLastOwnMessage() } } label: {
-                        Image(systemName: "arrow.up.to.line")
-                    }
-                    .accessibilityLabel("Jump to my last message")
                 }
             }
             // Tasks page (spec §4). Hidden once the panel VM has confirmed
