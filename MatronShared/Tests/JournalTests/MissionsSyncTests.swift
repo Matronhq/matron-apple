@@ -3,17 +3,10 @@ import MatronModels
 import MatronEvents
 @testable import MatronJournal
 
-/// Mirrors `ItemsSyncTests`' private helper of the same name.
-private final class Atomic<T>: @unchecked Sendable {
-    private let lock = NSLock(); private var value: T
-    init(_ value: T) { self.value = value }
-    func get() -> T { lock.withLock { value } }
-    func set(_ v: T) { lock.withLock { value = v } }
-}
-
 private final class FakeMissions: MissionsProviding, @unchecked Sendable {
     private let lock = NSLock()
     private var _list: [Mission] = []
+    private var _listDroppedIDs: [String] = []
     private var _listCalls = 0
     private var _listError: Error?
     private var _details: [String: MissionDetail] = [:]
@@ -23,8 +16,17 @@ private final class FakeMissions: MissionsProviding, @unchecked Sendable {
     /// coalesced refetch joins the first instead of issuing its own GET.
     private var _blockNextDetail = false
     private var _detailGate: CheckedContinuation<Void, Never>?
+    /// Holds the NEXT `listMissions(_:)` open — fix round 2, H1: lets a
+    /// test prove a detail refresh that completes WHILE a list GET is
+    /// still in flight isn't clobbered by that (now stale) list response.
+    private var _blockNextList = false
+    private var _listGate: CheckedContinuation<Void, Never>?
 
     var list: [Mission] { get { lock.withLock { _list } } set { lock.withLock { _list = newValue } } }
+    /// Fix round 2, addendum: ids `listMissions` reports as locally
+    /// undecodable on its NEXT call, so a test can prove they're
+    /// protected from the authoritative replace's stale-id sweep.
+    var listDroppedIDs: [String] { get { lock.withLock { _listDroppedIDs } } set { lock.withLock { _listDroppedIDs = newValue } } }
     var listCalls: Int { lock.withLock { _listCalls } }
     var listError: Error? { get { lock.withLock { _listError } } set { lock.withLock { _listError = newValue } } }
     var details: [String: MissionDetail] { get { lock.withLock { _details } } set { lock.withLock { _details = newValue } } }
@@ -36,11 +38,21 @@ private final class FakeMissions: MissionsProviding, @unchecked Sendable {
         let c = lock.withLock { () -> CheckedContinuation<Void, Never>? in defer { _detailGate = nil }; return _detailGate }
         c?.resume()
     }
+    var blockNextList: Bool { get { lock.withLock { _blockNextList } } set { lock.withLock { _blockNextList = newValue } } }
+    var isListGated: Bool { lock.withLock { _listGate != nil } }
+    func releaseListGate() {
+        let c = lock.withLock { () -> CheckedContinuation<Void, Never>? in defer { _listGate = nil }; return _listGate }
+        c?.resume()
+    }
 
-    func listMissions(_ query: MissionsListQuery) async throws -> [Mission] {
+    func listMissions(_ query: MissionsListQuery) async throws -> MissionsListDecode {
         lock.withLock { _listCalls += 1 }
+        if blockNextList {
+            blockNextList = false
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in lock.withLock { _listGate = c } }
+        }
         if let e = listError { throw e }
-        return list
+        return MissionsListDecode(missions: list, droppedIDs: listDroppedIDs)
     }
 
     func mission(id: String) async throws -> MissionDetail {
@@ -110,12 +122,66 @@ final class MissionsSyncTests: XCTestCase {
         try store.replaceMissionConversations(missionID: "ms_1", [
             MissionConversation(id: "c1", title: "Session", box: "dev-2", state: "running"),
         ])
+        // Fix round 2, L2: a tracker item pointed at "ms_1" must stop
+        // naming it once the mission is gone from the cache.
+        try store.upsertItems([
+            TrackerItem(id: "it_1", num: 900, kind: .task, title: "carry", originConvoID: "c1",
+                       missionID: "ms_1", missionNum: 61),
+        ])
         api.list = [mission("ms_2", num: 62)]
         let secondOutcome = await sync.refresh()
         XCTAssertEqual(secondOutcome, .succeeded)
         XCTAssertEqual(try store.missions(state: nil).map(\.id), ["ms_2"])
         XCTAssertEqual(try store.milestones(missionID: "ms_1"), [])
         XCTAssertEqual(try store.missionConversations(missionID: "ms_1"), [])
+        let survivingItem = try store.item(id: "it_1")
+        XCTAssertNil(survivingItem?.missionID, "an item pointed at a deleted mission must be cleared, not left dangling")
+        XCTAssertNil(survivingItem?.missionNum)
+        await sync.stop()
+    }
+
+    /// CodeRabbit #209 fix round 2, H1: a list GET issued before a
+    /// mission existed can still be in flight when a marker-driven
+    /// detail refresh for that NEW mission completes FIRST — the (now
+    /// stale) list response must not delete the mission the detail
+    /// refresh just wrote.
+    func testAConcurrentDetailRefreshSurvivesAStaleInFlightListRefresh() async throws {
+        let api = FakeMissions()
+        api.list = [mission("ms_1", num: 61)]
+        api.details = ["ms_2": MissionDetail(mission: mission("ms_2", num: 62), milestones: [], items: [], conversations: [])]
+        let (sync, store, _, _) = try make(api: api)
+        api.blockNextList = true
+        let listTask = Task { await sync.refresh() }
+        try await waitUntil { api.isListGated }
+        let detailOutcome = await sync.refreshMission(id: "ms_2")
+        XCTAssertEqual(detailOutcome, .succeeded)
+        XCTAssertEqual(try store.mission(id: "ms_2")?.id, "ms_2",
+                       "the detail refresh must land before the stale list response is even released")
+        api.releaseListGate()
+        let listOutcome = await listTask.value
+        XCTAssertEqual(listOutcome, .succeeded)
+        XCTAssertEqual(try store.mission(id: "ms_2")?.id, "ms_2",
+                       "the concurrent detail refresh must survive the now-stale list response")
+        await sync.stop()
+    }
+
+    /// CodeRabbit #209 fix round 2, addendum (Bugbot on #216): a mission
+    /// this device merely failed to DECODE on the next list response —
+    /// as opposed to one the server actually stopped returning — must
+    /// survive the authoritative replace.
+    func testAMissionDroppedByLocalDecodeFailureSurvivesTheReplace() async throws {
+        let api = FakeMissions()
+        api.list = [mission("ms_1", num: 61)]
+        let (sync, store, _, _) = try make(api: api)
+        let firstOutcome = await sync.refresh()
+        XCTAssertEqual(firstOutcome, .succeeded)
+        // "ms_2" is cached some other way (a prior detail refresh, say),
+        // and the NEXT list response's row for it fails to decode.
+        try store.upsertMissions([mission("ms_2", num: 62)])
+        api.listDroppedIDs = ["ms_2"]
+        let secondOutcome = await sync.refresh()
+        XCTAssertEqual(secondOutcome, .succeeded)
+        XCTAssertEqual(try store.missions(state: nil).map(\.id).sorted(), ["ms_1", "ms_2"])
         await sync.stop()
     }
 
@@ -153,21 +219,18 @@ final class MissionsSyncTests: XCTestCase {
         api.blockNextDetail = true
         let first = Task { await sync.refreshMission(id: "ms_1") }
         try await waitUntil { api.isDetailGated }
-        let secondReturned = Atomic(false)
-        let second = Task { _ = await sync.refreshMission(id: "ms_1"); secondReturned.set(true) }
-        // Deterministic joiner barrier (CodeRabbit #209): the earlier
-        // version released the gate right after spawning `second` and
-        // only checked the FINAL call count, which a non-coalescing
-        // implementation (two independent concurrent GETs instead of one
-        // repeated run) would also satisfy. A coalesced joiner registers
-        // against the in-flight task and cannot return before the gate
-        // opens; a broken implementation's own GET is unblocked
-        // (`blockNextDetail` was already consumed by the first call) and
-        // returns almost immediately — so waiting here and asserting it
-        // has NOT returned, with exactly one request active, actually
-        // distinguishes the two.
-        try? await Task.sleep(nanoseconds: 100_000_000)
-        XCTAssertFalse(secondReturned.get(), "the coalesced caller must wait for the in-flight refetch")
+        let joinsBefore = await sync.refetchJoins
+        let second = Task { await sync.refreshMission(id: "ms_1") }
+        // Deterministic joiner barrier (CodeRabbit #209 fix round 2, M1):
+        // the earlier version released the gate right after spawning
+        // `second`, timed a fixed sleep to give it a chance to (wrongly)
+        // return, and only then checked the FINAL call count — on a
+        // loaded machine, `second` might not even have been SCHEDULED
+        // yet within that sleep, so the assertion could pass for the
+        // wrong reason. Waiting on the actor's own `refetchJoins` counter
+        // instead proves `second` actually reached the "already in
+        // flight" branch and registered itself, with no timing guesswork.
+        try await waitUntil { await sync.refetchJoins > joinsBefore }
         XCTAssertEqual(api.detailCalls.filter { $0 == "ms_1" }.count, 1,
                        "only one request may be active before the gate releases")
         api.releaseDetailGate()
@@ -220,10 +283,10 @@ final class MissionsSyncTests: XCTestCase {
     }
 
     /// Polls a condition rather than sleeping a fixed interval.
-    private func waitUntil(timeout: TimeInterval = 2, _ condition: () throws -> Bool) async throws {
+    private func waitUntil(timeout: TimeInterval = 2, _ condition: () async throws -> Bool) async throws {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if try condition() { return }
+            if try await condition() { return }
             try await Task.sleep(nanoseconds: 10_000_000)
         }
         XCTFail("condition not met within \(timeout)s")

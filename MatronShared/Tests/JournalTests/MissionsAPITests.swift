@@ -34,8 +34,32 @@ final class MissionsAPITests: XCTestCase {
             MissionModelTests.missionJSON,
             ["id": "ms_broken"],                       // no num/state/title — skipped
         ]]
-        let missions = JournalAPI.decodeMissions(obj)
-        XCTAssertEqual(missions.map(\.id), ["ms_a1"])
+        let decoded = try JournalAPI.decodeMissions(obj)
+        XCTAssertEqual(decoded.missions.map(\.id), ["ms_a1"])
+        // Fix round 2, addendum: the dropped row's id is still reported
+        // so the caller can protect it from an authoritative replace
+        // reading a local decode failure as "the server removed it."
+        XCTAssertEqual(decoded.droppedIDs, ["ms_broken"])
+    }
+
+    /// Fix round 2, L1: the TOP-LEVEL `missions` key missing (or not an
+    /// array) is a malformed RESPONSE, not one bad row — an authoritative
+    /// replace must not read that as "zero missions."
+    func testDecodeMissionsListWithoutAMissionsArrayIsATransportError() {
+        XCTAssertThrowsError(try JournalAPI.decodeMissions(["foo": "bar"])) { error in
+            guard case JournalAPIError.transport = error else { return XCTFail("expected .transport, got \(error)") }
+        }
+        XCTAssertThrowsError(try JournalAPI.decodeMissions([:])) { error in
+            guard case JournalAPIError.transport = error else { return XCTFail("expected .transport, got \(error)") }
+        }
+    }
+
+    /// A present-but-empty array is a legitimate "no missions" answer,
+    /// not a malformed response.
+    func testDecodeMissionsListWithAnEmptyArrayDecodesToEmpty() throws {
+        let decoded = try JournalAPI.decodeMissions(["missions": []])
+        XCTAssertEqual(decoded.missions, [])
+        XCTAssertEqual(decoded.droppedIDs, [])
     }
 
     func testDecodeMissionDetail() throws {
@@ -70,8 +94,8 @@ final class MissionsAPITests: XCTestCase {
     func testListMissionsBuildsQueryAndDecodes() async throws {
         let (api, recorder) = makeStubbedAPI(status: 200, body: ["missions": [MissionModelTests.missionJSON]])
         var q = MissionsListQuery(); q.state = .open
-        let missions = try await api.listMissions(q)
-        XCTAssertEqual(missions.map(\.id), ["ms_a1"])
+        let decoded = try await api.listMissions(q)
+        XCTAssertEqual(decoded.missions.map(\.id), ["ms_a1"])
         let url = try XCTUnwrap(recorder.lastRequest?.url)
         XCTAssertEqual(url.path, "/missions")
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)!.queryItems!

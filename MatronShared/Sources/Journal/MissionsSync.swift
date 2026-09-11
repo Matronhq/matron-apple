@@ -53,6 +53,18 @@ public actor MissionsSync {
     /// running pass repeats once more if another was requested meanwhile.
     private var inFlightRefetches: [String: Task<MissionsRefreshOutcome, Never>] = [:]
     private var refetchAgain: Set<String> = []
+    /// Fix round 2, H1: ids a detail refresh (`refreshMissionOnce`) has
+    /// written since the CURRENT full-list `GET` started. `refreshOnce`
+    /// clears this immediately before issuing `api.listMissions` and
+    /// passes it to `replaceMissions(_:keeping:)`, so a mission that
+    /// didn't exist when the list request was made — but was created and
+    /// detail-fetched (via a marker) while that request was still in
+    /// flight — survives the authoritative sweep instead of being read
+    /// as "the list doesn't have it, so it's gone."
+    private var protectedSinceListStart: Set<String> = []
+    /// Test-only observability seam — see the increment site in
+    /// `refreshMission(id:)`.
+    private(set) var refetchJoins = 0
     public private(set) var isSupported = true
     private var supportedContinuations: [UUID: AsyncStream<Bool>.Continuation] = [:]
     /// Set by `stop()`, cleared by `start()`. Every write site re-checks it
@@ -150,13 +162,23 @@ public actor MissionsSync {
         // every connect/tab-open/pull is cheap and always right (spec:
         // Apps → Shared core, "full GET /missions on connect and reconnect").
         let query = MissionsListQuery()
+        // Fix round 2, H1: cleared right before the request so anything
+        // a detail refresh writes from here on is provably "since this
+        // list GET started," and therefore must survive the sweep below
+        // even if this response predates it.
+        protectedSinceListStart.removeAll()
         do {
-            let missions = try await api.listMissions(query)
+            let decoded = try await api.listMissions(query)
             guard !stopped, !Task.isCancelled else { return .stopped }
             // The complete list, unconditionally (comment above) — so
             // this write is authoritative and a mission the server no
-            // longer returns must not linger (CodeRabbit #209 MAJOR).
-            try store.replaceMissions(missions)
+            // longer returns must not linger (CodeRabbit #209 MAJOR),
+            // except a mission a concurrent detail refresh just wrote
+            // that this (now stale) response predates (fix round 2, H1),
+            // or one this device merely failed to DECODE this time
+            // (`droppedIDs` — fix round 2, addendum): a local decode
+            // failure is never grounds to treat a mission as gone.
+            try store.replaceMissions(decoded.missions, keeping: protectedSinceListStart.union(decoded.droppedIDs))
             setSupported(true)
             return .succeeded
         } catch JournalAPIError.notFound {
@@ -181,6 +203,13 @@ public actor MissionsSync {
     public func refreshMission(id: String) async -> MissionsRefreshOutcome {
         if let running = inFlightRefetches[id] {
             refetchAgain.insert(id)
+            // Test-only observability (internal, not private, so
+            // `@testable` tests can await it): incremented the instant a
+            // joiner registers against an in-flight run, so a test can
+            // deterministically wait for that registration instead of
+            // sleeping a fixed interval and hoping it happened in time
+            // (CodeRabbit #209 fix round 2, M1).
+            refetchJoins += 1
             return await running.value
         }
         let run = Task<MissionsRefreshOutcome, Never> { [self] in
@@ -207,6 +236,9 @@ public actor MissionsSync {
             // `mission_id`; upserting them keeps the tracker cache and the
             // mission page in agreement without a second /items fetch.
             if !detail.items.isEmpty { try store.upsertItems(detail.items) }
+            // Fix round 2, H1: protects this id from a concurrent,
+            // now-stale list refresh's sweep — see `protectedSinceListStart`.
+            protectedSinceListStart.insert(detail.mission.id)
             setSupported(true)
             return .succeeded
         } catch JournalAPIError.notFound {

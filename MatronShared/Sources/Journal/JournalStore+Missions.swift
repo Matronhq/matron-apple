@@ -162,9 +162,20 @@ extension JournalStore {
     /// — `milestone`/`mission_conversation` have no `ON DELETE CASCADE`
     /// (plain columns, no FK declared in the v10 migration), so those two
     /// tables are swept explicitly.
-    public func replaceMissions(_ missions: [Mission]) throws {
+    ///
+    /// `protectedIDs` (fix round 2, H1): a list `GET` can be in flight
+    /// when a mission that didn't exist yet at request time is created
+    /// and a marker-driven `refreshMission(id:)` detail fetch for it
+    /// completes FIRST — without an exclusion, this call then sees that
+    /// mission absent from `missions` (the list response predates it)
+    /// and deletes the row the detail fetch just wrote, milestones and
+    /// conversations included. `MissionsSync` passes the ids it has
+    /// upserted via the detail path since this list fetch started, so
+    /// they survive the stale-id sweep even though `missions` doesn't
+    /// name them.
+    public func replaceMissions(_ missions: [Mission], keeping protectedIDs: Set<String> = []) throws {
         try dbQueue.write { db in
-            let ids = Set(missions.map(\.id))
+            let ids = Set(missions.map(\.id)).union(protectedIDs)
             for m in missions { try MissionRecord(m).save(db) }
             let staleIDs = try String.fetchAll(
                 db, MissionRecord.filter(!ids.contains(Column("id"))).select(Column("id"), as: String.self))
@@ -172,6 +183,12 @@ extension JournalStore {
             try MissionRecord.filter(keys: staleIDs).deleteAll(db)
             try MilestoneRecord.filter(staleIDs.contains(Column("mission_id"))).deleteAll(db)
             try MissionConversationRecord.filter(staleIDs.contains(Column("mission_id"))).deleteAll(db)
+            // Fix round 2, L2: tracker rows must stop pointing at a
+            // mission that no longer exists in the cache, or a mission-
+            // page item lookup (`items(missionID:)`) and the item's own
+            // `missionID`/`missionNum` badge resolve a dangling id.
+            try ItemRecord.filter(staleIDs.contains(Column("mission_id")))
+                .updateAll(db, Column("mission_id").set(to: nil as String?), Column("mission_num").set(to: nil as Int?))
         }
     }
 
