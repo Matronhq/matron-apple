@@ -76,6 +76,20 @@ public struct ConversationRecord: Codable, FetchableRecord, PersistableRecord, E
     /// untouched when it doesn't (see `ConvoSummaryDTO.participants`).
     public var participants: String?
 
+    /// The `type` of the newest message-type event in this conversation
+    /// (`JournalEventType.messageTypes`), or `nil` when none has landed.
+    /// Maintained on write (`applyOne`, `insertHistory`) so the chat list's
+    /// read-time tool-output TTL is pure column logic — before v11 it ran a
+    /// `MAX(seq)` sub-query on `event` per stale conversation, which is what
+    /// made the whole list observation track the `event` table.
+    public var lastMessageType: String?
+    /// What the list must show instead of `snippet` once that newest
+    /// message-type event's 24 h tool-log TTL has passed: `"$ <command>"`,
+    /// capped at 120 characters like every other snippet. `nil` whenever
+    /// substitution does not apply (not a tool_output, no command, or a
+    /// legacy payload that was never a live log and is not tombstoned).
+    public var expiredSnippet: String?
+
     /// Decoded `participants`. Empty for anything that is not a known
     /// multi-agent room (nil column, or a value that fails to decode).
     public var participantIDs: [Int64] {
@@ -100,6 +114,8 @@ public struct ConversationRecord: Codable, FetchableRecord, PersistableRecord, E
         case unreadCount = "unread_count"
         case parentConvoID = "parent_convo_id"
         case agentDeviceID = "agent_device_id"
+        case lastMessageType = "last_message_type"
+        case expiredSnippet = "expired_snippet"
     }
 }
 
@@ -519,6 +535,48 @@ public final class JournalStore: @unchecked Sendable {
             // from the server's current values.
             try db.execute(sql: "DELETE FROM meta WHERE key = 'items_watermark_all' OR key LIKE 'items_watermark_convo_%'")
         }
+        // v11: launch performance (spec 2026-09-10). Purely ADDITIVE — one
+        // index plus two nullable columns on `conversation`, then a
+        // one-conversation-at-a-time backfill over the existing `convo_id`
+        // index.
+        //
+        // `event_type_ts` is what makes the tool-output sweep incremental:
+        // before it, every sweep was a full `event` scan (1.5 s and 75,791
+        // row decodes on the Mac copy, on every store open).
+        //
+        // `last_message_type` / `expired_snippet` are what let the chat
+        // list's TTL be pure column logic, which in turn stops the list
+        // observation from tracking the `event` table at all.
+        //
+        // The backfill is the one-off cost of this migration — an index
+        // build over ~457k rows plus one indexed point lookup per
+        // conversation (~6k), estimated 2-4 s on the Mac copy, once.
+        // `LaunchTimeline` records it as a nested `migration` interval so
+        // the number on the phone is known rather than guessed.
+        migrator.registerMigration("v11") { db in
+            try db.create(index: "event_type_ts", on: "event", columns: ["type", "ts"])
+            try db.alter(table: "conversation") { t in
+                t.add(column: "last_message_type", .text)
+                t.add(column: "expired_snippet", .text)
+            }
+            let placeholders = JournalEventType.messageTypes.map { _ in "?" }.joined(separator: ",")
+            let messageTypes = Array(JournalEventType.messageTypes)
+            for id in try String.fetchAll(db, sql: "SELECT id FROM conversation") {
+                var arguments: [DatabaseValueConvertible] = [id]
+                arguments.append(contentsOf: messageTypes)
+                guard let row = try Row.fetchOne(db, sql: """
+                    SELECT type, payload FROM event
+                    WHERE convo_id = ? AND type IN (\(placeholders))
+                    ORDER BY seq DESC LIMIT 1
+                    """, arguments: StatementArguments(arguments))
+                else { continue }
+                let type: String = row["type"]
+                let payloadData: Data = row["payload"]
+                try db.execute(
+                    sql: "UPDATE conversation SET last_message_type = ?, expired_snippet = ? WHERE id = ?",
+                    arguments: [type, Self.expiredSnippet(type: type, payloadData: payloadData), id])
+            }
+        }
         return migrator
     }
 
@@ -861,6 +919,33 @@ public final class JournalStore: @unchecked Sendable {
             if let s = payload["snippet"] as? String { return String(s.prefix(120)) }
             return "[\(type)]"
         }
+    }
+
+    /// The chat-list preview a tool_output falls back to once its output is
+    /// gone — the server's own `"$ <command>"` shape, capped at the same 120
+    /// characters as `snippet(type:payload:)`.
+    ///
+    /// Returns `nil` unless the payload is a tool_output that is either a
+    /// live log (the only shape the 24 h TTL applies to — see
+    /// `EventTombstone`) or already tombstoned (`expired: true`, server-side
+    /// or by the retention sweep). A legacy/offloaded tool_output with a
+    /// durable snippet and no `live_log` keeps showing that snippet forever,
+    /// which is the behaviour `testPurgeLeavesYoungAndNonLiveLogRows` pins.
+    static func expiredSnippet(type: String, payload: [String: Any]) -> String? {
+        guard type == JournalEventType.toolOutput,
+              payload["live_log"] as? Bool == true || payload["expired"] as? Bool == true,
+              let command = payload["command"] as? String, !command.isEmpty
+        else { return nil }
+        return String("$ \(command)".prefix(120))
+    }
+
+    /// `expiredSnippet(type:payload:)` over raw stored bytes — the form the
+    /// migration and the per-conversation refresh use, where the payload
+    /// comes back from SQLite as a BLOB.
+    static func expiredSnippet(type: String, payloadData: Data) -> String? {
+        guard let payload = (try? JSONSerialization.jsonObject(with: payloadData)) as? [String: Any]
+        else { return nil }
+        return expiredSnippet(type: type, payload: payload)
     }
 
     // MARK: History
