@@ -3,6 +3,14 @@ import MatronModels
 import MatronEvents
 @testable import MatronJournal
 
+/// Mirrors `ItemsSyncTests`' private helper of the same name.
+private final class Atomic<T>: @unchecked Sendable {
+    private let lock = NSLock(); private var value: T
+    init(_ value: T) { self.value = value }
+    func get() -> T { lock.withLock { value } }
+    func set(_ v: T) { lock.withLock { value = v } }
+}
+
 private final class FakeMissions: MissionsProviding, @unchecked Sendable {
     private let lock = NSLock()
     private var _list: [Mission] = []
@@ -143,11 +151,28 @@ final class MissionsSyncTests: XCTestCase {
         api.details = ["ms_1": MissionDetail(mission: mission("ms_1", num: 61), milestones: [], items: [], conversations: [])]
         let (sync, _, _, _) = try make(api: api)
         api.blockNextDetail = true
-        async let first = sync.refreshMission(id: "ms_1")
+        let first = Task { await sync.refreshMission(id: "ms_1") }
         try await waitUntil { api.isDetailGated }
-        async let second = sync.refreshMission(id: "ms_1")
+        let secondReturned = Atomic(false)
+        let second = Task { _ = await sync.refreshMission(id: "ms_1"); secondReturned.set(true) }
+        // Deterministic joiner barrier (CodeRabbit #209): the earlier
+        // version released the gate right after spawning `second` and
+        // only checked the FINAL call count, which a non-coalescing
+        // implementation (two independent concurrent GETs instead of one
+        // repeated run) would also satisfy. A coalesced joiner registers
+        // against the in-flight task and cannot return before the gate
+        // opens; a broken implementation's own GET is unblocked
+        // (`blockNextDetail` was already consumed by the first call) and
+        // returns almost immediately — so waiting here and asserting it
+        // has NOT returned, with exactly one request active, actually
+        // distinguishes the two.
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertFalse(secondReturned.get(), "the coalesced caller must wait for the in-flight refetch")
+        XCTAssertEqual(api.detailCalls.filter { $0 == "ms_1" }.count, 1,
+                       "only one request may be active before the gate releases")
         api.releaseDetailGate()
-        _ = await (first, second)
+        _ = await first.value
+        _ = await second.value
         XCTAssertEqual(api.detailCalls.filter { $0 == "ms_1" }.count, 2,
                        "the in-flight run repeats once for the coalesced joiner rather than issuing a separate concurrent GET")
         await sync.stop()
