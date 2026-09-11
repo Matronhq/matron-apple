@@ -122,7 +122,7 @@ public struct DiffCard: View {
                     .clipShape(Capsule())
             }
             counts
-            if event.truncated {
+            if event.truncated, !event.expired {
                 Text("…")
                     .font(.caption2).bold().foregroundStyle(.secondary)
             }
