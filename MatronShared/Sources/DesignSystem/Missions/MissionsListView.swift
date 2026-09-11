@@ -62,7 +62,7 @@ public struct MissionsListView: View {
                                 row(mission, hideTopSeparator: index == 0)
                             }
                         } header: {
-                            Text("Closed (\(model.closed.count))")
+                            closedHeader
                         }
                     }
                 }
@@ -89,6 +89,30 @@ public struct MissionsListView: View {
     /// it would otherwise double the header's own bottom line. Full-width
     /// separators are a Mac-only affordance; iOS keeps its sidebar style
     /// and default row insets.
+    /// The `.sidebar` style draws the disclosure chevron `Section(isExpanded:)`
+    /// needs; the Mac list is `.plain`, which draws none, so there the
+    /// header is the toggle (a11y id `missions.closedToggle`).
+    @ViewBuilder
+    private var closedHeader: some View {
+        #if os(macOS)
+        Button { withAnimation { showClosed.toggle() } } label: {
+            HStack {
+                Text("Closed (\(model.closed.count))")
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .rotationEffect(.degrees(showClosed ? 90 : 0))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("missions.closedToggle")
+        .accessibilityLabel(showClosed ? "Hide closed missions" : "Show closed missions")
+        #else
+        Text("Closed (\(model.closed.count))")
+        #endif
+    }
+
     private func row(_ mission: Mission, hideTopSeparator: Bool) -> some View {
         Button { onSelect(mission.id) } label: { MissionRowView(mission: mission) }
             .buttonStyle(.plain)
