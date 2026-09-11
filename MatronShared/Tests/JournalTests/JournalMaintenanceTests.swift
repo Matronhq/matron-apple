@@ -15,23 +15,45 @@ final class JournalMaintenanceTests: XCTestCase {
     private final class RecordingSearch: SearchService, @unchecked Sendable {
         private let lock = NSLock()
         private var _removed: [[String]] = []
+        /// Bugbot round 2 (A): actually tracked now, not stubbed to
+        /// constants, so `contains`/`eventCount` can prove a removal
+        /// happened rather than just recording that `removeAll` was called.
+        private var _indexed: Set<String> = []
         var removed: [[String]] { lock.lock(); defer { lock.unlock() }; return _removed }
         /// Awaited inside `removeAll` — the suspension point the `stop()`
         /// test needs in order to hold a sweep open.
         var beforeRemoveAll: (@Sendable () async -> Void)?
+        /// Set by a test to make `removeAll` throw — Bugbot A scenario 3: a
+        /// failed search removal must leave the search-retention watermark
+        /// untouched so the next pass retries the same seqs.
+        var removeAllError: Error?
 
-        func index(roomID: String, eventID: String, sender: String, timestamp: Date, body: String) async throws {}
-        func indexBatch(_ entries: [SearchIndexEntry]) async throws {}
-        func remove(eventID: String) async throws {}
+        func index(roomID: String, eventID: String, sender: String, timestamp: Date, body: String) async throws {
+            lock.lock(); _indexed.insert(eventID); lock.unlock()
+        }
+        func indexBatch(_ entries: [SearchIndexEntry]) async throws {
+            lock.lock(); for entry in entries { _indexed.insert(entry.eventID) }; lock.unlock()
+        }
+        func remove(eventID: String) async throws {
+            lock.lock(); _indexed.remove(eventID); lock.unlock()
+        }
         func removeAll(eventIDs: [String]) async throws {
             await beforeRemoveAll?()
-            lock.lock(); _removed.append(eventIDs); lock.unlock()
+            if let removeAllError { throw removeAllError }
+            lock.lock()
+            _removed.append(eventIDs)
+            for id in eventIDs { _indexed.remove(id) }
+            lock.unlock()
         }
         func query(_ text: String, limit: Int) async throws -> [SearchHit] { [] }
         func queryGrouped(_ text: String, limit: Int) async throws -> [SearchChatHit] { [] }
         func query(_ text: String, roomID: String, limit: Int) async throws -> [SearchHit] { [] }
-        func eventCount(roomID: String) async throws -> Int { 0 }
-        func contains(eventID: String) async throws -> Bool { false }
+        func eventCount(roomID: String) async throws -> Int {
+            lock.lock(); defer { lock.unlock() }; return _indexed.count
+        }
+        func contains(eventID: String) async throws -> Bool {
+            lock.lock(); defer { lock.unlock() }; return _indexed.contains(eventID)
+        }
         func wipe() async throws {}
         func recordBackfillProgress(roomID: String, indexedCount: Int, oldestEventID: String?, complete: Bool) async throws {}
         func backfillComplete(roomID: String) async throws -> Bool { true }
@@ -108,28 +130,39 @@ final class JournalMaintenanceTests: XCTestCase {
 
     func testRetiredSeqsAreRemovedFromTheSearchIndexInOneBatch() async throws {
         let store = SpyStore()
-        store.retentionResult = [11, 12, 13]
+        // Bugbot round 2 (A): search removal is driven by the INDEPENDENT
+        // `pendingSearchRetirements` watermark, not `applyRetention`'s
+        // return value — see `JournalMaintenance.run`.
+        store.pendingSearchResult = (seqs: [11, 12, 13], cutoff: t0)
         let search = RecordingSearch()
         let maintenance = JournalMaintenance(store: store, search: search, now: { self.t0 })
         await maintenance.runIfDue()
         XCTAssertEqual(search.removed, [["11", "12", "13"]],
                        "search rows are keyed by String(seq) — see JournalSyncEngine.indexForSearch")
+        XCTAssertEqual(store.searchRetirementCutoffs, [t0],
+                       "a successful removal must advance the search-retention watermark")
     }
 
     func testNothingRetiredMeansNoSearchWrite() async throws {
         let store = SpyStore()
+        store.pendingSearchResult = (seqs: [], cutoff: t0)
         let search = RecordingSearch()
         let maintenance = JournalMaintenance(store: store, search: search, now: { self.t0 })
         await maintenance.runIfDue()
         XCTAssertTrue(search.removed.isEmpty)
+        XCTAssertEqual(store.searchRetirementCutoffs, [t0],
+                       "an empty pass still records the watermark so it isn't rescanned every tick")
     }
 
-    /// R9, the ordering that makes spec goal D actually happen. Retention
-    /// must run FIRST: the 24 h sweep's first-pass range is `(0, now − 24 h]`,
-    /// which contains every >30-day row, and `EventTombstone.apply` gives
-    /// those the retention rewrite — so if the 24 h sweep ran first,
-    /// `applyRetention` would find them already tombstoned, return no seqs,
-    /// and their search rows would live forever.
+    /// Bugbot round 2 (A): search retirement now runs off its OWN watermark
+    /// (`pendingSearchRetirements` / `recordSearchRetirement`), independent
+    /// of `applyRetention`'s return value — a real store still proves the
+    /// end-to-end wiring: a >30-day live-log row is found by the pending
+    /// scan and reaches `search.removeAll` in the very first pass,
+    /// regardless of whether `applyRetention`'s own rewrite ran before or
+    /// after it (the two watermarks are unrelated; R9's retention-first
+    /// order is retained purely for disk hygiene — see `run`'s doc comment
+    /// — not because search correctness depends on it any more).
     func testRetentionRunsFirstSoItsSeqsReachTheSearchIndex() async throws {
         let store = try JournalStore(databaseURL: nil, ownSender: "user:dan")
         let fresh = Date(timeIntervalSince1970: 2)
@@ -153,7 +186,7 @@ final class JournalMaintenanceTests: XCTestCase {
 
     func testStopAwaitsTheInFlightSweep() async throws {
         let store = SpyStore()
-        store.retentionResult = [7]
+        store.pendingSearchResult = (seqs: [7], cutoff: t0)
         let search = RecordingSearch()
         let gate = Gate()
         search.beforeRemoveAll = { await gate.wait() }
@@ -191,6 +224,88 @@ final class JournalMaintenanceTests: XCTestCase {
         await maintenance.runIfDue(now: later)
         XCTAssertEqual(store.lastRunStamp, later, "the retry does not wait out the hour")
     }
+
+    // MARK: - Bugbot round 2 (PR #212)
+
+    private func liveLogToolOutputEvent(seq: Int64) -> JournalEvent {
+        JournalEvent(seq: seq, convoID: "c1", ts: Date(timeIntervalSince1970: 1),
+                     sender: "agent:dev-2", type: JournalEventType.toolOutput,
+                     payloadData: try! JSONSerialization.data(withJSONObject: [
+                        "command": "make test", "live_log": true, "snippet": "out",
+                     ] as [String: Any]))
+    }
+
+    /// A (High): "search removal is never retried." With no search
+    /// attached, a pass must skip search retirement ENTIRELY — leaving
+    /// `search_retention_ts` untouched — rather than advancing the
+    /// watermark past rows nothing ever removed from an index.
+    func testWithNoSearchAttachedAPassLeavesTheSearchWatermarkUntouchedAndTheSeqComesBackNextCall() async throws {
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:dan")
+        try store.insertHistory([liveLogToolOutputEvent(seq: 1)], now: Date(timeIntervalSince1970: 2))
+        let laterNow = Date(timeIntervalSince1970: 1).addingTimeInterval(31 * 24 * 3600)
+
+        let maintenance = JournalMaintenance(store: store, search: nil, now: { laterNow })
+        await maintenance.runIfDue()
+
+        let pending = try store.pendingSearchRetirements(now: laterNow)
+        XCTAssertEqual(pending.seqs, [1],
+                       "nothing removed it from an index this pass never had a reference to")
+    }
+
+    /// A (High): after `attachSearch` resolves the index (the iOS
+    /// locked-background-launch path), the very next pass removes the
+    /// pending seqs and advances the watermark so a further pass has
+    /// nothing left to retire.
+    func testAfterAttachSearchAPassRemovesThePendingSeqsAndAdvancesTheWatermark() async throws {
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:dan")
+        try store.insertHistory([liveLogToolOutputEvent(seq: 1)], now: Date(timeIntervalSince1970: 2))
+        let laterNow = Date(timeIntervalSince1970: 1).addingTimeInterval(31 * 24 * 3600)
+        let search = RecordingSearch()
+        try await search.index(roomID: "c1", eventID: "1", sender: "agent:dev-2",
+                               timestamp: Date(timeIntervalSince1970: 1), body: "out")
+
+        let maintenance = JournalMaintenance(store: store, search: nil, now: { laterNow })
+        await maintenance.attachSearch(search)
+        await maintenance.runIfDue()
+
+        XCTAssertEqual(search.removed, [["1"]])
+        let stillIndexed = try await search.contains(eventID: "1")
+        XCTAssertFalse(stillIndexed, "removeAll must have actually removed it from the index")
+        let remainingCount = try await search.eventCount(roomID: "c1")
+        XCTAssertEqual(remainingCount, 0)
+
+        let pending = try store.pendingSearchRetirements(now: laterNow)
+        XCTAssertTrue(pending.seqs.isEmpty,
+                      "the watermark must have advanced — a further pass has nothing pending")
+    }
+
+    /// A (High): a search whose `removeAll` throws must leave the
+    /// search-retention watermark untouched, and the SAME seq must come
+    /// back and succeed on the next pass once the failure clears.
+    func testASearchRemovalFailureLeavesTheWatermarkUntouchedAndRetriesNextPass() async throws {
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:dan")
+        try store.insertHistory([liveLogToolOutputEvent(seq: 1)], now: Date(timeIntervalSince1970: 2))
+        let laterNow = Date(timeIntervalSince1970: 1).addingTimeInterval(31 * 24 * 3600)
+        let search = RecordingSearch()
+        search.removeAllError = SpyStore.Boom()
+
+        let maintenance = JournalMaintenance(store: store, search: search, now: { laterNow })
+        await maintenance.runIfDue()
+
+        XCTAssertTrue(search.removed.isEmpty, "the throwing removal must not have recorded a batch")
+        var pending = try store.pendingSearchRetirements(now: laterNow)
+        XCTAssertEqual(pending.seqs, [1], "a failed pass must not advance the watermark")
+
+        search.removeAllError = nil
+        // The failed pass never stamped `maintenance_last_run`, so this
+        // retry does not need to wait out the hour — same rule as
+        // `testAFailedSweepIsNotStampedAndIsRetriedNextTick`.
+        await maintenance.runIfDue(now: laterNow.addingTimeInterval(60))
+
+        XCTAssertEqual(search.removed, [["1"]], "the retry must succeed against the same seq")
+        pending = try store.pendingSearchRetirements(now: laterNow.addingTimeInterval(60))
+        XCTAssertTrue(pending.seqs.isEmpty, "the watermark must now be advanced")
+    }
 }
 
 /// Plain (non-actor) recorder: `MaintenanceSweeping` is synchronous and
@@ -203,8 +318,15 @@ final class SpyStore: MaintenanceSweeping, @unchecked Sendable {
     private var _retentionCalls: [Date] = []
     private var _callOrder: [String] = []
     private var _lastRun: Date?
+    private var _pendingSearchCalls: [Date] = []
+    private var _searchRetirementCutoffs: [Date] = []
     var retentionResult: [Int64] = []
     var purgeError: Error?
+    /// Bugbot round 2 (A): what `pendingSearchRetirements` hands back — the
+    /// old `retentionResult`-feeds-search wiring is gone, so a test that
+    /// wants `JournalMaintenance` to see pending seqs sets this instead.
+    var pendingSearchResult: (seqs: [Int64], cutoff: Date) = ([], Date(timeIntervalSince1970: 0))
+    var pendingSearchError: Error?
 
     init(lastRun: Date? = nil) { _lastRun = lastRun }
 
@@ -212,6 +334,8 @@ final class SpyStore: MaintenanceSweeping, @unchecked Sendable {
     var retentionCalls: [Date] { lock.lock(); defer { lock.unlock() }; return _retentionCalls }
     var callOrder: [String] { lock.lock(); defer { lock.unlock() }; return _callOrder }
     var lastRunStamp: Date? { lock.lock(); defer { lock.unlock() }; return _lastRun }
+    var pendingSearchCalls: [Date] { lock.lock(); defer { lock.unlock() }; return _pendingSearchCalls }
+    var searchRetirementCutoffs: [Date] { lock.lock(); defer { lock.unlock() }; return _searchRetirementCutoffs }
 
     func purgeExpiredToolOutputSnippets(now: Date) throws {
         if let purgeError { throw purgeError }
@@ -224,5 +348,13 @@ final class SpyStore: MaintenanceSweeping, @unchecked Sendable {
     func maintenanceLastRun() throws -> Date? { lastRunStamp }
     func recordMaintenanceRun(at date: Date) throws {
         lock.lock(); _lastRun = date; lock.unlock()
+    }
+    func pendingSearchRetirements(now: Date) throws -> (seqs: [Int64], cutoff: Date) {
+        if let pendingSearchError { throw pendingSearchError }
+        lock.lock(); _pendingSearchCalls.append(now); _callOrder.append("pendingSearchRetirements"); lock.unlock()
+        return pendingSearchResult
+    }
+    func recordSearchRetirement(upTo cutoff: Date) throws {
+        lock.lock(); _searchRetirementCutoffs.append(cutoff); _callOrder.append("recordSearchRetirement"); lock.unlock()
     }
 }

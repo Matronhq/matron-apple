@@ -79,6 +79,16 @@ final class AppDependencies {
             // task; `core` itself stays on the main actor.
             let engine = core.engine
             Task { await engine.attachSearch(service) }
+            // Same late-attach hazard for maintenance (Bugbot High, PR
+            // #212): `JournalMaintenance(store:search:)` was constructed
+            // with a `nil` search whenever the app launched locked, and
+            // nothing ever told it search opened later — its search
+            // retirement watermark would have advanced past rows without
+            // ever removing them from an index it never had a reference
+            // to. `attachSearch` lets the next sweep resolve the index at
+            // pass time instead.
+            let maintenance = core.maintenance
+            Task { await maintenance.attachSearch(service) }
             if core.backfillTask == nil {
                 core.backfillTask = Self.startBackfill(search: service, api: core.api, store: core.store,
                                                        engine: engine, resetBookkeepingFirst: true)

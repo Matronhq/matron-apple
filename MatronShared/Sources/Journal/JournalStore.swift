@@ -569,11 +569,22 @@ public final class JournalStore: @unchecked Sendable {
     // MARK: Background maintenance sweeps
 
     /// `meta` keys written by the sweeps. None is written by a migration;
-    /// `wipe()`'s `DELETE FROM meta` resets all three, which is exactly
+    /// `wipe()`'s `DELETE FROM meta` resets all four, which is exactly
     /// right — a re-bootstrapped mirror must re-sweep from scratch.
     static let snippetTTLWatermarkKey = "snippet_ttl_ts"
     static let retentionWatermarkKey = "retention_ts"
     static let maintenanceLastRunKey = "maintenance_last_run"
+    /// Separate from `retentionWatermarkKey`: the tombstone sweep runs
+    /// whether or not a search index is attached (a locked background
+    /// launch on iOS opens it late via `adoptSearch`, and `applyRetention`'s
+    /// returned seqs were being silently dropped whenever that happened —
+    /// Bugbot High "search removal is never retried" on PR #212). Search
+    /// retirement is its own pass over the same `event_type_ts` range,
+    /// gated on this independent watermark, so a maintenance run with no
+    /// search attached leaves this watermark untouched and a later run
+    /// (once search IS attached) re-discovers the same rows instead of
+    /// having lost them.
+    static let searchRetentionWatermarkKey = "search_retention_ts"
 
     /// Rows per write transaction. The store is a single-connection
     /// `DatabaseQueue`, so a sweep that took one transaction for the whole
@@ -610,10 +621,17 @@ public final class JournalStore: @unchecked Sendable {
     /// no-op for the 30-day rule (its command is already short), so it
     /// would never appear in a rewrite-only list — but its search row was
     /// indexed while the row was still fresh, and nothing else ever visits
-    /// this seq again (the watermark guarantees exactly one visit), so the
-    /// caller (`JournalMaintenance`, feeding `SearchService.removeAll`)
-    /// needs it here or that search row would never be dropped. The
-    /// watermark bounds the list to what this pass actually scanned.
+    /// this seq again (the watermark guarantees exactly one visit).
+    ///
+    /// `JournalMaintenance` no longer consumes this return value for search
+    /// removal (Bugbot High, PR #212: a nil-or-not-yet-attached `search`
+    /// made that removal silently permanent, since this watermark had
+    /// already advanced past the rows by the time search was attached).
+    /// Search retirement now runs off its own independent watermark via
+    /// `pendingSearchRetirements(now:)` / `recordSearchRetirement(upTo:)`,
+    /// scanning the same range on its own schedule. This method's signature
+    /// and return value are unchanged — Task 4's tests pin them — the seqs
+    /// are just no longer anyone's only path to the search index.
     @discardableResult
     public func applyRetention(now: Date = Date()) throws -> [Int64] {
         let cutoff = Int64(now.timeIntervalSince1970 * 1000) - Int64(EventTombstone.retentionWindow * 1000)
@@ -748,6 +766,77 @@ public final class JournalStore: @unchecked Sendable {
         try dbQueue.write { db in
             try Self.setMeta(db, key: Self.maintenanceLastRunKey,
                              value: String(Int64(date.timeIntervalSince1970 * 1000)))
+        }
+    }
+
+    /// `tool_output`/`diff` seqs whose bodies have aged past the retention
+    /// window and have not yet been retired from the search index, plus the
+    /// timestamp this call actually finished scanning up to.
+    ///
+    /// A read-only sibling of `sweepTombstones`, over the same
+    /// `event_type_ts` range and the same 30-day cutoff as `applyRetention`,
+    /// but gated on its own `searchRetentionWatermarkKey` rather than
+    /// `retentionWatermarkKey` — see that key's doc comment for why the two
+    /// must not share a watermark. Paged the same way (keyset on `(ts,
+    /// seq)`, `sweepChunkSize` rows per chunk) so a large backlog doesn't
+    /// hold one long read transaction.
+    ///
+    /// `cutoff` is normally the full `now − retentionWindow` instant — the
+    /// same value `applyRetention(now:)` would tombstone up to — but if
+    /// `Task.isCancelled` bails the scan at a chunk boundary, `cutoff` is
+    /// only the timestamp of the last row actually seen, so a caller that
+    /// records this cutoff as the new watermark (only after successfully
+    /// removing `seqs` from the index) never claims coverage it doesn't
+    /// have — the next call resumes exactly where this one stopped.
+    public func pendingSearchRetirements(now: Date = Date()) throws -> (seqs: [Int64], cutoff: Date) {
+        let cutoffMs = Int64(now.timeIntervalSince1970 * 1000) - Int64(EventTombstone.retentionWindow * 1000)
+        let types = [JournalEventType.toolOutput, JournalEventType.diff]
+        let placeholders = types.map { _ in "?" }.joined(separator: ",")
+        var afterTS = try dbQueue.read { db in
+            try Int64.fetchOne(db, sql: "SELECT value FROM meta WHERE key = ?",
+                               arguments: [Self.searchRetentionWatermarkKey]) ?? 0
+        }
+        // Same "watermark past our own cutoff means no coverage for THIS
+        // call's range" rule as `sweepTombstones` — see its comment.
+        if afterTS > cutoffMs { afterTS = 0 }
+        var afterSeq = Int64.max
+        var seqs: [Int64] = []
+        var lastVisitedTS: Int64?
+        while true {
+            if Task.isCancelled {
+                let cutoff = lastVisitedTS.map { Date(timeIntervalSince1970: Double($0) / 1000) }
+                    ?? Date(timeIntervalSince1970: Double(afterTS) / 1000)
+                return (seqs, cutoff)
+            }
+            let chunk: [(seq: Int64, ts: Int64)] = try dbQueue.read { db in
+                var arguments: [DatabaseValueConvertible] = types
+                arguments.append(contentsOf: [cutoffMs, afterTS, afterTS, afterSeq])
+                return try Row.fetchAll(db, sql: """
+                    SELECT seq, ts FROM event
+                    WHERE type IN (\(placeholders)) AND ts <= ?
+                      AND (ts > ? OR (ts = ? AND seq > ?))
+                    ORDER BY ts, seq
+                    LIMIT \(Self.sweepChunkSize)
+                    """, arguments: StatementArguments(arguments))
+                    .map { (seq: $0["seq"] as Int64, ts: $0["ts"] as Int64) }
+            }
+            guard let last = chunk.last else { break }
+            seqs.append(contentsOf: chunk.map { $0.seq })
+            afterTS = last.ts
+            afterSeq = last.seq
+            lastVisitedTS = last.ts
+        }
+        return (seqs, Date(timeIntervalSince1970: Double(cutoffMs) / 1000))
+    }
+
+    /// Advances the search-retention watermark. Callers must only invoke
+    /// this after `SearchService.removeAll(eventIDs:)` has actually
+    /// succeeded for the `seqs` that came with this `cutoff` from
+    /// `pendingSearchRetirements` — see `JournalMaintenance.run`.
+    public func recordSearchRetirement(upTo cutoff: Date) throws {
+        try dbQueue.write { db in
+            try Self.setMeta(db, key: Self.searchRetentionWatermarkKey,
+                             value: String(Int64(cutoff.timeIntervalSince1970 * 1000)))
         }
     }
 

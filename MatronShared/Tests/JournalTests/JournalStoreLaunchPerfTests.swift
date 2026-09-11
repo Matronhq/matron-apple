@@ -546,20 +546,112 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
             "$ legacy")
     }
 
-    func testWipeResetsBothWatermarksAndTheMaintenanceStamp() throws {
+    func testWipeResetsAllThreeWatermarksAndTheMaintenanceStamp() throws {
         let store = try makeStore()
         let sweepAt = Date(timeIntervalSince1970: 100).addingTimeInterval(31 * 24 * 3600)
         try store.purgeExpiredToolOutputSnippets(now: sweepAt)
         _ = try store.applyRetention(now: sweepAt)
+        try store.recordSearchRetirement(upTo: sweepAt)
         try store.recordMaintenanceRun(at: sweepAt)
         XCTAssertNotNil(try watermark(store, key: "snippet_ttl_ts"))
         XCTAssertNotNil(try watermark(store, key: "retention_ts"))
+        XCTAssertNotNil(try watermark(store, key: "search_retention_ts"))
         XCTAssertNotNil(try store.maintenanceLastRun())
 
         try store.wipe()
         XCTAssertNil(try watermark(store, key: "snippet_ttl_ts"))
         XCTAssertNil(try watermark(store, key: "retention_ts"))
+        XCTAssertNil(try watermark(store, key: "search_retention_ts"))
         XCTAssertNil(try store.maintenanceLastRun())
+    }
+
+    // MARK: pendingSearchRetirements / recordSearchRetirement (Bugbot round 2, PR #212)
+
+    /// Same shape and cutoff as `applyRetention`, but over its OWN
+    /// watermark — the basic scan.
+    func testPendingSearchRetirementsFindsToolOutputAndDiffSeqsPastTheWindow() throws {
+        let store = try makeStore()
+        let insertAt = Date(timeIntervalSince1970: 3)
+        try store.insertHistory([
+            event(1, type: JournalEventType.toolOutput,
+                  payload: ["command": "old", "snippet": "out", "exit_code": 0]),
+            event(2, type: JournalEventType.diff, payload: ["file_path": "/w/A.swift", "diff": "+ a"]),
+            event(3, type: JournalEventType.text, payload: ["body": "kept forever"]),
+        ], now: insertAt)
+
+        let now = Date(timeIntervalSince1970: 3).addingTimeInterval(31 * 24 * 3600)
+        let pending = try store.pendingSearchRetirements(now: now)
+        XCTAssertEqual(pending.seqs.sorted(), [1, 2], "text rows are never retention-tombstoned")
+        XCTAssertEqual(pending.cutoff, now.addingTimeInterval(-EventTombstone.retentionWindow),
+                       "an uninterrupted scan's cutoff is the full retention cutoff")
+    }
+
+    /// The bug this round fixes: `applyRetention` tombstoning a row (which
+    /// advances `retention_ts`) must NOT be mistaken for search coverage —
+    /// the two watermarks are independent, so the pending scan still finds
+    /// the row.
+    func testPendingSearchRetirementsIsIndependentOfTheRetentionWatermark() throws {
+        let store = try makeStore()
+        let insertAt = Date(timeIntervalSince1970: 3)
+        try store.insertHistory([
+            event(1, type: JournalEventType.toolOutput,
+                  payload: ["command": "old", "snippet": "out", "exit_code": 0]),
+        ], now: insertAt)
+        let now = Date(timeIntervalSince1970: 3).addingTimeInterval(31 * 24 * 3600)
+
+        _ = try store.applyRetention(now: now)
+        XCTAssertNotNil(try watermark(store, key: "retention_ts"), "precondition: retention already ran")
+
+        let pending = try store.pendingSearchRetirements(now: now)
+        XCTAssertEqual(pending.seqs, [1],
+                       "the retention watermark advancing must not hide this seq from search retirement")
+    }
+
+    func testRecordSearchRetirementAdvancesItsWatermarkSoASecondCallSeesNothingPending() throws {
+        let store = try makeStore()
+        let insertAt = Date(timeIntervalSince1970: 3)
+        try store.insertHistory([
+            event(1, type: JournalEventType.toolOutput,
+                  payload: ["command": "old", "snippet": "out", "exit_code": 0]),
+        ], now: insertAt)
+        let now = Date(timeIntervalSince1970: 3).addingTimeInterval(31 * 24 * 3600)
+
+        let first = try store.pendingSearchRetirements(now: now)
+        XCTAssertEqual(first.seqs, [1])
+        try store.recordSearchRetirement(upTo: first.cutoff)
+
+        let second = try store.pendingSearchRetirements(now: now.addingTimeInterval(60))
+        XCTAssertEqual(second.seqs, [], "a second call after recording must see nothing pending")
+    }
+
+    /// Same cancellation contract as `applyRetention`: a scan cancelled
+    /// before its first chunk boundary must report no seqs, and its
+    /// `cutoff` must reflect only what was actually scanned — never the
+    /// full retention cutoff, or a caller recording it would claim coverage
+    /// it doesn't have.
+    func testPendingSearchRetirementsStopsAtTheNextChunkBoundaryWhenCancelled() async throws {
+        let store = try makeStore()
+        let insertAt = Date(timeIntervalSince1970: 1)
+        let events = (1...1200).map { seq in
+            event(Int64(seq), type: JournalEventType.toolOutput,
+                  payload: ["command": "c\(seq)", "live_log": true, "snippet": "out"])
+        }
+        try store.insertHistory(events, now: insertAt)
+        let now = Date(timeIntervalSince1970: 1).addingTimeInterval(31 * 24 * 3600)
+
+        let handle = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try store.pendingSearchRetirements(now: now)
+        }
+        let pending = try await handle.value
+        XCTAssertEqual(pending.seqs, [], "a scan cancelled before its first chunk must find nothing")
+        XCTAssertLessThan(pending.cutoff, now.addingTimeInterval(-EventTombstone.retentionWindow),
+                          "a cancelled scan's cutoff must not claim the full retention cutoff")
+
+        // An uncancelled pass over the same, still-fully-unscanned range
+        // must still find everything — cancellation must not leave a gap.
+        let resumed = try store.pendingSearchRetirements(now: now)
+        XCTAssertEqual(resumed.seqs.count, 1200)
     }
 
     func testMaintenanceLastRunRoundTripsToTheSecond() throws {

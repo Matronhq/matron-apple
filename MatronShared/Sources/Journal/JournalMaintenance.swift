@@ -10,6 +10,16 @@ public protocol MaintenanceSweeping: Sendable {
     func applyRetention(now: Date) throws -> [Int64]
     func maintenanceLastRun() throws -> Date?
     func recordMaintenanceRun(at date: Date) throws
+    /// The tool_output/diff seqs past the retention window that have not
+    /// yet been retired from the search index, and the timestamp this call
+    /// actually finished scanning up to. Gated on its own watermark,
+    /// independent of `applyRetention`'s — see `JournalStore
+    /// .searchRetentionWatermarkKey` for why the two must not share one.
+    func pendingSearchRetirements(now: Date) throws -> (seqs: [Int64], cutoff: Date)
+    /// Advances the search-retention watermark. Callers must only call this
+    /// after `SearchService.removeAll(eventIDs:)` has succeeded for the
+    /// `seqs` that came with `cutoff`.
+    func recordSearchRetirement(upTo cutoff: Date) throws
 }
 
 extension JournalStore: MaintenanceSweeping {}
@@ -40,7 +50,11 @@ public actor JournalMaintenance {
     public static let firstRunDelay: Duration = .seconds(10)
 
     private let store: any MaintenanceSweeping
-    private let search: (any SearchService)?
+    /// `var`, not `let`: a locked background launch on iOS opens the index
+    /// late (`AppDependencies.adoptSearch`), well after this actor is
+    /// constructed — see `attachSearch`. Only ever goes nil → non-nil, same
+    /// shape as `JournalSyncEngine.attachSearch`.
+    private var search: (any SearchService)?
     private let now: @Sendable () -> Date
     private let interval: TimeInterval
     /// The pass currently running, if any. Doubles as the re-entrancy gate
@@ -56,6 +70,19 @@ public actor JournalMaintenance {
         self.search = search
         self.now = now
         self.interval = interval
+    }
+
+    /// Attaches a just-opened search index to a maintenance actor that was
+    /// constructed without one (iOS locked-background-launch path, mirroring
+    /// `JournalSyncEngine.attachSearch`). Only ever nil → non-nil. The very
+    /// next pass after this call resolves `search` fresh (`run(now:)` reads
+    /// the stored property at call time, not at construction), so rows that
+    /// piled up in `pendingSearchRetirements` while `search` was nil are
+    /// retired on the next tick instead of the watermark having silently
+    /// skipped past them (Bugbot High, PR #212).
+    public func attachSearch(_ service: any SearchService) {
+        guard search == nil else { return }
+        search = service
     }
 
     /// Arms the first run and the hourly cadence. Idempotent.
@@ -110,25 +137,57 @@ public actor JournalMaintenance {
     /// `(0, now − 24 h]`, which contains every row older than 30 days, and
     /// `EventTombstone.apply` gives those the RETENTION rewrite. Run that way
     /// round, `applyRetention` would then find them already tombstoned,
-    /// return an empty seq list, and the search index would keep every
-    /// >30-day tool-output body forever — spec goal D silently unmet, and
-    /// nothing in the logs to show it.
+    /// return an empty seq list — but that no longer matters for search
+    /// (see below), so the ordering's remaining purpose is purely disk
+    /// hygiene: a row gets the strongest applicable rewrite in one pass
+    /// rather than the weaker 24 h one now and the 30-day one an hour later.
+    ///
+    /// Search retirement (step 3) is INDEPENDENT of `applyRetention`'s
+    /// return value — it has its own watermark
+    /// (`pendingSearchRetirements`/`recordSearchRetirement`), because
+    /// `applyRetention`'s seqs were being silently dropped whenever `search`
+    /// was nil at pass time (a locked iOS background launch opens the index
+    /// late; `JournalMaintenance` used to snapshot `search` only at
+    /// construction) — Bugbot High, PR #212. With a separate watermark, a
+    /// pass with no search attached simply leaves it untouched, and the
+    /// SAME rows are found and retired once `attachSearch` runs and a later
+    /// pass fires.
     private func run(now current: Date) async {
         do {
-            let retired = try store.applyRetention(now: current)
+            let retentionVisited = try store.applyRetention(now: current)
             try store.purgeExpiredToolOutputSnippets(now: current)
-            if !retired.isEmpty, let search {
-                // Search rows are keyed by `String(seq)` by every feeder
-                // (JournalSyncEngine.indexForSearch), so the seqs the
-                // retention sweep returns ARE the index's event ids.
-                // `removeAll` does its own per-chunk transactions.
-                try await search.removeAll(eventIDs: retired.map(String.init))
+            var searchRetired = 0
+            if let search {
+                let pending = try store.pendingSearchRetirements(now: current)
+                if !pending.seqs.isEmpty {
+                    // Search rows are keyed by `String(seq)` by every feeder
+                    // (JournalSyncEngine.indexForSearch), so the seqs this
+                    // scan returns ARE the index's event ids. `removeAll`
+                    // does its own per-chunk transactions.
+                    try await search.removeAll(eventIDs: pending.seqs.map(String.init))
+                }
+                // Recorded even when `seqs` is empty: an empty pass still
+                // scanned up to `pending.cutoff`, and skipping this write
+                // would just re-scan the same empty range every tick.
+                // Recorded only AFTER `removeAll` succeeds (or wasn't
+                // needed) — a thrown `removeAll` skips straight to the
+                // `catch` below, leaving the watermark exactly where it was
+                // so the next pass retries the same seqs.
+                try store.recordSearchRetirement(upTo: pending.cutoff)
+                searchRetired = pending.seqs.count
+            } else {
+                Self.logger.debug("maintenance pass: no search attached, search retirement skipped")
             }
             try store.recordMaintenanceRun(at: current)
-            Self.logger.info("maintenance pass done; retired \(retired.count, privacy: .public) bodies")
+            Self.logger.info("""
+                maintenance pass done; retention visited \(retentionVisited.count, privacy: .public), \
+                search retired \(searchRetired, privacy: .public)
+                """)
         } catch {
             // No stamp on failure: the next tick retries immediately rather
-            // than waiting out the hour.
+            // than waiting out the hour. Neither watermark this pass would
+            // have advanced was written before the throw, so retention and
+            // search retirement both retry from exactly where they left off.
             Self.logger.error("maintenance pass failed: \(error.localizedDescription, privacy: .public)")
         }
     }
