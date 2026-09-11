@@ -15,8 +15,9 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
     /// `JournalStoreTests.event` — so a test can make a row arbitrarily
     /// "old" relative to an injected `now` without wall-clock flake.
     func event(_ seq: Int64, convo: String = "c1", sender: String = "agent:dev-2",
-               type: String = "text", payload: [String: Any] = ["body": "hi"]) -> JournalEvent {
-        JournalEvent(seq: seq, convoID: convo, ts: Date(timeIntervalSince1970: Double(seq)),
+               type: String = "text", payload: [String: Any] = ["body": "hi"],
+               ts: Date? = nil) -> JournalEvent {
+        JournalEvent(seq: seq, convoID: convo, ts: ts ?? Date(timeIntervalSince1970: Double(seq)),
                      sender: sender, type: type,
                      payloadData: try! JSONSerialization.data(withJSONObject: payload))
     }
@@ -106,9 +107,18 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
     /// the TTL never applied to.
     func testV11LeavesExpiredSnippetNilForNonLiveLogToolOutput() throws {
         let url = try tempStoreURL()
+        // `ts` deliberately recent (not the usual epoch-relative seconds):
+        // this test is pinning the v11 BACKFILL's behaviour in isolation,
+        // and `JournalStore.init`'s boot-time sweep runs at the real wall
+        // clock right after the backfill. An epoch-1970 `ts` would also be
+        // >30 days stale by that real clock, so the boot sweep's accepted,
+        // documented over-enforcement (R17: the boot-time 24h sweep also
+        // performs 30-day retention until Task 6 reorders it) would rewrite
+        // this row a second time and mask what the backfill alone produced.
         try seedPreV11Database(at: url, conversations: ["c1"], events: [
             event(1, convo: "c1", type: JournalEventType.toolOutput,
-                  payload: ["command": "legacy", "snippet": "kept"]),
+                  payload: ["command": "legacy", "snippet": "kept"],
+                  ts: Date().addingTimeInterval(-3600)),
         ])
         let store = try JournalStore(databaseURL: url, ownSender: "user:dan")
         let row = try XCTUnwrap(try store.dbQueue.read { try ConversationRecord.fetchOne($0, key: "c1") })
@@ -335,5 +345,153 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
         let next = await iterator.next()
         XCTAssertEqual(next?.first?.title, "renamed",
                        "the event-payload write delivered a value — the list fetch still reads `event`")
+    }
+
+    // MARK: Watermarked sweeps
+
+    private func rawPayload(_ store: JournalStore, seq: Int64) throws -> [String: Any] {
+        let data: Data = try XCTUnwrap(try store.dbQueue.read { db in
+            try Data.fetchOne(db, sql: "SELECT payload FROM event WHERE seq = ?", arguments: [seq])
+        })
+        return try XCTUnwrap((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])
+    }
+
+    private func watermark(_ store: JournalStore, key: String) throws -> Int64? {
+        try store.dbQueue.read { db in
+            try Int64.fetchOne(db, sql: "SELECT value FROM meta WHERE key = ?", arguments: [key])
+        }
+    }
+
+    func testPurgeRecordsItsWatermarkAndTheSecondSweepSkipsThatRange() throws {
+        let store = try makeStore()
+        let insertAt = Date(timeIntervalSince1970: 1)
+        try store.applyJournal(event(1, type: JournalEventType.toolOutput,
+                                     payload: ["command": "make test", "live_log": true,
+                                               "snippet": "out", "blob_ref": "b1"]),
+                               now: insertAt)
+        let sweepAt = Date(timeIntervalSince1970: 1).addingTimeInterval(25 * 3600)
+        try store.purgeExpiredToolOutputSnippets(now: sweepAt)
+        XCTAssertNil(try rawPayload(store, seq: 1)["snippet"])
+        XCTAssertEqual(try watermark(store, key: "snippet_ttl_ts"),
+                       Int64(sweepAt.timeIntervalSince1970 * 1000) - Int64(24 * 3600 * 1000))
+
+        // Put an un-tombstoned payload back under the watermark by hand. A
+        // second sweep must not see it — that is what "incremental" means,
+        // and the insert paths are what guarantee no real row can be there.
+        try store.dbQueue.write { db in
+            let payload = try JSONSerialization.data(withJSONObject: [
+                "command": "make test", "live_log": true, "snippet": "back",
+            ] as [String: Any])
+            try db.execute(sql: "UPDATE event SET payload = ? WHERE seq = 1", arguments: [payload])
+        }
+        try store.purgeExpiredToolOutputSnippets(now: sweepAt.addingTimeInterval(60))
+        XCTAssertEqual(try rawPayload(store, seq: 1)["snippet"] as? String, "back",
+                       "the second sweep rescanned a range its watermark had already covered")
+    }
+
+    /// The other half of the watermark contract: a row older than the
+    /// watermark that lands AFTER it arrives tombstoned (Task 3), so
+    /// skipping the range is safe.
+    func testAnOldRowInsertedAfterTheWatermarkArrivesTombstoned() throws {
+        let store = try makeStore()
+        let sweepAt = Date(timeIntervalSince1970: 100).addingTimeInterval(25 * 3600)
+        try store.purgeExpiredToolOutputSnippets(now: sweepAt)
+
+        try store.insertHistory([
+            event(1, type: JournalEventType.toolOutput,
+                  payload: ["command": "ancient", "live_log": true, "snippet": "out"]),
+        ], now: sweepAt.addingTimeInterval(60))
+        XCTAssertNil(try rawPayload(store, seq: 1)["snippet"],
+                     "a below-watermark row must arrive already tombstoned")
+        XCTAssertEqual(try rawPayload(store, seq: 1)["expired"] as? Bool, true)
+    }
+
+    func testSweepCoversMoreRowsThanOneChunk() throws {
+        let store = try makeStore()
+        let insertAt = Date(timeIntervalSince1970: 1)
+        // 1200 rows = three chunks of 500 (the last partial), so a
+        // single-chunk implementation leaves 700 rows un-tombstoned.
+        let events = (1...1200).map { seq in
+            event(Int64(seq), type: JournalEventType.toolOutput,
+                  payload: ["command": "c\(seq)", "live_log": true, "snippet": "out"])
+        }
+        try store.insertHistory(events, now: insertAt)
+        try store.purgeExpiredToolOutputSnippets(
+            now: Date(timeIntervalSince1970: 1200).addingTimeInterval(25 * 3600))
+        // Decode every payload rather than `LIKE '%snippet%'` over a BLOB
+        // column: that relies on SQLite's implicit BLOB→TEXT coercion and
+        // would also match a row whose COMMAND happened to contain the word.
+        let stillCarryingABody = try store.events(convoID: "c1")
+            .filter { $0.payload["snippet"] != nil }
+            .map(\.seq)
+        XCTAssertEqual(stillCarryingABody, [], "the sweep stopped after the first chunk")
+    }
+
+    func testApplyRetentionReturnsTheSeqsItTombstoned() throws {
+        let store = try makeStore()
+        let insertAt = Date(timeIntervalSince1970: 3)
+        try store.insertHistory([
+            event(1, type: JournalEventType.toolOutput,
+                  payload: ["command": "old", "snippet": "out", "exit_code": 0]),
+            event(2, type: JournalEventType.diff, payload: ["file_path": "/w/A.swift", "diff": "+ a"]),
+            event(3, type: JournalEventType.text, payload: ["body": "kept forever"]),
+        ], now: insertAt)
+
+        let seqs = try store.applyRetention(
+            now: Date(timeIntervalSince1970: 3).addingTimeInterval(31 * 24 * 3600))
+        XCTAssertEqual(seqs.sorted(), [1, 2], "text rows are never retention-tombstoned")
+        XCTAssertNil(try rawPayload(store, seq: 1)["snippet"])
+        XCTAssertNil(try rawPayload(store, seq: 2)["diff"])
+        XCTAssertEqual(try rawPayload(store, seq: 2)["file_path"] as? String, "/w/A.swift")
+        XCTAssertEqual(try rawPayload(store, seq: 3)["body"] as? String, "kept forever")
+
+        XCTAssertEqual(try store.applyRetention(
+            now: Date(timeIntervalSince1970: 3).addingTimeInterval(31 * 24 * 3600 + 60)), [],
+            "a second retention sweep over the same range must tombstone nothing")
+    }
+
+    /// A tool_output that was never a live log has no `expired_snippet` at
+    /// insert time; once retention tombstones it, the list has nothing but
+    /// the command to show, so the sweep refreshes the columns of the
+    /// conversations it touched.
+    func testRetentionRefreshesTheConversationColumns() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, type: JournalEventType.toolOutput,
+                                     payload: ["command": "legacy", "snippet": "durable"]),
+                               now: Date(timeIntervalSince1970: 2))
+        XCTAssertNil(try XCTUnwrap(try store.dbQueue.read {
+            try ConversationRecord.fetchOne($0, key: "c1")
+        }).expiredSnippet)
+
+        _ = try store.applyRetention(now: Date(timeIntervalSince1970: 1).addingTimeInterval(31 * 24 * 3600))
+        let row = try XCTUnwrap(try store.dbQueue.read { try ConversationRecord.fetchOne($0, key: "c1") })
+        XCTAssertEqual(row.expiredSnippet, "$ legacy")
+        XCTAssertEqual(try store.conversations(
+            now: Date(timeIntervalSince1970: 1).addingTimeInterval(31 * 24 * 3600)).first?.snippet,
+            "$ legacy")
+    }
+
+    func testWipeResetsBothWatermarksAndTheMaintenanceStamp() throws {
+        let store = try makeStore()
+        let sweepAt = Date(timeIntervalSince1970: 100).addingTimeInterval(31 * 24 * 3600)
+        try store.purgeExpiredToolOutputSnippets(now: sweepAt)
+        _ = try store.applyRetention(now: sweepAt)
+        try store.recordMaintenanceRun(at: sweepAt)
+        XCTAssertNotNil(try watermark(store, key: "snippet_ttl_ts"))
+        XCTAssertNotNil(try watermark(store, key: "retention_ts"))
+        XCTAssertNotNil(try store.maintenanceLastRun())
+
+        try store.wipe()
+        XCTAssertNil(try watermark(store, key: "snippet_ttl_ts"))
+        XCTAssertNil(try watermark(store, key: "retention_ts"))
+        XCTAssertNil(try store.maintenanceLastRun())
+    }
+
+    func testMaintenanceLastRunRoundTripsToTheSecond() throws {
+        let store = try makeStore()
+        XCTAssertNil(try store.maintenanceLastRun())
+        let at = Date(timeIntervalSince1970: 1_700_000_000)
+        try store.recordMaintenanceRun(at: at)
+        XCTAssertEqual(try store.maintenanceLastRun(), at)
     }
 }

@@ -577,26 +577,165 @@ public final class JournalStore: @unchecked Sendable {
         return migrator
     }
 
-    // MARK: Tool-output TTL
+    // MARK: Background maintenance sweeps
 
-    /// Rewrites every aged-out `tool_output` payload to the tombstone shape
-    /// (`EventTombstone`). Idempotent; `now` is injectable for tests.
+    /// `meta` keys written by the sweeps. None is written by a migration;
+    /// `wipe()`'s `DELETE FROM meta` resets all three, which is exactly
+    /// right — a re-bootstrapped mirror must re-sweep from scratch.
+    static let snippetTTLWatermarkKey = "snippet_ttl_ts"
+    static let retentionWatermarkKey = "retention_ts"
+    static let maintenanceLastRunKey = "maintenance_last_run"
+
+    /// Rows per write transaction. The store is a single-connection
+    /// `DatabaseQueue`, so a sweep that took one transaction for the whole
+    /// range would block every UI read for its duration; 500 keeps each
+    /// transaction short enough to interleave.
+    static let sweepChunkSize = 500
+
+    /// Rewrites aged-out `tool_output` payloads to the tombstone shape,
+    /// incrementally: everything at or below `meta.snippet_ttl_ts` was
+    /// covered by an earlier sweep and is skipped, and the range scan uses
+    /// the `event_type_ts` index rather than reading the whole table.
+    ///
+    /// Same name and signature as the boot-time sweep it replaces — the
+    /// difference is that nothing calls it from `JournalStore.init` any
+    /// more (`JournalMaintenance` owns it, off the launch path).
+    ///
+    /// First run after the update has no watermark and therefore scans every
+    /// tool-output row older than 24 h once, in the background.
     public func purgeExpiredToolOutputSnippets(now: Date = Date()) throws {
         let cutoff = Int64(now.timeIntervalSince1970 * 1000) - Int64(EventTombstone.toolLogTTL * 1000)
-        try dbQueue.write { db in
-            let rows = try EventRecord
-                .filter(Column("type") == JournalEventType.toolOutput && Column("ts") <= cutoff)
-                .fetchAll(db)
-            for var row in rows {
-                guard let payload = (try? JSONSerialization.jsonObject(with: row.payload)) as? [String: Any],
-                      let rewritten = EventTombstone.apply(
-                        to: payload, type: row.type,
-                        ts: Date(timeIntervalSince1970: Double(row.ts) / 1000), now: now)
-                else { continue }
-                row.payload = try JSONSerialization.data(withJSONObject: rewritten)
-                try row.update(db)
-            }
+        _ = try sweepTombstones(types: [JournalEventType.toolOutput],
+                                watermarkKey: Self.snippetTTLWatermarkKey,
+                                cutoffMs: cutoff, now: now)
+    }
+
+    /// Local retention (spec §3.4 / §4 decision 1): tool-output and diff
+    /// BODIES older than 30 days are tombstoned on this device. The server
+    /// still has them; recovering them locally means a wipe + re-sync, which
+    /// is the existing `snapshot_required` path.
+    ///
+    /// Returns the `seq`s it tombstoned so the caller can drop their search
+    /// rows (`JournalMaintenance`).
+    @discardableResult
+    public func applyRetention(now: Date = Date()) throws -> [Int64] {
+        let cutoff = Int64(now.timeIntervalSince1970 * 1000) - Int64(EventTombstone.retentionWindow * 1000)
+        return try sweepTombstones(types: [JournalEventType.toolOutput, JournalEventType.diff],
+                                   watermarkKey: Self.retentionWatermarkKey,
+                                   cutoffMs: cutoff, now: now)
+    }
+
+    /// The shared sweep engine: walk `(type, ts)` forward from the watermark
+    /// to `cutoffMs` in chunks, rewrite what `EventTombstone` changes, then
+    /// move the watermark to the cutoff.
+    ///
+    /// Paging is keyset-based on `(ts, seq)` rather than OFFSET: rows sharing
+    /// a millisecond are common (a batch apply stamps many at once), and an
+    /// offset walk over a table being written underneath would skip them.
+    private func sweepTombstones(types: [String], watermarkKey: String,
+                                 cutoffMs: Int64, now: Date) throws -> [Int64] {
+        var tombstoned: [Int64] = []
+        let placeholders = types.map { _ in "?" }.joined(separator: ",")
+        var afterTS = try dbQueue.read { db in
+            try Int64.fetchOne(db, sql: "SELECT value FROM meta WHERE key = ?", arguments: [watermarkKey]) ?? 0
         }
+        // A persisted watermark can sit ABOVE this call's own cutoff: the
+        // boot-time sweep (`JournalStore.init`) always runs at the real
+        // wall clock, so on a store that is later driven with an injected
+        // `now:` smaller than real time (every test, and any replay of
+        // historical `now:` values), the watermark from that boot pass
+        // would otherwise blind this scan to rows genuinely inside this
+        // call's own `(0, cutoffMs]` range. Treat "watermark past our own
+        // cutoff" as "nothing verified for OUR range yet" rather than as
+        // coverage — it is never coverage for a smaller cutoff, since a
+        // watermark only certifies the range it was actually computed
+        // against.
+        if afterTS > cutoffMs {
+            afterTS = 0
+        }
+        // `Int64.max` on the first page makes the seed behave as `ts >
+        // watermark`, so a row exactly at the watermark is not re-swept.
+        var afterSeq = Int64.max
+        while true {
+            let chunk: [EventRecord] = try dbQueue.write { db in
+                var arguments: [DatabaseValueConvertible] = types
+                arguments.append(contentsOf: [cutoffMs, afterTS, afterTS, afterSeq])
+                let rows = try EventRecord.fetchAll(db, sql: """
+                    SELECT * FROM event
+                    WHERE type IN (\(placeholders)) AND ts <= ?
+                      AND (ts > ? OR (ts = ? AND seq > ?))
+                    ORDER BY ts, seq
+                    LIMIT \(Self.sweepChunkSize)
+                    """, arguments: StatementArguments(arguments))
+                var touched = Set<String>()
+                for var row in rows {
+                    guard let payload = (try? JSONSerialization.jsonObject(with: row.payload)) as? [String: Any],
+                          let rewritten = EventTombstone.apply(
+                            to: payload, type: row.type,
+                            ts: Date(timeIntervalSince1970: Double(row.ts) / 1000), now: now)
+                    else { continue }
+                    row.payload = try JSONSerialization.data(withJSONObject: rewritten)
+                    try row.update(db)
+                    tombstoned.append(row.seq)
+                    touched.insert(row.convoID)
+                }
+                // A tombstoned row can be its conversation's newest message —
+                // and a payload that was never a live log had no
+                // `expired_snippet` at insert time, so the list would keep
+                // showing a body that is no longer on disk. One indexed
+                // lookup per touched conversation, and no write at all when
+                // the columns already agree (so the chat-list observation
+                // does not re-fire for a sweep that changed nothing it shows).
+                for convoID in touched {
+                    try Self.refreshLastMessageColumns(db, convoID: convoID)
+                }
+                return rows
+            }
+            guard let last = chunk.last else { break }
+            afterTS = last.ts
+            afterSeq = last.seq
+        }
+        try dbQueue.write { db in
+            try Self.setMeta(db, key: watermarkKey, value: String(cutoffMs))
+        }
+        return tombstoned
+    }
+
+    /// Recomputes `last_message_type` / `expired_snippet` for one
+    /// conversation, writing only when a value actually changed.
+    static func refreshLastMessageColumns(_ db: Database, convoID: String) throws {
+        guard var convo = try ConversationRecord.fetchOne(db, key: convoID) else { return }
+        let columns = try newestMessageColumns(db, convoID: convoID)
+        guard convo.lastMessageType != columns.type || convo.expiredSnippet != columns.expiredSnippet
+        else { return }
+        convo.lastMessageType = columns.type
+        convo.expiredSnippet = columns.expiredSnippet
+        try convo.update(db)
+    }
+
+    /// When the maintenance sweeps last completed a full pass — the Settings
+    /// › Storage "Last maintenance" row, and the foreground scheduler's
+    /// due-check. Stored as epoch milliseconds in `meta`, like the cursor.
+    public func maintenanceLastRun() throws -> Date? {
+        try dbQueue.read { db in
+            guard let ms = try Int64.fetchOne(
+                db, sql: "SELECT value FROM meta WHERE key = ?",
+                arguments: [Self.maintenanceLastRunKey]) else { return nil }
+            return Date(timeIntervalSince1970: Double(ms) / 1000)
+        }
+    }
+
+    public func recordMaintenanceRun(at date: Date) throws {
+        try dbQueue.write { db in
+            try Self.setMeta(db, key: Self.maintenanceLastRunKey,
+                             value: String(Int64(date.timeIntervalSince1970 * 1000)))
+        }
+    }
+
+    static func setMeta(_ db: Database, key: String, value: String) throws {
+        try db.execute(
+            sql: "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            arguments: [key, value])
     }
 
     // MARK: Cursor
