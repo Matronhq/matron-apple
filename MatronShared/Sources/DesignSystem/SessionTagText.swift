@@ -74,25 +74,23 @@ public enum SessionTagText {
     /// that need the same tag as a VoiceOver label rather than a colored
     /// `Text` run (CodeRabbit #209: `MissionDetailView`'s milestone row
     /// announced only `boxName`, omitting the other room boxes and the
-    /// session short a multi-agent room's visual tag carries). `nil` when
-    /// there is nothing to show, same as `room`/`run`.
+    /// session short a multi-agent room's visual tag carries). Speaks box
+    /// NAMES, not the single-letter glyphs the visual run draws (fix
+    /// round 2, H3: the first version spoke "d", "↔" — box letters and a
+    /// separator glyph meant to be read, not heard). `nil` when there is
+    /// nothing to show, same as `room`/`run`.
     public static func plainLabel(
-        boxLetter: String?,
+        boxName: String?,
         sessionShort: String?,
-        roomBoxShorts: [String] = [],
         roomBoxNames: [String] = []
     ) -> String? {
-        if roomBoxShorts.count >= 2, roomBoxShorts.count == roomBoxNames.count {
-            let separator = roomBoxShorts.count == 2 ? "↔" : ","
-            let letters = roomBoxShorts.joined(separator: separator)
-            guard let sessionShort else { return letters }
-            return "\(letters):\(sessionShort)"
-        }
-        switch (boxLetter, sessionShort) {
+        let names = roomBoxNames.isEmpty ? [boxName].compactMap { $0 } : roomBoxNames
+        let joinedNames = names.isEmpty ? nil : names.joined(separator: ", ")
+        switch (joinedNames, sessionShort) {
         case (nil, nil): return nil
-        case (let l?, nil): return l
+        case (let n?, nil): return n
         case (nil, let s?): return s
-        case (let l?, let s?): return "\(l):\(s)"
+        case (let n?, let s?): return "\(n), \(s)"
         }
     }
 

@@ -257,10 +257,12 @@ public struct MissionDetailView: View {
                             // Same room-first fallback as the visual tag
                             // above — a `boxName`-only label omitted the
                             // other room boxes and the session short
-                            // (CodeRabbit #209).
+                            // (CodeRabbit #209); speaks box NAMES, not
+                            // the visual run's single-letter glyphs (fix
+                            // round 2, H3).
                             + (row.sessionTag.flatMap {
-                                SessionTagText.plainLabel(boxLetter: $0.boxLetter, sessionShort: $0.sessionShort,
-                                                          roomBoxShorts: $0.roomBoxShorts, roomBoxNames: $0.roomBoxNames)
+                                SessionTagText.plainLabel(boxName: $0.boxName, sessionShort: $0.sessionShort,
+                                                          roomBoxNames: $0.roomBoxNames)
                             }.map { ", \($0)" } ?? ""))
         .accessibilityHint("Opens the conversation at this point")
     }
