@@ -450,6 +450,42 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
             "a second retention sweep over the same range must tombstone nothing")
     }
 
+    /// `JournalMaintenance.stop()` (Task 6, R11) must be able to await an
+    /// in-flight sweep rather than only ever waiting one out — that means
+    /// the inter-chunk loop has to notice cancellation and stop without
+    /// advancing the watermark, so the next pass resumes from scratch on
+    /// the same, still-unswept range.
+    func testApplyRetentionStopsAtTheNextChunkBoundaryWhenCancelled() async throws {
+        let store = try makeStore()
+        let insertAt = Date(timeIntervalSince1970: 1)
+        // 1200 rows = three chunks of 500, so a cancellation that only took
+        // effect after the whole sweep would still tombstone everything.
+        let events = (1...1200).map { seq in
+            event(Int64(seq), type: JournalEventType.toolOutput,
+                  payload: ["command": "c\(seq)", "live_log": true, "snippet": "out"])
+        }
+        try store.insertHistory(events, now: insertAt)
+        let sweepAt = Date(timeIntervalSince1970: 1).addingTimeInterval(31 * 24 * 3600)
+
+        let handle = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try store.applyRetention(now: sweepAt)
+        }
+        let seqs = try await handle.value
+        XCTAssertEqual(seqs, [], "a sweep cancelled before its first chunk must tombstone nothing")
+        XCTAssertEqual(try rawPayload(store, seq: 1)["snippet"] as? String, "out",
+                       "a cancelled sweep must leave every row untouched")
+        XCTAssertNil(try watermark(store, key: "retention_ts"),
+                     "a cancelled sweep must not advance the watermark")
+
+        // An uncancelled pass over the same, still-fully-unswept range must
+        // still sweep everything — cancellation must not leave a gap.
+        let resumed = try store.applyRetention(now: sweepAt)
+        XCTAssertEqual(resumed.count, 1200)
+        XCTAssertNil(try rawPayload(store, seq: 1)["snippet"])
+        XCTAssertNotNil(try watermark(store, key: "retention_ts"))
+    }
+
     /// A tool_output that was never a live log has no `expired_snippet` at
     /// insert time; once retention tombstones it, the list has nothing but
     /// the command to show, so the sweep refreshes the columns of the

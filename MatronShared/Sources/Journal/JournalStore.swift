@@ -657,6 +657,19 @@ public final class JournalStore: @unchecked Sendable {
         // watermark`, so a row exactly at the watermark is not re-swept.
         var afterSeq = Int64.max
         while true {
+            // `Task.isCancelled` reads the calling `Task`'s cancellation
+            // flag when this synchronous function is invoked from inside
+            // one (e.g. `JournalMaintenance.stop()` awaiting an in-flight
+            // pass, R11); outside any `Task` — the `init`-time boot call —
+            // it is always `false`, so that call is unaffected. Bailing at
+            // a chunk boundary rather than mid-transaction, and skipping
+            // the watermark write below on exit, means the chunks already
+            // committed stay exactly as durable and idempotent as a normal
+            // interrupted sweep (app killed mid-pass): the next call simply
+            // resumes from the same watermark and re-covers the rest.
+            if Task.isCancelled {
+                return tombstoned
+            }
             let chunk: [EventRecord] = try dbQueue.write { db in
                 var arguments: [DatabaseValueConvertible] = types
                 arguments.append(contentsOf: [cutoffMs, afterTS, afterTS, afterSeq])
