@@ -14,22 +14,28 @@ public struct MissionRowView: View {
                 .font(.body)
                 .frame(width: 20)
                 .padding(.top, 2)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text("#\(mission.num)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                    Text(mission.title).font(.body.weight(.medium)).lineLimit(2)
-                }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(mission.title).font(.body.weight(.medium)).lineLimit(2)
                 if let last = mission.lastMilestone {
                     HStack(spacing: 5) {
+                        Text("#\(mission.num)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        Text("·").font(.caption).foregroundStyle(.tertiary)
                         Image(systemName: MissionGlyph.symbol(last.kind))
                             .font(.caption2)
                             .foregroundStyle(MissionGlyph.tint(last.kind))
                         Text(last.title).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                        Spacer(minLength: 6)
                         RelativeMinuteTimeView(last.createdAt)
                             .font(.caption2).foregroundStyle(.tertiary)
+                            .fixedSize()
+                            .layoutPriority(1)
                     }
                 } else if mission.state == .open {
-                    Text("No milestones yet").font(.subheadline).foregroundStyle(.tertiary)
+                    HStack(spacing: 5) {
+                        Text("#\(mission.num)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        Text("·").font(.caption).foregroundStyle(.tertiary)
+                        Text("No milestones yet").font(.subheadline).foregroundStyle(.tertiary)
+                    }
                 }
                 if mission.state == .closed, let summary = mission.closeSummary, !summary.isEmpty {
                     Text(summary.replacingOccurrences(of: "\n", with: " "))
@@ -38,7 +44,9 @@ public struct MissionRowView: View {
             }
             Spacer(minLength: 0)
             NeedsYouBadge(count: mission.needsYou)
+                .padding(.top, 2)
         }
+        .padding(.vertical, 6)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Mission \(mission.num), \(mission.title)\(mission.needsYou > 0 ? ", \(mission.needsYou) need you" : "")")
