@@ -23,6 +23,7 @@ struct AppShellView: View {
     /// a room opened from any tab rebinds to the same live view models.
     @State private var vmCache = ChatVMCache()
     @State private var decisionsVM: ItemsPanelViewModel
+    @State private var missionsVM: MissionsListViewModel
     /// Origin conversation labels for the Decisions rows (`conversationOriginLabels()`
     /// is a cheap id→label scan, re-run when the set of origins changes).
     @State private var originTitles: [String: String] = [:]
@@ -43,6 +44,7 @@ struct AppShellView: View {
         _nav = State(initialValue: navigation ?? AppShellNavigation())
         _chatListVM = State(initialValue: ChatListViewModel(chat: deps.chatService(for: session)))
         _decisionsVM = State(initialValue: deps.makeDecisionsViewModel(for: session))
+        _missionsVM = State(initialValue: deps.makeMissionsListViewModel(for: session))
         _coordinatorConvoID = AppStorage(CoordinatorSetting.defaultsKey(for: session.userID))
     }
 
@@ -54,14 +56,20 @@ struct AppShellView: View {
                 // that conversation.
                 .badge(coordinatorHasUnread ? "•" : nil as String?)
                 .tag(AppTab.coordinator)
-            conversationsTab
-                .tabItem { Label("Conversations", systemImage: "bubble.left.and.bubble.right") }
-                .tag(AppTab.conversations)
+            if missionsVM.isSupported {
+                missionsTab
+                    .tabItem { Label("Missions", systemImage: "flag.checkered") }
+                    .badge(missionsVM.needsYouTotal)
+                    .tag(AppTab.missions)
+            }
             decisionsTab
                 .tabItem { Label("Decisions", systemImage: "checkmark.circle") }
                 // `.badge(Int)` hides itself at zero.
                 .badge(decisionsVM.awaitingYouCount)
                 .tag(AppTab.decisions)
+            conversationsTab
+                .tabItem { Label("Conversations", systemImage: "bubble.left.and.bubble.right") }
+                .tag(AppTab.conversations)
         }
         .environment(\.appDependencies, deps)
         .environment(\.currentSession, session)
@@ -91,6 +99,11 @@ struct AppShellView: View {
         // (Bugbot, PR #197): mirror the setting into the nav object, and
         // hand off a chat-list row push of that conversation.
         .onChange(of: coordinatorConvoID, initial: true) { _, id in nav.coordinatorConvoID = id }
+        // Just the wire: the clamp that walks a selected `.missions` tab
+        // back to Conversations on the false edge lives on
+        // `AppShellNavigation.missionsSupported` itself (MAJOR-2), so it is
+        // testable without this view.
+        .onChange(of: missionsVM.isSupported) { _, supported in nav.missionsSupported = supported }
         .task { decisionsVM.start() }
         // The Conversations list VM needs to keep running even while
         // another tab shows: the coordinator badge and title read it.
@@ -98,8 +111,10 @@ struct AppShellView: View {
         // `observationTask` before subscribing — so this and
         // `ChatListView`'s own `.task { viewModel.start() }` don't race.
         .task { chatListVM.start() }
+        .task { missionsVM.start() }
         .onDisappear { decisionsVM.stop() }
         .onDisappear { chatListVM.cancel() }
+        .onDisappear { missionsVM.stop() }
     }
 
     private var coordinatorHasUnread: Bool {
@@ -188,5 +203,40 @@ struct AppShellView: View {
                 Text(decisionsVM.error ?? "")
             }
         }
+    }
+
+    private var missionsPath: Binding<[String]> {
+        Binding(get: { nav.missionsPath }, set: { nav.missionsPath = $0 })
+    }
+
+    private var missionsTab: some View {
+        NavigationStack(path: missionsPath) {
+            MissionsTabRoot(viewModel: missionsVM, onSelect: { nav.pushMission($0) })
+                .simultaneousGesture(rootSwipe)
+                .navigationDestination(for: String.self) { value in
+                    if let mission = MissionRoute(pathValue: value) {
+                        MissionDetailHost(missionID: mission.id, session: session,
+                                          onOpenMilestone: openMilestone,
+                                          onOpenItem: { nav.pushMissionItem($0) },
+                                          onOpenConversation: { nav.openConversation(fromMissions: $0) })
+                    } else if let item = ItemRoute(pathValue: value) {
+                        ItemDetailHost(itemID: item.id, session: session, currentConvoID: nil,
+                                       onOpenConversation: { nav.openConversation(fromMissions: $0) },
+                                       onOpenItem: { nav.pushMissionItem($0) })
+                    }
+                }
+        }
+        .environment(\.chatNavigationPath, missionsPath)
+    }
+
+    /// A milestone tap: open its conversation, then park the jump on that
+    /// room's cached `ChatViewModel`. Parking (rather than passing a seq
+    /// through the route) is what makes the tap work before the room's
+    /// stream is up — `focusOrPark` fires it on the first snapshot, and a
+    /// seq that no longer exists lands on the nearest earlier row.
+    private func openMilestone(convoID: String, seq: Int64) {
+        nav.openConversation(fromMissions: convoID)
+        let (chat, _) = vmCache.viewModels(for: convoID, deps: deps, session: session)
+        Task { await chat.jumpToMilestone(seq: seq) }
     }
 }

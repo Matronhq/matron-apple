@@ -111,6 +111,7 @@ public actor JournalSyncEngine {
     private var state: SyncConnectionState = .connecting
     private var stateContinuations: [UUID: AsyncStream<SyncConnectionState>.Continuation] = [:]
     private var itemMarkerContinuations: [UUID: AsyncStream<(convoID: String, marker: ItemMarkerEvent)>.Continuation] = [:]
+    private var missionMarkerContinuations: [UUID: AsyncStream<(convoID: String, marker: MissionMarker)>.Continuation] = [:]
     private var ephemeralContinuations: [UUID: (convoID: String, continuation: AsyncStream<EphemeralUpdate>.Continuation)] = [:]
     private var activityContinuations: [UUID: (convoID: String, continuation: AsyncStream<ActivityUpdate>.Continuation)] = [:]
     private var toolStreamContinuations: [UUID: (convoID: String, continuation: AsyncStream<ToolStreamUpdate>.Continuation)] = [:]
@@ -702,6 +703,34 @@ public actor JournalSyncEngine {
         for c in itemMarkerContinuations.values { c.yield((convoID: event.convoID, marker: marker)) }
     }
 
+    /// Mission markers (`mission` and `milestone` events) as they are
+    /// applied — the invalidation feed for `MissionsSync`. One stream for
+    /// both types: the actor's reaction to either is the same, refetch that
+    /// mission. Mirrors `itemMarkers()`.
+    public nonisolated func missionMarkers() -> AsyncStream<(convoID: String, marker: MissionMarker)> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerMissionMarkers(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in Task { await self.unregisterMissionMarkers(id: id) } }
+        }
+    }
+    private func registerMissionMarkers(id: UUID, continuation: AsyncStream<(convoID: String, marker: MissionMarker)>.Continuation) { missionMarkerContinuations[id] = continuation }
+    private func unregisterMissionMarkers(id: UUID) { missionMarkerContinuations.removeValue(forKey: id) }
+    private func publishMissionMarker(_ event: JournalEvent) {
+        let marker: MissionMarker
+        switch event.type {
+        case JournalEventType.milestone:
+            guard let m = MilestoneMarkerEvent.parse(payload: event.payload) else { return }
+            marker = .milestone(m)
+        case JournalEventType.mission:
+            guard let m = MissionMarkerEvent.parse(payload: event.payload) else { return }
+            marker = .mission(m)
+        default:
+            return
+        }
+        for c in missionMarkerContinuations.values { c.yield((convoID: event.convoID, marker: marker)) }
+    }
+
     /// Per-conversation stream of session-status updates (journal `status`
     /// ephemerals). Mirrors `activities(convoID:)`. The journal replays the
     /// last cached status when the client sends `viewing`, and the engine
@@ -1213,6 +1242,7 @@ public actor JournalSyncEngine {
     /// ignores duplicate guard").
     private func didApply(_ event: JournalEvent) {
         publishItemMarker(event)
+        publishMissionMarker(event)
         confirmMediaSendIfNeeded(event)
         indexForSearch(event)
     }
@@ -1223,7 +1253,7 @@ public actor JournalSyncEngine {
     /// batch instead of one of each per frame.
     private func didApplyBatch(_ events: [JournalEvent]) {
         guard !events.isEmpty else { return }
-        for event in events { publishItemMarker(event); confirmMediaSendIfNeeded(event) }
+        for event in events { publishItemMarker(event); publishMissionMarker(event); confirmMediaSendIfNeeded(event) }
         guard let search else { return }
         let entries = events.compactMap { event -> SearchIndexEntry? in
             guard let body = event.searchableBody else { return nil }

@@ -227,7 +227,9 @@ struct ChatListView: View {
             }
         }
         .navigationDestination(for: ChatSummary.ID.self) { id in
-            if let route = ItemRoute(pathValue: id) {
+            if let mission = MissionRoute(pathValue: id) {
+                missionDestination(mission)
+            } else if let route = ItemRoute(pathValue: id) {
                 itemDestination(route)
             } else {
                 chatDestination(for: id)
@@ -397,6 +399,18 @@ struct ChatListView: View {
         ChatDestinationView(id: id, summary: currentSummary(for: id), vmCache: vmCache)
     }
 
+    /// The nearest entry in `path`, from the top, that is not itself a
+    /// route (`isAnyPathPrefixedRoute`) — the chat an item or mission
+    /// route was pushed from. A static, pure decision so a test can pin
+    /// it directly: filtering on `ItemRoute` alone let a `MissionRoute`
+    /// entry pass as "the chat underneath" (it fails an `ItemRoute` test
+    /// too), so a milestone or conversation opened from inside a mission
+    /// page always appended a second copy of that chat instead of popping
+    /// back to the live one already underneath the mission (Bugbot).
+    static func currentChat(in path: [String]) -> String? {
+        path.last(where: { !isAnyPathPrefixedRoute($0) })
+    }
+
     /// Looks up the current `ChatSummary` for a navigation id across all
     /// groups. Returns `nil` when the room has been removed from the
     /// latest snapshot (e.g. user left from another device while the
@@ -417,13 +431,16 @@ struct ChatListView: View {
 
     /// Item detail pushed from a chat's tasks page (spec §4) — it rides the
     /// same `[String]` stack as `ItemRoute.pathValue`. The chat underneath
-    /// is the nearest non-item entry below it, so the "opened from…" link
-    /// hides when it would only point back at that chat; an origin link
-    /// elsewhere appends the conversation as before.
+    /// is the nearest entry below it that is not itself a route
+    /// (`isAnyPathPrefixedRoute` — an item pushed from inside a mission
+    /// page must skip that `MissionRoute` entry too, not just other item
+    /// routes, Bugbot), so the "opened from…" link hides when it would
+    /// only point back at that chat; an origin link elsewhere appends the
+    /// conversation as before.
     @ViewBuilder
     private func itemDestination(_ route: ItemRoute) -> some View {
         if let session {
-            let current = chatNavigationPath?.wrappedValue.last(where: { ItemRoute(pathValue: $0) == nil })
+            let current = Self.currentChat(in: chatNavigationPath?.wrappedValue ?? [])
             ItemDetailHost(itemID: route.id, session: session, currentConvoID: current,
                            onOpenConversation: { convoID in
                                guard convoID != current else { return }
@@ -440,6 +457,41 @@ struct ChatListView: View {
             ContentUnavailableView("Session unavailable", systemImage: "exclamationmark.triangle",
                                    description: Text("Sign in again to open this item."))
         }
+    }
+
+    /// Mission page pushed from a chat's title tap or a milestone card
+    /// (Task 9) — rides the same `[String]` stack as `ItemRoute.pathValue`.
+    /// A milestone open pushes its conversation onto THIS stack and parks
+    /// the jump on that room's cached `ChatViewModel`, same rule as
+    /// `AppShellView.openMilestone` on the Missions tab's own stack. Same
+    /// current-conversation dedupe as `itemDestination` (MINOR-3): the
+    /// PRIMARY flow here is chat X → title tap → mission page → tap a
+    /// milestone posted in X — without the dedupe that pushes a second
+    /// copy of X on top of the mission page instead of popping back to the
+    /// live one already underneath it.
+    @ViewBuilder
+    private func missionDestination(_ route: MissionRoute) -> some View {
+        // Same computation `itemDestination` uses: the nearest entry below
+        // that is not itself a route — filtering only `ItemRoute` let the
+        // mission route ITSELF (the entry this destination renders for)
+        // pass as "the chat underneath", so a milestone or conversation
+        // open for that same chat always appended a second copy instead
+        // of popping back to it (Bugbot). A mission route is always
+        // pushed directly from the chat it names, so this lands on that
+        // chat.
+        let current = Self.currentChat(in: chatNavigationPath?.wrappedValue ?? [])
+        MissionRouteDestination(
+            route: route, session: session, deps: deps, vmCache: vmCache,
+            onOpenConversation: { convoID in
+                if convoID == current {
+                    chatNavigationPath?.wrappedValue.removeLast()
+                } else {
+                    chatNavigationPath?.wrappedValue.append(convoID)
+                }
+            },
+            onOpenItem: { itemID in
+                chatNavigationPath?.wrappedValue.append(ItemRoute(id: itemID).pathValue)
+            })
     }
 
     /// Fires a chat-service action without awaiting its result. Used for

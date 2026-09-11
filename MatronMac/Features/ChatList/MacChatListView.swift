@@ -71,6 +71,13 @@ struct MacChatListView: View {
     @State private var decisionsPaneState = MacItemsPaneState()
     @State private var selectedDecisionID: String?
     @State private var decisionsOriginTitles: [String: String] = [:]
+    /// The per-session Missions list view model, started/stopped the same
+    /// way as `decisionsVM` so the nav badge stays live across entries.
+    @State private var missionsVM: MissionsListViewModel?
+    @State private var selectedMissionID: String?
+    /// Set when a mission page was opened from a conversation title, so the
+    /// page can offer a way back to it.
+    @State private var missionBackConvoID: String?
     /// Phase 6 (Search): the shared search VM, built once the session + index
     /// resolve and the chat list has loaded (so chat-title hits have a snapshot).
     /// A non-empty `searchModel.query` swaps the detail column for
@@ -151,11 +158,16 @@ struct MacChatListView: View {
     @ViewBuilder
     private var sidebarStack: some View {
         HStack(spacing: 0) {
-            MacNavColumn(selection: $nav, decisionsCount: decisionsVM?.awaitingYouCount ?? 0)
+            MacNavColumn(selection: $nav,
+                         badges: [.decisions: decisionsVM?.awaitingYouCount ?? 0,
+                                  .missions: missionsVM?.needsYouTotal ?? 0],
+                         missionsSupported: missionsVM?.isSupported ?? true)
             Divider()
             switch nav {
             case .conversations:
                 sidebarColumn
+            case .missions:
+                missionsColumn
             case .decisions:
                 decisionsColumn
             case .coordinator:
@@ -220,6 +232,8 @@ struct MacChatListView: View {
             } else {
                 detail
             }
+        case .missions:
+            missionDetail
         case .decisions:
             decisionsDetail
         case .coordinator:
@@ -417,6 +431,16 @@ struct MacChatListView: View {
                 guard let deps, let session else { return }
                 decisionsOriginTitles = (try? deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
             }
+            // The Missions VM lives for the session too, same reasoning as
+            // decisionsVM above — one instance, feeding both the list and
+            // the nav badge.
+            .task(id: session?.userID) {
+                guard let deps, let session else { return }
+                missionsVM?.stop()
+                let vm = deps.makeMissionsListViewModel(for: session)
+                missionsVM = vm
+                vm.start()
+            }
             // Cold-start tap drain (cursor PR #5 third-pass finding): a
             // notification tap that launched the app — `didReceive` fired
             // before this view mounted — would otherwise be lost because
@@ -477,6 +501,7 @@ struct MacChatListView: View {
             .onDisappear {
                 viewModel.cancel()
                 decisionsVM?.stop()
+                missionsVM?.stop()
                 decisionsPaneState.releaseAllSlots()
                 decisionsPaneState.cancelRecording()
             }
@@ -624,10 +649,7 @@ struct MacChatListView: View {
                 // DIFFERENT item before the re-select commits — a row
                 // click is a navigation like any other (#115, fix round
                 // 8).
-                onSelect: { id in
-                    decisionsPaneState.cancelRecordingIfNavigating(to: id)
-                    selectedDecisionID = id
-                },
+                onSelect: { id in showDecisionsItem(id) },
                 onOpenConversation: openConversationFromDecisions,
                 onRefresh: { await decisionsVM.refresh() }
             )
@@ -656,10 +678,7 @@ struct MacChatListView: View {
                               // thing a row tap does. Everywhere there IS a
                               // stack (the Mac items pane, both iOS
                               // surfaces) the link pushes instead.
-                              onOpenItem: { id in
-                                  decisionsPaneState.cancelRecordingIfNavigating(to: id)
-                                  selectedDecisionID = id
-                              },
+                              onOpenItem: { id in showDecisionsItem(id) },
                               // No navigation stack here — `decisionsPaneState.path`
                               // stays empty, so this host owns its own slot
                               // release and is on screen whenever it exists.
@@ -679,6 +698,89 @@ struct MacChatListView: View {
         showConversation(convoID)
     }
 
+    /// Open a Decisions item — the three-way "select a row / re-select from
+    /// its own detail / arrive from another nav entry" triplet, in one
+    /// place so they cannot diverge (MINOR-9; the mission page's own site
+    /// used to be the one that added `nav = .decisions` and the other two
+    /// didn't).
+    private func showDecisionsItem(_ id: String, switchingNav: Bool = false) {
+        if switchingNav { nav = .decisions }
+        decisionsPaneState.cancelRecordingIfNavigating(to: id)
+        selectedDecisionID = id
+    }
+
+    @ViewBuilder
+    private var missionsColumn: some View {
+        if let missionsVM {
+            MacMissionsColumn(viewModel: missionsVM, onSelect: { pickMission($0) })
+        } else {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    /// A sidebar row pick, as opposed to `showMission(_:from:)`'s
+    /// title-tap open: no originating conversation, so any "back to the
+    /// conversation" affordance a PREVIOUS title-tap open left behind must
+    /// clear here too — `navChanged` only clears it on leaving the
+    /// Missions entry entirely, not on picking a different mission while
+    /// already in it (Bugbot).
+    private func pickMission(_ missionID: String) {
+        missionBackConvoID = Self.missionBackConvoID(for: .sidebarPick)
+        selectedMissionID = missionID
+    }
+
+    /// How a mission page was opened — a sidebar row carries no
+    /// originating conversation; a title tap remembers the one it came
+    /// from. Backs `missionBackConvoID(for:)`, a pure helper so
+    /// `MacMissionsNavTests` can pin the rule without needing live view
+    /// state (`missionBackConvoID` itself is private `@State`).
+    enum MissionOpenSource { case sidebarPick; case titleTap(fromConvoID: String?) }
+
+    /// The back-button conversation id to store for a mission opened via
+    /// `source`.
+    static func missionBackConvoID(for source: MissionOpenSource) -> String? {
+        switch source {
+        case .sidebarPick: return nil
+        case .titleTap(let convoID): return convoID
+        }
+    }
+
+    @ViewBuilder
+    private var missionDetail: some View {
+        if let id = selectedMissionID, let session {
+            MacMissionPage(missionID: id, session: session, backConvoID: missionBackConvoID,
+                           onBack: showConversation,
+                           onOpenMilestone: openMilestone,
+                           onOpenItem: { id in
+                               // Missions has no stack of its own on the
+                               // Mac; an item opens where every item opens.
+                               showDecisionsItem(id, switchingNav: true)
+                           },
+                           onOpenConversation: showConversation)
+        } else {
+            ContentUnavailableView("Select a mission", systemImage: "flag.checkered",
+                                   description: Text("Pick a piece of work from the list."))
+        }
+    }
+
+    /// The mission page for `missionID`, remembering the conversation it was
+    /// opened from so the page can offer a way back.
+    private func showMission(_ missionID: String, from convoID: String?) {
+        missionBackConvoID = Self.missionBackConvoID(for: .titleTap(fromConvoID: convoID))
+        selectedMissionID = missionID
+        nav = .missions
+    }
+
+    /// A milestone tap: show its conversation, then park the jump on that
+    /// room's cached view model — `focusOrPark` fires it once the stream is
+    /// live, and a seq that no longer exists lands on the nearest earlier row.
+    private func openMilestone(convoID: String, seq: Int64) {
+        showConversation(convoID)
+        guard let deps, let session else { return }
+        let (chat, _) = vmCache.viewModels(for: convoID, deps: deps, session: session)
+        Task { await chat.jumpToMilestone(seq: seq) }
+    }
+
     /// Every "show me that chat" path — notification tap, cold-start drain,
     /// new-chat sheet, auto-open, Decisions origin link — goes through
     /// here so the Conversations entry comes forward even when the target
@@ -688,13 +790,43 @@ struct MacChatListView: View {
         // The search field unmounts with Conversations; an unconsumed ⌘F
         // request must not outlive it (Bugbot, PR #195).
         if old == .conversations { focusSearch = false }
+        // Clear the back affordance on the way out, so a later visit from
+        // the nav column does not offer a stale "back to the conversation".
+        if old == .missions, new != .missions { missionBackConvoID = nil }
         guard old == .decisions, new != .decisions else { return }
         decisionsPaneState.releaseAllSlots()
         decisionsPaneState.cancelRecording()
     }
 
+    /// Every path that lands here — a title tap from the coordinator chat
+    /// (via `showMission`'s `onBack`), a mission page's "back to the
+    /// conversation", a milestone jump into the coordinator room
+    /// (`openMilestone`), and "Open conversation" for that room — must
+    /// keep the Coordinator entry selected rather than open the same chat
+    /// under Conversations, mirroring iOS's `AppShellNavigation.openChat`
+    /// coordinator special-case (Bugbot).
+    /// Whether landing on `convoID` should select the Coordinator nav
+    /// entry instead of Conversations — true exactly when it names the
+    /// coordinator's own conversation, mirroring iOS's
+    /// `AppShellNavigation.openChat` coordinator special-case. A pure
+    /// helper so `MacMissionsNavTests` can pin it without live view state
+    /// (`showConversation` itself is private).
+    static func navForShowingConversation(_ convoID: String, coordinatorConvoID: String?) -> MacNav {
+        if let coordinatorConvoID, !coordinatorConvoID.isEmpty, convoID == coordinatorConvoID {
+            return .coordinator
+        }
+        return .conversations
+    }
+
     private func showConversation(_ convoID: String) {
-        nav = .conversations
+        let target = Self.navForShowingConversation(convoID, coordinatorConvoID: coordinatorConvoID)
+        nav = target
+        // The coordinator's own conversation is shown at its fixed nav
+        // entry (`detailContent`'s `.coordinator` case reads
+        // `coordinatorConvoID` directly) — never route it through
+        // Conversations, or through a `selectedSummaryID` assignment that
+        // would leave that entry pointed at it too.
+        guard target != .coordinator else { return }
         // A same-id assignment never runs `handleSelectionChange`, so the
         // search results panel would stay over the chat (Bugbot, PR #195).
         if searchQueryIsEmpty == false { searchModel?.query = "" }
@@ -791,7 +923,12 @@ struct MacChatListView: View {
                         await deps.prepareConversation(for: session, id: roomID)
                         showConversation(roomID)
                     }
-                }
+                },
+                // Transcript milestone cards and the toolbar title both
+                // open this conversation's mission, remembering where the
+                // reader came from so `MacMissionPage` can offer a way
+                // back.
+                onOpenMission: { showMission($0, from: id) }
             )
             .id(id)
         } else {

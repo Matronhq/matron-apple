@@ -2844,4 +2844,48 @@ final class ChatViewModelTests: XCTestCase {
 
         XCTAssertTrue(vm.hasMultipleSenders)
     }
+
+    /// A milestone tap made before the transcript is live parks and fires on
+    /// the first snapshot — the same gate in-conversation search uses, for
+    /// the same reason: sampling paginate growth against a stream nobody is
+    /// subscribed to falsely latches `reachedHistoryStart`. And because the
+    /// jump is owned by `FocusOwner.milestone`, dismissing the search bar
+    /// must not kill it (only search's own jump dies there).
+    @MainActor
+    func test_jumpToMilestone_parksUntilLive_andSurvivesSearchDismissal() async throws {
+        let fake = PagingFakeTimelineService(loaded: [row(120, own: false), row(121, own: false)],
+                                             olderPages: [])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService())
+
+        await vm.jumpToMilestone(seq: 120)
+        XCTAssertNil(vm.pendingFocusID, "no jump before the stream is live")
+        XCTAssertFalse(vm.reachedHistoryStart, "a pre-start jump must not latch history-start")
+
+        vm.endChatSearch()
+
+        _ = await vm.start()
+        // The parked jump fires off the first snapshot's Task hop.
+        let deadline = Date().addingTimeInterval(2)
+        while vm.pendingFocusID == nil && Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(vm.pendingFocusID, "120", "the parked milestone jump fired once the stream was live")
+        XCTAssertFalse(vm.reachedHistoryStart)
+        vm.stop()
+    }
+
+    /// The warm case: the stream is already live, so the jump runs at once
+    /// and lands on the milestone marker's own row (its seq IS the row id).
+    @MainActor
+    func test_jumpToMilestone_onALiveStreamLandsImmediately() async throws {
+        let fake = PagingFakeTimelineService(loaded: [row(120, own: false), row(121, own: false)],
+                                             olderPages: [])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService())
+        _ = await vm.start()
+
+        await vm.jumpToMilestone(seq: 121)
+        XCTAssertEqual(vm.pendingFocusID, "121")
+        XCTAssertEqual(fake.paginateCalls, 0, "the target row is already loaded — nothing to page in")
+        vm.stop()
+    }
 }
