@@ -317,7 +317,7 @@ public final class JournalStore: @unchecked Sendable {
     static func migrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
         migrator.registerMigration("v1") { db in
-            try db.create(table: "conversation") { t in
+            try db.create(table: "conversation", options: [.ifNotExists]) { t in
                 t.column("id", .text).primaryKey()
                 t.column("title", .text).notNull().defaults(to: "")
                 t.column("session_state", .text).notNull().defaults(to: "running")
@@ -330,7 +330,7 @@ public final class JournalStore: @unchecked Sendable {
                 t.column("read_up_to_seq", .integer).notNull().defaults(to: 0)
                 t.column("unread_count", .integer).notNull().defaults(to: 0)
             }
-            try db.create(table: "event") { t in
+            try db.create(table: "event", options: [.ifNotExists]) { t in
                 t.column("seq", .integer).primaryKey()
                 t.column("convo_id", .text).notNull().indexed()
                 t.column("ts", .integer).notNull()
@@ -338,7 +338,7 @@ public final class JournalStore: @unchecked Sendable {
                 t.column("type", .text).notNull()
                 t.column("payload", .blob).notNull()
             }
-            try db.create(table: "meta") { t in
+            try db.create(table: "meta", options: [.ifNotExists]) { t in
                 t.column("key", .text).primaryKey()
                 t.column("value", .text).notNull()
             }
