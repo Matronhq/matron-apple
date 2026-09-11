@@ -6,9 +6,32 @@ extension JournalEvent {
     /// The text the search index should hold for this event, or `nil` when
     /// the event carries nothing searchable. Single source of truth for all
     /// three index feeders — live sync (`JournalSyncEngine`), backward
-    /// pagination (`JournalTimelineService`), and the history backfill —
-    /// so what the user can SEE is what search can FIND.
-    public var searchableBody: String? {
+    /// pagination (`JournalTimelineService`), and the history backfill — so
+    /// what the user can SEE is what search can FIND.
+    ///
+    /// `now` exists because what the store no longer HOLDS must never be
+    /// indexed. Two rules, mirroring `EventTombstone`: nothing older than the
+    /// 30-day retention window for `tool_output`/`diff` (the backfill and
+    /// backward-pagination feeders fetch from the server, which keeps bodies
+    /// forever, so without this the very next pass would re-add exactly what
+    /// the maintenance sweep just removed), and nothing past the 24 h
+    /// tool-log TTL for a `live_log` `tool_output`.
+    public func searchableBody(now: Date = Date()) -> String? {
+        switch type {
+        case JournalEventType.toolOutput:
+            guard ts.addingTimeInterval(EventTombstone.retentionWindow) > now else { return nil }
+            // The 24 h half matters for the LIVE feeder, not just the
+            // server-backed ones: `applyJournal` / `applyJournalBatch` hand
+            // their callers the ORIGINAL events while the store keeps the
+            // tombstoned ones, so without this an aged live-log frame would
+            // be indexed with a snippet the store no longer holds.
+            if payload["live_log"] as? Bool == true,
+               ts.addingTimeInterval(EventTombstone.toolLogTTL) <= now { return nil }
+        case JournalEventType.diff:
+            guard ts.addingTimeInterval(EventTombstone.retentionWindow) > now else { return nil }
+        default:
+            break
+        }
         let body: String? = switch type {
         case JournalEventType.text: payload["body"] as? String
         case JournalEventType.toolOutput: payload["snippet"] as? String
@@ -54,17 +77,24 @@ public actor SearchBackfillCoordinator {
     private var generation = 0
     private static let logger = os.Logger(subsystem: "chat.matron", category: "search-backfill")
 
+    /// Wall clock for the retention guard in `searchableBody(now:)`.
+    /// Injectable so a test can walk fixture events without their epoch-era
+    /// timestamps tripping the 30-day window.
+    private let now: @Sendable () -> Date
+
     /// Thrown mid-walk when `reset()` moved the generation; `run` catches it
     /// and stops the sweep so the caller retries against the cleared
     /// bookkeeping.
     private struct GenerationMoved: Error {}
 
     public init(search: any SearchService, fetchPage: @escaping FetchPage,
-                pageSize: Int = 200, throttle: Duration = .milliseconds(100)) {
+                pageSize: Int = 200, throttle: Duration = .milliseconds(100),
+                now: @escaping @Sendable () -> Date = { Date() }) {
         self.search = search
         self.fetchPage = fetchPage
         self.pageSize = pageSize
         self.throttle = throttle
+        self.now = now
     }
 
     /// Clears the search store's backfill bookkeeping AND invalidates any
@@ -153,8 +183,9 @@ public actor SearchBackfillCoordinator {
             // 200-event page into one commit amortises the tree churn the
             // same way the catch-up replay path (`didApplyBatch`) already
             // does.
+            let indexedAt = now()
             let entries = older.compactMap { event -> SearchIndexEntry? in
-                guard let body = event.searchableBody else { return nil }
+                guard let body = event.searchableBody(now: indexedAt) else { return nil }
                 return SearchIndexEntry(roomID: event.convoID, eventID: String(event.seq),
                                         sender: event.sender, timestamp: event.ts, body: body)
             }

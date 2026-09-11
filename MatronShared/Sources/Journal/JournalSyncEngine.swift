@@ -1255,8 +1255,9 @@ public actor JournalSyncEngine {
         guard !events.isEmpty else { return }
         for event in events { publishItemMarker(event); publishMissionMarker(event); confirmMediaSendIfNeeded(event) }
         guard let search else { return }
+        let indexedAt = Date()
         let entries = events.compactMap { event -> SearchIndexEntry? in
-            guard let body = event.searchableBody else { return nil }
+            guard let body = event.searchableBody(now: indexedAt) else { return nil }
             return SearchIndexEntry(roomID: event.convoID, eventID: String(event.seq),
                                     sender: event.sender, timestamp: event.ts, body: body)
         }
@@ -1280,7 +1281,7 @@ public actor JournalSyncEngine {
         // Body extraction lives in `JournalEvent.searchableBody` (shared with
         // paginateBackward and the history backfill) so the three feeders
         // can't drift — see SearchBackfill.swift.
-        guard let body = event.searchableBody else { return }
+        guard let body = event.searchableBody() else { return }
         let convoID = event.convoID
         let seq = event.seq
         let sender = event.sender

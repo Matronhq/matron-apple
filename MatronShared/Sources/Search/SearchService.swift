@@ -18,6 +18,12 @@ public protocol SearchService: Sendable {
     /// Removes a single event (used for redactions).
     func remove(eventID: String) async throws
 
+    /// Removes many events in one call — the retention sweep's form. A
+    /// protocol requirement (not just an extension helper) so `any
+    /// SearchService` dispatches to the live override; the extension default
+    /// below keeps existing fakes compiling, exactly as `indexBatch` does.
+    func removeAll(eventIDs: [String]) async throws
+
     /// Queries by free-text. Returns at most `limit` hits, newest first.
     func query(_ text: String, limit: Int) async throws -> [SearchHit]
 
@@ -88,6 +94,12 @@ public extension SearchService {
             try await index(roomID: entry.roomID, eventID: entry.eventID,
                             sender: entry.sender, timestamp: entry.timestamp, body: entry.body)
         }
+    }
+
+    /// Default: one call per id. Correct but slow — `SearchServiceLive`
+    /// overrides it with a single transaction.
+    func removeAll(eventIDs: [String]) async throws {
+        for eventID in eventIDs { try await remove(eventID: eventID) }
     }
 
     /// Default for fakes: group a flat query in memory. `SearchServiceLive`

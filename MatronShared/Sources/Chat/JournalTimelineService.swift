@@ -828,8 +828,9 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         await overlay.prependOlder(newOnes)
         itemsSignal.withLock { $0 }?.signal()
         if let search {
+            let indexedAt = Date()
             for event in newOnes {
-                if let body = event.searchableBody {
+                if let body = event.searchableBody(now: indexedAt) {
                     try? await search.index(roomID: event.convoID, eventID: String(event.seq),
                                             sender: event.sender, timestamp: event.ts, body: body)
                 }
