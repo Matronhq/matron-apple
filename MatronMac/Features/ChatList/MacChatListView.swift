@@ -581,6 +581,7 @@ struct MacChatListView: View {
             }
             sidebar
         }
+        .onAppear { LaunchTimeline.shared.mark(.firstListPaint) }
     }
 
     @ViewBuilder

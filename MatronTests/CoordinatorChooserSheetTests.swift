@@ -8,6 +8,19 @@ import MatronModels
 @MainActor
 final class CoordinatorChooserSheetTests: XCTestCase {
     private let bot = BotIdentity(matrixID: "@b:s", displayName: "Bot", avatarURL: nil)
+    /// Held so `tearDown()` can stop the session's background maintenance
+    /// sweeper (M1 — the identical Mac defect fixed in
+    /// `MacCoordinatorChooserSheetTests`: a leaked `JournalMaintenance` 10 s
+    /// timer otherwise outlives the test method). Only `test_onPick_isInvocable`
+    /// below assigns it; `nil` in `tearDown()` for the other test is a no-op.
+    /// See `AppDependencies.stopMaintenanceForTests()`.
+    private var deps: AppDependencies!
+
+    override func tearDown() async throws {
+        await deps?.stopMaintenanceForTests()
+        deps = nil
+        try await super.tearDown()
+    }
 
     func test_filter_matchesTitleCaseInsensitively_andEmptyQueryKeepsAll() {
         let chats = [
@@ -20,7 +33,7 @@ final class CoordinatorChooserSheetTests: XCTestCase {
     }
 
     func test_onPick_isInvocable() {
-        let deps = AppDependencies()
+        deps = AppDependencies()
         let session = UserSession(userID: "@a:s", deviceID: "D",
                                   homeserverURL: URL(string: "https://s")!, accessToken: "t")
         var picked: String?

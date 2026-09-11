@@ -11,18 +11,27 @@ import MatronModels
 @MainActor
 final class AppShellViewTests: XCTestCase {
     private var window: UIWindow!
+    /// Held so `tearDown()` can stop the session's background maintenance
+    /// sweeper (M1 — the identical Mac defect fixed in
+    /// `MacAppDependenciesTests`: a leaked `JournalMaintenance` 10 s timer
+    /// otherwise outlives the test method). See
+    /// `AppDependencies.stopMaintenanceForTests()`.
+    private var deps: AppDependencies!
 
-    override func tearDown() {
+    override func tearDown() async throws {
         window?.isHidden = true
         window?.rootViewController = nil
         window = nil
-        super.tearDown()
+        await deps?.stopMaintenanceForTests()
+        deps = nil
+        try await super.tearDown()
     }
 
     private func makeShell(navigation: AppShellNavigation) -> AppShellView {
         let session = UserSession(userID: "@a:s", deviceID: "D",
                                   homeserverURL: URL(string: "https://s")!, accessToken: "t")
-        return AppShellView(session: session, deps: AppDependencies(), onSignOut: {}, navigation: navigation)
+        deps = AppDependencies()
+        return AppShellView(session: session, deps: deps, onSignOut: {}, navigation: navigation)
     }
 
     func test_shell_showsFourTabs_atTheRoot() throws {

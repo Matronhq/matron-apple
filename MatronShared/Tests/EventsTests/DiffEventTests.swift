@@ -53,4 +53,24 @@ final class DiffEventTests: XCTestCase {
         let evt = DiffEvent.parse(payload: ["diff": "x", "viewer_url": 42])
         XCTAssertNil(evt.viewerURL)
     }
+
+    /// Local retention (spec §3.4) strips `diff` and `snippet` and sets
+    /// `expired: true`, keeping every other key so the card can still name
+    /// the file. The parse must surface that as a flag, not as an empty diff
+    /// indistinguishable from a header-only payload.
+    func testParseCarriesTheExpiredFlagAndKeepsTheMetadata() {
+        let event = DiffEvent.parse(payload: [
+            "file_path": "/w/Sources/A.swift", "display_path": "Sources/A.swift",
+            "tool": "Edit", "added": 2, "removed": 1, "new_file": false, "expired": true,
+        ])
+        XCTAssertTrue(event.expired)
+        XCTAssertEqual(event.diff, "")
+        XCTAssertEqual(event.filename, "A.swift")
+        XCTAssertEqual(event.added, 2)
+        XCTAssertEqual(event.removed, 1)
+    }
+
+    func testParseDefaultsExpiredToFalse() {
+        XCTAssertFalse(DiffEvent.parse(payload: ["diff": "+ a"]).expired)
+    }
 }

@@ -79,6 +79,16 @@ final class AppDependencies {
             // task; `core` itself stays on the main actor.
             let engine = core.engine
             Task { await engine.attachSearch(service) }
+            // Same late-attach hazard for maintenance (Bugbot High, PR
+            // #212): `JournalMaintenance(store:search:)` was constructed
+            // with a `nil` search whenever the app launched locked, and
+            // nothing ever told it search opened later — its search
+            // retirement watermark would have advanced past rows without
+            // ever removing them from an index it never had a reference
+            // to. `attachSearch` lets the next sweep resolve the index at
+            // pass time instead.
+            let maintenance = core.maintenance
+            Task { await maintenance.attachSearch(service) }
             if core.backfillTask == nil {
                 core.backfillTask = Self.startBackfill(search: service, api: core.api, store: core.store,
                                                        engine: engine, resetBookkeepingFirst: true)
@@ -120,12 +130,21 @@ final class AppDependencies {
         /// Background search-history backfill sweep for this session (see
         /// `SearchBackfillCoordinator`). Cancelled on sign-out.
         var backfillTask: Task<Void, Never>?
-        init(api: JournalAPI, store: JournalStore, engine: JournalSyncEngine, items: ItemsSync, missions: MissionsSync) {
+        /// Background store housekeeping (TTL + retention sweeps and the
+        /// matching search removal). Replaces the sweep `JournalStore.init`
+        /// used to run on the launch path.
+        let maintenance: JournalMaintenance
+        /// Handle for the `maintenance.start()` kickoff — awaited before
+        /// `stop()` in the sign-out teardown, same rule as `itemsStartTask`.
+        var maintenanceStartTask: Task<Void, Never>?
+        init(api: JournalAPI, store: JournalStore, engine: JournalSyncEngine, items: ItemsSync, missions: MissionsSync,
+             maintenance: JournalMaintenance) {
             self.api = api
             self.store = store
             self.engine = engine
             self.items = items
             self.missions = missions
+            self.maintenance = maintenance
         }
     }
 
@@ -188,7 +207,15 @@ final class AppDependencies {
         if let existing = cores[session.userID] { return existing }
         let api = JournalAPI(serverURL: session.homeserverURL, token: session.accessToken)
         let dbURL = journalDirectory.appendingPathComponent("\(session.userID).sqlite")
-        let store = try! JournalStore(databaseURL: dbURL, ownSender: "user:\(session.userID)")
+        LaunchTimeline.shared.beginStoreOpen()
+        let store = try! JournalStore(databaseURL: dbURL, ownSender: "user:\(session.userID)")  // unchanged
+        LaunchTimeline.shared.endStoreOpen()
+        // Nested inside the store-open interval: present on the one launch
+        // that ran v11, absent on every later one. That contrast is the
+        // headline result of this whole plan, so it has to be visible.
+        if let migration = store.lastMigrationDuration {
+            LaunchTimeline.shared.recordMigration(migration)
+        }
         // One read, used for both: on a locked background launch this is nil
         // and stays nil for this core until `adoptSearch` fills it in.
         let search = self.search
@@ -203,10 +230,28 @@ final class AppDependencies {
         let items = ItemsSync(api: api, store: store, markers: { engine.itemMarkers() }, connectionStates: { engine.stateStream() })
         let missions = MissionsSync(api: api, store: store, markers: { engine.missionMarkers() },
                                     connectionStates: { engine.stateStream() })
-        let core = JournalCore(api: api, store: store, engine: engine, items: items, missions: missions)
+        let maintenance = JournalMaintenance(store: store, search: search)
+        let core = JournalCore(api: api, store: store, engine: engine, items: items, missions: missions,
+                                maintenance: maintenance)
         core.itemsStartTask = Task { await items.start() }
         core.missionsStartTask = Task { await missions.start() }
         core.backfillTask = Self.startBackfill(search: search, api: api, store: store, engine: engine)
+        core.maintenanceStartTask = Task {
+            await engine.attachMaintenance(maintenance)
+            // The engine lives in MatronShared and must not call
+            // LaunchTimeline itself (R7); this hook lets the app target
+            // record the mark the first time the replay reaches the live
+            // cursor. Also lets maintenance past its launch hold early
+            // (Bugbot High): catch-up reaching the live cursor is the
+            // signal the launch path is over, so a pass may run sooner
+            // than `start()`'s `firstRunDelay` if catch-up itself took
+            // longer.
+            await engine.setCatchUpCompleteHandler {
+                LaunchTimeline.shared.mark(.catchUpComplete)
+                Task { await maintenance.runAfterCatchUp() }
+            }
+            await maintenance.start()
+        }
         // One-time: box tag letters chosen before they were journal-held
         // move up to the server so they show on every device — and into
         // the local mirror first, so they keep painting while the push is
@@ -310,6 +355,12 @@ final class AppDependencies {
     /// browser). Same instance the sync engine writes.
     func journalStore(for session: UserSession) -> JournalStore {
         core(for: session).store
+    }
+
+    /// The session's background sweeper — the app-foreground trigger calls
+    /// `runIfDue()` on it.
+    func journalMaintenance(for session: UserSession) -> JournalMaintenance {
+        core(for: session).maintenance
     }
 
     /// Task 9 (items tracker): the session's `ItemsSync` actor — outbox
@@ -534,6 +585,15 @@ final class AppDependencies {
                 // writes landing after the wipe would resurrect them.
                 core.backfillTask?.cancel()
                 await core.backfillTask?.value
+                // Two separate hazards, both real:
+                //  - a not-yet-run start would arm the hourly timer AFTER
+                //    teardown, so await the kickoff first;
+                //  - a pass already suspended in `search.removeAll(…)` would
+                //    resume after the wipe below and re-stamp
+                //    `maintenance_last_run` on an empty `meta`, so `stop()`
+                //    awaits it (see `JournalMaintenance.stop`).
+                await core.maintenanceStartTask?.value
+                await core.maintenance.stop()
                 // Best-effort server-side push deregistration while the API
                 // still holds a valid token (Finding 3). Bounded so a dead
                 // network can't hold re-login hostage to a URLSession
@@ -583,6 +643,23 @@ final class AppDependencies {
         mediaServices.removeAll()
         timelineCache = LRUCache(limit: AppDependencies.timelineCacheLimit)
         try? auth.clearSession()
+    }
+
+    /// Test-only: stops every still-live session's background maintenance
+    /// sweeper — the `maintenanceStartTask` kickoff, then `stop()` — without
+    /// ending sync or wiping the store/search index, unlike `signOut()`.
+    /// MatronTests construct `AppDependencies()` directly and reach
+    /// `core(for:)` (via `mediaService(for:)`, `timelineService(for:)`,
+    /// etc.), which starts a real `JournalMaintenance` with its live 10 s
+    /// `firstRunDelay` timer; without this, that timer outlives the test
+    /// method (M1 — the identical Mac defect, `MatronMac/App/AppDependencies
+    /// .swift:558-562`). `internal`, `@testable`-visible only — no
+    /// production call site.
+    internal func stopMaintenanceForTests() async {
+        for core in cores.values {
+            await core.maintenanceStartTask?.value
+            await core.maintenance.stop()
+        }
     }
 
     /// In-flight (or most-recent) sign-out teardown, if any. See `signOut()`.
@@ -648,6 +725,13 @@ final class AppDependencies {
     /// mirrors. `wipeLocalDataForFreshLogin()` empties it; the test asserts
     /// a stray file placed here is gone afterwards.
     var journalStoreDirectory: URL { journalDirectory }
+
+    /// Where the FTS index lives — the Storage section's second file group.
+    /// Optional only to match the Mac accessor's shape: `searchDatabaseURL`
+    /// is a non-optional `URL` (it falls back to the plain container when the
+    /// App Group entitlement is missing), so this never actually returns nil
+    /// on iOS.
+    var searchStoreURL: URL? { searchDatabaseURL }
 
     /// Runs `operation`, abandoning the wait (not the work) after `seconds`.
     /// Used to bound best-effort network calls inside teardown.

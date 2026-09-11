@@ -48,12 +48,26 @@ private final class NoChat: ChatService, @unchecked Sendable {
 /// window's height, which puts the composer at the bottom.
 @MainActor
 final class MacItemsPaneLayoutTests: XCTestCase {
+    /// Held so `tearDown()` can stop the session's background maintenance
+    /// sweeper (review Major: a leaked `JournalMaintenance` 10 s timer
+    /// otherwise outlives the test method and can fire against the shared
+    /// `MATRON_APP_SUPPORT_OVERRIDE` directory after a later test deletes
+    /// or recreates the store there). See
+    /// `AppDependencies.stopMaintenanceForTests()`.
+    private var deps: AppDependencies!
+
+    override func tearDown() async throws {
+        await deps?.stopMaintenanceForTests()
+        deps = nil
+        try await super.tearDown()
+    }
+
     func test_chatColumnFillsWindowHeight_whenPaneIsOpenOnMount() async throws {
         let timeline = ThreeRowTimeline()
         let chatVM = ChatViewModel(roomID: "c1", timeline: timeline, media: NoMedia())
         let composerVM = ComposerViewModel(roomID: "c1", timeline: timeline, commands: [])
         let stripVM = SubChatStripViewModel(chat: NoChat(), parentConvoID: "c1")
-        let deps = AppDependencies()
+        deps = AppDependencies()
         let session = UserSession(userID: "@a:s", deviceID: "D",
                                   homeserverURL: URL(string: "https://s")!, accessToken: "t")
         let view = MacChatView(

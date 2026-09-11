@@ -4,6 +4,7 @@ import AppKit
 import MatronModels
 import MatronDesignSystem
 import MatronViewModels
+import MatronJournal
 
 /// Mac analogue of `DeviceSettingsView` (iOS Task 11 / Mac Task 12). Same
 /// reduction as the iOS view — the Encryption + Recovery-key sections are
@@ -27,6 +28,9 @@ struct MacDeviceSettingsView: View {
     var deps: AppDependencies? = nil
     /// Injected by MatronMacApp; nil in previews/tests hides the section.
     @Environment(\.appLockController) private var appLock
+    /// Filled by the `.task` below; `nil` while the read is in flight, which
+    /// is what `StorageSettingsRows` renders as a spinner.
+    @State private var storage: StorageSettingsRows.Model?
 
     var body: some View {
         Form {
@@ -67,6 +71,11 @@ struct MacDeviceSettingsView: View {
             if let deps {
                 MacCoordinatorSettingRow(session: session, deps: deps)
             }
+            if let deps {
+                Section("Storage") {
+                    StorageSettingsRows(model: storage)
+                }
+            }
             Section("Appearance") {
                 // Writes MatronAppearance.storageKey; MatronMacApp's root
                 // @AppStorage observes the same key and applies it via
@@ -95,9 +104,29 @@ struct MacDeviceSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        // Tall enough for the Privacy section when biometrics exist.
-        .frame(width: 420, height: 640)
+        // Tall enough for the Privacy section when biometrics exist, plus
+        // the Storage section's five rows.
+        .frame(width: 420, height: 760)
         .navigationTitle("Device")
+        .task {
+            // On demand only: two file stats and two COUNT(*)s, off the
+            // main actor, when the user opens this screen. Attached to the
+            // `Form`, not the `Storage` `Section` — there is no precedent
+            // elsewhere in the app for `.task` on a `Section`, and this way
+            // the read starts as soon as the screen appears regardless of
+            // scroll position.
+            guard let deps else { return }
+            let sizes = await StoreDiagnostics.sizes(
+                store: deps.journalStore(for: session), searchURL: deps.searchStoreURL)
+            storage = StorageSettingsRows.Model(
+                journalBytes: sizes.journalBytes,
+                searchBytes: sizes.searchBytes,
+                events: sizes.eventCount,
+                conversations: sizes.conversationCount,
+                launchText: LaunchTimeline.summary(LaunchTimeline.currentLaunch()),
+                maintenanceText: StoreDiagnostics.lastMaintenanceText(
+                    sizes.lastMaintenance, now: Date()))
+        }
     }
 }
 #endif

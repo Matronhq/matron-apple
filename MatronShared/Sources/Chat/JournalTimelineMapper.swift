@@ -199,10 +199,11 @@ public enum JournalTimelineMapper {
         )
     }
 
-    /// The journal server's tool-log TTL (docs/protocol.md Retention):
-    /// live-streamed output is purged server-side 24h after the event, and
-    /// the client rules make the same TTL binding on local caches.
-    public static let toolLogTTL: TimeInterval = 24 * 3600
+    /// The journal server's tool-log TTL (docs/protocol.md Retention).
+    /// Defined once, in `EventTombstone` — the leaf module both the store's
+    /// sweeps and this mapper can see — so the render-time guard and the
+    /// on-disk rewrite can never drift apart.
+    public static let toolLogTTL: TimeInterval = EventTombstone.toolLogTTL
 
     public static func toolCallEvent(fromToolOutput payload: [String: Any], ts: Date,
                                      now: Date = Date()) -> ToolCallEvent {

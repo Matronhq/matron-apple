@@ -657,4 +657,21 @@ final class JournalTimelineMapperTests: XCTestCase {
         }
         XCTAssertEqual(eventType, "spawn_outcome")
     }
+
+    // MARK: Expired diff
+
+    /// Local retention (Task 4's `EventTombstone`) strips `diff` and
+    /// `snippet` from a `diff` payload and sets `expired: true`, keeping the
+    /// other keys so the row can still name the file. The mapper must carry
+    /// that flag through to the `DiffEvent` unchanged.
+    func testExpiredDiffMapsToAFlaggedDiffItem() throws {
+        let item = try XCTUnwrap(map(event(7, type: JournalEventType.diff, payload: [
+            "file_path": "/w/Sources/A.swift", "added": 2, "removed": 1, "expired": true,
+        ])))
+        guard case .diff(_, let diff) = item.kind else {
+            return XCTFail("expected a diff item, got \(item.kind)")
+        }
+        XCTAssertTrue(diff.expired)
+        XCTAssertEqual(diff.filename, "A.swift", "the row must still be able to name the file")
+    }
 }

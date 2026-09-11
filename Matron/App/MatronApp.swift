@@ -119,6 +119,13 @@ struct MatronApp: App {
                     .onChange(of: scenePhase) { _, phase in
                         if phase == .active {
                             Task { await (dependencies.syncService(for: session) as? JournalSyncEngine)?.nudge() }
+                            // Foreground sweep (spec §3.4): a process that
+                            // has been backgrounded past the hour sweeps now
+                            // rather than waiting out the in-process timer,
+                            // which does not tick while suspended.
+                            Task(priority: .utility) {
+                                await dependencies.journalMaintenance(for: session).runIfDue()
+                            }
                             appLock.noteBecameActive()
                             if appLock.isLocked, !lockAutoPrompted {
                                 lockAutoPrompted = true

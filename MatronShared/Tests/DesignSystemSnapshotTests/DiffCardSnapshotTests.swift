@@ -57,4 +57,25 @@ final class DiffCardSnapshotTests: XCTestCase {
         assertVariants(of: DiffCard(event: sampleEvent(viewer: nil)).frame(width: 420),
                        named: "no_viewer_url")
     }
+
+    func test_expired_showsTheNotStoredNotice() {
+        let expired = DiffEvent(filePath: "/w/Sources/A.swift", displayPath: "Sources/A.swift",
+                                viewerURL: nil, tool: "Edit", label: nil, diff: "",
+                                added: 2, removed: 1, truncated: false, newFile: false,
+                                expired: true)
+        assertVariants(of: DiffCard(event: expired).frame(width: 420), named: "expired")
+    }
+
+    /// Review fix round 1 (Major): retention keeps `truncated` while
+    /// stripping the body, so a diff that was truncated at capture time can
+    /// still carry `truncated: true` after it expires. The header's "…"
+    /// truncation pill must not leak through — only the "Diff no longer
+    /// stored" notice should show, with nothing implying hidden content.
+    func test_expired_andTruncated_showsOnlyTheNotice() {
+        let expired = DiffEvent(filePath: "/w/Sources/A.swift", displayPath: "Sources/A.swift",
+                                viewerURL: nil, tool: "Edit", label: nil, diff: "",
+                                added: 2, removed: 1, truncated: true, newFile: false,
+                                expired: true)
+        assertVariants(of: DiffCard(event: expired).frame(width: 420), named: "expired_and_truncated")
+    }
 }
