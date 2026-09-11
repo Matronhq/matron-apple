@@ -45,6 +45,14 @@ final class StorageSettingsRowsSnapshotTests: XCTestCase {
         XCTAssertEqual(StorageSettingsRows.byteText(2_147_483_648), "2.1 GB")
     }
 
+    /// M8: the unit is picked from the raw byte count before rounding, so
+    /// without the post-rounding bump this renders "1000 MB" — the
+    /// rounded-up value crossing the very threshold that should have
+    /// selected GB instead.
+    func testByteTextBumpsUnitWhenRoundingCrossesTheThreshold() {
+        XCTAssertEqual(StorageSettingsRows.byteText(999_999_999), "1 GB")
+    }
+
     /// The regression M1 flagged: `ByteCountFormatter` has no `.locale`
     /// override, so it renders "1,5 MB" under a comma-decimal locale like
     /// `fr_FR`. `byteText` now formats the numeric part through a

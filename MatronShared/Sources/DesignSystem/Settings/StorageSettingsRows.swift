@@ -84,17 +84,29 @@ public struct StorageSettingsRows: View {
     /// one decimal place with the trailing ".0" dropped when the rounded
     /// value is a whole number — so an exact-MB fixture like `440_000_000`
     /// still renders "440 MB", not "440.0 MB".
+    ///
+    /// The unit is picked from the RAW byte count, before rounding — which
+    /// on its own would let a value like `999_999_999` (999.999999 MB)
+    /// round to "1000 MB" (M8). So the candidate unit's rounded value is
+    /// checked against the 1000 threshold and bumped up a tier when
+    /// rounding crossed it, before the final format.
     public static func byteText(_ bytes: Int64) -> String {
-        let (divisor, suffix): (Double, String)
+        guard bytes >= 1_000 else { return "\(bytes) B" }
+        var (divisor, suffix): (Double, String)
         switch bytes {
         case 1_000_000_000...:
             (divisor, suffix) = (1_000_000_000, "GB")
         case 1_000_000..<1_000_000_000:
             (divisor, suffix) = (1_000_000, "MB")
-        case 1_000..<1_000_000:
-            (divisor, suffix) = (1_000, "KB")
         default:
-            return "\(bytes) B"
+            (divisor, suffix) = (1_000, "KB")
+        }
+        func roundedToOneDecimal(_ value: Double) -> Double {
+            (value * 10).rounded(.toNearestOrAwayFromZero) / 10
+        }
+        if suffix != "GB", roundedToOneDecimal(Double(bytes) / divisor) >= 1000 {
+            divisor *= 1000
+            suffix = suffix == "KB" ? "MB" : "GB"
         }
         let value = Double(bytes) / divisor
         let text = byteNumberFormatter.string(from: NSNumber(value: value)) ?? String(bytes)
@@ -112,14 +124,21 @@ public struct StorageSettingsRows: View {
     /// formatter renders "457102", not "457,102" — pinning the *locale*
     /// doesn't pin the *separator*. Forcing `usesGroupingSeparator` with an
     /// explicit `groupingSeparator` does.
-    public static func countsText(events: Int, conversations: Int) -> String {
+    ///
+    /// Hoisted to a static (M8), matching `byteNumberFormatter` — a fresh
+    /// `NumberFormatter` on every call was the odd one out between the two.
+    private static let countsNumberFormatter: NumberFormatter = {
         let formatter = NumberFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.numberStyle = .decimal
         formatter.usesGroupingSeparator = true
         formatter.groupingSeparator = ","
+        return formatter
+    }()
+
+    public static func countsText(events: Int, conversations: Int) -> String {
         func text(_ value: Int) -> String {
-            formatter.string(from: NSNumber(value: value)) ?? String(value)
+            countsNumberFormatter.string(from: NSNumber(value: value)) ?? String(value)
         }
         return "\(text(events)) / \(text(conversations))"
     }
