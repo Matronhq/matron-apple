@@ -74,6 +74,16 @@ struct MacChatListView: View {
     /// The per-session Missions list view model, started/stopped the same
     /// way as `decisionsVM` so the nav badge stays live across entries.
     @State private var missionsVM: MissionsListViewModel?
+    /// Mirrors `missionsVM?.isSupported`, defaulting `false` while
+    /// `missionsVM` is still nil (support unknown) rather than `true` —
+    /// otherwise the sidebar briefly shows a selectable Missions entry
+    /// before the first answer lands (CodeRabbit #209). Wired by
+    /// `.onChange(of: missionsVM?.isSupported)`; kept as its own `@State`
+    /// (rather than read inline) because `setMissionsSupported` is the
+    /// one place, mirroring iOS `AppShellNavigation.missionsSupported`'s
+    /// `didSet`, that walks a selected `.missions` `nav` back to
+    /// `.conversations` on the false edge.
+    @State private var missionsSupported = false
     @State private var selectedMissionID: String?
     /// Set when a mission page was opened from a conversation title, so the
     /// page can offer a way back to it.
@@ -161,7 +171,7 @@ struct MacChatListView: View {
             MacNavColumn(selection: $nav,
                          badges: [.decisions: decisionsVM?.awaitingYouCount ?? 0,
                                   .missions: missionsVM?.needsYouTotal ?? 0],
-                         missionsSupported: missionsVM?.isSupported ?? true)
+                         missionsSupported: missionsSupported)
             Divider()
             switch nav {
             case .conversations:
@@ -412,6 +422,7 @@ struct MacChatListView: View {
                 }
             }
             .onChange(of: nav, navChanged)
+            .onChange(of: missionsVM?.isSupported) { _, supported in setMissionsSupported(supported ?? false) }
     }
 
     /// Lifecycle: view-model start/stop, decisions VM, sync-state and
@@ -787,6 +798,18 @@ struct MacChatListView: View {
     /// here so the Conversations entry comes forward even when the target
     /// is ALREADY selected (Bugbot, PR #195: the `selectedSummaryID`
     /// `onChange` alone never fires for a same-id assignment).
+    /// Just the wire: the clamp that walks a selected `.missions` nav
+    /// entry back to `.conversations` on the false edge lives here, in
+    /// the setter, not in an `onChange` on `nav` — mirrors iOS
+    /// `AppShellNavigation.missionsSupported`'s `didSet`, so a selection
+    /// that already landed on `.missions` before the 404 answers is
+    /// walked back the instant the flag flips false (CodeRabbit #209).
+    private func setMissionsSupported(_ supported: Bool) {
+        missionsSupported = supported
+        guard !supported, nav == .missions else { return }
+        nav = .conversations
+    }
+
     private func navChanged(from old: MacNav, to new: MacNav) {
         // The search field unmounts with Conversations; an unconsumed ⌘F
         // request must not outlive it (Bugbot, PR #195).
