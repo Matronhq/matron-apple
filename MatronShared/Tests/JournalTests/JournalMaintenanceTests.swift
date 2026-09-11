@@ -84,10 +84,28 @@ final class JournalMaintenanceTests: XCTestCase {
 
     private let t0 = Date(timeIntervalSince1970: 1_700_000_000)
 
+    /// `JournalMaintenance.firstRunDelay` restated as a `TimeInterval` for
+    /// `Date` arithmetic. Mirrors the actor's own private
+    /// `firstRunDelaySeconds` — `@testable` exposes `internal`, not
+    /// `private`, so tests can't reach that one directly.
+    private var firstRunDelaySeconds: TimeInterval {
+        TimeInterval(JournalMaintenance.firstRunDelay.components.seconds)
+    }
+
+    // Every `JournalMaintenance` now arms a launch hold at construction
+    // (`init` sets `holdUntil = now() + firstRunDelay`), so most of the
+    // tests below construct with a fixed `now:` and call `runAfterCatchUp()`
+    // rather than a bare `runIfDue()` — a bare call would land inside that
+    // hold and no-op for a reason unrelated to what the test claims to
+    // check. `runAfterCatchUp()` unconditionally clears the hold before
+    // deferring to `runIfDue()`, so it's the standard way past it,
+    // everywhere except the tests in the "Launch hold" section further
+    // down that are specifically about the hold itself.
+
     func testFirstRunSweepsWhenNothingHasEverRun() async throws {
         let store = SpyStore()
         let maintenance = JournalMaintenance(store: store, search: nil, now: { self.t0 })
-        await maintenance.runIfDue()
+        await maintenance.runAfterCatchUp()
         XCTAssertEqual(store.purgeCalls, [t0])
         XCTAssertEqual(store.retentionCalls, [t0])
         XCTAssertEqual(store.callOrder, ["retention", "purge"], "R9: retention sweeps first")
@@ -97,7 +115,7 @@ final class JournalMaintenanceTests: XCTestCase {
     func testASecondRunInsideTheHourDoesNothing() async throws {
         let store = SpyStore()
         let maintenance = JournalMaintenance(store: store, search: nil, now: { self.t0 })
-        await maintenance.runIfDue()
+        await maintenance.runAfterCatchUp()
         await maintenance.runIfDue(now: t0.addingTimeInterval(59 * 60))
         XCTAssertEqual(store.purgeCalls.count, 1, "the hourly cadence is the whole point of the watermark")
     }
@@ -105,39 +123,62 @@ final class JournalMaintenanceTests: XCTestCase {
     func testARunPastTheHourSweepsAgain() async throws {
         let store = SpyStore()
         let maintenance = JournalMaintenance(store: store, search: nil, now: { self.t0 })
-        await maintenance.runIfDue()
+        await maintenance.runAfterCatchUp()
         let later = t0.addingTimeInterval(61 * 60)
         await maintenance.runIfDue(now: later)
         XCTAssertEqual(store.purgeCalls, [t0, later])
     }
 
-    /// The foreground path: a process that starts with a stamp older than an
-    /// hour sweeps immediately rather than waiting out a timer.
+    /// The foreground path: a process that starts with a stamp older than
+    /// an hour sweeps immediately (once the launch hold has passed) rather
+    /// than waiting out the hourly timer. Uses a `now:` past the hold
+    /// (rather than `runAfterCatchUp()`) because this test is specifically
+    /// about the `runIfDue()` foreground call site the hold guards.
     func testAStaleStoredStampSweepsOnTheFirstForegroundCheck() async throws {
         let store = SpyStore(lastRun: t0.addingTimeInterval(-2 * 3600))
         let maintenance = JournalMaintenance(store: store, search: nil, now: { self.t0 })
-        await maintenance.runIfDue()
-        XCTAssertEqual(store.purgeCalls, [t0])
+        let afterHold = t0.addingTimeInterval(firstRunDelaySeconds + 1)
+        await maintenance.runIfDue(now: afterHold)
+        XCTAssertEqual(store.purgeCalls, [afterHold])
     }
 
     func testAFreshStoredStampSkipsTheFirstRun() async throws {
         let store = SpyStore(lastRun: t0.addingTimeInterval(-10 * 60))
         let maintenance = JournalMaintenance(store: store, search: nil, now: { self.t0 })
-        await maintenance.runIfDue()
+        // `runAfterCatchUp()`, not `runIfDue()`: this must skip because the
+        // stamp is fresh, not merely because the launch hold is still up —
+        // otherwise the assertion below would pass even with the freshness
+        // check deleted.
+        await maintenance.runAfterCatchUp()
         XCTAssertTrue(store.purgeCalls.isEmpty,
                       "a launch ten minutes after the last sweep must not re-sweep")
     }
 
     // MARK: - Launch hold (Bugbot High, follow-up fix)
 
-    /// `start()`'s own schedule already delays its first tick by
-    /// `firstRunDelay`, but nothing previously stopped an app-foreground
-    /// hook (`runIfDue()`, called with no delay of its own) from racing
-    /// ahead of it — and on the very first launch the scene goes
-    /// inactive → active immediately. Without a hold, a due store (fresh
-    /// upgrade, no stored `maintenance_last_run`) would run the first,
-    /// possibly history-sized pass right on the launch path.
-    func testStartArmsALaunchHoldThatBlocksAnImmediateRunIfDue() async throws {
+    /// Bugbot High follow-up: arming the hold inside `start()` was still
+    /// too late — `start()` is only reached after `maintenanceStartTask`'s
+    /// two engine hops (`attachMaintenance` / `setCatchUpCompleteHandler`),
+    /// which stall for as long as catch-up owns the engine actor, and an
+    /// app-foreground hook's `runIfDue()` call can land in that SAME
+    /// window and see no hold at all. `init` now arms `holdUntil`
+    /// synchronously at construction instead, before any hook can reach
+    /// this instance — proven here with no `start()` call whatsoever.
+    /// Without a hold, a due store (fresh upgrade, no stored
+    /// `maintenance_last_run`) would run the first, possibly
+    /// history-sized pass right on the launch path.
+    func testRunIfDueImmediatelyAfterInitDoesNotRunAPassEvenWithNoStartCall() async throws {
+        let store = SpyStore() // no lastRun: due immediately
+        let maintenance = JournalMaintenance(store: store, search: nil, now: { self.t0 })
+        await maintenance.runIfDue(now: t0)
+        XCTAssertNil(store.lastRunStamp,
+                     "an app-foreground hook landing right at construction must not run a pass, start() or not")
+    }
+
+    /// `start()` no longer arms the hold itself (it's already armed by
+    /// `init`), and calling it must not re-arm or otherwise disturb the
+    /// hold `init` already set.
+    func testStartDoesNotDisturbTheHoldInitAlreadyArmed() async throws {
         let store = SpyStore() // no lastRun: due immediately
         let maintenance = JournalMaintenance(store: store, search: nil, now: { self.t0 })
         await maintenance.start()
@@ -153,10 +194,8 @@ final class JournalMaintenanceTests: XCTestCase {
     func testRunAfterCatchUpRunsDuringTheHold() async throws {
         let store = SpyStore()
         let maintenance = JournalMaintenance(store: store, search: nil, now: { self.t0 })
-        await maintenance.start()
         await maintenance.runAfterCatchUp()
         XCTAssertEqual(store.lastRunStamp, t0, "catch-up completing lets a due pass run early")
-        await maintenance.stop()
     }
 
     /// Once `now` reaches the hold's expiry, `runIfDue` behaves normally
@@ -164,12 +203,9 @@ final class JournalMaintenanceTests: XCTestCase {
     func testRunIfDueRunsOnceTheHoldExpires() async throws {
         let store = SpyStore()
         let maintenance = JournalMaintenance(store: store, search: nil, now: { self.t0 })
-        await maintenance.start()
-        let delay = TimeInterval(JournalMaintenance.firstRunDelay.components.seconds)
-        let afterHold = t0.addingTimeInterval(delay + 1)
+        let afterHold = t0.addingTimeInterval(firstRunDelaySeconds + 1)
         await maintenance.runIfDue(now: afterHold)
         XCTAssertEqual(store.lastRunStamp, afterHold, "the hold has expired — a due pass runs normally")
-        await maintenance.stop()
     }
 
     func testRetiredSeqsAreRemovedFromTheSearchIndexInOneBatch() async throws {
@@ -180,7 +216,7 @@ final class JournalMaintenanceTests: XCTestCase {
         store.pendingSearchResult = (seqs: [11, 12, 13], cutoff: t0)
         let search = RecordingSearch()
         let maintenance = JournalMaintenance(store: store, search: search, now: { self.t0 })
-        await maintenance.runIfDue()
+        await maintenance.runAfterCatchUp()
         XCTAssertEqual(search.removed, [["11", "12", "13"]],
                        "search rows are keyed by String(seq) — see JournalSyncEngine.indexForSearch")
         XCTAssertEqual(store.searchRetirementCutoffs, [t0],
@@ -192,7 +228,7 @@ final class JournalMaintenanceTests: XCTestCase {
         store.pendingSearchResult = (seqs: [], cutoff: t0)
         let search = RecordingSearch()
         let maintenance = JournalMaintenance(store: store, search: search, now: { self.t0 })
-        await maintenance.runIfDue()
+        await maintenance.runAfterCatchUp()
         XCTAssertTrue(search.removed.isEmpty)
         XCTAssertEqual(store.searchRetirementCutoffs, [t0],
                        "an empty pass still records the watermark so it isn't rescanned every tick")
@@ -222,7 +258,7 @@ final class JournalMaintenanceTests: XCTestCase {
         let maintenance = JournalMaintenance(
             store: store, search: search,
             now: { Date(timeIntervalSince1970: 1).addingTimeInterval(31 * 24 * 3600) })
-        await maintenance.runIfDue()
+        await maintenance.runAfterCatchUp()
 
         XCTAssertEqual(search.removed, [["1"]],
                        "a >30-day live-log row must come back in the retention seqs on the first pass")
@@ -242,7 +278,11 @@ final class JournalMaintenanceTests: XCTestCase {
         search.beforeRemoveAll = { await gate.wait() }
         let maintenance = JournalMaintenance(store: store, search: search, now: { self.t0 })
 
-        let pass = Task { await maintenance.runIfDue() }
+        // `runAfterCatchUp()`, not `runIfDue()`: a bare `runIfDue()` here
+        // would land inside the construction-time launch hold and return
+        // instantly, never reaching the suspension inside `removeAll` this
+        // test needs.
+        let pass = Task { await maintenance.runAfterCatchUp() }
         // Let the pass reach the suspension inside `removeAll`.
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertNil(store.lastRunStamp, "precondition: the pass has not finished")
@@ -279,7 +319,9 @@ final class JournalMaintenanceTests: XCTestCase {
         search.beforeRemoveAll = { await gate.wait() }
         let maintenance = JournalMaintenance(store: store, search: search, now: { laterNow })
 
-        let pass = Task { await maintenance.runIfDue() }
+        // `runAfterCatchUp()`, not `runIfDue()`: a bare call would land
+        // inside the construction-time launch hold and return instantly.
+        let pass = Task { await maintenance.runAfterCatchUp() }
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertNil(try store.maintenanceLastRun(), "precondition: the pass has not finished")
 
@@ -306,7 +348,10 @@ final class JournalMaintenanceTests: XCTestCase {
         let store = SpyStore()
         store.purgeError = SpyStore.Boom()
         let maintenance = JournalMaintenance(store: store, search: nil, now: { self.t0 })
-        await maintenance.runIfDue()
+        // `runAfterCatchUp()`, not `runIfDue()`: this must fail (and so
+        // stay unstamped) because `purgeError` throws, not merely because
+        // the launch hold is still up.
+        await maintenance.runAfterCatchUp()
         XCTAssertNil(store.lastRunStamp)
 
         store.purgeError = nil
@@ -335,7 +380,7 @@ final class JournalMaintenanceTests: XCTestCase {
         let laterNow = Date(timeIntervalSince1970: 1).addingTimeInterval(31 * 24 * 3600)
 
         let maintenance = JournalMaintenance(store: store, search: nil, now: { laterNow })
-        await maintenance.runIfDue()
+        await maintenance.runAfterCatchUp()
 
         let pending = try store.pendingSearchRetirements(now: laterNow)
         XCTAssertEqual(pending.seqs, [1],
@@ -356,7 +401,7 @@ final class JournalMaintenanceTests: XCTestCase {
 
         let maintenance = JournalMaintenance(store: store, search: nil, now: { laterNow })
         await maintenance.attachSearch(search)
-        await maintenance.runIfDue()
+        await maintenance.runAfterCatchUp()
 
         XCTAssertEqual(search.removed, [["1"]])
         let stillIndexed = try await search.contains(eventID: "1")
@@ -380,7 +425,7 @@ final class JournalMaintenanceTests: XCTestCase {
         search.removeAllError = SpyStore.Boom()
 
         let maintenance = JournalMaintenance(store: store, search: search, now: { laterNow })
-        await maintenance.runIfDue()
+        await maintenance.runAfterCatchUp()
 
         XCTAssertTrue(search.removed.isEmpty, "the throwing removal must not have recorded a batch")
         var pending = try store.pendingSearchRetirements(now: laterNow)

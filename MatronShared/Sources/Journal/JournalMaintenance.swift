@@ -72,19 +72,40 @@ public actor JournalMaintenance {
     /// plenty of time for that to happen. There is no "unstop": a new
     /// sign-in builds a new `JournalMaintenance` on a new core.
     private var stopped = false
-    /// Set by `start()` to `now() + firstRunDelay`; `runIfDue(now:)` no-ops
-    /// while `current` is still before it. Bugbot High: the scene-active /
-    /// didBecomeActive hooks call `runIfDue()` with no guard of their own,
-    /// and on a fresh launch the scene goes inactive → active immediately,
-    /// so on an upgrade with no stored `maintenance_last_run` that call
-    /// would start the first (potentially history-sized) pass right on the
-    /// launch path — exactly what `firstRunDelay` was meant to prevent —
-    /// contending for the single `DatabaseQueue` with first list paint and
-    /// catch-up. `runAfterCatchUp()` clears this early: catch-up finishing
-    /// is the signal the launch path is over, so a pass may run sooner than
+    /// Set at construction to `now() + firstRunDelay`; `runIfDue(now:)`
+    /// no-ops while `current` is still before it. Bugbot High: the
+    /// scene-active / didBecomeActive hooks call `runIfDue()` with no guard
+    /// of their own, and on a fresh launch the scene goes inactive → active
+    /// immediately, so on an upgrade with no stored `maintenance_last_run`
+    /// that call would start the first (potentially history-sized) pass
+    /// right on the launch path — exactly what `firstRunDelay` was meant to
+    /// prevent — contending for the single `DatabaseQueue` with first list
+    /// paint and catch-up.
+    ///
+    /// Deliberately armed here rather than in `start()`: `start()` is only
+    /// reached after `maintenanceStartTask`'s two engine hops
+    /// (`attachMaintenance` / `setCatchUpCompleteHandler`), which stall for
+    /// as long as catch-up owns the engine actor — the SAME window in which
+    /// the scene-active hook can call `runIfDue()` directly, so arming the
+    /// hold there was too late to matter (Bugbot High, follow-up). `init`
+    /// runs synchronously on construction, before any hook can reach this
+    /// instance at all. `start()` leaves this alone if already set —
+    /// re-arming it there would only extend the hold by however long the
+    /// engine hops took.
+    ///
+    /// `runAfterCatchUp()` clears this early: catch-up finishing is the
+    /// signal the launch path is over, so a pass may run sooner than
     /// `firstRunDelay` if catch-up itself took longer.
     private var holdUntil: Date?
     private static let logger = os.Logger(subsystem: "chat.matron", category: "journal-maintenance")
+
+    /// `Duration` has no direct `TimeInterval` conversion; `firstRunDelay`
+    /// is whole seconds today, but this reads `attoseconds` too rather than
+    /// assume that stays true.
+    private static var firstRunDelaySeconds: TimeInterval {
+        let components = firstRunDelay.components
+        return TimeInterval(components.seconds) + TimeInterval(components.attoseconds) / 1e18
+    }
 
     public init(store: any MaintenanceSweeping, search: (any SearchService)?,
                 now: @escaping @Sendable () -> Date = { Date() },
@@ -93,6 +114,7 @@ public actor JournalMaintenance {
         self.search = search
         self.now = now
         self.interval = interval
+        holdUntil = now().addingTimeInterval(Self.firstRunDelaySeconds)
     }
 
     /// Attaches a just-opened search index to a maintenance actor that was
@@ -108,19 +130,17 @@ public actor JournalMaintenance {
         search = service
     }
 
-    /// Arms the first run and the hourly cadence. Idempotent, and a no-op
-    /// once `stop()` has been called — there is nothing to restart.
+    /// Arms the hourly cadence. Idempotent, and a no-op once `stop()` has
+    /// been called — there is nothing to restart. Does NOT arm `holdUntil`
+    /// — `init` already did, and re-arming it here would only extend the
+    /// hold by however long it took this session's two engine hops
+    /// (`attachMaintenance` / `setCatchUpCompleteHandler`) to reach this
+    /// call, which is exactly the window Bugbot's follow-up flagged as too
+    /// late. The schedule's own first tick happens only after sleeping
+    /// `firstRunDelay` from NOW, so it always clears `init`'s hold on its
+    /// own regardless.
     public func start() {
         guard !stopped, schedule == nil else { return }
-        // Holds off any `runIfDue()` call that lands before the schedule's
-        // own first tick — in particular the app-foreground hooks, which
-        // fire on the very first scene-active transition at launch. The
-        // schedule's own first call happens only after sleeping
-        // `firstRunDelay`, so it always passes this on its own.
-        let delayComponents = Self.firstRunDelay.components
-        let delaySeconds = TimeInterval(delayComponents.seconds)
-            + TimeInterval(delayComponents.attoseconds) / 1e18
-        holdUntil = now().addingTimeInterval(delaySeconds)
         schedule = Task(priority: .utility) { [weak self] in
             try? await Task.sleep(for: Self.firstRunDelay)
             if Task.isCancelled { return }
