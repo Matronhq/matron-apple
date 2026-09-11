@@ -702,6 +702,13 @@ final class AppDependencies {
     /// a stray file placed here is gone afterwards.
     var journalStoreDirectory: URL { journalDirectory }
 
+    /// Where the FTS index lives — the Storage section's second file group.
+    /// Optional only to match the Mac accessor's shape: `searchDatabaseURL`
+    /// is a non-optional `URL` (it falls back to the plain container when the
+    /// App Group entitlement is missing), so this never actually returns nil
+    /// on iOS.
+    var searchStoreURL: URL? { searchDatabaseURL }
+
     /// Runs `operation`, abandoning the wait (not the work) after `seconds`.
     /// Used to bound best-effort network calls inside teardown.
     private static func withTimeout(seconds: Double, _ operation: @escaping @Sendable () async -> Void) async {

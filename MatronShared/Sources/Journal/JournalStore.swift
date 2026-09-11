@@ -246,8 +246,13 @@ public final class JournalStore: @unchecked Sendable {
     /// the timeline and writes no `UserDefaults` (see the plan's R7).
     public private(set) var lastMigrationDuration: Duration?
 
+    /// Where this mirror lives, or `nil` for an in-memory store. Read by
+    /// `StoreDiagnostics` for the Settings › Storage size row.
+    public let databaseURL: URL?
+
     public init(databaseURL: URL?, ownSender: String) throws {
         self.ownSender = ownSender
+        self.databaseURL = databaseURL
         if let url = databaseURL {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -1350,6 +1355,23 @@ public final class JournalStore: @unchecked Sendable {
                 SELECT id FROM conversation
                 ORDER BY last_activity_ts DESC, last_seq DESC
                 """)
+        }
+    }
+
+    /// Row counts for the Settings › Storage section.
+    ///
+    /// Two `COUNT(*)`s on the store's single connection. On a 457k-row mirror
+    /// the `event` count is a full index scan — SQLite counts over the
+    /// smallest available index, which after v11 is `event_type_ts` — and it
+    /// holds that connection for its duration, stalling the chat-list
+    /// observation while Settings is open. That is why this is on-demand
+    /// only, never on the launch path, and why the section shows a spinner
+    /// until it returns. The counts are a spec requirement (§3.6), so the
+    /// cost is accepted and documented rather than approximated.
+    public func rowCounts() throws -> (events: Int, conversations: Int) {
+        try dbQueue.read { db in
+            (try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM event") ?? 0,
+             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM conversation") ?? 0)
         }
     }
 

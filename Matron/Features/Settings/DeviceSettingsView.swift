@@ -25,6 +25,9 @@ struct DeviceSettingsView: View {
     var deps: AppDependencies? = nil
     /// Injected by MatronApp; nil in previews/tests hides the section.
     @Environment(\.appLockController) private var appLock
+    /// Filled by the `.task` below; `nil` while the read is in flight, which
+    /// is what `StorageSettingsRows` renders as a spinner.
+    @State private var storage: StorageSettingsRows.Model?
 
     var body: some View {
         Form {
@@ -63,6 +66,25 @@ struct DeviceSettingsView: View {
             }
             if let deps {
                 CoordinatorSettingRow(session: session, deps: deps)
+            }
+            if let deps {
+                Section("Storage") {
+                    StorageSettingsRows(model: storage)
+                }
+                .task {
+                    // On demand only: two file stats and two COUNT(*)s, off
+                    // the main actor, when the user opens this screen.
+                    let sizes = await StoreDiagnostics.sizes(
+                        store: deps.journalStore(for: session), searchURL: deps.searchStoreURL)
+                    storage = StorageSettingsRows.Model(
+                        journalBytes: sizes.journalBytes,
+                        searchBytes: sizes.searchBytes,
+                        events: sizes.eventCount,
+                        conversations: sizes.conversationCount,
+                        launchText: LaunchTimeline.summary(LaunchTimeline.currentLaunch()),
+                        maintenanceText: StoreDiagnostics.lastMaintenanceText(
+                            sizes.lastMaintenance, now: Date()))
+                }
             }
             // Only offered when the device can actually authenticate —
             // a toggle that can never unlock again would lock the user

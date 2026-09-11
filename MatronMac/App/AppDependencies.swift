@@ -626,6 +626,9 @@ final class AppDependencies {
     /// a stray file placed here is gone afterwards.
     var journalStoreDirectory: URL { journalDirectory }
 
+    /// Mirror of the iOS accessor. `searchDBPath` is non-optional on macOS.
+    var searchStoreURL: URL? { StoragePaths.searchDBPath }
+
     /// Runs `operation`, abandoning the wait (not the work) after `seconds`.
     /// Used to bound best-effort network calls inside teardown.
     private static func withTimeout(seconds: Double, _ operation: @escaping @Sendable () async -> Void) async {
