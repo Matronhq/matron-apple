@@ -615,14 +615,22 @@ public final class JournalStore: @unchecked Sendable {
     /// still has them; recovering them locally means a wipe + re-sync, which
     /// is the existing `snapshot_required` path.
     ///
-    /// Returns the `seq`s it tombstoned so the caller can drop their search
-    /// rows (`JournalMaintenance`).
+    /// Returns every `tool_output`/`diff` seq this pass VISITED inside the
+    /// retention range — not just the ones it rewrote. A row the 24h sweep
+    /// already tombstoned (snippet gone, `expired: true`) is typically a
+    /// no-op for the 30-day rule (its command is already short), so it
+    /// would never appear in a rewrite-only list — but its search row was
+    /// indexed while the row was still fresh, and nothing else ever visits
+    /// this seq again (the watermark guarantees exactly one visit), so the
+    /// caller (`JournalMaintenance`, feeding `SearchService.removeAll`)
+    /// needs it here or that search row would never be dropped. The
+    /// watermark bounds the list to what this pass actually scanned.
     @discardableResult
     public func applyRetention(now: Date = Date()) throws -> [Int64] {
         let cutoff = Int64(now.timeIntervalSince1970 * 1000) - Int64(EventTombstone.retentionWindow * 1000)
         return try sweepTombstones(types: [JournalEventType.toolOutput, JournalEventType.diff],
                                    watermarkKey: Self.retentionWatermarkKey,
-                                   cutoffMs: cutoff, now: now)
+                                   cutoffMs: cutoff, now: now, returnAllVisited: true)
     }
 
     /// The shared sweep engine: walk `(type, ts)` forward from the watermark
@@ -632,9 +640,17 @@ public final class JournalStore: @unchecked Sendable {
     /// Paging is keyset-based on `(ts, seq)` rather than OFFSET: rows sharing
     /// a millisecond are common (a batch apply stamps many at once), and an
     /// offset walk over a table being written underneath would skip them.
+    ///
+    /// - Parameter returnAllVisited: `false` (the TTL sweep) returns only
+    ///   the seqs actually rewritten; `true` (retention) returns every seq
+    ///   the scan visited in range, rewritten or not — see `applyRetention`.
+    ///   Either way the actual payload writes are rewrite-only: this only
+    ///   changes what the function reports, never what it touches on disk.
     private func sweepTombstones(types: [String], watermarkKey: String,
-                                 cutoffMs: Int64, now: Date) throws -> [Int64] {
+                                 cutoffMs: Int64, now: Date,
+                                 returnAllVisited: Bool = false) throws -> [Int64] {
         var tombstoned: [Int64] = []
+        var visited: [Int64] = []
         let placeholders = types.map { _ in "?" }.joined(separator: ",")
         var afterTS = try dbQueue.read { db in
             try Int64.fetchOne(db, sql: "SELECT value FROM meta WHERE key = ?", arguments: [watermarkKey]) ?? 0
@@ -668,7 +684,7 @@ public final class JournalStore: @unchecked Sendable {
             // interrupted sweep (app killed mid-pass): the next call simply
             // resumes from the same watermark and re-covers the rest.
             if Task.isCancelled {
-                return tombstoned
+                return returnAllVisited ? visited : tombstoned
             }
             let chunk: [EventRecord] = try dbQueue.write { db in
                 var arguments: [DatabaseValueConvertible] = types
@@ -682,6 +698,7 @@ public final class JournalStore: @unchecked Sendable {
                     """, arguments: StatementArguments(arguments))
                 var touched = Set<String>()
                 for var row in rows {
+                    visited.append(row.seq)
                     guard let payload = (try? JSONSerialization.jsonObject(with: row.payload)) as? [String: Any],
                           let rewritten = EventTombstone.apply(
                             to: payload, type: row.type,
@@ -711,7 +728,7 @@ public final class JournalStore: @unchecked Sendable {
         try dbQueue.write { db in
             try Self.setMeta(db, key: watermarkKey, value: String(cutoffMs))
         }
-        return tombstoned
+        return returnAllVisited ? visited : tombstoned
     }
 
     /// Recomputes `last_message_type` / `expired_snippet` for one

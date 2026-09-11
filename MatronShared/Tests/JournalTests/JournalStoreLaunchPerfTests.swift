@@ -486,6 +486,45 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
         XCTAssertNotNil(try watermark(store, key: "retention_ts"))
     }
 
+    /// Bugbot (PR #212, "Retention omits already-purged seqs"): a row the
+    /// 24h TTL sweep already tombstoned — no `snippet`, no `live_log`,
+    /// `expired: true`, a short command — is a no-op for the 30-day rule,
+    /// so `EventTombstone.apply` returns `nil` for it and it never appears
+    /// in a rewrite-only list. But the watermark guarantees this seq is
+    /// visited exactly once, ever, by `applyRetention` — if its seq isn't
+    /// reported here, nothing ever tells `JournalMaintenance` to drop the
+    /// search row that was indexed while this row was still fresh.
+    func testApplyRetentionReturnsEveryVisitedSeqNotJustRewrittenOnes() throws {
+        let store = try makeStore()
+        let insertAt = Date(timeIntervalSince1970: 10)
+        try store.insertHistory([
+            // Already in tombstone shape — EventTombstone.apply is a no-op.
+            event(1, type: JournalEventType.toolOutput,
+                  payload: ["command": "already gone", "expired": true, "exit_code": 1]),
+            // Fresh-shape tool_output — retention rewrites it.
+            event(2, type: JournalEventType.toolOutput,
+                  payload: ["command": "still here", "snippet": "out", "live_log": true]),
+            // Fresh-shape diff — retention rewrites it.
+            event(3, type: JournalEventType.diff, payload: ["file_path": "/w/A.swift", "diff": "+ a"]),
+        ], now: insertAt)
+
+        let before: Data = try XCTUnwrap(try store.dbQueue.read { db in
+            try Data.fetchOne(db, sql: "SELECT payload FROM event WHERE seq = 1")
+        })
+
+        let seqs = try store.applyRetention(now: insertAt.addingTimeInterval(40 * 24 * 3600))
+        XCTAssertEqual(seqs.sorted(), [1, 2, 3],
+                       "the already-tombstoned row must still be reported: its search row is stale")
+
+        let after: Data = try XCTUnwrap(try store.dbQueue.read { db in
+            try Data.fetchOne(db, sql: "SELECT payload FROM event WHERE seq = 1")
+        })
+        XCTAssertEqual(before, after, "a no-op row must be reported, not rewritten")
+
+        XCTAssertNil(try rawPayload(store, seq: 2)["snippet"])
+        XCTAssertNil(try rawPayload(store, seq: 3)["diff"])
+    }
+
     /// A tool_output that was never a live log has no `expired_snippet` at
     /// insert time; once retention tombstones it, the list has nothing but
     /// the command to show, so the sweep refreshes the columns of the
