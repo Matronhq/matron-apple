@@ -531,6 +531,24 @@ final class AppDependencies {
         try? auth.clearSession()
     }
 
+    /// Test-only: stops every still-live session's background maintenance
+    /// sweeper — the `maintenanceStartTask` kickoff, then `stop()` — without
+    /// ending sync or wiping the store/search index, unlike `signOut()`.
+    /// MatronMacTests construct `AppDependencies()` directly and reach
+    /// `core(for:)` (via `mediaService(for:)`, `timelineService(for:)`,
+    /// etc.), which starts a real `JournalMaintenance` with its live 10 s
+    /// `firstRunDelay` timer; without this, that timer outlives the test
+    /// method and can fire against the shared `MATRON_APP_SUPPORT_OVERRIDE`
+    /// directory after a later test deletes or recreates the store there
+    /// (task-6-review.md Major #1: `SQLite error 10: disk I/O error`).
+    /// `internal`, `@testable`-visible only — no production call site.
+    internal func stopMaintenanceForTests() async {
+        for core in cores.values {
+            await core.maintenanceStartTask?.value
+            await core.maintenance.stop()
+        }
+    }
+
     /// In-flight (or most-recent) sign-out teardown, if any. See `signOut()`.
     /// Deliberately held even after completion (never nilled out — see
     /// `awaitPendingTeardown()`); awaiting an already-finished task is
