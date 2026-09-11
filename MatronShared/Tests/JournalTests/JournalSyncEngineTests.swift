@@ -1211,6 +1211,31 @@ final class JournalSyncEngineTests: XCTestCase {
         await engine.endSync()
         UserDefaults.standard.removeObject(forKey: "launch.last")
     }
+
+    /// M11: `core(for:)` installs this handler from an unstructured `Task`
+    /// that races the `.task` calling `start()` — if the engine is already
+    /// `.running` by the time the handler is installed, it must fire right
+    /// away rather than being stored for a `.running` transition that
+    /// already happened (and, absent a reconnect, never happens again).
+    func testSetCatchUpCompleteHandlerFiresImmediatelyWhenAlreadyRunning() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1))
+        let store = try seededStore()
+        let connector = FakeConnector([socket])
+        let engine = makeEngine(store: store, connector: connector)
+
+        await engine.beginSync()
+        try await engine.waitUntilReady() // engine is now .running
+
+        let counter = HandlerCallCounter()
+        await engine.setCatchUpCompleteHandler { counter.increment() }
+
+        XCTAssertEqual(counter.count, 1,
+                       "state was already .running — the handler must fire on install, not wait forever")
+
+        await engine.endSync()
+    }
 }
 
 /// Records what an engine asks it to index; every other `SearchService`

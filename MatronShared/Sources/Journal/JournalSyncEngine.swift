@@ -218,7 +218,18 @@ public actor JournalSyncEngine {
     /// also happens here — never re-fires it.
     private var catchUpCompleteHandler: (@Sendable () -> Void)?
 
+    /// M11: `core(for:)` spawns the task that calls this on an unstructured
+    /// `Task`, racing the `.task` that calls `start()` — if the engine has
+    /// already reached `.running` (and so already cleared/fired any
+    /// previously-installed handler) by the time this lands, storing the
+    /// handler here would leave it waiting for a `.running` transition that
+    /// already happened and, absent a reconnect, never happens again. Fire
+    /// immediately in that case instead of storing it.
     public func setCatchUpCompleteHandler(_ handler: @escaping @Sendable () -> Void) {
+        if case .running = state {
+            handler()
+            return
+        }
         catchUpCompleteHandler = handler
     }
 
