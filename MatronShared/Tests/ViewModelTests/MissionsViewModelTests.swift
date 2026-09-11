@@ -115,7 +115,7 @@ final class MissionsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.open.map(\.id), ["ms_1"])
         XCTAssertEqual(vm.closed.map(\.id), ["ms_2"])
         XCTAssertEqual(vm.needsYouTotal, 2)
-        XCTAssertTrue(vm.isSupported)
+        XCTAssertEqual(vm.isSupported, true)
         vm.stop()
     }
 
@@ -125,8 +125,17 @@ final class MissionsViewModelTests: XCTestCase {
         let vm = MissionsListViewModel(store: store, sync: sync)
         vm.start()
         try await Task.sleep(nanoseconds: 50_000_000)
-        XCTAssertFalse(vm.isSupported)
+        XCTAssertEqual(vm.isSupported, false)
         vm.stop()
+    }
+
+    /// CodeRabbit #209 fix round 2, H2: `isSupported` is tri-state so
+    /// "not yet known" is a real, distinct value rather than the Bool
+    /// default `true` masquerading as a confirmed answer.
+    func testIsSupportedStartsUnknown() {
+        let store = FakeMissionsStore(); let sync = FakeMissionsSync()
+        let vm = MissionsListViewModel(store: store, sync: sync)
+        XCTAssertNil(vm.isSupported)
     }
 
     func testDetailFiltersMilestonesToUserInputOnly() {

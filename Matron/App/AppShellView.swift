@@ -56,7 +56,7 @@ struct AppShellView: View {
                 // that conversation.
                 .badge(coordinatorHasUnread ? "•" : nil as String?)
                 .tag(AppTab.coordinator)
-            if missionsVM.isSupported {
+            if missionsVM.isSupported != false {
                 missionsTab
                     .tabItem { Label("Missions", systemImage: "flag.checkered") }
                     .badge(missionsVM.needsYouTotal)
@@ -103,7 +103,7 @@ struct AppShellView: View {
         // back to Conversations on the false edge lives on
         // `AppShellNavigation.missionsSupported` itself (MAJOR-2), so it is
         // testable without this view.
-        .onChange(of: missionsVM.isSupported) { _, supported in nav.missionsSupported = supported }
+        .onChange(of: missionsVM.isSupported) { _, supported in nav.missionsSupported = supported != false }
         .task { decisionsVM.start() }
         // The Conversations list VM needs to keep running even while
         // another tab shows: the coordinator badge and title read it.

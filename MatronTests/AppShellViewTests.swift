@@ -37,7 +37,8 @@ final class AppShellViewTests: XCTestCase {
     func test_shell_showsFourTabs_atTheRoot() throws {
         // Coordinator, Missions, Decisions, Conversations (Task 9) — the
         // Missions tab starts visible: `MissionsListViewModel.isSupported`
-        // defaults `true` until a refresh says otherwise, same as Decisions.
+        // defaults `nil` (not yet known) until a refresh says otherwise,
+        // and `nil` is treated as supported, same as Decisions.
         renderInWindow(makeShell(navigation: AppShellNavigation()))
         let bar = try XCTUnwrap(findTabBar(in: window), "TabView must bridge to a UITabBar")
         XCTAssertEqual(bar.items?.count, 4)

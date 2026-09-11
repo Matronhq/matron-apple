@@ -74,16 +74,20 @@ struct MacChatListView: View {
     /// The per-session Missions list view model, started/stopped the same
     /// way as `decisionsVM` so the nav badge stays live across entries.
     @State private var missionsVM: MissionsListViewModel?
-    /// Mirrors `missionsVM?.isSupported`, defaulting `false` while
-    /// `missionsVM` is still nil (support unknown) rather than `true` —
-    /// otherwise the sidebar briefly shows a selectable Missions entry
-    /// before the first answer lands (CodeRabbit #209). Wired by
+    /// Mirrors `missionsVM?.isSupported`, treating `nil` (VM absent, or
+    /// its own `isSupported` not yet known) the same way `isSupported ==
+    /// nil` is treated everywhere else — as supported, not hidden — so
+    /// this defaults `true` (CodeRabbit #209 fix round 2, H2: a `false`
+    /// default only ever deferred showing the entry by the one tick
+    /// between VM creation and `supportedStream()`'s first, optimistic
+    /// yield, and diverged from how `DecisionsListView.Model.isSupported`
+    /// treats its own `nil`). Wired by
     /// `.onChange(of: missionsVM?.isSupported)`; kept as its own `@State`
     /// (rather than read inline) because `setMissionsSupported` is the
     /// one place, mirroring iOS `AppShellNavigation.missionsSupported`'s
     /// `didSet`, that walks a selected `.missions` `nav` back to
-    /// `.conversations` on the false edge.
-    @State private var missionsSupported = false
+    /// `.conversations` the instant support is PROVEN false.
+    @State private var missionsSupported = true
     @State private var selectedMissionID: String?
     /// Set when a mission page was opened from a conversation title, so the
     /// page can offer a way back to it.
@@ -422,7 +426,11 @@ struct MacChatListView: View {
                 }
             }
             .onChange(of: nav, navChanged)
-            .onChange(of: missionsVM?.isSupported) { _, supported in setMissionsSupported(supported ?? false) }
+            // Flattens `Bool??` (optional VM × optional isSupported) to
+            // `Bool?` before the `!= false` comparison in
+            // `setMissionsSupported` — nil either way means "not proven
+            // false", never coerced with `??` into a premature answer.
+            .onChange(of: missionsVM?.isSupported ?? nil) { _, supported in setMissionsSupported(supported != false) }
     }
 
     /// Lifecycle: view-model start/stop, decisions VM, sync-state and

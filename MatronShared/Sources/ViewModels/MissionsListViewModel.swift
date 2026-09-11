@@ -105,9 +105,19 @@ extension MissionsSync: MissionsSyncing {}
 public final class MissionsListViewModel {
     public private(set) var open: [Mission] = []
     public private(set) var closed: [Mission] = []
-    /// `false` once the journal has answered 404 on `GET /missions` — the
-    /// hosts hide the tab entirely on it.
-    public private(set) var isSupported = true
+    /// Tri-state, exactly like `DecisionsListView.Model.isSupported`:
+    /// `nil` until the first answer lands, `false` once the journal has
+    /// 404'd `GET /missions`, `true` once a list fetch has actually
+    /// succeeded. A plain `Bool` defaulting `true` made "not yet known"
+    /// indistinguishable from "confirmed supported" the instant this VM
+    /// was created — `supportedStream()` yields the sync actor's own
+    /// optimistic default immediately, well before any real round trip —
+    /// so a consumer's `?? false` only ever deferred showing the tab/nav
+    /// entry by the one tick between VM creation and that first yield
+    /// (CodeRabbit #209 fix round 2, H2). Every consumer treats `nil` the
+    /// way Decisions' consumers treat their `nil`: not proven `false`, so
+    /// shown/assumed-supported (`!= false`) — never coerced away with `??`.
+    public private(set) var isSupported: Bool?
     public private(set) var isRefreshing = false
     public var error: String?
     /// The tab / nav badge: how many items across every open mission are
