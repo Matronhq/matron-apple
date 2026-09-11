@@ -88,19 +88,29 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
     public let commentCount: Int
     public let lastCommentAt: Date?
     public let hasImage: Bool
+    /// The mission this item belongs to, defaulted by the journal from the
+    /// origin conversation and repointable by an agent (`item_move`). The
+    /// apps only ever DISPLAY it. Both are `nil` for an item filed in a
+    /// conversation with no mission — and `missionID` can be present while
+    /// the mission itself is invisible to this caller (protocol, "Accepted
+    /// exception"), so never assume a local `mission` row exists for it.
+    public let missionID: String?
+    public let missionNum: Int?
 
     public init(id: String, num: Int, kind: ItemKind, state: ItemState = .open, resolution: ItemResolution? = nil,
                 awaiting: ItemAwaiting? = nil, rank: Double = 1024, title: String, body: String = "",
                 labels: [String] = [], links: [TrackerLink] = [], attachments: [TrackerAttachment] = [],
                 supersedes: String? = nil, originConvoID: String, createdBy: ItemAuthor = .agent,
                 createdAt: Date = Date(), updatedAt: Date = Date(), closedAt: Date? = nil,
-                commentCount: Int = 0, lastCommentAt: Date? = nil, hasImage: Bool = false) {
+                commentCount: Int = 0, lastCommentAt: Date? = nil, hasImage: Bool = false,
+                missionID: String? = nil, missionNum: Int? = nil) {
         self.id = id; self.num = num; self.kind = kind; self.state = state; self.resolution = resolution
         self.awaiting = awaiting; self.rank = rank; self.title = title; self.body = body; self.labels = labels
         self.links = links; self.attachments = attachments; self.supersedes = supersedes
         self.originConvoID = originConvoID; self.createdBy = createdBy; self.createdAt = createdAt
         self.updatedAt = updatedAt; self.closedAt = closedAt; self.commentCount = commentCount
         self.lastCommentAt = lastCommentAt; self.hasImage = hasImage
+        self.missionID = missionID; self.missionNum = missionNum
     }
 
     public init?(json: [String: Any]) {
@@ -124,7 +134,9 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
             createdAt: createdAt, updatedAt: updatedAt, closedAt: msDate(json["closed_at"]),
             commentCount: (json["comment_count"] as? NSNumber)?.intValue ?? 0,
             lastCommentAt: msDate(json["last_comment_at"]),
-            hasImage: (hasImageRaw as? Bool) ?? (((hasImageRaw as? NSNumber)?.intValue ?? 0) != 0))
+            hasImage: (hasImageRaw as? Bool) ?? (((hasImageRaw as? NSNumber)?.intValue ?? 0) != 0),
+            missionID: json["mission_id"] as? String,
+            missionNum: (json["mission_num"] as? NSNumber)?.intValue)
     }
 
     public var needsUser: Bool { state == .open && awaiting == .user }

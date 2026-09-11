@@ -229,6 +229,18 @@ struct ChatView: View {
         path.wrappedValue.append(value)
     }
 
+    /// Static twin of `pushItem` — a mission rides the same `[String]`
+    /// stack the chat itself is mounted on. Idempotent for the mission
+    /// already on top, mirroring `pushItem` (a double title tap or a
+    /// second milestone-card tap for the same mission must not stack two
+    /// identical pages).
+    static func pushMission(_ missionID: String, onto path: Binding<[String]>?) {
+        guard let path else { return }
+        let value = MissionRoute(id: missionID).pathValue
+        guard path.wrappedValue.last != value else { return }
+        path.wrappedValue.append(value)
+    }
+
     /// Pops the top entry of the OUTER chat stack — the full-width swipe
     /// back (Dan, 2026-09-09). Only the top entry: a subagent viewer pops
     /// to its parent, a top-level chat to the list. Static for the tests.
@@ -252,6 +264,12 @@ struct ChatView: View {
     /// outer stack straight away — no need to page to the tracker first.
     private func openItem(_ itemID: String) {
         Self.pushItem(itemID, onto: navigationPath)
+    }
+
+    /// A tapped milestone card opens its mission on whichever stack this
+    /// chat is mounted in — the same rule `openItem` follows.
+    private func openMission(_ missionID: String) {
+        Self.pushMission(missionID, onto: navigationPath)
     }
 
     /// A tapped `matron://item/<n>` link in a message body, resolved by the
@@ -347,8 +365,11 @@ struct ChatView: View {
     /// while the sheet is still up races the dismissal animation, and the
     /// sheet has no access to this view's `navigationPath` regardless.
     @State private var pendingChildOpen: String?
-    /// Tappable title → summaries TOC sheet (jump-to-point navigation).
-    @State private var showSummaries = false
+    /// Which mission this conversation belongs to (spec: Transcript and
+    /// title). Derived locally from the mission cache — the snapshot
+    /// never carries it — so it is nil until the first missions refresh,
+    /// which is exactly when the affordance should appear.
+    @State private var missionID: String?
     /// Tasks page (spec §4). The items VM is created and started in `.task`
     /// regardless of which page shows — the toolbar's `NeedsYouBadge` needs
     /// a live `needsYouCount` on the chat page — and stopped in the same
@@ -448,6 +469,26 @@ struct ChatView: View {
         Self.contextLine(boxName: boxName, workdir: viewModel.sessionStatus?.workdir)
     }
 
+    /// The principal toolbar item's content — the title plus the small
+    /// "box · ~/workdir" subtitle. Shared by the mission-button branch and
+    /// the plain (no-mission) branch so the two cannot drift.
+    private var titleStack: some View {
+        VStack(spacing: 1) {
+            titleText
+                .font(.headline)
+                .lineLimit(1)
+            if let context = chatContextLine {
+                Text(context)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    // Middle-truncate like the Mac toolbar's subtitle: the
+                    // tail of a path is the part worth keeping.
+                    .truncationMode(.middle)
+            }
+        }
+    }
+
     private var chatPage: some View {
         VStack(spacing: 0) {
             // QA finding #10: surface upstream stream failures (e.g.
@@ -527,6 +568,7 @@ struct ChatView: View {
                         onOpenSubChat: nil,
                         onOpenSpawnRoom: openSpawnedRoom,
                         onOpenItem: openItem,
+                        onOpenMission: openMission,
                         onPreview: { attachmentPreview = $0 },
                         onTapImage: { url, img in
                             attachmentPreview = .image(ImageGalleries.conversation(
@@ -1056,6 +1098,21 @@ struct ChatView: View {
         .navigationTitle(chatTitle)
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(Self.hidesSystemBackButton(page: pager.page))
+        // Which mission this conversation belongs to (spec: Transcript and
+        // title). Derived locally from the mission cache — the snapshot
+        // never carries it — so it is nil until the first missions refresh,
+        // which is exactly when the affordance should appear.
+        .task(id: viewModel.roomID) {
+            // Clear the previous room's value before the new
+            // `ValueObservation` delivers its first (asynchronous) fetch —
+            // otherwise a title tap in that window opens the wrong
+            // mission (MINOR-4).
+            missionID = nil
+            guard let deps, let session else { return }
+            for await id in deps.journalStore(for: session).missionIDStream(convoID: viewModel.roomID) {
+                missionID = id
+            }
+        }
         .toolbar {
             // The tasks page's own way back: to the conversation it
             // belongs to, in the corner every iOS back button lives in.
@@ -1067,42 +1124,37 @@ struct ChatView: View {
                     .accessibilityLabel("Back to the chat")
                 }
             }
-            // Tappable title → summaries TOC sheet (jump-to-point nav).
-            // Under it, "box · ~/workdir" in small text — which machine and
-            // folder this session lives on, readable without opening the
-            // info sheet (Dan, 2026-08-16). Box comes from the list summary
-            // (same gate as the row chip); the path arrives with the first
-            // session-status frame, home-abbreviated like the info sheet.
+            // Tappable title → this conversation's mission (spec: Transcript
+            // and title). Under it, "box · ~/workdir" in small text — which
+            // machine and folder this session lives on, readable without
+            // opening the info sheet (Dan, 2026-08-16). Box comes from the
+            // list summary (same gate as the row chip); the path arrives
+            // with the first session-status frame, home-abbreviated like
+            // the info sheet. With no mission the title is not a button
+            // (spec) — same content, just inert.
             ToolbarItem(placement: .principal) {
                 if pager.page == .tasks {
                     Text("Tasks & decisions").font(.headline)
+                } else if let missionID {
+                    Button { openMission(missionID) } label: { titleStack }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(Self.accessibilityTitle(
+                            chatTitle: chatTitle,
+                            boxName: boxName,
+                            sessionShort: sessionShort,
+                            roomBoxNames: roomBoxNames
+                        ))
+                        .accessibilityValue(chatContextLine ?? "")
+                        .accessibilityHint("Opens this conversation's mission")
                 } else {
-                    Button { showSummaries = true } label: {
-                        VStack(spacing: 1) {
-                            titleText
-                                .font(.headline)
-                                .lineLimit(1)
-                            if let context = chatContextLine {
-                                Text(context)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                    // Middle-truncate like the Mac toolbar's
-                                    // subtitle: the tail of a path is the part
-                                    // worth keeping.
-                                    .truncationMode(.middle)
-                            }
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(Self.accessibilityTitle(
-                        chatTitle: chatTitle,
-                        boxName: boxName,
-                        sessionShort: sessionShort,
-                        roomBoxNames: roomBoxNames
-                    ))
-                    .accessibilityValue(chatContextLine ?? "")
-                    .accessibilityHint("Shows conversation summaries")
+                    titleStack
+                        .accessibilityLabel(Self.accessibilityTitle(
+                            chatTitle: chatTitle,
+                            boxName: boxName,
+                            sessionShort: sessionShort,
+                            roomBoxNames: roomBoxNames
+                        ))
+                        .accessibilityValue(chatContextLine ?? "")
                 }
             }
             // Tasks page (spec §4). Hidden once the panel VM has confirmed
@@ -1162,9 +1214,6 @@ struct ChatView: View {
         }
         .sheet(isPresented: $showMediaBrowser) {
             MediaBrowserSheet(chatViewModel: viewModel)
-        }
-        .sheet(isPresented: $showSummaries) {
-            SummariesSheet(viewModel: viewModel)
         }
         .task {
             // (Scroll-memory restore lives on the ScrollView inside the
@@ -1345,6 +1394,11 @@ private struct TimelineListContent: View, Equatable {
     /// Fixed per screen like `onOpenSpawnRoom`, so `==` ignoring it is
     /// safe; `nil` where the screen has no items pane (sub-chat panes).
     let onOpenItem: ((String) -> Void)?
+    /// Opens the mission page to a tapped `.milestoneMarker` /
+    /// `.missionMarker`. Fixed per screen like `onOpenItem`, so `==`
+    /// ignoring it is safe; `nil` where the screen has no mission page
+    /// (sub-chat panes).
+    let onOpenMission: ((String) -> Void)?
     let onPreview: (ChatView.AttachmentPreview) -> Void
     /// Image tap → the screen builds the conversation gallery ONCE here,
     /// at tap time, and stores it in the preview payload. Building it in
@@ -1411,6 +1465,7 @@ private struct TimelineListContent: View, Equatable {
                     onOpenSubChat: onOpenSubChat,
                     onOpenSpawnRoom: onOpenSpawnRoom,
                     onOpenItem: onOpenItem,
+                    onOpenMission: onOpenMission,
                     onPreview: onPreview,
                     onTapImage: onTapImage
                 )
@@ -1452,6 +1507,10 @@ private struct TimelineRowView: View, Equatable {
     /// Opens the tracker item pane to a tapped `.itemMarker`'s item. Fixed
     /// per screen like `onOpenSpawnRoom`, so `==` ignoring it is safe.
     let onOpenItem: ((String) -> Void)?
+    /// Opens the mission page to a tapped `.milestoneMarker` /
+    /// `.missionMarker`. Fixed per screen like `onOpenSpawnRoom`, so `==`
+    /// ignoring it is safe.
+    let onOpenMission: ((String) -> Void)?
     let onPreview: (ChatView.AttachmentPreview) -> Void
     /// Image tap → the screen builds the conversation gallery ONCE here,
     /// at tap time, and stores it in the preview payload. Building it in
@@ -1530,6 +1589,7 @@ private struct TimelineRowView: View, Equatable {
                     },
                     onOpenSpawnRoom: onOpenSpawnRoom,
                     onOpenItem: onOpenItem,
+                    onOpenMission: onOpenMission,
                     convoID: viewModel.roomID,
                     hasMultipleSenders: viewModel.hasMultipleSenders
                 )
@@ -1688,6 +1748,7 @@ struct SubChatView: View {
                             // tap just does nothing). Same scope decision
                             // as the Mac twin's `MacSubChatPane`.
                             onOpenItem: nil,
+                            onOpenMission: nil,
                             onPreview: { attachmentPreview = $0 },
                             onTapImage: { url, img in
                                 attachmentPreview = .image(ImageGalleries.conversation(

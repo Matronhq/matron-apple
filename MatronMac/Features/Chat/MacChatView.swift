@@ -309,14 +309,16 @@ struct MacChatView: View {
         let gallery: ImageGallery
     }
 
-    /// Drives the summaries TOC popover — flipped on by the title cluster
-    /// button in `MacChatToolbar`, off by `MacSummariesPanel.onSelect`
-    /// (and by the system on outside-click dismissal).
-    @State private var showSummaries = false
-
     /// Drives the media, files & links browser sheet — flipped on by the
     /// toolbar button in `MacChatToolbar`.
     @State private var showMediaBrowser = false
+
+    /// Which mission this conversation belongs to (spec: Transcript and
+    /// title). Derived locally from the mission cache — the snapshot never
+    /// carries it — so it is nil until the first missions refresh, which is
+    /// exactly when the title-tap affordance should appear. Mirrors the
+    /// iOS `ChatView` wiring over the same `missionIDStream`.
+    @State private var missionID: String?
 
     let chatTitle: String
     /// Which agent box runs this session, or nil when the user has fewer
@@ -365,6 +367,10 @@ struct MacChatView: View {
     /// it changes the selection rather than opening the child pane. `nil`
     /// (previews, tests) omits the affordance rather than drawing it dead.
     var onOpenConversation: ((String) -> Void)? = nil
+
+    /// Set by `MacChatListView` — opens the mission page in the detail
+    /// column. `nil` in previews and tests leaves the cards inert.
+    var onOpenMission: ((String) -> Void)? = nil
 
     /// Minimum detail width to show the child sub-chat pane BESIDE the
     /// parent timeline. Below this the child pane takes over the whole
@@ -691,6 +697,7 @@ struct MacChatView: View {
                             showItemsPane = true
                             itemsPaneState.path = [id]
                         },
+                        onOpenMission: onOpenMission,
                         onPreviewImage: { url, img in
                             imagePreview = ImagePreview(gallery: ImageGalleries.conversation(
                                 tapped: url, image: img, chatViewModel: viewModel,
@@ -1060,6 +1067,18 @@ struct MacChatView: View {
                 }
             }
         }
+        // Which mission this conversation belongs to (spec: Transcript and
+        // title) — mirrors the iOS `ChatView` wiring at
+        // `Matron/Features/Chat/ChatView.swift`.
+        .task(id: viewModel.roomID) {
+            // Clear the previous room's value first — see the iOS
+            // `ChatView` wiring for why (MINOR-4).
+            missionID = nil
+            guard let deps, let session else { return }
+            for await id in deps.journalStore(for: session).missionIDStream(convoID: viewModel.roomID) {
+                missionID = id
+            }
+        }
         .toolbar {
             MacChatToolbar(
                 title: chatTitle,
@@ -1072,13 +1091,8 @@ struct MacChatView: View {
                 stripViewModel: stripViewModel,
                 onOpenSubChat: { openSubChatID = $0; showItemsPane = false },
                 onCompact: { Task { await viewModel.sendCommand("/compact") } },
-                showSummaries: $showSummaries,
-                popoverContent: {
-                    AnyView(MacSummariesPopoverContent(viewModel: viewModel) { seq in
-                        showSummaries = false
-                        Task { await viewModel.focus(seq: seq) }
-                    })
-                },
+                missionID: missionID,
+                onOpenMission: { onOpenMission?($0) },
                 showMediaBrowser: $showMediaBrowser,
                 showItemsPane: Binding(
                     get: { showItemsPane },
@@ -1196,6 +1210,11 @@ private struct MacTimelineListContent: View, Equatable {
     /// screen like `onOpenSpawnRoom`, so `==` ignoring it is safe; `nil`
     /// where the screen has no items pane (sub-chat panes).
     let onOpenItem: ((String) -> Void)?
+    /// Opens the mission page to a tapped `.milestoneMarker` /
+    /// `.missionMarker`. Fixed per screen like `onOpenSpawnRoom`, so `==`
+    /// ignoring it is safe; `nil` where the screen has no mission page
+    /// (sub-chat panes).
+    let onOpenMission: ((String) -> Void)?
     /// Carries the tapped image's `mxc://` URL alongside the resolved
     /// `Image` so the presenter can look up its native pixel size.
     let onPreviewImage: (URL, Image) -> Void
@@ -1252,6 +1271,7 @@ private struct MacTimelineListContent: View, Equatable {
                     onOpenSubChat: onOpenSubChat,
                     onOpenSpawnRoom: onOpenSpawnRoom,
                     onOpenItem: onOpenItem,
+                    onOpenMission: onOpenMission,
                     onPreviewImage: onPreviewImage
                 )
                 .equatable()
@@ -1296,6 +1316,10 @@ private struct MacTimelineRowView: View, Equatable {
     /// Opens the items pane to a tapped `.itemMarker`'s item. Fixed per
     /// screen like `onOpenSpawnRoom`, so `==` ignoring it is safe.
     let onOpenItem: ((String) -> Void)?
+    /// Opens the mission page to a tapped `.milestoneMarker` /
+    /// `.missionMarker`. Fixed per screen like `onOpenSpawnRoom`, so `==`
+    /// ignoring it is safe.
+    let onOpenMission: ((String) -> Void)?
     let onPreviewImage: (URL, Image) -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -1371,6 +1395,7 @@ private struct MacTimelineRowView: View, Equatable {
                     },
                     onOpenSpawnRoom: onOpenSpawnRoom,
                     onOpenItem: onOpenItem,
+                    onOpenMission: onOpenMission,
                     convoID: viewModel.roomID,
                     hasMultipleSenders: viewModel.hasMultipleSenders
                 )
@@ -1527,6 +1552,7 @@ struct MacSubChatPane: View {
                             // the iOS twin's identical decision for
                             // `SubChatView`.
                             onOpenItem: nil,
+                            onOpenMission: nil,
                             onPreviewImage: { url, img in
                                 imagePreview = MacSubChatImagePreview(gallery: ImageGalleries.conversation(
                                     tapped: url, image: img, chatViewModel: viewModel,

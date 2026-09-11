@@ -157,4 +157,23 @@ final class ChatListViewBindingTests: XCTestCase {
         // ViewBuilder branch falls through to the placeholder.
         let _ = view.chatDestination(for: "!ghost:s")
     }
+
+    /// Bugbot: `current` used to filter only `ItemRoute`, so a
+    /// `MissionRoute` entry passed the test and was returned AS "the chat
+    /// underneath" — the title → mission → milestone-in-same-chat round
+    /// trip (`missionDestination`'s primary flow) always appended a
+    /// second copy of the chat instead of popping back to the live one
+    /// already beneath the mission page.
+    func test_currentChat_skipsBothItemAndMissionRoutes() {
+        XCTAssertEqual(ChatListView.currentChat(in: ["!c1:s"]), "!c1:s")
+        XCTAssertEqual(
+            ChatListView.currentChat(in: ["!c1:s", MissionRoute(id: "ms_1").pathValue]), "!c1:s",
+            "a mission route pushed from the chat must not itself pass as the chat underneath it")
+        XCTAssertEqual(
+            ChatListView.currentChat(in: ["!c1:s", MissionRoute(id: "ms_1").pathValue, ItemRoute(id: "it_1").pathValue]),
+            "!c1:s", "an item opened from inside the mission page still resolves to the chat two levels down")
+        XCTAssertNil(ChatListView.currentChat(in: []))
+        XCTAssertNil(ChatListView.currentChat(in: [MissionRoute(id: "ms_1").pathValue]),
+                     "no chat below a mission route pushed at the root (e.g. a `#N` deep link)")
+    }
 }

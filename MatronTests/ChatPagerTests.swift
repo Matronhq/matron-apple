@@ -104,4 +104,18 @@ final class ChatPagerTests: XCTestCase {
         ChatView.pushItem("it_2", onto: nil)
         XCTAssertEqual(path.count, 2, "no path (previews/tests) is a no-op")
     }
+
+    /// A title tap or milestone card pushes a `MissionRoute` the same way
+    /// `pushItem` pushes an `ItemRoute` — including the idempotent repeat
+    /// tap (Bugbot: a double tap used to stack two identical mission pages).
+    func test_pushMission_appendsAMissionRouteToTheOuterPath_idempotentOnRepeat() {
+        var path: [String] = ["!r:s"]
+        let binding = Binding(get: { path }, set: { path = $0 })
+        ChatView.pushMission("ms_1", onto: binding)
+        XCTAssertEqual(path, ["!r:s", MissionRoute(id: "ms_1").pathValue])
+        ChatView.pushMission("ms_1", onto: binding)
+        XCTAssertEqual(path.count, 2, "a repeat tap on the same mission is idempotent")
+        ChatView.pushMission("ms_2", onto: nil)
+        XCTAssertEqual(path.count, 2, "no path (previews/tests) is a no-op")
+    }
 }

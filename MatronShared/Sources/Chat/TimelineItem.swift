@@ -94,6 +94,14 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         /// there is no underlying Matrix event to correlate against, the
         /// row exists purely to surface the marker inline.
         case itemMarker(eventID: String, ItemMarkerEvent)
+        /// Mission milestone marker (spec 2026-09-10). The event's own seq
+        /// is the milestone's anchor, so this row IS the jump target — a
+        /// `focus(seq:)` for that seq lands exactly here. `eventID` is the
+        /// journal seq, as for `.itemMarker`.
+        case milestoneMarker(eventID: String, MilestoneMarkerEvent)
+        /// Mission lifecycle marker — a one-line inline notice. Apps use it
+        /// only as an invalidation signal beyond that.
+        case missionMarker(eventID: String, MissionMarkerEvent)
         /// Transient typing / tool-use indicator (matron-journal `activity`
         /// ephemeral). Not persisted and not part of history — appended as a
         /// trailing overlay row while the agent is thinking or running a

@@ -39,6 +39,20 @@ public enum JournalTimelineMapper {
             else { return nil }
             kind = .itemMarker(eventID: String(event.seq), marker)
 
+        case JournalEventType.milestone:
+            // The marker's own seq is the anchor (protocol, "Marker
+            // events"), and `TimelineItem.id` is that seq — so nothing
+            // extra is needed to make a milestone tap land here. A payload
+            // that won't parse is skipped rather than rendered as
+            // `.unknown`: a half-drawn navigation affordance is worse than
+            // no row.
+            guard let marker = MilestoneMarkerEvent.parse(payload: payload) else { return nil }
+            kind = .milestoneMarker(eventID: String(event.seq), marker)
+
+        case JournalEventType.mission:
+            guard let marker = MissionMarkerEvent.parse(payload: payload) else { return nil }
+            kind = .missionMarker(eventID: String(event.seq), marker)
+
         case JournalEventType.text:
             // Old-client fallback (spec 2026-09-08, "Old-client fallback"):
             // the journal mirrors a card-worthy item marker as a plain

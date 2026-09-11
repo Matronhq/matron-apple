@@ -47,13 +47,20 @@ final class AppShellNavigationTests: XCTestCase {
     // horizontal drags, so a non-empty path ignores it.
     func test_rootSwipe_left_goesToTheNextTab_andRight_comesBack() {
         let nav = AppShellNavigation()
+        nav.tab = .coordinator
+        XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: -120, height: 10)))
+        XCTAssertEqual(nav.tab, .missions)
         XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: -120, height: 10)))
         XCTAssertEqual(nav.tab, .decisions)
+        XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: -120, height: 10)))
+        XCTAssertEqual(nav.tab, .conversations)
         XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: -120, height: 10)), "nothing to the right of the last tab")
+        XCTAssertEqual(nav.tab, .conversations)
+        XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 120, height: 10)))
         XCTAssertEqual(nav.tab, .decisions)
         XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 120, height: 10)))
-        XCTAssertEqual(nav.tab, .conversations)
-        XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 120, height: 10)), "Coordinator sits to the left of Conversations")
+        XCTAssertEqual(nav.tab, .missions)
+        XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 120, height: 10)), "Coordinator sits to the left of Missions")
         XCTAssertEqual(nav.tab, .coordinator)
         XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: 120, height: 10)), "nothing to the left of the first tab")
     }
