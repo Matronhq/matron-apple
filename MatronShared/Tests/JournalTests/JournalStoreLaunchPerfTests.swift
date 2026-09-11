@@ -140,6 +140,25 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
         XCTAssertEqual(row.expiredSnippet, "$ make build")
     }
 
+    // MARK: lastMigrationDuration (M2)
+
+    /// A fresh temp-file store has every migration pending, so `init` must
+    /// report how long the migration chain took. Reopening the same
+    /// (now up-to-date) URL must run nothing and report `nil` — this is
+    /// what `AppDependencies` reads to decide whether `LaunchTimeline`'s
+    /// `migration` interval appears on a given launch.
+    func testLastMigrationDurationIsSetOnFreshOpenAndNilOnReopen() throws {
+        let url = try tempStoreURL()
+        var store: JournalStore? = try JournalStore(databaseURL: url, ownSender: "user:dan")
+        XCTAssertNotNil(store?.lastMigrationDuration,
+                        "a brand-new temp-file store has every migration pending")
+        store = nil // closes the connection so the reopen below isn't contending for the file
+
+        let reopened = try JournalStore(databaseURL: url, ownSender: "user:dan")
+        XCTAssertNil(reopened.lastMigrationDuration,
+                     "reopening an up-to-date store runs no migrations")
+    }
+
     // MARK: Write path keeps the columns current
 
     func testApplyOneMaintainsLastMessageColumns() throws {
