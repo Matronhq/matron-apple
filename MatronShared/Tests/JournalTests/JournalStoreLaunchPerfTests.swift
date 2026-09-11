@@ -172,24 +172,45 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
         XCTAssertEqual(row.expiredSnippet, "$ make test")
     }
 
-    /// Fix round 1, M1: `Self.snippet(type:payload:)` has no `tool_output`
-    /// case, so once the row lands already-tombstoned (payload's `snippet`
-    /// key stripped) it falls to the generic default and reads the now-nil
-    /// `payload["snippet"]`, producing the literal placeholder `"[tool_
-    /// output]"` in `conversation.snippet` on disk. Reads the row directly
-    /// off the DB (not through `conversations(now:)`), because the read-time
-    /// TTL override would mask the bug — `applyReadTimeSnippetTTL` always
-    /// fires for a row whose `lastActivityTS` is already past the cutoff, so
-    /// the garbage would never actually render, only sit on disk waiting for
-    /// a future reader that doesn't go through the read path.
-    func testApplyOneStoresCommandStubNotPlaceholderForAlreadyStaleToolOutput() throws {
+    /// Fix round 2 (Bugbot PR #212): `convo.snippet` is derived from the
+    /// ORIGINAL wire payload, not the stored (possibly tombstoned) one — an
+    /// arrival past its cutoff behaves exactly like a row that expires
+    /// LATER, in place, where the purge no longer rewrites `snippet`
+    /// (Step 6) and `applyReadTimeSnippetTTL` is what hides it at read time.
+    /// Reads the row directly off the DB (not through `conversations(now:)`)
+    /// so the read-time override can't mask a regression here. `expired_
+    /// snippet` still comes from the stored payload — it's what the
+    /// read-time TTL substitutes IN.
+    func testApplyOneStoresOriginalSnippetForAlreadyStaleToolOutput() throws {
         let store = try makeStore()
         try store.applyJournal(event(1, type: JournalEventType.toolOutput,
                                      payload: ["command": "make test", "live_log": true, "snippet": "out"]),
                                now: Date(timeIntervalSince1970: 1).addingTimeInterval(25 * 3600))
         let row = try XCTUnwrap(try store.dbQueue.read { try ConversationRecord.fetchOne($0, key: "c1") })
-        XCTAssertEqual(row.snippet, "$ make test",
-                       "an already-stale tool_output must store the command stub, not the [tool_output] placeholder")
+        XCTAssertEqual(row.snippet, "out",
+                       "conversation.snippet keeps the ORIGINAL output — in-place-expiry parity")
+        XCTAssertEqual(row.expiredSnippet, "$ make test", "the stub still lands in expired_snippet")
+    }
+
+    /// Bugbot (PR #212), the case round 1 missed: `diff` is also in
+    /// `messageTypes`, and `Self.snippet` has no `diff` case either — but
+    /// `diff` has NO read-time override at all (`applyReadTimeSnippetTTL`
+    /// is `tool_output`-only), so a round-1-style fix that read `convo.
+    /// snippet` from the STORED (tombstoned) payload would show `"[diff]"`
+    /// forever, not just transiently. Deriving from the original payload
+    /// fixes this the same way as the tool_output case.
+    func testApplyOneStoresOriginalSnippetForAlreadyPastRetentionDiff() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, type: JournalEventType.diff,
+                                     payload: ["file_path": "/w/A.swift", "diff": "+ a", "snippet": "A.swift +1"]),
+                               now: Date(timeIntervalSince1970: 1).addingTimeInterval(31 * 24 * 3600))
+        let row = try XCTUnwrap(try store.dbQueue.read { try ConversationRecord.fetchOne($0, key: "c1") })
+        XCTAssertEqual(row.snippet, "A.swift +1", "a diff keeps its original preview, never the [diff] placeholder")
+
+        let stored = try XCTUnwrap(try store.events(convoID: "c1").first)
+        XCTAssertNil(stored.payload["diff"])
+        XCTAssertNil(stored.payload["snippet"])
+        XCTAssertEqual(stored.payload["expired"] as? Bool, true)
     }
 
     /// Reviewer nit carried from Task 2 (`EventTombstone` R2): an ALREADY

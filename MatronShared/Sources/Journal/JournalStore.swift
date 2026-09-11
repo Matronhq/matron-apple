@@ -814,32 +814,26 @@ public final class JournalStore: @unchecked Sendable {
                 convo.unreadCount = try Self.recountUnread(db, convoID: convo.id,
                                                            after: convo.readUpToSeq, ownSender: ownSender)
             } else if JournalEventType.messageTypes.contains(event.type) {
-                // `Self.snippet` has no `tool_output` case, so it falls to
-                // the generic default and reads `payload["snippet"]` — which
-                // `tombstonedForStorage` has already stripped for a row that
-                // landed past its cutoff. Without the fallback below,
-                // `convo.snippet` would store the literal placeholder
-                // `"[tool_output]"` (review fix round 1, M1) instead of the
-                // truthful `$ command` stub — masked today only because
-                // every read path applies `applyReadTimeSnippetTTL` first.
-                //
-                // Gated on the payload's OWN `expired` flag — set by
-                // `EventTombstone.rewrite` only when tombstoning actually
-                // happened — rather than on whether `Self.expiredSnippet`
-                // COULD produce a stub: that guard also fires for a fresh,
-                // still-inside-the-TTL `live_log` row, and using it
-                // unconditionally would overwrite the real output with its
-                // stub while still fresh.
-                let expiredSnippet = Self.expiredSnippet(type: event.type, payload: payload)
-                let alreadyExpired = payload["expired"] as? Bool == true
-                convo.snippet = alreadyExpired
-                    ? (expiredSnippet ?? Self.snippet(type: event.type, payload: payload))
-                    : Self.snippet(type: event.type, payload: payload)
-                // The chat list's tool-output TTL reads these two columns and
-                // nothing else (see `applyReadTimeSnippetTTL`), so they have
-                // to be maintained wherever the snippet is.
+                // `convo.snippet` is computed from the ORIGINAL wire payload,
+                // never the stored (possibly tombstoned) one: a message that
+                // expires later keeps its `conversation.snippet` exactly as
+                // written — the purge no longer rewrites it (Step 6) — and
+                // relies on `applyReadTimeSnippetTTL` to hide it at read
+                // time for the one type that TTL covers (`tool_output`). A
+                // message that arrives ALREADY past its cutoff must behave
+                // identically (in-place-expiry parity), not freeze whatever
+                // placeholder shape `Self.snippet`'s default case produces
+                // for a type it has no case for — round 1 fixed this for
+                // `tool_output` only; Bugbot (PR #212) found the same bug
+                // for `diff`, which has no read-time override at all, so an
+                // old diff read the literal `"[diff]"` forever.
+                convo.snippet = Self.snippet(type: event.type, payload: event.payload)
+                // These two columns DO come from the stored payload — they
+                // describe what's actually on disk, which is what the
+                // tool-output read-time TTL (`applyReadTimeSnippetTTL`)
+                // needs to reproduce the tombstone shape at read time.
                 convo.lastMessageType = event.type
-                convo.expiredSnippet = expiredSnippet
+                convo.expiredSnippet = Self.expiredSnippet(type: event.type, payload: payload)
                 if event.sender != ownSender, event.seq > convo.readUpToSeq {
                     convo.unreadCount += 1
                 }
