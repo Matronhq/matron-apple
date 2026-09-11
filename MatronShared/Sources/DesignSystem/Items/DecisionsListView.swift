@@ -75,11 +75,13 @@ public struct DecisionsListView: View {
                         .contextMenu {
                             Button("Open conversation") { onOpenConversation(row.item.originConvoID) }
                         }
-                        .listRowInsets(EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 12))
-                        .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
-                        .alignmentGuide(.listRowSeparatorTrailing) { d in d.width }
-                        .listRowSeparator(.visible, edges: .bottom)
-                        .listRowSeparator(index == 0 ? .hidden : .visible, edges: .top)
+                        // Full-width separators are a Mac-only affordance;
+                        // iOS keeps its insetGrouped style and default row
+                        // insets. `ItemRow` itself stays untouched since
+                        // `ItemsListView` also renders it.
+                        #if os(macOS)
+                        .macInboxRow(hideTopSeparator: index == 0)
+                        #endif
                     }
                 }
                 #if os(iOS)

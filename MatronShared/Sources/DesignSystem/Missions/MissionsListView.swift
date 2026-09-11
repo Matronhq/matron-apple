@@ -83,17 +83,17 @@ public struct MissionsListView: View {
     }
 
     /// `hideTopSeparator` drops the hairline above a section's first row —
-    /// it would otherwise double the header's own bottom line.
+    /// it would otherwise double the header's own bottom line. Full-width
+    /// separators are a Mac-only affordance; iOS keeps its sidebar style
+    /// and default row insets.
     private func row(_ mission: Mission, hideTopSeparator: Bool) -> some View {
         Button { onSelect(mission.id) } label: { MissionRowView(mission: mission) }
             .buttonStyle(.plain)
             // iOS List Buttons inherit the accent tint unless reset.
             .foregroundStyle(Color.primary)
-            .listRowInsets(EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 12))
-            .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
-            .alignmentGuide(.listRowSeparatorTrailing) { d in d.width }
-            .listRowSeparator(.visible, edges: .bottom)
-            .listRowSeparator(hideTopSeparator ? .hidden : .visible, edges: .top)
+            #if os(macOS)
+            .macInboxRow(hideTopSeparator: hideTopSeparator)
+            #endif
     }
 
     /// Same shape as `DecisionsListView.placeholder`: on iOS the empty
