@@ -29,10 +29,13 @@ public struct MissionRowView: View {
                             .fixedSize()
                             .layoutPriority(1)
                     }
-                } else if mission.state == .open {
+                } else {
+                    // The number must survive every state: a closed
+                    // mission with no milestone still needs its `#num`.
                     HStack(spacing: 5) {
                         numberPrefix
-                        Text("No milestones yet").font(.subheadline).foregroundStyle(.tertiary)
+                        Text(mission.state == .open ? "No milestones yet" : MissionGlyph.label(.closed))
+                            .font(.subheadline).foregroundStyle(.tertiary)
                     }
                 }
                 if mission.state == .closed, let summary = mission.closeSummary, !summary.isEmpty {
