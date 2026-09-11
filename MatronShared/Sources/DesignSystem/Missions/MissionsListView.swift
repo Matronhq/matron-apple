@@ -51,12 +51,16 @@ public struct MissionsListView: View {
                 List {
                     if !model.open.isEmpty {
                         Section("Open") {
-                            ForEach(model.open) { mission in row(mission) }
+                            ForEach(Array(model.open.enumerated()), id: \.element.id) { index, mission in
+                                row(mission, hideTopSeparator: index == 0)
+                            }
                         }
                     }
                     if !model.closed.isEmpty {
                         Section(isExpanded: $showClosed) {
-                            ForEach(model.closed) { mission in row(mission) }
+                            ForEach(Array(model.closed.enumerated()), id: \.element.id) { index, mission in
+                                row(mission, hideTopSeparator: index == 0)
+                            }
                         } header: {
                             Text("Closed (\(model.closed.count))")
                         }
@@ -67,7 +71,9 @@ public struct MissionsListView: View {
                 .scrollContentBackground(.hidden)
                 .refreshable { await onRefresh() }
                 #else
-                .listStyle(.sidebar)
+                // `.sidebar`/`.inset` inset or hide separators; `.plain`
+                // draws one hairline per row edge-to-edge, like Mail.
+                .listStyle(.plain)
                 #endif
             }
         }
@@ -76,11 +82,18 @@ public struct MissionsListView: View {
         #endif
     }
 
-    private func row(_ mission: Mission) -> some View {
+    /// `hideTopSeparator` drops the hairline above a section's first row —
+    /// it would otherwise double the header's own bottom line.
+    private func row(_ mission: Mission, hideTopSeparator: Bool) -> some View {
         Button { onSelect(mission.id) } label: { MissionRowView(mission: mission) }
             .buttonStyle(.plain)
             // iOS List Buttons inherit the accent tint unless reset.
             .foregroundStyle(Color.primary)
+            .listRowInsets(EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 12))
+            .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+            .alignmentGuide(.listRowSeparatorTrailing) { d in d.width }
+            .listRowSeparator(.visible, edges: .bottom)
+            .listRowSeparator(hideTopSeparator ? .hidden : .visible, edges: .top)
     }
 
     /// Same shape as `DecisionsListView.placeholder`: on iOS the empty

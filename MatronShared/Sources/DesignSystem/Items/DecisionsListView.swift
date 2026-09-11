@@ -66,7 +66,7 @@ public struct DecisionsListView: View {
                                                    description: Text("Questions and decisions waiting on you, from every conversation, appear here.")))
             } else {
                 List {
-                    ForEach(model.rows) { row in
+                    ForEach(Array(model.rows.enumerated()), id: \.element.id) { index, row in
                         Button { onSelect(row.item.id) } label: {
                             ItemRow(item: row.item, showsOrigin: row.originTitle ?? "Another chat")
                         }
@@ -75,6 +75,11 @@ public struct DecisionsListView: View {
                         .contextMenu {
                             Button("Open conversation") { onOpenConversation(row.item.originConvoID) }
                         }
+                        .listRowInsets(EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 12))
+                        .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                        .alignmentGuide(.listRowSeparatorTrailing) { d in d.width }
+                        .listRowSeparator(.visible, edges: .bottom)
+                        .listRowSeparator(index == 0 ? .hidden : .visible, edges: .top)
                     }
                 }
                 #if os(iOS)
@@ -82,7 +87,9 @@ public struct DecisionsListView: View {
                 .scrollContentBackground(.hidden)
                 .refreshable { await onRefresh() }
                 #else
-                .listStyle(.inset)
+                // `.inset` insets the separators; `.plain` draws one
+                // hairline per row edge-to-edge, like Mail.
+                .listStyle(.plain)
                 #endif
             }
         }
