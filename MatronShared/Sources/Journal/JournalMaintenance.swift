@@ -61,6 +61,17 @@ public actor JournalMaintenance {
     /// and as what `stop()` awaits.
     private var inFlight: Task<Void, Never>?
     private var schedule: Task<Void, Never>?
+    /// Set at the top of `stop()`. `start()`, `runIfDue(now:)` and the
+    /// engine's caught-up trigger all no-op once set — Bugbot Medium, PR
+    /// #212: `stop()` cancelling and awaiting only the CURRENT schedule and
+    /// in-flight pass left a window, after it returned, for a fresh
+    /// `runIfDue` (from a still-live sync engine reaching `.running` again,
+    /// or from `start()` being called a second time) to begin a brand new
+    /// pass — sign-out's teardown spends several seconds on push
+    /// deregistration between `maintenance.stop()` and `store.wipe()`,
+    /// plenty of time for that to happen. There is no "unstop": a new
+    /// sign-in builds a new `JournalMaintenance` on a new core.
+    private var stopped = false
     private static let logger = os.Logger(subsystem: "chat.matron", category: "journal-maintenance")
 
     public init(store: any MaintenanceSweeping, search: (any SearchService)?,
@@ -85,9 +96,10 @@ public actor JournalMaintenance {
         search = service
     }
 
-    /// Arms the first run and the hourly cadence. Idempotent.
+    /// Arms the first run and the hourly cadence. Idempotent, and a no-op
+    /// once `stop()` has been called — there is nothing to restart.
     public func start() {
-        guard schedule == nil else { return }
+        guard !stopped, schedule == nil else { return }
         schedule = Task(priority: .utility) { [weak self] in
             try? await Task.sleep(for: Self.firstRunDelay)
             if Task.isCancelled { return }
@@ -103,14 +115,26 @@ public actor JournalMaintenance {
         }
     }
 
-    /// Cancels the schedule AND waits for any pass already running.
+    /// Cancels the schedule AND waits for any pass already running, then
+    /// fences every future trigger — idempotent, and safe to call more than
+    /// once (a second call finds `schedule`/`inFlight` already nil and
+    /// returns immediately).
     ///
-    /// Cancelling alone is not enough: a `runIfDue` suspended in
-    /// `await search.removeAll(…)` resumes after sign-out has wiped the
-    /// mirror and then stamps `maintenance_last_run` on an empty `meta`,
-    /// leaving a fresh stamp beside absent watermarks. `backfillTask` in the
-    /// same teardown block is cancelled and awaited for exactly this reason.
+    /// Cancelling alone is not enough, for two separate reasons:
+    ///  - a `runIfDue` suspended in `await search.removeAll(…)` resumes
+    ///    after sign-out has wiped the mirror and then stamps
+    ///    `maintenance_last_run` on an empty `meta`, leaving a fresh stamp
+    ///    beside absent watermarks (`backfillTask` in the same teardown
+    ///    block is cancelled and awaited for exactly this reason);
+    ///  - without the `stopped` flag, sign-out's several seconds of push
+    ///    deregistration between this call returning and `store.wipe()`
+    ///    running is a wide open window for a still-live sync engine to
+    ///    reach `.running` again (or anything else holding this instance to
+    ///    call `runIfDue`/`start()`) and kick off a BRAND NEW pass against a
+    ///    store that's about to be wiped out from under it (Bugbot Medium,
+    ///    PR #212).
     public func stop() async {
+        stopped = true
         schedule?.cancel()
         schedule = nil
         await inFlight?.value
@@ -120,8 +144,10 @@ public actor JournalMaintenance {
     /// `interval` (or absent). Every trigger — the 10 s first run, the
     /// hourly tick, the sync engine's first catch-up, and app foreground —
     /// funnels through here, so "whichever comes first" needs no extra
-    /// state: the first caller does the work and the rest are no-ops.
+    /// state: the first caller does the work and the rest are no-ops. A
+    /// no-op too once `stop()` has been called.
     public func runIfDue(now overrideNow: Date? = nil) async {
+        guard !stopped else { return }
         let current = overrideNow ?? now()
         guard inFlight == nil else { return }
         if let last = try? store.maintenanceLastRun(),

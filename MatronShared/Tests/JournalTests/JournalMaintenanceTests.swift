@@ -306,6 +306,33 @@ final class JournalMaintenanceTests: XCTestCase {
         pending = try store.pendingSearchRetirements(now: laterNow.addingTimeInterval(60))
         XCTAssertTrue(pending.seqs.isEmpty, "the watermark must now be advanced")
     }
+
+    /// B (Medium): "stop does not fence later sweeps." Once `stop()` has
+    /// returned, `runIfDue` and `start()` must be permanent no-ops — a
+    /// still-live sync engine reaching `.running` again (or anything else
+    /// holding this instance) must not be able to open a brand new pass
+    /// against a store that sign-out is about to wipe. `stop()` itself must
+    /// also be idempotent.
+    func testRunIfDueAndStartAfterStopPerformNoSweepAndStopIsIdempotent() async throws {
+        let store = SpyStore()
+        let search = RecordingSearch()
+        let maintenance = JournalMaintenance(store: store, search: search, now: { self.t0 })
+
+        await maintenance.stop()
+        await maintenance.stop() // idempotent: must not hang or throw
+
+        await maintenance.runIfDue()
+        XCTAssertTrue(store.purgeCalls.isEmpty, "no sweep may run after stop()")
+        XCTAssertTrue(store.retentionCalls.isEmpty)
+        XCTAssertTrue(search.removed.isEmpty, "search must be untouched after stop()")
+        XCTAssertNil(store.lastRunStamp)
+
+        // `start()` must not resurrect the schedule either — there is no
+        // "unstop"; a new sign-in builds a new `JournalMaintenance`.
+        await maintenance.start()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(store.purgeCalls.isEmpty, "start() after stop() must not arm a new schedule")
+    }
 }
 
 /// Plain (non-actor) recorder: `MaintenanceSweeping` is synchronous and
