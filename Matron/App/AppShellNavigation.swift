@@ -6,8 +6,9 @@ import Observation
 /// The app opens on Conversations.
 enum AppTab: Hashable, CaseIterable {
     case coordinator
-    case conversations
+    case missions
     case decisions
+    case conversations
 }
 
 /// Navigation state of the signed-in shell: the selected tab and each
@@ -18,6 +19,29 @@ enum AppTab: Hashable, CaseIterable {
 @MainActor @Observable
 final class AppShellNavigation {
     var tab: AppTab = .conversations
+    /// `false` once `GET /missions` 404s (set by `AppShellView` from
+    /// `MissionsListViewModel.isSupported`) — the Missions tab is then
+    /// absent from the `TabView`, so nothing may select its tag: the root
+    /// swipe consults this (`swipeRoot` walks `Self.tabs(missionsSupported:)`,
+    /// not the unconditional `AppTab.allCases`) and `openMission` no-ops.
+    /// The clamp lives here, in the setter, rather than in a view
+    /// `onChange`, so it is testable without one: a swipe that already
+    /// landed on `.missions` in the window before a 404 answers is walked
+    /// back to Conversations the instant the flag flips false.
+    var missionsSupported = true {
+        didSet {
+            guard missionsSupported != oldValue, !missionsSupported, tab == .missions else { return }
+            tab = .conversations
+        }
+    }
+
+    /// The tabs actually in the bar for a given support state — the same
+    /// set `AppShellView`'s `TabView` renders. `swipeRoot` walks this
+    /// instead of the unconditional `AppTab.allCases`, so it can never
+    /// select a tag with no matching tab.
+    static func tabs(missionsSupported: Bool) -> [AppTab] {
+        missionsSupported ? AppTab.allCases : AppTab.allCases.filter { $0 != .missions }
+    }
     /// Conversations tab stack. `[String]` because `ChatSummary.ID == String`
     /// and the sub-chat switcher replaces entries in place.
     var chatPath: [String] = []
@@ -25,6 +49,9 @@ final class AppShellNavigation {
     /// Coordinator tab stack: sub-chats and items opened from the
     /// coordinator push here, so back returns to it.
     var coordinatorPath: [String] = []
+    /// Missions tab stack: `MissionRoute.pathValue` entries, plus
+    /// `ItemRoute.pathValue` for an item opened from a mission page.
+    var missionsPath: [String] = []
 
     init() {}
 
@@ -89,6 +116,43 @@ final class AppShellNavigation {
     /// Conversations first, then push, in that order and in one
     /// transaction so the push lands in the visible stack (spec §3).
     func openConversation(fromDecisions convoID: String) {
+        handOffToConversations(convoID)
+    }
+
+    /// Open a mission from anywhere: select the tab and REPLACE the stack,
+    /// so the page is never stacked on a stale copy of itself. No-op on an
+    /// old journal that has no Missions tab to select.
+    func openMission(_ missionID: String) {
+        guard missionsSupported else { return }
+        tab = .missions
+        let route = MissionRoute(id: missionID).pathValue
+        if missionsPath != [route] { missionsPath = [route] }
+    }
+
+    /// Push a mission onto the Missions stack without changing the tab —
+    /// e.g. a `#N` that resolves to another mission from a mission page.
+    /// No-op when that mission is already the top entry, mirroring
+    /// `ChatView.pushMission(_:onto:)` — a double tap must not stack two
+    /// identical pages.
+    func pushMission(_ missionID: String) {
+        let route = MissionRoute(id: missionID).pathValue
+        guard missionsPath.last != route else { return }
+        missionsPath.append(route)
+    }
+
+    func pushMissionItem(_ itemID: String) {
+        missionsPath.append(ItemRoute(id: itemID).pathValue)
+    }
+
+    /// "Open the conversation" from a Missions row or a milestone: switch to
+    /// Conversations first, then push, in that order and in one transaction
+    /// so the push lands in the visible stack.
+    func openConversation(fromMissions convoID: String) { handOffToConversations(convoID) }
+
+    /// Shared body of `openConversation(fromDecisions:)` and
+    /// `openConversation(fromMissions:)` — one rule, so the two entry points
+    /// cannot drift on the coordinator special case.
+    private func handOffToConversations(_ convoID: String) {
         if convoID == coordinatorConvoID {
             tab = .coordinator
             coordinatorPath = []
@@ -126,6 +190,7 @@ final class AppShellNavigation {
         case .conversations: chatPath.append(value)
         case .coordinator: coordinatorPath.append(value)
         case .decisions: if let route = ItemRoute(pathValue: value) { decisionsPath.append(route) }
+        case .missions: missionsPath.append(value)
         }
     }
 
@@ -135,6 +200,7 @@ final class AppShellNavigation {
         case .coordinator: return coordinatorPath.isEmpty
         case .conversations: return chatPath.isEmpty
         case .decisions: return decisionsPath.isEmpty
+        case .missions: return missionsPath.isEmpty
         }
     }
 
@@ -146,12 +212,13 @@ final class AppShellNavigation {
     /// changed, so the caller can animate only real switches.
     @discardableResult
     func swipeRoot(translation: CGSize) -> Bool {
+        let tabs = Self.tabs(missionsSupported: missionsSupported)
         guard isAtRoot, abs(translation.width) > 80,
               abs(translation.width) > abs(translation.height),
-              let index = AppTab.allCases.firstIndex(of: tab) else { return false }
+              let index = tabs.firstIndex(of: tab) else { return false }
         let next = translation.width < 0 ? index + 1 : index - 1
-        guard AppTab.allCases.indices.contains(next) else { return false }
-        tab = AppTab.allCases[next]
+        guard tabs.indices.contains(next) else { return false }
+        tab = tabs[next]
         return true
     }
 }

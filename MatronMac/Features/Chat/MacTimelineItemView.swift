@@ -59,6 +59,9 @@ struct MacTimelineItemView: View {
     /// Opens the tracker item pane to the tapped `.itemMarker`'s item —
     /// mirrors the iOS surface's `onOpenItem`.
     var onOpenItem: ((String) -> Void)? = nil
+    /// Opens the mission page to the tapped `.milestoneMarker` /
+    /// `.missionMarker` — mirrors the iOS surface's `onOpenMission`.
+    var onOpenMission: ((String) -> Void)? = nil
     /// The conversation this row belongs to — tags live-output sessions in
     /// the shared store so chat teardown can suspend only its own sockets
     /// (`suspendSessions(in:)`). `nil` keeps previews/tests compiling.
@@ -344,6 +347,21 @@ struct MacTimelineItemView: View {
             HStack {
                 ItemInlineCard(marker: marker) { onOpenItem?(marker.itemID) }
                     .frame(maxWidth: 360, alignment: .leading)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal)
+
+        case .milestoneMarker(_, let marker):
+            HStack {
+                MilestoneCard(marker: marker) { onOpenMission?(marker.missionID) }
+                    .frame(maxWidth: 360, alignment: .leading)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal)
+
+        case .missionMarker(_, let marker):
+            HStack {
+                MissionNotice(marker: marker) { onOpenMission?(marker.missionID) }
                 Spacer(minLength: 0)
             }
             .padding(.horizontal)

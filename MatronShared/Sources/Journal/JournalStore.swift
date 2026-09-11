@@ -448,6 +448,77 @@ public final class JournalStore: @unchecked Sendable {
                 t.column("last_error", .text)
             }
         }
+        // v10: mission cache (spec 2026-09-10 missions-milestones). Purely
+        // ADDITIVE — three new tables plus two nullable columns on `item`.
+        // Filled from GET /missions and GET /missions/:id, never from the
+        // event log: the `mission`/`milestone` markers are invalidation
+        // signals, and the journal omits their titles when they cross the
+        // privacy boundary, so a marker is never a source of truth for a
+        // name (MissionsSync).
+        migrator.registerMigration("v10") { db in
+            try db.create(table: "mission") { t in
+                t.column("id", .text).primaryKey()
+                t.column("num", .integer).notNull()
+                t.column("state", .text).notNull()
+                t.column("title", .text).notNull()
+                t.column("body", .text).notNull().defaults(to: "")
+                t.column("close_summary", .text)
+                t.column("closed_by", .text)
+                t.column("closed_over_open_items", .integer).notNull().defaults(to: 0)
+                t.column("origin_convo_id", .text).notNull()
+                t.column("origin_device_id", .integer).notNull().defaults(to: 0)
+                t.column("created_by", .text).notNull()
+                t.column("created_at", .integer).notNull()
+                t.column("updated_at", .integer).notNull()
+                t.column("last_milestone_at", .integer)
+                t.column("closed_at", .integer)
+                t.column("open_items", .integer).notNull().defaults(to: 0)
+                t.column("needs_you", .integer).notNull().defaults(to: 0)
+                t.column("conversation_count", .integer).notNull().defaults(to: 0)
+                t.column("milestone_count", .integer).notNull().defaults(to: 0)
+                t.column("last_milestone_json", .text)
+            }
+            try db.create(index: "mission_state_activity", on: "mission", columns: ["state", "last_milestone_at"])
+            try db.create(index: "mission_origin", on: "mission", columns: ["origin_convo_id"])
+            try db.create(table: "milestone") { t in
+                t.column("id", .text).primaryKey()
+                t.column("mission_id", .text).notNull()
+                t.column("num", .integer).notNull()
+                t.column("kind", .text).notNull()
+                t.column("title", .text).notNull()
+                t.column("body", .text).notNull().defaults(to: "")
+                t.column("convo_id", .text).notNull()
+                t.column("seq", .integer).notNull()
+                t.column("device_id", .integer).notNull().defaults(to: 0)
+                t.column("created_by", .text).notNull()
+                t.column("created_at", .integer).notNull()
+            }
+            try db.create(index: "milestone_mission", on: "milestone", columns: ["mission_id", "created_at"])
+            try db.create(index: "milestone_convo", on: "milestone", columns: ["convo_id", "seq"])
+            try db.create(table: "mission_conversation") { t in
+                t.column("mission_id", .text).notNull()
+                t.column("convo_id", .text).notNull()
+                t.column("title", .text).notNull().defaults(to: "")
+                t.column("box", .text)
+                t.column("state", .text).notNull().defaults(to: "")
+                t.primaryKey(["mission_id", "convo_id"])
+            }
+            try db.alter(table: "item") { t in
+                t.add(column: "mission_id", .text)
+                t.add(column: "mission_num", .integer)
+            }
+            try db.create(index: "item_mission", on: "item", columns: ["mission_id", "state", "awaiting"])
+            // The two new columns above land as NULL on every item row
+            // already cached — `ItemsSync.refreshOnce` fetches `?since=`
+            // its persisted watermark, which skips rows the server hasn't
+            // touched since, so those items would never gain a mission
+            // until each one changes again (Bugbot). Clearing the
+            // watermark keys (same statement `wipeItems()` runs) forces
+            // the very next refresh, for every scope, to be a full
+            // `GET /items` fetch that re-fills `mission_id`/`mission_num`
+            // from the server's current values.
+            try db.execute(sql: "DELETE FROM meta WHERE key = 'items_watermark_all' OR key LIKE 'items_watermark_convo_%'")
+        }
         return migrator
     }
 
@@ -1263,6 +1334,11 @@ public final class JournalStore: @unchecked Sendable {
             // inside this one, and also clears item_outbox which this path
             // must not touch.
             try db.execute(sql: "DELETE FROM item; DELETE FROM item_comment;")
+            // Mission cache — same rule as the tracker cache above: cleared
+            // inline, because this method is already inside `dbQueue.write`
+            // and cannot nest another. One bootstrap later, `GET /missions`
+            // refills it.
+            try Self.wipeMissionTables(db)
         }
     }
 

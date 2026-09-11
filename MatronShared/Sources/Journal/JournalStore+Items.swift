@@ -47,6 +47,7 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
     public var supersedes: String?; public var originConvoId: String; public var createdBy: String
     public var createdAt: Int64; public var updatedAt: Int64; public var closedAt: Int64?
     public var commentCount: Int; public var lastCommentAt: Int64?; public var hasImage: Bool
+    public var missionId: String?; public var missionNum: Int?
 
     enum CodingKeys: String, CodingKey {
         case id, num, kind, state, resolution, awaiting, rank, title, body, supersedes
@@ -54,6 +55,7 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
         case originConvoId = "origin_convo_id", createdBy = "created_by", createdAt = "created_at"
         case updatedAt = "updated_at", closedAt = "closed_at", commentCount = "comment_count"
         case lastCommentAt = "last_comment_at", hasImage = "has_image"
+        case missionId = "mission_id", missionNum = "mission_num"
     }
 
     public init(_ i: TrackerItem) {
@@ -63,6 +65,7 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
         supersedes = i.supersedes; originConvoId = i.originConvoID; createdBy = i.createdBy.rawValue
         createdAt = ms(i.createdAt); updatedAt = ms(i.updatedAt); closedAt = ms(i.closedAt)
         commentCount = i.commentCount; lastCommentAt = ms(i.lastCommentAt); hasImage = i.hasImage
+        missionId = i.missionID; missionNum = i.missionNum
     }
 
     public var item: TrackerItem {
@@ -72,7 +75,8 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
                     links: dec(linksJson, [TrackerLink].self) ?? [], attachments: dec(attachmentsJson, [TrackerAttachment].self) ?? [],
                     supersedes: supersedes, originConvoID: originConvoId, createdBy: ItemAuthor(rawValue: createdBy) ?? .agent,
                     createdAt: date(createdAt), updatedAt: date(updatedAt), closedAt: date(closedAt),
-                    commentCount: commentCount, lastCommentAt: date(lastCommentAt), hasImage: hasImage)
+                    commentCount: commentCount, lastCommentAt: date(lastCommentAt), hasImage: hasImage,
+                    missionID: missionId, missionNum: missionNum)
     }
 }
 
@@ -355,5 +359,24 @@ extension JournalStore {
             // meta`, which clears these keys along with everything else.
             try db.execute(sql: "DELETE FROM meta WHERE key = 'items_watermark_all' OR key LIKE 'items_watermark_convo_%'")
         }
+    }
+
+    /// The mission page's open items: awaiting-you first (that is the
+    /// section the page leads with), then newest activity. Closed items are
+    /// excluded — the page shows what is still outstanding.
+    private static func missionItemsRequest(_ missionID: String) -> SQLRequest<ItemRecord> {
+        SQLRequest<ItemRecord>(sql: """
+            SELECT * FROM item
+            WHERE mission_id = ? AND state = 'open'
+            ORDER BY (awaiting = 'user') DESC, updated_at DESC, num DESC
+            """, arguments: [missionID])
+    }
+
+    public func items(missionID: String) throws -> [TrackerItem] {
+        try dbQueue.read { db in try Self.missionItemsRequest(missionID).fetchAll(db).map(\.item) }
+    }
+
+    public func itemsStream(missionID: String) -> AsyncStream<[TrackerItem]> {
+        Self.stream(ValueObservation.tracking { db in try Self.missionItemsRequest(missionID).fetchAll(db).map(\.item) }, in: dbQueue)
     }
 }

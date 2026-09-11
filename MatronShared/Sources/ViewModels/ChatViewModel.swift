@@ -1092,7 +1092,7 @@ public final class ChatViewModel {
     /// parked. Dismissing the search bar must abort only search's own
     /// jump — a "jump to my last message" in flight while the bar happens
     /// to be up would otherwise die with it (Bugbot, PR #202).
-    private enum FocusOwner { case search, lastOwnMessage }
+    private enum FocusOwner { case search, lastOwnMessage, milestone }
     private var focusOwner: FocusOwner?
 
     /// Focus target parked by `focusOrPark` until the stream is live —
@@ -1167,6 +1167,22 @@ public final class ChatViewModel {
             }
         }
         return nil
+    }
+
+    // MARK: Jump to a milestone
+
+    /// Scrolls the transcript to a milestone's anchor — the `seq` of its own
+    /// `milestone` marker event (spec 2026-09-10). Rides the same
+    /// park-until-live jump as in-conversation search and the
+    /// last-own-message jump, so a tap made from the Missions tab *before*
+    /// this room's stream is up lands once the first snapshot arrives.
+    ///
+    /// Its own `FocusOwner` case matters: `endChatSearch()` cancels only
+    /// search's jump, so dismissing the search bar cannot kill a milestone
+    /// jump that happens to be in flight. A seq that no longer exists lands
+    /// on the nearest earlier row (`focus(seq:)`'s existing fallback).
+    public func jumpToMilestone(seq: Int64) async {
+        await focusOrPark(seq: seq, owner: .milestone)
     }
 
     /// Latest `rows` message id whose seq is `<= seq`, or nil if every
