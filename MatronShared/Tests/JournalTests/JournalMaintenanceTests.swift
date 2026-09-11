@@ -184,6 +184,12 @@ final class JournalMaintenanceTests: XCTestCase {
                        "a >30-day live-log row must come back in the retention seqs on the first pass")
     }
 
+    /// I1: `stop()` cancels the in-flight pass (`inFlight?.cancel()`) before
+    /// awaiting it, so a pass interrupted while suspended in `removeAll`
+    /// must still let `stop()` block until the pass task actually finishes
+    /// — but the finish is now via the `Task.isCancelled` guards in
+    /// `run(now:)`, not a normal completion, so neither
+    /// `recordSearchRetirement` nor `recordMaintenanceRun` runs.
     func testStopAwaitsTheInFlightSweep() async throws {
         let store = SpyStore()
         store.pendingSearchResult = (seqs: [7], cutoff: t0)
@@ -207,7 +213,47 @@ final class JournalMaintenanceTests: XCTestCase {
         await gate.open()
         await stopping.value
         await pass.value
-        XCTAssertEqual(store.lastRunStamp, t0, "stop() must not return until the pass completes")
+        XCTAssertNil(store.lastRunStamp,
+                     "the pass was cancelled — it must not buy itself a quiet interval it did not earn")
+        XCTAssertTrue(store.searchRetirementCutoffs.isEmpty,
+                      "the pass was cancelled before recordSearchRetirement — the watermark must not advance")
+    }
+
+    /// I1: on a real store, cancelling mid-pass must leave the search
+    /// retention watermark exactly where it was before the pass started —
+    /// the pending seq must still be pending for the next (uninterrupted)
+    /// pass to find and retire.
+    func testStopDuringAPassLeavesTheSearchRetentionWatermarkAtItsPreScanValue() async throws {
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:dan")
+        try store.insertHistory([liveLogToolOutputEvent(seq: 1)], now: Date(timeIntervalSince1970: 2))
+        let laterNow = Date(timeIntervalSince1970: 1).addingTimeInterval(31 * 24 * 3600)
+        let preScan = try store.pendingSearchRetirements(now: laterNow)
+        XCTAssertEqual(preScan.seqs, [1], "precondition: the seq is pending retirement")
+
+        let search = RecordingSearch()
+        let gate = Gate()
+        search.beforeRemoveAll = { await gate.wait() }
+        let maintenance = JournalMaintenance(store: store, search: search, now: { laterNow })
+
+        let pass = Task { await maintenance.runIfDue() }
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertNil(try store.maintenanceLastRun(), "precondition: the pass has not finished")
+
+        // `stop()` awaits the cancelled pass, and the pass is parked inside
+        // `removeAll` until the gate opens — run them concurrently rather
+        // than opening the gate only after `stop()` returns, or this
+        // deadlocks.
+        let stopping = Task { await maintenance.stop() }
+        try await Task.sleep(for: .milliseconds(50))
+        await gate.open()
+        await stopping.value
+        await pass.value
+
+        XCTAssertNil(try store.maintenanceLastRun(),
+                     "an interrupted pass must not stamp maintenance_last_run")
+        let postStop = try store.pendingSearchRetirements(now: laterNow)
+        XCTAssertEqual(postStop.seqs, [1],
+                       "the search retention watermark did not advance past its pre-scan value")
     }
 
     /// A failed sweep must not stamp `maintenance_last_run`: the next tick

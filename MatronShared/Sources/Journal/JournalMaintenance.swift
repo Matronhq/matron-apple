@@ -137,6 +137,7 @@ public actor JournalMaintenance {
         stopped = true
         schedule?.cancel()
         schedule = nil
+        inFlight?.cancel()
         await inFlight?.value
     }
 
@@ -199,11 +200,13 @@ public actor JournalMaintenance {
                 // needed) — a thrown `removeAll` skips straight to the
                 // `catch` below, leaving the watermark exactly where it was
                 // so the next pass retries the same seqs.
+                guard !Task.isCancelled else { return }
                 try store.recordSearchRetirement(upTo: pending.cutoff)
                 searchRetired = pending.seqs.count
             } else {
                 Self.logger.debug("maintenance pass: no search attached, search retirement skipped")
             }
+            guard !Task.isCancelled else { return }
             try store.recordMaintenanceRun(at: current)
             Self.logger.info("""
                 maintenance pass done; retention visited \(retentionVisited.count, privacy: .public), \

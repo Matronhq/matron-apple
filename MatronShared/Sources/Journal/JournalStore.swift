@@ -685,17 +685,18 @@ public final class JournalStore: @unchecked Sendable {
         var afterTS = try dbQueue.read { db in
             try Int64.fetchOne(db, sql: "SELECT value FROM meta WHERE key = ?", arguments: [watermarkKey]) ?? 0
         }
-        // A persisted watermark can sit ABOVE this call's own cutoff: the
-        // boot-time sweep (`JournalStore.init`) always runs at the real
-        // wall clock, so on a store that is later driven with an injected
-        // `now:` smaller than real time (every test, and any replay of
-        // historical `now:` values), the watermark from that boot pass
-        // would otherwise blind this scan to rows genuinely inside this
-        // call's own `(0, cutoffMs]` range. Treat "watermark past our own
-        // cutoff" as "nothing verified for OUR range yet" rather than as
-        // coverage — it is never coverage for a smaller cutoff, since a
-        // watermark only certifies the range it was actually computed
-        // against.
+        // A persisted watermark can sit ABOVE this call's own cutoff. There
+        // is no boot-time sweep any more (that call was deleted from
+        // `JournalStore.init`) — this fallback now exists for injected or
+        // stepped clocks: every test that drives the store with a `now:`
+        // smaller than a previous real pass, and any caller that steps
+        // `now:` backwards between calls, would otherwise have the
+        // watermark from that later pass blind this scan to rows genuinely
+        // inside this call's own `(0, cutoffMs]` range. Treat "watermark
+        // past our own cutoff" as "nothing verified for OUR range yet"
+        // rather than as coverage — it is never coverage for a smaller
+        // cutoff, since a watermark only certifies the range it was
+        // actually computed against.
         if afterTS > cutoffMs {
             afterTS = 0
         }
@@ -704,15 +705,17 @@ public final class JournalStore: @unchecked Sendable {
         var afterSeq = Int64.max
         while true {
             // `Task.isCancelled` reads the calling `Task`'s cancellation
-            // flag when this synchronous function is invoked from inside
-            // one (e.g. `JournalMaintenance.stop()` awaiting an in-flight
-            // pass, R11); outside any `Task` — the `init`-time boot call —
-            // it is always `false`, so that call is unaffected. Bailing at
-            // a chunk boundary rather than mid-transaction, and skipping
-            // the watermark write below on exit, means the chunks already
-            // committed stay exactly as durable and idempotent as a normal
-            // interrupted sweep (app killed mid-pass): the next call simply
-            // resumes from the same watermark and re-covers the rest.
+            // flag: `JournalMaintenance` runs each pass as its own
+            // unstructured `Task` (`runIfDue`'s `pass`), and `stop()`
+            // cancels that task directly (`inFlight?.cancel()`) before
+            // awaiting it, so this synchronous function — called from
+            // inside that task — observes the cancellation here, at the
+            // next chunk boundary. Bailing at a chunk boundary rather than
+            // mid-transaction, and skipping the watermark write below on
+            // exit, means the chunks already committed stay exactly as
+            // durable and idempotent as a normal interrupted sweep (app
+            // killed mid-pass): the next call simply resumes from the same
+            // watermark and re-covers the rest.
             if Task.isCancelled {
                 return returnAllVisited ? visited : tombstoned
             }
