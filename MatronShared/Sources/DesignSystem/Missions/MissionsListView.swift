@@ -74,6 +74,9 @@ public struct MissionsListView: View {
                 // `.sidebar`/`.inset` inset or hide separators; `.plain`
                 // draws one hairline per row edge-to-edge, like Mail.
                 .listStyle(.plain)
+                // `.plain` paints an opaque list background; hide it so the
+                // column keeps the same material backdrop as Conversations.
+                .scrollContentBackground(.hidden)
                 #endif
             }
         }

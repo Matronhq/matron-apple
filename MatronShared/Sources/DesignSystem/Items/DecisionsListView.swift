@@ -78,8 +78,12 @@ public struct DecisionsListView: View {
                         // Full-width separators are a Mac-only affordance;
                         // iOS keeps its insetGrouped style and default row
                         // insets. `ItemRow` itself stays untouched since
-                        // `ItemsListView` also renders it.
+                        // `ItemsListView` also renders it. `macInboxRow`
+                        // zeroes the list row insets, so the vertical
+                        // breathing room `ItemRow` doesn't provide itself
+                        // has to be added back here.
                         #if os(macOS)
+                        .padding(.vertical, 6)
                         .macInboxRow(hideTopSeparator: index == 0)
                         #endif
                     }
@@ -92,6 +96,9 @@ public struct DecisionsListView: View {
                 // `.inset` insets the separators; `.plain` draws one
                 // hairline per row edge-to-edge, like Mail.
                 .listStyle(.plain)
+                // `.plain` paints an opaque list background; hide it so the
+                // column keeps the same material backdrop as Conversations.
+                .scrollContentBackground(.hidden)
                 #endif
             }
         }

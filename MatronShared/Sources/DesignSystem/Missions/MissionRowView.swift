@@ -18,8 +18,7 @@ public struct MissionRowView: View {
                 Text(mission.title).font(.body.weight(.medium)).lineLimit(2)
                 if let last = mission.lastMilestone {
                     HStack(spacing: 5) {
-                        Text("#\(mission.num)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                        Text("·").font(.caption).foregroundStyle(.tertiary)
+                        numberPrefix
                         Image(systemName: MissionGlyph.symbol(last.kind))
                             .font(.caption2)
                             .foregroundStyle(MissionGlyph.tint(last.kind))
@@ -32,8 +31,7 @@ public struct MissionRowView: View {
                     }
                 } else if mission.state == .open {
                     HStack(spacing: 5) {
-                        Text("#\(mission.num)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                        Text("·").font(.caption).foregroundStyle(.tertiary)
+                        numberPrefix
                         Text("No milestones yet").font(.subheadline).foregroundStyle(.tertiary)
                     }
                 }
@@ -50,5 +48,14 @@ public struct MissionRowView: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Mission \(mission.num), \(mission.title)\(mission.needsYou > 0 ? ", \(mission.needsYou) need you" : "")")
+    }
+
+    /// `#num ·` — leads the meta line in both the has-milestone and
+    /// "No milestones yet" states.
+    private var numberPrefix: some View {
+        Group {
+            Text("#\(mission.num)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            Text("·").font(.caption).foregroundStyle(.tertiary)
+        }
     }
 }
