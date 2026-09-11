@@ -147,7 +147,17 @@ final class MissionsSyncTests: XCTestCase {
     /// refresh just wrote.
     func testAConcurrentDetailRefreshSurvivesAStaleInFlightListRefresh() async throws {
         let api = FakeMissions()
-        api.list = [mission("ms_1", num: 61)]
+        // The list response, once released, carries its OWN (stale) row
+        // for "ms_2" too — not just an absent one — so this pins fix
+        // round 3, N3: `keeping:` alone stops the row from being
+        // DELETED, but the stale row was still upserted over whatever
+        // the concurrent detail fetch just wrote, reverting its fields
+        // until the next refresh. The fresh title must survive, not just
+        // the row's existence.
+        api.list = [
+            mission("ms_1", num: 61),
+            Mission(id: "ms_2", num: 62, title: "stale title from an earlier snapshot", originConvoID: "c1"),
+        ]
         api.details = ["ms_2": MissionDetail(mission: mission("ms_2", num: 62), milestones: [], items: [], conversations: [])]
         let (sync, store, _, _) = try make(api: api)
         api.blockNextList = true
@@ -155,13 +165,13 @@ final class MissionsSyncTests: XCTestCase {
         try await waitUntil { api.isListGated }
         let detailOutcome = await sync.refreshMission(id: "ms_2")
         XCTAssertEqual(detailOutcome, .succeeded)
-        XCTAssertEqual(try store.mission(id: "ms_2")?.id, "ms_2",
+        XCTAssertEqual(try store.mission(id: "ms_2")?.title, "M62",
                        "the detail refresh must land before the stale list response is even released")
         api.releaseListGate()
         let listOutcome = await listTask.value
         XCTAssertEqual(listOutcome, .succeeded)
-        XCTAssertEqual(try store.mission(id: "ms_2")?.id, "ms_2",
-                       "the concurrent detail refresh must survive the now-stale list response")
+        XCTAssertEqual(try store.mission(id: "ms_2")?.title, "M62",
+                       "the concurrent detail refresh's fields must survive the now-stale list response's upsert, not just the row's existence")
         await sync.stop()
     }
 

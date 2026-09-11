@@ -176,7 +176,14 @@ extension JournalStore {
     public func replaceMissions(_ missions: [Mission], keeping protectedIDs: Set<String> = []) throws {
         try dbQueue.write { db in
             let ids = Set(missions.map(\.id)).union(protectedIDs)
-            for m in missions { try MissionRecord(m).save(db) }
+            // Fix round 3, N3: `protectedIDs` keeps a protected id from
+            // being DELETED, but a stale list row for it was still
+            // upserted here on top of whatever a concurrent detail fetch
+            // (or a user close) just wrote — reverting the row to the
+            // older snapshot until the next refresh. Skip the upsert for
+            // any id this call is protecting; its already-cached row is
+            // the newer one.
+            for m in missions where !protectedIDs.contains(m.id) { try MissionRecord(m).save(db) }
             let staleIDs = try String.fetchAll(
                 db, MissionRecord.filter(!ids.contains(Column("id"))).select(Column("id"), as: String.self))
             guard !staleIDs.isEmpty else { return }
