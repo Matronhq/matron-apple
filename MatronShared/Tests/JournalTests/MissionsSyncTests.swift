@@ -276,6 +276,10 @@ final class MissionsSyncTests: XCTestCase {
         api.listError = JournalAPIError.transport("offline")
         guard case .failed = await sync.refresh() else { return XCTFail("expected .failed") }
         XCTAssertEqual(try store.missions(state: nil).map(\.id), ["ms_1"])
+        // Fix round 3, N5: pins L1's "a transport error is not a support
+        // signal" — only `.notFound` (404) may flip `isSupported`.
+        let s = await sync.isSupported
+        XCTAssertTrue(s)
         await sync.stop()
     }
 
