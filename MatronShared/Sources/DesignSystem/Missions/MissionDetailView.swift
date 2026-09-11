@@ -254,7 +254,14 @@ public struct MissionDetailView: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(MissionGlyph.label(milestone.kind)) \(milestone.num), \(milestone.title)"
-                            + (row.sessionTag?.boxName.map { ", \($0)" } ?? ""))
+                            // Same room-first fallback as the visual tag
+                            // above — a `boxName`-only label omitted the
+                            // other room boxes and the session short
+                            // (CodeRabbit #209).
+                            + (row.sessionTag.flatMap {
+                                SessionTagText.plainLabel(boxLetter: $0.boxLetter, sessionShort: $0.sessionShort,
+                                                          roomBoxShorts: $0.roomBoxShorts, roomBoxNames: $0.roomBoxNames)
+                            }.map { ", \($0)" } ?? ""))
         .accessibilityHint("Opens the conversation at this point")
     }
 
