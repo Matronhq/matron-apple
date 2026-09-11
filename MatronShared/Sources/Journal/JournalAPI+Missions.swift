@@ -1,5 +1,8 @@
 import Foundation
+import os
 import MatronModels
+
+private let missionsAPILogger = Logger(subsystem: "chat.matron", category: "missions-api")
 
 public struct MissionsListQuery: Equatable, Sendable {
     /// Omitted means "both states" — the journal has no `state=any`.
@@ -43,9 +46,22 @@ public protocol MissionsProviding: Sendable {
 
 extension JournalAPI: MissionsProviding {
     /// Internal (not private) so `MissionsAPITests` can pin the decoding
-    /// without standing up an HTTP stub for every shape.
+    /// without standing up an HTTP stub for every shape. Lenient on
+    /// purpose — CodeRabbit #209 asked for a malformed row to fail the
+    /// whole response, but the controller ruling keeps this the way
+    /// `decodeMission`'s siblings (`items`, `milestones`, `conversations`)
+    /// already behave: one bad row must not blank the entire list. The
+    /// drop is logged instead, so it's visible without silently losing
+    /// every other row in the same response.
     static func decodeMissions(_ obj: [String: Any]) -> [Mission] {
-        (obj["missions"] as? [[String: Any]] ?? []).compactMap(Mission.init(json:))
+        let rows = obj["missions"] as? [[String: Any]] ?? []
+        return rows.compactMap { row in
+            if let mission = Mission(json: row) { return mission }
+            let id = row["id"] as? String ?? "?"
+            let num = (row["num"] as? Int).map(String.init) ?? "?"
+            missionsAPILogger.error("dropped malformed mission row id=\(id, privacy: .public) num=\(num, privacy: .public)")
+            return nil
+        }
     }
 
     static func decodeMission(_ obj: [String: Any]) throws -> Mission {

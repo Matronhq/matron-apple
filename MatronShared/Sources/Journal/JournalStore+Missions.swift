@@ -151,6 +151,30 @@ extension JournalStore {
         try dbQueue.write { db in for m in missions { try MissionRecord(m).save(db) } }
     }
 
+    /// The full-list refresh's write (`MissionsSync.refreshOnce`) IS
+    /// authoritative — `GET /missions` always answers with the complete
+    /// set — so unlike `upsertMissions` (used by the detail/marker path,
+    /// which only ever touches one mission at a time) a mission cached
+    /// locally but absent from `missions` no longer exists for this
+    /// device and must not linger (CodeRabbit #209 MAJOR). One
+    /// transaction: upsert the given rows, then delete every cached
+    /// `mission` row outside that set along with its dependent cache rows
+    /// — `milestone`/`mission_conversation` have no `ON DELETE CASCADE`
+    /// (plain columns, no FK declared in the v10 migration), so those two
+    /// tables are swept explicitly.
+    public func replaceMissions(_ missions: [Mission]) throws {
+        try dbQueue.write { db in
+            let ids = Set(missions.map(\.id))
+            for m in missions { try MissionRecord(m).save(db) }
+            let staleIDs = try String.fetchAll(
+                db, MissionRecord.filter(!ids.contains(Column("id"))).select(Column("id"), as: String.self))
+            guard !staleIDs.isEmpty else { return }
+            try MissionRecord.filter(keys: staleIDs).deleteAll(db)
+            try MilestoneRecord.filter(staleIDs.contains(Column("mission_id"))).deleteAll(db)
+            try MissionConversationRecord.filter(staleIDs.contains(Column("mission_id"))).deleteAll(db)
+        }
+    }
+
     public func missions(state: MissionState?) throws -> [Mission] {
         try dbQueue.read { db in try Self.missionsRequest(state).fetchAll(db).map(\.mission) }
     }

@@ -153,7 +153,10 @@ public actor MissionsSync {
         do {
             let missions = try await api.listMissions(query)
             guard !stopped, !Task.isCancelled else { return .stopped }
-            try store.upsertMissions(missions)
+            // The complete list, unconditionally (comment above) — so
+            // this write is authoritative and a mission the server no
+            // longer returns must not linger (CodeRabbit #209 MAJOR).
+            try store.replaceMissions(missions)
             setSupported(true)
             return .succeeded
         } catch JournalAPIError.notFound {

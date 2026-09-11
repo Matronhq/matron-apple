@@ -85,6 +85,32 @@ final class MissionsSyncTests: XCTestCase {
         await sync.stop()
     }
 
+    /// CodeRabbit #209 MAJOR: the full-list refresh IS authoritative — a
+    /// mission the server stops returning must not linger, and neither
+    /// must its cached milestones/conversations (no FK cascade on those
+    /// tables — `JournalStore.replaceMissions`).
+    func testReconnectDropsAMissionTheServerNoLongerReturns() async throws {
+        let api = FakeMissions()
+        api.list = [mission("ms_1", num: 61), mission("ms_2", num: 62)]
+        let (sync, store, _, _) = try make(api: api)
+        let firstOutcome = await sync.refresh()
+        XCTAssertEqual(firstOutcome, .succeeded)
+        try store.replaceMilestones(missionID: "ms_1", [
+            Milestone(id: "ml_1", missionID: "ms_1", num: 1, kind: .userInput, title: "step",
+                     convoID: "c1", seq: 400, createdAt: Date(timeIntervalSince1970: 4)),
+        ])
+        try store.replaceMissionConversations(missionID: "ms_1", [
+            MissionConversation(id: "c1", title: "Session", box: "dev-2", state: "running"),
+        ])
+        api.list = [mission("ms_2", num: 62)]
+        let secondOutcome = await sync.refresh()
+        XCTAssertEqual(secondOutcome, .succeeded)
+        XCTAssertEqual(try store.missions(state: nil).map(\.id), ["ms_2"])
+        XCTAssertEqual(try store.milestones(missionID: "ms_1"), [])
+        XCTAssertEqual(try store.missionConversations(missionID: "ms_1"), [])
+        await sync.stop()
+    }
+
     func testMarkerForAMissionRefetchesThatMissionOnly() async throws {
         let api = FakeMissions()
         api.details = ["ms_1": MissionDetail(
