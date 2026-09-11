@@ -491,8 +491,9 @@ struct MacChatView: View {
             .accessibilityHidden(true)
         )
         // ⇧⌘U — jump to my last message (item #60). Same hidden-button
-        // shape and the same home as ⇧⌘I above: the toolbar button sits in
-        // `chatColumn`, which the narrow-takeover branch doesn't render.
+        // shape and the same home as ⇧⌘I above: the visible control is the
+        // floating pill in `chatColumn`'s timeline overlay (#270), which
+        // the narrow-takeover branch doesn't render.
         .background(
             Button("") { Task { await viewModel.jumpToLastOwnMessage() } }
                 .keyboardShortcut("u", modifiers: [.command, .shift])
