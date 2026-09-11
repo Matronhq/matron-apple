@@ -180,8 +180,15 @@ final class AppDependencies {
             // The engine lives in MatronShared and must not call
             // LaunchTimeline itself (R7); this hook lets the app target
             // record the mark the first time the replay reaches the live
-            // cursor.
-            await engine.setCatchUpCompleteHandler { LaunchTimeline.shared.mark(.catchUpComplete) }
+            // cursor. Also lets maintenance past its launch hold early
+            // (Bugbot High): catch-up reaching the live cursor is the
+            // signal the launch path is over, so a pass may run sooner
+            // than `start()`'s `firstRunDelay` if catch-up itself took
+            // longer.
+            await engine.setCatchUpCompleteHandler {
+                LaunchTimeline.shared.mark(.catchUpComplete)
+                Task { await maintenance.runAfterCatchUp() }
+            }
             await maintenance.start()
         }
         // One-time: box tag letters chosen before they were journal-held

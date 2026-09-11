@@ -128,6 +128,50 @@ final class JournalMaintenanceTests: XCTestCase {
                       "a launch ten minutes after the last sweep must not re-sweep")
     }
 
+    // MARK: - Launch hold (Bugbot High, follow-up fix)
+
+    /// `start()`'s own schedule already delays its first tick by
+    /// `firstRunDelay`, but nothing previously stopped an app-foreground
+    /// hook (`runIfDue()`, called with no delay of its own) from racing
+    /// ahead of it — and on the very first launch the scene goes
+    /// inactive → active immediately. Without a hold, a due store (fresh
+    /// upgrade, no stored `maintenance_last_run`) would run the first,
+    /// possibly history-sized pass right on the launch path.
+    func testStartArmsALaunchHoldThatBlocksAnImmediateRunIfDue() async throws {
+        let store = SpyStore() // no lastRun: due immediately
+        let maintenance = JournalMaintenance(store: store, search: nil, now: { self.t0 })
+        await maintenance.start()
+        await maintenance.runIfDue(now: t0)
+        XCTAssertNil(store.lastRunStamp,
+                     "an app-foreground hook landing right at launch must not run a pass during the hold")
+        await maintenance.stop()
+    }
+
+    /// Catch-up finishing is the signal the launch path is over, so
+    /// `runAfterCatchUp()` may run a due pass even while still inside the
+    /// hold window.
+    func testRunAfterCatchUpRunsDuringTheHold() async throws {
+        let store = SpyStore()
+        let maintenance = JournalMaintenance(store: store, search: nil, now: { self.t0 })
+        await maintenance.start()
+        await maintenance.runAfterCatchUp()
+        XCTAssertEqual(store.lastRunStamp, t0, "catch-up completing lets a due pass run early")
+        await maintenance.stop()
+    }
+
+    /// Once `now` reaches the hold's expiry, `runIfDue` behaves normally
+    /// again with no need for `runAfterCatchUp`.
+    func testRunIfDueRunsOnceTheHoldExpires() async throws {
+        let store = SpyStore()
+        let maintenance = JournalMaintenance(store: store, search: nil, now: { self.t0 })
+        await maintenance.start()
+        let delay = TimeInterval(JournalMaintenance.firstRunDelay.components.seconds)
+        let afterHold = t0.addingTimeInterval(delay + 1)
+        await maintenance.runIfDue(now: afterHold)
+        XCTAssertEqual(store.lastRunStamp, afterHold, "the hold has expired — a due pass runs normally")
+        await maintenance.stop()
+    }
+
     func testRetiredSeqsAreRemovedFromTheSearchIndexInOneBatch() async throws {
         let store = SpyStore()
         // Bugbot round 2 (A): search removal is driven by the INDEPENDENT

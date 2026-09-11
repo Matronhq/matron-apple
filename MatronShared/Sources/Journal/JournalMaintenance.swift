@@ -72,6 +72,18 @@ public actor JournalMaintenance {
     /// plenty of time for that to happen. There is no "unstop": a new
     /// sign-in builds a new `JournalMaintenance` on a new core.
     private var stopped = false
+    /// Set by `start()` to `now() + firstRunDelay`; `runIfDue(now:)` no-ops
+    /// while `current` is still before it. Bugbot High: the scene-active /
+    /// didBecomeActive hooks call `runIfDue()` with no guard of their own,
+    /// and on a fresh launch the scene goes inactive → active immediately,
+    /// so on an upgrade with no stored `maintenance_last_run` that call
+    /// would start the first (potentially history-sized) pass right on the
+    /// launch path — exactly what `firstRunDelay` was meant to prevent —
+    /// contending for the single `DatabaseQueue` with first list paint and
+    /// catch-up. `runAfterCatchUp()` clears this early: catch-up finishing
+    /// is the signal the launch path is over, so a pass may run sooner than
+    /// `firstRunDelay` if catch-up itself took longer.
+    private var holdUntil: Date?
     private static let logger = os.Logger(subsystem: "chat.matron", category: "journal-maintenance")
 
     public init(store: any MaintenanceSweeping, search: (any SearchService)?,
@@ -100,6 +112,15 @@ public actor JournalMaintenance {
     /// once `stop()` has been called — there is nothing to restart.
     public func start() {
         guard !stopped, schedule == nil else { return }
+        // Holds off any `runIfDue()` call that lands before the schedule's
+        // own first tick — in particular the app-foreground hooks, which
+        // fire on the very first scene-active transition at launch. The
+        // schedule's own first call happens only after sleeping
+        // `firstRunDelay`, so it always passes this on its own.
+        let delayComponents = Self.firstRunDelay.components
+        let delaySeconds = TimeInterval(delayComponents.seconds)
+            + TimeInterval(delayComponents.attoseconds) / 1e18
+        holdUntil = now().addingTimeInterval(delaySeconds)
         schedule = Task(priority: .utility) { [weak self] in
             try? await Task.sleep(for: Self.firstRunDelay)
             if Task.isCancelled { return }
@@ -146,17 +167,36 @@ public actor JournalMaintenance {
     /// hourly tick, the sync engine's first catch-up, and app foreground —
     /// funnels through here, so "whichever comes first" needs no extra
     /// state: the first caller does the work and the rest are no-ops. A
-    /// no-op too once `stop()` has been called.
+    /// no-op too once `stop()` has been called — EXCEPT during the launch
+    /// hold `start()` arms: an app-foreground hook can call this before the
+    /// schedule's own first tick (the scene goes inactive → active on the
+    /// very first launch), and on a fresh upgrade with no stored
+    /// `maintenance_last_run` that would otherwise start the first,
+    /// possibly history-sized pass right on the launch path. `holdUntil`
+    /// blocks that; `runAfterCatchUp()` is the one way past it early.
     public func runIfDue(now overrideNow: Date? = nil) async {
         guard !stopped else { return }
         let current = overrideNow ?? now()
         guard inFlight == nil else { return }
+        if let holdUntil, current < holdUntil { return }
         if let last = try? store.maintenanceLastRun(),
            current.timeIntervalSince(last) < interval { return }
         let pass = Task { await self.run(now: current) }
         inFlight = pass
         await pass.value
         inFlight = nil
+    }
+
+    /// The engine's catch-up-complete signal (`JournalSyncEngine
+    /// .setCatchUpCompleteHandler`, wired by `AppDependencies`): the replay
+    /// reaching the live cursor means the launch path is over, so it's safe
+    /// to run sooner than `start()`'s launch hold if catch-up itself took
+    /// longer than `firstRunDelay`. Clears `holdUntil` unconditionally
+    /// (harmless if it was already clear or already past) and then defers
+    /// to the normal watermark gate in `runIfDue`.
+    public func runAfterCatchUp() async {
+        holdUntil = nil
+        await runIfDue()
     }
 
     /// RETENTION FIRST (R9). Spec §3.4 numbers the sweeps the other way, and
