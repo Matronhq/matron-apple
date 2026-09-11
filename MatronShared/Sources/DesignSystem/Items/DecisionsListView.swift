@@ -84,6 +84,9 @@ public struct DecisionsListView: View {
                         // has to be added back here.
                         #if os(macOS)
                         .padding(.vertical, 6)
+                        // The gutter is part of the row: without this the
+                        // strip beside the separator would not hit-test.
+                        .contentShape(Rectangle())
                         .macInboxRow(hideTopSeparator: index == 0)
                         #endif
                     }
