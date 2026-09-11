@@ -67,8 +67,16 @@ for each conversation id:
         WHERE convo_id = ? AND type IN (<JournalEventType.messageTypes>)
         ORDER BY seq DESC LIMIT 1
   last_message_type = row.type (or NULL when no message-type event exists)
-  expired_snippet   = row.type == tool_output ? "$ " + payload.command : NULL
+  expired_snippet   = row.type == tool_output
+                      && (payload.live_log == true || payload.expired == true)
+                      ? "$ " + payload.command : NULL
 ```
+
+`expired_snippet` is deliberately NULL for a `tool_output` that is neither a
+live log nor already tombstoned. Those payloads (offloaded/legacy) carry a
+durable snippet that no TTL applies to — §3.4's 24 h rule covers `live_log`
+rows only — so substituting a `$ command` stub over them after 24 h would
+hide output the device still holds.
 
 `meta` gains three keys, all written by the maintenance sweep (§3.4), none
 by the migration: `snippet_ttl_ts`, `retention_ts`, `maintenance_last_run`.
@@ -112,6 +120,10 @@ if last_message_type == tool_output && lastActivityTS + 24 h <= now
 else → snippet
 ```
 
+Because `expired_snippet` is non-NULL only for a live-log or already-expired
+`tool_output` (§3.1), the `??` above falls through to the real snippet for
+every other payload, which is what keeps the offloaded/legacy case unchanged.
+
 No `event` read, so `newestMessageSeq(_:convoID:)` and `SnippetTTLMemo`
 (964-999) are deleted along with their tests; `conversationsStream()` now
 tracks only `conversation`, and the comment at 1381-1385 explaining why it
@@ -131,14 +143,19 @@ owned by `JournalSyncEngine`, replaces the call in `JournalStore.init`.
 1. `purgeExpiredToolOutputSnippets(now:)` — keeps its name and public
    signature. Cutoff `now − 24 h`. Scans `event WHERE type = 'tool_output'
    AND ts > :snippet_ttl_ts AND ts <= :cutoff` (uses `event_type_ts`),
-   rewrites rows not already `expired`, then sets `snippet_ttl_ts = cutoff`.
+   rewrites `live_log` rows not already `expired`, then sets
+   `snippet_ttl_ts = cutoff`. The `live_log` gate is what the shipped sweep
+   already applies: a tool output with a durable snippet and no live log has
+   no 24 h TTL and is only ever touched by retention below.
    First run after the update has no watermark and scans every tool-output
    row older than 24 h once, in the background.
 2. `applyRetention(now:)` — cutoff `now − 30 days` (§4 decision 1). Same
    pattern over `type IN ('tool_output', 'diff')` with watermark
    `retention_ts`. Tombstone rules:
-   - `tool_output`: remove `snippet`, `blob_ref`, `live_log`; truncate
-     `command` to its first 200 characters plus `…` when longer; set
+   - `tool_output`: remove `snippet` and `live_log`, set `blob_ref` to JSON
+     null (the shipped tombstone shape, which the server also writes and the
+     current sweep already produces — an absent `blob_ref` stays absent);
+     truncate `command` to its first 200 characters plus `…` when longer; set
      `expired = true`. `exit_code`, `denied`, `truncated`, `message_ref` stay.
    - `diff`: remove `diff` and `snippet`; set `expired = true`; every other
      key stays so the timeline can still name the file(s).
@@ -203,8 +220,11 @@ runs `SELECT COUNT(*)` on `event` and `conversation`.
 - Journal store — `440 MB`
 - Search index — `544 MB`
 - Events / Conversations — counts
-- Last launch — `store 1.9 s · first list 2.4 s · catch-up 6.1 s`
-  (plus `migration 3.2 s` when one ran)
+- This launch — `store 1.9 s · first list 2.4 s · catch-up 6.1 s`
+  (plus `migration 3.2 s` when one ran). The record is persisted on every
+  mark rather than at process exit, so by the time Settings can be opened the
+  stored record describes the launch the user is in — which is the useful
+  one, and the reason the row does not say "last".
 - Last maintenance — relative time, from `meta.maintenance_last_run`
 
 Sizes use `ByteCountFormatter`; the section shows a spinner until the async
