@@ -177,6 +177,11 @@ final class AppDependencies {
         core.backfillTask = Self.startBackfill(search: search, api: api, store: store, engine: engine)
         core.maintenanceStartTask = Task {
             await engine.attachMaintenance(maintenance)
+            // The engine lives in MatronShared and must not call
+            // LaunchTimeline itself (R7); this hook lets the app target
+            // record the mark the first time the replay reaches the live
+            // cursor.
+            await engine.setCatchUpCompleteHandler { LaunchTimeline.shared.mark(.catchUpComplete) }
             await maintenance.start()
         }
         // One-time: box tag letters chosen before they were journal-held

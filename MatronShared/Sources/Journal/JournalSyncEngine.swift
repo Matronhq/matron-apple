@@ -210,6 +210,18 @@ public actor JournalSyncEngine {
         maintenance = sweeper
     }
 
+    /// App-target hook for the launch timeline (R7 — `LaunchTimeline` is
+    /// driven only from the app targets, so this actor must not import or
+    /// call it directly). Fired exactly once, on the first replay that
+    /// reaches the live cursor; `setState` clears it immediately after
+    /// invoking it, so a later reconnect's `.running` transition — which
+    /// also happens here — never re-fires it.
+    private var catchUpCompleteHandler: (@Sendable () -> Void)?
+
+    public func setCatchUpCompleteHandler(_ handler: @escaping @Sendable () -> Void) {
+        catchUpCompleteHandler = handler
+    }
+
     // MARK: Lifecycle
 
     public func beginSync() {
@@ -824,9 +836,13 @@ public actor JournalSyncEngine {
         if case .running = new {
             readyWaiters.forEach { $0.resume() }
             readyWaiters = []
-            // First time the replay reaches the live cursor — `mark` keeps
-            // the first value, so later reconnects do not overwrite it.
-            LaunchTimeline.shared.mark(.catchUpComplete)
+            // First time the replay reaches the live cursor. Cleared right
+            // after firing so a later reconnect's `.running` transition
+            // does not re-invoke the app target's handler.
+            if let handler = catchUpCompleteHandler {
+                catchUpCompleteHandler = nil
+                handler()
+            }
             // Caught up with the live cursor: the disk is free again, so the
             // sweeper may run. `runIfDue` is watermark-gated, so the
             // reconnects that also land here cost one `meta` read.

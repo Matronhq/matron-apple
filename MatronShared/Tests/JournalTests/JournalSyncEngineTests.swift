@@ -1159,6 +1159,58 @@ final class JournalSyncEngineTests: XCTestCase {
 
         await engine.endSync()
     }
+
+    /// R7: `JournalSyncEngine` lives in `MatronShared` and must never call
+    /// `LaunchTimeline` itself — a review of Task 8's first pass caught the
+    /// engine doing exactly that, and proved it wrote a real `UserDefaults`
+    /// key from an ordinary library test run. The fix is this handler seam:
+    /// an app target installs it, and the engine fires it exactly once, on
+    /// the first replay that reaches the live cursor, clearing it
+    /// immediately after — so a later reconnect's `.running` transition
+    /// (exercised here the same way `testReconnectResumesFromCursorAfterSocketDeath`
+    /// does) never re-invokes it.
+    private final class HandlerCallCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private(set) var count = 0
+        func increment() { lock.lock(); count += 1; lock.unlock() }
+    }
+
+    func testCatchUpCompleteHandlerFiresExactlyOnceAcrossAReconnect() async throws {
+        // Defensive: prove the engine itself never touches `UserDefaults`
+        // under this key, regardless of what earlier tests in this file (or
+        // a prior run) left behind.
+        UserDefaults.standard.removeObject(forKey: "launch.last")
+
+        let first = FakeWebSocketConnection()
+        first.serve(helloOK(2))
+        first.serve(journalLine(1))
+        first.serve(journalLine(2))
+        let second = FakeWebSocketConnection()
+        second.serve(helloOK(4))
+        second.serve(journalLine(3))
+        second.serve(journalLine(4))
+        let store = try seededStore()
+        let connector = FakeConnector([first, second])
+        let engine = makeEngine(store: store, connector: connector)
+        let counter = HandlerCallCounter()
+        await engine.setCatchUpCompleteHandler { counter.increment() }
+
+        await engine.beginSync()
+        try await engine.waitUntilReady() // first .running transition
+        first.closeFromServer()
+        for _ in 0..<200 where store.cursor < 4 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(store.cursor, 4, "reconnect must land the second socket's frames")
+
+        XCTAssertEqual(counter.count, 1,
+                       "the handler must fire once, not again on the reconnect's .running transition")
+        XCTAssertNil(UserDefaults.standard.object(forKey: "launch.last"),
+                     "JournalSyncEngine must never write the launch timeline's UserDefaults key (R7)")
+
+        await engine.endSync()
+        UserDefaults.standard.removeObject(forKey: "launch.last")
+    }
 }
 
 /// Records what an engine asks it to index; every other `SearchService`
