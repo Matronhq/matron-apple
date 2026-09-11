@@ -428,51 +428,6 @@ final class JournalStoreTests: XCTestCase {
         XCTAssertEqual(updated?.map(\.seq), [3, 4, 5])
     }
 
-    // MARK: Snippet-TTL memo invalidation
-
-    /// `insertHistory` writes event rows without bumping `last_seq`, so it
-    /// must drop the TTL memo: a stale conversation whose newest message
-    /// arrives via backfill would otherwise keep its cached "no override"
-    /// answer and never show the `$ command` snippet.
-    func testSnippetTTLMemoInvalidatedByInsertHistory() throws {
-        let store = try makeStore()
-        // Stale conversation (1970 activity), summary-known head at seq 10,
-        // no local events yet — the first read caches "no override".
-        try store.applyColdSnapshot([
-            ConvoSummaryDTO(id: "c1", title: "T", sessionState: "running",
-                            lastSeq: 10, snippet: "from-server", createdAt: 0, lastTS: 1_000),
-        ], headSeq: 0)
-        XCTAssertEqual(try store.conversations().first?.snippet, "from-server")
-
-        // Backfill lands a live-log tool_output as the newest message-type
-        // event; `last_seq` is untouched, so only the insertHistory
-        // invalidation makes the next read recompute.
-        try store.insertHistory([event(9, type: JournalEventType.toolOutput,
-                                       payload: ["live_log": true, "command": "make build"])])
-        XCTAssertEqual(try store.conversations().first?.snippet, "$ make build",
-                       "stale memo served after insertHistory changed the newest message")
-    }
-
-    func testSnippetTTLMemoInvalidatedByWipe() throws {
-        let store = try makeStore()
-        // Stale conversation whose newest message is an unexpired live_log
-        // tool_output — the read caches the `$ command` override.
-        try store.applyJournal(event(5, type: JournalEventType.toolOutput,
-                                     payload: ["live_log": true, "command": "make build"]))
-        XCTAssertEqual(try store.conversations().first?.snippet, "$ make build")
-
-        // Wipe, then re-bootstrap the same conversation at the SAME
-        // last_seq with no events: the memo key matches, so only the wipe
-        // invalidation keeps the stale override from resurfacing.
-        try store.wipe()
-        try store.applyColdSnapshot([
-            ConvoSummaryDTO(id: "c1", title: "T", sessionState: "running",
-                            lastSeq: 5, snippet: "fresh", createdAt: 0, lastTS: 1_000),
-        ], headSeq: 5)
-        XCTAssertEqual(try store.conversations().first?.snippet, "fresh",
-                       "stale memo override survived a mirror wipe")
-    }
-
     func testEventsStreamSuppressesOtherConversationCommits() async throws {
         let store = try makeStore()
         try store.applyJournal(event(1))
@@ -560,8 +515,11 @@ final class JournalStoreTests: XCTestCase {
     func testPurgeRewritesStaleLiveLogToTombstone() throws {
         let store = try makeStore()
         // The event helper stamps ts = seq seconds after epoch, so seq 1 is
-        // ancient relative to any injected `now` past 1970-01-02.
-        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()))
+        // ancient relative to any injected `now` past 1970-01-02. Pin the
+        // INSERT inside the TTL too, or the insert-time tombstone would do
+        // the sweep's job and this test would prove nothing.
+        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()),
+                               now: Date(timeIntervalSince1970: 1))
         try store.purgeExpiredToolOutputSnippets(
             now: Date(timeIntervalSince1970: 1).addingTimeInterval(25 * 3600))
 
@@ -576,8 +534,10 @@ final class JournalStoreTests: XCTestCase {
 
     func testPurgeLeavesYoungAndNonLiveLogRows() throws {
         let store = try makeStore()
-        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload(liveLog: false)))
-        try store.applyJournal(event(2, type: "tool_output", payload: toolOutputPayload()))
+        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload(liveLog: false)),
+                               now: Date(timeIntervalSince1970: 2))
+        try store.applyJournal(event(2, type: "tool_output", payload: toolOutputPayload()),
+                               now: Date(timeIntervalSince1970: 2))
         try store.purgeExpiredToolOutputSnippets(
             now: Date(timeIntervalSince1970: 2).addingTimeInterval(23 * 3600))
         XCTAssertNotNil(try storedPayload(store, seq: 2)["snippet"], "still inside the TTL")
@@ -591,7 +551,8 @@ final class JournalStoreTests: XCTestCase {
 
     func testPurgeRewritesConvoPreviewWhenPurgedEventIsNewest() throws {
         let store = try makeStore()
-        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()))
+        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()),
+                               now: Date(timeIntervalSince1970: 1))
         // Read-time TTL is wall-clock relative to `now`; pin it inside the
         // window so this precondition reflects "before the sweep AND before
         // the TTL", not the real current date (the event helper stamps
@@ -605,8 +566,10 @@ final class JournalStoreTests: XCTestCase {
 
     func testPurgeKeepsConvoPreviewWhenNewerMessageExists() throws {
         let store = try makeStore()
-        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()))
-        try store.applyJournal(event(2, payload: ["body": "later text"]))
+        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()),
+                               now: Date(timeIntervalSince1970: 2))
+        try store.applyJournal(event(2, payload: ["body": "later text"]),
+                               now: Date(timeIntervalSince1970: 2))
         try store.purgeExpiredToolOutputSnippets(
             now: Date(timeIntervalSince1970: 2).addingTimeInterval(48 * 3600))
         XCTAssertEqual(try store.conversations().first?.snippet, "later text")
@@ -614,7 +577,8 @@ final class JournalStoreTests: XCTestCase {
 
     func testPurgeIsIdempotent() throws {
         let store = try makeStore()
-        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()))
+        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()),
+                               now: Date(timeIntervalSince1970: 1))
         let now = Date(timeIntervalSince1970: 1).addingTimeInterval(25 * 3600)
         try store.purgeExpiredToolOutputSnippets(now: now)
         let first = try storedPayload(store, seq: 1)
@@ -633,7 +597,8 @@ final class JournalStoreTests: XCTestCase {
         // the next time the conversation list is *read*, not just the
         // next time the store happens to reopen.
         let store = try makeStore()
-        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()))
+        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()),
+                               now: Date(timeIntervalSince1970: 1))
         let fresh = try store.conversations(now: Date(timeIntervalSince1970: 1).addingTimeInterval(1))
         XCTAssertEqual(fresh.first?.snippet, "output text", "precondition: still fresh")
 
@@ -649,7 +614,8 @@ final class JournalStoreTests: XCTestCase {
 
     func testConversationsReadTimeTTLLeavesNonLiveLogSnippetsAlone() throws {
         let store = try makeStore()
-        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload(liveLog: false)))
+        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload(liveLog: false)),
+                               now: Date(timeIntervalSince1970: 1))
         let stale = try store.conversations(
             now: Date(timeIntervalSince1970: 1).addingTimeInterval(48 * 3600))
         XCTAssertEqual(stale.first?.snippet, "output text",

@@ -129,4 +129,170 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
         let row = try XCTUnwrap(try store.dbQueue.read { try ConversationRecord.fetchOne($0, key: "c1") })
         XCTAssertEqual(row.expiredSnippet, "$ make build")
     }
+
+    // MARK: Write path keeps the columns current
+
+    func testApplyOneMaintainsLastMessageColumns() throws {
+        let store = try makeStore()
+        let fresh = Date(timeIntervalSince1970: 10)
+        try store.applyJournal(event(1, type: JournalEventType.text), now: fresh)
+        var row = try XCTUnwrap(try store.dbQueue.read { try ConversationRecord.fetchOne($0, key: "c1") })
+        XCTAssertEqual(row.lastMessageType, JournalEventType.text)
+        XCTAssertNil(row.expiredSnippet)
+
+        try store.applyJournal(event(2, type: JournalEventType.toolOutput,
+                                     payload: ["command": "make test", "live_log": true, "snippet": "out"]),
+                               now: fresh)
+        row = try XCTUnwrap(try store.dbQueue.read { try ConversationRecord.fetchOne($0, key: "c1") })
+        XCTAssertEqual(row.lastMessageType, JournalEventType.toolOutput)
+        XCTAssertEqual(row.expiredSnippet, "$ make test")
+        XCTAssertEqual(row.snippet, "out", "the live preview is still the real output while it is fresh")
+
+        // A bookkeeping frame is not a message: the columns must not move.
+        try store.applyJournal(event(3, sender: "user:dan", type: JournalEventType.readMarker,
+                                     payload: ["up_to_seq": 2]), now: fresh)
+        row = try XCTUnwrap(try store.dbQueue.read { try ConversationRecord.fetchOne($0, key: "c1") })
+        XCTAssertEqual(row.lastMessageType, JournalEventType.toolOutput)
+        XCTAssertEqual(row.expiredSnippet, "$ make test")
+    }
+
+    /// The insert-time half of the watermark contract: a row that is already
+    /// past a cutoff when it lands is stored tombstoned, so the sweeps can
+    /// skip everything below their watermark and still be right.
+    func testApplyOneTombstonesAnAlreadyStaleToolOutputAtInsert() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, type: JournalEventType.toolOutput,
+                                     payload: ["command": "make test", "live_log": true,
+                                               "snippet": "out", "blob_ref": "b1"]),
+                               now: Date(timeIntervalSince1970: 1).addingTimeInterval(25 * 3600))
+        let stored = try XCTUnwrap(try store.events(convoID: "c1").first)
+        XCTAssertNil(stored.payload["snippet"], "a stale live log must land already tombstoned")
+        XCTAssertEqual(stored.payload["expired"] as? Bool, true)
+        let row = try XCTUnwrap(try store.dbQueue.read { try ConversationRecord.fetchOne($0, key: "c1") })
+        XCTAssertEqual(row.expiredSnippet, "$ make test")
+    }
+
+    /// Reviewer nit carried from Task 2 (`EventTombstone` R2): an ALREADY
+    /// absent `blob_ref` must stay absent through insert-time tombstoning,
+    /// not gain a `null` entry it never had. `EventTombstone.rewrite` only
+    /// nulls the key when it is present; this pins that the insert path
+    /// (not just the pure function) preserves that distinction.
+    func testApplyOneLeavesAbsentBlobRefAbsentAtInsert() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, type: JournalEventType.toolOutput,
+                                     payload: ["command": "make test", "live_log": true, "snippet": "out"]),
+                               now: Date(timeIntervalSince1970: 1).addingTimeInterval(25 * 3600))
+        let stored = try XCTUnwrap(try store.events(convoID: "c1").first)
+        XCTAssertNil(stored.payload["snippet"])
+        XCTAssertEqual(stored.payload["expired"] as? Bool, true)
+        XCTAssertNil(stored.payload["blob_ref"], "no blob_ref key was ever present; tombstoning must not add one")
+        XCTAssertFalse(stored.payload.keys.contains("blob_ref"),
+                       "an absent key must stay absent, not become an explicit null")
+    }
+
+    func testApplyOneTombstonesAPastRetentionDiffAtInsert() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, type: JournalEventType.diff,
+                                     payload: ["file_path": "/w/A.swift", "diff": "+ a", "added": 1]),
+                               now: Date(timeIntervalSince1970: 1).addingTimeInterval(31 * 24 * 3600))
+        let stored = try XCTUnwrap(try store.events(convoID: "c1").first)
+        XCTAssertNil(stored.payload["diff"])
+        XCTAssertEqual(stored.payload["expired"] as? Bool, true)
+        XCTAssertEqual(stored.payload["file_path"] as? String, "/w/A.swift")
+    }
+
+    func testInsertHistoryRecomputesTheColumnsAndTombstones() throws {
+        let store = try makeStore()
+        let fresh = Date(timeIntervalSince1970: 10)
+        try store.applyJournal(event(5, type: JournalEventType.text, payload: ["body": "newest"]), now: fresh)
+
+        // Backfill lands OLDER rows: `last_seq` does not move, so the columns
+        // can only stay right if insertHistory recomputes them.
+        try store.insertHistory([
+            event(1, type: JournalEventType.toolOutput,
+                  payload: ["command": "old", "live_log": true, "snippet": "out"]),
+        ], now: fresh)
+        var row = try XCTUnwrap(try store.dbQueue.read { try ConversationRecord.fetchOne($0, key: "c1") })
+        XCTAssertEqual(row.lastMessageType, JournalEventType.text, "seq 5 is still the newest message")
+        XCTAssertNil(row.expiredSnippet)
+
+        // Now a backfilled row that IS the newest message-type row, and old
+        // enough to arrive tombstoned.
+        try store.insertHistory([
+            event(6, type: JournalEventType.toolOutput,
+                  payload: ["command": "backfilled", "live_log": true, "snippet": "out"]),
+        ], now: Date(timeIntervalSince1970: 6).addingTimeInterval(25 * 3600))
+        row = try XCTUnwrap(try store.dbQueue.read { try ConversationRecord.fetchOne($0, key: "c1") })
+        XCTAssertEqual(row.lastMessageType, JournalEventType.toolOutput)
+        XCTAssertEqual(row.expiredSnippet, "$ backfilled")
+        let stored = try XCTUnwrap(try store.events(convoID: "c1").first { $0.seq == 6 })
+        XCTAssertNil(stored.payload["snippet"])
+    }
+
+    // MARK: Read path is columns only
+
+    /// The pin that matters: delete every `event` row, then read the list.
+    /// If the TTL still needed a sub-query the override would vanish.
+    func testReadTimeTTLDerivesFromColumnsWithoutReadingEvents() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, type: JournalEventType.toolOutput,
+                                     payload: ["command": "make test", "live_log": true, "snippet": "out"]),
+                               now: Date(timeIntervalSince1970: 2))
+        try store.dbQueue.write { db in try db.execute(sql: "DELETE FROM event") }
+
+        let fresh = try store.conversations(now: Date(timeIntervalSince1970: 1).addingTimeInterval(60))
+        XCTAssertEqual(fresh.first?.snippet, "out", "inside the TTL the real output still shows")
+        let stale = try store.conversations(now: Date(timeIntervalSince1970: 1).addingTimeInterval(25 * 3600))
+        XCTAssertEqual(stale.first?.snippet, "$ make test",
+                       "the TTL override must come from the columns, not from an event sub-query")
+    }
+
+    func testReadTimeTTLIgnoresConversationsWhoseNewestMessageIsNotToolOutput() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, type: JournalEventType.text, payload: ["body": "hello"]),
+                               now: Date(timeIntervalSince1970: 2))
+        let stale = try store.conversations(now: Date(timeIntervalSince1970: 1).addingTimeInterval(48 * 3600))
+        XCTAssertEqual(stale.first?.snippet, "hello")
+    }
+
+    /// The chat-list observation used to re-run its whole fetch on every
+    /// applied frame because the TTL sub-queries read `event`. Rewriting an
+    /// `event` payload in a way that WOULD have changed the old derived
+    /// snippet must now deliver nothing; the following `conversation` write
+    /// proves the stream is still alive rather than merely quiet.
+    func testConversationsStreamNoLongerTracksTheEventTable() async throws {
+        let store = try makeStore()
+        // Newest message is a tool_output with NO live_log: `expired_snippet`
+        // is nil, so the list shows the real snippet under the new rules —
+        // while the old read path would have started substituting
+        // "$ make test" the moment `live_log` appeared in the payload.
+        try store.applyJournal(event(1, type: JournalEventType.toolOutput,
+                                     payload: ["command": "make test", "snippet": "out"]),
+                               now: Date(timeIntervalSince1970: 2))
+
+        var iterator = store.conversationsStream().makeAsyncIterator()
+        let initial = await iterator.next()
+        XCTAssertEqual(initial?.first?.snippet, "out")
+
+        // `await`ed: GRDB's sync `write` overload is `@_disfavoredOverload`
+        // (SR-15150), so inside this `async throws` test the async overload
+        // wins resolution and must be awaited — same queue, same semantics.
+        try await store.dbQueue.write { db in
+            let payload = try JSONSerialization.data(withJSONObject: [
+                "command": "make test", "snippet": "out", "live_log": true,
+            ] as [String: Any])
+            try db.execute(sql: "UPDATE event SET payload = ? WHERE seq = 1", arguments: [payload])
+        }
+        // Sleep so the two commits cannot coalesce into one notification,
+        // which would mask a regression (same guard as
+        // `testEventsStreamSuppressesOtherConversationCommits`).
+        try await Task.sleep(for: .milliseconds(150))
+        try await store.dbQueue.write { db in
+            try db.execute(sql: "UPDATE conversation SET title = 'renamed' WHERE id = 'c1'")
+        }
+
+        let next = await iterator.next()
+        XCTAssertEqual(next?.first?.title, "renamed",
+                       "the event-payload write delivered a value — the list fetch still reads `event`")
+    }
 }
