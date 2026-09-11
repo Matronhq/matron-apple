@@ -814,12 +814,32 @@ public final class JournalStore: @unchecked Sendable {
                 convo.unreadCount = try Self.recountUnread(db, convoID: convo.id,
                                                            after: convo.readUpToSeq, ownSender: ownSender)
             } else if JournalEventType.messageTypes.contains(event.type) {
-                convo.snippet = Self.snippet(type: event.type, payload: payload)
+                // `Self.snippet` has no `tool_output` case, so it falls to
+                // the generic default and reads `payload["snippet"]` — which
+                // `tombstonedForStorage` has already stripped for a row that
+                // landed past its cutoff. Without the fallback below,
+                // `convo.snippet` would store the literal placeholder
+                // `"[tool_output]"` (review fix round 1, M1) instead of the
+                // truthful `$ command` stub — masked today only because
+                // every read path applies `applyReadTimeSnippetTTL` first.
+                //
+                // Gated on the payload's OWN `expired` flag — set by
+                // `EventTombstone.rewrite` only when tombstoning actually
+                // happened — rather than on whether `Self.expiredSnippet`
+                // COULD produce a stub: that guard also fires for a fresh,
+                // still-inside-the-TTL `live_log` row, and using it
+                // unconditionally would overwrite the real output with its
+                // stub while still fresh.
+                let expiredSnippet = Self.expiredSnippet(type: event.type, payload: payload)
+                let alreadyExpired = payload["expired"] as? Bool == true
+                convo.snippet = alreadyExpired
+                    ? (expiredSnippet ?? Self.snippet(type: event.type, payload: payload))
+                    : Self.snippet(type: event.type, payload: payload)
                 // The chat list's tool-output TTL reads these two columns and
                 // nothing else (see `applyReadTimeSnippetTTL`), so they have
                 // to be maintained wherever the snippet is.
                 convo.lastMessageType = event.type
-                convo.expiredSnippet = Self.expiredSnippet(type: event.type, payload: payload)
+                convo.expiredSnippet = expiredSnippet
                 if event.sender != ownSender, event.seq > convo.readUpToSeq {
                     convo.unreadCount += 1
                 }

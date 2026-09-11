@@ -172,6 +172,26 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
         XCTAssertEqual(row.expiredSnippet, "$ make test")
     }
 
+    /// Fix round 1, M1: `Self.snippet(type:payload:)` has no `tool_output`
+    /// case, so once the row lands already-tombstoned (payload's `snippet`
+    /// key stripped) it falls to the generic default and reads the now-nil
+    /// `payload["snippet"]`, producing the literal placeholder `"[tool_
+    /// output]"` in `conversation.snippet` on disk. Reads the row directly
+    /// off the DB (not through `conversations(now:)`), because the read-time
+    /// TTL override would mask the bug — `applyReadTimeSnippetTTL` always
+    /// fires for a row whose `lastActivityTS` is already past the cutoff, so
+    /// the garbage would never actually render, only sit on disk waiting for
+    /// a future reader that doesn't go through the read path.
+    func testApplyOneStoresCommandStubNotPlaceholderForAlreadyStaleToolOutput() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, type: JournalEventType.toolOutput,
+                                     payload: ["command": "make test", "live_log": true, "snippet": "out"]),
+                               now: Date(timeIntervalSince1970: 1).addingTimeInterval(25 * 3600))
+        let row = try XCTUnwrap(try store.dbQueue.read { try ConversationRecord.fetchOne($0, key: "c1") })
+        XCTAssertEqual(row.snippet, "$ make test",
+                       "an already-stale tool_output must store the command stub, not the [tool_output] placeholder")
+    }
+
     /// Reviewer nit carried from Task 2 (`EventTombstone` R2): an ALREADY
     /// absent `blob_ref` must stay absent through insert-time tombstoning,
     /// not gain a `null` entry it never had. `EventTombstone.rewrite` only
