@@ -989,19 +989,24 @@ struct MacChatView: View {
                     }
                 }
             }
-            // Floating stop — solid for the whole turn via the durable
+            // Floating top-trailing controls: Stop above "jump to my last
+            // message" — or jump alone, in Stop's slot, once no turn is
+            // running. Stop is solid for the whole turn via the durable
             // session_state; see iOS `ChatView` for the signal and
-            // !esc-as-own-message rationale.
+            // !esc-as-own-message rationale. No tasks page in the Mac chat
+            // pager, so jump's visibility only depends on scroll state.
             .overlay(alignment: .topTrailing) {
-                MinDisplayDuration(while: viewModel.isTurnRunning || viewModel.activityLabel != nil) { visible in
-                    if visible {
-                        StopTurnButton {
-                            Task { await viewModel.sendCommand("!esc") }
-                        }
-                    }
+                MinDisplayDuration(while: viewModel.isTurnRunning || viewModel.activityLabel != nil) { stopVisible in
+                    ChatTopTrailingControls(
+                        showsStop: stopVisible,
+                        showsJump: ChatTopTrailingControls.showsJump(
+                            isFollowingTail: isFollowingTail,
+                            isTasksPage: false
+                        ),
+                        onStop: { Task { await viewModel.sendCommand("!esc") } },
+                        onJump: { Task { await viewModel.jumpToLastOwnMessage() } }
+                    )
                 }
-                .animation(.easeInOut(duration: 0.18),
-                           value: viewModel.isTurnRunning || viewModel.activityLabel != nil)
             }
             }
             }
@@ -1066,7 +1071,6 @@ struct MacChatView: View {
                 stripViewModel: stripViewModel,
                 onOpenSubChat: { openSubChatID = $0; showItemsPane = false },
                 onCompact: { Task { await viewModel.sendCommand("/compact") } },
-                onJumpToLastOwnMessage: { Task { await viewModel.jumpToLastOwnMessage() } },
                 showSummaries: $showSummaries,
                 popoverContent: {
                     AnyView(MacSummariesPopoverContent(viewModel: viewModel) { seq in
