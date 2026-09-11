@@ -101,4 +101,61 @@ final class LaunchTimelineTests: XCTestCase {
         XCTAssertEqual(LaunchTimeline.summary(partial), "store 0.4 s")
         XCTAssertEqual(LaunchTimeline.summary(nil), "—")
     }
+
+    // MARK: - Fix round 2 (Bugbot: persist race + first-wins)
+
+    /// Bugbot Medium: `mark`/`endStoreOpen`/`recordMigration` used to copy
+    /// `_record` under the lock and persist the snapshot AFTER releasing
+    /// it, so two concurrent marks (main-actor `firstListPaint` racing the
+    /// sync engine's `catchUpComplete`) could persist an earlier snapshot
+    /// last and drop a field that had already landed in memory. Persisting
+    /// while still holding the lock makes the write atomic with the
+    /// mutation, so this must hold for every interleaving: on a real
+    /// (non-scripted) clock, hammered many times to shake out any
+    /// scheduling-dependent ordering.
+    func testConcurrentMarksNeverDropAFieldFromThePersistedRecord() throws {
+        for iteration in 0..<200 {
+            let defaults = UserDefaults(suiteName: "launch-timeline-concurrent-\(UUID().uuidString)")!
+            let timeline = LaunchTimeline(defaults: defaults)
+            let group = DispatchGroup()
+            group.enter()
+            DispatchQueue.global().async { timeline.mark(.firstListPaint); group.leave() }
+            group.enter()
+            DispatchQueue.global().async { timeline.mark(.catchUpComplete); group.leave() }
+            group.wait()
+
+            let inMemory = timeline.record
+            let persisted = try XCTUnwrap(LaunchTimeline.currentLaunch(defaults: defaults),
+                                          "iteration \(iteration): nothing was persisted at all")
+            XCTAssertNotNil(persisted.firstListPaint, "iteration \(iteration): firstListPaint dropped by a losing persist")
+            XCTAssertNotNil(persisted.catchUpComplete, "iteration \(iteration): catchUpComplete dropped by a losing persist")
+            XCTAssertEqual(persisted, inMemory,
+                           "iteration \(iteration): the persisted record must equal the in-memory one after any interleaving")
+        }
+    }
+
+    /// Bugbot Low: unlike `mark(_:)`, `endStoreOpen`/`recordMigration` used
+    /// to always overwrite, so a second `core(for:)` call in one process
+    /// (sign-out → sign-in) would replace this launch's `storeOpen` while
+    /// `firstListPaint`/`catchUpComplete` stayed from the first session —
+    /// a mixed record. The launch record now describes the first store
+    /// open of the process; a second full begin/end cycle is ignored.
+    func testASecondStoreOpenCycleDoesNotOverwriteTheFirst() throws {
+        let (timeline, _) = makeTimeline([0.0, 2.0, 5.0, 9.0])
+        timeline.beginStoreOpen()          // t = 0.0
+        timeline.endStoreOpen()            // t = 2.0 → storeOpen 2.0
+        timeline.beginStoreOpen()          // must no-op: storeOpen already recorded
+        timeline.endStoreOpen()            // must no-op: storeOpenBegan never set
+        XCTAssertEqual(try XCTUnwrap(timeline.record.storeOpen), 2.0, accuracy: 0.001,
+                       "a second store-open cycle must not replace the first launch's timing")
+    }
+
+    /// Same rule for the migration duration the store reports back.
+    func testRecordMigrationFirstWins() throws {
+        let (timeline, _) = makeTimeline([0.0])
+        timeline.recordMigration(.milliseconds(1000))
+        timeline.recordMigration(.milliseconds(5000))
+        XCTAssertEqual(try XCTUnwrap(timeline.record.migration), 1.0, accuracy: 0.001,
+                       "a second migration report must not overwrite the first launch's duration")
+    }
 }

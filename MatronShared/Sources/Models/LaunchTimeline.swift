@@ -77,11 +77,17 @@ public final class LaunchTimeline: @unchecked Sendable {
         return _record
     }
 
+    /// First-wins, like `mark(_:)`: the launch record describes the first
+    /// store open of the process. A second `core(for:)` call in the same
+    /// process (sign-out → sign-in) must not start a second signpost
+    /// interval or, via `endStoreOpen`, clobber the first session's timing
+    /// with the second session's.
     public func beginStoreOpen() {
         lock.lock()
+        defer { lock.unlock() }
+        guard _record.storeOpen == nil, storeOpenBegan == nil else { return }
         storeOpenBegan = clock()
         storeOpenSignpost = Self.signposter.beginInterval("storeOpen")
-        lock.unlock()
     }
 
     public func endStoreOpen() {
@@ -94,9 +100,12 @@ public final class LaunchTimeline: @unchecked Sendable {
             Self.signposter.endInterval("storeOpen", state)
             storeOpenSignpost = nil
         }
-        let snapshot = _record
+        // Persisted while still holding the lock — see `persist`'s doc:
+        // this keeps the write ordered with the mutation, so a mark that
+        // lands concurrently on another thread cannot finish its own
+        // read-mutate-write in the gap and have this snapshot overwrite it.
+        persist(_record)
         lock.unlock()
-        persist(snapshot)
         Self.logger.info("launch storeOpen \(elapsed, format: .fixed(precision: 3), privacy: .public) s")
     }
 
@@ -104,16 +113,19 @@ public final class LaunchTimeline: @unchecked Sendable {
     /// open. The duration is MEASURED BY THE STORE
     /// (`JournalStore.lastMigrationDuration`) and merely reported here, so
     /// `MatronShared` keeps no dependency on this type and no test writes
-    /// `UserDefaults` (R7).
+    /// `UserDefaults` (R7). First-wins for the same reason as
+    /// `beginStoreOpen`/`endStoreOpen`: a second `core(for:)` call must not
+    /// overwrite this launch's migration duration with its own (typically
+    /// absent) one.
     public func recordMigration(_ duration: Duration) {
         let elapsed = TimeInterval(duration.components.seconds)
             + Double(duration.components.attoseconds) * 1e-18
         lock.lock()
+        guard _record.migration == nil else { lock.unlock(); return }
         _record.migration = elapsed
-        let snapshot = _record
+        persist(_record)
         lock.unlock()
         Self.signposter.emitEvent("migration")
-        persist(snapshot)
         Self.logger.info("launch migration \(elapsed, format: .fixed(precision: 3), privacy: .public) s")
     }
 
@@ -135,7 +147,12 @@ public final class LaunchTimeline: @unchecked Sendable {
             lock.unlock()
             return
         }
-        let snapshot = _record
+        // Persisted before unlocking (see `persist`'s doc): two marks
+        // landing concurrently — e.g. main-actor `firstListPaint` racing
+        // the sync engine's `catchUpComplete` — must not let an earlier
+        // snapshot persist last and silently drop a field that already
+        // landed in memory.
+        persist(_record)
         lock.unlock()
         // `OSSignposter.emitEvent` takes a `StaticString`, which cannot be
         // built from a runtime `String` — so one literal per case, not
@@ -145,10 +162,17 @@ public final class LaunchTimeline: @unchecked Sendable {
         case .catchUpComplete: Self.signposter.emitEvent("catchUpComplete")
         case .processStart, .storeOpen, .migration: break
         }
-        persist(snapshot)
         Self.logger.info("launch \(mark.rawValue, privacy: .public) \(elapsed, format: .fixed(precision: 3), privacy: .public) s")
     }
 
+    /// Encodes and writes `record`. Every call site holds `lock` for the
+    /// duration of this call — deliberately: a `UserDefaults` write here is
+    /// a handful of bytes, cheap enough that serializing it with the
+    /// mutation is the simplest way to guarantee the invariant this type
+    /// promises: after any interleaving of marks, the persisted record
+    /// equals the in-memory one. Doing the write after releasing the lock
+    /// (the original shape) let two concurrent callers' writes land
+    /// out of order and drop whichever mark's write lost the race.
     private func persist(_ record: LaunchRecord) {
         guard let data = try? JSONEncoder().encode(record) else { return }
         defaults.set(data, forKey: Self.defaultsKey)
