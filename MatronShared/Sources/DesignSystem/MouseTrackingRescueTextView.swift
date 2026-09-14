@@ -185,17 +185,23 @@ open class MouseTrackingRescueTextView: NSTextView {
     /// click (button up, pointer within slop, no selection created) and
     /// nobody dispatched the link, the click was swallowed — dispatch it.
     /// Internal for tests — see `armLinkPress`.
-    func resolveLinkPressIfNeeded() {
+    /// - Parameter expected: `true` when the caller ran its OWN tracking
+    ///   loop (`MessageCopyTextView`'s takeover path), so AppKit never had
+    ///   the chance to dispatch and this is the normal route, not a
+    ///   swallowed click — the fault-hunting log line is skipped.
+    func resolveLinkPressIfNeeded(expected: Bool = false) {
         guard let press = linkPress else { return }
         linkPress = nil
         guard !linkClickDispatched else { return }
         let here = currentScreenLocation()
         let moved = hypot(here.x - press.screenPoint.x, here.y - press.screenPoint.y)
         guard moved <= Self.linkClickSlop, selectedRange().length == 0 else { return }
-        let storageChanged = textStorage?.string.hashValue != press.storageHash
-        let elapsedMs = Int((ProcessInfo.processInfo.systemUptime - press.began) * 1000)
-        let url = press.link as? URL
-        Self.logger.notice("link click swallowed by AppKit — dispatching fallback (scheme \(url?.scheme ?? "?", privacy: .public), host \(url?.host ?? "?", privacy: .public), \(elapsedMs)ms, storageChanged \(storageChanged), moved \(String(format: "%.1f", moved), privacy: .public)pt)")
+        if !expected {
+            let storageChanged = textStorage?.string.hashValue != press.storageHash
+            let elapsedMs = Int((ProcessInfo.processInfo.systemUptime - press.began) * 1000)
+            let url = press.link as? URL
+            Self.logger.notice("link click swallowed by AppKit — dispatching fallback (scheme \(url?.scheme ?? "?", privacy: .public), host \(url?.host ?? "?", privacy: .public), \(elapsedMs)ms, storageChanged \(storageChanged), moved \(String(format: "%.1f", moved), privacy: .public)pt)")
+        }
         // Clamp: a mid-press storage replacement can shrink the text below
         // the pressed index. The LINK value is what matters downstream.
         let safeIndex = min(press.charIndex, max(0, (textStorage?.length ?? 1) - 1))
