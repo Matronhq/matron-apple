@@ -51,8 +51,9 @@ final class ItemDetailSnapshotTests: XCTestCase {
 
     /// A wide host (a dragged-out Mac pane, or the narrow-takeover on a big
     /// window) must not stretch the thread across the window: the column
-    /// caps at `ItemTypography.measure` and centres, and the reply field
-    /// lines up under it (tracker #66).
+    /// caps at `ItemTypography.measure` and centres, and the composer row
+    /// caps to the same width so its accessory buttons sit on the column's
+    /// text edges with the field inset between them (tracker #66).
     func testWideHostCapsAndCentresTheColumn() {
         let item = TrackerItem(id: "it_3", num: 28, kind: .question, awaiting: .user, title: "bev re-pin prunes editor/node_modules — patch-package then fails",
                                body: "The re-pin step runs `npm ci` in `editor/`, which prunes `node_modules` before `patch-package` has applied the `@cantoo/pdf-lib` patch. The next build then fails on the unpatched module.\n\nTwo options: run `patch-package` as a `postinstall` hook, or move the patch into a fork. I recommend the hook — it is one line in `package.json` and matches how the web app does it.",

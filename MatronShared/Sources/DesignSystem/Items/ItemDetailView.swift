@@ -80,6 +80,14 @@ public struct ItemDetailView: View {
     /// same geometry callback as `isAtBottom`. Gates the jump-to-bottom
     /// button so a thread that fits on screen never offers a jump.
     @State private var isScrollable = false
+    /// The item body size for plain `Text` that sits beside a markdown
+    /// body (pending replies, voice transcripts): the same base and scale
+    /// `Theme.matronItem` resolves to, and — because it is a
+    /// `@ScaledMetric` relative to `.body`, exactly as MarkdownUI scales
+    /// its own base — it grows and shrinks with Dynamic Type in step with
+    /// the markdown next to it. A fixed `.system(size:)` would agree at
+    /// the default size and diverge at every other.
+    @ScaledMetric(relativeTo: .body) private var bodySize: CGFloat = ItemTypography.baseSize * ItemTypography.bodyScale
 
     public init(model: Model, draft: Binding<String>, image: @escaping (TrackerAttachment) -> Image?,
                 onOpenAttachment: @escaping (TrackerAttachment) -> Void, onOpenLink: @escaping (URL) -> Void,
@@ -341,7 +349,7 @@ public struct ItemDetailView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Button { onOpenAttachment(a) } label: { Label("Voice note", systemImage: "waveform") }.buttonStyle(.plain)
                     if let transcript = a.transcript, !transcript.isEmpty {
-                        Text(transcript).font(ItemTypography.bodyFont).lineSpacing(ItemTypography.lineSpacing).foregroundStyle(.secondary)
+                        Text(transcript).font(.system(size: bodySize)).lineSpacing(ItemTypography.lineSpacing).foregroundStyle(.secondary)
                     } else {
                         Text("Transcribing…").font(.subheadline).foregroundStyle(.tertiary).italic()
                     }
@@ -419,7 +427,7 @@ public struct ItemDetailView: View {
     private func pendingView(_ p: PendingComment) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("You").font(.caption.weight(.semibold))
-            if !p.body.isEmpty { Text(p.body).font(ItemTypography.bodyFont).lineSpacing(ItemTypography.lineSpacing) }
+            if !p.body.isEmpty { Text(p.body).font(.system(size: bodySize)).lineSpacing(ItemTypography.lineSpacing) }
             if p.attachmentCount > 0 { Label("\(p.attachmentCount) attachment\(p.attachmentCount == 1 ? "" : "s")", systemImage: "paperclip").font(.caption) }
             SendStateIndicator(state: pendingState(p))
         }

@@ -42,16 +42,19 @@ public enum ItemTypography {
     /// Inner padding of a body/comment card.
     static let cardPadding: CGFloat = 14
 
-    /// The body face as a SwiftUI `Font`, for plain `Text` that sits
-    /// alongside markdown bodies (pending replies, voice transcripts) so
-    /// they take the same size the markdown theme resolves to.
-    public static var bodyFont: Font {
+    /// MarkdownUI's base body size — `FontProperties.defaultSize`, the
+    /// point size its `.em` font sizes resolve against before Dynamic
+    /// Type scaling. Plain `Text` beside a markdown body must start from
+    /// the same base (and scale the same way, via `@ScaledMetric
+    /// (relativeTo: .body)` on the view) or the two drift apart at any
+    /// non-default text size.
+    static let baseSize: CGFloat = {
         #if os(macOS)
-        return .system(size: NSFont.preferredFont(forTextStyle: .body).pointSize * bodyScale)
+        return 13
         #else
-        return .system(size: UIFont.preferredFont(forTextStyle: .body).pointSize * bodyScale)
+        return 17
         #endif
-    }
+    }()
 }
 
 public extension Theme {
@@ -64,9 +67,15 @@ public extension Theme {
             ForegroundColor(.primary)
             FontSize(.em(ItemTypography.bodyScale))
         }
+        // Symmetric on purpose: MarkdownUI spaces neighbouring blocks by
+        // the larger of the two facing margins, and no other block style
+        // in `.matron` sets one, so a bottom-only margin would leave a
+        // paragraph flush against the code fence or list above it while
+        // gapped from the one below. `max` means paragraph→paragraph is
+        // still one gap, not two.
         .paragraph { configuration in
             configuration.label
                 .fixedSize(horizontal: false, vertical: true)
-                .markdownMargin(top: 0, bottom: ItemTypography.paragraphSpacing)
+                .markdownMargin(top: ItemTypography.paragraphSpacing, bottom: ItemTypography.paragraphSpacing)
         }
 }
