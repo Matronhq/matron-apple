@@ -12,11 +12,12 @@ import MarkdownUI
 /// capped, centred column instead of stretching across the window.
 public enum ItemTypography {
     #if os(macOS)
-    /// ×1.40 ⇒ ≈18.2pt on macOS (13pt body). Well above
-    /// `MessageTextScale.scale` (×1.10 ≈ 14.3pt) — the chat scale was
-    /// walked down for a stream of short turns; a thread of paragraphs
-    /// wants a reading face. ×1.25 (≈16.3pt) was tried first and still
-    /// read as small in the Decisions column (Dan, 2026-09-14).
+    /// ×1.40 ⇒ ≈18pt on macOS (13pt base). Well above the Mac chat
+    /// timeline's 14.3pt (`MarkdownAttributed.baseFontSize`) — the chat
+    /// scale was walked down for a stream of short turns; a thread of
+    /// paragraphs wants a reading face. (The ×1.25 and first ×1.40 steps
+    /// on 2026-09-14 never rendered — see `Theme.matronItem` — so 18pt is
+    /// the first size Dan actually sees above the 13pt base.)
     static let bodyScale: CGFloat = 1.40
     /// Extra leading between wrapped lines, on top of the font's own.
     public static let lineSpacing: CGFloat = 5
@@ -27,8 +28,10 @@ public enum ItemTypography {
     public static let captionFont: Font = .callout
     public static let captionDetailFont: Font = .subheadline
     #else
-    /// iOS/iPad messages already render at ≈20pt (`MessageTextScale`);
-    /// another step would be oversized, so the item body matches them.
+    /// ×1.18 ⇒ ≈20pt on iOS/iPad (17pt base) — the size `MessageTextScale`
+    /// intends for chat messages there. (Chat bodies through MarkdownUI
+    /// actually render at the 17pt base today because their `.em` scale is
+    /// ignored — see `Theme.matronItem`; that is a separate fix.)
     static let bodyScale: CGFloat = MessageTextScale.scale
     public static let lineSpacing: CGFloat = 3
     public static let titleFont: Font = .title2.weight(.semibold)
@@ -68,14 +71,26 @@ public enum ItemTypography {
 }
 
 public extension Theme {
-    /// Item-thread variant of `.matron`: the `ItemTypography` body scale
+    /// Item-thread variant of `.matron`: the `ItemTypography` body size
     /// plus a real paragraph gap. Pair with `ItemTypography.lineSpacing`
     /// on `MarkdownText` for the leading.
+    ///
+    /// The size is given in POINTS, never `.em`. MarkdownUI 2.x applies
+    /// `theme.text` on the outside and then re-applies its own base size
+    /// as an absolute `FontSize` just inside it (`ScaledFontSizeModifier`,
+    /// `Markdown.body`), and an absolute `FontSize` resets the relative
+    /// `scale` to 1 — so `FontSize(.em(x))` in a theme's `.text` style is
+    /// silently ignored. (That is why `Theme.matronMessage`'s `.em` scale
+    /// never took effect either.) An absolute size survives: the modifier
+    /// reads it back and re-applies it through a `@ScaledMetric
+    /// (relativeTo: .body)`, so Dynamic Type still scales it on iOS.
+    /// `ItemTypographyRenderTests` pins that the rendered text is
+    /// actually larger than the base.
     static let matronItem: Theme = matron
         .text {
             FontFamily(.system(.default))
             ForegroundColor(.primary)
-            FontSize(.em(ItemTypography.bodyScale))
+            FontSize(ItemTypography.baseSize * ItemTypography.bodyScale)
         }
         // Symmetric on purpose: MarkdownUI spaces neighbouring blocks by
         // the larger of the two facing margins, and no other block style
