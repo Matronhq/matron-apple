@@ -846,19 +846,22 @@ public actor JournalSyncEngine {
 
     /// Decides whether a live-born top-level conversation auto-opens, on
     /// whichever of its frames is in hand:
-    /// - `convo_meta` settles it: a title led by an agent-chat room marker
-    ///   means a room (never opened); anything else is the user's own new
-    ///   session and opens now.
-    /// - a message frame before any meta opens it too — the pre-title
-    ///   behaviour, kept so a bridge that never sends a meta still gets
-    ///   the /start UX.
+    /// - a `convo_meta` that CARRIES a title settles it: a title led by an
+    ///   agent-chat room marker means a room (never opened); anything else
+    ///   is the user's own new session and opens now. A meta without a
+    ///   title proves nothing — the journal fans one on every membership
+    ///   change (`payload: { participants }` only), and for a room that can
+    ///   land ahead of the title-bearing meta — so it parks like any other
+    ///   frame instead of passing as "not a room".
+    /// - a message frame before any titled meta opens it too — the
+    ///   pre-title behaviour, kept so a bridge that never sends a meta
+    ///   still gets the /start UX.
     /// - any other frame (session_status, read_marker…) parks the id in
     ///   `pendingAutoOpen` until one of the above arrives.
     /// A verdict, either way, retires the id from the pending set.
     private func considerAutoOpen(_ event: JournalEvent, firstFrame: Bool) {
-        if event.type == JournalEventType.convoMeta {
+        if event.type == JournalEventType.convoMeta, let title = event.payload["title"] as? String {
             pendingAutoOpen.remove(event.convoID)
-            let title = event.payload["title"] as? String ?? ""
             if !JournalEventType.isAgentRoomTitle(title) { publishNewConversation(event.convoID) }
         } else if JournalEventType.messageTypes.contains(event.type) {
             pendingAutoOpen.remove(event.convoID)

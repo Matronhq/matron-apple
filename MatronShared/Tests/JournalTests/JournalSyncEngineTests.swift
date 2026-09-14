@@ -10,6 +10,13 @@ final class JournalSyncEngineTests: XCTestCase {
         #"{"kind":"journal","seq":\#(seq),"convo_id":"\#(convo)","ts":\#(seq * 1000),"sender":"\#(sender)","type":"\#(type)","payload":{"body":"\#(body)\#(seq)"}}"#
     }
 
+    /// A `convo_meta` as an agent's bridge sends it — always titled (the
+    /// journal emits no meta for an absent title; its own membership fan is
+    /// the one titleless meta, see `testParticipantsMetaAheadOfTheTitleDoesNotOpenARoom`).
+    private func metaLine(_ seq: Int64, convo: String, title: String = "new session") -> String {
+        #"{"kind":"journal","seq":\#(seq),"convo_id":"\#(convo)","ts":\#(seq * 1000),"sender":"agent:a","type":"convo_meta","payload":{"title":"\#(title)","parent_convo_id":null,"agent_device_id":8}}"#
+    }
+
     private func helloOK(_ head: Int64) -> String {
         #"{"kind":"control","op":"hello_ok","seq":\#(head)}"#
     }
@@ -466,11 +473,41 @@ final class JournalSyncEngineTests: XCTestCase {
         let roomMeta = #"{"kind":"journal","seq":3,"convo_id":"room","ts":3000,"sender":"agent:a","type":"convo_meta","payload":{"title":"↔️ [ab] mac ↔ dev-z","parent_convo_id":null,"agent_device_id":8}}"#
         socket.serve(roomMeta)                                                // room → must NOT emit
         socket.serve(journalLine(4, convo: "room"))                           // the opening message → still not
-        socket.serve(journalLine(5, convo: "cLive", type: "convo_meta"))     // normal new convo → emit
+        socket.serve(metaLine(5, convo: "cLive"))     // normal new convo → emit
 
         let emitted = await iterator.next()
         XCTAssertEqual(emitted, "cLive",
                        "a live-born agent-chat room must not auto-open; only the user's own new session does")
+        await engine.endSync()
+    }
+
+    /// The journal fans a titleless `convo_meta` (`payload: { participants }`
+    /// only) on every membership change, and for a room that can land ahead
+    /// of the title-bearing meta. A meta without a title proves nothing about
+    /// room-ness, so it must park the verdict like a status frame — not pass
+    /// the room as "a normal session" and open it (Bugbot, PR #184).
+    func testParticipantsMetaAheadOfTheTitleDoesNotOpenARoom() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.newConversations().makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(50))
+
+        let participantsMeta = #"{"kind":"journal","seq":2,"convo_id":"room","ts":2000,"sender":"journal","type":"convo_meta","payload":{"participants":[8,9]}}"#
+        socket.serve(participantsMeta)                                        // first frame, titleless → park
+        let roomMeta = #"{"kind":"journal","seq":3,"convo_id":"room","ts":3000,"sender":"agent:a","type":"convo_meta","payload":{"title":"↔️ [ab] mac ↔ dev-z","parent_convo_id":null,"agent_device_id":8}}"#
+        socket.serve(roomMeta)                                                // room → must NOT emit
+        socket.serve(journalLine(4, convo: "room"))                           // opening message → still not
+        socket.serve(metaLine(5, convo: "cLive"))                             // normal titled meta → emit
+
+        let emitted = await iterator.next()
+        XCTAssertEqual(emitted, "cLive",
+                       "a titleless membership meta must not settle a room as a normal session")
         await engine.endSync()
     }
 
@@ -492,7 +529,7 @@ final class JournalSyncEngineTests: XCTestCase {
 
         let roomMeta = #"{"kind":"journal","seq":2,"convo_id":"room","ts":2000,"sender":"agent:a","type":"convo_meta","payload":{"title":"🔗 [ab] mac ↔ dev-z"}}"#
         socket.serve(roomMeta)                                            // room → must NOT emit
-        socket.serve(journalLine(3, convo: "cLive", type: "convo_meta")) // normal new convo → emit
+        socket.serve(metaLine(3, convo: "cLive")) // normal new convo → emit
 
         let emitted = await iterator.next()
         XCTAssertEqual(emitted, "cLive", "a legacy-marked room must not auto-open either")
