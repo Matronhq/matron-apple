@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import SwiftUI
 import os
@@ -100,11 +99,6 @@ public final class ChatViewModel {
     /// session-status sheet. Nil until the first status frame (the journal
     /// replays the cached one on convo-open, so this populates promptly).
     public private(set) var sessionStatus: SessionStatus?
-
-    /// TOC summary entries for this conversation, newest-first — mirrors
-    /// `TimelineService.summaryEntriesStream()`. Empty until the journal
-    /// replays the room's summary rows (or forever, on backends without one).
-    public private(set) var summaryEntries: [ConversationSummaryEntry] = []
 
     /// True while the conversation's session state is "running" — the
     /// bridge flips it via durable `session_status` journal events at
@@ -1047,21 +1041,25 @@ public final class ChatViewModel {
         let hits = (try? await search.query(trimmed, roomID: roomID, limit: Self.chatSearchMatchLimit)) ?? []
         let seqs = hits.compactMap { Int64($0.id) }
         chatSearch = ChatSearchState(query: trimmed, matchSeqs: seqs, index: 0)
-        // Every re-query owns the jump machinery from here: a previous
-        // query's parked seq must not fire on the next snapshot after
-        // this one's results replaced it in the bar (Bugbot, PR #172 —
-        // second round: the no-hit path cancelled the in-flight task but
-        // left the park armed).
-        pendingChatSearchFocusSeq = nil
         guard let newest = seqs.first else {
             // A re-query with no hits shows "No matches" — an earlier
             // query's still-paginating deep jump landing after that would
             // scroll the transcript to a match that no longer exists in
-            // the bar (Bugbot, PR #172).
-            focusTask?.cancel()
+            // the bar, and its parked seq must not fire on the next
+            // snapshot either (Bugbot, PR #172, two rounds). Only search's
+            // OWN jump dies here: a last-message jump in flight while the
+            // user types a query that finds nothing keeps going (Bugbot,
+            // PR #202 — see `FocusOwner`).
+            if focusOwner == .search {
+                pendingChatSearchFocusSeq = nil
+                focusTask?.cancel()
+                focusOwner = nil
+            }
             return
         }
-        await focusOrPark(seq: newest)
+        // A hit supersedes whatever jump was running or parked, whoever
+        // owned it — the user just asked for this one.
+        await focusOrPark(seq: newest, owner: .search)
     }
 
     /// Runs a search jump when the items stream is live; parks it
@@ -1075,7 +1073,8 @@ public final class ChatViewModel {
     /// delivery (`receiveSnapshot`). Shared by `beginChatSearch` and
     /// `stepChatSearch` — the chevrons are tappable in the same
     /// pre-first-snapshot window their bar appears in.
-    private func focusOrPark(seq: Int64) async {
+    private func focusOrPark(seq: Int64, owner: FocusOwner) async {
+        focusOwner = owner
         if hasReceivedFirstSnapshot, observationTask != nil {
             pendingChatSearchFocusSeq = nil
             await focus(seq: seq)
@@ -1084,8 +1083,16 @@ public final class ChatViewModel {
         }
     }
 
-    /// Focus target parked by `beginChatSearch` until the first timeline
-    /// snapshot lands — see the comment at its write site.
+    /// Which feature started the jump `focusOrPark` is running or has
+    /// parked. Dismissing the search bar must abort only search's own
+    /// jump — a "jump to my last message" in flight while the bar happens
+    /// to be up would otherwise die with it (Bugbot, PR #202).
+    private enum FocusOwner { case search, lastOwnMessage, milestone }
+    private var focusOwner: FocusOwner?
+
+    /// Focus target parked by `focusOrPark` until the stream is live —
+    /// see the comment at its write site. Shared by in-conversation search
+    /// and the last-own-message jump; `focusOwner` says whose it is.
     private var pendingChatSearchFocusSeq: Int64?
 
     /// Steps to the adjacent match — `older: true` walks up into history
@@ -1096,7 +1103,7 @@ public final class ChatViewModel {
         guard state.matchSeqs.indices.contains(next) else { return }
         state.index = next
         chatSearch = state
-        await focusOrPark(seq: state.matchSeqs[next])
+        await focusOrPark(seq: state.matchSeqs[next], owner: .search)
     }
 
     /// Dismisses the bar. The transcript stays where the user left it —
@@ -1106,13 +1113,72 @@ public final class ChatViewModel {
     /// (Bugbot, PR #172).
     public func endChatSearch() {
         chatSearch = nil
+        // Only search's own jump dies with the bar; see `FocusOwner`.
+        guard focusOwner == .search else { return }
         pendingChatSearchFocusSeq = nil
         focusTask?.cancel()
+        focusOwner = nil
     }
 
     /// Cap on navigable matches per conversation. Far beyond any realistic
     /// manual chevron walk; bounds the seq array and the FTS projection.
     private static let chatSearchMatchLimit = 500
+
+    // MARK: Jump to my last message
+
+    /// Scrolls the transcript to the newest message the user themself sent
+    /// (item #60): the one thing scrolling can't find once an agent has run
+    /// unattended for hours. Asks the timeline service first — the journal
+    /// mirror knows the answer across the whole history — and falls back to
+    /// the newest own row already loaded for transports without a mirror.
+    /// Rides the same park-until-live jump as in-conversation search, so a
+    /// tap before the first snapshot lands once the stream is up. Returns
+    /// `false` when there is nothing to land on (the user never wrote in
+    /// this conversation); the view keeps the transcript where it is.
+    @discardableResult
+    public func jumpToLastOwnMessage() async -> Bool {
+        let wasLive = observationTask != nil
+        let mirrorSeq = try? await timeline.newestOwnMessageSeq()
+        // The view left while the mirror was answering (`stop()` ran):
+        // parking now would fire a jump the user no longer wants on the
+        // next open of this room (CodeRabbit, PR #202). A cold tap —
+        // never live — still parks, as intended.
+        if wasLive, observationTask == nil { return false }
+        guard let seq = mirrorSeq ?? newestLoadedOwnMessageSeq() else { return false }
+        await focusOrPark(seq: seq, owner: .lastOwnMessage)
+        return true
+    }
+
+    /// Newest loaded row the user sent from the composer, by seq. A local
+    /// echo's id isn't a seq (`echo:…`) and isn't a landable row either, so
+    /// it's skipped rather than ending the scan.
+    private func newestLoadedOwnMessageSeq() -> Int64? {
+        for item in items.reversed() where item.isOwn {
+            switch item.kind {
+            case .text, .image, .file:
+                if let seq = Int64(item.id) { return seq }
+            default:
+                continue
+            }
+        }
+        return nil
+    }
+
+    // MARK: Jump to a milestone
+
+    /// Scrolls the transcript to a milestone's anchor — the `seq` of its own
+    /// `milestone` marker event (spec 2026-09-10). Rides the same
+    /// park-until-live jump as in-conversation search and the
+    /// last-own-message jump, so a tap made from the Missions tab *before*
+    /// this room's stream is up lands once the first snapshot arrives.
+    ///
+    /// Its own `FocusOwner` case matters: `endChatSearch()` cancels only
+    /// search's jump, so dismissing the search bar cannot kill a milestone
+    /// jump that happens to be in flight. A seq that no longer exists lands
+    /// on the nearest earlier row (`focus(seq:)`'s existing fallback).
+    public func jumpToMilestone(seq: Int64) async {
+        await focusOrPark(seq: seq, owner: .milestone)
+    }
 
     /// Latest `rows` message id whose seq is `<= seq`, or nil if every
     /// loaded message postdates it. `rows` is ascending (oldest first —
@@ -1247,7 +1313,6 @@ public final class ChatViewModel {
     private var observationTask: Task<Void, Never>?
     private var statusTask: Task<Void, Never>?
     private var sessionStateTask: Task<Void, Never>?
-    private var summaryEntriesTask: Task<Void, Never>?
     /// Tracks `mxc://` URLs with a request already in flight so we don't
     /// fire duplicate fetches on every SwiftUI re-render.
     private var inFlightRequests: Set<URL> = []
@@ -1660,17 +1725,6 @@ public final class ChatViewModel {
             }
         }
 
-        summaryEntriesTask?.cancel()
-        summaryEntriesTask = Task { [weak self] in
-            guard let stream = self?.timeline.summaryEntriesStream() else { return }
-            for await entries in stream {
-                guard let self, !Task.isCancelled else { return }
-                await MainActor.run {
-                    self.summaryEntries = entries
-                }
-            }
-        }
-
         await firstSignal.wait()
         return task
     }
@@ -1697,8 +1751,6 @@ public final class ChatViewModel {
         statusTask = nil
         sessionStateTask?.cancel()
         sessionStateTask = nil
-        summaryEntriesTask?.cancel()
-        summaryEntriesTask = nil
         emptyDebounceTask?.cancel()
         emptyDebounceTask = nil
         resumeTask?.cancel()
@@ -1707,6 +1759,11 @@ public final class ChatViewModel {
         historyRefillTask = nil
         focusTask?.cancel()
         focusTask = nil
+        // Leaving the room drops any parked jump, whoever owns it: a
+        // target parked before this view's first snapshot must not fire
+        // on the room's next open, days later.
+        pendingChatSearchFocusSeq = nil
+        focusOwner = nil
         // Leaving the room dismisses the in-conversation search — the VM
         // is cached, and re-opening days later must not resurrect a stale
         // bar whose match list predates everything received since.
@@ -1961,25 +2018,14 @@ public final class ChatViewModel {
         // cache above serves the wrong attachment's bytes (Bugbot,
         // PR #138). The human-friendly basename is preserved for the
         // share/preview label; uniqueness lives in the parent directory.
-        let urlDigest = SHA256.hash(data: Data(mxcURL.absoluteString.utf8))
-            .prefix(8).map { String(format: "%02x", $0) }.joined()
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("matron-attachments", isDirectory: true)
-            .appendingPathComponent(urlDigest, isDirectory: true)
+        // Sanitisation (path-traversal, directory separators — the
+        // filename arrives from attacker-controllable Matrix event
+        // metadata) and the digest-namespaced write both live in
+        // `AttachmentTempFiles` (fix wave, item H) so the items-tracker
+        // hosts can reuse the exact same two mitigations for comment/
+        // create file attachments instead of re-deriving them.
         do {
-            try FileManager.default.createDirectory(
-                at: dir, withIntermediateDirectories: true
-            )
-            // Sanitise the filename: strip directory separators and
-            // parent-dir traversal so a malicious sender can't craft
-            // `../../.ssh/authorized_keys` to escape the temp dir. The
-            // filename arrives from Matrix event metadata, which is
-            // attacker-controllable. We keep the basename for human-
-            // friendly preview / share labels, falling back to a UUID
-            // if sanitisation produces an empty string.
-            let safeFilename = Self.sanitisedAttachmentFilename(filename)
-            let dest = dir.appendingPathComponent(safeFilename)
-            try data.write(to: dest, options: .atomic)
+            let dest = try AttachmentTempFiles.write(data, name: filename, blobRef: mxcURL.absoluteString)
             fileTempURLs[mxcURL] = dest
             return dest
         } catch {
@@ -2011,22 +2057,11 @@ public final class ChatViewModel {
     /// file by accident. Test seam: `internal` so
     /// `ChatViewModelTests` can assert the contract directly without
     /// rendering or hitting disk.
+    /// Delegates to `AttachmentTempFiles.sanitisedFilename` (fix wave, item
+    /// H) — kept as a thin wrapper, not removed, so `ChatViewModelTests`'s
+    /// existing internal-access test seam keeps working unchanged.
     static func sanitisedAttachmentFilename(_ raw: String) -> String {
-        // Last path component drops any leading directory tree the
-        // sender embedded — `Foundation.URL`-style normalisation
-        // collapses `..` / `.` segments along the way.
-        let trimmed = (raw as NSString).lastPathComponent
-        // Replace remaining separators (rare, but `:` on macOS
-        // historically and `\` on Windows-style senders) with `_`.
-        let cleaned = trimmed.replacingOccurrences(of: "/", with: "_")
-                              .replacingOccurrences(of: ":", with: "_")
-        // Reject empty or `.`/`..`-only strings — fall back to a UUID
-        // so the write always lands inside the attachments dir.
-        let stripped = cleaned.trimmingCharacters(in: .whitespaces)
-        if stripped.isEmpty || stripped == "." || stripped == ".." {
-            return UUID().uuidString
-        }
-        return stripped
+        AttachmentTempFiles.sanitisedFilename(raw)
     }
 
     // MARK: - Ask-user prompts (Phase 5 Task 11)

@@ -118,6 +118,10 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
     /// `MarkdownReconstruction`.
     var markdownSource: String = ""
 
+    /// Where `copy(_:)` writes. The app uses the system clipboard; tests
+    /// inject a private named pasteboard so a test run never replaces what
+    /// the developer has on theirs.
+    var pasteboard: NSPasteboard = .general
     /// The timeline item this body belongs to. `nil` (previews, tests, the
     /// composer palette) keeps the view out of any cross-message selection.
     var selectionItemID: String? {
@@ -442,7 +446,6 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
         // Plain text carries the markdown; RTF carries the rendered look so
         // rich-text targets keep formatting.
         let selected = storage.attributedSubstring(from: range)
-        let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.declareTypes([.rtf, .string], owner: nil)
         if let rtf = selected.rtf(
@@ -469,11 +472,25 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
         return super.validateUserInterfaceItem(item)
     }
 
+    /// Two additions to AppKit's menu, in order.
+    ///
+    /// 1. AppKit builds its own "Open Link" item and that item hands the URL
+    ///    straight to the Launch Services opener — it never reaches
+    ///    `textView(_:clickedOnLink:at:)`, so it bypasses
+    ///    `MatronItemLink.action(for:)`. On `matron://item/65` that means a
+    ///    "no application can open this URL" sheet instead of the tracker
+    ///    item (item #115, fix round 2). Swap it for one that goes through
+    ///    the very same delegate call a left-click does.
+    /// 2. The cross-message "Copy N Messages" entry, when a finished
+    ///    selection exists.
     override func menu(for event: NSEvent) -> NSMenu? {
         // Exactly what super returned when there is nothing to add — an empty
         // `NSMenu()` substitute would swallow the right-click instead of
         // letting AppKit decline to show a menu at all.
-        let base = super.menu(for: event)
+        var base = super.menu(for: event)
+        if let menu = base, let (url, charIndex) = link(under: event) {
+            base = Self.rewritingLinkItems(in: menu, for: url, charIndex: charIndex, target: self)
+        }
         guard let selectionController, selectionController.hasSelection,
               // The FINISHED snapshot, not the live provider: the title and
               // the payload must agree, and neither may change under the
@@ -494,12 +511,73 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
         base.insertItem(item, at: 0)
         return base
     }
+
+    // MARK: - Right-click → "Open Link"
+
+    /// The `.link` attribute under a mouse event, with its character index.
+    private func link(under event: NSEvent) -> (URL, Int)? {
+        guard let storage = textStorage, storage.length > 0 else { return nil }
+        let point = convert(event.locationInWindow, from: nil)
+        // Clamp: `characterIndexForInsertion` legitimately returns `length`
+        // for a click past the end, which is not a valid attribute index.
+        let index = min(characterIndexForInsertion(at: point), storage.length - 1)
+        guard index >= 0 else { return nil }
+        switch storage.attribute(.link, at: index, effectiveRange: nil) {
+        case let value as URL: return (value, index)
+        case let value as String: return URL(string: value).map { ($0, index) }
+        default: return nil
+        }
+    }
+
+    /// Pure part of `menu(for:)`, so the policy is testable without a window.
+    ///
+    /// `.system` URLs (http(s) and anything else we have no opinion on) keep
+    /// AppKit's menu verbatim — its "Open Link" is exactly right for those.
+    /// Everything else loses that item, and a `matron://item/<n>` gains an
+    /// in-app opener in its place.
+    static func rewritingLinkItems(in menu: NSMenu, for url: URL, charIndex: Int,
+                                   target: MessageCopyTextView?) -> NSMenu {
+        let action = MatronItemLink.action(for: url)
+        if case .system = action { return menu }
+        // Matched by selector NAME: the item AppKit inserts is built from a
+        // private selector, and reading its name is inspection, not use. A
+        // rename by Apple leaves the (broken) item in place rather than
+        // breaking the build or the rest of the menu.
+        for item in menu.items where item.action.map({ NSStringFromSelector($0).lowercased().contains("openlink") }) == true {
+            menu.removeItem(item)
+        }
+        if case .openTrackerItem(let number) = action {
+            let item = NSMenuItem(title: "Open Item #\(number)",
+                                  action: #selector(MessageCopyTextView.openLinkInApp(_:)),
+                                  keyEquivalent: "")
+            item.target = target
+            item.representedObject = url
+            item.tag = charIndex
+            menu.insertItem(item, at: 0)
+        }
+        return menu
+    }
+
+    /// Routes the replacement menu item through the delegate — the single
+    /// place the link policy lives — so right-click and left-click cannot
+    /// disagree, and no `matron://` URL can reach the OS from either.
+    @objc func openLinkInApp(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        _ = delegate?.textView?(self, clickedOnLink: url, at: sender.tag)
+    }
 }
 
 /// `NSViewRepresentable` wrapping the non-editable, selectable `NSTextView`.
-private struct SelectableTextViewRepresentable: NSViewRepresentable {
+/// Internal (not `private`) so the link-click policy on its `Coordinator` is
+/// unit-testable without a rendered view.
+struct SelectableTextViewRepresentable: NSViewRepresentable {
     let source: String
     let rendered: MarkdownAttributed.Rendered
+    /// In-app tracker-item opener (item #115), read from the environment
+    /// HERE and handed to the coordinator in `makeNSView`/`updateNSView` —
+    /// an AppKit delegate can't read SwiftUI's environment itself, and a
+    /// global would break per-window/per-chat routing.
+    @Environment(\.openTrackerItem) private var openTrackerItem
     let itemID: String?
     let selectionController: MessageSelectionController?
 
@@ -530,6 +608,7 @@ private struct SelectableTextViewRepresentable: NSViewRepresentable {
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.delegate = context.coordinator
+        context.coordinator.openTrackerItem = openTrackerItem
         // Links are clickable but the body is not editable.
         textView.isAutomaticLinkDetectionEnabled = false
         textView.displaysLinkToolTips = true
@@ -541,6 +620,7 @@ private struct SelectableTextViewRepresentable: NSViewRepresentable {
 
     func updateNSView(_ textView: NSTextView, context: Context) {
         (textView as? MessageCopyTextView)?.markdownSource = source
+        context.coordinator.openTrackerItem = openTrackerItem
         if let view = textView as? MessageCopyTextView {
             if view.selectionItemID != itemID { view.selectionItemID = itemID }
             if view.selectionController !== selectionController { view.selectionController = selectionController }
@@ -590,14 +670,21 @@ private struct SelectableTextViewRepresentable: NSViewRepresentable {
         return rendered.size(width: width)
     }
 
-    /// Handles link clicks with the same scheme policy as `MarkdownText`
-    /// (http(s) → system handler, matrix/mxc → swallowed). `MarkdownText.handle`
-    /// is the source of truth for that policy but its `OpenURLAction.Result`
-    /// return type is only meaningful inside SwiftUI's `openURL` environment, so
-    /// the decision is mirrored here directly. Note that matrix/mxc URLs never
-    /// carry a `.link` attribute (see `MarkdownAttributed`), so in practice only
-    /// http(s)/unknown schemes ever reach this delegate.
+    /// Handles link clicks with the same policy as `MarkdownText` — the
+    /// decision itself comes from `MatronItemLink.action(for:)`, which both
+    /// renderers share, because `MarkdownText.handle`'s `OpenURLAction.Result`
+    /// return type is only meaningful inside SwiftUI's `openURL` environment.
+    /// Note that matrix/mxc URLs never carry a `.link` attribute (see
+    /// `MarkdownAttributed`), so in practice only item links, http(s) and
+    /// unknown schemes ever reach this delegate.
     final class Coordinator: NSObject, NSTextViewDelegate {
+        /// Set from the representable's environment on every update.
+        var openTrackerItem: ((Int) -> Void)?
+
+        /// Seam for the external opener so tests can prove a `matron://`
+        /// click never reaches `NSWorkspace`.
+        var openExternally: (URL) -> Void = { NSWorkspace.shared.open($0) }
+
         /// The exact `NSAttributedString` instance last written into the text
         /// view's storage. `MarkdownAttributed.Rendered` is memoised per
         /// source, so identity here is a valid — and O(1) — "content is
@@ -616,13 +703,18 @@ private struct SelectableTextViewRepresentable: NSViewRepresentable {
             default: url = nil
             }
             guard let url else { return false }
-            switch url.scheme?.lowercased() {
-            case "matrix", "mxc":
-                // Swallowed until permalink / content-URI handling lands —
-                // mirrors `MarkdownText.handle(url:)`.
+            switch MatronItemLink.action(for: url) {
+            case .openTrackerItem(let number):
+                // `matron://item/<n>` — opened in-app (item #115), and
+                // swallowed when no host installed a handler. The scheme is
+                // not registered with the OS, so it must never be handed on.
+                openTrackerItem?(number)
+            case .swallow:
+                // matrix/mxc — swallowed until permalink / content-URI
+                // handling lands; mirrors `MarkdownText.handle(url:)`.
                 break
-            default:
-                NSWorkspace.shared.open(url)
+            case .system(let url):
+                openExternally(url)
             }
             // Return `true` either way: we've decided the outcome, so the text
             // view shouldn't also hand the URL to its default opener.

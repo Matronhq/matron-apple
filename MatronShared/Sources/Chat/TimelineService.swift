@@ -1,26 +1,6 @@
 import Foundation
 import MatronModels
 
-/// One TOC entry from a bridge summary pass, as consumed by the Chat layer.
-/// Mirrors the Journal module's `SummaryEntryRecord` but lives here so Chat
-/// doesn't have to depend on the Journal record type — `JournalTimelineService`
-/// maps store rows into this shape at the boundary.
-public struct ConversationSummaryEntry: Equatable, Sendable, Identifiable {
-    public let seq: Int64
-    public let toc: String
-    public let detail: String
-    public let date: Date
-
-    public init(seq: Int64, toc: String, detail: String, date: Date) {
-        self.seq = seq
-        self.toc = toc
-        self.detail = detail
-        self.date = date
-    }
-
-    public var id: Int64 { seq }
-}
-
 /// Per-room timeline access. One `TimelineService` per open room.
 ///
 /// `items()` is the read side: an `AsyncStream` of full snapshots, newest
@@ -109,6 +89,14 @@ public protocol TimelineService: Sendable {
     /// Marks the most recent visible event as read.
     func markAsRead() async throws
 
+    /// Seq of the newest message the user themself sent in this
+    /// conversation, across the whole locally-mirrored history — not just
+    /// the loaded window — or nil when the transport can't say.
+    /// `ChatViewModel.jumpToLastOwnMessage()` asks this before scanning
+    /// loaded rows, so an hours-long agent run can't hide the answer
+    /// behind pagination (item #60).
+    func newestOwnMessageSeq() async throws -> Int64?
+
     /// Retries a pending/failed own-message (the timeline's tap-to-retry
     /// affordance). `itemID` is the timeline item's id. Implementations
     /// without an offline outbox inherit the default no-op.
@@ -130,10 +118,6 @@ public protocol TimelineService: Sendable {
     /// (which the staleness sweep can clear mid-turn); drives the floating
     /// stop button.
     func sessionState() -> AsyncStream<String>
-
-    /// TOC summary entries for this conversation, newest-first. Re-yields on
-    /// every change. Default: empty forever (fakes and non-journal backends).
-    func summaryEntriesStream() -> AsyncStream<[ConversationSummaryEntry]>
 }
 
 public extension TimelineService {
@@ -155,16 +139,14 @@ public extension TimelineService {
         AsyncStream { $0.finish() }
     }
 
-    /// Default: no summary source, same immediately-finished shape as
-    /// `sessionStatus()`/`sessionState()`.
-    func summaryEntriesStream() -> AsyncStream<[ConversationSummaryEntry]> {
-        AsyncStream { $0.finish() }
-    }
-
     /// Default no-ops so fakes and outbox-less implementations compile
     /// unchanged; `JournalTimelineService` overrides both.
     func retrySend(itemID: String) async {}
     func discardSend(itemID: String) async {}
+
+    /// Default: no mirror to ask — the view model falls back to the rows
+    /// it has loaded. `JournalTimelineService` overrides.
+    func newestOwnMessageSeq() async throws -> Int64? { nil }
 
     /// Defaults: drop the progress handler and forward to the plain sends.
     func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?,

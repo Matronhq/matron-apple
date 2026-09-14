@@ -9,8 +9,21 @@ import MatronModels
 /// when invoked and `body` resolves so the @State fields compile clean.
 @MainActor
 final class NewChatSheetBindingTests: XCTestCase {
+    /// Held so `tearDown()` can stop the session's background maintenance
+    /// sweeper (M1 — the identical Mac defect fixed in
+    /// `MacNewChatSheetBindingTests`: a leaked `JournalMaintenance` 10 s
+    /// timer otherwise outlives the test method). See
+    /// `AppDependencies.stopMaintenanceForTests()`.
+    private var deps: AppDependencies!
+
+    override func tearDown() async throws {
+        await deps?.stopMaintenanceForTests()
+        deps = nil
+        try await super.tearDown()
+    }
+
     func test_view_compiles_andOnCreatedClosure_isInvocable() {
-        let deps = AppDependencies()
+        deps = AppDependencies()
         let session = UserSession(
             userID: "@a:s", deviceID: "D",
             homeserverURL: URL(string: "https://s")!, accessToken: "t"

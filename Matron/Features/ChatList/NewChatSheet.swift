@@ -212,10 +212,22 @@ struct NewChatSheet: View {
                     .font(.callout.monospaced())
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
+                // Which coding agent the session runs as; only shown when
+                // the box offers a second one to switch to.
+                if viewModel.agentSwitchVisible {
+                    Picker("Agent", selection: $viewModel.selectedAgent) {
+                        ForEach(viewModel.agentOptions) { option in
+                            Text(option.label).tag(option.value)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("newchat.agent")
+                }
                 Toggle("Browser tools", isOn: $viewModel.browserEnabled)
                 // Hidden for a bridge that doesn't say what it can run —
-                // an empty menu would only ever offer "Default".
-                if !viewModel.modelOptions.isEmpty {
+                // an empty menu would only ever offer "Default" — and while
+                // Codex is the agent, which takes no Claude model.
+                if viewModel.modelPickerVisible {
                     Picker("Model", selection: $viewModel.selectedModel) {
                         Text(viewModel.defaultRowTitle).tag(String?.none)
                         ForEach(viewModel.modelOptions) { option in

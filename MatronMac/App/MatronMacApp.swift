@@ -15,6 +15,14 @@ struct MatronMacApp: App {
     /// directly to the journal `PushService` — see the push `.task`
     /// below and iOS `MatronApp` for the parallel wiring.
     @NSApplicationDelegateAdaptor(MatronMacAppDelegate.self) private var appDelegate
+    /// Global voice-note hotkey (Settings → Device → Voice note key): the
+    /// Carbon registration, the bus the composer listens on, and the
+    /// floating "Recording" indicator. All three live at the root because
+    /// the key must work with no chat window focused at all.
+    @AppStorage(VoiceNoteHotkeyKey.storageKey) private var voiceHotkeyRaw = VoiceNoteHotkeyKey.default.rawValue
+    @State private var voiceBus = VoiceNoteCommandBus()
+    @State private var voiceHotkey: VoiceNoteHotkeyRegistrar?
+    @State private var voicePanel = VoiceNoteRecordingPanel()
 
     @State private var dependencies = AppDependencies()
     @State private var session: UserSession?
@@ -101,6 +109,9 @@ struct MatronMacApp: App {
                     // is the Mac equivalent of iOS's `scenePhase == .active`.
                     .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                         Task { await (dependencies.syncService(for: session) as? JournalSyncEngine)?.nudge() }
+                        Task(priority: .utility) {
+                            await dependencies.journalMaintenance(for: session).runIfDue()
+                        }
                         appLock.noteBecameActive()
                         // Foreground re-prompt parity with iOS: returning
                         // to a still-locked app offers auth again instead
@@ -196,6 +207,32 @@ struct MatronMacApp: App {
             .onChange(of: appearanceRaw, initial: true) { _, raw in
                 NSApp.appearance = MatronAppearance(storedValue: raw).nsAppearance
             }
+            .environment(voiceBus)
+            // Register the global key at launch and whenever the Device
+            // settings picker changes it. A press with no composer on
+            // screen (no chat open) is refused audibly here, since the
+            // composer's own handler can't run when there is none.
+            .onChange(of: voiceHotkeyRaw, initial: true) { _, raw in
+                let registrar = voiceHotkey ?? VoiceNoteHotkeyRegistrar { [voiceBus, appLock] in
+                    // The lock is an overlay, so a composer is still
+                    // mounted behind it: refuse here or a passer-by could
+                    // record and send into the last chat.
+                    if voiceBus.hasActiveComposer, !appLock.isLocked {
+                        voiceBus.press()
+                    } else {
+                        VoiceNoteCommandBus.playRefuseSound()
+                    }
+                }
+                voiceHotkey = registrar
+                registrar.register(VoiceNoteHotkeyKey(rawValue: raw) ?? .default)
+            }
+            .onChange(of: voiceBus.recordingStart) { _, start in
+                if let start {
+                    voicePanel.show(start: start, hotkey: VoiceNoteHotkeyKey(rawValue: voiceHotkeyRaw) ?? .default)
+                } else {
+                    voicePanel.hide()
+                }
+            }
             // Gated on a live session: pre-bootstrap and the sign-in view
             // hold nothing worth hiding, and a cold-launch lock would
             // otherwise sit over the sign-in form.
@@ -233,7 +270,7 @@ struct MatronMacApp: App {
             Group {
                 if let session {
                     TabView {
-                        MacDeviceSettingsView(session: session, onSignOut: { signOut(activeSession: session) })
+                        MacDeviceSettingsView(session: session, onSignOut: { signOut(activeSession: session) }, deps: dependencies)
                             .tabItem { Label("General", systemImage: "gearshape") }
                             .environment(\.appLockController, appLock)
                         MacDevicesView(

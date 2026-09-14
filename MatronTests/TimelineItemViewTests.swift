@@ -187,4 +187,21 @@ final class TimelineItemViewTests: XCTestCase {
         )
         XCTAssertNil(TimelineItemView.avatarSender(for: item, hasMultipleSenders: true))
     }
+
+    /// Both mission kinds are visible rows — they are navigation
+    /// affordances, so filtering them out would make a milestone
+    /// unreachable from the transcript.
+    func testMissionKindsRender() {
+        let milestone = TimelineItem(id: "4210", sender: "agent:dev-2", timestamp: Date(),
+                                     kind: .milestoneMarker(eventID: "4210", MilestoneMarkerEvent(
+                                        milestoneID: "ml_2", num: 63, kind: .userInput, title: "Dan asked",
+                                        missionID: "ms_1", missionNum: 61, missionTitle: nil, by: .agent)),
+                                     isOwn: false)
+        let mission = TimelineItem(id: "4211", sender: "agent:dev-2", timestamp: Date(),
+                                   kind: .missionMarker(eventID: "4211", MissionMarkerEvent(
+                                      missionID: "ms_1", num: 61, title: nil, action: .closed, by: .user)),
+                                   isOwn: false)
+        XCTAssertTrue(TimelineItemView.shouldRender(milestone))
+        XCTAssertTrue(TimelineItemView.shouldRender(mission))
+    }
 }

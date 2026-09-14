@@ -19,6 +19,10 @@ public enum MatronCommand: String, CaseIterable, Sendable {
     case decreaseFontSize
     case resetFontSize
     case refresh
+    /// App shell (spec §5): nav-column selection — ⌘1 / ⌘2 / ⌘3.
+    case showCoordinator
+    case showConversations
+    case showDecisions
 }
 
 public extension Notification.Name {
@@ -41,6 +45,7 @@ public extension Notification.Name {
 ///   - `.toggleSidebar`  — `MacChatListView` (flips `NavigationSplitViewVisibility`)
 ///   - `.slashCommand`   — `MacChatView` (toggles `composerVM.palettePinnedOpen`)
 ///   - `.refresh`        — `MacChatView` (triggers `viewModel.refresh()`)
+///   - `.showCoordinator/.showConversations/.showDecisions` — `MacChatListView` (sets `nav`)
 ///
 /// Posted-but-unhandled (placeholder menu items, listeners land later):
 ///   - `.findInChat`            — Phase 6 wires SearchService; today the
@@ -79,6 +84,12 @@ struct ChatCommands: Commands {
         CommandGroup(after: .sidebar) {
             Button("Toggle Sidebar") { post(.toggleSidebar) }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
+            Button("Coordinator") { post(.showCoordinator) }
+                .keyboardShortcut("1", modifiers: .command)
+            Button("Conversations") { post(.showConversations) }
+                .keyboardShortcut("2", modifiers: .command)
+            Button("Decisions") { post(.showDecisions) }
+                .keyboardShortcut("3", modifiers: .command)
             Divider()
             // TODO Phase 5: wire font-size commands to a design-system
             // scale environment; today the listeners are missing so the

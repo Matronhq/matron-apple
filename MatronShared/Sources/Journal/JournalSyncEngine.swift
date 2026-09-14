@@ -3,6 +3,7 @@ import Network
 import os
 import MatronModels
 import MatronSearch
+import MatronEvents
 
 public enum JournalSyncError: Error, Equatable, Sendable {
     case offline
@@ -70,6 +71,12 @@ public actor JournalSyncEngine {
     /// directly. Same late-attach shape as `search`; only ever goes
     /// nil → non-nil.
     private var backfill: SearchBackfillCoordinator?
+    /// Background store housekeeping for this session. Attached after
+    /// construction (it is built from the same store) and poked when the
+    /// first catch-up reaches the live cursor — the "whichever comes first"
+    /// half of the first-run rule, with `JournalMaintenance.start()`'s 10 s
+    /// timer as the other half.
+    private var maintenance: JournalMaintenance?
     private let backoffBaseSeconds: Double
 
     private var runTask: Task<Void, Never>?
@@ -109,6 +116,8 @@ public actor JournalSyncEngine {
 
     private var state: SyncConnectionState = .connecting
     private var stateContinuations: [UUID: AsyncStream<SyncConnectionState>.Continuation] = [:]
+    private var itemMarkerContinuations: [UUID: AsyncStream<(convoID: String, marker: ItemMarkerEvent)>.Continuation] = [:]
+    private var missionMarkerContinuations: [UUID: AsyncStream<(convoID: String, marker: MissionMarker)>.Continuation] = [:]
     private var ephemeralContinuations: [UUID: (convoID: String, continuation: AsyncStream<EphemeralUpdate>.Continuation)] = [:]
     private var activityContinuations: [UUID: (convoID: String, continuation: AsyncStream<ActivityUpdate>.Continuation)] = [:]
     private var toolStreamContinuations: [UUID: (convoID: String, continuation: AsyncStream<ToolStreamUpdate>.Continuation)] = [:]
@@ -194,6 +203,34 @@ public actor JournalSyncEngine {
     public func attachBackfillCoordinator(_ coordinator: SearchBackfillCoordinator) {
         guard backfill == nil else { return }
         backfill = coordinator
+    }
+
+    public func attachMaintenance(_ sweeper: JournalMaintenance) {
+        guard maintenance == nil else { return }
+        maintenance = sweeper
+    }
+
+    /// App-target hook for the launch timeline (R7 — `LaunchTimeline` is
+    /// driven only from the app targets, so this actor must not import or
+    /// call it directly). Fired exactly once, on the first replay that
+    /// reaches the live cursor; `setState` clears it immediately after
+    /// invoking it, so a later reconnect's `.running` transition — which
+    /// also happens here — never re-fires it.
+    private var catchUpCompleteHandler: (@Sendable () -> Void)?
+
+    /// M11: `core(for:)` spawns the task that calls this on an unstructured
+    /// `Task`, racing the `.task` that calls `start()` — if the engine has
+    /// already reached `.running` (and so already cleared/fired any
+    /// previously-installed handler) by the time this lands, storing the
+    /// handler here would leave it waiting for a `.running` transition that
+    /// already happened and, absent a reconnect, never happens again. Fire
+    /// immediately in that case instead of storing it.
+    public func setCatchUpCompleteHandler(_ handler: @escaping @Sendable () -> Void) {
+        if case .running = state {
+            handler()
+            return
+        }
+        catchUpCompleteHandler = handler
     }
 
     // MARK: Lifecycle
@@ -684,6 +721,50 @@ public actor JournalSyncEngine {
         }
     }
 
+    /// Tracker markers (`item` events) as they are applied — the
+    /// invalidation feed for `ItemsSync`. Mirrors `newConversations()`.
+    public nonisolated func itemMarkers() -> AsyncStream<(convoID: String, marker: ItemMarkerEvent)> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerItemMarkers(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in Task { await self.unregisterItemMarkers(id: id) } }
+        }
+    }
+    private func registerItemMarkers(id: UUID, continuation: AsyncStream<(convoID: String, marker: ItemMarkerEvent)>.Continuation) { itemMarkerContinuations[id] = continuation }
+    private func unregisterItemMarkers(id: UUID) { itemMarkerContinuations.removeValue(forKey: id) }
+    private func publishItemMarker(_ event: JournalEvent) {
+        guard event.type == JournalEventType.item, let marker = ItemMarkerEvent.parse(payload: event.payload) else { return }
+        for c in itemMarkerContinuations.values { c.yield((convoID: event.convoID, marker: marker)) }
+    }
+
+    /// Mission markers (`mission` and `milestone` events) as they are
+    /// applied — the invalidation feed for `MissionsSync`. One stream for
+    /// both types: the actor's reaction to either is the same, refetch that
+    /// mission. Mirrors `itemMarkers()`.
+    public nonisolated func missionMarkers() -> AsyncStream<(convoID: String, marker: MissionMarker)> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerMissionMarkers(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in Task { await self.unregisterMissionMarkers(id: id) } }
+        }
+    }
+    private func registerMissionMarkers(id: UUID, continuation: AsyncStream<(convoID: String, marker: MissionMarker)>.Continuation) { missionMarkerContinuations[id] = continuation }
+    private func unregisterMissionMarkers(id: UUID) { missionMarkerContinuations.removeValue(forKey: id) }
+    private func publishMissionMarker(_ event: JournalEvent) {
+        let marker: MissionMarker
+        switch event.type {
+        case JournalEventType.milestone:
+            guard let m = MilestoneMarkerEvent.parse(payload: event.payload) else { return }
+            marker = .milestone(m)
+        case JournalEventType.mission:
+            guard let m = MissionMarkerEvent.parse(payload: event.payload) else { return }
+            marker = .mission(m)
+        default:
+            return
+        }
+        for c in missionMarkerContinuations.values { c.yield((convoID: event.convoID, marker: marker)) }
+    }
+
     /// Per-conversation stream of session-status updates (journal `status`
     /// ephemerals). Mirrors `activities(convoID:)`. The journal replays the
     /// last cached status when the client sends `viewing`, and the engine
@@ -766,6 +847,25 @@ public actor JournalSyncEngine {
         if case .running = new {
             readyWaiters.forEach { $0.resume() }
             readyWaiters = []
+            // First time the replay reaches the live cursor. Cleared right
+            // after firing so a later reconnect's `.running` transition
+            // does not re-invoke the app target's handler.
+            if let handler = catchUpCompleteHandler {
+                catchUpCompleteHandler = nil
+                handler()
+            }
+            // Caught up with the live cursor: the disk is free again, so the
+            // sweeper may run. `runIfDue` is watermark-gated, so the
+            // reconnects that also land here cost one `meta` read.
+            //
+            // R14: this is the replay REACHING the live cursor, which is
+            // spec §3.6's `catchUpComplete` rather than literally §3.4's
+            // "first catch-up batch applied". Benign — `start()`'s 10 s
+            // timer normally fires first, and whichever wins, the other is a
+            // no-op against the same watermark.
+            if let maintenance {
+                Task(priority: .utility) { await maintenance.runIfDue() }
+            }
         }
     }
 
@@ -1194,6 +1294,8 @@ public actor JournalSyncEngine {
     /// whose blobRef collides with the replayed one (bugbot "Media confirm
     /// ignores duplicate guard").
     private func didApply(_ event: JournalEvent) {
+        publishItemMarker(event)
+        publishMissionMarker(event)
         confirmMediaSendIfNeeded(event)
         indexForSearch(event)
     }
@@ -1204,10 +1306,11 @@ public actor JournalSyncEngine {
     /// batch instead of one of each per frame.
     private func didApplyBatch(_ events: [JournalEvent]) {
         guard !events.isEmpty else { return }
-        for event in events { confirmMediaSendIfNeeded(event) }
+        for event in events { publishItemMarker(event); publishMissionMarker(event); confirmMediaSendIfNeeded(event) }
         guard let search else { return }
+        let indexedAt = Date()
         let entries = events.compactMap { event -> SearchIndexEntry? in
-            guard let body = event.searchableBody else { return nil }
+            guard let body = event.searchableBody(now: indexedAt) else { return nil }
             return SearchIndexEntry(roomID: event.convoID, eventID: String(event.seq),
                                     sender: event.sender, timestamp: event.ts, body: body)
         }
@@ -1228,10 +1331,10 @@ public actor JournalSyncEngine {
 
     private func indexForSearch(_ event: JournalEvent) {
         guard let search else { return }
-        // Body extraction lives in `JournalEvent.searchableBody` (shared with
+        // Body extraction lives in `JournalEvent.searchableBody(now:)` (shared with
         // paginateBackward and the history backfill) so the three feeders
         // can't drift — see SearchBackfill.swift.
-        guard let body = event.searchableBody else { return }
+        guard let body = event.searchableBody() else { return }
         let convoID = event.convoID
         let seq = event.seq
         let sender = event.sender

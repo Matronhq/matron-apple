@@ -24,7 +24,45 @@ public enum JournalTimelineMapper {
              JournalEventType.summary:
             return nil
 
+        case JournalEventType.item:
+            // Tracker marker event (spec 2026-09-08). `ItemsSync` is the
+            // side-channel consumer (triggers a refetch of the item) —
+            // this is only about what the timeline SHOWS. `nil` (malformed
+            // payload), `.reordered`, and `.updated` never reach the
+            // timeline: `.reordered`/`.updated` markers exist purely to
+            // invalidate the local cache (see `ItemMarkerEvent`'s doc
+            // comment) and carry nothing worth rendering inline. PR B /
+            // Task 13 — before this the whole `item` type fell into the
+            // skip list above and rendered nothing.
+            guard let marker = ItemMarkerEvent.parse(payload: payload),
+                  marker.action != .reordered, marker.action != .updated
+            else { return nil }
+            kind = .itemMarker(eventID: String(event.seq), marker)
+
+        case JournalEventType.milestone:
+            // The marker's own seq is the anchor (protocol, "Marker
+            // events"), and `TimelineItem.id` is that seq — so nothing
+            // extra is needed to make a milestone tap land here. A payload
+            // that won't parse is skipped rather than rendered as
+            // `.unknown`: a half-drawn navigation affordance is worse than
+            // no row.
+            guard let marker = MilestoneMarkerEvent.parse(payload: payload) else { return nil }
+            kind = .milestoneMarker(eventID: String(event.seq), marker)
+
+        case JournalEventType.mission:
+            guard let marker = MissionMarkerEvent.parse(payload: payload) else { return nil }
+            kind = .missionMarker(eventID: String(event.seq), marker)
+
         case JournalEventType.text:
+            // Old-client fallback (spec 2026-09-08, "Old-client fallback"):
+            // the journal mirrors a card-worthy item marker as a plain
+            // `text` event, flagged `fallback_for: "item"`, so pre-tracker
+            // clients that cannot render `item` still see the turn. New
+            // clients already render the card from the `item` marker, so
+            // this mirror must be hidden here or it would double up.
+            if payload["fallback_for"] != nil {
+                return nil
+            }
             kind = .text(body: payload["body"] as? String ?? "", formattedHTML: nil)
 
         case JournalEventType.toolOutput:
@@ -161,10 +199,11 @@ public enum JournalTimelineMapper {
         )
     }
 
-    /// The journal server's tool-log TTL (docs/protocol.md Retention):
-    /// live-streamed output is purged server-side 24h after the event, and
-    /// the client rules make the same TTL binding on local caches.
-    public static let toolLogTTL: TimeInterval = 24 * 3600
+    /// The journal server's tool-log TTL (docs/protocol.md Retention).
+    /// Defined once, in `EventTombstone` — the leaf module both the store's
+    /// sweeps and this mapper can see — so the render-time guard and the
+    /// on-disk rewrite can never drift apart.
+    public static let toolLogTTL: TimeInterval = EventTombstone.toolLogTTL
 
     public static func toolCallEvent(fromToolOutput payload: [String: Any], ts: Date,
                                      now: Date = Date()) -> ToolCallEvent {

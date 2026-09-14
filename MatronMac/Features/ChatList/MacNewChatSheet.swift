@@ -249,13 +249,28 @@ struct MacNewChatSheet: View {
             .disabled(viewModel.isStarting
                       || viewModel.customPath.trimmingCharacters(in: .whitespaces).isEmpty)
         }
+        // Which coding agent the session runs as. Only shown when the box
+        // offers a second one to switch to (`agentSwitchVisible`); a box
+        // that can only run Claude, or a bridge older than the switch, has
+        // nothing to ask. Segmented so both choices are visible at once.
+        if viewModel.agentSwitchVisible {
+            Picker("Agent", selection: $viewModel.selectedAgent) {
+                ForEach(viewModel.agentOptions) { option in
+                    Text(option.label).tag(option.value)
+                }
+            }
+            .pickerStyle(.segmented)
+            .fixedSize()
+            .accessibilityIdentifier("newchat.agent")
+        }
         Toggle("Browser tools", isOn: $viewModel.browserEnabled)
             .toggleStyle(.checkbox)
         // Hidden for a bridge that doesn't say what it can run — an empty
-        // menu would only ever offer "Default". `.fixedSize` keeps the menu
+        // menu would only ever offer "Default" — and while Codex is the
+        // agent, which takes no Claude model. `.fixedSize` keeps the menu
         // at its own width: the sheet is rigid and up to 880pt wide, and a
         // full-width popup next to the checkbox reads as a text field.
-        if !viewModel.modelOptions.isEmpty {
+        if viewModel.modelPickerVisible {
             Picker("Model", selection: $viewModel.selectedModel) {
                 Text(viewModel.defaultRowTitle).tag(String?.none)
                 ForEach(viewModel.modelOptions) { option in

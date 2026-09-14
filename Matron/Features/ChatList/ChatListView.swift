@@ -30,15 +30,26 @@ import MatronViewModels
 /// `NewChatSheet` itself lands in Task 14.
 struct ChatListView: View {
     @State var viewModel: ChatListViewModel
+    /// Whether this view starts and cancels `viewModel` itself. The app
+    /// shell shares one `ChatListViewModel` across its tabs and owns its
+    /// lifetime, so it passes `false`; a tab switch must not cancel the
+    /// observation the Coordinator tab is still reading.
+    var ownsViewModel = true
     /// Per-room chat/composer view models, cached for the life of this
     /// screen. `chatDestination(for:)` used to construct fresh instances
     /// on every evaluation, so any remount of the pushed chat view
     /// rebooted the timeline from zero — blank until the room's first
     /// snapshot re-mapped (seconds for a large room). Mirrors the Mac's
     /// `ChatVMCache` fix for the same 2026-07-13 blank-panel incident.
-    @State private var vmCache = ChatVMCache()
+    /// Injected by `AppShellView` so every tab shares one cache; defaulted
+    /// for previews/tests.
+    @State var vmCache = ChatVMCache()
     @Environment(\.appDependencies) private var deps
     @Environment(\.currentSession) private var session
+    /// This tab's stack, owned by `AppShellView` — an item pushed from a
+    /// chat's tasks page rides it as an `ItemRoute.pathValue`, and the
+    /// item detail's origin link appends a conversation onto it.
+    @Environment(\.chatNavigationPath) private var chatNavigationPath
     @State private var showingNewChat = false
     /// Phase 6 (Search): drives the `.sheet` presenting `SearchView`.
     @State private var showingSearch = false
@@ -78,6 +89,7 @@ struct ChatListView: View {
 
     var body: some View {
         chatListContent
+        .onAppear { LaunchTimeline.shared.mark(.firstListPaint) }
         .navigationTitle("Chats")
         .toolbar {
             // Connection state rides inline in the nav bar's leading edge so
@@ -159,7 +171,8 @@ struct ChatListView: View {
                         onSignOut: {
                             showingDeviceSettings = false
                             onSignOut?()
-                        }
+                        },
+                        deps: deps
                     )
                         .toolbar {
                             ToolbarItem(placement: .topBarTrailing) {
@@ -215,10 +228,16 @@ struct ChatListView: View {
             }
         }
         .navigationDestination(for: ChatSummary.ID.self) { id in
-            chatDestination(for: id)
+            if let mission = MissionRoute(pathValue: id) {
+                missionDestination(mission)
+            } else if let route = ItemRoute(pathValue: id) {
+                itemDestination(route)
+            } else {
+                chatDestination(for: id)
+            }
         }
-        .task { viewModel.start() }
-        .onDisappear { viewModel.cancel() }
+        .task { if ownsViewModel { viewModel.start() } }
+        .onDisappear { if ownsViewModel { viewModel.cancel() } }
         // Sync connection-state banner. Subscribes to the host's
         // long-lived `stateStream()` and mirrors yields into the local
         // `connectionState` so the banner reacts without bouncing
@@ -372,76 +391,25 @@ struct ChatListView: View {
         }
     }
 
-    /// Builds the `ChatView` destination for a tapped row. Wrapped in a
-    /// helper so `body` stays readable and the `nil`-environment branch
-    /// doesn't leak SwiftUI conditional-content quirks into the main flow.
-    ///
-    /// Resolves the destination's `ChatSummary` from `viewModel.groups`
-    /// by id rather than capturing it at navigation time — see the file
-    /// header for the stale-capture rationale. The lookup can legitimately
-    /// return `nil` for a valid, open room: a conversation the bridge just
-    /// created (`/start`) auto-opens the instant its first frame hits the
-    /// store, but the chat-list snapshot arrives a GRDB `ValueObservation`
-    /// main-hop later — so `currentSummary` is briefly `nil` for a room
-    /// that is very much live. We therefore build the `ChatView` for any
-    /// valid id whenever the session is present; the title falls back to
-    /// empty and fills in live when the snapshot lands (the `ChatView`'s
-    /// `@State` view models and the roomID-keyed timeline persist across
-    /// that re-render). The `Session unavailable` placeholder is reserved
-    /// for the case its copy actually describes — no session / signed out.
-    @ViewBuilder
+    /// Builds the destination for a tapped row. The lookup can legitimately
+    /// return `nil` for a valid, open room — a conversation the bridge just
+    /// created auto-opens before the chat-list snapshot lands — so the
+    /// destination is built for any id whenever the session is present and
+    /// the title fills in live. See `ChatDestinationView`.
     func chatDestination(for id: ChatSummary.ID) -> some View {
-        if let deps, let session {
-            // A subagent child (learned from the store — the id stays
-            // opaque) opens the read-only sub-chat viewer; every other id is
-            // a normal top-level chat. Children reach this destination only
-            // via the running-subagent strip / switcher (they're filtered
-            // from the list and excluded from auto-open), so this branch is
-            // the sub-chat entry point.
-            if let parentConvoID = deps.parentConvoID(of: id, for: session) {
-                let (chatVM, stripVM) = vmCache.subChatViewModels(
-                    for: id, parentConvoID: parentConvoID, deps: deps, session: session)
-                SubChatView(viewModel: chatVM, stripViewModel: stripVM,
-                            childID: id, fallbackTitle: "Subagent")
-                    // Key the viewer's identity to the child. Switching
-                    // siblings REPLACES the path tail (pop-then-push), which
-                    // keeps the destination's structural position — without
-                    // this key SwiftUI reuses the old instance's `@State`,
-                    // so `viewModel` stays the previous child's VM and the
-                    // timeline never changes (only `childID`-derived header
-                    // fields update). Same fix as MacSubChatPane's
-                    // `.id(childID)` (f3eb091).
-                    .id(id)
-            } else {
-                let summary = currentSummary(for: id)
-                let (chatVM, composerVM) = vmCache.viewModels(for: id, deps: deps, session: session)
-                ChatView(
-                    viewModel: chatVM,
-                    composerVM: composerVM,
-                    stripViewModel: vmCache.stripViewModel(forParent: id, deps: deps, session: session),
-                    chatTitle: summary?.title ?? "",
-                    boxName: summary?.boxName,
-                    sessionShort: summary?.sessionShort,
-                    boxShort: summary?.boxShort,
-                    roomBoxNames: summary?.roomBoxNames ?? [],
-                    roomBoxShorts: summary?.roomBoxShorts ?? []
-                )
-                // Key the chat's identity to its room. `openChat` REPLACES
-                // the path ([A] → [B]), which keeps this destination's
-                // structural position — without this key SwiftUI reuses the
-                // old instance's `@State`, so `viewModel`/`composerVM` stay
-                // chat A's while the plain-`let` `chatTitle` updates to
-                // chat B: B's title over A's timeline. Same fix as the
-                // SubChatView branch above and MacSubChatPane (f3eb091).
-                .id(id)
-            }
-        } else {
-            ContentUnavailableView(
-                "Session unavailable",
-                systemImage: "exclamationmark.triangle",
-                description: Text("Sign in again to open this chat.")
-            )
-        }
+        ChatDestinationView(id: id, summary: currentSummary(for: id), vmCache: vmCache)
+    }
+
+    /// The nearest entry in `path`, from the top, that is not itself a
+    /// route (`isAnyPathPrefixedRoute`) — the chat an item or mission
+    /// route was pushed from. A static, pure decision so a test can pin
+    /// it directly: filtering on `ItemRoute` alone let a `MissionRoute`
+    /// entry pass as "the chat underneath" (it fails an `ItemRoute` test
+    /// too), so a milestone or conversation opened from inside a mission
+    /// page always appended a second copy of that chat instead of popping
+    /// back to the live one already underneath the mission (Bugbot).
+    static func currentChat(in path: [String]) -> String? {
+        path.last(where: { !isAnyPathPrefixedRoute($0) })
     }
 
     /// Looks up the current `ChatSummary` for a navigation id across all
@@ -460,6 +428,71 @@ struct ChatListView: View {
             }
         }
         return nil
+    }
+
+    /// Item detail pushed from a chat's tasks page (spec §4) — it rides the
+    /// same `[String]` stack as `ItemRoute.pathValue`. The chat underneath
+    /// is the nearest entry below it that is not itself a route
+    /// (`isAnyPathPrefixedRoute` — an item pushed from inside a mission
+    /// page must skip that `MissionRoute` entry too, not just other item
+    /// routes, Bugbot), so the "opened from…" link hides when it would
+    /// only point back at that chat; an origin link elsewhere appends the
+    /// conversation as before.
+    @ViewBuilder
+    private func itemDestination(_ route: ItemRoute) -> some View {
+        if let session {
+            let current = Self.currentChat(in: chatNavigationPath?.wrappedValue ?? [])
+            ItemDetailHost(itemID: route.id, session: session, currentConvoID: current,
+                           onOpenConversation: { convoID in
+                               guard convoID != current else { return }
+                               chatNavigationPath?.wrappedValue.append(convoID)
+                           },
+                           // An item link inside a body/comment rides the
+                           // same stack as this item did (item #115). No
+                           // list fallback: what sits below here is the
+                           // chat, and its tracker is a page INSIDE it.
+                           onOpenItem: { itemID in
+                               chatNavigationPath?.wrappedValue.append(ItemRoute(id: itemID).pathValue)
+                           })
+        } else {
+            ContentUnavailableView("Session unavailable", systemImage: "exclamationmark.triangle",
+                                   description: Text("Sign in again to open this item."))
+        }
+    }
+
+    /// Mission page pushed from a chat's title tap or a milestone card
+    /// (Task 9) — rides the same `[String]` stack as `ItemRoute.pathValue`.
+    /// A milestone open pushes its conversation onto THIS stack and parks
+    /// the jump on that room's cached `ChatViewModel`, same rule as
+    /// `AppShellView.openMilestone` on the Missions tab's own stack. Same
+    /// current-conversation dedupe as `itemDestination` (MINOR-3): the
+    /// PRIMARY flow here is chat X → title tap → mission page → tap a
+    /// milestone posted in X — without the dedupe that pushes a second
+    /// copy of X on top of the mission page instead of popping back to the
+    /// live one already underneath it.
+    @ViewBuilder
+    private func missionDestination(_ route: MissionRoute) -> some View {
+        // Same computation `itemDestination` uses: the nearest entry below
+        // that is not itself a route — filtering only `ItemRoute` let the
+        // mission route ITSELF (the entry this destination renders for)
+        // pass as "the chat underneath", so a milestone or conversation
+        // open for that same chat always appended a second copy instead
+        // of popping back to it (Bugbot). A mission route is always
+        // pushed directly from the chat it names, so this lands on that
+        // chat.
+        let current = Self.currentChat(in: chatNavigationPath?.wrappedValue ?? [])
+        MissionRouteDestination(
+            route: route, session: session, deps: deps, vmCache: vmCache,
+            onOpenConversation: { convoID in
+                if convoID == current {
+                    chatNavigationPath?.wrappedValue.removeLast()
+                } else {
+                    chatNavigationPath?.wrappedValue.append(convoID)
+                }
+            },
+            onOpenItem: { itemID in
+                chatNavigationPath?.wrappedValue.append(ItemRoute(id: itemID).pathValue)
+            })
     }
 
     /// Fires a chat-service action without awaiting its result. Used for
@@ -540,7 +573,10 @@ struct ChatRow: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
-                UnreadBadge(count: summary.unreadCount)
+                HStack(spacing: 4) {
+                    NeedsYouBadge(count: summary.needsUserCount)
+                    UnreadBadge(count: summary.unreadCount)
+                }
             }
             .fixedSize(horizontal: true, vertical: false)
         }

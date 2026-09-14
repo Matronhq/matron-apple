@@ -170,6 +170,7 @@ let package = Package(
                 "MatronModels",
                 "MatronStorage",
                 "MatronSearch",
+                "MatronEvents",
                 .product(name: "GRDB", package: "GRDB.swift"),
             ],
             path: "Sources/Journal"
@@ -190,6 +191,10 @@ let package = Package(
                 "MatronJournal",
                 "MatronModels",
                 .product(name: "SnapshotTesting", package: "swift-snapshot-testing"),
+                // Item #115 pins that a `[#65](matron://item/65)` body
+                // parses as a LINK (destination + `#65` text) on the
+                // MarkdownUI path iOS message bodies render through.
+                .product(name: "MarkdownUI", package: "swift-markdown-ui"),
             ],
             path: "Tests/DesignSystemSnapshotTests"
         ),
@@ -204,6 +209,6 @@ let package = Package(
             path: "Tests/EventsTests"
         ),
         .testTarget(name: "SearchTests", dependencies: ["MatronSearch"], path: "Tests/SearchTests"),
-        .testTarget(name: "JournalTests", dependencies: ["MatronJournal", "MatronModels", "MatronSearch"], path: "Tests/JournalTests"),
+        .testTarget(name: "JournalTests", dependencies: ["MatronJournal", "MatronModels", "MatronSearch", "MatronEvents"], path: "Tests/JournalTests"),
     ]
 )

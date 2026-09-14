@@ -542,4 +542,12 @@ final class WireModelsTests: XCTestCase {
         XCTAssertNil(ServerFrame.decode(#"{"kind":"device_meta","name":"dev-y"}"#))
         XCTAssertNil(ServerFrame.decode(#"{"kind":"device_meta","device_id":7}"#))
     }
+
+    /// push/unread stay untouched (spec, "Marker events"): the journal
+    /// never pushes these and never snippets them, so the client mirror
+    /// must not either.
+    func testMissionAndMilestoneAreNotMessageTypes() {
+        XCTAssertFalse(JournalEventType.messageTypes.contains(JournalEventType.mission))
+        XCTAssertFalse(JournalEventType.messageTypes.contains(JournalEventType.milestone))
+    }
 }

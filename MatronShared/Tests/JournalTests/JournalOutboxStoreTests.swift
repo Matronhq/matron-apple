@@ -53,6 +53,25 @@ final class JournalOutboxStoreTests: XCTestCase {
         XCTAssertEqual(try store.outboxRows(convoID: "c1").map(\.localID), ["A"])
     }
 
+    func testInsertHistoryFlaggedFallbackTextKeepsOutboxRow() throws {
+        // Old-client fallback (spec 2026-09-08, "Old-client fallback"): the
+        // journal mirrors an item marker as an own-sender `text` flagged
+        // `fallback_for: "item"`. The live path already ignores it for
+        // delivery confirmation; the post-snapshot history refill must too,
+        // or a coincidental body match deletes an unrelated queued send.
+        let store = try makeStore()
+        try store.outboxInsert(localID: "A", convoID: "c1", body: "📌 New task #3: x",
+                               now: Date(timeIntervalSince1970: 1))
+        try store.outboxMarkAttempt(localID: "A")
+        let fallback = JournalEvent(
+            seq: 2, convoID: "c1", ts: Date(timeIntervalSince1970: 2), // ts after the row
+            sender: "user:dan", type: "text",
+            payloadData: Data(#"{"body":"📌 New task #3: x","fallback_for":"item","item_id":"it_3","num":3,"action":"created"}"#.utf8))
+        try store.insertHistory([fallback])
+        XCTAssertEqual(try store.outboxRows(convoID: "c1").map(\.localID), ["A"],
+                       "a flagged fallback text in a history refill must not confirm an unrelated queued send")
+    }
+
     func testInsertAndFetchPendingFIFO() throws {
         let store = try makeStore()
         try store.outboxInsert(localID: "a", convoID: "c1", body: "first",

@@ -76,6 +76,20 @@ public struct ConversationRecord: Codable, FetchableRecord, PersistableRecord, E
     /// untouched when it doesn't (see `ConvoSummaryDTO.participants`).
     public var participants: String?
 
+    /// The `type` of the newest message-type event in this conversation
+    /// (`JournalEventType.messageTypes`), or `nil` when none has landed.
+    /// Maintained on write (`applyOne`, `insertHistory`) so the chat list's
+    /// read-time tool-output TTL is pure column logic — before v11 it ran a
+    /// `MAX(seq)` sub-query on `event` per stale conversation, which is what
+    /// made the whole list observation track the `event` table.
+    public var lastMessageType: String?
+    /// What the list must show instead of `snippet` once that newest
+    /// message-type event's 24 h tool-log TTL has passed: `"$ <command>"`,
+    /// capped at 120 characters like every other snippet. `nil` whenever
+    /// substitution does not apply (not a tool_output, no command, or a
+    /// legacy payload that was never a live log and is not tombstoned).
+    public var expiredSnippet: String?
+
     /// Decoded `participants`. Empty for anything that is not a known
     /// multi-agent room (nil column, or a value that fails to decode).
     public var participantIDs: [Int64] {
@@ -100,6 +114,8 @@ public struct ConversationRecord: Codable, FetchableRecord, PersistableRecord, E
         case unreadCount = "unread_count"
         case parentConvoID = "parent_convo_id"
         case agentDeviceID = "agent_device_id"
+        case lastMessageType = "last_message_type"
+        case expiredSnippet = "expired_snippet"
     }
 }
 
@@ -217,14 +233,26 @@ public struct SummaryEntryRecord: Codable, FetchableRecord, PersistableRecord, E
 /// transaction as the event insert — the wedge-proof property.
 public final class JournalStore: @unchecked Sendable {
     private static let logger = os.Logger(subsystem: "chat.matron", category: "journal-store")
-    private let dbQueue: DatabaseQueue
-    /// See `applyReadTimeSnippetTTL` — memoizes its per-conversation event
-    /// sub-queries across the conversation observation's per-commit re-runs.
-    private let snippetTTLMemo = SnippetTTLMemo()
+    // Module-internal (not private): JournalStore+Items.swift extends this
+    // type from a different file for the tracker cache (spec
+    // 2026-09-08-items-tracker-apps task 4) and needs direct access.
+    let dbQueue: DatabaseQueue
     private let ownSender: String
+
+    /// How long the schema migration took during this store's open, or `nil`
+    /// when every migration was already applied. Published rather than
+    /// reported: `AppDependencies` turns it into the launch timeline's
+    /// nested `migration` interval, so this module keeps no dependency on
+    /// the timeline and writes no `UserDefaults` (see the plan's R7).
+    public private(set) var lastMigrationDuration: Duration?
+
+    /// Where this mirror lives, or `nil` for an in-memory store. Read by
+    /// `StoreDiagnostics` for the Settings › Storage size row.
+    public let databaseURL: URL?
 
     public init(databaseURL: URL?, ownSender: String) throws {
         self.ownSender = ownSender
+        self.databaseURL = databaseURL
         if let url = databaseURL {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -252,17 +280,33 @@ public final class JournalStore: @unchecked Sendable {
         } else {
             dbQueue = try DatabaseQueue()
         }
-        try Self.migrator().migrate(dbQueue)
-        // Boot-time TTL sweep, mirroring the server's expire-logs job
-        // (matron-journal docs/protocol.md Retention): a cached live_log
-        // snippet must not outlive the 24h TTL just because this device
-        // never re-synced the row. Best-effort — a failed sweep must not
-        // block opening the store (the mapper's render-time TTL guard keeps
-        // the DISPLAY correct either way; the sweep is what cleans the disk).
-        do {
-            try purgeExpiredToolOutputSnippets()
-        } catch {
-            Self.logger.error("tool-output TTL sweep failed: \(error.localizedDescription, privacy: .public)")
+        // Migrations run synchronously here, before any caller can read the
+        // store, so the one launch that runs v11 pays its index build and
+        // backfill up front. `ContinuousClock` (not `Date`) because this is
+        // an elapsed-time measurement: it cannot be skewed by an NTP step
+        // landing mid-migration.
+        let migrator = Self.migrator()
+        let applied = (try? dbQueue.read { try migrator.appliedIdentifiers($0) }) ?? []
+        let hasPending = migrator.migrations.contains { !applied.contains($0) }
+        let clock = ContinuousClock()
+        let began = clock.now
+        try migrator.migrate(dbQueue)
+        lastMigrationDuration = hasPending ? clock.now - began : nil
+    }
+
+    /// Adds `column` to `table` unless it is already there. GRDB records
+    /// applied migrations by NAME, not by inspecting the schema — a device
+    /// that reached the same column under a different migration history
+    /// (renamed/renumbered migration, or a hand-patched DB) has the column
+    /// on disk but no matching entry in `grdb_migrations`, so the plain
+    /// `t.add(column:)` this replaces would re-run and fail with "duplicate
+    /// column", turning the `try!` store open into a launch crash loop
+    /// (tracker #216). Every additive migration below must call this
+    /// instead of adding a column directly.
+    static func addColumnIfMissing(_ db: Database, table: String, column: String, _ type: Database.ColumnType) throws {
+        guard try !db.columns(in: table).contains(where: { $0.name == column }) else { return }
+        try db.alter(table: table) { t in
+            t.add(column: column, type)
         }
     }
 
@@ -273,7 +317,7 @@ public final class JournalStore: @unchecked Sendable {
     static func migrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
         migrator.registerMigration("v1") { db in
-            try db.create(table: "conversation") { t in
+            try db.create(table: "conversation", options: [.ifNotExists]) { t in
                 t.column("id", .text).primaryKey()
                 t.column("title", .text).notNull().defaults(to: "")
                 t.column("session_state", .text).notNull().defaults(to: "running")
@@ -286,7 +330,7 @@ public final class JournalStore: @unchecked Sendable {
                 t.column("read_up_to_seq", .integer).notNull().defaults(to: 0)
                 t.column("unread_count", .integer).notNull().defaults(to: 0)
             }
-            try db.create(table: "event") { t in
+            try db.create(table: "event", options: [.ifNotExists]) { t in
                 t.column("seq", .integer).primaryKey()
                 t.column("convo_id", .text).notNull().indexed()
                 t.column("ts", .integer).notNull()
@@ -294,7 +338,7 @@ public final class JournalStore: @unchecked Sendable {
                 t.column("type", .text).notNull()
                 t.column("payload", .blob).notNull()
             }
-            try db.create(table: "meta") { t in
+            try db.create(table: "meta", options: [.ifNotExists]) { t in
                 t.column("key", .text).primaryKey()
                 t.column("value", .text).notNull()
             }
@@ -306,16 +350,14 @@ public final class JournalStore: @unchecked Sendable {
         // journal keeps every conversation and simply treats them all as
         // top-level until the bridge starts publishing children.
         migrator.registerMigration("v2") { db in
-            try db.alter(table: "conversation") { t in
-                t.add(column: "parent_convo_id", .text)
-            }
-            try db.create(indexOn: "conversation", columns: ["parent_convo_id"])
+            try Self.addColumnIfMissing(db, table: "conversation", column: "parent_convo_id", .text)
+            try db.create(indexOn: "conversation", columns: ["parent_convo_id"], options: .ifNotExists)
         }
         // v3: offline send queue. Text sends that can't reach the server
         // yet persist here (surviving relaunch and the snapshot_required
         // mirror wipe — see `wipe()`) and flush FIFO on reconnect.
         migrator.registerMigration("v3") { db in
-            try db.create(table: "outbox") { t in
+            try db.create(table: "outbox", options: [.ifNotExists]) { t in
                 t.column("local_id", .text).primaryKey()
                 t.column("convo_id", .text).notNull().indexed()
                 t.column("body", .text).notNull()
@@ -328,7 +370,7 @@ public final class JournalStore: @unchecked Sendable {
         // v4: TOC summary entries — one row per bridge summary pass, derived
         // from `summary` journal events. seq doubles as the transcript anchor.
         migrator.registerMigration("v4") { db in
-            try db.create(table: "summary_entry") { t in
+            try db.create(table: "summary_entry", options: [.ifNotExists]) { t in
                 t.column("convo_id", .text).notNull().indexed()
                 t.column("seq", .integer).notNull()
                 t.column("toc", .text).notNull()
@@ -343,10 +385,8 @@ public final class JournalStore: @unchecked Sendable {
         // Additive: existing rows keep NULL and simply render no chip until
         // the next snapshot fills them in.
         migrator.registerMigration("v5") { db in
-            try db.alter(table: "conversation") { t in
-                t.add(column: "agent_device_id", .integer)
-            }
-            try db.create(table: "agent") { t in
+            try Self.addColumnIfMissing(db, table: "conversation", column: "agent_device_id", .integer)
+            try db.create(table: "agent", options: [.ifNotExists]) { t in
                 t.column("id", .integer).primaryKey()
                 t.column("name", .text).notNull()
             }
@@ -357,9 +397,7 @@ public final class JournalStore: @unchecked Sendable {
         // existing rows keep NULL and chip as before until the next
         // snapshot / membership convo_meta fills them in.
         migrator.registerMigration("v6") { db in
-            try db.alter(table: "conversation") { t in
-                t.add(column: "participants", .text)
-            }
+            try Self.addColumnIfMissing(db, table: "conversation", column: "participants", .text)
         }
         // v7: backfill summary_entry from `summary` events already in the
         // local mirror. v4 created the table but only the live apply path
@@ -391,62 +429,467 @@ public final class JournalStore: @unchecked Sendable {
         // re-using the name on an installed device would silently skip this
         // column (GRDB records the identifier, not the body).
         migrator.registerMigration("v8") { db in
-            try db.alter(table: "agent") { t in
-                t.add(column: "tag_char", .text)
+            try Self.addColumnIfMissing(db, table: "agent", column: "tag_char", .text)
+        }
+        // v9: tracker cache (spec 2026-09-08 task-decision-tracker). Filled
+        // from GET /items, never from the event log; the `item` marker
+        // event is only an invalidation signal (ItemsSync).
+        migrator.registerMigration("v9") { db in
+            try db.create(table: "item", options: [.ifNotExists]) { t in
+                t.column("id", .text).primaryKey()
+                t.column("num", .integer).notNull()
+                t.column("kind", .text).notNull()
+                t.column("state", .text).notNull()
+                t.column("resolution", .text)
+                t.column("awaiting", .text)
+                t.column("rank", .double).notNull()
+                t.column("title", .text).notNull()
+                t.column("body", .text).notNull().defaults(to: "")
+                t.column("labels_json", .text).notNull().defaults(to: "[]")
+                t.column("links_json", .text).notNull().defaults(to: "[]")
+                t.column("attachments_json", .text).notNull().defaults(to: "[]")
+                t.column("supersedes", .text)
+                t.column("origin_convo_id", .text).notNull()
+                t.column("created_by", .text).notNull()
+                t.column("created_at", .integer).notNull()
+                t.column("updated_at", .integer).notNull()
+                t.column("closed_at", .integer)
+                t.column("comment_count", .integer).notNull().defaults(to: 0)
+                t.column("last_comment_at", .integer)
+                t.column("has_image", .boolean).notNull().defaults(to: false)
+            }
+            try db.create(index: "item_convo_state", on: "item", columns: ["origin_convo_id", "state"], options: .ifNotExists)
+            try db.create(index: "item_state_rank", on: "item", columns: ["state", "rank"], options: .ifNotExists)
+            try db.create(table: "item_comment", options: [.ifNotExists]) { t in
+                t.column("id", .text).primaryKey()
+                t.column("item_id", .text).notNull().indexed()
+                t.column("author", .text).notNull()
+                t.column("device_id", .integer).notNull().defaults(to: 0)
+                t.column("kind", .text).notNull()
+                t.column("body", .text).notNull().defaults(to: "")
+                t.column("attachments_json", .text).notNull().defaults(to: "[]")
+                t.column("meta_json", .text)
+                t.column("created_at", .integer).notNull()
+            }
+            try db.create(table: "item_outbox", options: [.ifNotExists]) { t in
+                t.column("local_id", .text).primaryKey()
+                t.column("item_id", .text).indexed()
+                t.column("op", .text).notNull()
+                t.column("payload_json", .text).notNull()
+                t.column("created_at", .integer).notNull()
+                t.column("attempts", .integer).notNull().defaults(to: 0)
+                t.column("last_error", .text)
+            }
+        }
+        // v10: mission cache (spec 2026-09-10 missions-milestones). Purely
+        // ADDITIVE — three new tables plus two nullable columns on `item`.
+        // Filled from GET /missions and GET /missions/:id, never from the
+        // event log: the `mission`/`milestone` markers are invalidation
+        // signals, and the journal omits their titles when they cross the
+        // privacy boundary, so a marker is never a source of truth for a
+        // name (MissionsSync).
+        migrator.registerMigration("v10") { db in
+            try db.create(table: "mission", options: [.ifNotExists]) { t in
+                t.column("id", .text).primaryKey()
+                t.column("num", .integer).notNull()
+                t.column("state", .text).notNull()
+                t.column("title", .text).notNull()
+                t.column("body", .text).notNull().defaults(to: "")
+                t.column("close_summary", .text)
+                t.column("closed_by", .text)
+                t.column("closed_over_open_items", .integer).notNull().defaults(to: 0)
+                t.column("origin_convo_id", .text).notNull()
+                t.column("origin_device_id", .integer).notNull().defaults(to: 0)
+                t.column("created_by", .text).notNull()
+                t.column("created_at", .integer).notNull()
+                t.column("updated_at", .integer).notNull()
+                t.column("last_milestone_at", .integer)
+                t.column("closed_at", .integer)
+                t.column("open_items", .integer).notNull().defaults(to: 0)
+                t.column("needs_you", .integer).notNull().defaults(to: 0)
+                t.column("conversation_count", .integer).notNull().defaults(to: 0)
+                t.column("milestone_count", .integer).notNull().defaults(to: 0)
+                t.column("last_milestone_json", .text)
+            }
+            try db.create(index: "mission_state_activity", on: "mission", columns: ["state", "last_milestone_at"], options: .ifNotExists)
+            try db.create(index: "mission_origin", on: "mission", columns: ["origin_convo_id"], options: .ifNotExists)
+            try db.create(table: "milestone", options: [.ifNotExists]) { t in
+                t.column("id", .text).primaryKey()
+                t.column("mission_id", .text).notNull()
+                t.column("num", .integer).notNull()
+                t.column("kind", .text).notNull()
+                t.column("title", .text).notNull()
+                t.column("body", .text).notNull().defaults(to: "")
+                t.column("convo_id", .text).notNull()
+                t.column("seq", .integer).notNull()
+                t.column("device_id", .integer).notNull().defaults(to: 0)
+                t.column("created_by", .text).notNull()
+                t.column("created_at", .integer).notNull()
+            }
+            try db.create(index: "milestone_mission", on: "milestone", columns: ["mission_id", "created_at"], options: .ifNotExists)
+            try db.create(index: "milestone_convo", on: "milestone", columns: ["convo_id", "seq"], options: .ifNotExists)
+            try db.create(table: "mission_conversation", options: [.ifNotExists]) { t in
+                t.column("mission_id", .text).notNull()
+                t.column("convo_id", .text).notNull()
+                t.column("title", .text).notNull().defaults(to: "")
+                t.column("box", .text)
+                t.column("state", .text).notNull().defaults(to: "")
+                t.primaryKey(["mission_id", "convo_id"])
+            }
+            try Self.addColumnIfMissing(db, table: "item", column: "mission_id", .text)
+            try Self.addColumnIfMissing(db, table: "item", column: "mission_num", .integer)
+            try db.create(index: "item_mission", on: "item", columns: ["mission_id", "state", "awaiting"], options: .ifNotExists)
+            // The two new columns above land as NULL on every item row
+            // already cached — `ItemsSync.refreshOnce` fetches `?since=`
+            // its persisted watermark, which skips rows the server hasn't
+            // touched since, so those items would never gain a mission
+            // until each one changes again (Bugbot). Clearing the
+            // watermark keys (same statement `wipeItems()` runs) forces
+            // the very next refresh, for every scope, to be a full
+            // `GET /items` fetch that re-fills `mission_id`/`mission_num`
+            // from the server's current values.
+            try db.execute(sql: "DELETE FROM meta WHERE key = 'items_watermark_all' OR key LIKE 'items_watermark_convo_%'")
+        }
+        // v11: launch performance (spec 2026-09-10). Purely ADDITIVE — one
+        // index plus two nullable columns on `conversation`, then a
+        // one-conversation-at-a-time backfill over the existing `convo_id`
+        // index.
+        //
+        // `event_type_ts` is what makes the tool-output sweep incremental:
+        // before it, every sweep was a full `event` scan (1.5 s and 75,791
+        // row decodes on the Mac copy, on every store open).
+        //
+        // `last_message_type` / `expired_snippet` are what let the chat
+        // list's TTL be pure column logic, which in turn stops the list
+        // observation from tracking the `event` table at all.
+        //
+        // The backfill is the one-off cost of this migration — an index
+        // build over ~457k rows plus one indexed point lookup per
+        // conversation (~6k), estimated 2-4 s on the Mac copy, once.
+        // `LaunchTimeline` records it as a nested `migration` interval so
+        // the number on the phone is known rather than guessed.
+        migrator.registerMigration("v11") { db in
+            try db.create(index: "event_type_ts", on: "event", columns: ["type", "ts"], options: .ifNotExists)
+            try Self.addColumnIfMissing(db, table: "conversation", column: "last_message_type", .text)
+            try Self.addColumnIfMissing(db, table: "conversation", column: "expired_snippet", .text)
+            let placeholders = JournalEventType.messageTypes.map { _ in "?" }.joined(separator: ",")
+            let messageTypes = Array(JournalEventType.messageTypes)
+            for id in try String.fetchAll(db, sql: "SELECT id FROM conversation") {
+                var arguments: [DatabaseValueConvertible] = [id]
+                arguments.append(contentsOf: messageTypes)
+                guard let row = try Row.fetchOne(db, sql: """
+                    SELECT type, payload FROM event
+                    WHERE convo_id = ? AND type IN (\(placeholders))
+                    ORDER BY seq DESC LIMIT 1
+                    """, arguments: StatementArguments(arguments))
+                else { continue }
+                let type: String = row["type"]
+                let payloadData: Data = row["payload"]
+                try db.execute(
+                    sql: "UPDATE conversation SET last_message_type = ?, expired_snippet = ? WHERE id = ?",
+                    arguments: [type, Self.expiredSnippet(type: type, payloadData: payloadData), id])
             }
         }
         return migrator
     }
 
-    // MARK: Tool-output TTL
+    // MARK: Background maintenance sweeps
 
-    /// Rewrites every `tool_output` event payload with `live_log: true`
-    /// older than 24h to the server's tombstone shape — snippet removed,
-    /// `expired: true`, `blob_ref: null` — and, when the purged event is
-    /// still the newest message-type event in its conversation, rewrites the
-    /// conversation-list preview to `$ <command>` exactly as the server
-    /// does. Idempotent: already-expired payloads are skipped. `now` is
-    /// injectable for tests only.
+    /// `meta` keys written by the sweeps. None is written by a migration;
+    /// `wipe()`'s `DELETE FROM meta` resets all four, which is exactly
+    /// right — a re-bootstrapped mirror must re-sweep from scratch.
+    static let snippetTTLWatermarkKey = "snippet_ttl_ts"
+    static let retentionWatermarkKey = "retention_ts"
+    static let maintenanceLastRunKey = "maintenance_last_run"
+    /// Separate from `retentionWatermarkKey`: the tombstone sweep runs
+    /// whether or not a search index is attached (a locked background
+    /// launch on iOS opens it late via `adoptSearch`, and `applyRetention`'s
+    /// returned seqs were being silently dropped whenever that happened —
+    /// Bugbot High "search removal is never retried" on PR #212). Search
+    /// retirement is its own pass over the same `event_type_ts` range,
+    /// gated on this independent watermark, so a maintenance run with no
+    /// search attached leaves this watermark untouched and a later run
+    /// (once search IS attached) re-discovers the same rows instead of
+    /// having lost them.
+    static let searchRetentionWatermarkKey = "search_retention_ts"
+
+    /// Rows per write transaction. The store is a single-connection
+    /// `DatabaseQueue`, so a sweep that took one transaction for the whole
+    /// range would block every UI read for its duration; 500 keeps each
+    /// transaction short enough to interleave.
+    static let sweepChunkSize = 500
+
+    /// Rewrites aged-out `tool_output` payloads to the tombstone shape,
+    /// incrementally: everything at or below `meta.snippet_ttl_ts` was
+    /// covered by an earlier sweep and is skipped, and the range scan uses
+    /// the `event_type_ts` index rather than reading the whole table.
+    ///
+    /// Same name and signature as the boot-time sweep it replaces — the
+    /// difference is that nothing calls it from `JournalStore.init` any
+    /// more (`JournalMaintenance` owns it, off the launch path).
+    ///
+    /// First run after the update has no watermark and therefore scans every
+    /// tool-output row older than 24 h once, in the background.
     public func purgeExpiredToolOutputSnippets(now: Date = Date()) throws {
-        let cutoff = Int64(now.timeIntervalSince1970 * 1000) - Int64(24 * 3600 * 1000)
-        try dbQueue.write { db in
-            // Rewrites event payloads without touching `last_seq` — see the
-            // matching invalidation note on `insertHistory` (inside the
-            // write block for the same serialization reason).
-            self.snippetTTLMemo.removeAll()
-            let rows = try EventRecord
-                .filter(Column("type") == JournalEventType.toolOutput && Column("ts") <= cutoff)
-                .fetchAll(db)
-            for var row in rows {
-                guard var payload = (try? JSONSerialization.jsonObject(with: row.payload)) as? [String: Any],
-                      payload["live_log"] as? Bool == true,
-                      payload["expired"] as? Bool != true
-                else { continue }
-                payload.removeValue(forKey: "snippet")
-                payload["expired"] = true
-                payload["blob_ref"] = NSNull()
-                row.payload = try JSONSerialization.data(withJSONObject: payload)
-                try row.update(db)
+        let cutoff = Int64(now.timeIntervalSince1970 * 1000) - Int64(EventTombstone.toolLogTTL * 1000)
+        _ = try sweepTombstones(types: [JournalEventType.toolOutput],
+                                watermarkKey: Self.snippetTTLWatermarkKey,
+                                cutoffMs: cutoff, now: now)
+    }
 
-                guard let command = payload["command"] as? String, !command.isEmpty,
-                      var convo = try ConversationRecord.fetchOne(db, key: row.convoID)
-                else { continue }
-                let newestMessageSeq = try Self.newestMessageSeq(db, convoID: row.convoID)
-                if newestMessageSeq == row.seq {
-                    convo.snippet = String("$ \(command)".prefix(120))
-                    try convo.update(db)
-                }
+    /// Local retention (spec §3.4 / §4 decision 1): tool-output and diff
+    /// BODIES older than 30 days are tombstoned on this device. The server
+    /// still has them; recovering them locally means a wipe + re-sync, which
+    /// is the existing `snapshot_required` path.
+    ///
+    /// Returns every `tool_output`/`diff` seq this pass VISITED inside the
+    /// retention range — not just the ones it rewrote. A row the 24h sweep
+    /// already tombstoned (snippet gone, `expired: true`) is typically a
+    /// no-op for the 30-day rule (its command is already short), so it
+    /// would never appear in a rewrite-only list — but its search row was
+    /// indexed while the row was still fresh, and nothing else ever visits
+    /// this seq again (the watermark guarantees exactly one visit).
+    ///
+    /// `JournalMaintenance` no longer consumes this return value for search
+    /// removal (Bugbot High, PR #212: a nil-or-not-yet-attached `search`
+    /// made that removal silently permanent, since this watermark had
+    /// already advanced past the rows by the time search was attached).
+    /// Search retirement now runs off its own independent watermark via
+    /// `pendingSearchRetirements(now:)` / `recordSearchRetirement(upTo:)`,
+    /// scanning the same range on its own schedule. This method's signature
+    /// and return value are unchanged — Task 4's tests pin them — the seqs
+    /// are just no longer anyone's only path to the search index.
+    @discardableResult
+    public func applyRetention(now: Date = Date()) throws -> [Int64] {
+        let cutoff = Int64(now.timeIntervalSince1970 * 1000) - Int64(EventTombstone.retentionWindow * 1000)
+        return try sweepTombstones(types: [JournalEventType.toolOutput, JournalEventType.diff],
+                                   watermarkKey: Self.retentionWatermarkKey,
+                                   cutoffMs: cutoff, now: now, returnAllVisited: true)
+    }
+
+    /// The shared sweep engine: walk `(type, ts)` forward from the watermark
+    /// to `cutoffMs` in chunks, rewrite what `EventTombstone` changes, then
+    /// move the watermark to the cutoff.
+    ///
+    /// Paging is keyset-based on `(ts, seq)` rather than OFFSET: rows sharing
+    /// a millisecond are common (a batch apply stamps many at once), and an
+    /// offset walk over a table being written underneath would skip them.
+    ///
+    /// - Parameter returnAllVisited: `false` (the TTL sweep) returns only
+    ///   the seqs actually rewritten; `true` (retention) returns every seq
+    ///   the scan visited in range, rewritten or not — see `applyRetention`.
+    ///   Either way the actual payload writes are rewrite-only: this only
+    ///   changes what the function reports, never what it touches on disk.
+    private func sweepTombstones(types: [String], watermarkKey: String,
+                                 cutoffMs: Int64, now: Date,
+                                 returnAllVisited: Bool = false) throws -> [Int64] {
+        var tombstoned: [Int64] = []
+        var visited: [Int64] = []
+        let placeholders = types.map { _ in "?" }.joined(separator: ",")
+        var afterTS = try dbQueue.read { db in
+            try Int64.fetchOne(db, sql: "SELECT value FROM meta WHERE key = ?", arguments: [watermarkKey]) ?? 0
+        }
+        // A persisted watermark can sit ABOVE this call's own cutoff. There
+        // is no boot-time sweep any more (that call was deleted from
+        // `JournalStore.init`) — this fallback now exists for injected or
+        // stepped clocks: every test that drives the store with a `now:`
+        // smaller than a previous real pass, and any caller that steps
+        // `now:` backwards between calls, would otherwise have the
+        // watermark from that later pass blind this scan to rows genuinely
+        // inside this call's own `(0, cutoffMs]` range. Treat "watermark
+        // past our own cutoff" as "nothing verified for OUR range yet"
+        // rather than as coverage — it is never coverage for a smaller
+        // cutoff, since a watermark only certifies the range it was
+        // actually computed against.
+        if afterTS > cutoffMs {
+            afterTS = 0
+        }
+        // `Int64.max` on the first page makes the seed behave as `ts >
+        // watermark`, so a row exactly at the watermark is not re-swept.
+        var afterSeq = Int64.max
+        while true {
+            // `Task.isCancelled` reads the calling `Task`'s cancellation
+            // flag: `JournalMaintenance` runs each pass as its own
+            // unstructured `Task` (`runIfDue`'s `pass`), and `stop()`
+            // cancels that task directly (`inFlight?.cancel()`) before
+            // awaiting it, so this synchronous function — called from
+            // inside that task — observes the cancellation here, at the
+            // next chunk boundary. Bailing at a chunk boundary rather than
+            // mid-transaction, and skipping the watermark write below on
+            // exit, means the chunks already committed stay exactly as
+            // durable and idempotent as a normal interrupted sweep (app
+            // killed mid-pass): the next call simply resumes from the same
+            // watermark and re-covers the rest.
+            if Task.isCancelled {
+                return returnAllVisited ? visited : tombstoned
             }
+            let chunk: [EventRecord] = try dbQueue.write { db in
+                var arguments: [DatabaseValueConvertible] = types
+                arguments.append(contentsOf: [cutoffMs, afterTS, afterTS, afterSeq])
+                let rows = try EventRecord.fetchAll(db, sql: """
+                    SELECT * FROM event
+                    WHERE type IN (\(placeholders)) AND ts <= ?
+                      AND (ts > ? OR (ts = ? AND seq > ?))
+                    ORDER BY ts, seq
+                    LIMIT \(Self.sweepChunkSize)
+                    """, arguments: StatementArguments(arguments))
+                var touched = Set<String>()
+                for var row in rows {
+                    visited.append(row.seq)
+                    guard let payload = (try? JSONSerialization.jsonObject(with: row.payload)) as? [String: Any],
+                          let rewritten = EventTombstone.apply(
+                            to: payload, type: row.type,
+                            ts: Date(timeIntervalSince1970: Double(row.ts) / 1000), now: now)
+                    else { continue }
+                    row.payload = try JSONSerialization.data(withJSONObject: rewritten)
+                    try row.update(db)
+                    tombstoned.append(row.seq)
+                    touched.insert(row.convoID)
+                }
+                // A tombstoned row can be its conversation's newest message —
+                // and a payload that was never a live log had no
+                // `expired_snippet` at insert time, so the list would keep
+                // showing a body that is no longer on disk. One indexed
+                // lookup per touched conversation, and no write at all when
+                // the columns already agree (so the chat-list observation
+                // does not re-fire for a sweep that changed nothing it shows).
+                for convoID in touched {
+                    try Self.refreshLastMessageColumns(db, convoID: convoID)
+                }
+                return rows
+            }
+            guard let last = chunk.last else { break }
+            afterTS = last.ts
+            afterSeq = last.seq
+        }
+        try dbQueue.write { db in
+            try Self.setMeta(db, key: watermarkKey, value: String(cutoffMs))
+        }
+        return returnAllVisited ? visited : tombstoned
+    }
+
+    /// Recomputes `last_message_type` / `expired_snippet` for one
+    /// conversation, writing only when a value actually changed.
+    static func refreshLastMessageColumns(_ db: Database, convoID: String) throws {
+        guard var convo = try ConversationRecord.fetchOne(db, key: convoID) else { return }
+        let columns = try newestMessageColumns(db, convoID: convoID)
+        guard convo.lastMessageType != columns.type || convo.expiredSnippet != columns.expiredSnippet
+        else { return }
+        convo.lastMessageType = columns.type
+        convo.expiredSnippet = columns.expiredSnippet
+        try convo.update(db)
+    }
+
+    /// When the maintenance sweeps last completed a full pass — the Settings
+    /// › Storage "Last maintenance" row, and the foreground scheduler's
+    /// due-check. Stored as epoch milliseconds in `meta`, like the cursor.
+    public func maintenanceLastRun() throws -> Date? {
+        try dbQueue.read { db in
+            guard let ms = try Int64.fetchOne(
+                db, sql: "SELECT value FROM meta WHERE key = ?",
+                arguments: [Self.maintenanceLastRunKey]) else { return nil }
+            return Date(timeIntervalSince1970: Double(ms) / 1000)
         }
     }
 
-    private static func newestMessageSeq(_ db: Database, convoID: String) throws -> Int64? {
-        let placeholders = JournalEventType.messageTypes.map { _ in "?" }.joined(separator: ",")
-        var arguments: [DatabaseValueConvertible] = [convoID]
-        arguments.append(contentsOf: Array(JournalEventType.messageTypes))
-        return try Int64.fetchOne(db, sql: """
-            SELECT MAX(seq) FROM event WHERE convo_id = ? AND type IN (\(placeholders))
-            """, arguments: StatementArguments(arguments))
+    public func recordMaintenanceRun(at date: Date) throws {
+        try dbQueue.write { db in
+            try Self.setMeta(db, key: Self.maintenanceLastRunKey,
+                             value: String(Int64(date.timeIntervalSince1970 * 1000)))
+        }
+    }
+
+    /// `tool_output`/`diff` seqs whose bodies have aged past the retention
+    /// window and have not yet been retired from the search index, plus the
+    /// timestamp this call actually finished scanning up to.
+    ///
+    /// A read-only sibling of `sweepTombstones`, over the same
+    /// `event_type_ts` range and the same 30-day cutoff as `applyRetention`,
+    /// but gated on its own `searchRetentionWatermarkKey` rather than
+    /// `retentionWatermarkKey` — see that key's doc comment for why the two
+    /// must not share a watermark. Paged the same way (keyset on `(ts,
+    /// seq)`, `sweepChunkSize` rows per chunk) so a large backlog doesn't
+    /// hold one long read transaction.
+    ///
+    /// `cutoff` is the full `now − retentionWindow` instant — the same
+    /// value `applyRetention(now:)` would tombstone up to — but ONLY when
+    /// the scan actually ran to completion.
+    ///
+    /// On `Task.isCancelled`, this records NOTHING: `cutoff` falls back to
+    /// the watermark the scan started from, so a caller that persists it
+    /// via `recordSearchRetirement` writes back exactly what was already
+    /// there — a pure no-op — and the next call re-scans this same,
+    /// still-fully-outstanding range from scratch. The `seqs` collected
+    /// before cancellation are still returned (harmless to remove from the
+    /// search index; idempotent, and they get re-reported and re-removed
+    /// next pass regardless).
+    ///
+    /// A cutoff derived from the last row actually seen was tried and
+    /// reverted (re-review of PR #212, round 2A): a chunk fetch that
+    /// returned a FULL `sweepChunkSize` never proves every row sharing that
+    /// row's `ts` was fetched — same-millisecond ties are routine (a batch
+    /// apply stamps many rows at once) — so persisting that `ts` as the new
+    /// watermark could permanently orphan un-fetched siblings past it, since
+    /// a resumed scan seeds `afterSeq = Int64.max` and so never revisits
+    /// ties AT the watermark. `sweepTombstones` already treats cancellation
+    /// this same way — persist nothing, let the next call redo the work —
+    /// and there is no cost to matching it here: `pendingSearchRetirements`
+    /// is read-only, so "redo the work" is just a re-scan, not a re-write.
+    public func pendingSearchRetirements(now: Date = Date()) throws -> (seqs: [Int64], cutoff: Date) {
+        let cutoffMs = Int64(now.timeIntervalSince1970 * 1000) - Int64(EventTombstone.retentionWindow * 1000)
+        let types = [JournalEventType.toolOutput, JournalEventType.diff]
+        let placeholders = types.map { _ in "?" }.joined(separator: ",")
+        var afterTS = try dbQueue.read { db in
+            try Int64.fetchOne(db, sql: "SELECT value FROM meta WHERE key = ?",
+                               arguments: [Self.searchRetentionWatermarkKey]) ?? 0
+        }
+        // Same "watermark past our own cutoff means no coverage for THIS
+        // call's range" rule as `sweepTombstones` — see its comment.
+        if afterTS > cutoffMs { afterTS = 0 }
+        // The value the scan STARTED from — what a cancelled scan reports
+        // back as `cutoff`, below.
+        let startTS = afterTS
+        var afterSeq = Int64.max
+        var seqs: [Int64] = []
+        while true {
+            if Task.isCancelled {
+                return (seqs, Date(timeIntervalSince1970: Double(startTS) / 1000))
+            }
+            let chunk: [(seq: Int64, ts: Int64)] = try dbQueue.read { db in
+                var arguments: [DatabaseValueConvertible] = types
+                arguments.append(contentsOf: [cutoffMs, afterTS, afterTS, afterSeq])
+                return try Row.fetchAll(db, sql: """
+                    SELECT seq, ts FROM event
+                    WHERE type IN (\(placeholders)) AND ts <= ?
+                      AND (ts > ? OR (ts = ? AND seq > ?))
+                    ORDER BY ts, seq
+                    LIMIT \(Self.sweepChunkSize)
+                    """, arguments: StatementArguments(arguments))
+                    .map { (seq: $0["seq"] as Int64, ts: $0["ts"] as Int64) }
+            }
+            guard let last = chunk.last else { break }
+            seqs.append(contentsOf: chunk.map { $0.seq })
+            afterTS = last.ts
+            afterSeq = last.seq
+        }
+        return (seqs, Date(timeIntervalSince1970: Double(cutoffMs) / 1000))
+    }
+
+    /// Advances the search-retention watermark. Callers must only invoke
+    /// this after `SearchService.removeAll(eventIDs:)` has actually
+    /// succeeded for the `seqs` that came with this `cutoff` from
+    /// `pendingSearchRetirements` — see `JournalMaintenance.run`.
+    public func recordSearchRetirement(upTo cutoff: Date) throws {
+        try dbQueue.write { db in
+            try Self.setMeta(db, key: Self.searchRetentionWatermarkKey,
+                             value: String(Int64(cutoff.timeIntervalSince1970 * 1000)))
+        }
+    }
+
+    static func setMeta(_ db: Database, key: String, value: String) throws {
+        try db.execute(
+            sql: "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            arguments: [key, value])
     }
 
     // MARK: Cursor
@@ -508,6 +951,19 @@ public final class JournalStore: @unchecked Sendable {
             if c.lastSeq > existing.lastSeq {
                 existing.lastSeq = c.lastSeq
                 existing.snippet = c.snippet
+                // Deliberately NOT touched here: `lastMessageType` /
+                // `expiredSnippet` are refreshed only when the events they
+                // derive from replay through `applyOne` (M5). A `/snapshot`
+                // refresh can therefore advance `snippet` to newer wire
+                // content while these two columns still describe whichever
+                // local event was applied last, until catch-up replays the
+                // rest — a window where a conversation whose newest
+                // activity is >24 h old can show a stale `"$ command"` stub
+                // over the fresher snippet. This matches pre-v11 behaviour
+                // exactly (the old `newestMessageSeq` also read only local
+                // events), so it's not a regression, just an existing
+                // exception to "the derived columns are maintained on
+                // write" worth having on the record.
             }
             // Without this a snapshot refresh could advance the snippet but
             // leave the displayed "last activity" time frozen at whatever
@@ -544,12 +1000,12 @@ public final class JournalStore: @unchecked Sendable {
     var failApplyForTesting: ((Int64) -> Bool)?
 
     @discardableResult
-    public func applyJournal(_ event: JournalEvent) throws -> Bool {
+    public func applyJournal(_ event: JournalEvent, now: Date = Date()) throws -> Bool {
         if failApplyForTesting?(event.seq) == true {
             throw JournalStoreTestError.simulatedWriteFailure
         }
         return try dbQueue.write { db in
-            try self.applyOne(db, event)
+            try self.applyOne(db, event, now: now)
         }
     }
 
@@ -572,7 +1028,7 @@ public final class JournalStore: @unchecked Sendable {
     /// `applyJournal`), in order, so the caller can run per-event side
     /// effects (search indexing, media-send confirmation) for real writes
     /// only.
-    public func applyJournalBatch(_ events: [JournalEvent]) throws -> [JournalEvent] {
+    public func applyJournalBatch(_ events: [JournalEvent], now: Date = Date()) throws -> [JournalEvent] {
         guard !events.isEmpty else { return [] }
         if let fail = failApplyForTesting, events.contains(where: { fail($0.seq) }) {
             throw JournalStoreTestError.simulatedWriteFailure
@@ -581,7 +1037,7 @@ public final class JournalStore: @unchecked Sendable {
             var applied: [JournalEvent] = []
             applied.reserveCapacity(events.count)
             for event in events {
-                if try self.applyOne(db, event) { applied.append(event) }
+                if try self.applyOne(db, event, now: now) { applied.append(event) }
             }
             return applied
         }
@@ -591,10 +1047,14 @@ public final class JournalStore: @unchecked Sendable {
     /// transaction by both `applyJournal` (own transaction per event) and
     /// `applyJournalBatch` (one transaction for the run). Returns `false`
     /// for a duplicate (seq <= cursor) without writing anything.
-    private func applyOne(_ db: Database, _ event: JournalEvent) throws -> Bool {
+    private func applyOne(_ db: Database, _ event: JournalEvent, now: Date) throws -> Bool {
             let current = try Int64.fetchOne(db, sql: "SELECT value FROM meta WHERE key = 'cursor'") ?? 0
             guard event.seq > current else { return false }
-            try EventRecord(event).save(db)
+            // Stored tombstoned when it is already past a cutoff — see
+            // `tombstonedForStorage`. Everything below reads `stored`, so the
+            // conversation's snippet and columns describe what is on disk.
+            let stored = Self.tombstonedForStorage(event, now: now)
+            try EventRecord(stored).save(db)
             if let entry = SummaryEntryRecord(event: event) {
                 try entry.insert(db, onConflict: .ignore)
             }
@@ -617,7 +1077,7 @@ public final class JournalStore: @unchecked Sendable {
                 convo.lastActivityTS = Int64(event.ts.timeIntervalSince1970 * 1000)
             }
 
-            let payload = event.payload
+            let payload = stored.payload
             if event.type == JournalEventType.convoMeta {
                 // Live title updates (and the title of a conversation that
                 // first appears over the socket, e.g. one the bridge just
@@ -660,7 +1120,26 @@ public final class JournalStore: @unchecked Sendable {
                 convo.unreadCount = try Self.recountUnread(db, convoID: convo.id,
                                                            after: convo.readUpToSeq, ownSender: ownSender)
             } else if JournalEventType.messageTypes.contains(event.type) {
-                convo.snippet = Self.snippet(type: event.type, payload: payload)
+                // `convo.snippet` is computed from the ORIGINAL wire payload,
+                // never the stored (possibly tombstoned) one: a message that
+                // expires later keeps its `conversation.snippet` exactly as
+                // written — the purge no longer rewrites it (Step 6) — and
+                // relies on `applyReadTimeSnippetTTL` to hide it at read
+                // time for the one type that TTL covers (`tool_output`). A
+                // message that arrives ALREADY past its cutoff must behave
+                // identically (in-place-expiry parity), not freeze whatever
+                // placeholder shape `Self.snippet`'s default case produces
+                // for a type it has no case for — round 1 fixed this for
+                // `tool_output` only; Bugbot (PR #212) found the same bug
+                // for `diff`, which has no read-time override at all, so an
+                // old diff read the literal `"[diff]"` forever.
+                convo.snippet = Self.snippet(type: event.type, payload: event.payload)
+                // These two columns DO come from the stored payload — they
+                // describe what's actually on disk, which is what the
+                // tool-output read-time TTL (`applyReadTimeSnippetTTL`)
+                // needs to reproduce the tombstone shape at read time.
+                convo.lastMessageType = event.type
+                convo.expiredSnippet = Self.expiredSnippet(type: event.type, payload: payload)
                 if event.sender != ownSender, event.seq > convo.readUpToSeq {
                     convo.unreadCount += 1
                 }
@@ -675,7 +1154,13 @@ public final class JournalStore: @unchecked Sendable {
             // outbox delete commit or fail together, so a relaunch can
             // never show a durable duplicate echo beside the delivered
             // message.
+            // Skip the journal's flagged fallback mirror of an item marker
+            // (spec 2026-09-08, "Old-client fallback"): it is a synthetic
+            // echo of a card the user never typed into the composer, so a
+            // coincidental body match must not confirm an unrelated queued
+            // outbox row.
             if event.sender == ownSender, event.type == JournalEventType.text,
+               payload["fallback_for"] == nil,
                let body = payload["body"] as? String {
                 try Self.outboxDeleteFirstMatching(db, convoID: event.convoID, body: body)
             }
@@ -733,19 +1218,77 @@ public final class JournalStore: @unchecked Sendable {
         }
     }
 
+    /// The chat-list preview a tool_output falls back to once its output is
+    /// gone — the server's own `"$ <command>"` shape, capped at the same 120
+    /// characters as `snippet(type:payload:)`.
+    ///
+    /// Returns `nil` unless the payload is a tool_output that is either a
+    /// live log (the only shape the 24 h TTL applies to — see
+    /// `EventTombstone`) or already tombstoned (`expired: true`, server-side
+    /// or by the retention sweep). A legacy/offloaded tool_output with a
+    /// durable snippet and no `live_log` keeps showing that snippet forever,
+    /// which is the behaviour `testPurgeLeavesYoungAndNonLiveLogRows` pins.
+    static func expiredSnippet(type: String, payload: [String: Any]) -> String? {
+        guard type == JournalEventType.toolOutput,
+              payload["live_log"] as? Bool == true || payload["expired"] as? Bool == true,
+              let command = payload["command"] as? String, !command.isEmpty
+        else { return nil }
+        return String("$ \(command)".prefix(120))
+    }
+
+    /// `expiredSnippet(type:payload:)` over raw stored bytes — the form the
+    /// migration and the per-conversation refresh use, where the payload
+    /// comes back from SQLite as a BLOB.
+    static func expiredSnippet(type: String, payloadData: Data) -> String? {
+        guard let payload = (try? JSONSerialization.jsonObject(with: payloadData)) as? [String: Any]
+        else { return nil }
+        return expiredSnippet(type: type, payload: payload)
+    }
+
+    /// The form of `event` that actually goes to disk: a `tool_output` or
+    /// `diff` that is ALREADY past one of `EventTombstone`'s cutoffs when it
+    /// arrives is stored tombstoned, never in full.
+    ///
+    /// This is what makes the sweeps' watermarks complete. A sweep skips
+    /// everything at or below its watermark, so a row older than that can
+    /// only be correct if the two insert paths applied the identical rule on
+    /// the way in — which is why both of them, and both sweeps, call
+    /// `EventTombstone.apply` and nothing else.
+    static func tombstonedForStorage(_ event: JournalEvent, now: Date) -> JournalEvent {
+        guard let rewritten = EventTombstone.apply(to: event.payload, type: event.type,
+                                                   ts: event.ts, now: now),
+              let data = try? JSONSerialization.data(withJSONObject: rewritten)
+        else { return event }
+        return JournalEvent(seq: event.seq, convoID: event.convoID, ts: event.ts,
+                            sender: event.sender, type: event.type, payloadData: data)
+    }
+
+    /// The newest message-type event's derived facts for `convoID`, or
+    /// `(nil, nil)` when the conversation has no message-type event. One
+    /// indexed lookup on `convo_id`; called only from write paths, never
+    /// from a read.
+    static func newestMessageColumns(_ db: Database, convoID: String) throws
+        -> (type: String?, expiredSnippet: String?) {
+        let placeholders = JournalEventType.messageTypes.map { _ in "?" }.joined(separator: ",")
+        var arguments: [DatabaseValueConvertible] = [convoID]
+        arguments.append(contentsOf: Array(JournalEventType.messageTypes))
+        guard let row = try Row.fetchOne(db, sql: """
+            SELECT type, payload FROM event
+            WHERE convo_id = ? AND type IN (\(placeholders))
+            ORDER BY seq DESC LIMIT 1
+            """, arguments: StatementArguments(arguments))
+        else { return (nil, nil) }
+        let type: String = row["type"]
+        let payloadData: Data = row["payload"]
+        return (type, expiredSnippet(type: type, payloadData: payloadData))
+    }
+
     // MARK: History
 
-    public func insertHistory(_ events: [JournalEvent]) throws {
+    public func insertHistory(_ events: [JournalEvent], now: Date = Date()) throws {
         try dbQueue.write { db in
-            // Backfilled rows can change a conversation's newest
-            // message-type event without bumping `last_seq` — drop the TTL
-            // memo so the list snippet re-derives. INSIDE the write block:
-            // the queue serializes this against observation fetches, so an
-            // in-flight read can't re-store the pre-write value after the
-            // clear (review, 2026-08-26).
-            self.snippetTTLMemo.removeAll()
             for e in events {
-                try EventRecord(e).insert(db, onConflict: .ignore)
+                try EventRecord(Self.tombstonedForStorage(e, now: now)).insert(db, onConflict: .ignore)
                 if let entry = SummaryEntryRecord(event: e) {
                     try entry.insert(db, onConflict: .ignore)
                 }
@@ -757,8 +1300,13 @@ public final class JournalStore: @unchecked Sendable {
             // Without this pass the rows stayed queued forever, re-flushing
             // (idem-deduped, but ghost-echoing) on every reconnect. The
             // `journaledAtMs` guard keeps old replayed history from eating
-            // a fresh queued send with the same body.
-            for e in events where e.sender == ownSender && e.type == JournalEventType.text {
+            // a fresh queued send with the same body. The `fallback_for`
+            // guard mirrors the live path above: the journal's old-client
+            // mirror of an item marker is a synthetic own-sender text the
+            // user never typed, so it must not confirm a queued send either
+            // (Bugbot PR #185, "History path still confirms fallback texts").
+            for e in events where e.sender == ownSender && e.type == JournalEventType.text
+                && e.payload["fallback_for"] == nil {
                 guard let body = e.payload["body"] as? String else { continue }
                 try Self.outboxDeleteFirstMatching(
                     db, convoID: e.convoID, body: body,
@@ -769,10 +1317,18 @@ public final class JournalStore: @unchecked Sendable {
             // Live `applyJournal` counts unread incrementally; without a
             // recount here the chat list under-reports until the next
             // read_marker frame lands (bugbot "History insert skips unread").
+            //
+            // Backfilled rows can also become a conversation's newest
+            // message-type event without moving `last_seq`, so the two TTL
+            // columns are recomputed in the same pass — one indexed lookup
+            // per touched conversation, exactly like the recount.
             for convoID in Set(events.map(\.convoID)) {
                 guard var convo = try ConversationRecord.fetchOne(db, key: convoID) else { continue }
                 convo.unreadCount = try Self.recountUnread(db, convoID: convoID,
                                                            after: convo.readUpToSeq, ownSender: ownSender)
+                let columns = try Self.newestMessageColumns(db, convoID: convoID)
+                convo.lastMessageType = columns.type
+                convo.expiredSnippet = columns.expiredSnippet
                 try convo.update(db)
             }
         }
@@ -802,7 +1358,7 @@ public final class JournalStore: @unchecked Sendable {
                 // activity timestamp fall to the bottom on their own.
                 .order(Column("last_activity_ts").desc, Column("last_seq").desc)
                 .fetchAll(db)
-            return try records.map { try Self.applyReadTimeSnippetTTL($0, db: db, now: now, memo: snippetTTLMemo) }
+            return records.map { Self.applyReadTimeSnippetTTL($0, now: now) }
         }
     }
 
@@ -819,6 +1375,23 @@ public final class JournalStore: @unchecked Sendable {
                 SELECT id FROM conversation
                 ORDER BY last_activity_ts DESC, last_seq DESC
                 """)
+        }
+    }
+
+    /// Row counts for the Settings › Storage section.
+    ///
+    /// Two `COUNT(*)`s in a single `dbQueue.read`. SQLite counts over the
+    /// smallest available covering index — after v11 that's `event_type_ts`
+    /// for `event` — so this is a single fast index-only scan, not a table
+    /// scan: measured at 3.4 ms warm on a 400k-row mirror with this index
+    /// set, not a connection held for any real duration. Still on-demand
+    /// only, never on the launch path — the two counts are a spec
+    /// requirement (§3.6) with no reason to pay them before Settings is
+    /// opened — and the section shows a spinner until it returns.
+    public func rowCounts() throws -> (events: Int, conversations: Int) {
+        try dbQueue.read { db in
+            (try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM event") ?? 0,
+             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM conversation") ?? 0)
         }
     }
 
@@ -849,89 +1422,30 @@ public final class JournalStore: @unchecked Sendable {
         }
     }
 
-    /// Read-time mirror of `purgeExpiredToolOutputSnippets`'s tombstone
-    /// rewrite, applied WITHOUT a write. The boot-time sweep only runs when
-    /// the store opens — an app left running past the 24h tool-output TTL
-    /// (docs/protocol.md Retention) must still stop surfacing an expired
-    /// `live_log` snippet in the conversation list the next time it's read,
-    /// exactly as `JournalTimelineMapper` already hides it in the open
-    /// thread (bugbot: "stale list preview after tool-snippet TTL"). Only
-    /// touches the in-memory record; the disk sweep is still what cleans
-    /// the payload.
-    private static func applyReadTimeSnippetTTL(
-        _ record: ConversationRecord, db: Database, now: Date, memo: SnippetTTLMemo? = nil
-    ) throws -> ConversationRecord {
-        guard let activityTS = record.lastActivityTS else { return record }
-        let cutoff = Int64(now.timeIntervalSince1970 * 1000) - Int64(24 * 3600 * 1000)
-        guard activityTS <= cutoff else { return record }
-        // Past the gate, the answer is a pure function of the row's events —
-        // and `last_seq` moves on every applied frame — so the sub-queries
-        // below can be memoized per (id, last_seq). Without this,
-        // `conversationsStream()` re-ran them for EVERY stale conversation
-        // on EVERY commit anywhere in the store (2026-08-26 lag captures).
-        // The staleness gate above deliberately stays outside the memo: it
-        // depends on wall time, not on the row.
-        if let memo, let cached = memo.lookup(id: record.id, lastSeq: record.lastSeq) {
-            guard let snippet = cached else { return record }
-            var expired = record
-            expired.snippet = snippet
-            return expired
-        }
-        func remember(_ override: String?) {
-            memo?.store(id: record.id, lastSeq: record.lastSeq, snippetOverride: override)
-        }
-        guard let seq = try newestMessageSeq(db, convoID: record.id),
-              let event = try EventRecord.fetchOne(db, key: seq),
-              event.type == JournalEventType.toolOutput,
-              let payload = (try? JSONSerialization.jsonObject(with: event.payload)) as? [String: Any],
-              payload["live_log"] as? Bool == true,
-              payload["expired"] as? Bool != true,
-              let command = payload["command"] as? String, !command.isEmpty
-        else {
-            remember(nil)
-            return record
-        }
-        var expired = record
-        expired.snippet = String("$ \(command)".prefix(120))
-        remember(expired.snippet)
-        return expired
-    }
-
-    /// Lock-protected memo for `applyReadTimeSnippetTTL`'s per-row event
-    /// sub-queries. An entry is valid while the conversation's `last_seq`
-    /// is unchanged; whole-store invalidation happens on the paths that
-    /// touch event rows without bumping `last_seq` (`insertHistory`,
-    /// `purgeExpiredToolOutputSnippets`, `wipe`).
+    /// Read-time mirror of the tool-output tombstone, applied WITHOUT a
+    /// write and WITHOUT reading `event`.
     ///
-    /// Known accepted staleness: `upsertSummary` can set `last_seq` to the
-    /// SERVER's head ahead of the local cursor, and the replayed frames
-    /// that follow then insert event rows under an unchanged `last_seq` —
-    /// a >24h-stale conversation catching up that way keeps its cached
-    /// snippet until the next real bump. Cosmetic and short-lived; not
-    /// worth widening the memo key over.
-    final class SnippetTTLMemo: @unchecked Sendable {
-        private let lock = NSLock()
-        private var entries: [String: (lastSeq: Int64, snippetOverride: String?)] = [:]
-
-        /// Outer nil = miss; inner nil = cached "no override".
-        func lookup(id: String, lastSeq: Int64) -> String?? {
-            lock.lock()
-            defer { lock.unlock() }
-            guard let entry = entries[id], entry.lastSeq == lastSeq else { return nil }
-            return .some(entry.snippetOverride)
-        }
-
-        func store(id: String, lastSeq: Int64, snippetOverride: String?) {
-            lock.lock()
-            defer { lock.unlock() }
-            entries[id] = (lastSeq, snippetOverride)
-        }
-
-        func removeAll() {
-            lock.lock()
-            defer { lock.unlock() }
-            entries.removeAll()
-        }
+    /// An app left running past the 24 h tool-output TTL (docs/protocol.md
+    /// Retention) must stop surfacing an expired `live_log` snippet in the
+    /// conversation list the next time it is read, exactly as
+    /// `JournalTimelineMapper` already hides it in the open thread. Before
+    /// v11 that answer came from a `MAX(seq)` sub-query plus an event fetch
+    /// per stale conversation — ~0.4 s for 526 stale conversations on the
+    /// Mac copy, and, worse, it made the whole chat-list observation track
+    /// the `event` table, so every applied frame re-ran the entire list
+    /// fetch. Both facts now live on the conversation row, maintained on
+    /// write (`applyOne`, `insertHistory`, and the sweeps).
+    private static func applyReadTimeSnippetTTL(_ record: ConversationRecord,
+                                                now: Date) -> ConversationRecord {
+        guard record.lastMessageType == JournalEventType.toolOutput,
+              let expiredSnippet = record.expiredSnippet,
+              let activityTS = record.lastActivityTS
+        else { return record }
+        let cutoff = Int64(now.timeIntervalSince1970 * 1000) - Int64(EventTombstone.toolLogTTL * 1000)
+        guard activityTS <= cutoff else { return record }
+        var expired = record
+        expired.snippet = expiredSnippet
+        return expired
     }
 
     public func events(convoID: String) throws -> [JournalEvent] {
@@ -1125,6 +1639,48 @@ public final class JournalStore: @unchecked Sendable {
         }
     }
 
+    /// Seq of the newest message the user themself sent in `convoID` — a
+    /// `text`, `image` or `file` row from `ownSender` — or nil when they
+    /// never wrote there. The chat view's "jump to my last message"
+    /// control lands on it (item #60). Skips the journal's `fallback_for`
+    /// text mirrors of item markers: those carry the user's sender but
+    /// were never typed, and `JournalTimelineMapper` drops them, so
+    /// landing on one would target a row the transcript does not render.
+    /// The mirror check reads the payload in Swift rather than via
+    /// `json_extract` — the column is a blob, and SQLite's JSON functions
+    /// treat a blob argument as JSONB, not text — so the scan walks own
+    /// rows newest-first in batches until it finds a real message or
+    /// runs out (CodeRabbit, PR #202: a fixed cut-off could be exhausted
+    /// by mirrors alone).
+    public func newestOwnMessageSeq(convoID: String) throws -> Int64? {
+        try dbQueue.read { db in
+            var before: Int64?
+            while true {
+                var query = EventRecord
+                    .filter(Column("convo_id") == convoID
+                            && Column("sender") == ownSender
+                            && Self.ownMessageTypes.contains(Column("type")))
+                if let before { query = query.filter(Column("seq") < before) }
+                let batch = try query
+                    .order(Column("seq").desc)
+                    .limit(Self.ownMessageScanBatch)
+                    .fetchAll(db)
+                if let hit = batch.first(where: { $0.journalEvent.payload["fallback_for"] == nil }) {
+                    return hit.seq
+                }
+                guard batch.count == Self.ownMessageScanBatch, let last = batch.last else { return nil }
+                before = last.seq
+            }
+        }
+    }
+
+    /// The event types a person produces from the composer.
+    private static let ownMessageTypes = [JournalEventType.text, JournalEventType.image, JournalEventType.file]
+    /// Rows per batch in `newestOwnMessageSeq`'s scan. Mirrors are rare —
+    /// one per item marker at most — so the first batch almost always
+    /// answers; the loop exists for correctness, not throughput.
+    static let ownMessageScanBatch = 50
+
     public func setMuted(_ muted: Bool, convoID: String) throws {
         try dbQueue.write { db in
             try db.execute(sql: "UPDATE conversation SET muted = ? WHERE id = ?", arguments: [muted, convoID])
@@ -1137,15 +1693,29 @@ public final class JournalStore: @unchecked Sendable {
         }
     }
 
-    /// Clears the journal mirror (events, conversations, cursor) but NOT
-    /// the outbox: this runs on `snapshot_required` (replay gap too large),
-    /// and a mirror wipe must not eat the user's unsent messages. Sign-out
-    /// calls `wipeOutbox()` separately.
+    /// Clears the journal mirror (events, conversations, cursor) and the
+    /// tracker cache (item, item_comment) but NOT the outbox tables
+    /// (outbox, item_outbox): this runs on `snapshot_required` (replay gap
+    /// too large), and a mirror wipe must not eat the user's unsent
+    /// messages OR unsent tracker comments/creates — both are refetched or
+    /// replayed independently of the mirror, but the outbox rows are the
+    /// only record of what hasn't gone out yet. Sign-out calls
+    /// `wipeOutbox()` separately for those.
     public func wipe() throws {
         try dbQueue.write { db in
-            // Inside the write block — see `insertHistory`'s invalidation note.
-            self.snippetTTLMemo.removeAll()
             try db.execute(sql: "DELETE FROM event; DELETE FROM conversation; DELETE FROM meta; DELETE FROM summary_entry;")
+            // Tracker cache (item/item_comment only — NOT item_outbox, see
+            // the doc comment above): cleared inline, in the same
+            // transaction, rather than via `wipeItems()` — that helper
+            // opens its own `dbQueue.write`, which would deadlock nested
+            // inside this one, and also clears item_outbox which this path
+            // must not touch.
+            try db.execute(sql: "DELETE FROM item; DELETE FROM item_comment;")
+            // Mission cache — same rule as the tracker cache above: cleared
+            // inline, because this method is already inside `dbQueue.write`
+            // and cannot nest another. One bootstrap later, `GET /missions`
+            // refills it.
+            try Self.wipeMissionTables(db)
         }
     }
 
@@ -1274,17 +1844,17 @@ public final class JournalStore: @unchecked Sendable {
     }
 
     /// Sign-out hygiene: the next account on this database file must not
-    /// inherit (or send) the previous user's queued messages.
+    /// inherit (or send) the previous user's queued messages or queued
+    /// tracker comments/creates — clears both `outbox` and `item_outbox`.
     public func wipeOutbox() throws {
         try dbQueue.write { db in
-            try db.execute(sql: "DELETE FROM outbox")
+            try db.execute(sql: "DELETE FROM outbox; DELETE FROM item_outbox;")
         }
     }
 
     // MARK: Observation
 
     public func conversationsStream() -> AsyncStream<[ConversationRecord]> {
-        let memo = snippetTTLMemo
         let observation = ValueObservation.tracking { db in
             let records = try ConversationRecord
                 .filter(Column("hidden") == false)
@@ -1296,17 +1866,17 @@ public final class JournalStore: @unchecked Sendable {
                 .order(Column("last_activity_ts").desc, Column("last_seq").desc)
                 .fetchAll(db)
             // Fresh `Date()` per re-run: the tracking closure re-executes on
-            // every DB change the store observes, so a subscriber that's
-            // been open a while still gets the TTL re-evaluated against
-            // current wall time rather than whatever "now" was at
-            // subscribe time. See `applyReadTimeSnippetTTL`.
-            return try records.map { try Self.applyReadTimeSnippetTTL($0, db: db, now: Date(), memo: memo) }
+            // every change GRDB observes for the tables it reads, so a
+            // long-lived subscriber still gets the TTL re-evaluated against
+            // current wall time rather than "now" at subscribe time.
+            return records.map { Self.applyReadTimeSnippetTTL($0, now: Date()) }
         }
-        // This observation reads the `event` table (the TTL sub-queries), so
-        // it re-runs on EVERY applied journal frame — including frames for
-        // conversations that don't move the list at all. Deduplicating here
-        // keeps that churn out of the chat-list view model and SwiftUI
-        // (2026-08-26 lag capture: list re-diffs on every commit).
+        // This observation reads ONLY the `conversation` table: the TTL is
+        // pure column logic (see `applyReadTimeSnippetTTL`), so an applied
+        // journal frame re-runs the list fetch only when it actually touches
+        // a conversation row. `removeDuplicates()` stays as the guard
+        // against re-render churn from writes that change a row the list
+        // does not display.
         return Self.stream(observation.removeDuplicates(), in: dbQueue)
     }
 
@@ -1442,7 +2012,10 @@ public final class JournalStore: @unchecked Sendable {
         return Self.stream(observation, in: dbQueue)
     }
 
-    private static func stream<Reducer: ValueReducer>(
+    // Module-internal (not private): JournalStore+Items.swift's item
+    // streams (spec 2026-09-08-items-tracker-apps task 4) reuse this from
+    // a different file.
+    static func stream<Reducer: ValueReducer>(
         _ observation: ValueObservation<Reducer>,
         in dbQueue: DatabaseQueue
     ) -> AsyncStream<Reducer.Value> where Reducer.Value: Sendable {

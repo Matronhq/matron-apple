@@ -1,5 +1,6 @@
 import Foundation
 import MatronChat
+import MatronJournal
 import MatronModels
 import UniformTypeIdentifiers
 
@@ -71,6 +72,7 @@ public final class ComposerViewModel {
     public var canSend: Bool {
         !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !stagedAttachments.isEmpty
     }
+
     /// Mac slash palette is also openable via `⌘K`; iOS toggles purely via `/` typing.
     public var palettePinnedOpen: Bool = false
 
@@ -379,12 +381,7 @@ public final class ComposerViewModel {
         // message sent, but the text stayed sitting in the composer (Dan,
         // 2026-07-15, iOS — rare, because it needs a slow enough send).
         let pending = input
-        input = ""
-        stagedAttachments = []
-        lastRecalledValue = nil
-        isNavigatingHistory = false
-        folderSuggestionsSuppressedFor = nil
-        ComposerDraftMemory.forget(roomID: roomID)
+        clearComposerAfterSend()
 
         do {
             if attachments.isEmpty {
@@ -429,6 +426,20 @@ public final class ComposerViewModel {
         guard input.isEmpty else { return }
         input = pending
         ComposerDraftMemory.store(roomID: roomID, text: pending)
+    }
+
+    /// The optimistic post-send clear: wipes the text, the tray, and the
+    /// history/palette bookkeeping that goes with a fresh composer, and
+    /// forgets the per-room draft. Callers snapshot whatever they still
+    /// need (the pending text for `restoreInput`, the staged attachments
+    /// to delete their temp copies) BEFORE calling this — it clears both.
+    private func clearComposerAfterSend() {
+        input = ""
+        stagedAttachments = []
+        lastRecalledValue = nil
+        isNavigatingHistory = false
+        folderSuggestionsSuppressedFor = nil
+        ComposerDraftMemory.forget(roomID: roomID)
     }
 
     /// Uploads staged attachments in order, hanging the caption on the

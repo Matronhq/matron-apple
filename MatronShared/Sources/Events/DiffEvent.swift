@@ -18,11 +18,16 @@ public struct DiffEvent: Equatable, Sendable {
     public let removed: Int?
     public let truncated: Bool
     public let newFile: Bool
+    /// The body is gone from this device: either the server tombstoned the
+    /// event or local retention did (30 days, `EventTombstone`). Every other
+    /// field is still present, so the card renders its header and says the
+    /// diff is no longer stored rather than showing an empty body.
+    public let expired: Bool
 
     public init(filePath: String? = nil, displayPath: String? = nil,
                 viewerURL: URL? = nil, tool: String? = nil, label: String? = nil,
                 diff: String, added: Int? = nil, removed: Int? = nil,
-                truncated: Bool = false, newFile: Bool = false) {
+                truncated: Bool = false, newFile: Bool = false, expired: Bool = false) {
         self.filePath = filePath
         self.displayPath = displayPath
         self.viewerURL = viewerURL
@@ -33,6 +38,7 @@ public struct DiffEvent: Equatable, Sendable {
         self.removed = removed
         self.truncated = truncated
         self.newFile = newFile
+        self.expired = expired
     }
 
     /// Total parse — every field is optional metadata around the diff text,
@@ -51,7 +57,8 @@ public struct DiffEvent: Equatable, Sendable {
             added: (payload["added"] as? NSNumber)?.intValue,
             removed: (payload["removed"] as? NSNumber)?.intValue,
             truncated: payload["truncated"] as? Bool ?? false,
-            newFile: payload["new_file"] as? Bool ?? false
+            newFile: payload["new_file"] as? Bool ?? false,
+            expired: payload["expired"] as? Bool ?? false
         )
     }
 

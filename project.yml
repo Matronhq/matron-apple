@@ -51,7 +51,7 @@ settings:
     # unique, monotonic build number. Set at the project level (not per
     # target) because App Store validation requires the NSE's version keys
     # to exactly match its host app's.
-    MARKETING_VERSION: "1.0.4"
+    MARKETING_VERSION: "1.1.0"
     CURRENT_PROJECT_VERSION: 1
   configs:
     Debug:
@@ -115,8 +115,13 @@ targets:
         # sync — and the offline outbox flush — run periodically while the
         # app is backgrounded. Identifier must match
         # MatronAppDelegate.refreshTaskID.
+        # audio — a voice note keeps recording while the app is
+        # backgrounded (switching apps mid-note). Only bites while the
+        # recorder holds an active audio session; the rest of the time the
+        # app suspends as before.
         UIBackgroundModes:
           - fetch
+          - audio
         BGTaskSchedulerPermittedIdentifiers:
           - chat.matron.refresh
         # Production talks to https://chat.example.com, so ATS stays on.

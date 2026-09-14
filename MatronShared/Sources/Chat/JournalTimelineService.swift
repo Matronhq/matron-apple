@@ -828,8 +828,9 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         await overlay.prependOlder(newOnes)
         itemsSignal.withLock { $0 }?.signal()
         if let search {
+            let indexedAt = Date()
             for event in newOnes {
-                if let body = event.searchableBody {
+                if let body = event.searchableBody(now: indexedAt) {
                     try? await search.index(roomID: event.convoID, eventID: String(event.seq),
                                             sender: event.sender, timestamp: event.ts, body: body)
                 }
@@ -846,23 +847,8 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         store.sessionStateStream(convoID: convoID)
     }
 
-    public func summaryEntriesStream() -> AsyncStream<[ConversationSummaryEntry]> {
-        let upstream = store.summaryEntriesStream(convoID: convoID)
-        return AsyncStream { continuation in
-            let task = Task {
-                for await records in upstream {
-                    continuation.yield(records.map {
-                        // SummaryEntryRecord.createdAt is milliseconds since
-                        // epoch (the store's Int64-timestamp convention) —
-                        // divide by 1000 to get a `Date`.
-                        ConversationSummaryEntry(seq: $0.seq, toc: $0.toc, detail: $0.detail,
-                                                 date: Date(timeIntervalSince1970: TimeInterval($0.createdAt) / 1000))
-                    })
-                }
-                continuation.finish()
-            }
-            continuation.onTermination = { _ in task.cancel() }
-        }
+    public func newestOwnMessageSeq() async throws -> Int64? {
+        try store.newestOwnMessageSeq(convoID: convoID)
     }
 
     public func markAsRead() async throws {

@@ -12,11 +12,151 @@ private final class FakeAudioRecorder: AudioRecording {
     func stop() { stopCalls += 1 }
 }
 
+/// Fake interruption source: captures the recorder's handler so a test can
+/// deliver began/ended events, and counts how often the subscription was
+/// torn down.
+private final class FakeInterruptions {
+    var handler: ((AudioInterruption) -> Void)?
+    private(set) var cancelCalls = 0
+    func source(_ handler: @escaping (AudioInterruption) -> Void) -> () -> Void {
+        self.handler = handler
+        return { [self] in cancelCalls += 1 }
+    }
+}
+
 final class VoiceRecorderTests: XCTestCase {
     @MainActor
     private func makeRecorder(permission: Bool = true,
-                             fake: FakeAudioRecorder = FakeAudioRecorder()) -> VoiceRecorder {
-        VoiceRecorder(requestPermission: { permission }, makeRecorder: { _ in fake })
+                             fake: FakeAudioRecorder = FakeAudioRecorder(),
+                             interruptions: FakeInterruptions? = nil) -> VoiceRecorder {
+        if let interruptions {
+            return VoiceRecorder(requestPermission: { permission }, makeRecorder: { _ in fake },
+                                 observeInterruptions: interruptions.source)
+        }
+        return VoiceRecorder(requestPermission: { permission }, makeRecorder: { _ in fake })
+    }
+
+    // MARK: Interruptions (calls, Siri, another app taking the mic)
+
+    /// iOS pauses the recorder for the interruption; when it ends with the
+    /// resume hint, capture must pick up again — otherwise the note would
+    /// silently stop at the call while the UI still says "recording".
+    @MainActor
+    func test_interruptionEnded_withResumeHint_resumesTheRecorder() async throws {
+        let fake = FakeAudioRecorder()
+        let interruptions = FakeInterruptions()
+        let rec = makeRecorder(fake: fake, interruptions: interruptions)
+        try await rec.start()
+        XCTAssertEqual(fake.recordCalls, 1)
+        XCTAssertNotNil(interruptions.handler, "subscribed for the life of the recording")
+
+        interruptions.handler?(.began)
+        interruptions.handler?(.ended(shouldResume: true))
+        XCTAssertEqual(fake.recordCalls, 2, "record() again resumes the paused AVAudioRecorder")
+        guard case .recording = rec.state else { return XCTFail("still recording") }
+    }
+
+    /// Without the hint iOS does not want us back on the mic (another app
+    /// took it). The recorder stays paused; Stop still delivers what was
+    /// captured up to the interruption.
+    @MainActor
+    func test_interruptionEnded_withoutResumeHint_leavesRecorderPaused() async throws {
+        let fake = FakeAudioRecorder()
+        let interruptions = FakeInterruptions()
+        let rec = makeRecorder(fake: fake, interruptions: interruptions)
+        try await rec.start()
+        interruptions.handler?(.began)
+        interruptions.handler?(.ended(shouldResume: false))
+        XCTAssertEqual(fake.recordCalls, 1)
+        XCTAssertNotNil(rec.stop(), "the captured part is still delivered")
+    }
+
+    /// An `ended` with no matching `began` is noise (a stale notification
+    /// from a previous session), not a reason to poke the recorder.
+    @MainActor
+    func test_interruptionEnded_withoutBegan_isIgnored() async throws {
+        let fake = FakeAudioRecorder()
+        let interruptions = FakeInterruptions()
+        let rec = makeRecorder(fake: fake, interruptions: interruptions)
+        try await rec.start()
+        interruptions.handler?(.ended(shouldResume: true))
+        XCTAssertEqual(fake.recordCalls, 1)
+    }
+
+    /// The duration handed to the send path is capture time, not wall time:
+    /// a two-minute call in the middle of a note is silence the recorder
+    /// never captured (CodeRabbit, PR #180).
+    @MainActor
+    func test_duration_excludesInterruptedTime_whenResumed() async throws {
+        let fake = FakeAudioRecorder()
+        let interruptions = FakeInterruptions()
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        var now = t0
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake },
+                                observeInterruptions: interruptions.source, now: { now })
+        try await rec.start()
+        now = t0.addingTimeInterval(10)
+        interruptions.handler?(.began)
+        now = t0.addingTimeInterval(15)
+        interruptions.handler?(.ended(shouldResume: true))
+        now = t0.addingTimeInterval(20)
+        XCTAssertEqual(try XCTUnwrap(rec.stop()).duration, 15, accuracy: 0.001)
+    }
+
+    /// Not resumed: paused from the interruption until Stop, so nothing
+    /// after `began` counts.
+    @MainActor
+    func test_duration_excludesInterruptedTime_whenNotResumed() async throws {
+        let fake = FakeAudioRecorder()
+        let interruptions = FakeInterruptions()
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        var now = t0
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake },
+                                observeInterruptions: interruptions.source, now: { now })
+        try await rec.start()
+        now = t0.addingTimeInterval(10)
+        interruptions.handler?(.began)
+        now = t0.addingTimeInterval(15)
+        interruptions.handler?(.ended(shouldResume: false))
+        now = t0.addingTimeInterval(20)
+        XCTAssertEqual(try XCTUnwrap(rec.stop()).duration, 10, accuracy: 0.001)
+    }
+
+    /// A resume that fails leaves the recorder paused, so the pause keeps
+    /// running until Stop (Bugbot, PR #180).
+    @MainActor
+    func test_duration_excludesTimeAfterAFailedResume() async throws {
+        let fake = FakeAudioRecorder()
+        let interruptions = FakeInterruptions()
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        var now = t0
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake },
+                                observeInterruptions: interruptions.source, now: { now })
+        try await rec.start()
+        now = t0.addingTimeInterval(10)
+        interruptions.handler?(.began)
+        fake.recordReturn = false
+        now = t0.addingTimeInterval(15)
+        interruptions.handler?(.ended(shouldResume: true))
+        now = t0.addingTimeInterval(20)
+        XCTAssertEqual(try XCTUnwrap(rec.stop()).duration, 10, accuracy: 0.001)
+    }
+
+    @MainActor
+    func test_stopAndCancel_unsubscribeFromInterruptions() async throws {
+        let fake = FakeAudioRecorder()
+        let interruptions = FakeInterruptions()
+        let rec = makeRecorder(fake: fake, interruptions: interruptions)
+        try await rec.start()
+        _ = rec.stop()
+        XCTAssertEqual(interruptions.cancelCalls, 1)
+        interruptions.handler?(.began)
+        interruptions.handler?(.ended(shouldResume: true))
+        XCTAssertEqual(fake.recordCalls, 1, "a finished recording never resumes")
+
+        try await rec.start()
+        rec.cancel()
+        XCTAssertEqual(interruptions.cancelCalls, 2)
     }
 
     @MainActor

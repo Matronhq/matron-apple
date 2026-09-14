@@ -43,6 +43,14 @@ final class MarkdownAttributedTests: XCTestCase {
 
     // MARK: - Paragraphs
 
+    /// The bridge mirrors a voice note as "[Voice note transcription]: …",
+    /// which CommonMark reads as a link reference definition and drops.
+    func test_referenceDefinitionShapedBody_rendersAsText() {
+        let rendered = MarkdownAttributed.attributedString(for: "[Voice note transcription]: Hello.").string
+        XCTAssertTrue(rendered.contains("Hello."), "body was swallowed: \(rendered.debugDescription)")
+        XCTAssertTrue(rendered.contains("[Voice note transcription]:"))
+    }
+
     func test_twoParagraphs_singleStringWithParagraphSpacing() {
         let attributed = convert("First paragraph.\n\nSecond paragraph.")
 

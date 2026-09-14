@@ -44,6 +44,49 @@ struct MacChatView: View {
     /// strip / switcher; cleared by the pane's close button. Reset per
     /// parent chat because `MacChatView` is rebuilt with `.id(id)`.
     @State private var openSubChatID: String?
+    /// Whether the tasks-and-decisions pane (Task 10) is open. Shares the
+    /// sub-chat slot with `openSubChatID` — opening either one closes the
+    /// other (see the toolbar call site and `onOpenSubChat` below).
+    ///
+    /// I5 (Mac fix wave, part 1): hoisted to `MacChatListView` — the spec
+    /// wants this per-WINDOW, but `MacChatView` itself is torn down and
+    /// rebuilt per conversation (`.id(id)` in
+    /// `MacChatListView.chatDetail`), so a plain `@State` here reset on
+    /// every conversation switch. `itemsPaneOpen` is the caller's binding;
+    /// default `.constant(false)` keeps every other call site (tests,
+    /// previews) compiling unchanged. `showItemsPane` stays as a computed
+    /// proxy so every existing read/write site below is unchanged.
+    var itemsPaneOpen: Binding<Bool> = .constant(false)
+    private var showItemsPane: Bool {
+        get { itemsPaneOpen.wrappedValue }
+        nonmutating set { itemsPaneOpen.wrappedValue = newValue }
+    }
+    /// The pane's view model, created lazily in the outer `.task` and kept
+    /// running even while the pane is closed so the toolbar's needs-you
+    /// badge stays live. Stopped in the outer `onDisappear` alongside
+    /// `stripViewModel`.
+    @State private var itemsVM: ItemsPanelViewModel?
+    /// I4 (Mac fix wave, part 2): `ItemsPanelViewModel` now owns its own
+    /// `observationGeneration`/`stop(ifGeneration:)` counter (mirrors
+    /// `viewModel`/`stripViewModel` below, and `SubChatStripViewModel`'s
+    /// own pattern) — `itemsVMStartedGeneration` just records which
+    /// generation THIS view instance's running `itemsVM` belongs to, so a
+    /// stale `onDisappear` (a same-identity remount racing the outer
+    /// `.task`, per this file's own comment on `viewModel.stop(ifGeneration:)`)
+    /// can't stop a VM a newer `.task` now owns.
+    @State private var itemsVMStartedGeneration = 0
+    /// I6 (Mac fix wave, part 1): pane/detail state hoisted out of
+    /// `MacItemsPane`/`MacItemDetailHost` so it survives being rebuilt
+    /// when the window crosses `sideBySideMinWidth` — see
+    /// `MacItemsPaneState`'s doc comment. One instance per `MacChatView`
+    /// lifetime (resets on a genuine room switch, same as `itemsVM`).
+    @State private var itemsPaneState = MacItemsPaneState()
+    /// `[#65](matron://item/65)` taps from any message body (item #115).
+    /// The relay's `action` goes into the environment with a stable closure
+    /// identity (see `TrackerItemLinkRelay`) — every rendered message body
+    /// reads that value — and the navigation happens in `onChange` below
+    /// with current state.
+    @State private var itemLinkRelay = TrackerItemLinkRelay()
     /// Local text for the in-conversation search bar's field — seeded from
     /// `viewModel.chatSearch?.query`, submitted back via `beginChatSearch`.
     @State private var chatSearchQuery = ""
@@ -266,15 +309,16 @@ struct MacChatView: View {
         let gallery: ImageGallery
     }
 
-    /// Drives the summaries TOC popover — flipped on by the title cluster
-    /// button in `MacChatToolbar`, off by `MacSummariesPanel.onSelect`
-    /// (and by the system on outside-click dismissal).
-    @State private var showSummaries = false
-
     /// Drives the media, files & links browser sheet — flipped on by the
     /// toolbar button in `MacChatToolbar`.
     @State private var showMediaBrowser = false
 
+    /// Which mission this conversation belongs to (spec: Transcript and
+    /// title). Derived locally from the mission cache — the snapshot never
+    /// carries it — so it is nil until the first missions refresh, which is
+    /// exactly when the title-tap affordance should appear. Mirrors the
+    /// iOS `ChatView` wiring over the same `missionIDStream`.
+    @State private var missionID: String?
     /// This chat's cross-message selection (drag from one message body into
     /// another, then ⌘C). One per timeline: the sub-chat pane owns its own.
     /// Created with the view, so a room switch (`.id(id)` rebuild) starts
@@ -330,12 +374,36 @@ struct MacChatView: View {
     /// (previews, tests) omits the affordance rather than drawing it dead.
     var onOpenConversation: ((String) -> Void)? = nil
 
+    /// Set by `MacChatListView` — opens the mission page in the detail
+    /// column. `nil` in previews and tests leaves the cards inert.
+    var onOpenMission: ((String) -> Void)? = nil
+
     /// Minimum detail width to show the child sub-chat pane BESIDE the
     /// parent timeline. Below this the child pane takes over the whole
     /// detail area with a back chevron (spec §5). Floor is 800 — the sum of
     /// the two panes' own minimums (420 + 380); going lower would force one
     /// pane below its min, so 820 keeps a small margin above that.
     private static let sideBySideMinWidth: CGFloat = 820
+
+    /// A tapped `matron://item/<n>` link in a message body (item #115),
+    /// resolved by the shared `TrackerItemLinkResolver`. A known item lands
+    /// exactly where an inline `.itemMarker` card does — the items pane,
+    /// pushed straight to that item. A number this device still doesn't
+    /// have after a refresh changes NOTHING on screen (no pane, no path
+    /// reset — the old fallback swapped the reader onto a list that by
+    /// definition lacked the item) and reports itself in the tracker alert.
+    @MainActor private func openTrackerItem(num: Int) async -> TrackerItemLinkOutcome {
+        guard let deps, let session, let itemsVM, itemsVM.isSupported != false else { return .ignore }
+        return await deps.trackerItemLinkOutcome(num: num, session: session)
+    }
+
+    /// The navigation half, run by `trackerItemLinks` only if the tap that
+    /// asked for it is still the latest one (item #115, fix round 5).
+    @MainActor private func showItem(_ id: String) {
+        openSubChatID = nil
+        showItemsPane = true
+        itemsPaneState.path = [id]
+    }
 
     /// Controller spans → transcript. Pure: the copy handler feeds it the
     /// current `windowedRows` items and `selectedSpans()`. Skips ids with
@@ -404,6 +472,12 @@ struct MacChatView: View {
                     HSplitView {
                         chatColumn
                             .frame(minWidth: 420)
+                            // Fill the split's height explicitly. `HSplitView`
+                            // is NSSplitView-backed; a child left to its
+                            // ideal height can stay bunched at the top after
+                            // a conversation switch mounts a fresh view into
+                            // an already-open split (item #76).
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                         MacSubChatPane(
                             viewModel: childVM, stripViewModel: parentStrip,
                             childID: childID, showsBackChevron: false,
@@ -434,10 +508,67 @@ struct MacChatView: View {
                     // sibling switch re-runs `.task` and starts the new VM.
                     .id(childID)
                 }
+            } else if showItemsPane, let itemsVM, let session {
+                if geo.size.width >= Self.sideBySideMinWidth {
+                    HSplitView {
+                        chatColumn
+                            .frame(minWidth: 420)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)  // see the sub-chat branch (item #76)
+                        MacItemsPane(
+                            viewModel: itemsVM, session: session, state: itemsPaneState,
+                            onOpenConversation: { onOpenConversation?($0) },
+                            onClose: { showItemsPane = false }
+                        )
+                        .frame(minWidth: 380)
+                    }
+                } else {
+                    MacItemsPane(
+                        viewModel: itemsVM, session: session, state: itemsPaneState, showsBackChevron: true,
+                        onOpenConversation: { onOpenConversation?($0) },
+                        onClose: { showItemsPane = false }
+                    )
+                }
             } else {
                 chatColumn
             }
         }
+        // Item links (`[#65](matron://item/65)`) tapped in a message body.
+        // Installed once, on the stable outer view, so it covers both the
+        // side-by-side and the narrow-takeover branches. `MacItemDetailHost`
+        // installs its own inside the pane — a link tapped in an ITEM
+        // pushes onto the pane's stack rather than replacing it.
+        .trackerItemLinks(itemLinkRelay, resolve: { await openTrackerItem(num: $0) },
+                          open: { showItem($0) })
+        // Minor (Mac fix wave, part 1): ⌘⇧I toggles the tasks-and-decisions
+        // pane. Attached HERE (the stable outer view, same reasoning as the
+        // observation lifecycle below) rather than as a toolbar-item
+        // shortcut inside `chatColumn` — `chatColumn` isn't rendered in the
+        // narrow-takeover branch, so a shortcut registered on its toolbar
+        // couldn't close the pane it opened. A hidden button is the
+        // SwiftUI-recommended pattern for a global shortcut with no visible
+        // counterpart of its own (mirrors the ⌘K hidden button on
+        // `chatColumn` below, minus the accessibility hiding concern here
+        // since this one carries no risk of a stray VoiceOver-announced
+        // "button" — it sits outside the rendered branch either way).
+        .background(
+            Button("") {
+                showItemsPane.toggle()
+                if showItemsPane { openSubChatID = nil }
+            }
+            .keyboardShortcut("i", modifiers: [.command, .shift])
+            .opacity(0)
+            .accessibilityHidden(true)
+        )
+        // ⇧⌘U — jump to my last message (item #60). Same hidden-button
+        // shape and the same home as ⇧⌘I above: the visible control is the
+        // floating pill in `chatColumn`'s timeline overlay (#270), which
+        // the narrow-takeover branch doesn't render.
+        .background(
+            Button("") { Task { await viewModel.jumpToLastOwnMessage() } }
+                .keyboardShortcut("u", modifiers: [.command, .shift])
+                .opacity(0)
+                .accessibilityHidden(true)
+        )
         // This timeline's cross-message selection, published to every
         // message body below (the sub-chat pane overrides it with its own
         // inside its subtree, so the two timelines never share a selection).
@@ -467,6 +598,28 @@ struct MacChatView: View {
             startedGeneration = viewModel.observationGeneration + 1
             stripViewModel.start()
             stripStartedGeneration = stripViewModel.observationGeneration
+            // Task 10: the items VM is started even when the pane is
+            // closed so the toolbar's needs-you badge stays live. Hoisted
+            // to the same stable outer view as the strip, for the same
+            // reason (see the branch-move comment above this `.task`).
+            //
+            // I4 (Mac fix wave, part 2): the VM must exist before its
+            // generation can be read, so creation comes first here — the
+            // generation is still recorded BEFORE `start()`, same ordering
+            // rule as `startedGeneration` above (see that line's comment).
+            // `start()` itself is called UNCONDITIONALLY (not just on
+            // first creation): it's idempotent (`ItemsPanelViewModel.start()`
+            // calls its own `stop()` before resubscribing), so even a VM a
+            // prior, out-of-order `onDisappear` already stopped comes back
+            // to life on this `.task` run rather than staying frozen — the
+            // original `if itemsVM == nil` guard skipped `start()`
+            // entirely whenever the VM already existed, which is exactly
+            // the failure mode reported.
+            if itemsVM == nil, let deps, let session {
+                itemsVM = deps.makeItemsPanelViewModel(for: session, convoID: viewModel.roomID)
+            }
+            itemsVMStartedGeneration = (itemsVM?.observationGeneration ?? 0) + 1
+            itemsVM?.start()
             // Small first-paint window: the switch stall was one big
             // layout transaction building the full 120-row window.
             // Paint a short tail first, then settle to steady state
@@ -499,6 +652,20 @@ struct MacChatView: View {
             // stream and freeze the timeline.
             viewModel.stop(ifGeneration: startedGeneration)
             stripViewModel.stop(ifGeneration: stripStartedGeneration)
+            // I4: VM-owned generation guard (see `itemsVMStartedGeneration`'s
+            // doc comment) — only stop if no newer `.task` has since taken
+            // over `itemsVM`.
+            itemsVM?.stop(ifGeneration: itemsVMStartedGeneration)
+            // I6: the pane's detail VM/recorder are torn down HERE, not in
+            // `MacItemDetailHost`'s own onDisappear (there isn't one) —
+            // this outer onDisappear only fires on a genuine room-leave,
+            // never on the width-crossing branch move that rebuilds
+            // `MacItemsPane`/`MacItemDetailHost` for the SAME item (see
+            // `MacItemsPaneState`'s doc comment). A real room-leave must
+            // still stop the detail VM's subscriptions and cancel any
+            // in-flight recording.
+            itemsPaneState.releaseAllSlots()
+            itemsPaneState.cancelRecording()
             // Shrink the cached VM's window for the next open — keeping a
             // grown window here is what made switching BACK to a deep-read
             // room re-mount 600+ rows in one transaction (2026-08-21
@@ -570,6 +737,7 @@ struct MacChatView: View {
             // take-over on a narrow window). Hidden when none are running.
             MacRunningSubagentStrip(viewModel: stripViewModel, highlightedID: openSubChatID) { childID in
                 openSubChatID = childID
+                showItemsPane = false
             }
             if viewModel.settledEmpty && viewModel.error == nil {
                 // Settled-empty branch — see iOS `ChatView` and
@@ -592,8 +760,22 @@ struct MacChatView: View {
                     MacTimelineListContent(
                         viewModel: viewModel,
                         stripViewModel: stripViewModel,
-                        onOpenSubChat: { openSubChatID = $0 },
+                        onOpenSubChat: { openSubChatID = $0; showItemsPane = false },
                         onOpenSpawnRoom: onOpenConversation,
+                        // PR B / Task 13: an inline `.itemMarker` card tap
+                        // opens the items pane straight to that item —
+                        // same "close the other slot" convention as
+                        // `onOpenSubChat` above, and `itemsPaneState` is
+                        // the shared `@Observable` instance both HSplitView
+                        // branches already read `path` from, so setting it
+                        // here is all `MacItemsPane`'s `NavigationStack`
+                        // needs to push (see `MacItemsPaneState`).
+                        onOpenItem: { id in
+                            openSubChatID = nil
+                            showItemsPane = true
+                            itemsPaneState.path = [id]
+                        },
+                        onOpenMission: onOpenMission,
                         onPreviewImage: { url, img in
                             imagePreview = ImagePreview(gallery: ImageGalleries.conversation(
                                 tapped: url, image: img, chatViewModel: viewModel,
@@ -893,19 +1075,24 @@ struct MacChatView: View {
                     }
                 }
             }
-            // Floating stop — solid for the whole turn via the durable
+            // Floating top-trailing controls: Stop above "jump to my last
+            // message" — or jump alone, in Stop's slot, once no turn is
+            // running. Stop is solid for the whole turn via the durable
             // session_state; see iOS `ChatView` for the signal and
-            // !esc-as-own-message rationale.
+            // !esc-as-own-message rationale. No tasks page in the Mac chat
+            // pager, so jump's visibility only depends on scroll state.
             .overlay(alignment: .topTrailing) {
-                MinDisplayDuration(while: viewModel.isTurnRunning || viewModel.activityLabel != nil) { visible in
-                    if visible {
-                        StopTurnButton {
-                            Task { await viewModel.sendCommand("!esc") }
-                        }
-                    }
+                MinDisplayDuration(while: viewModel.isTurnRunning || viewModel.activityLabel != nil) { stopVisible in
+                    ChatTopTrailingControls(
+                        showsStop: stopVisible,
+                        showsJump: ChatTopTrailingControls.showsJump(
+                            isFollowingTail: isFollowingTail,
+                            isTasksPage: false
+                        ),
+                        onStop: { Task { await viewModel.sendCommand("!esc") } },
+                        onJump: { Task { await viewModel.jumpToLastOwnMessage() } }
+                    )
                 }
-                .animation(.easeInOut(duration: 0.18),
-                           value: viewModel.isTurnRunning || viewModel.activityLabel != nil)
             }
             }
             }
@@ -958,6 +1145,20 @@ struct MacChatView: View {
                 }
             }
         }
+        // Which mission this conversation belongs to (spec: Transcript and
+        // title) — mirrors the iOS `ChatView` wiring at
+        // `Matron/Features/Chat/ChatView.swift`.
+        .task(id: viewModel.roomID) {
+            // Clear the previous room's value first — see the iOS
+            // `ChatView` wiring for why (MINOR-4).
+            missionID = nil
+            guard let deps, let session else { return }
+            for await id in deps.journalStore(for: session).missionIDStream(convoID: viewModel.roomID) {
+                // See the iOS `ChatView` wiring for why (CodeRabbit #209).
+                guard !Task.isCancelled else { return }
+                missionID = id
+            }
+        }
         .toolbar {
             MacChatToolbar(
                 title: chatTitle,
@@ -968,16 +1169,17 @@ struct MacChatView: View {
                     sessionShort: sessionShort, roomBoxNames: roomBoxNames),
                 status: viewModel.sessionStatus,
                 stripViewModel: stripViewModel,
-                onOpenSubChat: { openSubChatID = $0 },
+                onOpenSubChat: { openSubChatID = $0; showItemsPane = false },
                 onCompact: { Task { await viewModel.sendCommand("/compact") } },
-                showSummaries: $showSummaries,
-                popoverContent: {
-                    AnyView(MacSummariesPopoverContent(viewModel: viewModel) { seq in
-                        showSummaries = false
-                        Task { await viewModel.focus(seq: seq) }
-                    })
-                },
-                showMediaBrowser: $showMediaBrowser
+                missionID: missionID,
+                onOpenMission: { onOpenMission?($0) },
+                showMediaBrowser: $showMediaBrowser,
+                showItemsPane: Binding(
+                    get: { showItemsPane },
+                    set: { showItemsPane = $0; if $0 { openSubChatID = nil } }
+                ),
+                needsYouCount: itemsVM?.needsYouCount ?? 0,
+                itemsAvailable: itemsVM?.isSupported ?? true
             )
         }
         // Observation start/stop is hoisted to the outer view in `body` —
@@ -1084,6 +1286,15 @@ private struct MacTimelineListContent: View, Equatable {
     /// `onOpenSubChat` (so `==` ignoring it is safe), and `nil` where there
     /// is nowhere to navigate — the affordance is then omitted, not dead.
     let onOpenSpawnRoom: ((String) -> Void)?
+    /// Opens the items pane to a tapped `.itemMarker`'s item. Fixed per
+    /// screen like `onOpenSpawnRoom`, so `==` ignoring it is safe; `nil`
+    /// where the screen has no items pane (sub-chat panes).
+    let onOpenItem: ((String) -> Void)?
+    /// Opens the mission page to a tapped `.milestoneMarker` /
+    /// `.missionMarker`. Fixed per screen like `onOpenSpawnRoom`, so `==`
+    /// ignoring it is safe; `nil` where the screen has no mission page
+    /// (sub-chat panes).
+    let onOpenMission: ((String) -> Void)?
     /// Carries the tapped image's `mxc://` URL alongside the resolved
     /// `Image` so the presenter can look up its native pixel size.
     let onPreviewImage: (URL, Image) -> Void
@@ -1143,6 +1354,8 @@ private struct MacTimelineListContent: View, Equatable {
                     viewModel: viewModel,
                     onOpenSubChat: onOpenSubChat,
                     onOpenSpawnRoom: onOpenSpawnRoom,
+                    onOpenItem: onOpenItem,
+                    onOpenMission: onOpenMission,
                     onPreviewImage: onPreviewImage
                 )
                 .equatable()
@@ -1223,6 +1436,13 @@ private struct MacTimelineRowView: View, Equatable {
     /// so it changes the sidebar selection rather than opening a child pane.
     /// `nil` where there is nowhere to navigate.
     let onOpenSpawnRoom: ((String) -> Void)?
+    /// Opens the items pane to a tapped `.itemMarker`'s item. Fixed per
+    /// screen like `onOpenSpawnRoom`, so `==` ignoring it is safe.
+    let onOpenItem: ((String) -> Void)?
+    /// Opens the mission page to a tapped `.milestoneMarker` /
+    /// `.missionMarker`. Fixed per screen like `onOpenSpawnRoom`, so `==`
+    /// ignoring it is safe.
+    let onOpenMission: ((String) -> Void)?
     let onPreviewImage: (URL, Image) -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -1297,6 +1517,8 @@ private struct MacTimelineRowView: View, Equatable {
                         }
                     },
                     onOpenSpawnRoom: onOpenSpawnRoom,
+                    onOpenItem: onOpenItem,
+                    onOpenMission: onOpenMission,
                     convoID: viewModel.roomID,
                     hasMultipleSenders: viewModel.hasMultipleSenders
                 )
@@ -1460,6 +1682,11 @@ struct MacSubChatPane: View {
                             stripViewModel: stripViewModel,
                             onOpenSubChat: onOpenSibling,
                             onOpenSpawnRoom: onOpenSpawnRoom,
+                            // No items pane inside a sub-chat pane — see
+                            // the iOS twin's identical decision for
+                            // `SubChatView`.
+                            onOpenItem: nil,
+                            onOpenMission: nil,
                             onPreviewImage: { url, img in
                                 imagePreview = MacSubChatImagePreview(gallery: ImageGalleries.conversation(
                                     tapped: url, image: img, chatViewModel: viewModel,
@@ -1645,6 +1872,12 @@ private struct MacSubChatMiniHeader: View {
 /// `.onDrop`/`ComposerDropDelegate` this overlays (the call site turns
 /// hit-testing off).
 struct DropHereOverlay: View {
+    /// Defaults to the chat column's own copy so every existing call site
+    /// (just the one in `MacChatView`) stays source-compatible; the items
+    /// pane (`MacItemDetailHost`) passes its own wording — attachments
+    /// there land on the item's comment thread, not a message.
+    var subtitle: String = "Files and images will be attached to your message"
+
     var body: some View {
         ZStack {
             Rectangle()
@@ -1660,7 +1893,7 @@ struct DropHereOverlay: View {
                     .font(.system(size: 42, weight: .light))
                 Text("Drop here to add")
                     .font(.title3.weight(.semibold))
-                Text("Files and images will be attached to your message")
+                Text(subtitle)
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }

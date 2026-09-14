@@ -68,6 +68,30 @@ final class JournalStoreTests: XCTestCase {
                        "own-text frame in a batch must confirm the queued send")
     }
 
+    func testFlaggedFallbackTextDoesNotConfirmQueuedSend() throws {
+        // Old-client fallback (spec 2026-09-08, "Old-client fallback"): the
+        // journal mirrors a card-worthy item marker as a plain, own-sender
+        // `text` event flagged `fallback_for: "item"`. That mirror is not a
+        // reply to anything a user typed and queued, so it must never be
+        // mistaken for the delivery confirmation of a pending outbox row —
+        // even when its body happens to match by coincidence.
+        let store = try makeStore()
+        try store.outboxInsert(localID: "A", convoID: "c1", body: "📌 New task #3: x")
+        try store.outboxMarkAttempt(localID: "A")
+        XCTAssertEqual(try store.outboxRows(convoID: "c1").count, 1)
+        _ = try store.applyJournalBatch([
+            event(1, sender: "user:dan", payload: [
+                "body": "📌 New task #3: x",
+                "fallback_for": "item",
+                "item_id": "it_3",
+                "num": 3,
+                "action": "created",
+            ]),
+        ])
+        XCTAssertEqual(try store.outboxRows(convoID: "c1").count, 1,
+                       "a flagged fallback text must not confirm an unrelated queued send")
+    }
+
     func testBatchApplyIsAllOrNothingOnInjectedFailure() throws {
         let store = try makeStore()
         store.failApplyForTesting = { $0 == 2 }
@@ -354,6 +378,42 @@ final class JournalStoreTests: XCTestCase {
         XCTAssertEqual(try store.events(convoID: "c1", beforeSeq: 1, limit: 3).map(\.seq), [])
     }
 
+    /// Item #60 — "jump to my last message". The newest own `text`/`image`/
+    /// `file` row wins; agent rows, read markers and other conversations
+    /// don't count, and neither does the journal's `fallback_for` text
+    /// mirror of an item marker (own sender, never typed, not rendered).
+    func testNewestOwnMessageSeqSkipsAgentRowsMarkersAndFallbackMirrors() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, sender: "user:dan"))
+        try store.applyJournal(event(2))
+        try store.applyJournal(event(3, sender: "user:dan", type: "image",
+                                     payload: ["blob_ref": "b", "name": "x.png"]))
+        try store.applyJournal(event(4))
+        try store.applyJournal(event(5, sender: "user:dan",
+                                     payload: ["body": "📌 #1 filed", "fallback_for": "item"]))
+        try store.applyJournal(event(6, sender: "user:dan", type: "read_marker",
+                                     payload: ["up_to_seq": 5]))
+        try store.applyJournal(event(7, convo: "c2", sender: "user:dan"))
+        XCTAssertEqual(try store.newestOwnMessageSeq(convoID: "c1"), 3)
+        XCTAssertEqual(try store.newestOwnMessageSeq(convoID: "c2"), 7)
+        XCTAssertNil(try store.newestOwnMessageSeq(convoID: "c3"),
+                     "a conversation the user never wrote in has no target")
+    }
+
+    /// More fallback mirrors than one scan batch, all newer than the real
+    /// message: the scan keeps going instead of giving up (CodeRabbit,
+    /// PR #202).
+    func testNewestOwnMessageSeqScansPastABatchOfFallbackMirrors() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, sender: "user:dan", payload: ["body": "real"]))
+        let mirrors = JournalStore.ownMessageScanBatch + 10
+        for seq in 2...(1 + mirrors) {
+            try store.applyJournal(event(Int64(seq), sender: "user:dan",
+                                         payload: ["body": "📌 #\(seq)", "fallback_for": "item"]))
+        }
+        XCTAssertEqual(try store.newestOwnMessageSeq(convoID: "c1"), 1)
+    }
+
     func testEventsStreamAnchoredAtSinceSeq() async throws {
         let store = try makeStore()
         for seq in 1...4 { try store.applyJournal(event(Int64(seq))) }
@@ -366,51 +426,6 @@ final class JournalStoreTests: XCTestCase {
         try store.applyJournal(event(5))
         let updated = await iterator.next()
         XCTAssertEqual(updated?.map(\.seq), [3, 4, 5])
-    }
-
-    // MARK: Snippet-TTL memo invalidation
-
-    /// `insertHistory` writes event rows without bumping `last_seq`, so it
-    /// must drop the TTL memo: a stale conversation whose newest message
-    /// arrives via backfill would otherwise keep its cached "no override"
-    /// answer and never show the `$ command` snippet.
-    func testSnippetTTLMemoInvalidatedByInsertHistory() throws {
-        let store = try makeStore()
-        // Stale conversation (1970 activity), summary-known head at seq 10,
-        // no local events yet — the first read caches "no override".
-        try store.applyColdSnapshot([
-            ConvoSummaryDTO(id: "c1", title: "T", sessionState: "running",
-                            lastSeq: 10, snippet: "from-server", createdAt: 0, lastTS: 1_000),
-        ], headSeq: 0)
-        XCTAssertEqual(try store.conversations().first?.snippet, "from-server")
-
-        // Backfill lands a live-log tool_output as the newest message-type
-        // event; `last_seq` is untouched, so only the insertHistory
-        // invalidation makes the next read recompute.
-        try store.insertHistory([event(9, type: JournalEventType.toolOutput,
-                                       payload: ["live_log": true, "command": "make build"])])
-        XCTAssertEqual(try store.conversations().first?.snippet, "$ make build",
-                       "stale memo served after insertHistory changed the newest message")
-    }
-
-    func testSnippetTTLMemoInvalidatedByWipe() throws {
-        let store = try makeStore()
-        // Stale conversation whose newest message is an unexpired live_log
-        // tool_output — the read caches the `$ command` override.
-        try store.applyJournal(event(5, type: JournalEventType.toolOutput,
-                                     payload: ["live_log": true, "command": "make build"]))
-        XCTAssertEqual(try store.conversations().first?.snippet, "$ make build")
-
-        // Wipe, then re-bootstrap the same conversation at the SAME
-        // last_seq with no events: the memo key matches, so only the wipe
-        // invalidation keeps the stale override from resurfacing.
-        try store.wipe()
-        try store.applyColdSnapshot([
-            ConvoSummaryDTO(id: "c1", title: "T", sessionState: "running",
-                            lastSeq: 5, snippet: "fresh", createdAt: 0, lastTS: 1_000),
-        ], headSeq: 5)
-        XCTAssertEqual(try store.conversations().first?.snippet, "fresh",
-                       "stale memo override survived a mirror wipe")
     }
 
     func testEventsStreamSuppressesOtherConversationCommits() async throws {
@@ -500,8 +515,11 @@ final class JournalStoreTests: XCTestCase {
     func testPurgeRewritesStaleLiveLogToTombstone() throws {
         let store = try makeStore()
         // The event helper stamps ts = seq seconds after epoch, so seq 1 is
-        // ancient relative to any injected `now` past 1970-01-02.
-        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()))
+        // ancient relative to any injected `now` past 1970-01-02. Pin the
+        // INSERT inside the TTL too, or the insert-time tombstone would do
+        // the sweep's job and this test would prove nothing.
+        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()),
+                               now: Date(timeIntervalSince1970: 1))
         try store.purgeExpiredToolOutputSnippets(
             now: Date(timeIntervalSince1970: 1).addingTimeInterval(25 * 3600))
 
@@ -516,8 +534,10 @@ final class JournalStoreTests: XCTestCase {
 
     func testPurgeLeavesYoungAndNonLiveLogRows() throws {
         let store = try makeStore()
-        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload(liveLog: false)))
-        try store.applyJournal(event(2, type: "tool_output", payload: toolOutputPayload()))
+        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload(liveLog: false)),
+                               now: Date(timeIntervalSince1970: 2))
+        try store.applyJournal(event(2, type: "tool_output", payload: toolOutputPayload()),
+                               now: Date(timeIntervalSince1970: 2))
         try store.purgeExpiredToolOutputSnippets(
             now: Date(timeIntervalSince1970: 2).addingTimeInterval(23 * 3600))
         XCTAssertNotNil(try storedPayload(store, seq: 2)["snippet"], "still inside the TTL")
@@ -531,7 +551,8 @@ final class JournalStoreTests: XCTestCase {
 
     func testPurgeRewritesConvoPreviewWhenPurgedEventIsNewest() throws {
         let store = try makeStore()
-        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()))
+        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()),
+                               now: Date(timeIntervalSince1970: 1))
         // Read-time TTL is wall-clock relative to `now`; pin it inside the
         // window so this precondition reflects "before the sweep AND before
         // the TTL", not the real current date (the event helper stamps
@@ -545,8 +566,10 @@ final class JournalStoreTests: XCTestCase {
 
     func testPurgeKeepsConvoPreviewWhenNewerMessageExists() throws {
         let store = try makeStore()
-        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()))
-        try store.applyJournal(event(2, payload: ["body": "later text"]))
+        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()),
+                               now: Date(timeIntervalSince1970: 2))
+        try store.applyJournal(event(2, payload: ["body": "later text"]),
+                               now: Date(timeIntervalSince1970: 2))
         try store.purgeExpiredToolOutputSnippets(
             now: Date(timeIntervalSince1970: 2).addingTimeInterval(48 * 3600))
         XCTAssertEqual(try store.conversations().first?.snippet, "later text")
@@ -554,7 +577,8 @@ final class JournalStoreTests: XCTestCase {
 
     func testPurgeIsIdempotent() throws {
         let store = try makeStore()
-        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()))
+        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()),
+                               now: Date(timeIntervalSince1970: 1))
         let now = Date(timeIntervalSince1970: 1).addingTimeInterval(25 * 3600)
         try store.purgeExpiredToolOutputSnippets(now: now)
         let first = try storedPayload(store, seq: 1)
@@ -573,7 +597,8 @@ final class JournalStoreTests: XCTestCase {
         // the next time the conversation list is *read*, not just the
         // next time the store happens to reopen.
         let store = try makeStore()
-        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()))
+        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload()),
+                               now: Date(timeIntervalSince1970: 1))
         let fresh = try store.conversations(now: Date(timeIntervalSince1970: 1).addingTimeInterval(1))
         XCTAssertEqual(fresh.first?.snippet, "output text", "precondition: still fresh")
 
@@ -589,7 +614,8 @@ final class JournalStoreTests: XCTestCase {
 
     func testConversationsReadTimeTTLLeavesNonLiveLogSnippetsAlone() throws {
         let store = try makeStore()
-        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload(liveLog: false)))
+        try store.applyJournal(event(1, type: "tool_output", payload: toolOutputPayload(liveLog: false)),
+                               now: Date(timeIntervalSince1970: 1))
         let stale = try store.conversations(
             now: Date(timeIntervalSince1970: 1).addingTimeInterval(48 * 3600))
         XCTAssertEqual(stale.first?.snippet, "output text",

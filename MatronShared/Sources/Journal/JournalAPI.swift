@@ -681,20 +681,26 @@ public actor JournalAPI {
     // MARK: Internals
 
     /// Escapes one path segment: everything but unreserved characters is
-    /// percent-encoded, including "/" (which .urlPathAllowed would let through).
-    private static func pathSegment(_ raw: String) -> String {
+    /// percent-encoded, including "/" (which .urlPathAllowed would let through)
+    /// and "#" (item ids like "#12" would otherwise be parsed as a URL
+    /// fragment). Internal (not private) so `JournalAPI+Items.swift` can
+    /// build `/items/<id>` paths too.
+    static func pathSegment(_ raw: String) -> String {
         var allowed = CharacterSet.alphanumerics
         allowed.insert(charactersIn: "-._~")
         return raw.addingPercentEncoding(withAllowedCharacters: allowed) ?? raw
     }
 
-    private func request(
+    /// Not `private`: `JournalAPI+Items.swift` (a separate file, same
+    /// module) calls this too.
+    func request(
         path: String, method: String = "GET", body: [String: Any]? = nil,
-        query: [URLQueryItem] = [], authenticated: Bool = true
+        query: [URLQueryItem] = [], authenticated: Bool = true,
+        accept: Set<Int> = [200], headers: [String: String] = [:]
     ) async throws -> [String: Any] {
         let (data, response) = try await rawRequest(path: path, method: method, body: body,
-                                                    query: query, authenticated: authenticated)
-        guard response.statusCode == 200 else { throw Self.error(status: response.statusCode, data: data) }
+                                                    query: query, authenticated: authenticated, headers: headers)
+        guard accept.contains(response.statusCode) else { throw Self.error(status: response.statusCode, data: data) }
         guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             throw JournalAPIError.transport("non-JSON response for \(path)")
         }
@@ -704,7 +710,7 @@ public actor JournalAPI {
     private func rawRequest(
         path: String, method: String, body: [String: Any]?,
         query: [URLQueryItem] = [], authenticated: Bool = true,
-        rawBody: Data? = nil, rawContentType: String? = nil
+        rawBody: Data? = nil, rawContentType: String? = nil, headers: [String: String] = [:]
     ) async throws -> (Data, HTTPURLResponse) {
         var components = URLComponents(url: serverURL, resolvingAgainstBaseURL: false)!
         components.percentEncodedPath = Self.basePath(of: components) + path
@@ -713,6 +719,9 @@ public actor JournalAPI {
         request.httpMethod = method
         if authenticated, let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        for (key, value) in headers {
+            request.setValue(value, forHTTPHeaderField: key)
         }
         // A raw body (media upload) sends `data` verbatim under its own
         // content type; the JSON `body` path is mutually exclusive with it.

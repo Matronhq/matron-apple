@@ -385,18 +385,50 @@ final class MarkdownCopyTests: XCTestCase {
 
         view.copy(nil)
 
-        let pasted = NSPasteboard.general.string(forType: .string)
+        let pasted = view.pasteboard.string(forType: .string)
         XCTAssertNotNil(pasted)
         XCTAssertFalse(pasted!.isEmpty)
     }
 
     // MARK: - Copy override
 
-    private func makeCopyView(_ source: String) -> MessageCopyTextView {
+    /// Every copy test writes to a uniquely-named private `NSPasteboard`,
+    /// never `NSPasteboard.general` — these run on a developer's machine and
+    /// would replace the clipboard they're working with (Dan, 2026-09-09:
+    /// "Run this: ```bash ls```" kept turning up on paste).
+    private var pasteboards: [NSPasteboard] = []
+
+    override func tearDown() {
+        pasteboards.forEach { $0.releaseGlobally() }
+        pasteboards = []
+        super.tearDown()
+    }
+
+    private func makePasteboard(function: String = #function) -> NSPasteboard {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("MatronTest-\(function)-\(UUID())"))
+        pasteboards.append(pasteboard)
+        pasteboard.clearContents()
+        return pasteboard
+    }
+
+    private func makeCopyView(_ source: String, function: String = #function) -> MessageCopyTextView {
         let view = MessageCopyTextView()
+        view.pasteboard = makePasteboard(function: function)
         view.markdownSource = source
         view.textStorage?.setAttributedString(MarkdownAttributed.attributedString(for: source))
         return view
+    }
+
+    func test_copy_writesToInjectedPasteboard_notGeneral() {
+        let generalBefore = NSPasteboard.general.changeCount
+        let view = makeCopyView("Run this:\n\n```bash\nls\n```")
+        view.setSelectedRange(NSRange(location: 0, length: view.textStorage!.length))
+
+        view.copy(nil)
+
+        XCTAssertEqual(view.pasteboard.string(forType: .string), "Run this:\n\n```bash\nls\n```")
+        XCTAssertEqual(NSPasteboard.general.changeCount, generalBefore,
+                       "copy must never write to the developer's real clipboard")
     }
 
     func test_copy_fullSelection_copiesRawSourceVerbatim() {
@@ -406,8 +438,8 @@ final class MarkdownCopyTests: XCTestCase {
 
         view.copy(nil)
 
-        XCTAssertEqual(NSPasteboard.general.string(forType: .string), source)
-        XCTAssertNotNil(NSPasteboard.general.data(forType: .rtf))
+        XCTAssertEqual(view.pasteboard.string(forType: .string), source)
+        XCTAssertNotNil(view.pasteboard.data(forType: .rtf))
     }
 
     func test_copy_partialSelection_reconstructsMarkdown() {
@@ -419,7 +451,7 @@ final class MarkdownCopyTests: XCTestCase {
 
         view.copy(nil)
 
-        XCTAssertEqual(NSPasteboard.general.string(forType: .string), "**bold** tail")
+        XCTAssertEqual(view.pasteboard.string(forType: .string), "**bold** tail")
     }
 
     /// The full-selection raw-source fast path must NOT win when the whole
@@ -432,7 +464,7 @@ final class MarkdownCopyTests: XCTestCase {
         view.copy(nil)
 
         XCTAssertEqual(
-            NSPasteboard.general.string(forType: .string),
+            view.pasteboard.string(forType: .string),
             "cd /var/www/yearbook.com/current"
         )
     }
@@ -446,20 +478,19 @@ final class MarkdownCopyTests: XCTestCase {
         view.copy(nil)
 
         XCTAssertEqual(
-            NSPasteboard.general.string(forType: .string),
+            view.pasteboard.string(forType: .string),
             "Run this:\n\n```bash\nls\n```"
         )
     }
 
     func test_copy_emptySelection_doesNotClearPasteboard() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString("sentinel", forType: .string)
         let view = makeCopyView("hello")
+        view.pasteboard.setString("sentinel", forType: .string)
         view.setSelectedRange(NSRange(location: 0, length: 0))
 
         view.copy(nil)
 
-        XCTAssertEqual(NSPasteboard.general.string(forType: .string), "sentinel")
+        XCTAssertEqual(view.pasteboard.string(forType: .string), "sentinel")
     }
 }
 #endif

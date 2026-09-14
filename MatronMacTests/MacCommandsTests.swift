@@ -27,7 +27,7 @@ final class MacCommandsTests: XCTestCase {
         let triggers: [MatronCommand] = [
             .newChat, .signOut, .findInChat, .slashCommand,
             .toggleSidebar, .increaseFontSize, .decreaseFontSize, .resetFontSize,
-            .refresh,
+            .refresh, .showCoordinator, .showConversations, .showDecisions,
         ]
         for trigger in triggers {
             XCTAssertTrue(MatronCommand.allCases.contains(trigger), "missing \(trigger)")
@@ -43,6 +43,17 @@ final class MacCommandsTests: XCTestCase {
             forName: .matronCommand(.newChat), object: nil, queue: nil
         ) { _ in exp.fulfill() }
         NotificationCenter.default.post(name: .matronCommand(.newChat), object: nil)
+        wait(for: [exp], timeout: 1)
+        NotificationCenter.default.removeObserver(observer)
+    }
+
+    /// App shell (spec §5): ⌘1/⌘2/⌘3 select the nav column's entries.
+    func test_post_showDecisions_notifiesObserver() {
+        let exp = expectation(description: "showDecisions observed")
+        let observer = NotificationCenter.default.addObserver(
+            forName: .matronCommand(.showDecisions), object: nil, queue: nil
+        ) { _ in exp.fulfill() }
+        NotificationCenter.default.post(name: .matronCommand(.showDecisions), object: nil)
         wait(for: [exp], timeout: 1)
         NotificationCenter.default.removeObserver(observer)
     }

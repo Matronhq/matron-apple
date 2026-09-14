@@ -345,6 +345,124 @@ final class NewChatViewModelTests: XCTestCase {
                      "box b can't run opus — carrying the pick over would earn a bad_model")
     }
 
+    // MARK: Agent switch
+
+    func test_agentOptions_parsedFromRecentFolders_openOnTheBoxDefault() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(9, connected: true)])
+        fake.replies["recent_folders"] = foldersReply(#"""
+        {"folders":[],"default_agent":"codex","agent_options":[
+          {"value":"claude","label":"Claude Code"},
+          {"value":"codex","label":"Codex"},
+          {"value":"codex","label":"Codex again"},
+          {"value":""},
+          {"label":"nameless"}
+        ]}
+        """#)
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        await vm.load()
+        XCTAssertEqual(vm.agentOptions, [AgentOption(value: "claude", label: "Claude Code"),
+                                         AgentOption(value: "codex", label: "Codex")],
+                       "bridge order kept; repeats and entries with nothing to send are dropped")
+        XCTAssertEqual(vm.selectedAgent, "codex", "the switch opens on what a no-pick start would run")
+        XCTAssertTrue(vm.agentSwitchVisible)
+    }
+
+    func test_agentOptions_absentKey_hidesTheSwitch_andStartOmitsAgent() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(9, connected: true)])
+        fake.replies["recent_folders"] = foldersReply(#"{"folders":[]}"#)
+        fake.replies["start"] = .ok(resultData: Data(#"{"convo_id":"c-new"}"#.utf8))
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        await vm.load()
+        XCTAssertTrue(vm.agentOptions.isEmpty)
+        XCTAssertFalse(vm.agentSwitchVisible, "an older bridge offers nothing — no switch")
+        await vm.start(workdir: "~/dev/app")
+        XCTAssertNil(fake.requests.last?.params["agent"],
+                     "a bridge that never offered agents must not be sent one")
+    }
+
+    func test_singleAgentOffer_hidesTheSwitch_butStartStillNamesIt() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(9, connected: true)])
+        fake.replies["recent_folders"] = foldersReply(#"""
+        {"folders":[],"default_agent":"claude","agent_options":[{"value":"claude","label":"Claude Code"}]}
+        """#)
+        fake.replies["start"] = .ok(resultData: Data(#"{"convo_id":"c-new"}"#.utf8))
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        await vm.load()
+        XCTAssertFalse(vm.agentSwitchVisible, "one choice is no choice")
+        await vm.start(workdir: "~/dev/app")
+        XCTAssertEqual(fake.requests.last?.params["agent"] as? String, "claude",
+                       "a bridge that offers agents accepts the key — say what was shown")
+    }
+
+    func test_start_sendsThePickedAgent() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(9, connected: true)])
+        fake.replies["recent_folders"] = foldersReply(#"""
+        {"folders":[],"default_agent":"claude","agent_options":[{"value":"claude","label":"Claude Code"},{"value":"codex","label":"Codex"}]}
+        """#)
+        fake.replies["start"] = .ok(resultData: Data(#"{"convo_id":"c-new"}"#.utf8))
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        await vm.load()
+        vm.selectedAgent = "codex"
+        await vm.start(workdir: "~/dev/app")
+        XCTAssertEqual(fake.requests.last?.params["agent"] as? String, "codex")
+    }
+
+    func test_codexPick_hidesTheModelPicker_andOmitsTheModel() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(9, connected: true)])
+        fake.replies["recent_folders"] = foldersReply(#"""
+        {"folders":[],"default_agent":"claude",
+         "agent_options":[{"value":"claude","label":"Claude Code"},{"value":"codex","label":"Codex"}],
+         "model_options":[{"value":"opus","label":"Opus"}]}
+        """#)
+        fake.replies["start"] = .ok(resultData: Data(#"{"convo_id":"c-new"}"#.utf8))
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        await vm.load()
+        vm.selectedModel = "opus"
+        XCTAssertTrue(vm.modelPickerVisible)
+
+        vm.selectedAgent = "codex"
+        XCTAssertFalse(vm.modelPickerVisible, "Claude aliases mean nothing to a Codex session")
+        await vm.start(workdir: "~/dev/app")
+        XCTAssertNil(fake.requests.last?.params["model"],
+                     "the bridge answers bad_model to a model on a Codex start — never send one")
+
+        vm.selectedAgent = "claude"
+        XCTAssertTrue(vm.modelPickerVisible)
+        XCTAssertEqual(vm.selectedModel, "opus", "the pick was parked, not thrown away")
+    }
+
+    func test_switchingBoxes_dropsAnAgentTheNewBoxDoesNotOffer() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(1, name: "a", connected: true),
+                                       agent(2, name: "b", connected: true)])
+        fake.repliesByDevice[1] = .ok(resultData: Data(#"""
+        {"folders":[],"default_agent":"claude","agent_options":[{"value":"claude","label":"Claude Code"},{"value":"codex","label":"Codex"}]}
+        """#.utf8))
+        fake.repliesByDevice[2] = .ok(resultData: Data(#"""
+        {"folders":[],"default_agent":"claude","agent_options":[{"value":"claude","label":"Claude Code"}]}
+        """#.utf8))
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        await vm.load()
+        await vm.capacityFanOutForTesting?.value
+
+        await vm.select(agent: agent(1, name: "a", connected: true))
+        vm.selectedAgent = "codex"
+        await vm.select(agent: agent(2, name: "b", connected: true))
+        XCTAssertEqual(vm.selectedAgent, "claude",
+                       "box b can't run Codex — carrying the pick over would earn a bad_agent")
+        XCTAssertFalse(vm.agentSwitchVisible)
+    }
+
+    func test_startErrorCopy_badAgent() {
+        XCTAssertEqual(NewChatViewModel.startErrorCopy(code: "bad_agent", detail: "codex"),
+                       "That box can't start that agent — pick another.")
+    }
+
     // MARK: Default model
 
     func test_defaultModel_titlesTheDefaultRowAndStillOmitsTheKey() async {

@@ -206,6 +206,42 @@ final class JournalTimelineMapperTests: XCTestCase {
                      "convo_meta updates the conversation row, not the timeline")
     }
 
+    /// Fix wave, item E / Bugbot C1: an `item` marker event used to fall
+    /// through to the `default` branch and render as a grey "unsupported
+    /// event: item" row in both chat timelines — `ItemsSync` is the real
+    /// consumer (it triggers a refetch), not the timeline.
+    /// PR B / Task 13 superseded the blanket skip: `created`/`closed`
+    /// markers now render as `.itemMarker` (see
+    /// `JournalTimelineMapperItemTests`). `updated` markers still carry
+    /// nothing worth showing inline — they exist purely to invalidate
+    /// `ItemsSync`'s local cache — so they stay hidden, same as
+    /// `reordered`.
+    func testItemMarkerUpdatedIsSkippedInTimeline() throws {
+        XCTAssertNil(map(event(6, type: "item", payload: ["item_id": "it_1", "num": 1, "kind": "task", "title": "T", "action": "updated", "by": "agent"])),
+                     "updated item markers carry no renderable content — ItemsSync consumes them, not the timeline")
+    }
+
+    /// Old-client fallback (spec 2026-09-08, "Old-client fallback"): the
+    /// journal mirrors a card-worthy item marker as a plain `text` event so
+    /// pre-tracker clients (which cannot render `item`) still see the turn.
+    /// New clients render the card from the `item` marker itself, so this
+    /// flagged text must be hidden or it would show as a duplicate bubble.
+    func testFlaggedFallbackTextIsSkippedInTimeline() throws {
+        XCTAssertNil(map(event(7, type: "text", payload: [
+            "body": "📌 New task #3: x",
+            "fallback_for": "item",
+            "item_id": "it_3",
+            "num": 3,
+            "action": "created",
+        ])), "a text flagged fallback_for is the old-client mirror of an item marker — new clients render the card, not this")
+    }
+
+    func testUnflaggedTextWithSameBodyIsNotSkipped() throws {
+        let item = try XCTUnwrap(map(event(8, type: "text", payload: ["body": "📌 New task #3: x"])))
+        guard case .text(let body, _) = item.kind else { return XCTFail() }
+        XCTAssertEqual(body, "📌 New task #3: x")
+    }
+
     func testPromptWithOptions() throws {
         let item = try XCTUnwrap(map(event(3, type: "prompt", payload: [
             "question": "Deploy?",
@@ -620,5 +656,22 @@ final class JournalTimelineMapperTests: XCTestCase {
             return XCTFail("expected .unknown, got \(item.kind)")
         }
         XCTAssertEqual(eventType, "spawn_outcome")
+    }
+
+    // MARK: Expired diff
+
+    /// Local retention (Task 4's `EventTombstone`) strips `diff` and
+    /// `snippet` from a `diff` payload and sets `expired: true`, keeping the
+    /// other keys so the row can still name the file. The mapper must carry
+    /// that flag through to the `DiffEvent` unchanged.
+    func testExpiredDiffMapsToAFlaggedDiffItem() throws {
+        let item = try XCTUnwrap(map(event(7, type: JournalEventType.diff, payload: [
+            "file_path": "/w/Sources/A.swift", "added": 2, "removed": 1, "expired": true,
+        ])))
+        guard case .diff(_, let diff) = item.kind else {
+            return XCTFail("expected a diff item, got \(item.kind)")
+        }
+        XCTAssertTrue(diff.expired)
+        XCTAssertEqual(diff.filename, "A.swift", "the row must still be able to name the file")
     }
 }

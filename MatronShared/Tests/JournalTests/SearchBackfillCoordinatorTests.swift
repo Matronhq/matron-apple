@@ -114,13 +114,15 @@ private func makeEvent(seq: Int64, convoID: String = "c1", type: String = Journa
 
 final class SearchBackfillCoordinatorTests: XCTestCase {
     private func makeCoordinator(search: InMemorySearchService, pager: ScriptedPager,
-                                 pageSize: Int = 2) -> SearchBackfillCoordinator {
+                                 pageSize: Int = 2,
+                                 now: @escaping @Sendable () -> Date = { Date(timeIntervalSince1970: 10) }
+    ) -> SearchBackfillCoordinator {
         SearchBackfillCoordinator(
             search: search,
             fetchPage: { convoID, beforeSeq, limit in
                 try await pager.page(convoID: convoID, beforeSeq: beforeSeq, limit: limit)
             },
-            pageSize: pageSize, throttle: .zero
+            pageSize: pageSize, throttle: .zero, now: now
         )
     }
 
@@ -407,16 +409,62 @@ final class SearchBackfillCoordinatorTests: XCTestCase {
     }
 
     func test_searchableBody_mapsEventTypesLikeTheTimelineMapper() {
-        XCTAssertEqual(makeEvent(seq: 1, payload: ["body": "hi"]).searchableBody, "hi")
+        let now = Date(timeIntervalSince1970: 10)
+        XCTAssertEqual(makeEvent(seq: 1, payload: ["body": "hi"]).searchableBody(now: now), "hi")
         XCTAssertEqual(makeEvent(seq: 2, type: JournalEventType.toolOutput,
-                                 payload: ["snippet": "out"]).searchableBody, "out")
+                                 payload: ["snippet": "out"]).searchableBody(now: now), "out")
         // diff precedence: `diff` wins over `snippet`, snippet is the fallback.
         XCTAssertEqual(makeEvent(seq: 3, type: JournalEventType.diff,
-                                 payload: ["diff": "+ d", "snippet": "s"]).searchableBody, "+ d")
+                                 payload: ["diff": "+ d", "snippet": "s"]).searchableBody(now: now), "+ d")
         XCTAssertEqual(makeEvent(seq: 4, type: JournalEventType.diff,
-                                 payload: ["snippet": "s"]).searchableBody, "s")
+                                 payload: ["snippet": "s"]).searchableBody(now: now), "s")
         XCTAssertNil(makeEvent(seq: 5, type: JournalEventType.image,
-                               payload: ["blob_ref": "b"]).searchableBody)
-        XCTAssertNil(makeEvent(seq: 6, payload: ["body": ""]).searchableBody)
+                               payload: ["blob_ref": "b"]).searchableBody(now: now))
+        XCTAssertNil(makeEvent(seq: 6, payload: ["body": ""]).searchableBody(now: now))
+    }
+
+    /// Retention removed these rows from the index; the server-backed
+    /// feeders (backfill, backward pagination) would otherwise put them
+    /// straight back, because the server keeps bodies forever.
+    func test_searchableBody_isNilForToolOutputAndDiffPastTheRetentionWindow() {
+        let past = Date(timeIntervalSince1970: 1).addingTimeInterval(31 * 24 * 3600)
+        XCTAssertNil(makeEvent(seq: 1, type: JournalEventType.toolOutput,
+                               payload: ["snippet": "out"]).searchableBody(now: past))
+        XCTAssertNil(makeEvent(seq: 1, type: JournalEventType.diff,
+                               payload: ["diff": "+ d"]).searchableBody(now: past))
+        XCTAssertEqual(makeEvent(seq: 1, payload: ["body": "text is kept forever"]).searchableBody(now: past),
+                       "text is kept forever",
+                       "retention covers tool output and diffs only — message text stays searchable")
+    }
+
+    /// The live feeder's case: `applyJournalBatch` returns the events it was
+    /// given, not the tombstoned rows it stored, so the 24 h rule has to be
+    /// enforced here too or search keeps a body the store dropped.
+    func test_searchableBody_isNilForAStaleLiveLogToolOutput() {
+        let past = Date(timeIntervalSince1970: 1).addingTimeInterval(25 * 3600)
+        XCTAssertNil(makeEvent(seq: 1, type: JournalEventType.toolOutput,
+                               payload: ["snippet": "out", "live_log": true]).searchableBody(now: past))
+        XCTAssertEqual(makeEvent(seq: 1, type: JournalEventType.toolOutput,
+                                 payload: ["snippet": "out"]).searchableBody(now: past), "out",
+                       "an offloaded tool output has no 24 h TTL — it stays searchable until retention")
+    }
+
+    func test_backfill_skipsToolOutputAndDiffPastTheRetentionWindow() async throws {
+        let search = InMemorySearchService()
+        let events: [JournalEvent] = [
+            makeEvent(seq: 1, payload: ["body": "real text"]),
+            makeEvent(seq: 2, type: JournalEventType.toolOutput, payload: ["snippet": "tool says"]),
+            makeEvent(seq: 3, type: JournalEventType.diff, payload: ["diff": "+ added line"]),
+        ]
+        let pager = ScriptedPager(events: events)
+        let coordinator = makeCoordinator(search: search, pager: pager, pageSize: 10,
+                                          now: { Date(timeIntervalSince1970: 3).addingTimeInterval(31 * 24 * 3600) })
+
+        let allComplete = await coordinator.run(convoIDs: ["c1"])
+
+        XCTAssertTrue(allComplete, "skipping bodies must not stall the walk")
+        let indexed = await search.indexed
+        XCTAssertEqual(Set(indexed.keys), Set(["1"]),
+                       "the backfill re-indexed rows retention had removed")
     }
 }

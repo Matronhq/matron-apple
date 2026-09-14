@@ -143,6 +143,41 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
         }
     }
 
+    /// Ids per write transaction. 500 keeps the `IN (…)` list well inside
+    /// `SQLITE_MAX_VARIABLE_NUMBER` and, more importantly, keeps each
+    /// transaction short: the index has ONE connection, and a first
+    /// retention pass retires on the order of 10^5 rows.
+    static let removalChunkSize = 500
+
+    /// Pure split, so the transaction count is unit-testable without
+    /// instrumenting GRDB.
+    static func removalChunks(of eventIDs: [String]) -> [[String]] {
+        stride(from: 0, to: eventIDs.count, by: removalChunkSize).map {
+            Array(eventIDs[$0..<min($0 + removalChunkSize, eventIDs.count)])
+        }
+    }
+
+    public func removeAll(eventIDs: [String]) async throws {
+        guard !eventIDs.isEmpty else { return }
+        // ONE TRANSACTION PER CHUNK, not one for the whole batch (spec §3.4,
+        // "one search write transaction per sweep chunk"). A single
+        // transaction deleting every retired row would hold the index's only
+        // connection for the whole delete and dirty the same kind of page
+        // volume as the 2026-08-10 backfill incident this file already
+        // carries a comment about. The caller passes the whole list; the
+        // chunking is ours.
+        for chunk in Self.removalChunks(of: eventIDs) {
+            try await queue.write { db in
+                let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+                // DELETE on `messages` fires the AFTER DELETE trigger which
+                // removes the matching FTS row — the same path the
+                // single-row form takes, so no tokens are stranded.
+                try db.execute(sql: "DELETE FROM messages WHERE event_id IN (\(placeholders))",
+                               arguments: StatementArguments(chunk))
+            }
+        }
+    }
+
     public func query(_ text: String, limit: Int) async throws -> [SearchHit] {
         let escaped = text.replacingOccurrences(of: "\"", with: "\"\"")
         let pattern = "\"\(escaped)\"*"
