@@ -182,7 +182,15 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
     }
 
     func characterIndex(atWindowPoint point: NSPoint) -> Int {
-        characterIndexForInsertion(at: convert(point, from: nil))
+        let local = convert(point, from: nil)
+        // TextKit 2's `characterIndexForInsertion` maps a point ABOVE the
+        // first line to the END of the document (measured: y = -6 → length),
+        // the same answer as a point below the last line. A drag resolves
+        // its head by nearest row while the pointer is still in the gap
+        // above that row, so without this clamp the span painted there ran
+        // the wrong way (press…end instead of start…press on an upward drag).
+        if local.y < 0 { return 0 }
+        return characterIndexForInsertion(at: local)
     }
 
     func setCrossSelection(_ range: NSRange?) {
@@ -236,7 +244,22 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
                     .backgroundColor, value: NSColor.selectedTextBackgroundColor, forCharacterRange: range)
             }
         }
-        needsDisplay = true
+        // The text is not drawn by this view's own layer: TextKit 2's
+        // NSTextView renders it two levels down, in private viewport element
+        // views under `_NSTextContentView`, and `needsDisplay` on the text
+        // view marks only the text view's layer. Rendering attributes change
+        // nothing in layout, so nothing else ever re-renders those views — a
+        // highlight added, shrunk or removed here stayed on screen as it was
+        // until an unrelated redraw (measured on screen: a cleared span kept
+        // its blue through `invalidateLayout`, `layoutViewport` and
+        // `invalidateRenderingAttributes`; only dirtying every descendant
+        // view repainted it). Public API only: no private class is named.
+        Self.setNeedsDisplayRecursively(self)
+    }
+
+    private static func setNeedsDisplayRecursively(_ view: NSView) {
+        view.needsDisplay = true
+        for subview in view.subviews { setNeedsDisplayRecursively(subview) }
     }
 
     private static func textRange(_ range: NSRange, in content: NSTextContentManager) -> NSTextRange? {
