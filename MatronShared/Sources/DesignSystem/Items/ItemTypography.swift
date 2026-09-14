@@ -12,26 +12,25 @@ import MarkdownUI
 /// capped, centred column instead of stretching across the window.
 public enum ItemTypography {
     #if os(macOS)
-    /// ×1.40 ⇒ ≈18pt on macOS (13pt base). Well above the Mac chat
+    /// ×1.25 ⇒ ≈16pt on macOS (13pt base). A step above the Mac chat
     /// timeline's 14.3pt (`MarkdownAttributed.baseFontSize`) — the chat
     /// scale was walked down for a stream of short turns; a thread of
-    /// paragraphs wants a reading face. (The ×1.25 and first ×1.40 steps
-    /// on 2026-09-14 never rendered — see `Theme.matronItem` — so 18pt is
-    /// the first size Dan actually sees above the 13pt base.)
-    static let bodyScale: CGFloat = 1.40
+    /// paragraphs wants a reading face. (×1.40 ≈ 18pt was tried on
+    /// 2026-09-14 once the theme actually rendered; Dan read it as too
+    /// big, so this is the settled size.)
+    static let bodyScale: CGFloat = 1.25
     /// Extra leading between wrapped lines, on top of the font's own.
-    public static let lineSpacing: CGFloat = 5
+    public static let lineSpacing: CGFloat = 4
     /// The item title, a step above the body: 22pt semibold on the Mac.
     public static let titleFont: Font = .title.weight(.semibold)
     /// Author / date captions on a card — 12pt/11pt, so they don't read
-    /// as footnotes beside an 18pt body.
+    /// as footnotes beside a 16pt body.
     public static let captionFont: Font = .callout
     public static let captionDetailFont: Font = .subheadline
     #else
-    /// ×1.18 ⇒ ≈20pt on iOS/iPad (17pt base) — the size `MessageTextScale`
-    /// intends for chat messages there. (Chat bodies through MarkdownUI
-    /// actually render at the 17pt base today because their `.em` scale is
-    /// ignored — see `Theme.matronItem`; that is a separate fix.)
+    /// ×1.18 ⇒ ≈20pt on iOS/iPad (17pt base). Chat bodies there stay at
+    /// the 17pt system size by decision (tracker #823); the item thread is
+    /// the one surface that reads a step above it.
     static let bodyScale: CGFloat = MessageTextScale.scale
     public static let lineSpacing: CGFloat = 3
     public static let titleFont: Font = .title2.weight(.semibold)
