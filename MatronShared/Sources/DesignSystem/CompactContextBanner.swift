@@ -13,7 +13,10 @@ public struct CompactContextBanner: View {
     /// Absolute context size (in tokens) past which the banner appears.
     /// Absolute, not a fraction of the model's window: the concern is
     /// cost/latency/recall at large sizes, which a 1M-window model shares.
-    public static let tokenThreshold = 200_000
+    /// Raised 200k → 400k on 2026-09-03 (Dan: it fired too early on
+    /// 1M-window sessions). The Android banner still uses 200k until it
+    /// is bumped to match.
+    public static let tokenThreshold = 400_000
 
     /// Whether the banner should show for `context`. Nil (no status frame
     /// yet) and exactly-at-threshold do not show; strictly above does.

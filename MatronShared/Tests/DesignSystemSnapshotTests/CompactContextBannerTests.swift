@@ -4,7 +4,8 @@ import MatronModels
 
 /// Pins the show/hide predicate and label wording for the tap-to-compact
 /// strip. Mirrors the Android suite so the two clients stay behaviourally
-/// identical (same 200k absolute threshold, same copy).
+/// identical (same absolute threshold, same copy). Threshold raised
+/// 200k → 400k on 2026-09-03 (Dan: the banner fired too early).
 final class CompactContextBannerTests: XCTestCase {
     private func context(tokens: Int) -> SessionStatus.Context {
         SessionStatus.Context(tokens: tokens, window: 1_000_000, pct: tokens / 10_000)
@@ -15,11 +16,16 @@ final class CompactContextBannerTests: XCTestCase {
     }
 
     func test_shouldShow_exactlyAtThreshold_isFalse() {
-        XCTAssertFalse(CompactContextBanner.shouldShow(context(tokens: 200_000)))
+        XCTAssertFalse(CompactContextBanner.shouldShow(context(tokens: 400_000)))
     }
 
     func test_shouldShow_strictlyAboveThreshold_isTrue() {
-        XCTAssertTrue(CompactContextBanner.shouldShow(context(tokens: 200_001)))
+        XCTAssertTrue(CompactContextBanner.shouldShow(context(tokens: 400_001)))
+    }
+
+    func test_shouldShow_oldThreshold_noLongerShows() {
+        // 200k–400k used to fire the banner; it now stays quiet there.
+        XCTAssertFalse(CompactContextBanner.shouldShow(context(tokens: 265_400)))
     }
 
     func test_shouldShow_wellBelowThreshold_isFalse() {
