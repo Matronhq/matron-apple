@@ -24,7 +24,8 @@ public struct MarkdownText: View {
 
     /// - Parameters:
     ///   - theme: markdown theme. Defaults to `.matron`; chat messages pass
-    ///     `.matronMessage` for a slightly larger body size.
+    ///     `.matronMessage`, which renders at the same system body size
+    ///     (#823) but is kept as its own name for messages.
     ///   - lineSpacing: extra spacing between wrapped lines. Defaults to `0`;
     ///     chat messages pass a small value for more comfortable line height.
     ///   - cacheParsed: pass `false` for text that mutates between renders
@@ -126,20 +127,29 @@ public struct MarkdownText: View {
     }
 }
 
-/// Single source of truth for the chat-message text scale, relative to
-/// each platform's system body size. Consumed by BOTH message renderers —
-/// `Theme.matronMessage` (MarkdownUI, iOS + non-timeline Mac contexts) via
-/// `FontSize(.em(_:))`, and `MarkdownAttributed` (the Mac timeline's
-/// selectable NSTextView) via `baseFontSize` — so the two paths cannot
-/// drift apart in size.
+/// Per-platform scale factor. Used to share a single chat-message text
+/// scale between `Theme.matronMessage` and `MarkdownAttributed` — but
+/// `matronMessage`'s `.em` use was a no-op (MarkdownUI discards a relative
+/// `FontSize(.em)` set at a theme's root `.text` style; see #823), so as
+/// of 2026-09-14 chat bodies render at the plain system size on both
+/// platforms and `matronMessage` no longer reads this enum at all. The two
+/// branches now serve unrelated, independent consumers — don't assume
+/// they should track each other:
+///   - macOS: `MarkdownAttributed.baseFontSize`, the Mac chat timeline's
+///     own (real) NSTextView body size.
+///   - iOS: `ItemTypography.bodyScale`, the tracker-item reading
+///     surface's body size — a real, rendered ≈20pt that happens to
+///     reuse the multiplier iOS chat used to (wrongly) claim.
 enum MessageTextScale {
     #if os(macOS)
     /// ×1.10 ⇒ ≈14.3pt on macOS (13pt body). Walked down ~1pt from the
     /// cross-platform ×1.18 — the Mac read slightly oversized in daily
-    /// use (Dan, 2026-07-15).
+    /// use (Dan, 2026-07-15). Consumed by `MarkdownAttributed.baseFontSize`
+    /// (the Mac chat timeline).
     static let scale: CGFloat = 1.10
     #else
-    /// ×1.18 ⇒ ≈20pt on iOS (17pt body).
+    /// ×1.18 ⇒ ≈20pt on iOS (17pt body). Consumed by
+    /// `ItemTypography.bodyScale` for the item-thread reading surface.
     static let scale: CGFloat = 1.18
     #endif
 }
@@ -166,24 +176,28 @@ public extension Theme {
             UnderlineStyle(.single)
         }
 
-    /// Chat-message variant of `.matron`: same chrome, larger body text.
-    /// Scoped to messages so tool-call cards / other markdown keep the
-    /// base size. Pair with a small `lineSpacing` on `MarkdownText` for the
-    /// roomier line height.
+    /// Chat-message theme. Renders at the system body size on both
+    /// platforms (iOS 17pt; macOS non-timeline contexts 13pt) — identical
+    /// to `.matron`, kept as its own name because 8 call sites reference
+    /// it and may want to diverge from the base theme again later.
     ///
-    /// The multiplier applies to each platform's system body size (iOS
-    /// 17pt ≈ 20pt messages; macOS 13pt ≈ 15.3pt messages). The Mac size
-    /// walked up to ×1.34 (≈17.4pt) chasing matron-web parity during the
-    /// 2026-07 polish batch and read as oversized in daily use once the
-    /// selectable NSTextView renderer locked it in — walked back to the
-    /// pre-polish value. Change `MessageTextScale.scale`, not this theme:
-    /// it's the single source both renderers consume.
+    /// This used to set a `FontSize(.em(MessageTextScale.scale))` override
+    /// claiming ×1.18 (iOS, ≈20pt) / ×1.10 (macOS, ≈14.3pt) messages, but
+    /// MarkdownUI 2.x discards a relative `FontSize(.em)` set at a theme's
+    /// root `.text` style — `Markdown.body` applies `theme.text` outside
+    /// and then its own absolute `ScaledFontSizeModifier` inside, which
+    /// resets the relative scale to 1 (see `Theme.matronItem`'s doc for
+    /// the mechanism). So the multiplier was silently a no-op from the
+    /// day it was added: every `matronMessage` render was already plain
+    /// system size, on both platforms. Dan confirmed on 2026-09-14 that
+    /// iOS chat bodies should in fact stay at system size (#823), so this
+    /// removes the dead override rather than making it real.
+    ///
+    /// The Mac chat timeline does not use this theme (or MarkdownUI) at
+    /// all — it renders through `MarkdownAttributed`/`SelectableMessageText`
+    /// (an NSTextView), whose real, independent ≈14.3pt
+    /// (`MarkdownAttributed.baseFontSize`) is unaffected by this change.
     static let matronMessage: Theme = matron
-        .text {
-            FontFamily(.system(.default))
-            ForegroundColor(.primary)
-            FontSize(.em(MessageTextScale.scale))
-        }
 }
 
 /// Cross-platform pasteboard wrapper. Lives in DesignSystem so primitives compile

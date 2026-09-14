@@ -28,10 +28,11 @@ enum MarkdownAttributed {
 
     // MARK: - Sizing constants
 
-    /// Base body size: the 13pt macOS system body at the shared
-    /// `MessageTextScale.scale` (≈15.3pt) — the same constant
-    /// `Theme.matronMessage` uses, so this renderer and MarkdownUI's
-    /// cannot drift apart in size.
+    /// Base body size: the 13pt macOS system body at `MessageTextScale.scale`
+    /// (≈14.3pt). This is the Mac chat timeline's own, independent size —
+    /// `Theme.matronMessage` renders at the plain system body size instead
+    /// (its `.em` scale was a MarkdownUI no-op; see #823), so the two are
+    /// not required to match.
     static let baseFontSize: CGFloat = 13 * MessageTextScale.scale
 
     /// Space after a paragraph, in points — the visual gap MarkdownUI leaves
