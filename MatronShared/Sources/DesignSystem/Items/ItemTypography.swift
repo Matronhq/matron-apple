@@ -12,24 +12,34 @@ import MarkdownUI
 /// capped, centred column instead of stretching across the window.
 public enum ItemTypography {
     #if os(macOS)
-    /// ×1.25 ⇒ ≈16.3pt on macOS (13pt body). A step above
+    /// ×1.40 ⇒ ≈18.2pt on macOS (13pt body). Well above
     /// `MessageTextScale.scale` (×1.10 ≈ 14.3pt) — the chat scale was
     /// walked down for a stream of short turns; a thread of paragraphs
-    /// wants the bigger face.
-    static let bodyScale: CGFloat = 1.25
+    /// wants a reading face. ×1.25 (≈16.3pt) was tried first and still
+    /// read as small in the Decisions column (Dan, 2026-09-14).
+    static let bodyScale: CGFloat = 1.40
     /// Extra leading between wrapped lines, on top of the font's own.
-    public static let lineSpacing: CGFloat = 4
+    public static let lineSpacing: CGFloat = 5
+    /// The item title, a step above the body: 22pt semibold on the Mac.
+    public static let titleFont: Font = .title.weight(.semibold)
+    /// Author / date captions on a card — 12pt/11pt, so they don't read
+    /// as footnotes beside an 18pt body.
+    public static let captionFont: Font = .callout
+    public static let captionDetailFont: Font = .subheadline
     #else
     /// iOS/iPad messages already render at ≈20pt (`MessageTextScale`);
     /// another step would be oversized, so the item body matches them.
     static let bodyScale: CGFloat = MessageTextScale.scale
     public static let lineSpacing: CGFloat = 3
+    public static let titleFont: Font = .title2.weight(.semibold)
+    public static let captionFont: Font = .caption
+    public static let captionDetailFont: Font = .caption2
     #endif
 
     /// Gap after each markdown paragraph inside a body — a real paragraph
     /// break, not just a wrapped line, so multi-paragraph items read as
     /// prose rather than a wall.
-    static let paragraphSpacing: CGFloat = 12
+    static let paragraphSpacing: CGFloat = 14
 
     /// Maximum width of the thread column. At ≈16pt this is roughly
     /// 70–75 characters per line (the classic 65–75 measure); wider than

@@ -280,7 +280,7 @@ public struct ItemDetailView: View {
                     .padding(.horizontal, 8).padding(.vertical, 3)
                     .background((item.needsUser ? Color.orange : Color.secondary).opacity(0.18), in: Capsule())
             }
-            Text(item.title).font(.title2.weight(.semibold)).textSelection(.enabled)
+            Text(item.title).font(ItemTypography.titleFont).textSelection(.enabled)
             if let originTitle = model.originTitle {
                 Button { onOpenConversation(item.originConvoID) } label: {
                     Label(originTitle, systemImage: "bubble.left.and.bubble.right").font(.caption)
@@ -312,8 +312,8 @@ public struct ItemDetailView: View {
     /// "You · 5 min ago" / "Agent · 3 Sept" above a card's body.
     private func authorCaption(_ author: ItemAuthor, date: Date) -> some View {
         HStack(spacing: 4) {
-            Text(author == .user ? "You" : "Agent").font(.caption.weight(.semibold))
-            Text("· \(relativeDate(date))").font(.caption2).foregroundStyle(.tertiary)
+            Text(author == .user ? "You" : "Agent").font(ItemTypography.captionFont.weight(.semibold))
+            Text("· \(relativeDate(date))").font(ItemTypography.captionDetailFont).foregroundStyle(.tertiary)
         }
     }
 
@@ -426,7 +426,7 @@ public struct ItemDetailView: View {
     /// instead of forking a bespoke label.
     private func pendingView(_ p: PendingComment) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("You").font(.caption.weight(.semibold))
+            Text("You").font(ItemTypography.captionFont.weight(.semibold))
             if !p.body.isEmpty { Text(p.body).font(.system(size: bodySize)).lineSpacing(ItemTypography.lineSpacing) }
             if p.attachmentCount > 0 { Label("\(p.attachmentCount) attachment\(p.attachmentCount == 1 ? "" : "s")", systemImage: "paperclip").font(.caption) }
             SendStateIndicator(state: pendingState(p))
