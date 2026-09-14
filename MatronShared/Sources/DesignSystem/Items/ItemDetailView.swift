@@ -123,17 +123,23 @@ public struct ItemDetailView: View {
             #endif
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: ItemTypography.threadSpacing) {
                         header
                         if !item.labels.isEmpty || !item.links.isEmpty { meta }
-                        if !item.body.isEmpty { MarkdownText(item.body, theme: .matronMessage) }
-                        attachments(item.attachments)
+                        if !item.body.isEmpty || !item.attachments.isEmpty { bodyCard }
                         Divider()
                         ForEach(model.comments) { comment in commentView(comment) }
                         ForEach(model.pending) { p in pendingView(p) }
                         Color.clear.frame(height: 1).id(Self.bottomAnchorID)
                     }
+                    // A reading measure, not a chat column: the thread caps
+                    // at `ItemTypography.measure` and centres in whatever
+                    // width the host gives it (a dragged-wide Mac pane, the
+                    // narrow takeover, an iPad) instead of stretching every
+                    // line across the window (tracker #66).
+                    .frame(maxWidth: ItemTypography.measure, alignment: .leading)
                     .padding()
+                    .frame(maxWidth: .infinity)
                 }
                 .onItemThreadGeometryChange { geometry in
                     isAtBottom = geometry.atBottom
@@ -266,12 +272,40 @@ public struct ItemDetailView: View {
                     .padding(.horizontal, 8).padding(.vertical, 3)
                     .background((item.needsUser ? Color.orange : Color.secondary).opacity(0.18), in: Capsule())
             }
-            Text(item.title).font(.title3.weight(.semibold)).textSelection(.enabled)
+            Text(item.title).font(.title2.weight(.semibold)).textSelection(.enabled)
             if let originTitle = model.originTitle {
                 Button { onOpenConversation(item.originConvoID) } label: {
                     Label(originTitle, systemImage: "bubble.left.and.bubble.right").font(.caption)
                 }.buttonStyle(.plain).foregroundStyle(.secondary)
             }
+        }
+    }
+
+    /// The original post — body and item-level attachments — in the same
+    /// card as a comment, captioned with who filed it and when, so the
+    /// thread reads as one conversation instead of a bare body followed
+    /// by carded replies (tracker #72). Tinted like a comment from the
+    /// same author.
+    private var bodyCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            authorCaption(item.createdBy, date: item.createdAt)
+            if !item.body.isEmpty { itemBody(item.body) }
+            attachments(item.attachments)
+        }
+        .itemCard(mine: item.createdBy == .user)
+    }
+
+    /// A markdown body at the item reading scale (`Theme.matronItem`) with
+    /// the thread's leading — one call for the item body and every comment.
+    private func itemBody(_ markdown: String) -> some View {
+        MarkdownText(markdown, theme: .matronItem, lineSpacing: ItemTypography.lineSpacing)
+    }
+
+    /// "You · 5 min ago" / "Agent · 3 Sept" above a card's body.
+    private func authorCaption(_ author: ItemAuthor, date: Date) -> some View {
+        HStack(spacing: 4) {
+            Text(author == .user ? "You" : "Agent").font(.caption.weight(.semibold))
+            Text("· \(relativeDate(date))").font(.caption2).foregroundStyle(.tertiary)
         }
     }
 
@@ -326,17 +360,12 @@ public struct ItemDetailView: View {
                 if !c.body.isEmpty { Text(c.body).font(.caption).foregroundStyle(.secondary).italic() }
             }.frame(maxWidth: .infinity)
         } else {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 4) {
-                    Text(c.author == .user ? "You" : "Agent").font(.caption.weight(.semibold))
-                    Text("· \(relativeDate(c.createdAt))").font(.caption2).foregroundStyle(.tertiary)
-                }
-                if !c.body.isEmpty { MarkdownText(c.body, theme: .matronMessage) }
+            VStack(alignment: .leading, spacing: 6) {
+                authorCaption(c.author, date: c.createdAt)
+                if !c.body.isEmpty { itemBody(c.body) }
                 attachments(c.attachments)
             }
-            .padding(10)
-            .background(c.author == .user ? Color.matronBubbleMe : Color.matronBubbleBot, in: RoundedRectangle(cornerRadius: 10))
-            .shadow(color: .matronBubbleShadow, radius: 2, y: 1)
+            .itemCard(mine: c.author == .user)
         }
     }
 
@@ -388,15 +417,13 @@ public struct ItemDetailView: View {
     /// caption matches the chat timeline's own queued/failed treatment
     /// instead of forking a bespoke label.
     private func pendingView(_ p: PendingComment) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             Text("You").font(.caption.weight(.semibold))
-            if !p.body.isEmpty { Text(p.body) }
+            if !p.body.isEmpty { Text(p.body).font(ItemTypography.bodyFont).lineSpacing(ItemTypography.lineSpacing) }
             if p.attachmentCount > 0 { Label("\(p.attachmentCount) attachment\(p.attachmentCount == 1 ? "" : "s")", systemImage: "paperclip").font(.caption) }
             SendStateIndicator(state: pendingState(p))
         }
-        .padding(10)
-        .background(Color.matronBubbleMe, in: RoundedRectangle(cornerRadius: 10))
-        .shadow(color: .matronBubbleShadow, radius: 2, y: 1)
+        .itemCard(mine: true)
         .opacity(0.85)
     }
 
@@ -413,6 +440,16 @@ public struct ItemDetailView: View {
 }
 
 private extension View {
+    /// The thread's card chrome — the chat bubble surfaces on a rounded
+    /// rectangle with the bubble shadow — shared by the body card, the
+    /// comment cards and the pending rows so they read as one thread.
+    func itemCard(mine: Bool) -> some View {
+        self
+            .padding(ItemTypography.cardPadding)
+            .background(mine ? Color.matronBubbleMe : Color.matronBubbleBot, in: RoundedRectangle(cornerRadius: 10))
+            .shadow(color: .matronBubbleShadow, radius: 2, y: 1)
+    }
+
     /// Reports whether a `ScrollView`'s bottom is currently visible, via
     /// `onScrollGeometryChange` (iOS 18 / macOS 15 — same wave as
     /// `onUserScrollGesture`'s `onScrollPhaseChange`, see that file). The

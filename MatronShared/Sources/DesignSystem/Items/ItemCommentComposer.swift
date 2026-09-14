@@ -98,7 +98,12 @@ public struct ItemCommentComposer: View {
             }
         }
         .disabled(isBusy)
+        // The field spans the thread's reading measure (its accessory
+        // gutters sit outside it) and centres with the column above, so
+        // the reply box lines up under the text it answers (tracker #66).
+        .frame(maxWidth: ItemTypography.measure + 2 * (Self.trailingAccessoryWidth + 4))
         .padding()
+        .frame(maxWidth: .infinity)
         // Pull the row down to hide the keyboard (iOS; inert on the Mac).
         .dragDownDismissesKeyboard()
     }
