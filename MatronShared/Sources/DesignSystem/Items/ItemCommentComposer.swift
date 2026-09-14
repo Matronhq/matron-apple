@@ -98,10 +98,14 @@ public struct ItemCommentComposer: View {
             }
         }
         .disabled(isBusy)
-        // The field spans the thread's reading measure (its accessory
-        // gutters sit outside it) and centres with the column above, so
-        // the reply box lines up under the text it answers (tracker #66).
-        .frame(maxWidth: ItemTypography.measure + 2 * (Self.trailingAccessoryWidth + 4))
+        // The row caps at the thread's reading measure and centres with
+        // the column above, so the accessory buttons sit on the text's
+        // edges and the field is inset by their gutters — the same
+        // relationship at every host width, narrow pane or wide window
+        // (tracker #66; Bugbot: capping the row wider than the column
+        // left a band of widths where the column was centred but the
+        // row still filled the host).
+        .frame(maxWidth: ItemTypography.measure)
         .padding()
         .frame(maxWidth: .infinity)
         // Pull the row down to hide the keyboard (iOS; inert on the Mac).

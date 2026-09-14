@@ -341,7 +341,7 @@ public struct ItemDetailView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Button { onOpenAttachment(a) } label: { Label("Voice note", systemImage: "waveform") }.buttonStyle(.plain)
                     if let transcript = a.transcript, !transcript.isEmpty {
-                        Text(transcript).font(.subheadline).foregroundStyle(.secondary)
+                        Text(transcript).font(ItemTypography.bodyFont).lineSpacing(ItemTypography.lineSpacing).foregroundStyle(.secondary)
                     } else {
                         Text("Transcribing…").font(.subheadline).foregroundStyle(.tertiary).italic()
                     }
