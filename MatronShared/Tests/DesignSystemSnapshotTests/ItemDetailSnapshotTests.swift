@@ -48,4 +48,27 @@ final class ItemDetailSnapshotTests: XCTestCase {
             .frame(width: 380, height: 520)
         assertVariants(of: view, named: "ItemDetail_closedDecision")
     }
+
+    /// A wide host (a dragged-out Mac pane, or the narrow-takeover on a big
+    /// window) must not stretch the thread across the window: the column
+    /// caps at `ItemTypography.measure` and centres, and the composer row
+    /// caps to the same width so its accessory buttons sit on the column's
+    /// text edges with the field inset between them (tracker #66).
+    func testWideHostCapsAndCentresTheColumn() {
+        let item = TrackerItem(id: "it_3", num: 28, kind: .question, awaiting: .user, title: "bev re-pin prunes editor/node_modules — patch-package then fails",
+                               body: "The re-pin step runs `npm ci` in `editor/`, which prunes `node_modules` before `patch-package` has applied the `@cantoo/pdf-lib` patch. The next build then fails on the unpatched module.\n\nTwo options: run `patch-package` as a `postinstall` hook, or move the patch into a fork. I recommend the hook — it is one line in `package.json` and matches how the web app does it.",
+                               originConvoID: "c1", createdBy: .agent,
+                               createdAt: .init(timeIntervalSince1970: 1_770_000_000), updatedAt: .init(timeIntervalSince1970: 1_770_000_000), commentCount: 1)
+        let comments = [
+            TrackerComment(id: "c1", itemID: "it_3", author: .user, body: "Hook is fine.", createdAt: .init(timeIntervalSince1970: 1_770_000_100)),
+        ]
+        let model = ItemDetailView.Model(item: item, comments: comments, pending: [], originTitle: "bev walkthrough",
+                                         availableResolutions: [.answered], isBusy: false)
+        let view = ItemDetailView(model: model, draft: .constant(""), image: { _ in nil },
+                                  onOpenAttachment: { _ in }, onOpenLink: { _ in }, onOpenConversation: { _ in },
+                                  onSubmit: {}, onAttach: {}, onVoiceNote: {}, onClose: { _ in }, onReopen: {},
+                                  now: Date(timeIntervalSince1970: 1_770_000_600))
+            .frame(width: 900, height: 560)
+        assertVariants(of: view, named: "ItemDetail_wide")
+    }
 }
