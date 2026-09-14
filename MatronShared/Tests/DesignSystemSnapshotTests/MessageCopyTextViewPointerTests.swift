@@ -43,6 +43,15 @@ final class MessageCopyTextViewPointerTests: XCTestCase {
         XCTAssertEqual(tv.characterIndex(atWindowPoint: NSPoint(x: x, y: frame.minY - 6)), tv.storageLength)
     }
 
+    /// The within-message drag uses the same clamped lookup: a pointer a few
+    /// points above the first line (inside the escalation slop) is the start.
+    func test_viewPointAboveTheTextResolvesToStart() {
+        guard let (tv, _) = hostedTextView() else { return XCTFail("no text view") }
+        XCTAssertEqual(tv.characterIndex(atViewPoint: NSPoint(x: 40, y: -3)), 0)
+        XCTAssertLessThan(tv.characterIndex(atViewPoint: NSPoint(x: 40, y: 3)), 20)
+        XCTAssertEqual(tv.characterIndex(atViewPoint: NSPoint(x: 40, y: tv.bounds.maxY + 3)), tv.storageLength)
+    }
+
     /// A highlight change marks every descendant view dirty (the TextKit 2
     /// text is drawn two levels down), not just the text view's own layer.
     func test_highlightChangeDirtiesEveryDescendantView() {

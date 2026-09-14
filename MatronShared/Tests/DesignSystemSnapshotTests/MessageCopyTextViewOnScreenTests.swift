@@ -28,7 +28,14 @@ final class MessageCopyTextViewOnScreenTests: XCTestCase {
             return nil
         }
         guard let tv = find(host) else { return XCTFail("no text view") }
-        func bluePixels() throws -> Int {
+        // The highlight colour is the user's accent-dependent selection
+        // colour, resolved in this window's appearance — never assume blue.
+        var expected = NSColor.selectedTextBackgroundColor
+        window.effectiveAppearance.performAsCurrentDrawingAppearance {
+            expected = NSColor.selectedTextBackgroundColor.usingColorSpace(.sRGB) ?? expected
+        }
+        let target = (r: expected.redComponent * 255, g: expected.greenComponent * 255, b: expected.blueComponent * 255)
+        func highlightPixels() throws -> Int {
             spin()
             guard let img = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(window.windowNumber), [.boundsIgnoreFraming, .bestResolution]),
                   img.width > 0, let data = img.dataProvider?.data, let ptr = CFDataGetBytePtr(data) else {
@@ -37,21 +44,21 @@ final class MessageCopyTextViewOnScreenTests: XCTestCase {
             var n = 0
             for y in 0..<img.height { for x in 0..<img.width {
                 let o = y * img.bytesPerRow + x * 4
-                let b = ptr[o], g = ptr[o + 1], r = ptr[o + 2] // BGRA
-                if b > 215, g > 180, g < 240, r < 215 { n += 1 }
+                let b = CGFloat(ptr[o]), g = CGFloat(ptr[o + 1]), r = CGFloat(ptr[o + 2]) // BGRA
+                if abs(r - target.r) < 24, abs(g - target.g) < 24, abs(b - target.b) < 24 { n += 1 }
             } }
             return n
         }
-        let before = try bluePixels()
+        let before = try highlightPixels()
         tv.setCrossSelection(NSRange(location: 4, length: 60))
-        let sixty = try bluePixels()
+        let sixty = try highlightPixels()
         XCTAssertGreaterThan(sixty, before + 500, "highlight did not appear on screen")
         tv.setCrossSelection(NSRange(location: 4, length: 10))
-        let ten = try bluePixels()
+        let ten = try highlightPixels()
         XCTAssertLessThan(ten, sixty / 2, "shrunk highlight did not repaint on screen")
         XCTAssertGreaterThan(ten, before)
         tv.setCrossSelection(nil)
-        let cleared = try bluePixels()
+        let cleared = try highlightPixels()
         XCTAssertLessThan(cleared, before + 50, "cleared highlight stayed on screen")
     }
 }

@@ -182,15 +182,20 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
     }
 
     func characterIndex(atWindowPoint point: NSPoint) -> Int {
-        let local = convert(point, from: nil)
-        // TextKit 2's `characterIndexForInsertion` maps a point ABOVE the
-        // first line to the END of the document (measured: y = -6 → length),
-        // the same answer as a point below the last line. A drag resolves
-        // its head by nearest row while the pointer is still in the gap
-        // above that row, so without this clamp the span painted there ran
-        // the wrong way (press…end instead of start…press on an upward drag).
-        if local.y < 0 { return 0 }
-        return characterIndexForInsertion(at: local)
+        characterIndex(atViewPoint: convert(point, from: nil))
+    }
+
+    /// `characterIndexForInsertion` with TextKit 2's top-edge quirk removed:
+    /// it maps a point ABOVE the first line to the END of the document
+    /// (measured: y = -6 → length), the same answer as a point below the last
+    /// line. Every pointer→index lookup goes through here — the cross-message
+    /// head (resolved by nearest row while the pointer is still in the gap
+    /// above that row, where the span then ran the wrong way) and the
+    /// within-message drag (a pointer a few points above the first line, inside
+    /// the escalation slop, jumped the selection to the rest of the message).
+    func characterIndex(atViewPoint point: NSPoint) -> Int {
+        if point.y < 0 { return 0 }
+        return characterIndexForInsertion(at: point)
     }
 
     func setCrossSelection(_ range: NSRange?) {
@@ -299,7 +304,7 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
     /// tail of `mouseDown` closes the sequence exactly once.
     private func extendSelection(fromAnchor anchorIndex: Int, toViewPoint point: NSPoint) {
         let anchor = min(anchorIndex, storageLength)
-        let index = characterIndexForInsertion(at: point)
+        let index = characterIndex(atViewPoint: point)
         let range = NSRange(location: min(anchor, index), length: abs(index - anchor))
         setSelectedRange(range, affinity: index < anchor ? .upstream : .downstream, stillSelecting: true)
     }
