@@ -39,13 +39,13 @@ final class ItemTypographyRenderTests: XCTestCase {
         XCTAssertGreaterThan(base, 0)
         // The same face through the same MarkdownUI path scales its ink
         // width with the point size, so `item / base` should be the body
-        // scale, give or take a few percent of tracking and rounding. (A
-        // plain `Text` at the same point size is NOT a usable reference:
-        // SF's per-size tracking makes it a few percent narrower.) A
-        // silently-ignored scale would leave `item` equal to `base`.
+        // scale. SF's per-size tracking moves that ratio by a few percent
+        // and differs between OS versions (a 1.25 scale measured 1.26 on a
+        // macOS 26 desktop and 1.20 on the CI runner), so allow ±10%: a
+        // silently-ignored scale (ratio 1.0) and a double-applied one
+        // (ratio 1.56) both stay well outside the band.
         let expected = base * ItemTypography.bodyScale
-        XCTAssertEqual(item, expected, accuracy: base * 0.05, "item body \(item)pt wide vs expected \(expected)pt (base \(base)pt × \(ItemTypography.bodyScale))")
-        XCTAssertGreaterThan(item, base * 1.1, "item body did not render above the base size")
+        XCTAssertEqual(item, expected, accuracy: base * ItemTypography.bodyScale * 0.10, "item body \(item)pt wide vs expected \(expected)pt (base \(base)pt × \(ItemTypography.bodyScale))")
     }
 
     func testItemBodyIsLargerThanTheMacChatTimeline() {
