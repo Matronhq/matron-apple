@@ -12,11 +12,23 @@ final class SessionTagTests: XCTestCase {
         XCTAssertEqual(title, "css token migration")
     }
 
+    func testSplitTitlePeelsAThreeCharacterShort() {
+        // The bridge's newer short is three characters; two-character
+        // titles already published never rewrite, so both must parse.
+        let (short, title) = SessionTag.splitTitle("[b5f] css token migration")
+        XCTAssertEqual(short, "b5f")
+        XCTAssertEqual(title, "css token migration")
+
+        let (roomShort, roomTitle) = SessionTag.splitTitle("↔️ [ab1] mac ↔ dev-z — ci triage")
+        XCTAssertEqual(roomShort, "ab1")
+        XCTAssertEqual(roomTitle, "↔️ mac ↔ dev-z — ci triage")
+    }
+
     func testSplitTitleLeavesUnprefixedTitlesAlone() {
         for raw in [
             "css token migration",         // no prefix at all
             "[b5]no space after bracket",
-            "[b5f] three chars is not a short",
+            "[b5f0] four chars is not a short",
             "[b] one char is not a short",
             "[b ] spaces are not a short",
             "[b5] ",                       // nothing after the prefix
