@@ -313,6 +313,10 @@ struct MacChatView: View {
     /// toolbar button in `MacChatToolbar`.
     @State private var showMediaBrowser = false
 
+    /// Identifies THIS mounted chat column to the window's header — see
+    /// `MacChatToolbarProps.publisher`.
+    @State private var headerPublisher = UUID()
+
     /// Which mission this conversation belongs to (spec: Transcript and
     /// title). Derived locally from the mission cache — the snapshot never
     /// carries it — so it is nil until the first missions refresh, which is
@@ -1166,6 +1170,7 @@ struct MacChatView: View {
         // — see `MacChatToolbar` for why. This column only publishes it.
         .preference(key: MacChatToolbarPreference.self, value: MacChatToolbarProps(
             roomID: viewModel.roomID,
+            publisher: headerPublisher,
             title: chatTitle,
             boxName: boxName,
             styledTitle: styledTitle,

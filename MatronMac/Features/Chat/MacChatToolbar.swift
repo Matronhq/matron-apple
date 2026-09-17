@@ -382,8 +382,13 @@ struct MacChatToolbar {
 ///
 /// Equality covers what is DRAWN. The actions are closures over the
 /// publishing view's `@State`, which outlive any one body evaluation, so
-/// they are deliberately left out — but `roomID` is in, so a switch always
-/// republishes and the header never keeps acting on the room that left.
+/// they are deliberately left out — but `roomID` and `publisher` are in, so a
+/// switch always republishes and the header never keeps acting on the room
+/// that left. `publisher` is the publishing view INSTANCE: the same room can
+/// be remounted with nothing drawn differently (Conversations ↔ Coordinator
+/// on the coordinator's own conversation swaps sibling branches in one
+/// transaction), and without it the header would keep the dead instance's
+/// bindings.
 struct MacChatToolbarProps: Equatable {
     struct Actions {
         let onOpenSubChat: (String) -> Void
@@ -394,6 +399,8 @@ struct MacChatToolbarProps: Equatable {
     }
 
     let roomID: String
+    /// One per mounted chat column — a `@State` UUID in the publisher.
+    let publisher: UUID
     let title: String
     let boxName: String?
     let styledTitle: Text?
@@ -407,6 +414,7 @@ struct MacChatToolbarProps: Equatable {
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.roomID == rhs.roomID
+            && lhs.publisher == rhs.publisher
             && lhs.title == rhs.title
             && lhs.boxName == rhs.boxName
             && lhs.styledTitle == rhs.styledTitle

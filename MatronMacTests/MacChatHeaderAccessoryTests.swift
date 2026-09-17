@@ -28,10 +28,12 @@ private final class HarnessModel: ObservableObject {
     @Published var showsSplitView = true
 }
 
+private let harnessPublisher = UUID()
+
 @MainActor
-private func makeProps(roomID: String, strip: SubChatStripViewModel) -> MacChatToolbarProps {
+private func makeProps(roomID: String, strip: SubChatStripViewModel, publisher: UUID = harnessPublisher) -> MacChatToolbarProps {
     MacChatToolbarProps(
-        roomID: roomID, title: "Chat \(roomID)", boxName: nil, styledTitle: nil,
+        roomID: roomID, publisher: publisher, title: "Chat \(roomID)", boxName: nil, styledTitle: nil,
         accessibilityTitle: nil, status: nil, stripViewModel: strip, missionID: nil,
         needsYouCount: 0, itemsAvailable: true,
         actions: .init(onOpenSubChat: { _ in }, onCompact: {}, onOpenMission: { _ in },
@@ -113,6 +115,8 @@ final class MacChatHeaderAccessoryTests: XCTestCase {
                           "a switch must republish so the header stops acting on the room that left")
         let otherStrip = SubChatStripViewModel(chat: FakeChatForHeader(), parentConvoID: "p2")
         XCTAssertNotEqual(makeProps(roomID: "a", strip: strip), makeProps(roomID: "a", strip: otherStrip))
+        XCTAssertNotEqual(makeProps(roomID: "a", strip: strip), makeProps(roomID: "a", strip: strip, publisher: UUID()),
+                          "the same room remounted is a new publisher: its bindings replace the dead instance's")
     }
 
     func test_preferenceReduce_keepsTheFirstPublisher() {
