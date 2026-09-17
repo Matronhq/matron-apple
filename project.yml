@@ -355,6 +355,9 @@ targets:
       # and imports MatronSearch (SearchHit) + the shared SearchViewModel.
       - package: MatronShared
         product: MatronSearch
+      # MacPaneSplitMeasureTests reads the DEBUG row-measurement probe.
+      - package: MatronShared
+        product: MatronDesignSystem
       # Snapshot tests for Mac chrome (e.g. MacSearchViewSnapshotTests).
       # Pixel-equality is gated behind MATRON_SKIP_SNAPSHOT_TESTS=1 on CI to
       # dodge macOS / Xcode renderer drift; baselines remain useful locally.

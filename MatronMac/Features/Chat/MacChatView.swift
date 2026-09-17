@@ -462,6 +462,14 @@ struct MacChatView: View {
         }
     }
 
+    private static let chatColumnMinWidth: CGFloat = 420
+    private static let sidePaneMinWidth: CGFloat = 380
+
+    /// The chat column prefers whatever the side pane's minimum leaves over.
+    private static func chatColumnIdealWidth(in containerWidth: CGFloat) -> CGFloat {
+        max(chatColumnMinWidth, containerWidth - sidePaneMinWidth)
+    }
+
     var body: some View {
         GeometryReader { geo in
             if let childID = openSubChatID {
@@ -471,20 +479,8 @@ struct MacChatView: View {
                     // side (HSplitView gives the draggable divider).
                     HSplitView {
                         chatColumn
-                            .frame(minWidth: 420)
-                            // Pin the split's children to the container
-                            // height. `HSplitView` is NSSplitView-backed and
-                            // sizes itself from its children's IDEAL height,
-                            // not the proposal: a conversation switch mounts
-                            // a fresh column while the transcript is still
-                            // empty, the split adopts that short ideal
-                            // (~250 pt) and never regrows when the rows land
-                            // (item #76). `maxHeight: .infinity` was not
-                            // enough — a flex frame's ideal is still its
-                            // content's. `.top` keeps a short child (the
-                            // empty tasks pane) from centring in the frame.
-                            .frame(maxWidth: .infinity)
-                            .frame(height: geo.size.height, alignment: .top)
+                            .splitPaneFrame(minWidth: Self.chatColumnMinWidth,
+                                            idealWidth: Self.chatColumnIdealWidth(in: geo.size.width), height: geo.size.height)
                         MacSubChatPane(
                             viewModel: childVM, stripViewModel: parentStrip,
                             childID: childID, showsBackChevron: false,
@@ -499,8 +495,7 @@ struct MacChatView: View {
                         // (same pattern as MacChatListView's `.id(id)` on
                         // MacChatView).
                         .id(childID)
-                        .frame(minWidth: 380)
-                        .frame(height: geo.size.height, alignment: .top)  // see chatColumn above (item #76)
+                        .splitPaneFrame(minWidth: Self.sidePaneMinWidth, idealWidth: Self.sidePaneMinWidth, height: geo.size.height)
                     }
                 } else {
                     // Narrow: child takes over the detail area; a back
@@ -520,16 +515,14 @@ struct MacChatView: View {
                 if geo.size.width >= Self.sideBySideMinWidth {
                     HSplitView {
                         chatColumn
-                            .frame(minWidth: 420)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: geo.size.height, alignment: .top)  // see the sub-chat branch (item #76)
+                            .splitPaneFrame(minWidth: Self.chatColumnMinWidth,
+                                            idealWidth: Self.chatColumnIdealWidth(in: geo.size.width), height: geo.size.height)
                         MacItemsPane(
                             viewModel: itemsVM, session: session, state: itemsPaneState,
                             onOpenConversation: { onOpenConversation?($0) },
                             onClose: { showItemsPane = false }
                         )
-                        .frame(minWidth: 380)
-                        .frame(height: geo.size.height, alignment: .top)  // item #76
+                        .splitPaneFrame(minWidth: Self.sidePaneMinWidth, idealWidth: Self.sidePaneMinWidth, height: geo.size.height)
                     }
                 } else {
                     MacItemsPane(
@@ -1911,5 +1904,43 @@ struct DropHereOverlay: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Drop here to add attachments")
+    }
+}
+
+/// Sizes a child of the pane `HSplitView` without ever consulting its content.
+///
+/// `HSplitView` is NSSplitView-backed. Each pane gets its own hosting view,
+/// which asks the child for its minimum, ideal and maximum size on every
+/// layout pass: proposals of zero, unspecified and infinity. Any axis this
+/// frame leaves open is answered by the content, and for the chat column the
+/// content is the eager transcript, so every row is measured without a usable
+/// width. Two bugs came from that:
+///
+/// - Item #76: a conversation switch mounts the column while the transcript
+///   is empty. The split adopted that short ideal height (~250 pt) and never
+///   regrew. A flexible `maxHeight` does not help: a flex frame's ideal is
+///   still its content's.
+/// - Item #1264: with the pane open, every transcript change re-measured the
+///   whole transcript width-less. Live samples showed 64–72% of multi-second
+///   main-thread stalls in exactly that path.
+///
+/// Fixing width and height in ONE frame lets SwiftUI answer all three
+/// proposals from the frame itself. Split across two `.frame` calls the inner
+/// one still needs the child for its open axis. `.top` keeps a short child
+/// (the empty tasks pane) from centring vertically.
+private struct SplitPaneFrame: ViewModifier {
+    let minWidth: CGFloat
+    let idealWidth: CGFloat
+    let height: CGFloat
+
+    func body(content: Content) -> some View {
+        content.frame(minWidth: minWidth, idealWidth: idealWidth, maxWidth: .infinity,
+                      minHeight: height, idealHeight: height, maxHeight: height, alignment: .top)
+    }
+}
+
+private extension View {
+    func splitPaneFrame(minWidth: CGFloat, idealWidth: CGFloat, height: CGFloat) -> some View {
+        modifier(SplitPaneFrame(minWidth: minWidth, idealWidth: idealWidth, height: height))
     }
 }
