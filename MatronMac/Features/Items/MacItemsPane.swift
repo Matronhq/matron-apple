@@ -302,7 +302,7 @@ struct MacItemsPane: View {
             // 2: no per-conversation round trip, `ItemsListView` already
             // falls back to "Another chat" for a miss).
             guard let deps else { return }
-            state.originTitles = (try? deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
+            state.originTitles = (try? await deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
         }
         .alert("Tracker", isPresented: Binding(get: { viewModel.error != nil }, set: { if !$0 { viewModel.error = nil } })) {
             Button("OK") { viewModel.error = nil }

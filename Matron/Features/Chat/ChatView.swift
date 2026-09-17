@@ -1040,7 +1040,7 @@ struct ChatView: View {
             // enough to re-run on every scope switch.
             .task(id: itemsVM.scope) {
                 guard let deps, let session else { return }
-                originTitles = (try? deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
+                originTitles = (try? await deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
             }
             .sheet(isPresented: $showCreateItem) {
                 NewItemSheet { kind, title, itemBody in

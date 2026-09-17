@@ -449,7 +449,7 @@ struct MacChatListView: View {
             }
             .task(id: decisionsVM?.awaitingYou.map(\.originConvoID) ?? []) {
                 guard let deps, let session else { return }
-                decisionsOriginTitles = (try? deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
+                decisionsOriginTitles = (try? await deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
             }
             // The Missions VM lives for the session too, same reasoning as
             // decisionsVM above — one instance, feeding both the list and

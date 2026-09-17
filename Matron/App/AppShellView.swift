@@ -193,7 +193,7 @@ struct AppShellView: View {
                                onOpenItem: { nav.pushDecision($0) })
             }
             .task(id: decisionsVM.awaitingYou.map(\.originConvoID)) {
-                originTitles = (try? deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
+                originTitles = (try? await deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
             }
             // Refresh failures surface through the VM's `error` — the same
             // alert the tracker uses (spec §7).
