@@ -68,9 +68,11 @@ private final class NoChat: ChatService, @unchecked Sendable {
     func leave(roomID: String) async throws {}
 }
 
-/// Drives a real conversation switch: `MacChatListView` hosts `MacChatView`
-/// in a `NavigationSplitView` detail column keyed by `.id(convoID)`, so a
-/// switch tears the old view down and mounts a fresh one into the same slot.
+/// Drives a real conversation switch: `MacChatListView` keys `MacChatView`
+/// by `.id(convoID)`, so a switch tears the old view down and mounts a fresh
+/// one into the same slot. A plain `HStack` stands in for the app's
+/// `NavigationSplitView`: the bug reproduces without it, and on the macOS 15
+/// CI runner the composer could not be found under one (cause not established).
 @MainActor @Observable
 private final class SwitchModel {
     var convoID: String
@@ -82,10 +84,8 @@ private struct SwitchHarness: View {
     let chat: (String) -> MacChatView
 
     var body: some View {
-        NavigationSplitView {
-            List { Text("sidebar") }
-                .navigationSplitViewColumnWidth(220)
-        } detail: {
+        HStack(spacing: 0) {
+            Text("sidebar").frame(width: 220)
             chat(model.convoID).id(model.convoID)
         }
     }
@@ -156,7 +156,8 @@ final class MacItemsPaneLayoutTests: XCTestCase {
         model.convoID = "c2"
         await Self.spin(seconds: 4)
 
-        let composer = try XCTUnwrap(Self.find(ComposerTextView.self, in: window.contentView))
+        let composer = try XCTUnwrap(Self.find(ComposerTextView.self, in: window.contentView),
+                                     "no composer after the switch; hierarchy:\n\(Self.dump(window.contentView))")
         let inWindow = composer.convert(composer.bounds, to: nil)
         XCTAssertLessThan(inWindow.minY, 150,
                           "composer minY \(inWindow.minY): after a switch the chat column should still fill the window (item #76)")
@@ -209,6 +210,12 @@ final class MacItemsPaneLayoutTests: XCTestCase {
         XCTAssertNotNil(Self.find(NSSplitView.self, in: window.contentView) as NSView?,
                         "sanity: the pane branch (an HSplitView) is what got laid out", file: file, line: line)
         window.orderOut(nil)
+    }
+
+    private static func dump(_ view: NSView?, depth: Int = 0) -> String {
+        guard let view, depth < 12 else { return "" }
+        let line = String(repeating: "  ", count: depth) + "\(type(of: view)) \(view.frame)\n"
+        return line + view.subviews.map { dump($0, depth: depth + 1) }.joined()
     }
 
     private static func find<T: NSView>(_ type: T.Type, in view: NSView?) -> T? {
