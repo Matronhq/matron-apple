@@ -472,12 +472,19 @@ struct MacChatView: View {
                     HSplitView {
                         chatColumn
                             .frame(minWidth: 420)
-                            // Fill the split's height explicitly. `HSplitView`
-                            // is NSSplitView-backed; a child left to its
-                            // ideal height can stay bunched at the top after
-                            // a conversation switch mounts a fresh view into
-                            // an already-open split (item #76).
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            // Pin the split's children to the container
+                            // height. `HSplitView` is NSSplitView-backed and
+                            // sizes itself from its children's IDEAL height,
+                            // not the proposal: a conversation switch mounts
+                            // a fresh column while the transcript is still
+                            // empty, the split adopts that short ideal
+                            // (~250 pt) and never regrows when the rows land
+                            // (item #76). `maxHeight: .infinity` was not
+                            // enough — a flex frame's ideal is still its
+                            // content's. `.top` keeps a short child (the
+                            // empty tasks pane) from centring in the frame.
+                            .frame(maxWidth: .infinity)
+                            .frame(height: geo.size.height, alignment: .top)
                         MacSubChatPane(
                             viewModel: childVM, stripViewModel: parentStrip,
                             childID: childID, showsBackChevron: false,
@@ -493,6 +500,7 @@ struct MacChatView: View {
                         // MacChatView).
                         .id(childID)
                         .frame(minWidth: 380)
+                        .frame(height: geo.size.height, alignment: .top)  // see chatColumn above (item #76)
                     }
                 } else {
                     // Narrow: child takes over the detail area; a back
@@ -513,13 +521,15 @@ struct MacChatView: View {
                     HSplitView {
                         chatColumn
                             .frame(minWidth: 420)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)  // see the sub-chat branch (item #76)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: geo.size.height, alignment: .top)  // see the sub-chat branch (item #76)
                         MacItemsPane(
                             viewModel: itemsVM, session: session, state: itemsPaneState,
                             onOpenConversation: { onOpenConversation?($0) },
                             onClose: { showItemsPane = false }
                         )
                         .frame(minWidth: 380)
+                        .frame(height: geo.size.height, alignment: .top)  // item #76
                     }
                 } else {
                     MacItemsPane(
