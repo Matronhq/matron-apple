@@ -298,11 +298,21 @@ struct MacItemsPane: View {
         }
         .task(id: viewModel.scope) {
             // Labels for the "All" scope rows come from the local store's
-            // conversation list — one cheap read per scope switch (ruling
-            // 2: no per-conversation round trip, `ItemsListView` already
-            // falls back to "Another chat" for a miss).
-            guard let deps else { return }
-            state.originTitles = (try? await deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
+            // conversation list (ruling 2: no per-conversation round trip,
+            // `ItemsListView` already falls back to "Another chat" for a
+            // miss). ONLY the "All" scope draws them, so the conversation
+            // scope — what the pane opens in, i.e. every conversation switch
+            // with the pane open — skips the scan: it is a full pass over
+            // every conversation, and GRDB's async read does not honour
+            // cancellation, so fast switching would otherwise queue one
+            // orphaned scan per switch on the serial database queue ahead of
+            // the next room's timeline fetch (Bugbot, PR #223).
+            guard let deps, viewModel.scope == .all else { return }
+            let labels = (try? await deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
+            // A cancelled task's read still completes; it must not overwrite
+            // what its successor wrote (CodeRabbit, PR #223).
+            guard !Task.isCancelled else { return }
+            state.originTitles = labels
         }
         .alert("Tracker", isPresented: Binding(get: { viewModel.error != nil }, set: { if !$0 { viewModel.error = nil } })) {
             Button("OK") { viewModel.error = nil }

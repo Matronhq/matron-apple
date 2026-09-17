@@ -449,7 +449,12 @@ struct MacChatListView: View {
             }
             .task(id: decisionsVM?.awaitingYou.map(\.originConvoID) ?? []) {
                 guard let deps, let session else { return }
-                decisionsOriginTitles = (try? await deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
+                let labels = (try? await deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
+                // A cancelled task's read still completes (GRDB's async read
+                // does not honour cancellation); it must not overwrite what
+                // its successor wrote (CodeRabbit, PR #223).
+                guard !Task.isCancelled else { return }
+                decisionsOriginTitles = labels
             }
             // The Missions VM lives for the session too, same reasoning as
             // decisionsVM above — one instance, feeding both the list and
