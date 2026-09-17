@@ -8,8 +8,22 @@ import MatronModels
 import MatronViewModels
 
 private final class FakeChatForHoist: ChatService, @unchecked Sendable {
+    /// Set before `start()`; yielded after `childrenDelay` so the list lands
+    /// AFTER the toolbar's first render, the way a real room's does.
+    var lateChildren: [SubChatSummary] = []
+    var childrenDelay: TimeInterval = 0
+
     func children(of parentConvoID: String) -> AsyncStream<[SubChatSummary]> {
-        AsyncStream { $0.finish() }
+        let late = lateChildren
+        let delay = childrenDelay
+        return AsyncStream { continuation in
+            guard !late.isEmpty else { continuation.finish(); return }
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                continuation.yield(late)
+                continuation.finish()
+            }
+        }
     }
     func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error> {
         AsyncThrowingStream { $0.finish() }
@@ -100,6 +114,35 @@ final class MacChatToolbarHoistTests: XCTestCase {
         }
         XCTAssertFalse(before.isEmpty, "the harness must actually produce toolbar items")
         XCTAssertNotEqual(before, after, "inside the identity every switch rebuilds the item views — the cost the hoist removes")
+    }
+
+    /// The sub-chat list arrives after the room's first render and is not part
+    /// of the published props (the strip VM compares by identity), so the
+    /// hoisted toolbar has to pick the change up through `@Observable`
+    /// tracking of `children` in its own body (Bugbot, PR #224).
+    func test_lateSubChatList_addsTheSwitcherItem_whenHoisted() async throws {
+        let chat = FakeChatForHoist()
+        chat.lateChildren = [SubChatSummary(id: "c1", title: "Child", isRunning: true)]
+        chat.childrenDelay = 1
+        let model = RoomModel()
+        let strip = SubChatStripViewModel(chat: chat, parentConvoID: "p1")
+        let host = NSHostingController(rootView: HoistedHarness(model: model, strip: strip))
+        host.sceneBridgingOptions = [.toolbars]
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 500),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.contentViewController = host
+        window.orderFront(nil)
+        defer { window.close() }
+
+        await Self.spin(seconds: 0.5)
+        let before = window.toolbar?.items.count ?? 0
+        XCTAssertGreaterThan(before, 0, "the harness must actually produce toolbar items")
+        let task = strip.start()
+        await task.value
+        XCTAssertEqual(strip.children.count, 1)
+        await Self.spin(seconds: 1)
+        XCTAssertEqual(window.toolbar?.items.count ?? 0, before + 1,
+                       "the switcher item must appear once the child list lands, with no other prop changing")
     }
 
     private func itemViewsAcrossSwitch(
