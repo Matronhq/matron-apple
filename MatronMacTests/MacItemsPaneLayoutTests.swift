@@ -71,8 +71,10 @@ private final class NoChat: ChatService, @unchecked Sendable {
 /// Drives a real conversation switch: `MacChatListView` keys `MacChatView`
 /// by `.id(convoID)`, so a switch tears the old view down and mounts a fresh
 /// one into the same slot. A plain `HStack` stands in for the app's
-/// `NavigationSplitView`: the bug reproduces without it, and on the macOS 15
-/// CI runner the composer could not be found under one (cause not established).
+/// `NavigationSplitView`: the bug reproduces without it. The sidebar is narrow
+/// and the window 1000 pt wide because the CI runner's screen clamps windows to
+/// 1024 pt: a wider sidebar left the chat area under `sideBySideMinWidth`, so
+/// the pane took over the detail area and no composer was mounted.
 @MainActor @Observable
 private final class SwitchModel {
     var convoID: String
@@ -85,7 +87,7 @@ private struct SwitchHarness: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            Text("sidebar").frame(width: 220)
+            Text("side").frame(width: 100)
             chat(model.convoID).id(model.convoID)
         }
     }
@@ -146,21 +148,24 @@ final class MacItemsPaneLayoutTests: XCTestCase {
         .environment(\.currentSession, session)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1300, height: 700),
+            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
             styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.contentViewController = NSHostingController(rootView: root)
-        window.setContentSize(NSSize(width: 1300, height: 700))
+        window.setContentSize(NSSize(width: 1000, height: 700))
         window.orderFront(nil)
         await Self.spin(seconds: 2)
 
         model.convoID = "c2"
         await Self.spin(seconds: 4)
 
-        let composer = try XCTUnwrap(Self.find(ComposerTextView.self, in: window.contentView),
-                                     "no composer after the switch; hierarchy:\n\(Self.dump(window.contentView))")
-        let inWindow = composer.convert(composer.bounds, to: nil)
-        XCTAssertLessThan(inWindow.minY, 150,
-                          "composer minY \(inWindow.minY): after a switch the chat column should still fill the window (item #76)")
+        // Assert on the split itself: bunched, it is ~250 pt tall in a 700 pt
+        // window. Where the short split lands (top or bottom) depends on the
+        // host, so the composer's position is not a reliable signal here.
+        let split = try XCTUnwrap(Self.find(NSSplitView.self, in: window.contentView),
+                                  "the chat area must be wide enough for the side-by-side split; hierarchy:\n\(Self.dump(window.contentView))")
+        XCTAssertGreaterThan(split.frame.height, 600,
+                             "split height \(split.frame.height): after a switch the pane split should still fill the 700 pt window (item #76)")
+        XCTAssertNotNil(Self.find(ComposerTextView.self, in: split), "the composer must be mounted beside the pane")
         window.orderOut(nil)
     }
 
