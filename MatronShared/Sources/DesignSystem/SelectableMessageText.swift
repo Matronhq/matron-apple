@@ -595,6 +595,17 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
     }
 }
 
+#if DEBUG
+/// Test seam (item #1264). Counts row measurements that arrive WITHOUT a
+/// usable width: unspecified, zero or infinite. They come from a container
+/// probing the transcript's minimum, ideal or maximum size rather than laying
+/// it out, and an `HSplitView` pane's hosting view did that for every row on
+/// every transcript change. Main-thread only.
+public enum SelectableMessageTextProbe {
+    nonisolated(unsafe) public static var widthlessMeasurements = 0
+}
+#endif
+
 /// `NSViewRepresentable` wrapping the non-editable, selectable `NSTextView`.
 /// Internal (not `private`) so the link-click policy on its `Coordinator` is
 /// unit-testable without a rendered view.
@@ -693,6 +704,9 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
     /// short message's bubble hugs its text instead of spanning the pane.
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextView, context: Context) -> CGSize? {
         guard let width = proposal.width, width > 0, width.isFinite else {
+            #if DEBUG
+            SelectableMessageTextProbe.widthlessMeasurements += 1
+            #endif
             return nil
         }
         return rendered.size(width: width)
