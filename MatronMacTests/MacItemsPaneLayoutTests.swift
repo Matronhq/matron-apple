@@ -27,6 +27,33 @@ private final class ThreeRowTimeline: TimelineService, @unchecked Sendable {
     func markAsRead() async throws {}
 }
 
+/// A timeline whose rows arrive AFTER the view has mounted and laid out —
+/// what a real conversation switch looks like (the store read lands a beat
+/// after `MacChatListView` mounts the fresh `MacChatView`). The transcript
+/// is empty while the split first sizes itself.
+private final class LateRowsTimeline: TimelineService, @unchecked Sendable {
+    func items() -> AsyncThrowingStream<[TimelineItem], Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                continuation.yield((1...40).map {
+                    TimelineItem(id: "\($0)", sender: "agent:box",
+                                 timestamp: Date(timeIntervalSince1970: Double($0)),
+                                 kind: .text(body: "row \($0)\nsecond line\nthird line", formattedHTML: nil),
+                                 isOwn: false)
+                })
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+    func sendText(_ body: String, inReplyTo: String?) async throws {}
+    func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {}
+    func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
+    func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
+    func paginateBackward(requestSize: UInt16) async throws -> Bool { true }
+    func markAsRead() async throws {}
+}
+
 private final class NoMedia: MediaService, @unchecked Sendable {
     func image(for mxc: URL) async -> Data? { nil }
 }
@@ -39,6 +66,29 @@ private final class NoChat: ChatService, @unchecked Sendable {
     func forceSnapshot() async throws {}
     func mute(roomID: String) async throws {}
     func leave(roomID: String) async throws {}
+}
+
+/// Drives a real conversation switch: `MacChatListView` hosts `MacChatView`
+/// in a `NavigationSplitView` detail column keyed by `.id(convoID)`, so a
+/// switch tears the old view down and mounts a fresh one into the same slot.
+@MainActor @Observable
+private final class SwitchModel {
+    var convoID: String
+    init(convoID: String) { self.convoID = convoID }
+}
+
+private struct SwitchHarness: View {
+    let model: SwitchModel
+    let chat: (String) -> MacChatView
+
+    var body: some View {
+        NavigationSplitView {
+            List { Text("sidebar") }
+                .navigationSplitViewColumnWidth(220)
+        } detail: {
+            chat(model.convoID).id(model.convoID)
+        }
+    }
 }
 
 /// Item #76: with the tasks pane open, a freshly mounted chat (what a
@@ -63,7 +113,66 @@ final class MacItemsPaneLayoutTests: XCTestCase {
     }
 
     func test_chatColumnFillsWindowHeight_whenPaneIsOpenOnMount() async throws {
-        let timeline = ThreeRowTimeline()
+        try await assertComposerAtBottom(timeline: ThreeRowTimeline())
+    }
+
+    /// The reported shape, and the only one that reproduces (a plain mount
+    /// with late rows lays out fine): pane open, user switches conversation.
+    /// Reproduced 2026-09-17 with an instrumented build — the split is
+    /// NSSplitView-backed and takes its height from its children's IDEAL
+    /// height, not the proposal. The fresh column mounts with an empty
+    /// transcript, so that ideal is ~250 pt; the split adopts it and does
+    /// not regrow when the rows land.
+    func test_chatColumnFillsWindowHeight_afterConversationSwitch_withPaneOpen() async throws {
+        deps = AppDependencies()
+        let session = UserSession(userID: "@a:s", deviceID: "D",
+                                  homeserverURL: URL(string: "https://s")!, accessToken: "t")
+        let timelines: [String: TimelineService] = ["c1": ThreeRowTimeline(), "c2": LateRowsTimeline()]
+        var parts: [String: (ChatViewModel, ComposerViewModel, SubChatStripViewModel)] = [:]
+        for (id, timeline) in timelines {
+            parts[id] = (ChatViewModel(roomID: id, timeline: timeline, media: NoMedia()),
+                         ComposerViewModel(roomID: id, timeline: timeline, commands: []),
+                         SubChatStripViewModel(chat: NoChat(), parentConvoID: id))
+        }
+        let model = SwitchModel(convoID: "c1")
+        let root = SwitchHarness(model: model) { id in
+            let (chatVM, composerVM, stripVM) = parts[id]!
+            return MacChatView(
+                viewModel: chatVM, composerVM: composerVM, stripViewModel: stripVM,
+                subChatProvider: { _ in (chatVM, stripVM) },
+                itemsPaneOpen: .constant(true), chatTitle: "Chat \(id)")
+        }
+        .environment(\.appDependencies, deps)
+        .environment(\.currentSession, session)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1300, height: 700),
+            styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.contentViewController = NSHostingController(rootView: root)
+        window.setContentSize(NSSize(width: 1300, height: 700))
+        window.orderFront(nil)
+        await Self.spin(seconds: 2)
+
+        model.convoID = "c2"
+        await Self.spin(seconds: 4)
+
+        let composer = try XCTUnwrap(Self.find(ComposerTextView.self, in: window.contentView))
+        let inWindow = composer.convert(composer.bounds, to: nil)
+        XCTAssertLessThan(inWindow.minY, 150,
+                          "composer minY \(inWindow.minY): after a switch the chat column should still fill the window (item #76)")
+        window.orderOut(nil)
+    }
+
+    private static func spin(seconds: Double) async {
+        for _ in 0..<Int(seconds / 0.05) {
+            await Task.yield()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+    }
+
+    private func assertComposerAtBottom(
+        timeline: TimelineService, file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
         let chatVM = ChatViewModel(roomID: "c1", timeline: timeline, media: NoMedia())
         let composerVM = ComposerViewModel(roomID: "c1", timeline: timeline, commands: [])
         let stripVM = SubChatStripViewModel(chat: NoChat(), parentConvoID: "c1")
@@ -89,15 +198,16 @@ final class MacItemsPaneLayoutTests: XCTestCase {
         }
 
         let composer = try XCTUnwrap(Self.find(ComposerTextView.self, in: window.contentView),
-                                     "the composer must be mounted beside the pane")
+                                     "the composer must be mounted beside the pane", file: file, line: line)
         let inWindow = composer.convert(composer.bounds, to: nil)
         // AppKit y grows upward: a composer at the bottom of a 700pt
         // window has a small minY; a mid-window composer means the column
         // collapsed to its content height.
         XCTAssertLessThan(inWindow.minY, 150,
-                          "composer minY \(inWindow.minY): the chat column should fill the window (item #76)")
+                          "composer minY \(inWindow.minY): the chat column should fill the window (item #76)",
+                          file: file, line: line)
         XCTAssertNotNil(Self.find(NSSplitView.self, in: window.contentView) as NSView?,
-                        "sanity: the pane branch (an HSplitView) is what got laid out")
+                        "sanity: the pane branch (an HSplitView) is what got laid out", file: file, line: line)
         window.orderOut(nil)
     }
 
