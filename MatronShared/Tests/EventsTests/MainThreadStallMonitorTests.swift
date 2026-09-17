@@ -7,8 +7,11 @@ final class MainThreadStallMonitorTests: XCTestCase {
         XCTAssertTrue(MainThreadStallMonitor.isStall(hop: 0.25, threshold: 0.25))
     }
 
-    /// Blocks the main thread for half a second under a running monitor and
-    /// expects exactly that stall to be reported — and nothing while idle.
+    /// Blocks the main thread for a second under a running monitor and expects
+    /// exactly that stall to be reported — and nothing while idle. The block is
+    /// several times `unresponsiveAfter` so a utility queue that a loaded runner
+    /// schedules a few hundred ms late still announces it while it is happening
+    /// (CodeRabbit, PR #224).
     @MainActor
     func testReportsABlockedMainThreadAndStaysQuietWhenIdle() async throws {
         let monitor = MainThreadStallMonitor()
@@ -21,7 +24,7 @@ final class MainThreadStallMonitorTests: XCTestCase {
         try await Task.sleep(nanoseconds: 400_000_000)
         XCTAssertEqual(stalls.values, [], "an idle main thread must not be reported")
 
-        Thread.sleep(forTimeInterval: 0.5)
+        Thread.sleep(forTimeInterval: 1.0)
         try await Task.sleep(nanoseconds: 300_000_000)
         let reported = stalls.values
         XCTAssertEqual(reported.count, 1, "one block, one report: \(reported)")
