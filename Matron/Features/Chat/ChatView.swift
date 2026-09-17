@@ -1036,11 +1036,14 @@ struct ChatView: View {
                     navigationPath?.wrappedValue.append(id)
                 }
             )
-            // `conversationOriginLabels()` — a plain id→label scan, cheap
-            // enough to re-run on every scope switch.
+            // `conversationOriginLabels()` — a full id→label scan, drawn
+            // only by the "All" scope, so the conversation scope skips it
+            // (see the matching comment in `MacItemsPane`).
             .task(id: itemsVM.scope) {
-                guard let deps, let session else { return }
-                originTitles = (try? await deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
+                guard let deps, let session, itemsVM.scope == .all else { return }
+                let labels = (try? await deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
+                guard !Task.isCancelled else { return }
+                originTitles = labels
             }
             .sheet(isPresented: $showCreateItem) {
                 NewItemSheet { kind, title, itemBody in
