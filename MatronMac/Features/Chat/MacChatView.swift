@@ -1162,29 +1162,32 @@ struct MacChatView: View {
                 missionID = id
             }
         }
-        .toolbar {
-            MacChatToolbar(
-                title: chatTitle,
-                boxName: boxName,
-                styledTitle: styledTitle,
-                accessibilityTitle: SessionTag.accessibilityTitle(
-                    chatTitle: chatTitle, boxName: boxName,
-                    sessionShort: sessionShort, roomBoxNames: roomBoxNames),
-                status: viewModel.sessionStatus,
-                stripViewModel: stripViewModel,
+        // The header is drawn in the window's title bar, not as a `.toolbar`
+        // — see `MacChatToolbar` for why. This column only publishes it.
+        .preference(key: MacChatToolbarPreference.self, value: MacChatToolbarProps(
+            roomID: viewModel.roomID,
+            title: chatTitle,
+            boxName: boxName,
+            styledTitle: styledTitle,
+            accessibilityTitle: SessionTag.accessibilityTitle(
+                chatTitle: chatTitle, boxName: boxName,
+                sessionShort: sessionShort, roomBoxNames: roomBoxNames),
+            status: viewModel.sessionStatus,
+            stripViewModel: stripViewModel,
+            missionID: missionID,
+            needsYouCount: itemsVM?.needsYouCount ?? 0,
+            itemsAvailable: itemsVM?.isSupported ?? true,
+            actions: .init(
                 onOpenSubChat: { openSubChatID = $0; showItemsPane = false },
                 onCompact: { Task { await viewModel.sendCommand("/compact") } },
-                missionID: missionID,
                 onOpenMission: { onOpenMission?($0) },
                 showMediaBrowser: $showMediaBrowser,
                 showItemsPane: Binding(
                     get: { showItemsPane },
                     set: { showItemsPane = $0; if $0 { openSubChatID = nil } }
-                ),
-                needsYouCount: itemsVM?.needsYouCount ?? 0,
-                itemsAvailable: itemsVM?.isSupported ?? true
+                )
             )
-        }
+        ))
         // Observation start/stop is hoisted to the outer view in `body` —
         // this column moves between structural branches when the sub-chat
         // pane opens/closes, and per-branch lifecycle over shared @State

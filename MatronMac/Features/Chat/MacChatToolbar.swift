@@ -4,23 +4,31 @@ import MatronModels
 import MatronViewModels
 import MatronDesignSystem
 
-/// Mac chat detail column toolbar. Layout — three separate toolbar items,
-/// each in its own glass capsule (Dan, 2026-07-15: "separate bubbles"):
+/// Mac chat header content. Layout — separate clusters, each in its own
+/// glass capsule (Dan, 2026-07-15: "separate bubbles"):
 /// - Leading: model name, context gauge, host vitals (CPU/RAM)
 /// - Center: title (+ workdir and account email underneath when known)
-/// - Trailing: usage bars
+/// - Trailing: usage bars, then media + tasks, then the subagents menu
 ///
-/// The capsules are the SYSTEM's per-item glass. Round 2 replaced them
-/// with hand-drawn `glassEffect` capsules (to control corner radius);
-/// round 3 reverted that — inside toolbar items the custom glass didn't
-/// composite as live glass and the header read as a flat grey bar
-/// (Dan, 2026-07-15: "why have we lost the glass effect in the
-/// header?"). Alignment survives the revert a simpler way: all three
-/// clusters share one fixed content height, so the system capsules —
-/// which hug their content — come out equal and vertically centred as a
-/// row. Corner radius stays the system pill; that's the price of real
-/// glass. The 12pt horizontal padding keeps "Session" and friends off
-/// the capsule edge.
+/// This is NOT a SwiftUI `.toolbar` any more, though it sits in the same
+/// title-bar strip and draws the same capsules. SwiftUI's NSToolbar bridge
+/// answers any change under the `NavigationSplitView` detail by removing
+/// and re-adding the chat's `NSToolbarItem`s over two or three run-loop
+/// turns, each dragging a whole-window layout; with a mounted transcript
+/// that was most of the cost of switching conversation (2026-09-17, tracker
+/// #1434: 8 switches stalled main ~3.5 s with the toolbar, ~0.6 s without,
+/// three interleaved rounds). Hoisting the toolbar out of the per-room
+/// identity, explicit item ids and fixed item slots all still churned. So
+/// the clusters are plain views, `MacChatHeaderBar` lays them out, and
+/// `MacChatHeaderAccessory` hosts that bar in a native title-bar accessory.
+///
+/// The capsules are hand-drawn `glassEffect` (`MacChatHeaderGlass`). An
+/// earlier attempt at that INSIDE toolbar items didn't composite as live
+/// glass (Dan, 2026-07-15: "why have we lost the glass effect in the
+/// header?"); in the accessory, outside the system's own item glass, it
+/// does. All clusters share one fixed height so the capsules come out
+/// equal and vertically centred as a row. The 12pt horizontal padding
+/// keeps "Session" and friends off the capsule edge.
 ///
 /// The refresh button was dropped after the journal rewire: it only ran
 /// `ChatViewModel.refresh()` (= `paginateBackward`, an OLDER-history
@@ -43,7 +51,7 @@ import MatronDesignSystem
 /// header now carries the live context gauge and usage bars inline
 /// instead of a tap-through sheet.
 @MainActor
-struct MacChatToolbar: ToolbarContent {
+struct MacChatToolbar {
     let title: String
     /// Which agent box this session runs on, or `nil` when the user has
     /// fewer than two boxes (resolved by `JournalChatService.boxName`).
@@ -139,6 +147,27 @@ struct MacChatToolbar: ToolbarContent {
         self.itemsAvailable = itemsAvailable
     }
 
+    /// Builds the header from the chat column's published props — the form
+    /// `MacChatHeaderBar` uses, see `MacChatToolbarProps`.
+    init(props: MacChatToolbarProps) {
+        self.init(
+            title: props.title,
+            boxName: props.boxName,
+            styledTitle: props.styledTitle,
+            accessibilityTitle: props.accessibilityTitle,
+            status: props.status,
+            stripViewModel: props.stripViewModel,
+            onOpenSubChat: props.actions.onOpenSubChat,
+            onCompact: props.actions.onCompact,
+            missionID: props.missionID,
+            onOpenMission: props.actions.onOpenMission,
+            showMediaBrowser: props.actions.showMediaBrowser,
+            showItemsPane: props.actions.showItemsPane,
+            needsYouCount: props.needsYouCount,
+            itemsAvailable: props.itemsAvailable
+        )
+    }
+
     /// Whether the title renders as a button. Only a real mission id counts:
     /// an empty string is treated as absent rather than producing a button
     /// that navigates nowhere.
@@ -147,81 +176,75 @@ struct MacChatToolbar: ToolbarContent {
         return !missionID.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
-    var body: some ToolbarContent {
+    @ViewBuilder var modelItem: some View {
         if status?.model != nil || status?.context != nil || status?.vitals != nil {
-            ToolbarItem(placement: .navigation) {
-                cluster { modelContextCluster }
+            cluster { modelContextCluster }
+        }
+    }
+
+    @ViewBuilder var titleItem: some View {
+        cluster {
+            if Self.titleOpensMission(missionID: missionID), let missionID {
+                Button { onOpenMission(missionID) } label: { titleCluster }
+                    .buttonStyle(.plain)
+                    .help("Open this conversation's mission")
+                    .accessibilityLabel(accessibilityTitle ?? title)
+                    .accessibilityHint("Opens this conversation's mission")
+            } else {
+                titleCluster
+                    .accessibilityLabel(accessibilityTitle ?? title)
             }
         }
-        ToolbarItem(placement: .principal) {
-            cluster {
-                // Tappable title → this conversation's mission, same
-                // affordance as iOS's tappable title. `.buttonStyle(.plain)`
-                // is mandatory here (see header) — the default button style
-                // breaks the system glass capsule this cluster renders
-                // inside.
-                if Self.titleOpensMission(missionID: missionID), let missionID {
-                    Button { onOpenMission(missionID) } label: { titleCluster }
-                        .buttonStyle(.plain)
-                        .help("Open this conversation's mission")
-                        .accessibilityLabel(accessibilityTitle ?? title)
-                        .accessibilityHint("Opens this conversation's mission")
-                } else {
-                    titleCluster
-                        .accessibilityLabel(accessibilityTitle ?? title)
-                }
-            }
-        }
+    }
+
+    @ViewBuilder var usageItem: some View {
         if let limits = status?.limits, !limits.isEmpty {
-            ToolbarItem(placement: .primaryAction) {
-                cluster { UsageBarsView(limits: limits, scale: .compact) }
+            cluster {
+                UsageBarsView(limits: limits, scale: .compact)
+                    .modifier(MacChatHeaderInactiveDim(opacity: 0.8))
             }
         }
-        ToolbarItem(placement: .primaryAction) {
-            Button { showMediaBrowser.wrappedValue = true } label: {
-                Image(systemName: "photo.on.rectangle.angled")
-            }
-            .help("Media, files & links")
-            .accessibilityLabel("Media browser")
+    }
+
+    @ViewBuilder var mediaItem: some View {
+        Button { showMediaBrowser.wrappedValue = true } label: {
+            Image(systemName: "photo.on.rectangle.angled")
+                .modifier(MacChatHeaderInactiveDim(opacity: 0.5))
         }
+        .help("Media, files & links")
+        .accessibilityLabel("Media browser")
+    }
+
+    @ViewBuilder var tasksItem: some View {
         if itemsAvailable {
-            ToolbarItem(placement: .primaryAction) {
-                Button { showItemsPane.wrappedValue.toggle() } label: {
-                    Image(systemName: "checklist")
-                        .overlay(alignment: .topTrailing) {
-                            NeedsYouBadge(count: needsYouCount)
-                                .scaleEffect(0.8)
-                                .offset(x: 8, y: -8)
-                        }
-                }
-                .help("Tasks & decisions")
-                .accessibilityLabel("Tasks and decisions" + (needsYouCount > 0 ? ", \(needsYouCount) need you" : ""))
-                // Minor (Mac fix wave, part 1): the shortcut itself moved
-                // to an always-mounted hidden button in `MacChatView` —
-                // this toolbar item lives inside `chatColumn`, which isn't
-                // rendered in the narrow-takeover branch, so a shortcut
-                // registered here couldn't close the pane it opened.
-            }
-        }
-        if !stripViewModel.children.isEmpty {
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    ForEach(stripViewModel.children) { child in
-                        Button {
-                            onOpenSubChat(child.id)
-                        } label: {
-                            Label(
-                                child.title,
-                                systemImage: child.isRunning
-                                    ? "circle.dashed" : "checkmark.circle"
-                            )
-                        }
+            Button { showItemsPane.wrappedValue.toggle() } label: {
+                Image(systemName: "checklist")
+                    .modifier(MacChatHeaderInactiveDim(opacity: 0.5))
+                    .overlay(alignment: .topTrailing) {
+                        NeedsYouBadge(count: needsYouCount)
+                            .scaleEffect(0.8)
+                            .offset(x: 8, y: -8)
                     }
-                } label: {
-                    Image(systemName: "arrow.triangle.branch")
-                }
-                .accessibilityLabel("Subagents")
             }
+            .help("Tasks & decisions")
+            .accessibilityLabel("Tasks and decisions" + (needsYouCount > 0 ? ", \(needsYouCount) need you" : ""))
+        }
+    }
+
+    @ViewBuilder var subagentsItem: some View {
+        if !stripViewModel.children.isEmpty {
+            Menu {
+                ForEach(stripViewModel.children) { child in
+                    Button {
+                        onOpenSubChat(child.id)
+                    } label: {
+                        Label(child.title, systemImage: child.isRunning ? "circle.dashed" : "checkmark.circle")
+                    }
+                }
+            } label: {
+                Image(systemName: "arrow.triangle.branch")
+            }
+            .accessibilityLabel("Subagents")
         }
     }
 
@@ -232,9 +255,39 @@ struct MacChatToolbar: ToolbarContent {
         content()
             .padding(.horizontal, 12)
             .frame(height: Self.clusterHeight)
+            .modifier(MacChatHeaderGlass())
+    }
+
+    /// Media + tasks share one capsule, as the system toolbar grouped them.
+    @ViewBuilder var buttonsItem: some View {
+        HStack(spacing: 14) {
+            mediaItem
+            tasksItem
+        }
+        .font(.system(size: 15))
+        .padding(.horizontal, 10.5)
+        .frame(height: Self.clusterHeight)
+        .modifier(MacChatHeaderGlass())
+    }
+
+    @ViewBuilder var subagentsCapsule: some View {
+        if !stripViewModel.children.isEmpty {
+            subagentsItem
+                .font(.system(size: 15))
+                .modifier(MacChatHeaderInactiveDim(opacity: 0.5))
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .padding(.horizontal, 6.5)
+                .frame(height: Self.clusterHeight)
+                .modifier(MacChatHeaderGlass())
+        }
     }
 
     private var modelContextCluster: some View {
+        modelContextLines.modifier(MacChatHeaderInactiveDim(opacity: 0.8))
+    }
+
+    private var modelContextLines: some View {
         VStack(alignment: .leading, spacing: 1) {
             if let modelLine {
                 Text(modelLine)
@@ -282,6 +335,7 @@ struct MacChatToolbar: ToolbarContent {
                 .font(.headline)
                 .lineLimit(1)
                 .truncationMode(.tail)
+                .modifier(MacChatHeaderInactiveDim(opacity: 0.7))
             if let subtitle = titleSubtitle {
                 Text(subtitle)
                     .font(.caption2)
@@ -318,5 +372,61 @@ struct MacChatToolbar: ToolbarContent {
             parts.append(email)
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+}
+
+/// Everything `MacChatToolbar` renders, published UP from the chat column as
+/// a preference: the header is drawn in the window's title bar
+/// (`MacChatHeaderAccessory`), outside the chat column's view tree, so the
+/// column hands its header over as a value.
+///
+/// Equality covers what is DRAWN. The actions are closures over the
+/// publishing view's `@State`, which outlive any one body evaluation, so
+/// they are deliberately left out — but `roomID` is in, so a switch always
+/// republishes and the header never keeps acting on the room that left.
+struct MacChatToolbarProps: Equatable {
+    struct Actions {
+        let onOpenSubChat: (String) -> Void
+        let onCompact: () -> Void
+        let onOpenMission: (String) -> Void
+        let showMediaBrowser: Binding<Bool>
+        let showItemsPane: Binding<Bool>
+    }
+
+    let roomID: String
+    let title: String
+    let boxName: String?
+    let styledTitle: Text?
+    let accessibilityTitle: String?
+    let status: SessionStatus?
+    let stripViewModel: SubChatStripViewModel
+    let missionID: String?
+    let needsYouCount: Int
+    let itemsAvailable: Bool
+    let actions: Actions
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.roomID == rhs.roomID
+            && lhs.title == rhs.title
+            && lhs.boxName == rhs.boxName
+            && lhs.styledTitle == rhs.styledTitle
+            && lhs.accessibilityTitle == rhs.accessibilityTitle
+            && lhs.status == rhs.status
+            && lhs.stripViewModel === rhs.stripViewModel
+            && lhs.missionID == rhs.missionID
+            && lhs.needsYouCount == rhs.needsYouCount
+            && lhs.itemsAvailable == rhs.itemsAvailable
+    }
+}
+
+/// Carries the on-screen chat column's header props to `MacChatHeaderHost`.
+/// `nil` when no chat column is mounted (another tab, the empty state, the
+/// narrow pane-takeover branch) — the header is empty there, as the toolbar
+/// was when the chat column owned one. Only the chat column publishes, so the
+/// first value is the only one; `reduce` keeps it rather than guessing.
+struct MacChatToolbarPreference: PreferenceKey {
+    static let defaultValue: MacChatToolbarProps? = nil
+    static func reduce(value: inout MacChatToolbarProps?, nextValue: () -> MacChatToolbarProps?) {
+        value = value ?? nextValue()
     }
 }

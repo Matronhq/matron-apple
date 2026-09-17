@@ -308,7 +308,9 @@ struct MacChatListView: View {
                     }
                 }
         } detail: {
-            detailContent
+            // The chat header rides in the window's title bar, fed by
+            // whichever chat column is mounted in here — `MacChatHeaderHost`.
+            MacChatHeaderHost { detailContent }
         }
     }
 
