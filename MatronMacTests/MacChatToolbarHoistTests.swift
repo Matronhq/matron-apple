@@ -134,15 +134,13 @@ final class MacChatToolbarHoistTests: XCTestCase {
         window.orderFront(nil)
         defer { window.close() }
 
-        await Self.spin(seconds: 0.5)
-        let before = window.toolbar?.items.count ?? 0
+        let before = await Self.settledItemViews(in: window).count
         XCTAssertGreaterThan(before, 0, "the harness must actually produce toolbar items")
         let task = strip.start()
         await task.value
         XCTAssertEqual(strip.children.count, 1)
-        await Self.spin(seconds: 1)
-        XCTAssertEqual(window.toolbar?.items.count ?? 0, before + 1,
-                       "the switcher item must appear once the child list lands, with no other prop changing")
+        let grew = await Self.poll(seconds: 10) { Self.itemViews(in: window).count == before + 1 }
+        XCTAssertTrue(grew, "the switcher item must appear once the child list lands, with no other prop changing (items: \(Self.itemViews(in: window).count), before: \(before))")
     }
 
     private func itemViewsAcrossSwitch(
@@ -158,11 +156,29 @@ final class MacChatToolbarHoistTests: XCTestCase {
         window.orderFront(nil)
         defer { window.close() }
 
-        await Self.spin(seconds: 1)
-        let before = Self.itemViews(in: window)
+        let before = await Self.settledItemViews(in: window)
         model.roomID = "room-b"
         await Self.spin(seconds: 1)
         return (before, Self.itemViews(in: window))
+    }
+
+    /// The hoisted toolbar arrives one preference round-trip after the first
+    /// render, and a loaded runner takes its time bridging it into the window,
+    /// so wait for items to exist (then a beat more, for the rest of them)
+    /// rather than for a fixed interval.
+    private static func settledItemViews(in window: NSWindow) async -> [ObjectIdentifier] {
+        _ = await poll(seconds: 10) { !itemViews(in: window).isEmpty }
+        await spin(seconds: 0.5)
+        return itemViews(in: window)
+    }
+
+    private static func poll(seconds: TimeInterval, until done: () -> Bool) async -> Bool {
+        let end = Date().addingTimeInterval(seconds)
+        while Date() < end {
+            if done() { return true }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        return done()
     }
 
     private static func itemViews(in window: NSWindow) -> [ObjectIdentifier] {
