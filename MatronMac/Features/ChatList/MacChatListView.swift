@@ -308,7 +308,9 @@ struct MacChatListView: View {
                     }
                 }
         } detail: {
-            detailContent
+            // The chat toolbar is declared here, outside `MacChatView`'s
+            // per-room `.id` — see `MacChatToolbarHost`.
+            MacChatToolbarHost { detailContent }
         }
     }
 

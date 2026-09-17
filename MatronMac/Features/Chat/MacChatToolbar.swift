@@ -139,6 +139,27 @@ struct MacChatToolbar: ToolbarContent {
         self.itemsAvailable = itemsAvailable
     }
 
+    /// Builds the toolbar from the chat column's published props — the form
+    /// `MacChatListView` uses, see `MacChatToolbarProps`.
+    init(props: MacChatToolbarProps) {
+        self.init(
+            title: props.title,
+            boxName: props.boxName,
+            styledTitle: props.styledTitle,
+            accessibilityTitle: props.accessibilityTitle,
+            status: props.status,
+            stripViewModel: props.stripViewModel,
+            onOpenSubChat: props.actions.onOpenSubChat,
+            onCompact: props.actions.onCompact,
+            missionID: props.missionID,
+            onOpenMission: props.actions.onOpenMission,
+            showMediaBrowser: props.actions.showMediaBrowser,
+            showItemsPane: props.actions.showItemsPane,
+            needsYouCount: props.needsYouCount,
+            itemsAvailable: props.itemsAvailable
+        )
+    }
+
     /// Whether the title renders as a button. Only a real mission id counts:
     /// an empty string is treated as absent rather than producing a button
     /// that navigates nowhere.
@@ -318,5 +339,89 @@ struct MacChatToolbar: ToolbarContent {
             parts.append(email)
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+}
+
+/// Everything `MacChatToolbar` renders, published UP from the chat column as
+/// a preference so the toolbar itself can live outside the per-room identity.
+///
+/// `MacChatView` is `.id(roomID)`-keyed, and a `.toolbar` declared inside it
+/// takes that identity with it: every conversation switch destroyed every
+/// `NSToolbarItem` and built new ones, and NSToolbar answers each insertion by
+/// re-tiling and forcing a whole-window layout — with a mounted transcript
+/// that was the largest single cost of a switch (2026-09-17, optimized build
+/// on a 7,300-conversation store: worst main-thread stall per switch ~1.25 s
+/// with the toolbar inside the identity, ~0.3 s with it outside). Declared
+/// once in `MacChatListView`, the items persist and only their content
+/// updates.
+///
+/// Equality covers what is DRAWN. The actions are closures over the
+/// publishing view's `@State`, which outlive any one body evaluation, so
+/// they are deliberately left out — but `roomID` is in, so a switch always
+/// republishes and the toolbar never keeps acting on the room that left.
+struct MacChatToolbarProps: Equatable {
+    struct Actions {
+        let onOpenSubChat: (String) -> Void
+        let onCompact: () -> Void
+        let onOpenMission: (String) -> Void
+        let showMediaBrowser: Binding<Bool>
+        let showItemsPane: Binding<Bool>
+    }
+
+    let roomID: String
+    let title: String
+    let boxName: String?
+    let styledTitle: Text?
+    let accessibilityTitle: String?
+    let status: SessionStatus?
+    let stripViewModel: SubChatStripViewModel
+    let missionID: String?
+    let needsYouCount: Int
+    let itemsAvailable: Bool
+    let actions: Actions
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.roomID == rhs.roomID
+            && lhs.title == rhs.title
+            && lhs.boxName == rhs.boxName
+            && lhs.styledTitle == rhs.styledTitle
+            && lhs.accessibilityTitle == rhs.accessibilityTitle
+            && lhs.status == rhs.status
+            && lhs.stripViewModel === rhs.stripViewModel
+            && lhs.missionID == rhs.missionID
+            && lhs.needsYouCount == rhs.needsYouCount
+            && lhs.itemsAvailable == rhs.itemsAvailable
+    }
+}
+
+/// Carries the on-screen chat column's toolbar props to `MacChatListView`.
+/// `nil` when no chat column is mounted (another tab, the empty state, the
+/// narrow pane-takeover branch) — the toolbar is empty there, as it was when
+/// the chat column owned it. Only the chat column publishes, so the first
+/// value is the only one; `reduce` keeps it rather than guessing.
+struct MacChatToolbarPreference: PreferenceKey {
+    static let defaultValue: MacChatToolbarProps? = nil
+    static func reduce(value: inout MacChatToolbarProps?, nextValue: () -> MacChatToolbarProps?) {
+        value = value ?? nextValue()
+    }
+}
+
+/// Declares the chat toolbar around the detail column, OUTSIDE the per-room
+/// identity, from whatever the mounted chat column publishes. The props live
+/// in this view's own `@State` on purpose: held by `MacChatListView` instead,
+/// every title / badge / status change would re-evaluate that whole root view,
+/// sidebar included.
+struct MacChatToolbarHost<Content: View>: View {
+    @ViewBuilder let content: Content
+    @State private var props: MacChatToolbarProps?
+
+    var body: some View {
+        content
+            .onPreferenceChange(MacChatToolbarPreference.self) { props = $0 }
+            .toolbar {
+                if let props {
+                    MacChatToolbar(props: props)
+                }
+            }
     }
 }
