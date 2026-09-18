@@ -679,6 +679,19 @@ public final class ChatViewModel {
         return true
     }
 
+    /// Paginate-on-open, skipped when the local timeline already fills the
+    /// render window. An unconditional paginate loaded one more page on
+    /// EVERY open, so a conversation the user keeps coming back to grew by a
+    /// page per visit (354 → 495 → 626 items over three opens) and every
+    /// per-item pass on the main actor grew with it — the switch stall on
+    /// such a room climbed from 0.3 s to 1 s. Older history is still one
+    /// scroll-up away: `extendHistoryWindow()` fetches when the window has
+    /// shown everything local.
+    public func paginateOnOpenIfNeeded() async {
+        guard items.count < Self.defaultWindowSize else { return }
+        await paginateBackward()
+    }
+
     /// Reveals older content when the user nears the visual top: grows
     /// the render window over already-loaded rows first (local,
     /// instant); only when the window already shows everything local
@@ -861,9 +874,19 @@ public final class ChatViewModel {
     /// only fires when no successor has started — i.e. the room is
     /// genuinely being left, which is when trimming the cached window is
     /// wanted (the 2026-08-21 switch-stall fix).
+    ///
+    /// It then parks the window at the entry size. `beginEntryWindow()`
+    /// runs from the views' `.task`, which is AFTER the first body — so a
+    /// cached VM left at steady state painted all 120 rows on re-entry,
+    /// was shrunk to 40 a moment later and grown back to 120 after that:
+    /// three transcript builds per revisit where a first visit pays two.
+    /// Parked here, a revisit's first paint is the entry window, the
+    /// `.task`'s `beginEntryWindow()` is a no-op and `settleEntryWindow()`
+    /// grows it as usual. Nothing is on screen to notice the shrink.
     public func resetHistoryWindow(ifGeneration generation: Int) {
         guard generation == observationGeneration else { return }
         resetHistoryWindow()
+        beginEntryWindow()
     }
 
     /// Grows the window (without animation concerns — called before the

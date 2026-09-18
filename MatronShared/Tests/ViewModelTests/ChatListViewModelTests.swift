@@ -259,4 +259,53 @@ final class ChatListViewModelTests: XCTestCase {
         XCTAssertNil(vm.error, "successful snapshot must keep error nil")
         XCTAssertFalse(vm.groups.isEmpty)
     }
+    /// A snapshot identical to the last one must not write `groups`:
+    /// `@Observable` notifies on every write, equal or not, and each
+    /// notification re-evaluates the Mac sidebar and everything else that
+    /// read it — up to four times a second while agents are live.
+    @MainActor
+    func test_identicalSnapshot_doesNotNotifyGroupsObservers() async throws {
+        let bot = BotIdentity(matrixID: "@b:s", displayName: "Bot", avatarURL: nil)
+        let stamp = Date()
+        let one = [ChatSummary(id: "!1:s", title: "first", bot: bot, lastActivity: stamp, unreadCount: 0)]
+        let fake = FakeStreamingChatService()
+        fake.snapshotsToEmit = [one]
+        let vm = ChatListViewModel(chat: fake)
+        vm.start()
+        var start = Date()
+        while vm.groups.isEmpty && Date().timeIntervalSince(start) < 2 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(vm.hasChats)
+
+        let groupsChanged = Flag()
+        let hasChatsChanged = Flag()
+        withObservationTracking { _ = vm.groups } onChange: { groupsChanged.set() }
+        withObservationTracking { _ = vm.hasChats } onChange: { hasChatsChanged.set() }
+
+        // Same content again, then a real change: the real change proves the
+        // identical snapshot had been consumed by the time we assert.
+        fake.snapshotsToEmit = [one]
+        await vm.refresh()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertFalse(groupsChanged.value, "an identical snapshot must not write groups")
+
+        let two = one + [ChatSummary(id: "!2:s", title: "second", bot: bot, lastActivity: stamp, unreadCount: 0)]
+        fake.snapshotsToEmit = [two]
+        await vm.refresh()
+        start = Date()
+        while !groupsChanged.value && Date().timeIntervalSince(start) < 2 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(groupsChanged.value, "a changed snapshot must still notify")
+        XCTAssertFalse(hasChatsChanged.value, "hasChats is written only when it flips")
+        XCTAssertEqual(vm.groups.flatMap(\.summaries).count, 2)
+    }
+}
+
+private final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var flag = false
+    var value: Bool { lock.lock(); defer { lock.unlock() }; return flag }
+    func set() { lock.lock(); flag = true; lock.unlock() }
 }
