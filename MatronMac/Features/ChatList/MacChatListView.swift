@@ -859,7 +859,8 @@ struct MacChatListView: View {
             MacChatDetailGate(key: .init(
                 id: id, title: summary?.title, boxName: summary?.boxName,
                 sessionShort: summary?.sessionShort, boxShort: summary?.boxShort,
-                roomBoxNames: summary?.roomBoxNames ?? [], roomBoxShorts: summary?.roomBoxShorts ?? []
+                roomBoxNames: summary?.roomBoxNames ?? [], roomBoxShorts: summary?.roomBoxShorts ?? [],
+                itemsPaneOpen: itemsPaneOpen
             )) {
             let (chatVM, composerVM) = vmCache.viewModels(for: id, deps: deps, session: session)
             MacChatView(
@@ -1054,8 +1055,10 @@ struct MacChatSidebarList: View {
             // Keep the long-lived search VM's chat snapshot current: the toolbar
             // VM is built once, so without this new rooms and renamed titles never
             // reach chat-title search or `chatTitle(for:)` until relaunch (bugbot
-            // "Mac chat search snapshot stale").
-            .onChange(of: viewModel.groups) { _, groups in
+            // "Mac chat search snapshot stale"). `initial:` because this list
+            // unmounts under the other tabs: a room added or renamed while
+            // it was away must reach the search VM when it comes back.
+            .onChange(of: viewModel.groups, initial: true) { _, groups in
                 onSummariesChange(groups.flatMap(\.summaries))
             }
             .refreshable {
@@ -1096,6 +1099,10 @@ struct MacChatDetailGate<Content: View>: View, Equatable {
         let boxShort: String?
         let roomBoxNames: [String]
         let roomBoxShorts: [String]
+        /// The pane toggle reaches `MacChatView` as a `Binding`, which
+        /// tracks its source on its own; carried here as well so the gate
+        /// never depends on that.
+        let itemsPaneOpen: Bool
     }
 
     let key: Key

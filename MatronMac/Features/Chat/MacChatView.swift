@@ -1790,8 +1790,9 @@ struct MacSubChatPane: View {
             try? await Task.sleep(nanoseconds: 300_000_000)
             await viewModel.settleEntryWindow()
             // Seed history over HTTP; no markAsRead — children carry no
-            // unread state (they're silent).
-            await viewModel.paginateBackward()
+            // unread state (they're silent). Only while the local tail is
+            // short, same as the parent's open sequence.
+            await viewModel.paginateOnOpenIfNeeded()
         }
         .onDisappear {
             // Same reasoning as the parent timeline's: drop the selection,
