@@ -193,7 +193,11 @@ struct AppShellView: View {
                                onOpenItem: { nav.pushDecision($0) })
             }
             .task(id: decisionsVM.awaitingYou.map(\.originConvoID)) {
-                originTitles = (try? deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
+                let labels = (try? await deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
+                // See the Mac twin in `MacChatListView`: a cancelled task's
+                // read still completes and must not overwrite its successor.
+                guard !Task.isCancelled else { return }
+                originTitles = labels
             }
             // Refresh failures surface through the VM's `error` — the same
             // alert the tracker uses (spec §7).

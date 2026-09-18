@@ -140,13 +140,18 @@ extension JournalStore {
 
     /// Every conversation's origin label, keyed by id (item #114): feeds
     /// the "All" scope's `originTitles` in `ItemsListView.Model` on the Mac
-    /// and iOS items panes. A `LEFT JOIN` against `agent` — cheap enough to
-    /// re-run on every scope switch, no caching needed. Rows with an empty
-    /// (not yet set) title are omitted so a miss in the returned dictionary
-    /// reads the same whether the conversation is unknown or just untitled
-    /// — `ItemsListView`'s "Another chat" fallback covers both.
-    public func conversationOriginLabels() throws -> [String: String] {
-        try dbQueue.read { db in
+    /// and iOS items panes. A `LEFT JOIN` against `agent`, re-run on every
+    /// scope switch with no caching — but `async`, so the scan happens on
+    /// the database queue and the caller's actor is free meanwhile: the
+    /// callers are all main-actor `.task`s, and on a store with thousands
+    /// of conversations the synchronous form held the main thread for
+    /// ~0.4 s on every Mac items-pane mount, i.e. every conversation switch
+    /// with the pane open. Rows with an empty (not yet set) title are
+    /// omitted so a miss in the returned dictionary reads the same whether
+    /// the conversation is unknown or just untitled — `ItemsListView`'s
+    /// "Another chat" fallback covers both.
+    public func conversationOriginLabels() async throws -> [String: String] {
+        try await dbQueue.read { db in
             try Row.fetchAll(db, sql: """
                 SELECT conversation.id AS id, conversation.title AS title, agent.name AS agent_name
                 FROM conversation LEFT JOIN agent ON agent.id = conversation.agent_device_id

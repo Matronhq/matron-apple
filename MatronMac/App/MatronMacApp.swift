@@ -56,6 +56,10 @@ struct MatronMacApp: App {
         UserDefaults.standard.register(defaults: [
             "NSSplitViewItemSidebarDefaultsToFloatingAppearance": false
         ])
+        // Un-gated: every main-thread stall ≥250 ms lands in the unified log
+        // (category `main-stall`) and the file log, so a "feels sluggish"
+        // report can be read back instead of reproduced.
+        MainThreadStallMonitor.shared.start()
         #if DEBUG
         DebugSnapshot.armIfRequested()
         #endif

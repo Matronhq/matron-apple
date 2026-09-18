@@ -220,7 +220,7 @@ final class JournalStoreItemsTests: XCTestCase {
     /// conversation, e.g. "dev-mac · Missions plan", so a tracker row or
     /// the item-detail origin button reads as "which box, which chat"
     /// rather than just the chat title.
-    func testConversationOriginLabelsNameTheBox() throws {
+    func testConversationOriginLabelsNameTheBox() async throws {
         let store = try makeStore()
         try store.replaceAgents([AgentDTO(id: 7, name: "dev-mac"), AgentDTO(id: 9, name: "")])
         try store.applyColdSnapshot([
@@ -230,7 +230,7 @@ final class JournalStoreItemsTests: XCTestCase {
             ConvoSummaryDTO(id: "c4", title: "Empty agent name", sessionState: "running", lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 9),
         ], headSeq: 1)
 
-        let labels = try store.conversationOriginLabels()
+        let labels = try await store.conversationOriginLabels()
         XCTAssertEqual(labels["c1"], "dev-mac \u{00B7} Missions plan", "box present names the box")
         XCTAssertEqual(labels["c2"], "No box", "no agent on the conversation falls back to the title alone")
         XCTAssertNil(labels["c3"], "an empty title is omitted from the map, box or not")
