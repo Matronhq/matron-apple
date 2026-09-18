@@ -313,6 +313,10 @@ struct MacChatView: View {
     /// toolbar button in `MacChatToolbar`.
     @State private var showMediaBrowser = false
 
+    /// Identifies THIS mounted chat column to the window's header — see
+    /// `MacChatToolbarProps.publisher`.
+    @State private var headerPublisher = UUID()
+
     /// Which mission this conversation belongs to (spec: Transcript and
     /// title). Derived locally from the mission cache — the snapshot never
     /// carries it — so it is nil until the first missions refresh, which is
@@ -1162,29 +1166,33 @@ struct MacChatView: View {
                 missionID = id
             }
         }
-        .toolbar {
-            MacChatToolbar(
-                title: chatTitle,
-                boxName: boxName,
-                styledTitle: styledTitle,
-                accessibilityTitle: SessionTag.accessibilityTitle(
-                    chatTitle: chatTitle, boxName: boxName,
-                    sessionShort: sessionShort, roomBoxNames: roomBoxNames),
-                status: viewModel.sessionStatus,
-                stripViewModel: stripViewModel,
+        // The header is drawn in the window's title bar, not as a `.toolbar`
+        // — see `MacChatToolbar` for why. This column only publishes it.
+        .preference(key: MacChatToolbarPreference.self, value: MacChatToolbarProps(
+            roomID: viewModel.roomID,
+            publisher: headerPublisher,
+            title: chatTitle,
+            boxName: boxName,
+            styledTitle: styledTitle,
+            accessibilityTitle: SessionTag.accessibilityTitle(
+                chatTitle: chatTitle, boxName: boxName,
+                sessionShort: sessionShort, roomBoxNames: roomBoxNames),
+            status: viewModel.sessionStatus,
+            stripViewModel: stripViewModel,
+            missionID: missionID,
+            needsYouCount: itemsVM?.needsYouCount ?? 0,
+            itemsAvailable: itemsVM?.isSupported ?? true,
+            actions: .init(
                 onOpenSubChat: { openSubChatID = $0; showItemsPane = false },
                 onCompact: { Task { await viewModel.sendCommand("/compact") } },
-                missionID: missionID,
                 onOpenMission: { onOpenMission?($0) },
                 showMediaBrowser: $showMediaBrowser,
                 showItemsPane: Binding(
                     get: { showItemsPane },
                     set: { showItemsPane = $0; if $0 { openSubChatID = nil } }
-                ),
-                needsYouCount: itemsVM?.needsYouCount ?? 0,
-                itemsAvailable: itemsVM?.isSupported ?? true
+                )
             )
-        }
+        ))
         // Observation start/stop is hoisted to the outer view in `body` —
         // this column moves between structural branches when the sub-chat
         // pane opens/closes, and per-branch lifecycle over shared @State
