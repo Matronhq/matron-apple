@@ -1388,6 +1388,79 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_leavingTheRoom_parksTheWindowAtEntrySize_soARevisitPaintsSmall() async throws {
+        // `beginEntryWindow()` runs from the views' `.task`, after the first
+        // body: a cached VM left at steady state painted 120 rows on
+        // re-entry, shrank to 40, then regrew — three builds per revisit.
+        let fake = FakeTimelineService()
+        let items = (0..<200).map { i in
+            TimelineItem(
+                id: "m\(i)", sender: "@a:s", timestamp: .now,
+                kind: .text(body: "msg \(i)", formattedHTML: nil), isOwn: false
+            )
+        }
+        fake.snapshotsToEmit = [items]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        vm.beginEntryWindow()
+        let task = await vm.start()
+        await task.value
+        await vm.settleEntryWindow()
+        XCTAssertEqual(vm.windowedRows.count, 121)
+
+        vm.resetHistoryWindow(ifGeneration: vm.observationGeneration)
+        XCTAssertEqual(vm.windowedRows.count, 41, "a left room must wait at the entry window")
+
+        // The revisit's own open sequence still reaches steady state.
+        vm.beginEntryWindow()
+        await vm.settleEntryWindow()
+        XCTAssertEqual(vm.windowedRows.count, 121)
+    }
+
+    @MainActor
+    func test_leavingTheRoom_staleGeneration_leavesTheWindowAlone() async throws {
+        let fake = FakeTimelineService()
+        let items = (0..<200).map { i in
+            TimelineItem(
+                id: "m\(i)", sender: "@a:s", timestamp: .now,
+                kind: .text(body: "msg \(i)", formattedHTML: nil), isOwn: false
+            )
+        }
+        fake.snapshotsToEmit = [items]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        await task.value
+        vm.resetHistoryWindow(ifGeneration: vm.observationGeneration - 1)
+        XCTAssertEqual(vm.windowedRows.count, 121, "a superseded view's leave must not shrink its successor's window")
+    }
+
+    @MainActor
+    func test_paginateOnOpen_skippedOnceTheLocalTimelineFillsTheWindow() async throws {
+        // An unconditional paginate-on-open grew a revisited room by a page
+        // per visit.
+        let fake = FakeTimelineService()
+        let items = (0..<200).map { i in
+            TimelineItem(
+                id: "m\(i)", sender: "@a:s", timestamp: .now,
+                kind: .text(body: "msg \(i)", formattedHTML: nil), isOwn: false
+            )
+        }
+        fake.snapshotsToEmit = [items]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let task = await vm.start()
+        await task.value
+        await vm.paginateOnOpenIfNeeded()
+        XCTAssertEqual(fake.paginateCalls, 0)
+    }
+
+    @MainActor
+    func test_paginateOnOpen_runsWhileTheLocalTimelineIsShort() async throws {
+        let fake = FakeTimelineService()
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        await vm.paginateOnOpenIfNeeded()
+        XCTAssertEqual(fake.paginateCalls, 1)
+    }
+
+    @MainActor
     func test_paginate_invokesService() async throws {
         let fake = FakeTimelineService()
         let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())

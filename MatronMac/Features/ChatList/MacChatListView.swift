@@ -333,18 +333,10 @@ struct MacChatListView: View {
             // `SearchViewModel` no longer has `observeBackfill(_:)` (Task 11
             // dropped it on the iOS side of this same journal-stack rewire; the
             // journal server has no backfill concept to observe).
-            .task(id: viewModel.groups.isEmpty) {
-                guard searchModel == nil, !viewModel.groups.isEmpty,
+            .task(id: viewModel.hasChats) {
+                guard searchModel == nil, viewModel.hasChats,
                       let search = deps?.search else { return }
                 searchModel = SearchViewModel(search: search, allChats: allChatSummaries)
-            }
-            // Keep the long-lived search VM's chat snapshot current: the toolbar
-            // VM is built once, so without this new rooms and renamed titles never
-            // reach chat-title search or `chatTitle(for:)` until relaunch (bugbot
-            // "Mac chat search snapshot stale"). Keyed on the flattened summaries
-            // because `GroupedSummaries` isn't Equatable.
-            .onChange(of: allChatSummaries) { _, summaries in
-                searchModel?.updateChats(summaries)
             }
             // Breadcrumb every selection flip — user click, auto-open,
             // notification tap, or (the pathological case) the List clearing
@@ -611,56 +603,12 @@ struct MacChatListView: View {
         .onAppear { LaunchTimeline.shared.mark(.firstListPaint) }
     }
 
-    @ViewBuilder
     private var sidebar: some View {
-        if viewModel.isLoading {
-            ProgressView("Connecting…")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let errorMessage = viewModel.error, viewModel.groups.isEmpty {
-            // QA finding #10: mirror the iOS error overlay so a
-            // sliding-sync timeout doesn't leave the user with a silent
-            // empty sidebar.
-            ContentUnavailableView(
-                "Couldn't load chats",
-                systemImage: "exclamationmark.triangle",
-                description: Text(errorMessage)
-            )
-        } else if viewModel.groups.isEmpty {
-            ContentUnavailableView(
-                "No chats yet",
-                systemImage: "bubble.left.and.bubble.right",
-                description: Text("Provision a bot via dev-boxer to get started.")
-            )
-        } else {
-            List(selection: $selectedSummaryID) {
-                ForEach(viewModel.groups) { group in
-                    Section(group.group.rawValue) {
-                        ForEach(group.summaries) { summary in
-                            MacChatRow(summary: summary)
-                                .tag(summary.id)
-                                .contextMenu {
-                                    Button("Mute") {
-                                        runChatAction { try await $0.mute(roomID: summary.id) }
-                                    }
-                                    Button("Leave", role: .destructive) {
-                                        runChatAction { try await $0.leave(roomID: summary.id) }
-                                    }
-                                }
-                        }
-                    }
-                }
-            }
-            .listStyle(.sidebar)
-            .refreshable {
-                // Phase 2.5: `⌘R` / sidebar pull drives a one-shot
-                // `client.rooms()` snapshot through the live broadcaster
-                // pipe via `ChatListViewModel.refresh()` →
-                // `ChatService.forceSnapshot()`. Pre-2.5 this called
-                // `chat.refresh()`, a `sync.waitUntilReady()` no-op once
-                // running, so the gesture was purely cosmetic.
-                await viewModel.refresh()
-            }
-        }
+        MacChatSidebarList(
+            viewModel: viewModel, selection: $selectedSummaryID,
+            onSummariesChange: { searchModel?.updateChats($0) },
+            runChatAction: runChatAction
+        )
     }
 
     /// Decisions selected (spec §5): the list column is the shared
@@ -897,22 +845,6 @@ struct MacChatListView: View {
         }
     }
 
-    /// Looks up the current `ChatSummary` for a sidebar selection id
-    /// across all groups. Returns `nil` when the selected room has been
-    /// removed from the latest snapshot (e.g. the user left it from
-    /// another device). Re-evaluated on every `viewModel.groups` change
-    /// because `@Observable` triggers `body` re-render, so the detail
-    /// column always reflects the latest summary fields (title, unread
-    /// count, last activity) without needing a stale captured value.
-    private func currentSummary(for id: ChatSummary.ID) -> ChatSummary? {
-        for group in viewModel.groups {
-            if let match = group.summaries.first(where: { $0.id == id }) {
-                return match
-            }
-        }
-        return nil
-    }
-
     /// Builds the `MacChatView` for the selected id. Wrapped in a helper so
     /// the missing-environment branch (no deps / session) stays out of the
     /// main `body` flow. The `id(id)` modifier forces a fresh instance per
@@ -923,7 +855,13 @@ struct MacChatListView: View {
     @ViewBuilder
     private func chatDetail(for id: ChatSummary.ID) -> some View {
         if let deps, let session {
-            let summary = currentSummary(for: id)
+            MacChatSummaryReader(viewModel: viewModel, id: id) { summary in
+            MacChatDetailGate(key: .init(
+                id: id, title: summary?.title, boxName: summary?.boxName,
+                sessionShort: summary?.sessionShort, boxShort: summary?.boxShort,
+                roomBoxNames: summary?.roomBoxNames ?? [], roomBoxShorts: summary?.roomBoxShorts ?? [],
+                itemsPaneOpen: itemsPaneOpen
+            )) {
             let (chatVM, composerVM) = vmCache.viewModels(for: id, deps: deps, session: session)
             MacChatView(
                 viewModel: chatVM,
@@ -970,6 +908,9 @@ struct MacChatListView: View {
                 // back.
                 onOpenMission: { showMission($0, from: id) }
             )
+            }
+            .equatable()
+            }
             .id(id)
         } else {
             ContentUnavailableView(
@@ -1057,6 +998,119 @@ final class ChatVMCache {
         let strip = stripViewModel(forParent: parentConvoID, deps: deps, session: session)
         return (chat, strip)
     }
+}
+
+/// The sidebar's conversation list, as its own view so that it — and only
+/// it — re-evaluates when a chat-list snapshot lands. While agents are live
+/// that is up to four times a second; read from `MacChatListView.body` the
+/// same snapshot also rebuilt the open chat, the toolbar and every modifier
+/// on the split view, which is what made a conversation switch stall while
+/// online and not in an offline run.
+struct MacChatSidebarList: View {
+    let viewModel: ChatListViewModel
+    @Binding var selection: ChatSummary.ID?
+    let onSummariesChange: ([ChatSummary]) -> Void
+    let runChatAction: (@escaping (ChatService) async throws -> Void) -> Void
+
+    @ViewBuilder
+    var body: some View {
+        if viewModel.isLoading {
+            ProgressView("Connecting…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let errorMessage = viewModel.error, viewModel.groups.isEmpty {
+            // QA finding #10: mirror the iOS error overlay so a
+            // sliding-sync timeout doesn't leave the user with a silent
+            // empty sidebar.
+            ContentUnavailableView(
+                "Couldn't load chats",
+                systemImage: "exclamationmark.triangle",
+                description: Text(errorMessage)
+            )
+        } else if viewModel.groups.isEmpty {
+            ContentUnavailableView(
+                "No chats yet",
+                systemImage: "bubble.left.and.bubble.right",
+                description: Text("Provision a bot via dev-boxer to get started.")
+            )
+        } else {
+            List(selection: $selection) {
+                ForEach(viewModel.groups) { group in
+                    Section(group.group.rawValue) {
+                        ForEach(group.summaries) { summary in
+                            MacChatRow(summary: summary)
+                                .tag(summary.id)
+                                .contextMenu {
+                                    Button("Mute") {
+                                        runChatAction { (chat: ChatService) in try await chat.mute(roomID: summary.id) }
+                                    }
+                                    Button("Leave", role: .destructive) {
+                                        runChatAction { (chat: ChatService) in try await chat.leave(roomID: summary.id) }
+                                    }
+                                }
+                        }
+                    }
+                }
+            }
+            .listStyle(.sidebar)
+            // Keep the long-lived search VM's chat snapshot current: the toolbar
+            // VM is built once, so without this new rooms and renamed titles never
+            // reach chat-title search or `chatTitle(for:)` until relaunch (bugbot
+            // "Mac chat search snapshot stale"). `initial:` because this list
+            // unmounts under the other tabs: a room added or renamed while
+            // it was away must reach the search VM when it comes back.
+            .onChange(of: viewModel.groups, initial: true) { _, groups in
+                onSummariesChange(groups.flatMap(\.summaries))
+            }
+            .refreshable {
+                // Phase 2.5: `⌘R` / sidebar pull drives a one-shot
+                // `client.rooms()` snapshot through the live broadcaster
+                // pipe via `ChatListViewModel.refresh()` →
+                // `ChatService.forceSnapshot()`. Pre-2.5 this called
+                // `chat.refresh()`, a `sync.waitUntilReady()` no-op once
+                // running, so the gesture was purely cosmetic.
+                await viewModel.refresh()
+            }
+        }
+    }
+}
+
+/// Reads the selected chat's summary out of the list snapshot, so the
+/// snapshot dependency lives here rather than in `MacChatListView.body`.
+struct MacChatSummaryReader<Content: View>: View {
+    let viewModel: ChatListViewModel
+    let id: ChatSummary.ID
+    @ViewBuilder let content: (ChatSummary?) -> Content
+
+    var body: some View {
+        content(viewModel.groups.lazy.flatMap(\.summaries).first { $0.id == id })
+    }
+}
+
+/// Stops a re-evaluation at the chat detail unless something the detail
+/// draws has changed. `MacChatView` takes closures, which SwiftUI cannot
+/// compare, so without this gate every snapshot that reaches the reader
+/// above re-runs the whole chat column's body.
+struct MacChatDetailGate<Content: View>: View, Equatable {
+    struct Key: Equatable {
+        let id: ChatSummary.ID
+        let title: String?
+        let boxName: String?
+        let sessionShort: String?
+        let boxShort: String?
+        let roomBoxNames: [String]
+        let roomBoxShorts: [String]
+        /// The pane toggle reaches `MacChatView` as a `Binding`, which
+        /// tracks its source on its own; carried here as well so the gate
+        /// never depends on that.
+        let itemsPaneOpen: Bool
+    }
+
+    let key: Key
+    @ViewBuilder let content: () -> Content
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.key == rhs.key }
+
+    var body: some View { content() }
 }
 
 /// Row view with hover-tint state held locally so it doesn't muddy the

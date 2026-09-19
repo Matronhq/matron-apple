@@ -5,13 +5,17 @@ import MatronModels
 @Observable
 @MainActor
 public final class ChatListViewModel {
-    public struct GroupedSummaries: Identifiable {
+    public struct GroupedSummaries: Identifiable, Equatable, Sendable {
         public let group: ChatRecencyGroup
         public let summaries: [ChatSummary]
         public var id: String { group.rawValue }
     }
 
     public private(set) var groups: [GroupedSummaries] = []
+    /// Whether any chat has arrived. Its own property, written only when it
+    /// flips, so a view that needs just "is the list populated" does not
+    /// re-evaluate on every snapshot the way a read of `groups` does.
+    public private(set) var hasChats: Bool = false
     public private(set) var isLoading: Bool = true
     /// Sum of `unreadCount` across every chat in `groups`. Drives the
     /// app-icon badge (iOS `UNUserNotificationCenter.setBadgeCount`)
@@ -49,14 +53,9 @@ public final class ChatListViewModel {
             do {
                 for try await snapshot in chat.chatSummaries() {
                     if Task.isCancelled { return }
-                    let grouped = Self.group(summaries: snapshot)
-                    let unread = snapshot.reduce(0) { $0 + $1.unreadCount }
-                    await MainActor.run {
-                        self.groups = grouped
-                        self.totalUnread = unread
-                        self.isLoading = false
-                        self.error = nil
-                    }
+                    let (grouped, unread) = await Self.derive(from: snapshot)
+                    if Task.isCancelled { return }
+                    self.apply(groups: grouped, totalUnread: unread)
                 }
             } catch {
                 let message = error.localizedDescription
@@ -66,6 +65,24 @@ public final class ChatListViewModel {
                 }
             }
         }
+    }
+
+    /// Grouping sorts and buckets every chat, so it runs off the main actor:
+    /// while agents are live a snapshot lands up to four times a second, and
+    /// on the main actor that work competed with a conversation switch.
+    private nonisolated static func derive(from snapshot: [ChatSummary]) async -> ([GroupedSummaries], Int) {
+        (group(summaries: snapshot), snapshot.reduce(0) { $0 + $1.unreadCount })
+    }
+
+    /// `@Observable` notifies on every write, equal or not, and each
+    /// notification re-evaluates every view that read the property — so
+    /// only write what actually changed.
+    private func apply(groups grouped: [GroupedSummaries], totalUnread unread: Int) {
+        if groups != grouped { groups = grouped }
+        if hasChats != !grouped.isEmpty { hasChats = !grouped.isEmpty }
+        if totalUnread != unread { totalUnread = unread }
+        if isLoading { isLoading = false }
+        if error != nil { error = nil }
     }
 
     /// iOS pull-to-refresh / Mac `⌘R` entry point. Drives a one-shot
@@ -97,7 +114,7 @@ public final class ChatListViewModel {
         observationTask = nil
     }
 
-    public static func group(summaries: [ChatSummary], now: Date = Date(), calendar: Calendar = .current) -> [GroupedSummaries] {
+    public nonisolated static func group(summaries: [ChatSummary], now: Date = Date(), calendar: Calendar = .current) -> [GroupedSummaries] {
         let buckets = Dictionary(grouping: summaries) { ChatRecencyGroup.bucket($0.lastActivity, now: now, calendar: calendar) }
         return ChatRecencyGroup.allCases.compactMap { bucket in
             guard let summaries = buckets[bucket]?.sorted(by: Self.byRecencyDescending), !summaries.isEmpty else { return nil }
@@ -107,7 +124,7 @@ public final class ChatListViewModel {
 
     /// Sort: rooms with a known lastActivity come first, newest first; rooms
     /// with `nil` lastActivity sort by title to give a stable order.
-    private static func byRecencyDescending(_ a: ChatSummary, _ b: ChatSummary) -> Bool {
+    private nonisolated static func byRecencyDescending(_ a: ChatSummary, _ b: ChatSummary) -> Bool {
         switch (a.lastActivity, b.lastActivity) {
         case let (lhs?, rhs?): return lhs > rhs
         case (nil, _?): return false

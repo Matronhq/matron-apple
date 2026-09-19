@@ -515,26 +515,36 @@ struct MacChatView: View {
                     // sibling switch re-runs `.task` and starts the new VM.
                     .id(childID)
                 }
-            } else if showItemsPane, let itemsVM, let session {
-                if geo.size.width >= Self.sideBySideMinWidth {
-                    HSplitView {
-                        chatColumn
-                            .splitPaneFrame(minWidth: Self.chatColumnMinWidth,
-                                            idealWidth: Self.chatColumnIdealWidth(in: geo.size.width), height: geo.size.height)
-                        MacItemsPane(
-                            viewModel: itemsVM, session: session, state: itemsPaneState,
-                            onOpenConversation: { onOpenConversation?($0) },
-                            onClose: { showItemsPane = false }
-                        )
-                        .splitPaneFrame(minWidth: Self.sidePaneMinWidth, idealWidth: Self.sidePaneMinWidth, height: geo.size.height)
+            } else if showItemsPane, let session, geo.size.width >= Self.sideBySideMinWidth {
+                // Deliberately NOT gated on `itemsVM`: it is created in the
+                // outer `.task`, a turn after the first body. Gated on it,
+                // every conversation switch with the pane open drew the chat
+                // column alone, then moved it into this split — a different
+                // structural position, so the whole transcript was torn down
+                // and built a second time.
+                HSplitView {
+                    chatColumn
+                        .splitPaneFrame(minWidth: Self.chatColumnMinWidth,
+                                        idealWidth: Self.chatColumnIdealWidth(in: geo.size.width), height: geo.size.height)
+                    Group {
+                        if let itemsVM {
+                            MacItemsPane(
+                                viewModel: itemsVM, session: session, state: itemsPaneState,
+                                onOpenConversation: { onOpenConversation?($0) },
+                                onClose: { showItemsPane = false }
+                            )
+                        } else {
+                            Color.clear
+                        }
                     }
-                } else {
-                    MacItemsPane(
-                        viewModel: itemsVM, session: session, state: itemsPaneState, showsBackChevron: true,
-                        onOpenConversation: { onOpenConversation?($0) },
-                        onClose: { showItemsPane = false }
-                    )
+                    .splitPaneFrame(minWidth: Self.sidePaneMinWidth, idealWidth: Self.sidePaneMinWidth, height: geo.size.height)
                 }
+            } else if showItemsPane, let itemsVM, let session {
+                MacItemsPane(
+                    viewModel: itemsVM, session: session, state: itemsPaneState, showsBackChevron: true,
+                    onOpenConversation: { onOpenConversation?($0) },
+                    onClose: { showItemsPane = false }
+                )
             } else {
                 chatColumn
             }
@@ -641,7 +651,8 @@ struct MacChatView: View {
             // Explicit paginate-on-open BEFORE markAsRead — see iOS
             // `ChatView`: history loads over HTTP and must not wait on
             // the live socket, which a half-dead connection can hang.
-            await viewModel.paginateBackward()
+            // Only while the local tail is short — see the VM method.
+            await viewModel.paginateOnOpenIfNeeded()
             await viewModel.markAsRead()
         }
         .onDisappear {
@@ -1779,8 +1790,9 @@ struct MacSubChatPane: View {
             try? await Task.sleep(nanoseconds: 300_000_000)
             await viewModel.settleEntryWindow()
             // Seed history over HTTP; no markAsRead — children carry no
-            // unread state (they're silent).
-            await viewModel.paginateBackward()
+            // unread state (they're silent). Only while the local tail is
+            // short, same as the parent's open sequence.
+            await viewModel.paginateOnOpenIfNeeded()
         }
         .onDisappear {
             // Same reasoning as the parent timeline's: drop the selection,
