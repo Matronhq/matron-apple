@@ -90,6 +90,9 @@ public struct ItemInlineCard: View {
             if let transcript = attachment.transcript, !transcript.isEmpty {
                 line += " — \(transcript)"
             }
+            // Deliberately no "transcribing…" here: this card renders the
+            // marker's frozen snapshot, which never learns the job finished.
+            // The live state is in the item thread (ItemDetailView).
             return line
         }
         return "Attachment: \(name)"

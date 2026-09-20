@@ -350,6 +350,8 @@ public struct ItemDetailView: View {
                     Button { onOpenAttachment(a) } label: { Label("Voice note", systemImage: "waveform") }.buttonStyle(.plain)
                     if let transcript = a.transcript, !transcript.isEmpty {
                         Text(transcript).font(.system(size: bodySize)).lineSpacing(ItemTypography.lineSpacing).foregroundStyle(.secondary)
+                    } else if a.transcriptionFailed {
+                        Text("Couldn’t transcribe — tap to listen").font(.subheadline).foregroundStyle(.tertiary).italic()
                     } else {
                         Text("Transcribing…").font(.subheadline).foregroundStyle(.tertiary).italic()
                     }

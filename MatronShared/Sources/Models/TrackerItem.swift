@@ -24,19 +24,31 @@ public struct TrackerAttachment: Equatable, Hashable, Sendable, Codable {
     public let name: String
     public let size: Int64
     public var transcript: String?
-    public init(blobRef: String, mime: String, name: String, size: Int64, transcript: String? = nil) {
+    /// The journal's own transcription job for this voice note: `"pending"`
+    /// while it runs, then `"done"` or `"failed"`. `nil` when the journal
+    /// never took the job (the origin bridge transcribes instead) — which,
+    /// like `"pending"`, still reads as "Transcribing…" until words arrive.
+    public var transcriptStatus: String?
+    public init(blobRef: String, mime: String, name: String, size: Int64, transcript: String? = nil, transcriptStatus: String? = nil) {
         self.blobRef = blobRef; self.mime = mime; self.name = name; self.size = size; self.transcript = transcript
+        self.transcriptStatus = transcriptStatus
     }
+    /// Nobody produced words and nobody is still trying: the journal's job
+    /// failed. (A bridge that then transcribes it itself flips this back to
+    /// `"done"` server-side, and the next refresh shows the words.)
+    public var transcriptionFailed: Bool { isAudio && (transcript ?? "").isEmpty && transcriptStatus == "failed" }
     public init?(json: [String: Any]) {
         guard let blobRef = json["blob_ref"] as? String, let mime = json["mime"] as? String else { return nil }
         self.init(blobRef: blobRef, mime: mime, name: json["name"] as? String ?? "",
-                  size: (json["size"] as? NSNumber)?.int64Value ?? 0, transcript: json["transcript"] as? String)
+                  size: (json["size"] as? NSNumber)?.int64Value ?? 0, transcript: json["transcript"] as? String,
+                  transcriptStatus: json["transcript_status"] as? String)
     }
     public var isImage: Bool { mime.hasPrefix("image/") }
     public var isAudio: Bool { mime.hasPrefix("audio/") }
     public var json: [String: Any] {
         var o: [String: Any] = ["blob_ref": blobRef, "mime": mime, "name": name, "size": size]
         if let transcript { o["transcript"] = transcript }
+        if let transcriptStatus { o["transcript_status"] = transcriptStatus }
         return o
     }
 }
