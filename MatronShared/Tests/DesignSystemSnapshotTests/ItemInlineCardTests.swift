@@ -10,9 +10,11 @@ final class ItemInlineCardTests: XCTestCase {
         XCTAssertEqual(ItemInlineCard.attachmentLine(a), "Voice note: Voice 1.m4a — use option A")
     }
 
-    func test_audioPendingOnTheJournal_saysTranscribing() {
+    func test_audioPendingOnTheJournal_showsNameOnly() {
+        // The card is a frozen marker snapshot: a present-tense "transcribing…"
+        // would outlive the job.
         let a = TrackerAttachment(blobRef: "b3", mime: "audio/m4a", name: "Voice 3.m4a", size: 1, transcript: nil, transcriptStatus: "pending")
-        XCTAssertEqual(ItemInlineCard.attachmentLine(a), "Voice note: Voice 3.m4a — transcribing…")
+        XCTAssertEqual(ItemInlineCard.attachmentLine(a), "Voice note: Voice 3.m4a")
     }
 
     func test_transcriptStatus_roundTripsAndFlagsFailure() {
