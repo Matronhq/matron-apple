@@ -89,6 +89,8 @@ public struct ItemInlineCard: View {
             var line = "Voice note: \(name)"
             if let transcript = attachment.transcript, !transcript.isEmpty {
                 line += " — \(transcript)"
+            } else if attachment.transcriptStatus == "pending" {
+                line += " — transcribing…"
             }
             return line
         }
