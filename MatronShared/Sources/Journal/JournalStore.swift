@@ -1369,13 +1369,40 @@ public final class JournalStore: @unchecked Sendable {
     /// activity ordering indexes the conversations the user is most likely
     /// to search before the long tail. (DESC puts NULL activity rows last,
     /// same as `conversations()`.)
-    public func allConversationIDs() throws -> [String] {
-        try dbQueue.read { db in
+    ///
+    /// `async` for the same reason as `conversationOriginLabels()`: the
+    /// only caller is the backfill task in `AppDependencies`, which is
+    /// `@MainActor`-isolated, so the synchronous form ran this full-table
+    /// read on the main thread on every sweep — live samples of a 7k-row
+    /// store put it inside main-thread hangs. The async read runs on the
+    /// database queue and the main actor is free until the ids come back.
+    public func allConversationIDs() async throws -> [String] {
+        try await readOffCaller { db in
             try String.fetchAll(db, sql: """
                 SELECT id FROM conversation
                 ORDER BY last_activity_ts DESC, last_seq DESC
                 """)
         }
+    }
+
+    /// A synchronous `dbQueue.read` hopped off the caller's actor, for the
+    /// `async` reads main-actor callers await.
+    ///
+    /// Deliberately NOT GRDB's own `async read` / `asyncRead`: in GRDB 6.29
+    /// that path runs `endReadOnly()` from a `defer` even when
+    /// `beginReadOnly()` threw, so an unreadable database (the CI test hosts
+    /// hit "disk I/O error in PRAGMA query_only = 1" once the test run has
+    /// torn the store's directory down under the app) trips GRDB's
+    /// "unbalanced endReadOnly()" assertion and kills the process instead of
+    /// throwing. The synchronous read propagates that error like every other
+    /// store call. The hop costs one cooperative-pool thread for the length
+    /// of a serial-queue read, which is what these callers are avoiding on
+    /// the main thread anyway.
+    func readOffCaller<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
+        let dbQueue = self.dbQueue
+        return try await Task.detached(priority: .utility) {
+            try dbQueue.read(body)
+        }.value
     }
 
     /// Row counts for the Settings › Storage section.

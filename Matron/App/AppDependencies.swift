@@ -319,7 +319,7 @@ final class AppDependencies {
                 }
                 // An empty list means the first snapshot hasn't landed yet —
                 // treat it like a failed pass and retry on the backoff curve.
-                let ids = (try? store.allConversationIDs()) ?? []
+                let ids = (try? await store.allConversationIDs()) ?? []
                 if !ids.isEmpty, await coordinator.run(convoIDs: ids) {
                     backoff = .seconds(30) // a later failure restarts the curve
                     try? await Task.sleep(for: .seconds(900))

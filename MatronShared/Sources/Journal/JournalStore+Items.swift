@@ -151,7 +151,7 @@ extension JournalStore {
     /// the conversation is unknown or just untitled — `ItemsListView`'s
     /// "Another chat" fallback covers both.
     public func conversationOriginLabels() async throws -> [String: String] {
-        try await dbQueue.read { db in
+        try await readOffCaller { db in
             try Row.fetchAll(db, sql: """
                 SELECT conversation.id AS id, conversation.title AS title, agent.name AS agent_name
                 FROM conversation LEFT JOIN agent ON agent.id = conversation.agent_device_id
