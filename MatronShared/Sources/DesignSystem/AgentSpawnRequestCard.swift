@@ -83,24 +83,15 @@ public struct AgentSpawnRequestCard: View {
 /// The answer half of the spawn card: Decline / Approve while the ask is
 /// open, the outcome line (plus an Open button into a started room) once it
 /// is not, and the failure message under a send that did not land. Its own
-/// view so item detail (item #2318) can draw it without the card around it
-/// when an ask's card event has not reached this device — the answer needs
-/// only the request id, and the item body already holds the facts.
-public struct AgentSpawnAnswerControls: View {
-    public let state: AgentSpawnCardState
-    public let onApprove: () -> Void
-    public let onDeny: () -> Void
-    public let onOpen: ((String) -> Void)?
+/// view so the card's header and facts stay a pure rendering of the
+/// request, and the state machine's four cases are read in one place.
+struct AgentSpawnAnswerControls: View {
+    let state: AgentSpawnCardState
+    let onApprove: () -> Void
+    let onDeny: () -> Void
+    let onOpen: ((String) -> Void)?
 
-    public init(state: AgentSpawnCardState, onApprove: @escaping () -> Void, onDeny: @escaping () -> Void,
-                onOpen: ((String) -> Void)? = nil) {
-        self.state = state
-        self.onApprove = onApprove
-        self.onDeny = onDeny
-        self.onOpen = onOpen
-    }
-
-    public var body: some View {
+    var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             switch state {
             case .idle, .sending, .failed:

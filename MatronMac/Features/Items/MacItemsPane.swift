@@ -522,7 +522,16 @@ struct MacItemDetailHost: View {
                         // item was first opened.
                         onBottomVisibilityChange: { slot.isAtBottom = $0; slot.startsAtBottom = $0 },
                         onAnswerSpawn: { approve in Task { await viewModel.answerSpawn(approve: approve) } },
-                        onOpenRoom: onOpenConversation)
+                        // "Open" on a started spawn: `prepareConversation`
+                        // first, as the timeline card does — the room may
+                        // have no journal frames yet, and the detail column
+                        // needs a row to render.
+                        onOpenRoom: { roomID in
+                            Task { @MainActor in
+                                await deps?.prepareConversation(for: session, id: roomID)
+                                onOpenConversation(roomID)
+                            }
+                        })
                 } else {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }

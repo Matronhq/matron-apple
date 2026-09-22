@@ -5,9 +5,9 @@ import MatronModels
 @testable import MatronDesignSystem
 
 /// The spawn consent card inside item detail (item #2318). Three renderings
-/// a user meets: the full card, answerable; the answer controls alone, for
-/// an ask whose card event has not reached this device; and a started ask
-/// offering to open the child's room.
+/// a user meets: the full card, answerable; the placeholder for an ask
+/// whose card event has not reached this device (no buttons — nothing to
+/// approve yet); and a started ask offering to open the child's room.
 @MainActor
 final class ItemDetailConsentSnapshotTests: XCTestCase {
     private static let request = AgentSpawnRequest(
@@ -43,7 +43,7 @@ final class ItemDetailConsentSnapshotTests: XCTestCase {
 
     func testSpawnConsentWithoutTheCardEvent() {
         let consent = ItemSpawnConsent(requestID: "spawn-1", request: nil, state: .idle)
-        assertVariants(of: view(Self.item(), consent: consent), named: "ItemDetail_spawnConsent_controlsOnly")
+        assertVariants(of: view(Self.item(), consent: consent), named: "ItemDetail_spawnConsent_cardNotSynced")
     }
 
     func testSpawnConsentStarted() {

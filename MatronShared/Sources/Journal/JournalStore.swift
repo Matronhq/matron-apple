@@ -1489,9 +1489,13 @@ public final class JournalStore: @unchecked Sendable {
     /// (`spawn_outcome`) of one conversation, oldest first — what item
     /// detail needs to draw a consent item's card and settle its state
     /// (item #2318). Reads the full local history, like `attachmentEvents`:
-    /// a card can be much older than the timeline's window.
-    public func consentEvents(convoID: String) throws -> [JournalEvent] {
-        try dbQueue.read { db in
+    /// a card can be much older than the timeline's window. Live, so a card
+    /// that syncs after the item was opened still reaches it; the non-key
+    /// `convo_id` filter means every applied frame anywhere re-runs the
+    /// fetch (see `eventsStream`), which the type filter keeps cheap and
+    /// `removeDuplicates()` keeps quiet downstream.
+    public func consentEventsStream(convoID: String) -> AsyncStream<[JournalEvent]> {
+        let observation = ValueObservation.tracking { db in
             try EventRecord
                 .filter(Column("convo_id") == convoID)
                 .filter([JournalEventType.permissionRequest, JournalEventType.spawnOutcome].contains(Column("type")))
@@ -1499,6 +1503,7 @@ public final class JournalStore: @unchecked Sendable {
                 .fetchAll(db)
                 .map(\.journalEvent)
         }
+        return Self.stream(observation.removeDuplicates(), in: dbQueue)
     }
 
     /// `image`/`file` events for one conversation, newest first — the

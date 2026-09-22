@@ -32,9 +32,10 @@ public final class ItemDetailViewModel {
     public private(set) var loadedCommentCount: Int?
     /// The spawn consent ask this item mirrors (item #2318) — `nil` unless
     /// the item carries a `matron://consent/spawn/<id>` link. Re-derived
-    /// from the store whenever the item or its thread updates: the journal
-    /// closes the item right after appending the ask's `spawn_outcome`, so
-    /// the item update is what brings the resolved state in.
+    /// whenever the item, its thread, or the origin conversation's consent
+    /// rows change: the journal closes the item right after appending the
+    /// ask's `spawn_outcome`, and the card itself may sync after the item
+    /// was opened.
     public private(set) var spawnConsent: ItemSpawnConsent?
 
     private let store: any ItemsStoreReading
@@ -42,8 +43,13 @@ public final class ItemDetailViewModel {
     private let sync: any ItemsSyncing
     /// The origin conversation's consent rows — the card's own payload and
     /// its outcome. Optional so existing call sites construct unchanged; a
-    /// view model without it still answers, it just cannot draw the card.
+    /// view model without it draws no card and so never answers.
     private let events: (any ConsentEventsReading)?
+    /// The latest rows from `events` for `consentConvoID`, kept by the
+    /// subscription below so every re-derivation reads the same snapshot.
+    private var consentRows: [JournalEvent] = []
+    private var consentConvoID: String?
+    private var consentTask: Task<Void, Never>?
     /// Answers the ask. Optional for the same reason `ChatViewModel`'s is:
     /// with nothing wired, the card renders read-only rather than offering
     /// buttons that would do nothing.
@@ -69,7 +75,12 @@ public final class ItemDetailViewModel {
         let id = itemID
         tasks.append(Task { [weak self] in
             guard let s = self?.store.itemStream(id: id) else { return }
-            for await v in s { guard let self, !Task.isCancelled else { return }; self.item = v; self.refreshSpawnConsent() }
+            for await v in s {
+                guard let self, !Task.isCancelled else { return }
+                self.item = v
+                self.subscribeConsentRows()
+                self.refreshSpawnConsent()
+            }
         })
         subscribeComments()
         tasks.append(Task { [weak self] in
@@ -99,6 +110,7 @@ public final class ItemDetailViewModel {
         tasks.forEach { $0.cancel() }; tasks = []
         commentsTask?.cancel(); commentsTask = nil
         refreshTask?.cancel(); refreshTask = nil
+        consentTask?.cancel(); consentTask = nil; consentConvoID = nil; consentRows = []
     }
 
     private func subscribeComments() {
@@ -119,28 +131,49 @@ public final class ItemDetailViewModel {
     /// nothing); the resolved state from its `spawn_outcome`, the last one
     /// for the request id winning should there ever be two.
     private func refreshSpawnConsent() {
-        guard let item, let requestID = item.spawnConsentRequestID else { spawnConsent = nil; return }
+        guard let item, let requestID = item.spawnConsentRequestID else {
+            if spawnConsent != nil { spawnConsent = nil }
+            return
+        }
         var request: AgentSpawnRequest?
         var outcome: SpawnOutcome?
-        if let events, let rows = try? events.consentEvents(convoID: item.originConvoID) {
-            for row in rows {
-                switch row.type {
-                case JournalEventType.permissionRequest:
-                    guard request == nil, let parsed = AgentSpawnRequest.parse(payload: row.payload),
-                          parsed.requestID == requestID else { continue }
-                    request = parsed
-                case JournalEventType.spawnOutcome:
-                    guard let parsed = SpawnOutcome.parse(payload: row.payload), parsed.requestID == requestID else { continue }
-                    outcome = parsed
-                default:
-                    continue
-                }
+        for row in consentRows {
+            switch row.type {
+            case JournalEventType.permissionRequest:
+                guard request == nil, let parsed = AgentSpawnRequest.parse(payload: row.payload),
+                      parsed.requestID == requestID else { continue }
+                request = parsed
+            case JournalEventType.spawnOutcome:
+                guard let parsed = SpawnOutcome.parse(payload: row.payload), parsed.requestID == requestID else { continue }
+                outcome = parsed
+            default:
+                continue
             }
         }
-        spawnConsent = ItemSpawnConsent(
+        let next = ItemSpawnConsent(
             requestID: requestID, request: request,
             state: Self.spawnState(requestID: requestID, outcome: outcome, itemIsOpen: item.state == .open,
                                    transient: spawnTransient, canAnswer: agentSpawn != nil))
+        if next != spawnConsent { spawnConsent = next }
+    }
+
+    /// Follows the origin conversation's consent rows for as long as the
+    /// item is a consent ask. Keyed on the conversation, not the item: an
+    /// item update that leaves the origin alone keeps the subscription.
+    private func subscribeConsentRows() {
+        let convoID = item?.spawnConsentRequestID == nil ? nil : item?.originConvoID
+        guard convoID != consentConvoID else { return }
+        consentTask?.cancel(); consentTask = nil
+        consentConvoID = convoID
+        consentRows = []
+        guard let convoID, let events else { return }
+        consentTask = Task { [weak self] in
+            for await rows in events.consentEventsStream(convoID: convoID) {
+                guard let self, !Task.isCancelled else { return }
+                self.consentRows = rows
+                self.refreshSpawnConsent()
+            }
+        }
     }
 
     /// Where the ask is, in order of authority:
@@ -166,15 +199,19 @@ public final class ItemDetailViewModel {
     }
 
     /// Answers the spawn ask — `POST /agent-spawn/answer`, the one path that
-    /// resolves it, exactly as the timeline card answers it. Records nothing
-    /// on success: the card settles when the journal's outcome lands (and
+    /// resolves it, exactly as the timeline card answers it. Only against
+    /// the card's own payload: the request id comes from a link any agent
+    /// can write into any item, so an item whose card has not synced could
+    /// be an ask the user has never seen (another conversation's request id
+    /// in a benign-looking body). No card, no answer. Records nothing on
+    /// success: the card settles when the journal's outcome lands (and
     /// closes the item), which is also what makes the resolution honest —
     /// approving is not "approved and done" until the child has started. A
     /// 409 (answered elsewhere, or expired) settles the card as no longer
     /// waiting; any other error settles into the card and leaves it
     /// answerable again; cancellation just drops the in-flight state.
     public func answerSpawn(approve: Bool) async {
-        guard let agentSpawn, let consent = spawnConsent else { return }
+        guard let agentSpawn, let consent = spawnConsent, consent.request != nil else { return }
         switch consent.state {
         case .resolved, .sending: return
         case .idle, .failed: break
@@ -202,9 +239,15 @@ public final class ItemDetailViewModel {
     /// only honest close is to dismiss it. An open decision is already in
     /// force, so reversing it leads. A reply still in the outbox counts
     /// (Bugbot): it is the user's, and it will land.
+    ///
+    /// An open consent ask (item #2318) offers none: Approve and Decline
+    /// are its only honest closes. Cancelling the item would hide it while
+    /// the spawn request stays parked on the journal for its full life —
+    /// the journal closes the item itself on every terminal outcome.
     public var availableResolutions: [ItemResolution] {
-        Self.resolutions(for: item?.kind,
-                         userHasReplied: !pendingComments.isEmpty || comments.contains { $0.author == .user && $0.kind == .comment })
+        if let item, item.isConsentAsk, item.state == .open { return [] }
+        return Self.resolutions(for: item?.kind,
+                                userHasReplied: !pendingComments.isEmpty || comments.contains { $0.author == .user && $0.kind == .comment })
     }
 
     static func resolutions(for kind: ItemKind?, userHasReplied: Bool) -> [ItemResolution] {

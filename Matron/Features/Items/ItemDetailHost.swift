@@ -165,7 +165,15 @@ struct ItemDetailHost: View {
                     startsAtBottom: startsAtBottom,
                     onBottomVisibilityChange: { isAtBottom = $0 },
                     onAnswerSpawn: { approve in Task { await vm.answerSpawn(approve: approve) } },
-                    onOpenRoom: onOpenConversation
+                    // "Open" on a started spawn: `prepareConversation` first,
+                    // as the timeline card does — the room may have no
+                    // journal frames yet, and the destination needs a row.
+                    onOpenRoom: { roomID in
+                        Task { @MainActor in
+                            await deps?.prepareConversation(for: session, id: roomID)
+                            onOpenConversation(roomID)
+                        }
+                    }
                 )
                 // Resolve/reopen lives in the navigation bar's top-right
                 // corner, out of the composer's way (see the control's

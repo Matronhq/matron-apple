@@ -9,9 +9,13 @@ import MatronJournal
 /// for the real store is declared here since `MatronJournal` cannot import
 /// this module.
 public protocol ConsentEventsReading: Sendable {
-    /// `permission_request` and `spawn_outcome` events of one conversation,
-    /// oldest first.
-    func consentEvents(convoID: String) throws -> [JournalEvent]
+    /// Live `permission_request` and `spawn_outcome` events of one
+    /// conversation, oldest first: the current rows first, then again on
+    /// every change. Live because the card can land AFTER the item — a
+    /// consent item opened from a push on a device that has not yet
+    /// synced the origin conversation — and the ask must become
+    /// answerable the moment its card arrives, without reopening the item.
+    func consentEventsStream(convoID: String) -> AsyncStream<[JournalEvent]>
 }
 
 extension JournalStore: ConsentEventsReading {}

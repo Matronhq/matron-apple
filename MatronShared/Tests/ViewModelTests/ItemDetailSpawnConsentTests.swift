@@ -9,6 +9,8 @@ import MatronJournal
 /// published into the origin conversation, with the state derived the way
 /// `ChatViewModel.agentSpawnState` derives it — a `spawn_outcome` row wins,
 /// then the in-flight transient, then the item's own open/closed state.
+/// And it answers only against that card: the request id in the item's
+/// link is agent-written, so an ask without its card is never answerable.
 @MainActor
 final class ItemDetailSpawnConsentTests: XCTestCase {
     private final class Store: ItemsStoreReading, @unchecked Sendable {
@@ -39,12 +41,24 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
         func commentItem(id: String, body: String, attachments: [TrackerAttachment], idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment) { fatalError() }
         func rankItem(id: String, _ change: ItemRankChange) async throws -> TrackerItem { fatalError() }
     }
-    /// The origin conversation's consent rows, swapped by tests to simulate
-    /// a card (or its outcome) landing in the local store.
+    /// The origin conversation's consent rows: a subscription yields what
+    /// is there now, and `land` simulates a card (or its outcome) reaching
+    /// the local store later.
     private final class Events: ConsentEventsReading, @unchecked Sendable {
         var rows: [String: [JournalEvent]] = [:]
         var asked: [String] = []
-        func consentEvents(convoID: String) throws -> [JournalEvent] { asked.append(convoID); return rows[convoID] ?? [] }
+        private var conts: [String: [AsyncStream<[JournalEvent]>.Continuation]] = [:]
+        func consentEventsStream(convoID: String) -> AsyncStream<[JournalEvent]> {
+            asked.append(convoID)
+            return AsyncStream { cont in
+                self.conts[convoID, default: []].append(cont)
+                cont.yield(self.rows[convoID] ?? [])
+            }
+        }
+        func land(_ convoID: String, _ rows: [JournalEvent]) {
+            self.rows[convoID] = rows
+            for cont in conts[convoID] ?? [] { cont.yield(rows) }
+        }
     }
     /// Records answers; `error` makes the next one throw; `gate` holds it.
     private final class Spawn: AgentSpawnAnswering, @unchecked Sendable {
@@ -120,20 +134,49 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
         XCTAssertEqual(events.asked.first, "c1", "the card lives in the item's origin conversation")
     }
 
-    func testAMissingCardStillLeavesTheAskAnswerable() async throws {
-        let (vm, store, _) = try await make()
+    /// The forgery this guards against: an agent files an item in ITS
+    /// conversation linking ANOTHER conversation's request id under a
+    /// benign body. No card in the origin conversation, no answer.
+    func testAMissingCardIsNotAnswerable() async throws {
+        let spawn = Spawn()
+        let (vm, store, _) = try await make(spawn: spawn)
         store.itemCont?.yield(Self.item())
         try await waitUntil { vm.spawnConsent != nil }
         XCTAssertNil(vm.spawnConsent?.request, "the card event has not synced: no facts to draw")
-        XCTAssertEqual(vm.spawnConsent?.state, .idle, "but the answer API needs only the request id")
+        await vm.answerSpawn(approve: true)
+        XCTAssertTrue(spawn.answers.isEmpty, "the request id alone is never enough to answer on")
     }
 
     func testAStoreWithoutEventsReadsAsNoCard() async throws {
-        let (vm, store, _) = try await make(events: nil)
+        let spawn = Spawn()
+        let (vm, store, _) = try await make(events: nil, spawn: spawn)
         store.itemCont?.yield(Self.item())
         try await waitUntil { vm.spawnConsent != nil }
         XCTAssertNil(vm.spawnConsent?.request)
+        await vm.answerSpawn(approve: true)
+        XCTAssertTrue(spawn.answers.isEmpty)
+    }
+
+    /// The push-open case: the item is on screen before the origin
+    /// conversation synced. The card must arrive without reopening.
+    func testACardThatLandsLaterMakesTheAskAnswerable() async throws {
+        let events = Events()
+        let (vm, store, _) = try await make(events: events)
+        store.itemCont?.yield(Self.item())
+        try await waitUntil { vm.spawnConsent != nil }
+        XCTAssertNil(vm.spawnConsent?.request)
+        events.land("c1", [Self.card])
+        try await waitUntil { vm.spawnConsent?.request != nil }
         XCTAssertEqual(vm.spawnConsent?.state, .idle)
+        XCTAssertEqual(events.asked, ["c1"], "one subscription per origin conversation, not one per item update")
+    }
+
+    func testAnOpenConsentAskOffersNoManualClose() async throws {
+        let events = Events(); events.rows["c1"] = [Self.card]
+        let (vm, store, _) = try await make(events: events)
+        store.itemCont?.yield(Self.item())
+        try await waitUntil { vm.spawnConsent != nil }
+        XCTAssertEqual(vm.availableResolutions, [], "Approve and Decline are the only honest closes; cancelling would park the spawn unseen")
     }
 
     func testASpawnOutcomeInTheStoreResolvesTheCard() async throws {
@@ -173,16 +216,18 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
                        "same convention as the timeline card: never buttons with nothing behind them")
     }
 
-    /// The journal closes the item right after appending the outcome, so
-    /// the item update is what re-reads the store.
-    func testTheCardReDerivesWhenTheItemUpdates() async throws {
+    /// The journal appends the outcome, then closes the item: the outcome
+    /// row resolves the card on its own, the item update follows.
+    func testTheCardReDerivesWhenTheOutcomeLands() async throws {
         let events = Events(); events.rows["c1"] = [Self.card]
         let (vm, store, _) = try await make(events: events)
         store.itemCont?.yield(Self.item())
         try await waitUntil { vm.spawnConsent?.state == .idle }
-        events.rows["c1"] = [Self.card, Self.started]
-        store.itemCont?.yield(Self.item(state: .closed))
+        events.land("c1", [Self.card, Self.started])
         try await waitUntil { vm.spawnConsent?.state.isResolvedStarted == true }
+        store.itemCont?.yield(Self.item(state: .closed))
+        try await waitUntil { vm.item?.state == .closed }
+        XCTAssertTrue(vm.spawnConsent?.state.isResolvedStarted == true)
     }
 
     // MARK: - Answering
@@ -201,8 +246,9 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
     }
 
     func testDeclineSendsDeny() async throws {
+        let events = Events(); events.rows["c1"] = [Self.card]
         let spawn = Spawn()
-        let (vm, store, _) = try await make(spawn: spawn)
+        let (vm, store, _) = try await make(events: events, spawn: spawn)
         store.itemCont?.yield(Self.item())
         try await waitUntil { vm.spawnConsent?.state == .idle }
         await vm.answerSpawn(approve: false)
@@ -210,8 +256,9 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
     }
 
     func testAConflictSettlesTheCardAsExpired() async throws {
+        let events = Events(); events.rows["c1"] = [Self.card]
         let spawn = Spawn(); spawn.error = JournalAPIError.conflict
-        let (vm, store, _) = try await make(spawn: spawn)
+        let (vm, store, _) = try await make(events: events, spawn: spawn)
         store.itemCont?.yield(Self.item())
         try await waitUntil { vm.spawnConsent?.state == .idle }
         await vm.answerSpawn(approve: true)
@@ -219,8 +266,9 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
     }
 
     func testAnErrorSettlesIntoTheCardAndLeavesItAnswerableAgain() async throws {
+        let events = Events(); events.rows["c1"] = [Self.card]
         let spawn = Spawn(); spawn.error = JournalAPIError.transport("offline")
-        let (vm, store, _) = try await make(spawn: spawn)
+        let (vm, store, _) = try await make(events: events, spawn: spawn)
         store.itemCont?.yield(Self.item())
         try await waitUntil { vm.spawnConsent?.state == .idle }
         await vm.answerSpawn(approve: true)
@@ -232,8 +280,9 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
     }
 
     func testASecondTapWhileSendingIsIgnored() async throws {
+        let events = Events(); events.rows["c1"] = [Self.card]
         let spawn = Spawn(); spawn.holds = true
-        let (vm, store, _) = try await make(spawn: spawn)
+        let (vm, store, _) = try await make(events: events, spawn: spawn)
         store.itemCont?.yield(Self.item())
         try await waitUntil { vm.spawnConsent?.state == .idle }
         let first = Task { await vm.answerSpawn(approve: true) }
@@ -262,8 +311,7 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
         try await waitUntil { vm.spawnConsent?.state == .idle }
         await vm.answerSpawn(approve: true)
         guard case .failed = vm.spawnConsent?.state else { return XCTFail("expected failed") }
-        events.rows["c1"] = [Self.card, Self.started]
-        store.itemCont?.yield(Self.item(state: .closed))
+        events.land("c1", [Self.card, Self.started])
         try await waitUntil { vm.spawnConsent?.state.isResolvedStarted == true }
     }
 }

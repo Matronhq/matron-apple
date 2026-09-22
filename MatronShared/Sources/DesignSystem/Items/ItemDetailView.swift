@@ -357,10 +357,12 @@ public struct ItemDetailView: View {
     /// meta row and the body so the answer sits near the top of the thread.
     /// The full `AgentSpawnRequestCard` when the card's own event is in the
     /// local store — its task is then byte-for-byte what the timeline card
-    /// shows — and the answer controls alone otherwise: the body already
-    /// carries every fact the card would repeat, and the answer needs only
-    /// the request id. The body stays either way; it holds facts (model,
-    /// room flag) the card does not draw.
+    /// shows. Without it there is nothing to approve: the id in the item's
+    /// link is agent-written and could name an ask the user has never seen,
+    /// so the placeholder says the card has not arrived and offers no
+    /// buttons; the view model re-derives the moment it syncs. The body
+    /// stays either way; it holds facts (model, room flag) the card does
+    /// not draw.
     @ViewBuilder
     private func spawnConsentCard(_ consent: ItemSpawnConsent) -> some View {
         if let request = consent.request {
@@ -374,9 +376,9 @@ public struct ItemDetailView: View {
                 } icon: {
                     Image(systemName: "sparkles.rectangle.stack").foregroundStyle(.tint)
                 }
-                AgentSpawnAnswerControls(state: consent.state,
-                                         onApprove: { onAnswerSpawn?(true) }, onDeny: { onAnswerSpawn?(false) },
-                                         onOpen: onOpenRoom)
+                Text("The request card hasn't reached this device yet. It can be approved once it arrives, or from the conversation it was asked in.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding()
