@@ -69,6 +69,39 @@ public struct AgentSpawnRequestCard: View {
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary))
 
+            AgentSpawnAnswerControls(state: state, onApprove: onApprove, onDeny: onDeny, onOpen: onOpen)
+        }
+        .padding()
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.matronBubbleBot)
+                .shadow(color: .matronBubbleShadow, radius: 2, y: 1)
+        )
+    }
+}
+
+/// The answer half of the spawn card: Decline / Approve while the ask is
+/// open, the outcome line (plus an Open button into a started room) once it
+/// is not, and the failure message under a send that did not land. Its own
+/// view so item detail (item #2318) can draw it without the card around it
+/// when an ask's card event has not reached this device — the answer needs
+/// only the request id, and the item body already holds the facts.
+public struct AgentSpawnAnswerControls: View {
+    public let state: AgentSpawnCardState
+    public let onApprove: () -> Void
+    public let onDeny: () -> Void
+    public let onOpen: ((String) -> Void)?
+
+    public init(state: AgentSpawnCardState, onApprove: @escaping () -> Void, onDeny: @escaping () -> Void,
+                onOpen: ((String) -> Void)? = nil) {
+        self.state = state
+        self.onApprove = onApprove
+        self.onDeny = onDeny
+        self.onOpen = onOpen
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
             switch state {
             case .idle, .sending, .failed:
                 controls
@@ -80,12 +113,6 @@ public struct AgentSpawnRequestCard: View {
                 Text(message).font(.caption).foregroundStyle(.red)
             }
         }
-        .padding()
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color.matronBubbleBot)
-                .shadow(color: .matronBubbleShadow, radius: 2, y: 1)
-        )
     }
 
     @ViewBuilder
@@ -127,8 +154,10 @@ public struct AgentSpawnRequestCard: View {
         .font(.callout)
         .foregroundStyle(.secondary)
     }
+}
 
-    private func detail(label: String, value: String) -> some View {
+private extension AgentSpawnRequestCard {
+    func detail(label: String, value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label).font(.caption).foregroundStyle(.secondary)
             Text(value).font(.callout)

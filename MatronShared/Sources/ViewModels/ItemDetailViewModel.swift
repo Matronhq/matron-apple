@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import MatronEvents
 import MatronModels
 import MatronJournal
 
@@ -29,16 +30,38 @@ public final class ItemDetailViewModel {
     /// is re-subscribed so a pre-refetch snapshot still in flight on the
     /// old subscription can never overwrite the loaded thread.
     public private(set) var loadedCommentCount: Int?
+    /// The spawn consent ask this item mirrors (item #2318) — `nil` unless
+    /// the item carries a `matron://consent/spawn/<id>` link. Re-derived
+    /// from the store whenever the item or its thread updates: the journal
+    /// closes the item right after appending the ask's `spawn_outcome`, so
+    /// the item update is what brings the resolved state in.
+    public private(set) var spawnConsent: ItemSpawnConsent?
 
     private let store: any ItemsStoreReading
     private let api: any ItemsProviding
     private let sync: any ItemsSyncing
+    /// The origin conversation's consent rows — the card's own payload and
+    /// its outcome. Optional so existing call sites construct unchanged; a
+    /// view model without it still answers, it just cannot draw the card.
+    private let events: (any ConsentEventsReading)?
+    /// Answers the ask. Optional for the same reason `ChatViewModel`'s is:
+    /// with nothing wired, the card renders read-only rather than offering
+    /// buttons that would do nothing.
+    private let agentSpawn: (any AgentSpawnAnswering)?
+    /// The in-flight answer's state (`.sending`, a `.failed` message, or the
+    /// synthetic resolution a 409 settles the card with). In memory only,
+    /// like `ChatViewModel.agentSpawnTransientStates`: an interrupted send
+    /// must come back answerable, and a real resolution comes from the
+    /// store, not from here.
+    private var spawnTransient: AgentSpawnCardState?
     private var tasks: [Task<Void, Never>] = []
     private var commentsTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
 
-    public init(itemID: String, store: any ItemsStoreReading, api: any ItemsProviding, sync: any ItemsSyncing) {
+    public init(itemID: String, store: any ItemsStoreReading, api: any ItemsProviding, sync: any ItemsSyncing,
+                events: (any ConsentEventsReading)? = nil, agentSpawn: (any AgentSpawnAnswering)? = nil) {
         self.itemID = itemID; self.store = store; self.api = api; self.sync = sync
+        self.events = events; self.agentSpawn = agentSpawn
     }
 
     public func start() {
@@ -46,7 +69,7 @@ public final class ItemDetailViewModel {
         let id = itemID
         tasks.append(Task { [weak self] in
             guard let s = self?.store.itemStream(id: id) else { return }
-            for await v in s { guard let self, !Task.isCancelled else { return }; self.item = v }
+            for await v in s { guard let self, !Task.isCancelled else { return }; self.item = v; self.refreshSpawnConsent() }
         })
         subscribeComments()
         tasks.append(Task { [weak self] in
@@ -68,6 +91,7 @@ public final class ItemDetailViewModel {
             self.subscribeComments()
             if let fresh = try? self.store.comments(itemID: id) { self.comments = fresh }
             self.loadedCommentCount = self.comments.count
+            self.refreshSpawnConsent()
         }
     }
 
@@ -82,8 +106,92 @@ public final class ItemDetailViewModel {
         let id = itemID
         commentsTask = Task { [weak self] in
             guard let s = self?.store.commentsStream(itemID: id) else { return }
-            for await v in s { guard let self, !Task.isCancelled else { return }; self.comments = v }
+            for await v in s { guard let self, !Task.isCancelled else { return }; self.comments = v; self.refreshSpawnConsent() }
         }
+    }
+
+    // MARK: Spawn consent (item #2318)
+
+    /// Rebuilds `spawnConsent` from the item and the origin conversation's
+    /// consent rows. The card's facts come from the ask's own
+    /// `permission_request` payload (never reconstructed from the item's
+    /// markdown: what the user approves must be the card's words or
+    /// nothing); the resolved state from its `spawn_outcome`, the last one
+    /// for the request id winning should there ever be two.
+    private func refreshSpawnConsent() {
+        guard let item, let requestID = item.spawnConsentRequestID else { spawnConsent = nil; return }
+        var request: AgentSpawnRequest?
+        var outcome: SpawnOutcome?
+        if let events, let rows = try? events.consentEvents(convoID: item.originConvoID) {
+            for row in rows {
+                switch row.type {
+                case JournalEventType.permissionRequest:
+                    guard request == nil, let parsed = AgentSpawnRequest.parse(payload: row.payload),
+                          parsed.requestID == requestID else { continue }
+                    request = parsed
+                case JournalEventType.spawnOutcome:
+                    guard let parsed = SpawnOutcome.parse(payload: row.payload), parsed.requestID == requestID else { continue }
+                    outcome = parsed
+                default:
+                    continue
+                }
+            }
+        }
+        spawnConsent = ItemSpawnConsent(
+            requestID: requestID, request: request,
+            state: Self.spawnState(requestID: requestID, outcome: outcome, itemIsOpen: item.state == .open,
+                                   transient: spawnTransient, canAnswer: agentSpawn != nil))
+    }
+
+    /// Where the ask is, in order of authority:
+    ///
+    /// 1. A `spawn_outcome` row for the request — the server's durable word,
+    ///    outranking everything (answered on another device, expired by the
+    ///    sweep: history here too).
+    /// 2. A closed item with no local outcome — the row stopped awaiting an
+    ///    answer (the journal closes the item on every terminal outcome, and
+    ///    the thread's closing note says how); rendered as "no longer
+    ///    waiting", the same sentence a 409 earns. Above the transient so a
+    ///    `.sending` from this device cannot spin on after the item settled
+    ///    without its outcome row having synced.
+    /// 3. The in-flight transient.
+    /// 4. Answerable when an answerer is wired; otherwise read-only, the
+    ///    timeline card's own convention.
+    static func spawnState(requestID: String, outcome: SpawnOutcome?, itemIsOpen: Bool,
+                           transient: AgentSpawnCardState?, canAnswer: Bool) -> AgentSpawnCardState {
+        if let outcome { return .resolved(outcome) }
+        if !itemIsOpen { return .resolved(.expired(requestID: requestID)) }
+        if let transient { return transient }
+        return canAnswer ? .idle : .resolved(.expired(requestID: requestID))
+    }
+
+    /// Answers the spawn ask — `POST /agent-spawn/answer`, the one path that
+    /// resolves it, exactly as the timeline card answers it. Records nothing
+    /// on success: the card settles when the journal's outcome lands (and
+    /// closes the item), which is also what makes the resolution honest —
+    /// approving is not "approved and done" until the child has started. A
+    /// 409 (answered elsewhere, or expired) settles the card as no longer
+    /// waiting; any other error settles into the card and leaves it
+    /// answerable again; cancellation just drops the in-flight state.
+    public func answerSpawn(approve: Bool) async {
+        guard let agentSpawn, let consent = spawnConsent else { return }
+        switch consent.state {
+        case .resolved, .sending: return
+        case .idle, .failed: break
+        }
+        spawnTransient = .sending
+        refreshSpawnConsent()
+        do {
+            try await agentSpawn.answerAgentSpawn(requestID: consent.requestID, decision: approve ? .approve : .deny)
+            await sync.refreshItem(id: itemID)
+        } catch is CancellationError {
+            spawnTransient = nil
+        } catch JournalAPIError.conflict {
+            spawnTransient = .resolved(.expired(requestID: consent.requestID))
+        } catch {
+            spawnTransient = .failed(ChatViewModel.describeAgentSpawnError(error))
+        }
+        refreshSpawnConsent()
     }
 
     /// The resolutions the person can close this item with, primary

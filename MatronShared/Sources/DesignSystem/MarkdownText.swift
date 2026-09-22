@@ -72,7 +72,7 @@ public struct MarkdownText: View {
                 Self.log.debug("No tracker-item handler installed for \(MatronItemLink.redactedForLog(url), privacy: .public)")
             }
             return .handled
-        case .swallow:
+        case .swallow, .openConsent:
             // Matrix-internal (`matrix:` / `mxc:`) — swallowed until
             // permalink + content-URI handling lands — and any `matron://`
             // we don't understand. `.handled` keeps the OS from surfacing a

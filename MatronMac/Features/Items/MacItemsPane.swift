@@ -431,8 +431,23 @@ struct MacItemDetailHost: View {
         // is a tap like any other and must share the body's staleness gate
         // (item #115, fix round 5).
         case .openTrackerItem(let number): itemLinkRelay.action(number)
+        case .openConsent(let consent): openConsent(consent)
         case .swallow: break
         case .system(let url): NSWorkspace.shared.open(url)
+        }
+    }
+
+    /// A consent chip (item #2318): a spawn ask's card lives in this item's
+    /// origin conversation (the card itself is already drawn inline above
+    /// the body — the chip is the way to the timeline around it); a chat
+    /// ask's card lives in the room it is about.
+    private func openConsent(_ consent: ConsentLink) {
+        switch consent {
+        case .spawn:
+            guard let convoID = item?.originConvoID else { return }
+            onOpenConversation(convoID)
+        case .chat(let roomID, _):
+            onOpenConversation(roomID)
         }
     }
 
@@ -481,7 +496,8 @@ struct MacItemDetailHost: View {
                             // it is the honest UI.
                             originTitle: item.originConvoID == currentConvoID ? nil : slot.originTitle,
                             availableResolutions: viewModel.availableResolutions, isBusy: viewModel.isBusy,
-                            loadedCommentCount: viewModel.loadedCommentCount),
+                            loadedCommentCount: viewModel.loadedCommentCount,
+                            spawnConsent: viewModel.spawnConsent),
                         draft: Binding(get: { viewModel.draft }, set: { viewModel.draft = $0 }),
                         image: { slot.images[$0.blobRef] },
                         onOpenAttachment: { openAttachment($0, in: item) },
@@ -504,7 +520,9 @@ struct MacItemDetailHost: View {
                         // SAME item, and its fresh ItemDetailView must place
                         // itself where the reader actually is, not where the
                         // item was first opened.
-                        onBottomVisibilityChange: { slot.isAtBottom = $0; slot.startsAtBottom = $0 })
+                        onBottomVisibilityChange: { slot.isAtBottom = $0; slot.startsAtBottom = $0 },
+                        onAnswerSpawn: { approve in Task { await viewModel.answerSpawn(approve: approve) } },
+                        onOpenRoom: onOpenConversation)
                 } else {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }

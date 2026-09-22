@@ -32,6 +32,7 @@ public struct ItemRow: View {
         "\(ItemGlyph.label(item.kind)) \(item.num), \(item.title)"
             + (item.needsUser ? ", needs you" : "")
             + (Self.missionChipText(for: item).map { ", mission \($0)" } ?? "")
+            + (item.isConsentAsk ? ", consent ask" : "")
     }
 
     public var body: some View {
@@ -50,6 +51,15 @@ public struct ItemRow: View {
                     Text(item.body.replacingOccurrences(of: "\n", with: " ")).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 }
                 HStack(spacing: 8) {
+                    // A consent ask (item #2318) — a spawn or chat card
+                    // mirrored into the tracker — told apart from an
+                    // ordinary question at a glance. Decided by the item's
+                    // consent link, never by its labels.
+                    if item.isConsentAsk {
+                        Label("Consent", systemImage: "hand.raised")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
                     if let origin { Text(origin).font(.caption2).foregroundStyle(.tertiary).lineLimit(1) }
                     if let chip = Self.missionChipText(for: item) {
                         Label(chip, systemImage: MissionGlyph.symbol())

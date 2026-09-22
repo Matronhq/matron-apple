@@ -751,9 +751,10 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
                 // swallowed when no host installed a handler. The scheme is
                 // not registered with the OS, so it must never be handed on.
                 openTrackerItem?(number)
-            case .swallow:
+            case .swallow, .openConsent:
                 // matrix/mxc — swallowed until permalink / content-URI
-                // handling lands; mirrors `MarkdownText.handle(url:)`.
+                // handling lands; mirrors `MarkdownText.handle(url:)`. A
+                // consent link belongs on an item, not in prose (#2318).
                 break
             case .system(let url):
                 openExternally(url)

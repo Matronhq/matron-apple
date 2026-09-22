@@ -583,7 +583,7 @@ enum MarkdownAttributed {
             // — `matron://item/<n>` and ordinary web links — gets an
             // accent-coloured, underlined, clickable link.
             switch MatronItemLink.action(for: link) {
-            case .swallow:
+            case .swallow, .openConsent:
                 attrs[.foregroundColor] = NSColor.controlAccentColor
             case .openTrackerItem, .system:
                 attrs[.link] = link

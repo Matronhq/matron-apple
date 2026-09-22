@@ -1485,6 +1485,22 @@ public final class JournalStore: @unchecked Sendable {
         }
     }
 
+    /// The consent cards (`permission_request`) and spawn outcomes
+    /// (`spawn_outcome`) of one conversation, oldest first — what item
+    /// detail needs to draw a consent item's card and settle its state
+    /// (item #2318). Reads the full local history, like `attachmentEvents`:
+    /// a card can be much older than the timeline's window.
+    public func consentEvents(convoID: String) throws -> [JournalEvent] {
+        try dbQueue.read { db in
+            try EventRecord
+                .filter(Column("convo_id") == convoID)
+                .filter([JournalEventType.permissionRequest, JournalEventType.spawnOutcome].contains(Column("type")))
+                .order(Column("seq"))
+                .fetchAll(db)
+                .map(\.journalEvent)
+        }
+    }
+
     /// `image`/`file` events for one conversation, newest first — the
     /// media & links browser's Media and Files tabs. Reads the full local
     /// history: the timeline's 120-row window cannot see older attachments.

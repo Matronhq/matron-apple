@@ -95,8 +95,23 @@ struct ItemDetailHost: View {
         // (item #115, fix round 5) — resolving it on the side would let a
         // chip and a body link race each other.
         case .openTrackerItem(let number): itemLinkRelay.action(number)
+        case .openConsent(let consent): openConsent(consent)
         case .swallow: break
         case .system(let url): openURL(url)
+        }
+    }
+
+    /// A consent chip (item #2318): a spawn ask's card lives in this item's
+    /// origin conversation (the card itself is already drawn inline above
+    /// the body — the chip is the way to the timeline around it); a chat
+    /// ask's card lives in the room it is about.
+    private func openConsent(_ consent: ConsentLink) {
+        switch consent {
+        case .spawn:
+            guard let convoID = viewModel?.item?.originConvoID else { return }
+            onOpenConversation(convoID)
+        case .chat(let roomID, _):
+            onOpenConversation(roomID)
         }
     }
 
@@ -134,7 +149,8 @@ struct ItemDetailHost: View {
                         originTitle: item.originConvoID == currentConvoID ? nil : originTitle,
                         availableResolutions: vm.availableResolutions,
                         isBusy: vm.isBusy,
-                        loadedCommentCount: vm.loadedCommentCount
+                        loadedCommentCount: vm.loadedCommentCount,
+                        spawnConsent: vm.spawnConsent
                     ),
                     draft: Binding(get: { vm.draft }, set: { vm.draft = $0 }),
                     image: { imageCache[$0.blobRef] },
@@ -147,7 +163,9 @@ struct ItemDetailHost: View {
                     onClose: { resolution in Task { await vm.close(resolution: resolution, comment: nil) } },
                     onReopen: { Task { await vm.reopen() } },
                     startsAtBottom: startsAtBottom,
-                    onBottomVisibilityChange: { isAtBottom = $0 }
+                    onBottomVisibilityChange: { isAtBottom = $0 },
+                    onAnswerSpawn: { approve in Task { await vm.answerSpawn(approve: approve) } },
+                    onOpenRoom: onOpenConversation
                 )
                 // Resolve/reopen lives in the navigation bar's top-right
                 // corner, out of the composer's way (see the control's
