@@ -1369,8 +1369,15 @@ public final class JournalStore: @unchecked Sendable {
     /// activity ordering indexes the conversations the user is most likely
     /// to search before the long tail. (DESC puts NULL activity rows last,
     /// same as `conversations()`.)
-    public func allConversationIDs() throws -> [String] {
-        try dbQueue.read { db in
+    ///
+    /// `async` for the same reason as `conversationOriginLabels()`: the
+    /// only caller is the backfill task in `AppDependencies`, which is
+    /// `@MainActor`-isolated, so the synchronous form ran this full-table
+    /// read on the main thread on every sweep — live samples of a 7k-row
+    /// store put it inside main-thread hangs. The async read runs on the
+    /// database queue and the main actor is free until the ids come back.
+    public func allConversationIDs() async throws -> [String] {
+        try await dbQueue.read { db in
             try String.fetchAll(db, sql: """
                 SELECT id FROM conversation
                 ORDER BY last_activity_ts DESC, last_seq DESC

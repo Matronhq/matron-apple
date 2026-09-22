@@ -294,6 +294,32 @@ final class JournalStoreTests: XCTestCase {
                        "null last_activity_ts sorts last, tiebroken by last_seq desc")
     }
 
+    func testAllConversationIDsIncludesHiddenOrderedByActivity_asyncRead() async throws {
+        // Backs the search-history backfill sweep: every conversation,
+        // hidden ones included (they still hold searchable messages),
+        // most-recently-active first with null-activity rows last. Pinned
+        // on the async form because the only caller runs on the main
+        // actor — a synchronous full-table read there showed up inside
+        // main-thread hangs on a 7k-row store.
+        let store = try makeStore()
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "c-old", title: "Old", sessionState: "running",
+                            lastSeq: 100, snippet: "s", createdAt: 0, lastTS: 1_000),
+            ConvoSummaryDTO(id: "c-hidden", title: "Hidden", sessionState: "running",
+                            lastSeq: 7, snippet: "s", createdAt: 0, lastTS: 3_000),
+            ConvoSummaryDTO(id: "c-new", title: "New", sessionState: "running",
+                            lastSeq: 5, snippet: "s", createdAt: 0, lastTS: 2_000),
+            ConvoSummaryDTO(id: "c-null", title: "Never", sessionState: "running",
+                            lastSeq: 50, snippet: "s", createdAt: 0),
+        ], headSeq: 100)
+        try store.setHidden(true, convoID: "c-hidden")
+        XCTAssertFalse(try store.conversations().map(\.id).contains("c-hidden"),
+                       "precondition: the list view filters hidden rows")
+        let ids = try await store.allConversationIDs()
+        XCTAssertEqual(ids, ["c-hidden", "c-new", "c-old", "c-null"],
+                       "hidden rows included; activity desc, null activity last")
+    }
+
     func testConversationsStreamYieldsOnChange() async throws {
         let store = try makeStore()
         var iterator = store.conversationsStream().makeAsyncIterator()
