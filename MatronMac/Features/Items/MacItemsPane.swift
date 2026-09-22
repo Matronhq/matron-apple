@@ -14,17 +14,29 @@ import MatronDesignSystem
 struct MacItemsPaneChrome<Content: View>: View {
     let title: String
     var showsBackChevron = false
+    /// Pops the pane's own navigation stack; `nil` while nothing is pushed.
+    /// The pane draws this Back itself because the window toolbar cannot —
+    /// see `MacItemsPaneStackDestination`.
+    var onBack: (() -> Void)? = nil
     let onClose: () -> Void
     @ViewBuilder let content: () -> Content
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                if showsBackChevron {
+                switch MacItemsPaneLeadingControl.resolve(canGoBack: onBack != nil, showsBackChevron: showsBackChevron) {
+                case .back:
+                    Button { onBack?() } label: { Label("Back", systemImage: "chevron.left") }
+                        .buttonStyle(.plain)
+                        .help("Back to the list")
+                        .accessibilityLabel("Back")
+                case .toChat:
                     Button(action: onClose) { Image(systemName: "chevron.left") }
                         .buttonStyle(.plain)
                         .help("Back to the chat")
                         .accessibilityLabel("Back to the chat")
+                case .absent:
+                    EmptyView()
                 }
                 Text(title).font(.headline)
                 Spacer()
@@ -40,6 +52,39 @@ struct MacItemsPaneChrome<Content: View>: View {
             content()
         }
         .background(.background)
+    }
+}
+
+/// Which control leads the pane's header row. One at a time, so unwinding
+/// is one level per click: a pushed item goes back to the list; the list,
+/// in the narrow takeover, goes back to the chat. Pure so
+/// `MacItemsPaneChromeTests` can pin the rule without rendering.
+enum MacItemsPaneLeadingControl: Equatable {
+    /// "‹ Back" — pops the pane's navigation stack.
+    case back
+    /// "‹" — the narrow takeover's way back to the chat (`onClose`).
+    case toChat
+    case absent
+
+    static func resolve(canGoBack: Bool, showsBackChevron: Bool) -> Self {
+        if canGoBack { return .back }
+        return showsBackChevron ? .toChat : .absent
+    }
+}
+
+/// Applied to every view pushed on the pane's `NavigationStack`. The chat
+/// header is a title-bar accessory as wide as the whole detail column
+/// (`MacChatHeaderAccessory`), so the detail section of the window's
+/// NSToolbar has no room at all: the stack's automatic Back item was clipped
+/// into AppKit's `»` overflow menu — a chevron in the top-left corner with a
+/// lone "Back" inside it, or nothing at all once the stack it belonged to had
+/// gone (Dan, 2026-09-22). The pane draws its own Back in
+/// `MacItemsPaneChrome` instead, so the stack must not add one to the
+/// toolbar. `MacChatHeaderAccessoryTests` pins that a push under the header
+/// adds no toolbar item.
+struct MacItemsPaneStackDestination: ViewModifier {
+    func body(content: Content) -> some View {
+        content.navigationBarBackButtonHidden(true)
     }
 }
 
@@ -242,7 +287,9 @@ struct MacItemsPane: View {
     @Environment(\.appDependencies) private var deps
 
     var body: some View {
-        MacItemsPaneChrome(title: "Tasks & decisions", showsBackChevron: showsBackChevron, onClose: onClose) {
+        MacItemsPaneChrome(title: "Tasks & decisions", showsBackChevron: showsBackChevron,
+                           onBack: state.path.isEmpty ? nil : { state.path.removeLast() },
+                           onClose: onClose) {
             NavigationStack(path: Binding(get: { state.path }, set: { state.path = $0 })) {
                 ItemsListView(
                     model: .init(
@@ -282,6 +329,7 @@ struct MacItemsPane: View {
                                            state.path.append(id)
                                        },
                                        surface: .stack)
+                    .modifier(MacItemsPaneStackDestination())
                 }
             }
         }

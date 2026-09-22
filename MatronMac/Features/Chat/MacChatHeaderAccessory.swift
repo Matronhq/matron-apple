@@ -173,6 +173,14 @@ private final class MacChatHeaderContainerView: NSView {
 /// It is installed once per window and never removed — adding or removing an
 /// accessory re-lays the title bar, which is the cost this exists to avoid —
 /// only hidden while no chat column is on screen.
+///
+/// Being as wide as the detail column, it leaves the detail section of the
+/// window's NSToolbar no room at all. Anything mounted under it that adds a
+/// toolbar item — a `NavigationStack`'s automatic Back, a `.toolbar` — gets
+/// clipped into AppKit's `»` overflow menu at the column's leading edge
+/// (Dan, 2026-09-22: a dead `»` in the top-left corner). So nothing beneath
+/// the header may add toolbar items; the Tasks pane hides its stack's Back
+/// and draws its own (`MacItemsPaneStackDestination`).
 @MainActor
 final class MacChatHeaderAccessory: NSTitlebarAccessoryViewController {
     /// The unified title bar + toolbar strip.
@@ -278,7 +286,11 @@ struct MacChatHeaderAccessoryInstaller: NSViewRepresentable {
             didSet { if width != oldValue { scheduleSync() } }
         }
         /// Set when SwiftUI is done with this view, whether or not AppKit has
-        /// taken it out of the window yet.
+        /// taken it out of the window yet. This — not losing the window — is
+        /// what releases the accessory: SwiftUI lifts this view's platform
+        /// host out of the hierarchy on a `NavigationStack` push under the
+        /// host (the Tasks pane opening an item) and may never put it back,
+        /// while the chat column it serves stays on screen (2026-09-22).
         var dismantled = false {
             didSet { scheduleSync() }
         }
@@ -300,9 +312,15 @@ struct MacChatHeaderAccessoryInstaller: NSViewRepresentable {
         }
 
         private func sync() {
-            guard let window, !dismantled else {
+            guard !dismantled else {
                 attached?.detach(self)
                 attached = nil
+                return
+            }
+            guard let window else {
+                // Out of the window but still alive — see `dismantled`. The
+                // header stays attached and keeps following the column's width.
+                attached?.setWidth(width)
                 return
             }
             if let attached, attached !== MacChatHeaderAccessory.existing(in: window) {
