@@ -43,4 +43,31 @@ final class CoordinatorSettingTests: XCTestCase {
         XCTAssertNil(a.convoID)
         XCTAssertNil(defaults.object(forKey: CoordinatorSetting.defaultsKey(for: "@a:s")), "clearing removes the key outright")
     }
+
+    func testMigratedFlagIsPerUserAndDefaultsFalse() {
+        let a = CoordinatorSetting(userID: "@a:s", defaults: defaults)
+        XCTAssertFalse(a.migrated)
+        a.migrated = true
+        XCTAssertTrue(CoordinatorSetting(userID: "@a:s", defaults: defaults).migrated)
+        XCTAssertFalse(CoordinatorSetting(userID: "@b:s", defaults: defaults).migrated)
+        XCTAssertEqual(CoordinatorSetting.migratedKey(for: "@a:s"), "coordinator.migrated.@a:s")
+    }
+
+    /// Spec §3a: local only / journal only / both different / both empty /
+    /// already migrated.
+    func testReconcileRules() {
+        XCTAssertEqual(CoordinatorSetting.reconcile(journal: nil, cached: "cL", migrated: false), .push("cL"),
+                       "journal has none, this device has one: first device wins")
+        XCTAssertEqual(CoordinatorSetting.reconcile(journal: "cJ", cached: nil, migrated: false), .adopt("cJ"))
+        XCTAssertEqual(CoordinatorSetting.reconcile(journal: "cJ", cached: "cL", migrated: false), .adopt("cJ"),
+                       "a later device with a different cached id adopts the journal's")
+        XCTAssertEqual(CoordinatorSetting.reconcile(journal: nil, cached: nil, migrated: false), .adopt(nil))
+        XCTAssertEqual(CoordinatorSetting.reconcile(journal: nil, cached: "cL", migrated: true), .adopt(nil),
+                       "after the first reconcile a journal 'none' is a clear from elsewhere, not a gap to fill")
+        XCTAssertEqual(CoordinatorSetting.reconcile(journal: nil, cached: "", migrated: false), .adopt(nil))
+    }
+
+    func testNewChatModelIsOpus1M() {
+        XCTAssertEqual(CoordinatorSetting.newChatModel, "opus[1m]")
+    }
 }
