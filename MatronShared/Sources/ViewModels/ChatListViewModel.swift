@@ -34,8 +34,20 @@ public final class ChatListViewModel {
     private let chat: ChatService
     private var observationTask: Task<Void, Never>?
 
-    public init(chat: ChatService) {
+    /// Snapshots are applied at most once per interval; see `schedule`.
+    private let coalesceInterval: Duration
+    private var lastApplied: ContinuousClock.Instant?
+    private var pending: (groups: [GroupedSummaries], totalUnread: Int)?
+    private var flushTask: Task<Void, Never>?
+
+    /// - Parameter coalesceInterval: minimum spacing between two applied
+    ///   snapshots. The service already coalesces to ~4/s; the list does
+    ///   not need that rate (every applied snapshot re-diffs every sidebar
+    ///   row), so the default holds it to one a second. Tests pass a
+    ///   shorter interval or `.zero`.
+    public init(chat: ChatService, coalesceInterval: Duration = .seconds(1)) {
         self.chat = chat
+        self.coalesceInterval = coalesceInterval
     }
 
     /// Subscribes to the long-lived `ChatService.chatSummaries()` stream
@@ -55,7 +67,7 @@ public final class ChatListViewModel {
                     if Task.isCancelled { return }
                     let (grouped, unread) = await Self.derive(from: snapshot)
                     if Task.isCancelled { return }
-                    self.apply(groups: grouped, totalUnread: unread)
+                    self.schedule(groups: grouped, totalUnread: unread)
                 }
             } catch {
                 let message = error.localizedDescription
@@ -74,10 +86,47 @@ public final class ChatListViewModel {
         (group(summaries: snapshot), snapshot.reduce(0) { $0 + $1.unreadCount })
     }
 
+    /// Applies a snapshot now if the last one is at least `coalesceInterval`
+    /// old; otherwise parks it as `pending` and flushes the latest pending
+    /// snapshot when the interval is up. While agents are live the service
+    /// yields several snapshots a second (activity timestamps, snippets),
+    /// and each applied one makes the sidebar `List` diff every row —
+    /// live samples of a 700-row sidebar put that diff inside multi-second
+    /// main-thread hangs. Only the newest snapshot matters, so the ones
+    /// that arrive inside the interval are dropped, never queued: the list
+    /// is at most one interval behind and never plays catch-up.
+    private func schedule(groups grouped: [GroupedSummaries], totalUnread unread: Int) {
+        let now = ContinuousClock.now
+        if let lastApplied, now - lastApplied < coalesceInterval {
+            pending = (grouped, unread)
+            if flushTask == nil {
+                let delay = coalesceInterval - (now - lastApplied)
+                flushTask = Task { [weak self] in
+                    try? await Task.sleep(for: delay)
+                    guard let self, !Task.isCancelled else { return }
+                    self.flushTask = nil
+                    if let pending = self.pending {
+                        self.pending = nil
+                        self.apply(groups: pending.groups, totalUnread: pending.totalUnread)
+                    }
+                }
+            }
+            return
+        }
+        // A snapshot that lands after the interval but before a scheduled
+        // flush resumes must win over the parked one: drop the flush and
+        // its (older) snapshot, or it would apply on top of this newer one.
+        flushTask?.cancel()
+        flushTask = nil
+        pending = nil
+        apply(groups: grouped, totalUnread: unread)
+    }
+
     /// `@Observable` notifies on every write, equal or not, and each
     /// notification re-evaluates every view that read the property — so
     /// only write what actually changed.
     private func apply(groups grouped: [GroupedSummaries], totalUnread unread: Int) {
+        lastApplied = .now
         if groups != grouped { groups = grouped }
         if hasChats != !grouped.isEmpty { hasChats = !grouped.isEmpty }
         if totalUnread != unread { totalUnread = unread }
@@ -112,6 +161,9 @@ public final class ChatListViewModel {
     public func cancel() {
         observationTask?.cancel()
         observationTask = nil
+        flushTask?.cancel()
+        flushTask = nil
+        pending = nil
     }
 
     public nonisolated static func group(summaries: [ChatSummary], now: Date = Date(), calendar: Calendar = .current) -> [GroupedSummaries] {
