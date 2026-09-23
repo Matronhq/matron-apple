@@ -105,8 +105,9 @@ struct ChatCommands: Commands {
                 .keyboardShortcut("+", modifiers: .command)
             Button("Decrease Font Size") { post(.decreaseFontSize) }
                 .keyboardShortcut("-", modifiers: .command)
+            // No shortcut: its listener never landed, and ⌘0 is Go ▸
+            // Coordinator's now.
             Button("Reset Font Size") { post(.resetFontSize) }
-                .keyboardShortcut("0", modifiers: .command)
         }
 
         // Go menu — the key window's navigation history (spec 2026-09-23
@@ -119,6 +120,14 @@ struct ChatCommands: Commands {
             Button("Forward") { navigation?.goForward() }
                 .keyboardShortcut("]", modifiers: .command)
                 .disabled(navigation?.canGoForward != true)
+            Divider()
+            // The key window's Coordinator panel (Coordinator redesign
+            // §3b) — per window like Back/Forward, so not a bus command.
+            Button(navigation?.isCoordinatorOpen == true ? "Hide Coordinator" : "Coordinator") {
+                navigation?.toggleCoordinator?()
+            }
+            .keyboardShortcut("0", modifiers: .command)
+            .disabled(navigation?.toggleCoordinator == nil)
         }
     }
 
@@ -134,6 +143,10 @@ struct MacNavigationActions {
     var canGoForward: Bool
     var goBack: () -> Void
     var goForward: () -> Void
+    /// The key window's Coordinator panel (spec §3b) — per window, like
+    /// Back/Forward, so never a bus command.
+    var isCoordinatorOpen: Bool = false
+    var toggleCoordinator: (() -> Void)? = nil
 }
 
 extension FocusedValues {

@@ -259,7 +259,13 @@ final class MacChatHeaderAccessory: NSTitlebarAccessoryViewController {
 @MainActor
 final class MacChatHeaderLink {
     private var latest: MacChatToolbarProps?
-    private var latestInset: CGFloat = 0
+    /// The host's own `trailingInset`, used while no panel container below
+    /// reports the width it draws.
+    private var explicitInset: CGFloat = 0
+    /// What `MacCoordinatorPanelContainer` reports it draws — wins over
+    /// `explicitInset`, so the header clears exactly what is on screen.
+    private var panelInset: CGFloat?
+    private var latestInset: CGFloat { panelInset ?? explicitInset }
     weak var accessory: MacChatHeaderAccessory? {
         didSet {
             if let latest { accessory?.model.props = latest }
@@ -273,8 +279,18 @@ final class MacChatHeaderLink {
     }
 
     func publishTrailingInset(_ inset: CGFloat) {
-        latestInset = inset
-        accessory?.model.trailingInset = inset
+        explicitInset = inset
+        applyInset()
+    }
+
+    func publishPanelInset(_ inset: CGFloat?) {
+        panelInset = inset
+        applyInset()
+    }
+
+    private func applyInset() {
+        let inset = latestInset
+        if accessory?.model.trailingInset != inset { accessory?.model.trailingInset = inset }
     }
 }
 
@@ -356,7 +372,8 @@ struct MacChatHeaderAccessoryInstaller: NSViewRepresentable {
 /// `MacChatListView` instead, every title / badge / status change would
 /// re-evaluate that whole root view, sidebar included.
 struct MacChatHeaderHost<Content: View>: View {
-    /// See `MacChatHeaderModel.trailingInset`.
+    /// See `MacChatHeaderModel.trailingInset`. A `MacCoordinatorPanelContainer`
+    /// inside `content` overrides it with the width it actually draws.
     var trailingInset: CGFloat = 0
     @ViewBuilder let content: Content
     @State private var link = MacChatHeaderLink()
@@ -373,6 +390,9 @@ struct MacChatHeaderHost<Content: View>: View {
             }
             .onPreferenceChange(MacChatToolbarPreference.self) { props in
                 MainActor.assumeIsolated { link.publish(props) }
+            }
+            .onPreferenceChange(MacCoordinatorPanelInsetPreference.self) { inset in
+                MainActor.assumeIsolated { link.publishPanelInset(inset) }
             }
     }
 }

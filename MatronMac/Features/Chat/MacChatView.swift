@@ -411,6 +411,13 @@ struct MacChatView: View {
     /// column. `nil` in previews and tests leaves the cards inert.
     var onOpenMission: ((String) -> Void)? = nil
 
+    /// `false` for the Coordinator panel's chat (Coordinator redesign §3b):
+    /// with two chats on screen the menu bus (⌘K Slash Command, ⌘R) must
+    /// reach the main chat only, and a second hidden ⌘K button would race it.
+    /// The same goes for the hidden ⇧⌘I / ⇧⌘U buttons: a duplicate would
+    /// let the panel's chat answer the main chat's shortcut.
+    var respondsToMenuCommands: Bool = true
+
     /// Minimum detail width to show the child sub-chat pane BESIDE the
     /// parent timeline. Below this the child pane takes over the whole
     /// detail area with a back chevron (spec §5). Floor is 800 — the sum of
@@ -645,25 +652,29 @@ struct MacChatView: View {
         // `chatColumn` below, minus the accessibility hiding concern here
         // since this one carries no risk of a stray VoiceOver-announced
         // "button" — it sits outside the rendered branch either way).
-        .background(
-            Button("") {
-                showItemsPane.toggle()
-                if showItemsPane { openSubChatID = nil }
+        .background {
+            if respondsToMenuCommands {
+                Button("") {
+                    showItemsPane.toggle()
+                    if showItemsPane { openSubChatID = nil }
+                }
+                .keyboardShortcut("i", modifiers: [.command, .shift])
+                .opacity(0)
+                .accessibilityHidden(true)
             }
-            .keyboardShortcut("i", modifiers: [.command, .shift])
-            .opacity(0)
-            .accessibilityHidden(true)
-        )
+        }
         // ⇧⌘U — jump to my last message (item #60). Same hidden-button
         // shape and the same home as ⇧⌘I above: the visible control is the
         // floating pill in `chatColumn`'s timeline overlay (#270), which
         // the narrow-takeover branch doesn't render.
-        .background(
-            Button("") { Task { await viewModel.jumpToLastOwnMessage() } }
-                .keyboardShortcut("u", modifiers: [.command, .shift])
-                .opacity(0)
-                .accessibilityHidden(true)
-        )
+        .background {
+            if respondsToMenuCommands {
+                Button("") { Task { await viewModel.jumpToLastOwnMessage() } }
+                    .keyboardShortcut("u", modifiers: [.command, .shift])
+                    .opacity(0)
+                    .accessibilityHidden(true)
+            }
+        }
         // This timeline's cross-message selection, published to every
         // message body below (the sub-chat pane overrides it with its own
         // inside its subtree, so the two timelines never share a selection).
@@ -1319,12 +1330,14 @@ struct MacChatView: View {
         // accessibilityHidden because the unlabeled button would
         // otherwise be announced as a nameless "button" by VoiceOver
         // (QA finding #21).
-        .background(
-            Button("") { composerVM.palettePinnedOpen.toggle() }
-                .keyboardShortcut("k", modifiers: .command)
-                .opacity(0)
-                .accessibilityHidden(true)
-        )
+        .background {
+            if respondsToMenuCommands {
+                Button("") { composerVM.palettePinnedOpen.toggle() }
+                    .keyboardShortcut("k", modifiers: .command)
+                    .opacity(0)
+                    .accessibilityHidden(true)
+            }
+        }
         // ⌘R refresh — driven by the menu-bar command bus (Task 14e).
         // When focus is on a chat detail column, ⌘R reloads THIS
         // chat's timeline (paginate-backward via
@@ -1333,6 +1346,7 @@ struct MacChatView: View {
         // the list-level snapshot via `ChatService.forceSnapshot()` —
         // those are different surfaces and stay separately wired.
         .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.refresh))) { _ in
+            guard respondsToMenuCommands else { return }
             Task { await viewModel.refresh() }
         }
         // ⌘K menu route — `Commands.swift` posts `.slashCommand` from
@@ -1341,6 +1355,7 @@ struct MacChatView: View {
         // via the hidden Button above, but the menu picked the same
         // notification and dropped it). QA finding #2.
         .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.slashCommand))) { _ in
+            guard respondsToMenuCommands else { return }
             composerVM.palettePinnedOpen.toggle()
         }
         // Mac fullscreen image preview — Mac's `NSWorkspace.shared.open`

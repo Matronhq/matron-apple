@@ -35,4 +35,14 @@ final class MacMissionsNavTests: XCTestCase {
         XCTAssertEqual(MacChatListView.missionBackConvoID(for: .titleTap(fromConvoID: "c1")), "c1")
         XCTAssertNil(MacChatListView.missionBackConvoID(for: .titleTap(fromConvoID: nil)))
     }
+
+    /// Spec §3b: a search hit, notification tap, milestone jump or "Open
+    /// conversation" into the Coordinator's conversation opens the panel;
+    /// every other conversation opens in the detail.
+    func testConversationTarget_opensTheCoordinatorInThePanel() {
+        XCTAssertEqual(MacChatListView.conversationTarget("c-coord", coordinatorConvoID: "c-coord"), .panel)
+        XCTAssertEqual(MacChatListView.conversationTarget("c-other", coordinatorConvoID: "c-coord"), .detail)
+        XCTAssertEqual(MacChatListView.conversationTarget("c-coord", coordinatorConvoID: nil), .detail)
+        XCTAssertEqual(MacChatListView.conversationTarget("c-coord", coordinatorConvoID: ""), .detail)
+    }
 }

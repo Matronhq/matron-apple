@@ -4,7 +4,7 @@ import SwiftUI
 import AppKit
 @testable import MatronMac
 
-private final class Counter { var appears = 0; var width: CGFloat = 0 }
+private final class Counter { var appears = 0; var width: CGFloat = 0; var height: CGFloat = 0 }
 
 private struct DetailProbe: View {
     let counter: Counter
@@ -17,6 +17,17 @@ private struct DetailProbe: View {
     }
 }
 
+private struct PanelProbe: View {
+    let counter: Counter
+    var body: some View {
+        GeometryReader { geo in
+            Color.gray
+                .onAppear { counter.width = geo.size.width; counter.height = geo.size.height }
+                .onChange(of: geo.size) { _, size in counter.width = size.width; counter.height = size.height }
+        }
+    }
+}
+
 private final class PanelModel: ObservableObject {
     @Published var isOpen = true
     @Published var width: Double = 380
@@ -25,11 +36,12 @@ private final class PanelModel: ObservableObject {
 private struct Harness: View {
     @ObservedObject var model: PanelModel
     let counter: Counter
+    var panelCounter = Counter()
     var body: some View {
         MacCoordinatorPanelContainer(isOpen: model.isOpen, width: $model.width) {
             DetailProbe(counter: counter)
         } panel: {
-            Color.gray
+            PanelProbe(counter: panelCounter)
         }
     }
 }
@@ -57,6 +69,18 @@ final class MacCoordinatorPanelLayoutTests: XCTestCase {
         XCTAssertEqual(MacCoordinatorPanelLayout.headerTrailingInset(isOpen: false, panelWidth: 380), 0)
     }
 
+    /// Controller ruling (Task 13 review): the header clears what is DRAWN —
+    /// under an overlay the panel is clipped to the container, not its
+    /// stored width.
+    func test_drawnPanelWidth_isClippedToTheContainerUnderAnOverlay() {
+        XCTAssertEqual(MacCoordinatorPanelLayout.drawnPanelWidth(mode: .closed, panelWidth: 380, containerWidth: 1000), 0)
+        XCTAssertEqual(MacCoordinatorPanelLayout.drawnPanelWidth(mode: .beside, panelWidth: 380, containerWidth: 1000), 380)
+        XCTAssertEqual(MacCoordinatorPanelLayout.drawnPanelWidth(mode: .overlay, panelWidth: 380, containerWidth: 700), 380)
+        XCTAssertEqual(MacCoordinatorPanelLayout.drawnPanelWidth(mode: .overlay, panelWidth: 720, containerWidth: 600), 600)
+        XCTAssertEqual(MacCoordinatorPanelLayout.drawnPanelWidth(mode: .overlay, panelWidth: 100, containerWidth: 600), 320,
+                       "a stored width under the minimum still draws at the minimum")
+    }
+
     func test_dragOfTheLeadingEdgeResizes() {
         XCTAssertEqual(MacCoordinatorPanelLayout.resized(from: 380, translation: -50), 430, "dragging left widens")
         XCTAssertEqual(MacCoordinatorPanelLayout.resized(from: 380, translation: 200), 320, "never under the minimum")
@@ -78,6 +102,20 @@ final class MacCoordinatorPanelLayoutTests: XCTestCase {
         window.setContentSize(NSSize(width: 700, height: 400))
         await Self.settle(window)
         XCTAssertEqual(counter.width, 700, accuracy: 1, "under 420 pt of detail the panel overlays instead")
+        XCTAssertEqual(counter.appears, 1, "moving into overlay mode must not remount the detail")
+    }
+
+    /// Controller ruling (Task 13 review): the panel column fills the
+    /// container's height, beside or overlaid, and sits at its trailing edge.
+    func test_panelFillsTheHeight() async {
+        let panel = Counter()
+        let window = mount(Harness(model: PanelModel(), counter: Counter(), panelCounter: panel), width: 1000)
+        await Self.settle(window)
+        XCTAssertEqual(panel.height, 400, accuracy: 1)
+        XCTAssertEqual(panel.width, 380, accuracy: 1)
+        window.setContentSize(NSSize(width: 700, height: 500))
+        await Self.settle(window)
+        XCTAssertEqual(panel.height, 500, accuracy: 1, "overlaid, the panel still runs the full height")
     }
 
     /// Review focus: toggling or resizing the panel must not remount the
@@ -87,11 +125,27 @@ final class MacCoordinatorPanelLayoutTests: XCTestCase {
         let model = PanelModel()
         let window = mount(Harness(model: model, counter: counter), width: 1000)
         await Self.settle(window)
+        XCTAssertEqual(counter.width, 620, accuracy: 1, "open beside")
         model.isOpen = false
         await Self.settle(window)
+        XCTAssertEqual(counter.width, 1000, accuracy: 1, "closed")
         model.isOpen = true
         model.width = 500
         await Self.settle(window)
+        XCTAssertEqual(counter.width, 500, accuracy: 1, "reopened wider")
+        // Through overlay mode: narrow the window, then toggle there.
+        window.setContentSize(NSSize(width: 700, height: 400))
+        await Self.settle(window)
+        XCTAssertEqual(counter.width, 700, accuracy: 1, "overlaid")
+        model.isOpen = false
+        await Self.settle(window)
+        XCTAssertEqual(counter.width, 700, accuracy: 1, "closed from overlay")
+        model.isOpen = true
+        await Self.settle(window)
+        XCTAssertEqual(counter.width, 700, accuracy: 1, "reopened as an overlay")
+        window.setContentSize(NSSize(width: 1000, height: 400))
+        await Self.settle(window)
+        XCTAssertEqual(counter.width, 500, accuracy: 1, "back beside once there is room")
         XCTAssertEqual(counter.appears, 1)
     }
 

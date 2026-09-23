@@ -31,6 +31,18 @@ enum MacCoordinatorPanelLayout {
         isOpen ? clamp(panelWidth) : 0
     }
 
+    /// The width the panel is actually drawn at: nothing closed, its own
+    /// width beside the detail, and under an overlay never wider than the
+    /// container. The header's trailing inset is this value (published by
+    /// `MacCoordinatorPanelContainer`), so it matches what is on screen.
+    static func drawnPanelWidth(mode: Mode, panelWidth: CGFloat, containerWidth: CGFloat) -> CGFloat {
+        switch mode {
+        case .closed: return 0
+        case .beside: return clamp(panelWidth)
+        case .overlay: return max(0, min(clamp(panelWidth), containerWidth))
+        }
+    }
+
     /// Width after dragging the panel's LEADING edge by `translation`
     /// (positive = rightwards, which narrows the panel).
     static func resized(from start: CGFloat, translation: CGFloat) -> CGFloat {
