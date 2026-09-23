@@ -438,8 +438,12 @@ struct MacChatView: View {
     private func applyPaneRoute(_ route: MacChatPaneRoute?) {
         let next = Self.localState(applying: route, path: itemsPaneState.path)
         // A restore that opens the pane straight onto an item behaves like a
-        // link tap: the pane's Back closes it (#2608).
-        if !showItemsPane, next.itemsOpen, !next.path.isEmpty { itemsPaneState.openedOnItem = true }
+        // link tap: the pane's Back closes it (#2608). "Was open" is the
+        // LOCAL flag, not `showItemsPane`: before the first apply that reads
+        // the handed-in route, so a restore that remounts this chat already
+        // on an item looked open and skipped the flag (Bugbot, #233).
+        let wasOpen = routeApplied && localItemsOpen
+        if !wasOpen, next.itemsOpen, !next.path.isEmpty { itemsPaneState.openedOnItem = true }
         if localItemsOpen != next.itemsOpen { localItemsOpen = next.itemsOpen }
         if localSubChatID != next.subChatID { localSubChatID = next.subChatID }
         if itemsPaneState.path != next.path { itemsPaneState.path = next.path }
@@ -706,6 +710,11 @@ struct MacChatView: View {
             // original `if itemsVM == nil` guard skipped `start()`
             // entirely whenever the VM already existed, which is exactly
             // the failure mode reported.
+            // The pane mounts only once `itemsVM` exists, so apply the
+            // handed-in route first: a restore onto a pushed item then
+            // mounts the pane already on that item, never on its list for
+            // a frame (Bugbot, #233). A no-op once `onChange` has applied it.
+            if !routeApplied { applyPaneRoute(paneRoute.wrappedValue) }
             if itemsVM == nil, let deps, let session {
                 itemsVM = deps.makeItemsPanelViewModel(for: session, convoID: viewModel.roomID)
             }

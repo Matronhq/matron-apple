@@ -81,6 +81,17 @@ final class MacItemsPaneStackTests: XCTestCase {
         assertChatStillBesideThePane(pushed: "it_probe")
     }
 
+    /// A Back/Forward restore remounts the chat straight onto an item, so
+    /// the pane's Back closes it rather than revealing a list the user
+    /// never saw in that place (Bugbot, #233).
+    func test_mountWithAPushedItem_paneBackCloses() async throws {
+        let box = RouteBox(.items(path: ["it_probe"]))
+        await mount(box)
+        XCTAssertEqual(paneState?.path, ["it_probe"])
+        XCTAssertEqual(paneState?.openedOnItem, true)
+        XCTAssertEqual(paneState?.back(), .closePane)
+    }
+
     private func assertChatStillBesideThePane(pushed: String, file: StaticString = #filePath, line: UInt = #line) {
         guard let window else { return XCTFail("no window", file: file, line: line) }
         XCTAssertTrue(Self.contains(ComposerTextView.self, in: window.contentView),
