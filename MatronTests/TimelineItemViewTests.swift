@@ -204,4 +204,11 @@ final class TimelineItemViewTests: XCTestCase {
         XCTAssertTrue(TimelineItemView.shouldRender(milestone))
         XCTAssertTrue(TimelineItemView.shouldRender(mission))
     }
+
+    func testCoordinatorMarkerRenders() {
+        let item = TimelineItem(id: "77", sender: "user:dan", timestamp: Date(),
+                                kind: .coordinatorMarker(eventID: "77", CoordinatorMarkerEvent(role: .assigned)),
+                                isOwn: true)
+        XCTAssertTrue(TimelineItemView.shouldRender(item))
+    }
 }

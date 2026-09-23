@@ -29,6 +29,9 @@ public enum JournalEventType {
     /// Milestone marker. Its own `seq` is the milestone's anchor — the row
     /// IS the jump target. Also outside `messageTypes`, for the same reason.
     public static let milestone = "milestone"
+    /// Coordinator role change (Coordinator redesign contract). Like
+    /// `mission`, deliberately NOT in `messageTypes`: a marker, not a message.
+    public static let coordinator = "coordinator"
     /// How an agent-spawn consent card ended (matron-journal
     /// `emitSpawnOutcome`). Server-minted, agent-visible, and durable — the
     /// row the spawn card derives its resolved state from.

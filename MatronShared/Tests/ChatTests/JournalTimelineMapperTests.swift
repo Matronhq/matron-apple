@@ -674,4 +674,16 @@ final class JournalTimelineMapperTests: XCTestCase {
         XCTAssertTrue(diff.expired)
         XCTAssertEqual(diff.filename, "A.swift", "the row must still be able to name the file")
     }
+
+    func testCoordinatorEventMapsToAOneLineMarker() throws {
+        let item = try XCTUnwrap(map(event(9, type: "coordinator", sender: "user:dan", payload: ["role": "assigned"])))
+        guard case .coordinatorMarker(let eventID, let marker) = item.kind else { return XCTFail("got \(item.kind)") }
+        XCTAssertEqual(eventID, "9")
+        XCTAssertEqual(marker.role, .assigned)
+    }
+
+    func testMalformedCoordinatorEventIsSkipped() {
+        XCTAssertNil(map(event(10, type: "coordinator", payload: ["role": "promoted"])),
+                     "a half-understood marker is skipped rather than drawn as .unknown")
+    }
 }

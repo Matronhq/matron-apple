@@ -138,5 +138,12 @@ final class MacTimelineItemViewTests: XCTestCase {
         XCTAssertTrue(MacTimelineItemView.shouldRender(milestone))
         XCTAssertTrue(MacTimelineItemView.shouldRender(mission))
     }
+
+    func testCoordinatorMarkerRenders() {
+        let item = TimelineItem(id: "77", sender: "user:dan", timestamp: Date(),
+                                kind: .coordinatorMarker(eventID: "77", CoordinatorMarkerEvent(role: .assigned)),
+                                isOwn: true)
+        XCTAssertTrue(MacTimelineItemView.shouldRender(item))
+    }
 }
 #endif
