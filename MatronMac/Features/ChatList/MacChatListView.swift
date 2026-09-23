@@ -360,21 +360,9 @@ struct MacChatListView: View {
                 // selection come from `sidebarWidths(for:)`.
                 .navigationSplitViewColumnWidth(min: widths.min, ideal: widths.ideal, max: widths.max)
                 .toolbar {
-                    // Spec 2026-09-23 §5: the window's Back/Forward, at the
-                    // top-left where Finder and Safari keep theirs, in the
-                    // SIDEBAR section — the chat header accessory must not
-                    // gain toolbar items (PR #228). Always present; greyed
-                    // when there is nothing to go to.
-                    ToolbarItemGroup(placement: .navigation) {
-                        Button { goBack() } label: { Image(systemName: "chevron.backward") }
-                            .disabled(!history.canGoBack)
-                            .help("Back")
-                            .accessibilityLabel("Back")
-                        Button { goForward() } label: { Image(systemName: "chevron.forward") }
-                            .disabled(!history.canGoForward)
-                            .help("Forward")
-                            .accessibilityLabel("Forward")
-                    }
+                    // Spec 2026-09-23 §5: the window's Back/Forward, top-left
+                    // in the SIDEBAR section — see `MacHistoryToolbarItems`.
+                    MacHistoryToolbarItems(history: history, goBack: goBack, goForward: goForward)
                     // With the sidebar toggle removed the new-chat button
                     // is the only item in the sidebar section and packs
                     // to its leading edge; the flexible spacer pushes it

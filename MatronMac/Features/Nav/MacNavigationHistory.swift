@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import SwiftUI
 
 /// What the chat detail shows beside (or instead of) the timeline (spec
 /// §1). Hoisted to the shell per window so it is part of a place and
@@ -148,5 +149,33 @@ final class MacNavigationHistory {
         if let current { back.append(current) }
         current = next
         return next
+    }
+}
+
+/// The window's Back/Forward chevrons (spec §5), always present and greyed
+/// out when there's nothing to go to. Mounted in the SIDEBAR column's
+/// toolbar with `.automatic` placement, which keeps them in the sidebar
+/// section just right of the traffic lights. `.navigation` placement
+/// looked right but lands in the DETAIL section, which the chat header
+/// accessory leaves zero-width, so AppKit folded the chevrons into its
+/// `»` overflow however wide the window was (Dan, #2608; PR #228 for the
+/// accessory). Coordinator's 72 pt sidebar has no toolbar room at all:
+/// there they share the `»` with New Chat, and ⌘[ / ⌘] still work.
+struct MacHistoryToolbarItems: ToolbarContent {
+    let history: MacNavigationHistory
+    let goBack: () -> Void
+    let goForward: () -> Void
+
+    var body: some ToolbarContent {
+        ToolbarItemGroup(placement: .automatic) {
+            Button { goBack() } label: { Image(systemName: "chevron.backward") }
+                .disabled(!history.canGoBack)
+                .help("Back")
+                .accessibilityLabel("Back")
+            Button { goForward() } label: { Image(systemName: "chevron.forward") }
+                .disabled(!history.canGoForward)
+                .help("Forward")
+                .accessibilityLabel("Forward")
+        }
     }
 }
