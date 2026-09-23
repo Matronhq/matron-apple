@@ -488,6 +488,10 @@ public enum MarkdownAttributed {
                     let style = NSMutableParagraphStyle()
                     style.textBlocks = [cellBlock]
                     style.paragraphSpacing = 0
+                    // The render style's leading applies inside cells too —
+                    // an item-style table read at chat leading beside 4pt
+                    // prose (Bugbot, PR #232).
+                    style.lineSpacing = renderStyle.lineSpacing
                     if column < alignments.count {
                         style.alignment = nsAlignment(alignments[column])
                     }

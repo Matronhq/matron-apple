@@ -284,6 +284,19 @@ final class MarkdownAttributedTests: XCTestCase {
         XCTAssertEqual(code.pointSize, 13 * 1.25 * 0.92, accuracy: 0.01)
     }
 
+    /// Table cells build their own paragraph style (it carries the text
+    /// block), so the item leading has to reach them separately — a table
+    /// inside an item must not read at chat leading (Bugbot, PR #232).
+    func test_itemStyle_tableCellsCarryTheItemLeading() {
+        let source = "| Repo | PR |\n| :--- | ---: |\n| bridge | 215 |"
+        let attributed = MarkdownAttributed.attributedString(for: source, style: .item)
+        let cell = attributes(of: attributed, atFirst: "bridge")[.paragraphStyle] as? NSParagraphStyle
+        XCTAssertEqual(cell?.textBlocks.count, 1, "not a table cell")
+        XCTAssertEqual(cell?.lineSpacing, 4)
+        let chatCell = attributes(of: MarkdownAttributed.attributedString(for: source), atFirst: "bridge")[.paragraphStyle] as? NSParagraphStyle
+        XCTAssertEqual(chatCell?.lineSpacing, 0)
+    }
+
     /// The memo is keyed on (source, style): the same body rendered for
     /// the chat and for an item must be two entries, and each style must
     /// still hit its own.
