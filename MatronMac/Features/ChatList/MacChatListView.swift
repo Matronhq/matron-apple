@@ -57,9 +57,11 @@ struct MacChatListView: View {
     /// §3). Lives HERE, not in `MacChatView` (which is `.id(id)`-keyed per
     /// selection and torn down on every conversation switch), so it
     /// survives a switch and is part of the place the Back/Forward
-    /// history records. `MacChatView` keeps its local states in step
-    /// through the binding. (Replaces the I5-era `itemsPaneOpen` Bool.)
-    @State private var paneRoute: MacChatPaneRoute?
+    /// history records. Tagged with its owning conversation: each chat
+    /// reads it through `paneRouteBinding(for:)`, which shows a non-owner
+    /// the switch reset. `MacChatView` keeps its local states in step
+    /// through that binding. (Replaces the I5-era `itemsPaneOpen` Bool.)
+    @State private var paneRoute = MacOwnedPaneRoute()
     /// The window's Back/Forward history (spec 2026-09-23 §2, §4). Fed by
     /// `recordPlace` from the `onChange` on `currentPlace`; read from the
     /// body only through `canGoBack` / `canGoForward` (the two buttons).
@@ -227,32 +229,34 @@ struct MacChatListView: View {
         }
     }
 
-    /// The pane route the window should carry after landing on `place`
-    /// from `previous` — the history's current place before this change
-    /// (spec §3). Today switching conversations with the pane open shows
-    /// the NEW chat's list (the old `MacChatView` took its stack with it),
-    /// and closes a sub-chat (a child belongs to its parent); with the
-    /// route hoisted, this is where that happens. A restore must NOT be
-    /// reset: `goBack`/`goForward` set the history's current place before
-    /// the shell restores it, so `place == previous` is exactly "this is
-    /// a restore (or nothing changed)" and the route is kept. Places that
-    /// show no chat leave the per-window route alone.
-    static func paneRoute(after place: MacPlace, previous: MacPlace?, current: MacChatPaneRoute?,
-                          coordinatorConvoID: String?) -> MacChatPaneRoute? {
-        guard place != previous else { return current }
-        guard let shown = place.displayedConversationID(coordinatorConvoID: coordinatorConvoID) else { return current }
-        let before = previous?.displayedConversationID(coordinatorConvoID: coordinatorConvoID)
-        guard shown != before else { return current }
-        switch current {
-        case .items(let path) where !path.isEmpty: return .items(path: [])
-        case .subChat: return nil
-        default: return current
-        }
+    /// The owned route after the window lands on `place` (spec §3). A
+    /// place that shows no chat drops the owner but keeps the route, so
+    /// coming back to a chat by any means but Back resets like a click,
+    /// and an open pane stays open on its list.
+    static func paneRoute(_ owned: MacOwnedPaneRoute, landingOn place: MacPlace,
+                          coordinatorConvoID: String?) -> MacOwnedPaneRoute {
+        guard place.displayedConversationID(coordinatorConvoID: coordinatorConvoID) == nil,
+              owned.owner != nil else { return owned }
+        return MacOwnedPaneRoute(owner: nil, route: owned.route)
+    }
+
+    /// The route binding handed to the chat `id` shows. Reads resolve
+    /// through `MacOwnedPaneRoute.route(for:)`, and writes claim the route
+    /// for `id`.
+    private func paneRouteBinding(for id: String) -> Binding<MacChatPaneRoute?> {
+        Binding(
+            get: { paneRoute.route(for: id) },
+            set: { route in
+                let next = MacOwnedPaneRoute(owner: id, route: route)
+                if paneRoute != next { paneRoute = next }
+            }
+        )
     }
 
     private var currentPlace: MacPlace {
         Self.place(nav: nav, selectedSummaryID: selectedSummaryID, selectedMissionID: selectedMissionID,
-                   selectedDecisionID: selectedDecisionID, paneRoute: paneRoute)
+                   selectedDecisionID: selectedDecisionID,
+                   paneRoute: paneRoute.route(for: nav == .coordinator ? coordinatorConvoID : selectedSummaryID))
     }
 
     /// The detail column for the selected nav entry. Hoisted out of
@@ -340,12 +344,6 @@ struct MacChatListView: View {
                 // selection come from `sidebarWidths(for:)`.
                 .navigationSplitViewColumnWidth(min: widths.min, ideal: widths.ideal, max: widths.max)
                 .toolbar {
-                    // With the sidebar toggle removed the new-chat button
-                    // is the only item in the sidebar section and packs
-                    // to its leading edge; the flexible spacer pushes it
-                    // to the sidebar's trailing edge (Dan, 2026-07-15).
-                    // `ToolbarSpacer` needs the macOS 26 SDK (Swift 6.2
-                    // toolchain) — CI's Xcode 16.4 compiles without it.
                     // Spec 2026-09-23 §5: the window's Back/Forward, at the
                     // top-left where Finder and Safari keep theirs, in the
                     // SIDEBAR section — the chat header accessory must not
@@ -361,6 +359,12 @@ struct MacChatListView: View {
                             .help("Forward")
                             .accessibilityLabel("Forward")
                     }
+                    // With the sidebar toggle removed the new-chat button
+                    // is the only item in the sidebar section and packs
+                    // to its leading edge; the flexible spacer pushes it
+                    // to the sidebar's trailing edge (Dan, 2026-07-15).
+                    // `ToolbarSpacer` needs the macOS 26 SDK (Swift 6.2
+                    // toolchain) — CI's Xcode 16.4 compiles without it.
                     #if compiler(>=6.2)
                     if #available(macOS 26.0, *) {
                         ToolbarSpacer(.flexible, placement: .primaryAction)
@@ -467,10 +471,12 @@ struct MacChatListView: View {
             .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showCoordinator))) { _ in nav = .coordinator }
             .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showConversations))) { _ in nav = .conversations }
             .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showDecisions))) { _ in nav = .decisions }
-            // Go ▸ Back / Forward, ⌘[ / ⌘] (spec 2026-09-23 §5) — same bus
-            // shape as ⌘1/⌘2/⌘3; a press with nothing to go to is a no-op.
-            .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.goBack))) { _ in goBack() }
-            .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.goForward))) { _ in goForward() }
+            // Go ▸ Back / Forward, ⌘[ / ⌘] (spec 2026-09-23 §5): published
+            // to the menu bar for THIS window only, unlike the bus above;
+            // history is per window (PR #233 review I1).
+            .focusedSceneValue(\.macNavigation, MacNavigationActions(
+                canGoBack: history.canGoBack, canGoForward: history.canGoForward,
+                goBack: { goBack() }, goForward: { goForward() }))
             // Leaving Decisions through the nav column (Bugbot, PR #195): the
             // detail host has no teardown of its own (I6 — a same-item rebuild
             // must keep the draft), so stop its VM and any recording here and
@@ -764,20 +770,24 @@ struct MacChatListView: View {
     }
 
     /// Every place change lands here (the `onChange` on `currentPlace`).
-    /// First the conversation-switch route reset (spec §3): if it changes
-    /// the route, the place changes with it and the NEXT `onChange` is the
-    /// one that records — so a click onto a new chat with a pushed pane
-    /// records the list, never the transient pushed state. Otherwise the
-    /// place is recorded; a restore's own landing is a no-op inside
-    /// `visit`.
+    /// A restore's own landing is a no-op inside `visit`. Leaving every
+    /// chat drops the route's owner (`paneRoute(_:landingOn:)`); that
+    /// doesn't change the place, so it can't record twice.
     private func recordPlace(_ place: MacPlace) {
-        let route = Self.paneRoute(after: place, previous: history.current, current: paneRoute,
-                                   coordinatorConvoID: coordinatorConvoID)
-        if route != paneRoute {
-            paneRoute = route
-            return
-        }
+        let owned = Self.paneRoute(paneRoute, landingOn: place, coordinatorConvoID: coordinatorConvoID)
+        if owned != paneRoute { paneRoute = owned }
+        guard Self.isRecordable(place, historyIsEmpty: history.current == nil) else { return }
         history.visit(place)
+    }
+
+    /// The empty launch state ("Select a chat" before anything is picked)
+    /// isn't a place to go back to. A cold-start notification tap or a
+    /// new-chat auto-open selects a chat a beat after the first frame, and
+    /// recording that first frame made the first Back land on an empty
+    /// detail (PR #233 review M3). Once history has a place, "Select a
+    /// chat" records like any other place.
+    static func isRecordable(_ place: MacPlace, historyIsEmpty: Bool) -> Bool {
+        !(historyIsEmpty && place == MacPlace(detail: .conversation(id: nil, pane: nil)))
     }
 
     /// Writes a popped place back into the shell's state (spec §4). Direct
@@ -789,12 +799,12 @@ struct MacChatListView: View {
         switch place.detail {
         case .coordinator(let pane):
             nav = .coordinator
-            paneRoute = pane
+            paneRoute = MacOwnedPaneRoute(owner: coordinatorConvoID, route: pane)
         case .conversation(let id, let pane):
             nav = .conversations
             if searchQueryIsEmpty == false { searchModel?.query = "" }
             selectedSummaryID = id
-            paneRoute = pane
+            paneRoute = MacOwnedPaneRoute(owner: id, route: pane)
         case .mission(let id):
             // A restored page offers no "back to the conversation": the
             // global Back covers that now (spec §4).
@@ -993,7 +1003,7 @@ struct MacChatListView: View {
                 id: id, title: summary?.title, boxName: summary?.boxName,
                 sessionShort: summary?.sessionShort, boxShort: summary?.boxShort,
                 roomBoxNames: summary?.roomBoxNames ?? [], roomBoxShorts: summary?.roomBoxShorts ?? [],
-                paneRoute: paneRoute
+                paneRoute: paneRoute.route(for: id)
             )) {
             let (chatVM, composerVM) = vmCache.viewModels(for: id, deps: deps, session: session)
             MacChatView(
@@ -1013,7 +1023,7 @@ struct MacChatListView: View {
                 // Spec 2026-09-23 §3: hoisted here so the pane's route
                 // survives a conversation switch and the history can
                 // restore it — see `paneRoute`'s declaration above.
-                paneRoute: $paneRoute,
+                paneRoute: paneRouteBinding(for: id),
                 chatTitle: summary?.title ?? "",
                 boxName: summary?.boxName,
                 sessionShort: summary?.sessionShort,

@@ -23,10 +23,6 @@ public enum MatronCommand: String, CaseIterable, Sendable {
     case showCoordinator
     case showConversations
     case showDecisions
-    /// Navigation history (spec 2026-09-23 §5): the Go menu's Back / Forward,
-    /// ⌘[ / ⌘].
-    case goBack
-    case goForward
 }
 
 public extension Notification.Name {
@@ -50,7 +46,6 @@ public extension Notification.Name {
 ///   - `.slashCommand`   — `MacChatView` (toggles `composerVM.palettePinnedOpen`)
 ///   - `.refresh`        — `MacChatView` (triggers `viewModel.refresh()`)
 ///   - `.showCoordinator/.showConversations/.showDecisions` — `MacChatListView` (sets `nav`)
-///   - `.goBack/.goForward`  — `MacChatListView` (window navigation history)
 ///
 /// Posted-but-unhandled (placeholder menu items, listeners land later):
 ///   - `.findInChat`            — Phase 6 wires SearchService; today the
@@ -61,6 +56,12 @@ public extension Notification.Name {
 /// items (and their listeners) along with the rest of the verification
 /// UI — the journal stack has no verification concept yet.
 struct ChatCommands: Commands {
+    /// The key window's Back/Forward (spec 2026-09-23 §5), published by
+    /// its `MacChatListView`. Read from the focused scene instead of posted
+    /// on the bus: history is per window, and a bus post would move every
+    /// open window (PR #233 review I1).
+    @FocusedValue(\.macNavigation) private var navigation
+
     var body: some Commands {
         // File menu — `.newItem` is the system "New" group; we replace
         // it with our `New Chat` so the keyboard shortcut binds cleanly.
@@ -107,19 +108,33 @@ struct ChatCommands: Commands {
                 .keyboardShortcut("0", modifiers: .command)
         }
 
-        // Go menu — the window's navigation history (spec 2026-09-23 §5).
-        // Both items stay enabled: `Commands` cannot read view state, and a
-        // press with nothing to go to is a no-op in the listener, the same
-        // shape as ⌘1/⌘2/⌘3 above.
+        // Go menu — the key window's navigation history (spec 2026-09-23
+        // §5). Greyed out when that window has nothing to go back or
+        // forward to, or no window is key.
         CommandMenu("Go") {
-            Button("Back") { post(.goBack) }
+            Button("Back") { navigation?.goBack() }
                 .keyboardShortcut("[", modifiers: .command)
-            Button("Forward") { post(.goForward) }
+                .disabled(navigation?.canGoBack != true)
+            Button("Forward") { navigation?.goForward() }
                 .keyboardShortcut("]", modifiers: .command)
+                .disabled(navigation?.canGoForward != true)
         }
     }
 
     private func post(_ cmd: MatronCommand) {
         NotificationCenter.default.post(name: .matronCommand(cmd), object: nil)
     }
+}
+
+/// A window's Back/Forward, published to the menu bar with
+/// `focusedSceneValue` so ⌘[ / ⌘] act on the key window only.
+struct MacNavigationActions {
+    var canGoBack: Bool
+    var canGoForward: Bool
+    var goBack: () -> Void
+    var goForward: () -> Void
+}
+
+extension FocusedValues {
+    @Entry var macNavigation: MacNavigationActions?
 }

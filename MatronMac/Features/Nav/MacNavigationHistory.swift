@@ -35,6 +35,29 @@ enum MacChatPaneRoute: Equatable {
     }
 }
 
+/// The window's pane route, tagged with the conversation that set it
+/// (spec §3). A chat reads its route through `route(for:)`, so a chat
+/// that doesn't own the route sees the conversation-switch reset (the
+/// pane's list, no sub-chat) from its first frame. There is no
+/// asynchronous reset for a freshly mounted chat to race: it could
+/// otherwise pick up the previous chat's pushed item or sub-chat.
+struct MacOwnedPaneRoute: Equatable {
+    /// The conversation the route belongs to; `nil` once the window has
+    /// left every chat (Missions, Decisions, "Select a chat"), so coming
+    /// back resets like a click.
+    var owner: String?
+    var route: MacChatPaneRoute?
+
+    /// The route chat `id` shows. The owner sees it as set. Any other
+    /// chat keeps an open pane on its list and never inherits a
+    /// sub-chat (a child belongs to its parent).
+    func route(for id: String?) -> MacChatPaneRoute? {
+        guard let id else { return nil }
+        if id == owner { return route }
+        return route?.isItems == true ? .items(path: []) : nil
+    }
+}
+
 /// Where the user is in a window (spec §1): the shell's selection state,
 /// normalised so fields that do not apply to the selected nav entry are
 /// absent and cannot mint a spurious history entry.

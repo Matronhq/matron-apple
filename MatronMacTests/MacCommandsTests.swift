@@ -28,7 +28,6 @@ final class MacCommandsTests: XCTestCase {
             .newChat, .signOut, .findInChat, .slashCommand,
             .toggleSidebar, .increaseFontSize, .decreaseFontSize, .resetFontSize,
             .refresh, .showCoordinator, .showConversations, .showDecisions,
-            .goBack, .goForward,
         ]
         for trigger in triggers {
             XCTAssertTrue(MatronCommand.allCases.contains(trigger), "missing \(trigger)")
@@ -59,19 +58,12 @@ final class MacCommandsTests: XCTestCase {
         NotificationCenter.default.removeObserver(observer)
     }
 
-    /// Spec 2026-09-23 §5: ⌘[ / ⌘] and the Go menu post the window's
-    /// Back/Forward over the same bus as ⌘1/⌘2/⌘3.
-    func test_post_goBackAndGoForward_notifyObservers() {
-        for command in [MatronCommand.goBack, .goForward] {
-            let exp = expectation(description: "\(command) observed")
-            let observer = NotificationCenter.default.addObserver(
-                forName: .matronCommand(command), object: nil, queue: nil
-            ) { _ in exp.fulfill() }
-            NotificationCenter.default.post(name: .matronCommand(command), object: nil)
-            wait(for: [exp], timeout: 1)
-            NotificationCenter.default.removeObserver(observer)
-        }
-        XCTAssertNotEqual(Notification.Name.matronCommand(.goBack), .matronCommand(.goForward))
+    /// Spec 2026-09-23 §5, PR #233 review I1: Back/Forward are NOT bus
+    /// commands. A post reaches every window's listener, and history is
+    /// per window, so the Go menu reads the key window's
+    /// `MacNavigationActions` instead.
+    func test_backAndForward_areNotBusCommands() {
+        XCTAssertFalse(MatronCommand.allCases.map(\.rawValue).contains { $0 == "goBack" || $0 == "goForward" })
     }
 
     /// `ChatCommands` is a `Commands` struct — instantiation alone is

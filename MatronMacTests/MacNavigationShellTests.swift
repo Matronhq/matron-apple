@@ -47,60 +47,58 @@ final class MacNavigationShellTests: XCTestCase {
 
     // MARK: Route reset on a conversation switch (spec §3)
 
-    func test_paneRouteAfter_switchResetsAPushedPaneToTheList() {
-        let from = MacPlace(detail: .conversation(id: "c1", pane: route))
-        let to = MacPlace(detail: .conversation(id: "c2", pane: route))
-        XCTAssertEqual(MacChatListView.paneRoute(after: to, previous: from, current: route, coordinatorConvoID: nil),
-                       .items(path: []))
+    /// A chat that doesn't own the route sees the switch reset from its
+    /// first read: an open pane shows its list.
+    func test_ownedRoute_otherChatSeesAPushedPaneAsTheList() {
+        let owned = MacOwnedPaneRoute(owner: "c1", route: route)
+        XCTAssertEqual(owned.route(for: "c1"), route)
+        XCTAssertEqual(owned.route(for: "c2"), .items(path: []))
     }
 
-    /// Review focus 3.
-    func test_paneRouteAfter_switchClearsASubChat() {
-        let child = MacChatPaneRoute.subChat(id: "s1")
-        let from = MacPlace(detail: .conversation(id: "c1", pane: child))
-        let to = MacPlace(detail: .conversation(id: "c2", pane: child))
-        XCTAssertNil(MacChatListView.paneRoute(after: to, previous: from, current: child, coordinatorConvoID: nil))
+    /// Review focus 3: a sub-chat belongs to its parent and never follows
+    /// a switch.
+    func test_ownedRoute_otherChatNeverInheritsASubChat() {
+        let owned = MacOwnedPaneRoute(owner: "c1", route: .subChat(id: "s1"))
+        XCTAssertEqual(owned.route(for: "c1"), .subChat(id: "s1"))
+        XCTAssertNil(owned.route(for: "c2"))
     }
 
-    func test_paneRouteAfter_switchKeepsAnOpenListAndAClosedPane() {
-        let from = MacPlace(detail: .conversation(id: "c1", pane: .items(path: [])))
-        let to = MacPlace(detail: .conversation(id: "c2", pane: .items(path: [])))
-        XCTAssertEqual(MacChatListView.paneRoute(after: to, previous: from, current: .items(path: []), coordinatorConvoID: nil),
-                       .items(path: []))
-        let closedFrom = MacPlace(detail: .conversation(id: "c1", pane: nil))
-        let closedTo = MacPlace(detail: .conversation(id: "c2", pane: nil))
-        XCTAssertNil(MacChatListView.paneRoute(after: closedTo, previous: closedFrom, current: nil, coordinatorConvoID: nil))
+    func test_ownedRoute_keepsAnOpenListAndAClosedPane() {
+        XCTAssertEqual(MacOwnedPaneRoute(owner: "c1", route: .items(path: [])).route(for: "c2"), .items(path: []))
+        XCTAssertNil(MacOwnedPaneRoute(owner: "c1", route: nil).route(for: "c2"))
+        XCTAssertNil(MacOwnedPaneRoute(owner: "c1", route: route).route(for: nil), "no chat, no pane")
     }
 
-    /// A restore: the history's current place already IS the place being
-    /// landed on, so the route it carries is kept.
-    func test_paneRouteAfter_restoreKeepsTheRestoredRoute() {
-        let restored = MacPlace(detail: .conversation(id: "c2", pane: route))
-        XCTAssertEqual(MacChatListView.paneRoute(after: restored, previous: restored, current: route, coordinatorConvoID: nil),
-                       route)
+    /// Leaving every chat drops the owner, so coming back to the same chat
+    /// by a click resets like a click; the pane stays open on its list.
+    func test_paneRouteLandingOn_nonChatPlaceDropsTheOwner() {
+        let owned = MacOwnedPaneRoute(owner: "c1", route: route)
+        let left = MacChatListView.paneRoute(owned, landingOn: MacPlace(detail: .mission(id: "m1")), coordinatorConvoID: nil)
+        XCTAssertEqual(left, MacOwnedPaneRoute(owner: nil, route: route))
+        XCTAssertEqual(left.route(for: "c1"), .items(path: []))
+        XCTAssertEqual(MacChatListView.paneRoute(owned, landingOn: MacPlace(detail: .conversation(id: nil, pane: nil)),
+                                                 coordinatorConvoID: nil).owner, nil)
     }
 
-    /// Leaving the chat for Missions and coming back is a conversation
-    /// change (nil → c1) and resets like a click; a nav-only move away
-    /// leaves the per-window route untouched.
-    func test_paneRouteAfter_nonChatPlacesLeaveTheRouteAlone() {
-        let chat = MacPlace(detail: .conversation(id: "c1", pane: route))
-        let mission = MacPlace(detail: .mission(id: "m1"))
-        XCTAssertEqual(MacChatListView.paneRoute(after: mission, previous: chat, current: route, coordinatorConvoID: nil), route)
-        XCTAssertEqual(MacChatListView.paneRoute(after: chat, previous: mission, current: route, coordinatorConvoID: nil),
-                       .items(path: []))
+    /// Landing on a chat (a click, a restore, the coordinator) leaves the
+    /// owned route alone: ownership changes only through the chat's own
+    /// writes and through `restore`.
+    func test_paneRouteLandingOn_chatPlacesLeaveTheRouteAlone() {
+        let owned = MacOwnedPaneRoute(owner: "c1", route: route)
+        XCTAssertEqual(MacChatListView.paneRoute(owned, landingOn: MacPlace(detail: .conversation(id: "c2", pane: nil)),
+                                                 coordinatorConvoID: nil), owned)
+        XCTAssertEqual(MacChatListView.paneRoute(owned, landingOn: MacPlace(detail: .coordinator(pane: nil)),
+                                                 coordinatorConvoID: "k"), owned)
     }
 
-    /// The coordinator's own conversation is a displayed conversation too:
-    /// moving between it and another chat resets exactly like a click.
-    func test_paneRouteAfter_coordinatorCountsAsAConversation() {
-        let coord = MacPlace(detail: .coordinator(pane: route))
-        let chat = MacPlace(detail: .conversation(id: "c1", pane: route))
-        XCTAssertEqual(MacChatListView.paneRoute(after: chat, previous: coord, current: route, coordinatorConvoID: "k"),
-                       .items(path: []))
-        let coordAgain = MacPlace(detail: .coordinator(pane: route))
-        XCTAssertEqual(MacChatListView.paneRoute(after: coordAgain, previous: coord, current: route, coordinatorConvoID: "k"),
-                       route, "same place, no change")
+    /// Review M3: the empty launch state is never the first entry, so a
+    /// cold-start auto-open doesn't leave a Back onto "Select a chat".
+    func test_isRecordable_skipsTheEmptyLaunchStateOnly() {
+        let empty = MacPlace(detail: .conversation(id: nil, pane: nil))
+        XCTAssertFalse(MacChatListView.isRecordable(empty, historyIsEmpty: true))
+        XCTAssertTrue(MacChatListView.isRecordable(empty, historyIsEmpty: false))
+        XCTAssertTrue(MacChatListView.isRecordable(MacPlace(detail: .conversation(id: "c1", pane: nil)), historyIsEmpty: true))
+        XCTAssertTrue(MacChatListView.isRecordable(MacPlace(detail: .mission(id: nil)), historyIsEmpty: true))
     }
 }
 #endif
