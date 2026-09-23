@@ -1039,19 +1039,34 @@ struct MacChatSidebarList: View {
                         ForEach(group.summaries) { summary in
                             MacChatRow(summary: summary)
                                 .tag(summary.id)
-                                .contextMenu {
-                                    Button("Mute") {
-                                        runChatAction { (chat: ChatService) in try await chat.mute(roomID: summary.id) }
-                                    }
-                                    Button("Leave", role: .destructive) {
-                                        runChatAction { (chat: ChatService) in try await chat.leave(roomID: summary.id) }
-                                    }
-                                }
                         }
                     }
                 }
             }
             .listStyle(.sidebar)
+            // One menu for the whole list, not one per row. A per-row
+            // `.contextMenu` hosts an AppKit platform view under every row,
+            // and live samples of a 700-row sidebar showed each chat-list
+            // snapshot re-adopting the environment on all of them
+            // (`AppKitPlatformViewHost.coreUpdateEnvironment`) — a third of
+            // one 78 s hang. The selection-typed form asks the list for the
+            // clicked row's tag instead: an unselected row yields just its
+            // own id, a right-click inside the selection yields the whole
+            // selection, empty space yields nothing.
+            .contextMenu(forSelectionType: ChatSummary.ID.self) { ids in
+                if !ids.isEmpty {
+                    Button("Mute") {
+                        runChatAction { (chat: ChatService) in
+                            for id in ids { try await chat.mute(roomID: id) }
+                        }
+                    }
+                    Button("Leave", role: .destructive) {
+                        runChatAction { (chat: ChatService) in
+                            for id in ids { try await chat.leave(roomID: id) }
+                        }
+                    }
+                }
+            }
             // Keep the long-lived search VM's chat snapshot current: the toolbar
             // VM is built once, so without this new rooms and renamed titles never
             // reach chat-title search or `chatTitle(for:)` until relaunch (bugbot

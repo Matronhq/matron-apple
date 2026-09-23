@@ -241,6 +241,34 @@ final class ChatListViewModelTests: XCTestCase {
         XCTAssertEqual(vm.totalUnread, 0, "empty snapshot must clear the badge")
     }
 
+    /// While agents are live the service yields several snapshots a second
+    /// and every applied one re-diffs the whole sidebar `List`; the VM holds
+    /// snapshots to one per `coalesceInterval`, keeping only the newest.
+    @MainActor
+    func test_snapshotsInsideTheCoalesceInterval_collapseToTheLatest() async throws {
+        let bot = BotIdentity(matrixID: "@b:s", displayName: "Bot", avatarURL: nil)
+        func chats(_ n: Int) -> [ChatSummary] {
+            (0..<n).map { ChatSummary(id: "!\($0):s", title: "c\($0)", bot: bot, lastActivity: .now, unreadCount: 1) }
+        }
+        let fake = FakeStreamingChatService()
+        fake.snapshotsToEmit = [chats(1), chats(2), chats(3), chats(4)]
+        let vm = ChatListViewModel(chat: fake, coalesceInterval: .milliseconds(1_500))
+        vm.start()
+        var start = Date()
+        while vm.groups.isEmpty && Date().timeIntervalSince(start) < 2 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(vm.totalUnread, 1, "the first snapshot applies immediately")
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(vm.totalUnread, 1, "snapshots inside the interval are held, not applied one by one")
+        start = Date()
+        while vm.totalUnread != 4 && Date().timeIntervalSince(start) < 4 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(vm.totalUnread, 4, "the newest held snapshot lands once the interval is up")
+        XCTAssertEqual(fake.callCount, 1)
+    }
+
     @MainActor
     func test_successfulSnapshot_clears_priorError() async throws {
         // After an error, a fresh successful snapshot should clear the
