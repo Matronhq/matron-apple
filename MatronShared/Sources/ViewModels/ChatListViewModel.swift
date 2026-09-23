@@ -113,6 +113,12 @@ public final class ChatListViewModel {
             }
             return
         }
+        // A snapshot that lands after the interval but before a scheduled
+        // flush resumes must win over the parked one: drop the flush and
+        // its (older) snapshot, or it would apply on top of this newer one.
+        flushTask?.cancel()
+        flushTask = nil
+        pending = nil
         apply(groups: grouped, totalUnread: unread)
     }
 

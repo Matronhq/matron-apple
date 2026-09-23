@@ -1055,14 +1055,18 @@ struct MacChatSidebarList: View {
             // selection, empty space yields nothing.
             .contextMenu(forSelectionType: ChatSummary.ID.self) { ids in
                 if !ids.isEmpty {
+                    // Per room, independently: one failure must not stop the
+                    // rest of a multi-selection. `runChatAction` already
+                    // swallows these errors (there is no error surface for
+                    // Mute/Leave), so this keeps that behaviour per room.
                     Button("Mute") {
                         runChatAction { (chat: ChatService) in
-                            for id in ids { try await chat.mute(roomID: id) }
+                            for id in ids { try? await chat.mute(roomID: id) }
                         }
                     }
                     Button("Leave", role: .destructive) {
                         runChatAction { (chat: ChatService) in
-                            for id in ids { try await chat.leave(roomID: id) }
+                            for id in ids { try? await chat.leave(roomID: id) }
                         }
                     }
                 }
