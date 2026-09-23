@@ -224,4 +224,13 @@ final class AppDependenciesTests: XCTestCase {
         let perChat = deps.makeItemsPanelViewModel(for: session, convoID: "c1")
         XCTAssertEqual(perChat.scope, .convo("c1"))
     }
+
+    /// One `CoordinatorSync` per session — the chooser, the rows and the
+    /// shell must all write through the same actor.
+    func test_coordinatorSync_isCached_perSession() {
+        deps = AppDependencies()
+        let session = UserSession(userID: "@a:s", deviceID: "D",
+                                  homeserverURL: URL(string: "https://s")!, accessToken: "t")
+        XCTAssertTrue(deps.coordinatorSync(for: session) === deps.coordinatorSync(for: session))
+    }
 }

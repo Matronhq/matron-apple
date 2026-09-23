@@ -24,6 +24,7 @@ struct CoordinatorTabView: View {
     @Binding var convoID: String?
 
     @State private var showingChooser = false
+    @State private var saveError: String?
 
     static func root(for convoID: String?) -> Root {
         guard let convoID, !convoID.isEmpty else { return .setup }
@@ -124,9 +125,14 @@ struct CoordinatorTabView: View {
         .onChange(of: convoID) { _, _ in path = [] }
         .sheet(isPresented: $showingChooser) {
             CoordinatorChooserSheet(deps: deps, session: session) { id in
-                convoID = id
                 showingChooser = false
+                Task { @MainActor in saveError = await deps.setCoordinator(id, for: session) }
             }
+        }
+        .alert("Coordinator", isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })) {
+            Button("OK") { saveError = nil }
+        } message: {
+            Text(saveError ?? "")
         }
     }
 }

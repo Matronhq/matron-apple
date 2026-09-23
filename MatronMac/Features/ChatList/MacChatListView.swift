@@ -115,6 +115,7 @@ struct MacChatListView: View {
     /// `UserDefaults` change (Settings' Change/Clear).
     @State private var coordinatorConvoID: String?
     @State private var showingCoordinatorChooser = false
+    @State private var coordinatorError: String?
     /// Sidebar visibility toggle — wired to `.matronCommand(.toggleSidebar)`
     /// so the menu-bar item / toolbar button / ⌘⇧S keyboard shortcut all
     /// flip the same state. `.automatic` is the system default (sidebar
@@ -510,9 +511,10 @@ struct MacChatListView: View {
             .sheet(isPresented: $showingCoordinatorChooser) {
                 if let deps, let session {
                     MacCoordinatorChooserSheet(deps: deps, session: session) { id in
-                        CoordinatorSetting(userID: session.userID).convoID = id
-                        coordinatorConvoID = id
                         showingCoordinatorChooser = false
+                        // The cache (and so `coordinatorConvoID`, via the
+                        // UserDefaults observer above) follows the journal.
+                        Task { @MainActor in coordinatorError = await deps.setCoordinator(id, for: session) }
                     }
                 }
             }
@@ -536,6 +538,20 @@ struct MacChatListView: View {
             // coerced with `??` into a premature answer, so it reaches
             // `setMissionsSupported`'s `!= false` comparison untouched.
             .onChange(of: missionsVM?.isSupported) { _, supported in setMissionsSupported(supported != false) }
+    }
+
+    /// The Coordinator save-error alert (Task 5), split into its own helper
+    /// rather than lengthening `withNavigationListeners`'s chain further —
+    /// same CI type-checker budget rule that split that chain off
+    /// `withCommandListeners` in the first place (PR #233).
+    private func withCoordinatorAlert(_ content: some View) -> some View {
+        content
+            .alert("Coordinator", isPresented: Binding(get: { coordinatorError != nil },
+                                                       set: { if !$0 { coordinatorError = nil } })) {
+                Button("OK") { coordinatorError = nil }
+            } message: {
+                Text(coordinatorError ?? "")
+            }
     }
 
     /// Lifecycle: view-model start/stop, decisions VM, sync-state and
@@ -679,7 +695,7 @@ struct MacChatListView: View {
     }
 
     var body: some View {
-        withLifecycle(withNavigationListeners(withCommandListeners(splitView)))
+        withLifecycle(withCoordinatorAlert(withNavigationListeners(withCommandListeners(splitView))))
     }
 
     /// Sidebar column wrapper: connection banner (when not `.running`)

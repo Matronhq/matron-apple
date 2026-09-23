@@ -127,6 +127,10 @@ final class AppDependencies {
         /// rest of the session's teardown on sign-out.
         let missions: MissionsSync
         var missionsStartTask: Task<Void, Never>?
+        /// Keeps the cached Coordinator in step with the journal (Coordinator
+        /// redesign §3a). Started right after construction, stopped on sign-out.
+        let coordinator: CoordinatorSync
+        var coordinatorStartTask: Task<Void, Never>?
         /// Background search-history backfill sweep for this session (see
         /// `SearchBackfillCoordinator`). Cancelled on sign-out.
         var backfillTask: Task<Void, Never>?
@@ -138,12 +142,13 @@ final class AppDependencies {
         /// `stop()` in the sign-out teardown, same rule as `itemsStartTask`.
         var maintenanceStartTask: Task<Void, Never>?
         init(api: JournalAPI, store: JournalStore, engine: JournalSyncEngine, items: ItemsSync, missions: MissionsSync,
-             maintenance: JournalMaintenance) {
+             coordinator: CoordinatorSync, maintenance: JournalMaintenance) {
             self.api = api
             self.store = store
             self.engine = engine
             self.items = items
             self.missions = missions
+            self.coordinator = coordinator
             self.maintenance = maintenance
         }
     }
@@ -230,11 +235,14 @@ final class AppDependencies {
         let items = ItemsSync(api: api, store: store, markers: { engine.itemMarkers() }, connectionStates: { engine.stateStream() })
         let missions = MissionsSync(api: api, store: store, markers: { engine.missionMarkers() },
                                     connectionStates: { engine.stateStream() })
+        let coordinator = CoordinatorSync(api: api, setting: CoordinatorSetting(userID: session.userID),
+                                          updates: { engine.coordinatorUpdates() })
         let maintenance = JournalMaintenance(store: store, search: search)
         let core = JournalCore(api: api, store: store, engine: engine, items: items, missions: missions,
-                                maintenance: maintenance)
+                                coordinator: coordinator, maintenance: maintenance)
         core.itemsStartTask = Task { await items.start() }
         core.missionsStartTask = Task { await missions.start() }
+        core.coordinatorStartTask = Task { await coordinator.start() }
         core.backfillTask = Self.startBackfill(search: search, api: api, store: store, engine: engine)
         core.maintenanceStartTask = Task {
             await engine.attachMaintenance(maintenance)
@@ -375,6 +383,24 @@ final class AppDependencies {
     /// factories hand out.
     func missionsSync(for session: UserSession) -> MissionsSync {
         core(for: session).missions
+    }
+
+    /// The session's `CoordinatorSync` — every Coordinator pick or clear
+    /// goes through it (Coordinator redesign §3a).
+    func coordinatorSync(for session: UserSession) -> CoordinatorSync {
+        core(for: session).coordinator
+    }
+
+    /// The user's own Coordinator pick or clear, from any surface: the
+    /// journal first, the cache follows. `nil` on success, otherwise the
+    /// message to show.
+    @MainActor func setCoordinator(_ convoID: String?, for session: UserSession) async -> String? {
+        do {
+            try await coordinatorSync(for: session).set(convoID)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
     }
 
     /// Item #115: resolves a tapped `[#65](matron://item/65)` link to a
@@ -616,6 +642,8 @@ final class AppDependencies {
                 // marker/reconnect subscriptions after the store is wiped.
                 await core.missionsStartTask?.value
                 await core.missions.stop()
+                await core.coordinatorStartTask?.value
+                await core.coordinator.stop()
                 await core.engine.endSync()          // stop the writer first…
                 try? core.store.wipe()               // …then clear the mirror
                 // The mirror wipe deliberately preserves the outbox (a
