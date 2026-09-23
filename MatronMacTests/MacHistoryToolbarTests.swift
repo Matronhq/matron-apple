@@ -81,6 +81,16 @@ final class MacHistoryToolbarTests: XCTestCase {
         }
         XCTAssertGreaterThanOrEqual(visibleButtons.count, 2,
                                     "Back and Forward must be visible inside the 472 pt sidebar section")
+
+        // Dan, #2608: an empty or missing sidebar toolbar drops the
+        // window's NSToolbar entirely and the title bar shrinks from 52 to
+        // 32 pt, cropping the 52 pt chat header. This used to be pinned
+        // only by the (now-deleted) Coordinator harness test; Tasks 13-14
+        // edit this same sidebar toolbar, so the guard has to live here.
+        window.contentView?.superview?.layoutSubtreeIfNeeded()
+        let titleBar = window.frame.height - window.contentLayoutRect.height
+        XCTAssertGreaterThanOrEqual(titleBar, MacChatHeaderAccessory.height,
+                                    "an empty or missing sidebar toolbar shrinks the title bar and crops the header (#2608)")
     }
 
     private static func hasClippedIndicator(in view: NSView?) -> Bool {
