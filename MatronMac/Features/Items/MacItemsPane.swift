@@ -19,13 +19,22 @@ private let slotLogger = Logger(subsystem: "chat.matron", category: "item-slots"
 struct MacItemsPaneChrome<Content: View>: View {
     let title: String
     var showsBackChevron = false
+    /// Pops the pane's own stack one level; `nil` while the list is on
+    /// top. The pane has no `NavigationStack` (see `MacItemsPane`), so
+    /// this is its only Back for a pushed item.
+    var onPop: (() -> Void)? = nil
     let onClose: () -> Void
     @ViewBuilder let content: () -> Content
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                if showsBackChevron {
+                if let onPop {
+                    Button(action: onPop) { Image(systemName: "chevron.left") }
+                        .buttonStyle(.plain)
+                        .help("Back")
+                        .accessibilityLabel("Back")
+                } else if showsBackChevron {
                     Button(action: onClose) { Image(systemName: "chevron.left") }
                         .buttonStyle(.plain)
                         .help("Back to the chat")
@@ -256,8 +265,19 @@ struct MacItemsPane: View {
     @Environment(\.appDependencies) private var deps
 
     var body: some View {
-        MacItemsPaneChrome(title: "Tasks & decisions", showsBackChevron: showsBackChevron, onClose: onClose) {
-            NavigationStack(path: Binding(get: { state.path }, set: { state.path = $0 })) {
+        MacItemsPaneChrome(title: "Tasks & decisions", showsBackChevron: showsBackChevron,
+                           onPop: state.path.isEmpty ? nil : { state.path.removeLast() },
+                           onClose: onClose) {
+            // The pane's stack is `state.path`, drawn here by hand. It was a
+            // `NavigationStack`, but inside the window's `NavigationSplitView`
+            // SwiftUI pushed its destinations onto the DETAIL COLUMN's stack:
+            // an opened item replaced the whole column (chat, composer and
+            // header gone, a system Back in the toolbar), and the pushed page
+            // outlived a switch to Decisions, where it spun forever waiting
+            // for a slot this pane had released (#2608, proven in
+            // `MacItemsPaneStackTests`). The list stays mounted underneath so
+            // its scroll position survives a push and pop.
+            ZStack {
                 ItemsListView(
                     model: .init(
                         needsYou: viewModel.sections.needsYou, tasks: viewModel.sections.tasks,
@@ -275,27 +295,37 @@ struct MacItemsPane: View {
                     onMove: { id, index in Task { await viewModel.move(itemID: id, toIndex: index) } },
                     onCreate: { state.showCreate = true },
                     onOpenConversation: handleOpenConversation)
-                .navigationDestination(for: String.self) { id in
-                    MacItemDetailHost(itemID: id, session: session, currentConvoID: viewModel.convoID,
-                                       state: state, onOpenConversation: handleOpenConversation,
-                                       // Per-host PUSH: an item link inside
-                                       // an item stacks over it, so Back
-                                       // returns to where the link was
-                                       // tapped (item #115, fix round 2 —
-                                       // this used to REPLACE the path).
-                                       // Ends any in-flight recording that
-                                       // belongs to a DIFFERENT item before
-                                       // the push commits (fix round 8) —
-                                       // `releaseSlots` (driven by the
-                                       // `path` change below) would also
-                                       // catch it, but only after this
-                                       // host has already been asked to
-                                       // draw the newly-pushed item.
-                                       onOpenItem: { id in
-                                           state.cancelRecordingIfNavigating(to: id)
-                                           state.path.append(id)
-                                       },
-                                       surface: .stack)
+                .opacity(state.path.isEmpty ? 1 : 0)
+                .allowsHitTesting(state.path.isEmpty)
+                .accessibilityHidden(!state.path.isEmpty)
+
+                if let top = state.path.last {
+                    MacItemDetailHost(itemID: top, session: session, currentConvoID: viewModel.convoID,
+                                      state: state, onOpenConversation: handleOpenConversation,
+                                      // Per-host PUSH: an item link inside
+                                      // an item stacks over it, so Back
+                                      // returns to where the link was
+                                      // tapped (item #115, fix round 2 —
+                                      // this used to REPLACE the path).
+                                      // Ends any in-flight recording that
+                                      // belongs to a DIFFERENT item before
+                                      // the push commits (fix round 8) —
+                                      // `releaseSlots` (driven by the
+                                      // `path` change below) would also
+                                      // catch it, but only after this
+                                      // host has already been asked to
+                                      // draw the newly-pushed item.
+                                      onOpenItem: { id in
+                                          state.cancelRecordingIfNavigating(to: id)
+                                          state.path.append(id)
+                                      },
+                                      surface: .stack)
+                        // One host per pushed item, as the stack's
+                        // destinations were: a push or pop swaps identity,
+                        // so each item's `.task` / `.onDisappear` run as
+                        // they did under `NavigationStack`.
+                        .id(top)
+                        .background(.background)
                 }
             }
         }
