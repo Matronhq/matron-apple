@@ -202,6 +202,14 @@ public struct RPCResponse: Equatable, Sendable {
     }
 }
 
+/// `coordinator_convo_id` on `hello_ok` (Coordinator redesign contract).
+/// `.absent` is a journal predating the field — "unknown", never "cleared";
+/// `.known(nil)` is an authoritative "no Coordinator".
+public enum HelloCoordinator: Equatable, Sendable {
+    case absent
+    case known(String?)
+}
+
 /// Server → client frames. Unknown `kind`s decode to nil (skip); unknown
 /// control ops decode to `.unknownControl` so the protocol can grow.
 public enum ServerFrame: Equatable, Sendable {
@@ -211,7 +219,7 @@ public enum ServerFrame: Equatable, Sendable {
     case toolStream(ToolStreamUpdate)
     case sessionStatus(SessionStatusUpdate)
     case rpcResponse(RPCResponse)
-    case helloOK(headSeq: Int64)
+    case helloOK(headSeq: Int64, coordinator: HelloCoordinator)
     /// `requestID` correlates RPC errors (`not_ready`, `agent_unreachable`,
     /// …) back to their `agent_request`; nil for ordinary op errors.
     case error(code: String, ref: String?, requestID: String?, detail: String?)
@@ -416,7 +424,10 @@ public enum ServerFrame: Equatable, Sendable {
             guard let op = obj["op"] as? String else { return nil }
             switch op {
             case "hello_ok":
-                return .helloOK(headSeq: (obj["seq"] as? NSNumber)?.int64Value ?? 0)
+                // Key presence, not value: `as? String` folds absent and null.
+                let coordinator: HelloCoordinator = obj.keys.contains("coordinator_convo_id")
+                    ? .known(obj["coordinator_convo_id"] as? String) : .absent
+                return .helloOK(headSeq: (obj["seq"] as? NSNumber)?.int64Value ?? 0, coordinator: coordinator)
             case "error":
                 return .error(code: obj["code"] as? String ?? "unknown",
                               ref: obj["ref"] as? String,

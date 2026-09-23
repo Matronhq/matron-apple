@@ -1356,6 +1356,48 @@ final class JournalSyncEngineTests: XCTestCase {
 
         await engine.endSync()
     }
+
+    private func coordinatorLine(_ seq: Int64, convo: String, role: String) -> String {
+        #"{"kind":"journal","seq":\#(seq),"convo_id":"\#(convo)","ts":\#(seq * 1000),"sender":"user:dan","type":"coordinator","payload":{"role":"\#(role)"}}"#
+    }
+
+    /// The hello lands before any subscriber exists (it is part of the
+    /// handshake), so the engine replays it; live events follow in order.
+    func testCoordinatorUpdatesReplayTheHelloThenFollowEvents() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(#"{"kind":"control","op":"hello_ok","seq":1,"coordinator_convo_id":"c1"}"#)
+        socket.serve(journalLine(1))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.coordinatorUpdates().makeAsyncIterator()
+        let first = await iterator.next()
+        XCTAssertEqual(first, .snapshot("c1"))
+        socket.serve(coordinatorLine(2, convo: "c1", role: "released"))
+        socket.serve(coordinatorLine(3, convo: "c2", role: "assigned"))
+        let second = await iterator.next()
+        let third = await iterator.next()
+        XCTAssertEqual(second, .released(convoID: "c1"))
+        XCTAssertEqual(third, .assigned(convoID: "c2"))
+        await engine.endSync()
+    }
+
+    func testCoordinatorUpdatesSkipAHelloWithoutTheField() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.coordinatorUpdates().makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(50))
+        socket.serve(coordinatorLine(2, convo: "c1", role: "assigned"))
+        let first = await iterator.next()
+        XCTAssertEqual(first, .assigned(convoID: "c1"), "no snapshot is invented for an old journal")
+        await engine.endSync()
+    }
 }
 
 /// Records what an engine asks it to index; every other `SearchService`
