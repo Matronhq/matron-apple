@@ -48,6 +48,20 @@ final class ItemTypographyRenderTests: XCTestCase {
         XCTAssertEqual(item, expected, accuracy: base * ItemTypography.bodyScale * 0.10, "item body \(item)pt wide vs expected \(expected)pt (base \(base)pt × \(ItemTypography.bodyScale))")
     }
 
+    /// The Mac item thread now renders through the timeline's NSTextView
+    /// (tracker #2533) at `MarkdownAttributed.Style.item`. Pin by ink, as
+    /// above, that the item style really is the item scale — a style that
+    /// silently fell back to the chat metrics would pass every attribute
+    /// test that reads the style back.
+    func testSelectableItemStyleRendersAtTheItemScale() {
+        let chat = inkWidth(SelectableMessageText(sample))
+        let item = inkWidth(SelectableMessageText(sample, style: .item))
+        XCTAssertGreaterThan(chat, 0)
+        let expected = chat * (ItemTypography.bodyScale / MessageTextScale.scale)
+        XCTAssertEqual(item, expected, accuracy: expected * 0.10,
+                       "item-style text view \(item)pt wide vs expected \(expected)pt (chat \(chat)pt × 1.25/1.10)")
+    }
+
     func testItemBodyIsLargerThanTheMacChatTimeline() {
         let chat = inkWidth(SelectableMessageText(sample))
         let item = inkWidth(MarkdownText(sample, theme: .matronItem))

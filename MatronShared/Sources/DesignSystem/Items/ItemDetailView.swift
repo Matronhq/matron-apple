@@ -104,6 +104,16 @@ public struct ItemDetailView: View {
     /// the markdown next to it. A fixed `.system(size:)` would agree at
     /// the default size and diverge at every other.
     @ScaledMetric(relativeTo: .body) private var bodySize: CGFloat = ItemTypography.baseSize * ItemTypography.bodyScale
+    #if os(macOS)
+    /// The thread's cross-card selection (tracker #2533): the body card and
+    /// every text comment render through the chat timeline's NSTextView
+    /// (`SelectableMessageText`), and this controller — installed in the
+    /// environment below, shadowing any chat timeline's own — lets one
+    /// drag run from a card into the next, exactly as in a conversation.
+    /// Owned here rather than by the host so the iOS view stays a pure leaf
+    /// and the Mac hosts (pane, Decisions, Missions) need no wiring.
+    @State fileprivate var cardSelection = MessageSelectionController()
+    #endif
 
     public init(model: Model, draft: Binding<String>, image: @escaping (TrackerAttachment) -> Image?,
                 onOpenAttachment: @escaping (TrackerAttachment) -> Void, onOpenLink: @escaping (URL) -> Void,
@@ -219,6 +229,7 @@ public struct ItemDetailView: View {
                                                 oldCount: oldCount, newCount: newCount) else { return }
                     proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
                 }
+                .cardSelection(self)
             }
             Divider()
             ItemCommentComposer(draft: $draft, isBusy: model.isBusy, onSubmit: onSubmit, onAttach: onAttach, onVoiceNote: onVoiceNote)
@@ -316,16 +327,41 @@ public struct ItemDetailView: View {
     private var bodyCard: some View {
         VStack(alignment: .leading, spacing: 6) {
             authorCaption(item.createdBy, date: item.createdAt)
-            if !item.body.isEmpty { itemBody(item.body) }
+            if !item.body.isEmpty { itemBody(item.body, selectionID: Self.bodySelectionID(for: item.id)) }
             attachments(item.attachments)
         }
         .itemCard(mine: item.createdBy == .user)
     }
 
-    /// A markdown body at the item reading scale (`Theme.matronItem`) with
-    /// the thread's leading — one call for the item body and every comment.
-    private func itemBody(_ markdown: String) -> some View {
+    /// A markdown body at the item reading scale with the thread's leading
+    /// — one call for the item body and every comment. On the Mac it is the
+    /// chat timeline's selectable NSTextView at `MarkdownAttributed.Style
+    /// .item`, so a drag selects across paragraphs, lists and code — and,
+    /// through `cardSelection`, across cards (tracker #2533). MarkdownUI's
+    /// per-block `Text`s (`Theme.matronItem`) stay on iOS, where selection
+    /// is a long-press affair and cannot span blocks either way.
+    @ViewBuilder
+    private func itemBody(_ markdown: String, selectionID: String) -> some View {
+        #if os(macOS)
+        SelectableMessageText(markdown, itemID: selectionID, style: .item)
+        #else
         MarkdownText(markdown, theme: .matronItem, lineSpacing: ItemTypography.lineSpacing)
+        #endif
+    }
+
+    /// The selection id of the body card. Prefixed so it can never collide
+    /// with a comment id — both are journal ids, and the selection
+    /// controller keys its targets by id.
+    static func bodySelectionID(for itemID: String) -> String { "body:" + itemID }
+
+    /// Row order for the cross-card selection: the body card first (when
+    /// there is a body), then every comment with a text body. Status rows
+    /// and empty bodies render no text view, so they cannot take part.
+    static func selectionOrder(item: TrackerItem, comments: [TrackerComment]) -> [String] {
+        var ids: [String] = []
+        if !item.body.isEmpty { ids.append(bodySelectionID(for: item.id)) }
+        ids += comments.filter { $0.kind != .status && !$0.body.isEmpty }.map(\.id)
+        return ids
     }
 
     /// "You · 5 min ago" / "Agent · 3 Sept" above a card's body.
@@ -428,7 +464,7 @@ public struct ItemDetailView: View {
         } else {
             VStack(alignment: .leading, spacing: 6) {
                 authorCaption(c.author, date: c.createdAt)
-                if !c.body.isEmpty { itemBody(c.body) }
+                if !c.body.isEmpty { itemBody(c.body, selectionID: c.id) }
                 attachments(c.attachments)
             }
             .itemCard(mine: c.author == .user)
@@ -505,7 +541,77 @@ public struct ItemDetailView: View {
     }
 }
 
+#if os(macOS)
+extension ItemDetailView {
+    /// The pasteboard text for a finished cross-card selection — the chat
+    /// timeline's own "[date] Name: text" shape (`TranscriptFormatter`),
+    /// one line per selected card in row order. Cards whose selected part
+    /// is empty (the pointer sat in the gap above them) and ids that no
+    /// longer name a card contribute nothing. The reader is "Me", as in
+    /// the timeline; the agent is "Agent", as in the card captions.
+    static func transcript(item: TrackerItem, comments: [TrackerComment], spans: [SelectedSpan],
+                           locale: Locale = .current, timeZone: TimeZone = .current) -> SelectionTranscript {
+        var entries: [TranscriptEntry] = []
+        for span in spans {
+            guard let text = span.text, !text.isEmpty else { continue }
+            let author: ItemAuthor
+            let date: Date
+            if span.id == bodySelectionID(for: item.id) {
+                author = item.createdBy
+                date = item.createdAt
+            } else if let comment = comments.first(where: { $0.id == span.id }) {
+                author = comment.author
+                date = comment.createdAt
+            } else {
+                continue
+            }
+            entries.append(TranscriptEntry(timestamp: date, name: author == .user ? "Me" : "Agent", text: text))
+        }
+        return SelectionTranscript(text: TranscriptFormatter.format(entries, locale: locale, timeZone: timeZone),
+                                   messageCount: entries.count)
+    }
+
+    /// Row order as the controller wants it, recomputed from the model.
+    fileprivate var selectionOrder: [String] { Self.selectionOrder(item: item, comments: model.comments) }
+
+    /// Installs the spans → transcript bridge. Captures the CURRENT model
+    /// by value: comments are immutable once posted and the provider is
+    /// re-installed whenever the model changes, so what a finished
+    /// selection copies is what the cards showed when it finished.
+    fileprivate func installTranscriptProvider() {
+        let item = self.item, comments = model.comments
+        cardSelection.transcriptProvider = { [weak cardSelection] in
+            guard let cardSelection else { return SelectionTranscript(text: "", messageCount: 0) }
+            return Self.transcript(item: item, comments: comments, spans: cardSelection.selectedSpans())
+        }
+    }
+}
+#endif
+
 private extension View {
+    /// The Mac cross-card selection plumbing on the thread's scroll view
+    /// (tracker #2533): the controller in the environment for every
+    /// `SelectableMessageText` under it, the row order kept in step with
+    /// the model, the transcript provider re-installed as comments land,
+    /// and the selection dropped on the way out so its clear-monitor does
+    /// not outlive the thread. No-op on iOS.
+    @ViewBuilder
+    func cardSelection(_ detail: ItemDetailView) -> some View {
+        #if os(macOS)
+        self
+            .environment(detail.cardSelection)
+            .onChange(of: detail.selectionOrder, initial: true) { _, order in
+                detail.cardSelection.orderedIDs = order
+            }
+            .onChange(of: detail.model, initial: true) { _, _ in
+                detail.installTranscriptProvider()
+            }
+            .onDisappear { detail.cardSelection.clear() }
+        #else
+        self
+        #endif
+    }
+
     /// The thread's card chrome — the chat bubble surfaces on a rounded
     /// rectangle with the bubble shadow — shared by the body card, the
     /// comment cards and the pending rows so they read as one thread.

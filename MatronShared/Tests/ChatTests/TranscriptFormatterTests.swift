@@ -1,5 +1,6 @@
 import XCTest
 @testable import MatronChat
+import MatronModels
 
 final class TranscriptFormatterTests: XCTestCase {
 

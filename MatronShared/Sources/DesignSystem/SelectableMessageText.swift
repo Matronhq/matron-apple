@@ -36,10 +36,12 @@ public struct SelectableMessageText: View {
     ///     text can't identify a size (bugbot, PR #37).
     ///   - itemID: the timeline item this body belongs to; enables the
     ///     cross-message selection. `nil` opts out.
-    public init(_ source: String, itemID: String? = nil) {
+    ///   - style: the reading scale — `.chat` (the timeline, the default)
+    ///     or `.item` (the tracker item thread, tracker #2533).
+    public init(_ source: String, itemID: String? = nil, style: MarkdownAttributed.Style = .chat) {
         self.source = source
         self.itemID = itemID
-        self.rendered = MarkdownAttributed.rendered(for: source)
+        self.rendered = MarkdownAttributed.rendered(for: source, style: style)
     }
 
     public var body: some View {
