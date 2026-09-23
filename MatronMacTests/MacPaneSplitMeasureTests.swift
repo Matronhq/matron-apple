@@ -98,7 +98,7 @@ final class MacPaneSplitMeasureTests: XCTestCase {
         let view = MacChatView(
             viewModel: chatVM, composerVM: composerVM, stripViewModel: stripVM,
             subChatProvider: { _ in (chatVM, stripVM) },
-            itemsPaneOpen: .constant(paneOpen), chatTitle: "Chat")
+            paneRoute: .constant(paneOpen ? .items(path: []) : nil), chatTitle: "Chat")
             .environment(\.appDependencies, deps)
             .environment(\.currentSession, session)
 

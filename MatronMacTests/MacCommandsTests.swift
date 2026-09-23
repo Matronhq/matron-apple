@@ -58,6 +58,14 @@ final class MacCommandsTests: XCTestCase {
         NotificationCenter.default.removeObserver(observer)
     }
 
+    /// Spec 2026-09-23 §5, PR #233 review I1: Back/Forward are NOT bus
+    /// commands. A post reaches every window's listener, and history is
+    /// per window, so the Go menu reads the key window's
+    /// `MacNavigationActions` instead.
+    func test_backAndForward_areNotBusCommands() {
+        XCTAssertFalse(MatronCommand.allCases.map(\.rawValue).contains { $0 == "goBack" || $0 == "goForward" })
+    }
+
     /// `ChatCommands` is a `Commands` struct — instantiation alone is
     /// proof the menu-bar surface compiles. The actual menu items are
     /// validated by hand on first launch (no public hook to introspect a

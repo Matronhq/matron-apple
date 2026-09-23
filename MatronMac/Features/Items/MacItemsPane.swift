@@ -5,6 +5,11 @@ import MatronModels
 import MatronJournal
 import MatronViewModels
 import MatronDesignSystem
+import os
+
+/// Item-detail slot lifecycle (#2608: a Decisions detail spinner that never
+/// cleared). `log show --predicate 'subsystem == "chat.matron" && category == "item-slots"'`.
+private let slotLogger = Logger(subsystem: "chat.matron", category: "item-slots")
 
 /// Header chrome shared by the list and detail pushes: title, back/close.
 /// Split out of `MacItemsPane` so it — and the populated list inside it —
@@ -14,13 +19,22 @@ import MatronDesignSystem
 struct MacItemsPaneChrome<Content: View>: View {
     let title: String
     var showsBackChevron = false
+    /// Pops the pane's own stack one level; `nil` while the list is on
+    /// top. The pane has no `NavigationStack` (see `MacItemsPane`), so
+    /// this is its only Back for a pushed item.
+    var onPop: (() -> Void)? = nil
     let onClose: () -> Void
     @ViewBuilder let content: () -> Content
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                if showsBackChevron {
+                if let onPop {
+                    Button(action: onPop) { Image(systemName: "chevron.left") }
+                        .buttonStyle(.plain)
+                        .help("Back")
+                        .accessibilityLabel("Back")
+                } else if showsBackChevron {
                     Button(action: onClose) { Image(systemName: "chevron.left") }
                         .buttonStyle(.plain)
                         .help("Back to the chat")
@@ -66,6 +80,12 @@ struct MacItemsPaneChrome<Content: View>: View {
 @MainActor @Observable
 final class MacItemsPaneState {
     var path: [String] = []
+    /// The pane was opened straight onto an item (a `#123` link, an item
+    /// card, a Back/Forward restore), not from its list. Back from that
+    /// first item then closes the pane, returning the user to where they
+    /// were, instead of revealing a list they never opened (#2608).
+    /// Cleared whenever the list is on screen.
+    var openedOnItem = false
     var showCreate = false
     var originTitles: [String: String] = [:]
 
@@ -92,6 +112,22 @@ final class MacItemsPaneState {
     /// (teardown, the bar's own Cancel button) needs both halves done
     /// together, or a stale `recordingItemID` could outlive the recording
     /// it named.
+    enum BackResult: Equatable { case popped, closePane, nothing }
+
+    /// The pane's Back: one level down the stack, or, from the item the
+    /// pane was opened straight onto (`openedOnItem`), empties the stack
+    /// and asks the caller to close the pane, back to where the user was.
+    func back() -> BackResult {
+        guard !path.isEmpty else { return .nothing }
+        if path.count == 1, openedOnItem {
+            path = []
+            openedOnItem = false
+            return .closePane
+        }
+        path.removeLast()
+        return .popped
+    }
+
     func cancelRecording() {
         detailRecorder.cancel()
         recordingItemID = nil
@@ -127,8 +163,12 @@ final class MacItemsPaneState {
     /// tests exercise slot lifetime without writing to the real defaults.
     let readMemory: ItemReadMemory
 
-    init(readMemory: ItemReadMemory = ItemReadMemory()) {
+    /// Names this surface in the `item-slots` log ("pane", "decisions").
+    let surfaceName: String
+
+    init(readMemory: ItemReadMemory = ItemReadMemory(), surfaceName: String = "pane") {
         self.readMemory = readMemory
+        self.surfaceName = surfaceName
     }
 
     /// This item's slot, created on first push. Never recycles another
@@ -145,6 +185,10 @@ final class MacItemsPaneState {
     /// single-slot swap did inline. `retained` is the stack (or, stackless,
     /// the one selected item).
     func releaseSlots(keeping retained: Set<String>) {
+        let released = slots.keys.filter { !retained.contains($0) }
+        if !released.isEmpty {
+            slotLogger.log("\(self.surfaceName, privacy: .public) release \(released, privacy: .public) keeping \(retained.sorted(), privacy: .public)")
+        }
         for (id, slot) in slots where !retained.contains(id) {
             slot.viewModel?.stop()
             readMemory.store(itemID: id, atBottom: slot.isAtBottom)
@@ -179,6 +223,7 @@ final class MacItemsPaneState {
     /// it. The stackless surface has no path to observe, so its one visible
     /// host both activates and releases.
     func activateSlot(for itemID: String, surface: MacItemDetailSurface) -> MacItemDetailSlot? {
+        slotLogger.log("\(self.surfaceName, privacy: .public) activate \(itemID, privacy: .public) path=\(self.path, privacy: .public) existing=\(self.slots[itemID] != nil) vm=\(self.slots[itemID]?.viewModel != nil)")
         switch surface {
         case .stack:
             guard path.last == itemID else { return nil }
@@ -241,9 +286,24 @@ struct MacItemsPane: View {
     let onClose: () -> Void
     @Environment(\.appDependencies) private var deps
 
+    private func pop() {
+        if state.back() == .closePane { onClose() }
+    }
+
     var body: some View {
-        MacItemsPaneChrome(title: "Tasks & decisions", showsBackChevron: showsBackChevron, onClose: onClose) {
-            NavigationStack(path: Binding(get: { state.path }, set: { state.path = $0 })) {
+        MacItemsPaneChrome(title: "Tasks & decisions", showsBackChevron: showsBackChevron,
+                           onPop: state.path.isEmpty ? nil : pop,
+                           onClose: onClose) {
+            // The pane's stack is `state.path`, drawn here by hand. It was a
+            // `NavigationStack`, but inside the window's `NavigationSplitView`
+            // SwiftUI pushed its destinations onto the DETAIL COLUMN's stack:
+            // an opened item replaced the whole column (chat, composer and
+            // header gone, a system Back in the toolbar), and the pushed page
+            // outlived a switch to Decisions, where it spun forever waiting
+            // for a slot this pane had released (#2608, proven in
+            // `MacItemsPaneStackTests`). The list stays mounted underneath so
+            // its scroll position survives a push and pop.
+            ZStack {
                 ItemsListView(
                     model: .init(
                         needsYou: viewModel.sections.needsYou, tasks: viewModel.sections.tasks,
@@ -261,27 +321,40 @@ struct MacItemsPane: View {
                     onMove: { id, index in Task { await viewModel.move(itemID: id, toIndex: index) } },
                     onCreate: { state.showCreate = true },
                     onOpenConversation: handleOpenConversation)
-                .navigationDestination(for: String.self) { id in
-                    MacItemDetailHost(itemID: id, session: session, currentConvoID: viewModel.convoID,
-                                       state: state, onOpenConversation: handleOpenConversation,
-                                       // Per-host PUSH: an item link inside
-                                       // an item stacks over it, so Back
-                                       // returns to where the link was
-                                       // tapped (item #115, fix round 2 —
-                                       // this used to REPLACE the path).
-                                       // Ends any in-flight recording that
-                                       // belongs to a DIFFERENT item before
-                                       // the push commits (fix round 8) —
-                                       // `releaseSlots` (driven by the
-                                       // `path` change below) would also
-                                       // catch it, but only after this
-                                       // host has already been asked to
-                                       // draw the newly-pushed item.
-                                       onOpenItem: { id in
-                                           state.cancelRecordingIfNavigating(to: id)
-                                           state.path.append(id)
-                                       },
-                                       surface: .stack)
+                .opacity(state.path.isEmpty ? 1 : 0)
+                .allowsHitTesting(state.path.isEmpty)
+                .accessibilityHidden(!state.path.isEmpty)
+                // Hidden under an open item: a row button that still had
+                // keyboard focus must not answer Return (CodeRabbit, #233).
+                .disabled(!state.path.isEmpty)
+
+                if let top = state.path.last {
+                    MacItemDetailHost(itemID: top, session: session, currentConvoID: viewModel.convoID,
+                                      state: state, onOpenConversation: handleOpenConversation,
+                                      // Per-host PUSH: an item link inside
+                                      // an item stacks over it, so Back
+                                      // returns to where the link was
+                                      // tapped (item #115, fix round 2 —
+                                      // this used to REPLACE the path).
+                                      // Ends any in-flight recording that
+                                      // belongs to a DIFFERENT item before
+                                      // the push commits (fix round 8) —
+                                      // `releaseSlots` (driven by the
+                                      // `path` change below) would also
+                                      // catch it, but only after this
+                                      // host has already been asked to
+                                      // draw the newly-pushed item.
+                                      onOpenItem: { id in
+                                          state.cancelRecordingIfNavigating(to: id)
+                                          state.path.append(id)
+                                      },
+                                      surface: .stack)
+                        // One host per pushed item, as the stack's
+                        // destinations were: a push or pop swaps identity,
+                        // so each item's `.task` / `.onDisappear` run as
+                        // they did under `NavigationStack`.
+                        .id(top)
+                        .background(.background)
                 }
             }
         }
@@ -295,6 +368,7 @@ struct MacItemsPane: View {
         // no detail host is left to run anything.
         .onChange(of: state.path) { _, path in
             state.releaseSlots(keeping: Set(path))
+            if path.isEmpty { state.openedOnItem = false }
         }
         .task(id: viewModel.scope) {
             // Labels for the "All" scope rows come from the local store's
@@ -589,6 +663,7 @@ struct MacItemDetailHost: View {
             let vm = deps.makeItemDetailViewModel(for: session, itemID: itemID)
             slot.viewModel = vm
             vm.start()
+            slotLogger.log("\(state.surfaceName, privacy: .public) started vm \(itemID, privacy: .public)")
         }
         // Belt-and-braces for the LAST item viewed in a pane close/window
         // teardown, which the in-place swap above never sees (there's no

@@ -43,23 +43,49 @@ struct MacChatView: View {
     /// when only the parent timeline shows. Set by the running-subagent
     /// strip / switcher; cleared by the pane's close button. Reset per
     /// parent chat because `MacChatView` is rebuilt with `.id(id)`.
-    @State private var openSubChatID: String?
-    /// Whether the tasks-and-decisions pane (Task 10) is open. Shares the
-    /// sub-chat slot with `openSubChatID` — opening either one closes the
-    /// other (see the toolbar call site and `onOpenSubChat` below).
+    /// Reads the handed-in route until the first apply (see
+    /// `routeApplied`).
+    private var openSubChatID: String? {
+        get { routeApplied ? localSubChatID : paneRoute.wrappedValue?.subChatID }
+        nonmutating set { localSubChatID = newValue }
+    }
+    @State private var localSubChatID: String?
+    /// The pane route — the tasks-and-decisions pane with its push stack,
+    /// or an open sub-chat — hoisted to `MacChatListView` per WINDOW (spec
+    /// 2026-09-23 §3): `MacChatView` is torn down and rebuilt per
+    /// conversation (`.id(id)` in `MacChatListView.chatDetail`), so state
+    /// held here would reset on every switch, and the window's Back/Forward
+    /// history records and restores this route as part of a place. The
+    /// caller's binding; default `.constant(nil)` keeps every other call
+    /// site (tests, previews) compiling unchanged.
     ///
-    /// I5 (Mac fix wave, part 1): hoisted to `MacChatListView` — the spec
-    /// wants this per-WINDOW, but `MacChatView` itself is torn down and
-    /// rebuilt per conversation (`.id(id)` in
-    /// `MacChatListView.chatDetail`), so a plain `@State` here reset on
-    /// every conversation switch. `itemsPaneOpen` is the caller's binding;
-    /// default `.constant(false)` keeps every other call site (tests,
-    /// previews) compiling unchanged. `showItemsPane` stays as a computed
-    /// proxy so every existing read/write site below is unchanged.
-    var itemsPaneOpen: Binding<Bool> = .constant(false)
+    /// What's on screen is ALWAYS the three local states (`showItemsPane`,
+    /// `itemsPaneState.path`, `openSubChatID`); every read/write site uses
+    /// them. The binding only mirrors them: local → binding on every
+    /// change, and binding → local only when the binding carries a route
+    /// the local states don't already describe (a restore, or the route
+    /// a fresh mount is handed). A local edit touching several states in
+    /// one update is one `localRoute` change, so nothing half-applied is
+    /// ever mirrored back (PR #233 review C1).
+    var paneRoute: Binding<MacChatPaneRoute?> = .constant(nil)
+    /// Whether the tasks-and-decisions pane is open. Reads the handed-in
+    /// route until the first apply (see `routeApplied`).
     private var showItemsPane: Bool {
-        get { itemsPaneOpen.wrappedValue }
-        nonmutating set { itemsPaneOpen.wrappedValue = newValue }
+        get { routeApplied ? localItemsOpen : paneRoute.wrappedValue?.isItems == true }
+        nonmutating set { localItemsOpen = newValue }
+    }
+    @State private var localItemsOpen = false
+    /// `false` until the `initial: true` shell → local `onChange` has run.
+    /// Until then the two pane flags read the route the shell handed this
+    /// freshly mounted chat, so its FIRST frame already has the pane
+    /// open or the sub-chat split. Defaulting to closed showed the chat
+    /// alone for one frame and then split it, re-mounting the transcript
+    /// on every switch into a chat with the pane open (Bugbot, PR #233).
+    @State private var routeApplied = false
+    /// The route this view's local states describe (`MacChatPaneRoute.from`).
+    /// Observed by the local → shell `onChange`.
+    private var localRoute: MacChatPaneRoute? {
+        MacChatPaneRoute.from(itemsOpen: showItemsPane, path: itemsPaneState.path, subChatID: openSubChatID)
     }
     /// The pane's view model, created lazily in the outer `.task` and kept
     /// running even while the pane is closed so the toolbar's needs-you
@@ -80,7 +106,10 @@ struct MacChatView: View {
     /// when the window crosses `sideBySideMinWidth` — see
     /// `MacItemsPaneState`'s doc comment. One instance per `MacChatView`
     /// lifetime (resets on a genuine room switch, same as `itemsVM`).
-    @State private var itemsPaneState = MacItemsPaneState()
+    /// Internal, not private, only so a test can hand in its own and read
+    /// the slots back (`MacItemsPaneStackTests`); every call site keeps
+    /// the default.
+    @State var itemsPaneState = MacItemsPaneState()
     /// `[#65](matron://item/65)` taps from any message body (item #115).
     /// The relay's `action` goes into the environment with a stable closure
     /// identity (see `TrackerItemLinkRelay`) — every rendered message body
@@ -389,6 +418,38 @@ struct MacChatView: View {
     /// pane below its min, so 820 keeps a small margin above that.
     private static let sideBySideMinWidth: CGFloat = 820
 
+    /// Shell → local (spec §3): the local states a route from the shell
+    /// should produce. Pure so the mapping is testable without a window.
+    /// A `.items` route opens the pane on that stack and clears a sub-chat
+    /// (shared slot); a `.subChat` route opens that child, closes the pane
+    /// and keeps its stack for a later reopen, as closing the pane does
+    /// today; `nil` closes both and keeps the stack.
+    static func localState(applying route: MacChatPaneRoute?, path: [String])
+        -> (itemsOpen: Bool, path: [String], subChatID: String?) {
+        switch route {
+        case .items(let newPath): return (true, newPath, nil)
+        case .subChat(let id): return (false, path, id)
+        case nil: return (false, path, nil)
+        }
+    }
+
+    /// Writes only what differs, so applying the echo of a local change
+    /// (a route the local states already describe) changes nothing.
+    private func applyPaneRoute(_ route: MacChatPaneRoute?) {
+        let next = Self.localState(applying: route, path: itemsPaneState.path)
+        // A restore that opens the pane straight onto an item behaves like a
+        // link tap: the pane's Back closes it (#2608). "Was open" is the
+        // LOCAL flag, not `showItemsPane`: before the first apply that reads
+        // the handed-in route, so a restore that remounts this chat already
+        // on an item looked open and skipped the flag (Bugbot, #233).
+        let wasOpen = routeApplied && localItemsOpen
+        if !wasOpen, next.itemsOpen, !next.path.isEmpty { itemsPaneState.openedOnItem = true }
+        if localItemsOpen != next.itemsOpen { localItemsOpen = next.itemsOpen }
+        if localSubChatID != next.subChatID { localSubChatID = next.subChatID }
+        if itemsPaneState.path != next.path { itemsPaneState.path = next.path }
+        if !routeApplied { routeApplied = true }
+    }
+
     /// A tapped `matron://item/<n>` link in a message body (item #115),
     /// resolved by the shared `TrackerItemLinkResolver`. A known item lands
     /// exactly where an inline `.itemMarker` card does — the items pane,
@@ -404,6 +465,9 @@ struct MacChatView: View {
     /// The navigation half, run by `trackerItemLinks` only if the tap that
     /// asked for it is still the latest one (item #115, fix round 5).
     @MainActor private func showItem(_ id: String) {
+        // Opened straight onto the item: the pane's Back closes it again
+        // rather than dropping to a list the user never opened (#2608).
+        if !showItemsPane { itemsPaneState.openedOnItem = true }
         openSubChatID = nil
         showItemsPane = true
         itemsPaneState.path = [id]
@@ -556,6 +620,20 @@ struct MacChatView: View {
         // pushes onto the pane's stack rather than replacing it.
         .trackerItemLinks(itemLinkRelay, resolve: { await openTrackerItem(num: $0) },
                           open: { showItem($0) })
+        // Pane route sync (spec 2026-09-23 §3). Local → shell: a push, a
+        // pop, a sub-chat open/close, or the ⇧⌘I toggle re-derives
+        // `localRoute` and writes the window's binding, which the history
+        // records. Shell → local: a Back/Forward restore onto THIS
+        // conversation writes the binding and lands here; `initial: true`
+        // seeds a freshly mounted chat from the route the shell hands it.
+        // `applyPaneRoute` writes only what differs, so the echo of a
+        // local write is a no-op.
+        .onChange(of: localRoute) { _, route in
+            if paneRoute.wrappedValue != route { paneRoute.wrappedValue = route }
+        }
+        .onChange(of: paneRoute.wrappedValue, initial: true) { _, route in
+            applyPaneRoute(route)
+        }
         // Minor (Mac fix wave, part 1): ⌘⇧I toggles the tasks-and-decisions
         // pane. Attached HERE (the stable outer view, same reasoning as the
         // observation lifecycle below) rather than as a toolbar-item
@@ -632,6 +710,11 @@ struct MacChatView: View {
             // original `if itemsVM == nil` guard skipped `start()`
             // entirely whenever the VM already existed, which is exactly
             // the failure mode reported.
+            // The pane mounts only once `itemsVM` exists, so apply the
+            // handed-in route first: a restore onto a pushed item then
+            // mounts the pane already on that item, never on its list for
+            // a frame (Bugbot, #233). A no-op once `onChange` has applied it.
+            if !routeApplied { applyPaneRoute(paneRoute.wrappedValue) }
             if itemsVM == nil, let deps, let session {
                 itemsVM = deps.makeItemsPanelViewModel(for: session, convoID: viewModel.roomID)
             }
@@ -786,13 +869,9 @@ struct MacChatView: View {
                         // `onOpenSubChat` above, and `itemsPaneState` is
                         // the shared `@Observable` instance both HSplitView
                         // branches already read `path` from, so setting it
-                        // here is all `MacItemsPane`'s `NavigationStack`
-                        // needs to push (see `MacItemsPaneState`).
-                        onOpenItem: { id in
-                            openSubChatID = nil
-                            showItemsPane = true
-                            itemsPaneState.path = [id]
-                        },
+                        // here is all `MacItemsPane` needs to show it
+                        // (see `MacItemsPaneState`).
+                        onOpenItem: { id in showItem(id) },
                         onOpenMission: onOpenMission,
                         onPreviewImage: { url, img in
                             imagePreview = ImagePreview(gallery: ImageGalleries.conversation(

@@ -217,6 +217,50 @@ final class MacChatViewTests: XCTestCase {
         XCTAssertEqual(view.chatTitle, "Hello")
     }
 
+    /// Spec §3, shell → local: a restored route lands on the chat view's
+    /// local states; a route the local states already describe changes
+    /// nothing (so the local → shell echo cannot loop).
+    func test_localState_appliesARouteFromTheShell() {
+        let pushed = MacChatView.localState(applying: .items(path: ["it_9"]), path: [])
+        XCTAssertTrue(pushed.itemsOpen)
+        XCTAssertEqual(pushed.path, ["it_9"])
+        XCTAssertNil(pushed.subChatID, "the items pane and a sub-chat share one slot")
+
+        let child = MacChatView.localState(applying: .subChat(id: "s2"), path: ["it_9"])
+        XCTAssertFalse(child.itemsOpen, "a sub-chat closes the pane")
+        XCTAssertEqual(child.subChatID, "s2")
+        XCTAssertEqual(child.path, ["it_9"], "closing the pane keeps its stack for a later reopen, as today")
+
+        let closed = MacChatView.localState(applying: nil, path: ["it_9"])
+        XCTAssertFalse(closed.itemsOpen)
+        XCTAssertNil(closed.subChatID)
+        XCTAssertEqual(closed.path, ["it_9"])
+    }
+
+    /// Every route survives the round trip through the local states, so
+    /// the local → shell mirror of an applied route is the route itself
+    /// and the echo is a no-op (PR #233 review C1).
+    func test_localState_roundTripsThroughFrom() {
+        let routes: [MacChatPaneRoute?] = [nil, .items(path: []), .items(path: ["a", "b"]), .subChat(id: "s1")]
+        for route in routes {
+            let local = MacChatView.localState(applying: route, path: ["kept"])
+            XCTAssertEqual(MacChatPaneRoute.from(itemsOpen: local.itemsOpen, path: local.path, subChatID: local.subChatID),
+                           route)
+        }
+    }
+
+    /// The binding replaces the old `itemsPaneOpen` Bool and defaults to
+    /// "no pane", so previews and tests build without a route.
+    func test_view_defaultsToNoPaneRoute() {
+        let timeline = FakeTimelineForChat()
+        let chatVM = ChatViewModel(roomID: "!r:s", timeline: timeline, media: FakeMediaForChat())
+        let composerVM = ComposerViewModel(roomID: "!test:s", timeline: timeline, commands: [])
+        let stripVM = SubChatStripViewModel(chat: FakeChatForSubStrip(), parentConvoID: "!r:s")
+        let view = MacChatView(
+            viewModel: chatVM, composerVM: composerVM, stripViewModel: stripVM,
+            subChatProvider: { _ in (chatVM, stripVM) }, chatTitle: "Hello")
+        XCTAssertNil(view.paneRoute.wrappedValue)
+    }
 }
 /// The bridge from controller spans to transcript text — pure, so it is
 /// pinned here without a window or a drag.

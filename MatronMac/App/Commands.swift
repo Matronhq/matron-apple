@@ -56,6 +56,12 @@ public extension Notification.Name {
 /// items (and their listeners) along with the rest of the verification
 /// UI — the journal stack has no verification concept yet.
 struct ChatCommands: Commands {
+    /// The key window's Back/Forward (spec 2026-09-23 §5), published by
+    /// its `MacChatListView`. Read from the focused scene instead of posted
+    /// on the bus: history is per window, and a bus post would move every
+    /// open window (PR #233 review I1).
+    @FocusedValue(\.macNavigation) private var navigation
+
     var body: some Commands {
         // File menu — `.newItem` is the system "New" group; we replace
         // it with our `New Chat` so the keyboard shortcut binds cleanly.
@@ -101,9 +107,52 @@ struct ChatCommands: Commands {
             Button("Reset Font Size") { post(.resetFontSize) }
                 .keyboardShortcut("0", modifiers: .command)
         }
+
+        // Go menu — the key window's navigation history (spec 2026-09-23
+        // §5). Greyed out when that window has nothing to go back or
+        // forward to, or no window is key.
+        CommandMenu("Go") {
+            Button("Back") { navigation?.goBack() }
+                .keyboardShortcut("[", modifiers: .command)
+                .disabled(navigation?.canGoBack != true)
+            Button("Forward") { navigation?.goForward() }
+                .keyboardShortcut("]", modifiers: .command)
+                .disabled(navigation?.canGoForward != true)
+        }
     }
 
     private func post(_ cmd: MatronCommand) {
         NotificationCenter.default.post(name: .matronCommand(cmd), object: nil)
     }
+}
+
+/// A window's Back/Forward, published to the menu bar with
+/// `focusedSceneValue` so ⌘[ / ⌘] act on the key window only.
+struct MacNavigationActions {
+    var canGoBack: Bool
+    var canGoForward: Bool
+    var goBack: () -> Void
+    var goForward: () -> Void
+    /// New Chat, for a host that also stands in for the sidebar's toolbar
+    /// (the Coordinator chat header). The Go menu ignores it.
+    var newChat: (() -> Void)? = nil
+
+    /// What a view draws from these actions; closures aren't comparable.
+    struct DrawnState: Equatable {
+        var present: Bool
+        var canGoBack: Bool
+        var canGoForward: Bool
+        var hasNewChat: Bool
+
+        init(_ actions: MacNavigationActions?) {
+            present = actions != nil
+            canGoBack = actions?.canGoBack ?? false
+            canGoForward = actions?.canGoForward ?? false
+            hasNewChat = actions?.newChat != nil
+        }
+    }
+}
+
+extension FocusedValues {
+    @Entry var macNavigation: MacNavigationActions?
 }
