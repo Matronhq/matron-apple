@@ -21,7 +21,7 @@ final class MacNavColumnSnapshotTests: XCTestCase {
     }
 
     func testEntriesInBarOrder() {
-        XCTAssertEqual(MacNav.allCases, [.coordinator, .missions, .decisions, .conversations])
+        XCTAssertEqual(MacNav.allCases, [.missions, .decisions, .conversations])
         XCTAssertEqual(MacNav.decisions.symbol, "checkmark.circle")
         XCTAssertEqual(MacNavColumn.width, 72)
     }

@@ -64,7 +64,6 @@ struct MacOwnedPaneRoute: Equatable {
 /// absent and cannot mint a spurious history entry.
 struct MacPlace: Equatable {
     enum Detail: Equatable {
-        case coordinator(pane: MacChatPaneRoute?)
         /// `nil` id is the "Select a chat" empty state.
         case conversation(id: String?, pane: MacChatPaneRoute?)
         case mission(id: String?)
@@ -75,7 +74,6 @@ struct MacPlace: Equatable {
 
     var nav: MacNav {
         switch detail {
-        case .coordinator: return .coordinator
         case .conversation: return .conversations
         case .mission: return .missions
         case .decision: return .decisions
@@ -83,23 +81,15 @@ struct MacPlace: Equatable {
     }
 
     var pane: MacChatPaneRoute? {
-        switch detail {
-        case .coordinator(let pane): return pane
-        case .conversation(_, let pane): return pane
-        case .mission, .decision: return nil
-        }
+        if case .conversation(_, let pane) = detail { return pane }
+        return nil
     }
 
-    /// The conversation the chat detail is showing at this place, if any:
-    /// the coordinator's own conversation under the Coordinator entry.
-    func displayedConversationID(coordinatorConvoID: String?) -> String? {
-        switch detail {
-        case .coordinator:
-            guard let coordinatorConvoID, !coordinatorConvoID.isEmpty else { return nil }
-            return coordinatorConvoID
-        case .conversation(let id, _): return id
-        case .mission, .decision: return nil
-        }
+    /// The conversation the chat detail shows at this place, if any. The
+    /// Coordinator panel is not part of a place (spec §3b).
+    var displayedConversationID: String? {
+        if case .conversation(let id, _) = detail { return id }
+        return nil
     }
 }
 
@@ -159,9 +149,7 @@ final class MacNavigationHistory {
 /// looked right but lands in the DETAIL section, which the chat header
 /// accessory leaves zero-width, so AppKit folded the chevrons into its
 /// `»` overflow however wide the window was (Dan, #2608; PR #228 for the
-/// accessory). Coordinator's 72 pt sidebar has no toolbar room at all,
-/// so there the shell leaves these out and the chat header draws
-/// `MacHeaderHistoryCluster` instead.
+/// accessory).
 struct MacHistoryToolbarItems: ToolbarContent {
     let history: MacNavigationHistory
     let goBack: () -> Void
@@ -177,19 +165,6 @@ struct MacHistoryToolbarItems: ToolbarContent {
                 .disabled(!history.canGoForward)
                 .help("Forward")
                 .accessibilityLabel("Forward")
-        }
-    }
-}
-
-/// Coordinator's sidebar toolbar: one invisible 1 pt item. With NO items
-/// SwiftUI drops the window's NSToolbar and the title bar shrinks from 52
-/// to 32 pt, cropping the 52 pt chat header top and bottom (#2608). A 1 pt
-/// item keeps the toolbar and is too small to be clipped into the »
-/// overflow (both measured in `MacHistoryToolbarTests`).
-struct MacCoordinatorToolbarPlaceholder: ToolbarContent {
-    var body: some ToolbarContent {
-        ToolbarItem(placement: .automatic) {
-            Color.clear.frame(width: 1, height: 1).accessibilityHidden(true)
         }
     }
 }

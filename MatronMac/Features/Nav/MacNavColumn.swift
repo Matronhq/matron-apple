@@ -1,15 +1,14 @@
 import SwiftUI
 
 /// Top-level Mac navigation entries (app shell, spec §5), top to bottom.
+/// The Coordinator is a panel since the Coordinator redesign (§3b).
 enum MacNav: Hashable, CaseIterable {
-    case coordinator
     case missions
     case decisions
     case conversations
 
     var title: String {
         switch self {
-        case .coordinator: return "Coordinator"
         case .missions: return "Missions"
         case .decisions: return "Decisions"
         case .conversations: return "Conversations"
@@ -18,7 +17,6 @@ enum MacNav: Hashable, CaseIterable {
 
     var symbol: String {
         switch self {
-        case .coordinator: return "person.crop.circle.badge.checkmark"
         case .missions: return "flag.checkered"
         case .decisions: return "checkmark.circle"
         case .conversations: return "bubble.left.and.bubble.right"

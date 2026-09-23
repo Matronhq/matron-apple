@@ -200,24 +200,14 @@ struct MacChatListView: View {
                 missionsColumn
             case .decisions:
                 decisionsColumn
-            case .coordinator:
-                // Coordinator selected: the list column collapses to the
-                // nav column alone (the width modifier below shrinks it).
-                Spacer(minLength: 0)
             }
         }
     }
 
-    /// Sidebar column min/ideal/max for a nav selection: the list keeps
-    /// its 260/400/600 and the nav column adds its fixed 72 (spec §5);
-    /// with Coordinator selected only the nav column remains. A plain
-    /// function rather than three inline ternaries so `body` stays inside
-    /// the type-checker's budget (see `sidebarStack`).
-    static func sidebarWidths(for nav: MacNav) -> (min: CGFloat, ideal: CGFloat, max: CGFloat) {
-        let column = MacNavColumn.width
-        if nav == .coordinator { return (column, column, column) }
-        return (260 + column, 400 + column, 600 + column)
-    }
+    /// Sidebar column min/ideal/max: the list's 260/400/600 plus the fixed
+    /// 72 pt nav column (spec §5), the same for every entry.
+    static let sidebarWidths: (min: CGFloat, ideal: CGFloat, max: CGFloat) =
+        (260 + MacNavColumn.width, 400 + MacNavColumn.width, 600 + MacNavColumn.width)
 
     /// The place the shell's state describes (spec §1), normalised: only
     /// the fields the selected nav entry shows are carried, so a change
@@ -227,8 +217,6 @@ struct MacChatListView: View {
     static func place(nav: MacNav, selectedSummaryID: String?, selectedMissionID: String?,
                       selectedDecisionID: String?, paneRoute: MacChatPaneRoute?) -> MacPlace {
         switch nav {
-        case .coordinator:
-            return MacPlace(detail: .coordinator(pane: paneRoute))
         case .conversations:
             return MacPlace(detail: .conversation(id: selectedSummaryID, pane: selectedSummaryID == nil ? nil : paneRoute))
         case .missions:
@@ -248,9 +236,8 @@ struct MacChatListView: View {
     /// any means but Back resets like a click, and an open pane stays open
     /// on its list. The place itself never changes here: it reads the
     /// same `route(for:)` value either way.
-    static func paneRoute(_ owned: MacOwnedPaneRoute, landingOn place: MacPlace,
-                          coordinatorConvoID: String?) -> MacOwnedPaneRoute {
-        guard let shown = place.displayedConversationID(coordinatorConvoID: coordinatorConvoID) else {
+    static func paneRoute(_ owned: MacOwnedPaneRoute, landingOn place: MacPlace) -> MacOwnedPaneRoute {
+        guard let shown = place.displayedConversationID else {
             return owned.owner == nil ? owned : MacOwnedPaneRoute(owner: nil, route: owned.route)
         }
         guard shown != owned.owner else { return owned }
@@ -273,7 +260,7 @@ struct MacChatListView: View {
     private var currentPlace: MacPlace {
         Self.place(nav: nav, selectedSummaryID: selectedSummaryID, selectedMissionID: selectedMissionID,
                    selectedDecisionID: selectedDecisionID,
-                   paneRoute: paneRoute.route(for: nav == .coordinator ? coordinatorConvoID : selectedSummaryID))
+                   paneRoute: paneRoute.route(for: selectedSummaryID))
     }
 
     /// The detail column for the selected nav entry. Hoisted out of
@@ -323,21 +310,6 @@ struct MacChatListView: View {
             missionDetail
         case .decisions:
             decisionsDetail
-        case .coordinator:
-            if let id = coordinatorConvoID, !id.isEmpty {
-                // The coordinator is an ordinary chat in its own slot; its
-                // sub-chats open in this column exactly as from the list.
-                chatDetail(for: id)
-            } else {
-                ContentUnavailableView {
-                    Label("Coordinator", systemImage: MacNav.coordinator.symbol)
-                } description: {
-                    Text("Pick one conversation to act as your coordinator. It keeps its own place here; everything else about it stays the same.")
-                } actions: {
-                    Button("Choose a conversation…") { showingCoordinatorChooser = true }
-                        .buttonStyle(.borderedProminent)
-                }
-            }
         }
     }
 
@@ -346,58 +318,45 @@ struct MacChatListView: View {
     /// stays inside Xcode 16.4's type-checker budget on CI (it timed out
     /// twice on `body` once the nav column landed).
     private var splitView: some View {
-        let widths = Self.sidebarWidths(for: nav)
-        return NavigationSplitView(columnVisibility: $columnVisibility) {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebarStack
                 // Drop the system sidebar-collapse toolbar button. The
                 // ⌘⇧S menu item / `.toggleSidebar` notification handler
                 // still collapses the sidebar; only the redundant toolbar
                 // chevron is removed.
                 .toolbar(removing: .sidebarToggle)
-                // MUST come after `.toolbar(removing: .sidebarToggle)`:
-                // on macOS 26 that modifier masks an inner column-width
-                // preference and the sidebar falls back to the system
-                // default (probe-bisected 2026-07-20). Widths per nav
-                // selection come from `sidebarWidths(for:)`.
-                .navigationSplitViewColumnWidth(min: widths.min, ideal: widths.ideal, max: widths.max)
+                // MUST come after `.toolbar(removing: .sidebarToggle)`
+                // (macOS 26).
+                .navigationSplitViewColumnWidth(min: Self.sidebarWidths.min, ideal: Self.sidebarWidths.ideal,
+                                                max: Self.sidebarWidths.max)
                 .toolbar {
-                    // Coordinator's sidebar is the 72 pt nav column alone:
-                    // no room for any toolbar item, which AppKit then drew
-                    // BEHIND the chat header, visible but dead (#2608). There
-                    // the header carries Back/Forward and New Chat instead
-                    // (`coordinatorHeaderActions`); ⌘N stays on the menu.
-                    if nav == .coordinator {
-                        // Keeps the 52 pt title bar the header needs.
-                        MacCoordinatorToolbarPlaceholder()
-                    } else {
-                        // Spec 2026-09-23 §5: the window's Back/Forward,
-                        // top-left in the SIDEBAR section — see
-                        // `MacHistoryToolbarItems`.
-                        MacHistoryToolbarItems(history: history, goBack: goBack, goForward: goForward)
-                        // With the sidebar toggle removed the new-chat button
-                        // is the only item in the sidebar section and packs
-                        // to its leading edge; the flexible spacer pushes it
-                        // to the sidebar's trailing edge (Dan, 2026-07-15).
-                        // `ToolbarSpacer` needs the macOS 26 SDK (Swift 6.2
-                        // toolchain) — CI's Xcode 16.4 compiles without it.
-                        #if compiler(>=6.2)
-                        if #available(macOS 26.0, *) {
-                            ToolbarSpacer(.flexible, placement: .primaryAction)
+                    // Spec 2026-09-23 §5: the window's Back/Forward,
+                    // top-left in the SIDEBAR section — see
+                    // `MacHistoryToolbarItems`.
+                    MacHistoryToolbarItems(history: history, goBack: goBack, goForward: goForward)
+                    // With the sidebar toggle removed the new-chat button
+                    // is the only item in the sidebar section and packs
+                    // to its leading edge; the flexible spacer pushes it
+                    // to the sidebar's trailing edge (Dan, 2026-07-15).
+                    // `ToolbarSpacer` needs the macOS 26 SDK (Swift 6.2
+                    // toolchain) — CI's Xcode 16.4 compiles without it.
+                    #if compiler(>=6.2)
+                    if #available(macOS 26.0, *) {
+                        ToolbarSpacer(.flexible, placement: .primaryAction)
+                    }
+                    #endif
+                    ToolbarItem(placement: .primaryAction) {
+                        Button { showingNewChat = true } label: {
+                            Image(systemName: "square.and.pencil")
                         }
-                        #endif
-                        ToolbarItem(placement: .primaryAction) {
-                            Button { showingNewChat = true } label: {
-                                Image(systemName: "square.and.pencil")
-                            }
-                            .help("New chat")
-                            .keyboardShortcut("n", modifiers: .command)
-                        }
+                        .help("New chat")
+                        .keyboardShortcut("n", modifiers: .command)
                     }
                 }
         } detail: {
             // The chat header rides in the window's title bar, fed by
             // whichever chat column is mounted in here — `MacChatHeaderHost`.
-            MacChatHeaderHost(navigation: nav == .coordinator ? coordinatorHeaderActions : nil) { detailContent }
+            MacChatHeaderHost { detailContent }
         }
     }
 
@@ -491,7 +450,10 @@ struct MacChatListView: View {
     private func withNavigationListeners(_ content: some View) -> some View {
         content
             // ⌘1/⌘2/⌘3 (Commands.swift) — same bus shape as `.toggleSidebar`.
-            .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showCoordinator))) { _ in nav = .coordinator }
+            .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showMissions))) { _ in
+                // An old journal has no Missions entry to select.
+                if missionsSupported { nav = .missions }
+            }
             .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showConversations))) { _ in nav = .conversations }
             .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showDecisions))) { _ in nav = .decisions }
             // Go ▸ Back / Forward, ⌘[ / ⌘] (spec 2026-09-23 §5): published
@@ -816,7 +778,7 @@ struct MacChatListView: View {
     /// chat drops the route's owner (`paneRoute(_:landingOn:)`); that
     /// doesn't change the place, so it can't record twice.
     private func recordPlace(_ place: MacPlace) {
-        let owned = Self.paneRoute(paneRoute, landingOn: place, coordinatorConvoID: coordinatorConvoID)
+        let owned = Self.paneRoute(paneRoute, landingOn: place)
         if owned != paneRoute { paneRoute = owned }
         guard Self.isRecordable(place, historyIsEmpty: history.current == nil) else { return }
         history.visit(place)
@@ -840,9 +802,6 @@ struct MacChatListView: View {
     private func restore(_ place: MacPlace) {
         listLogger.log("history restore \(String(describing: place.detail), privacy: .public)")
         switch place.detail {
-        case .coordinator(let pane):
-            nav = .coordinator
-            paneRoute = MacOwnedPaneRoute(owner: coordinatorConvoID, route: pane)
         case .conversation(let id, let pane):
             nav = .conversations
             if searchQueryIsEmpty == false { searchModel?.query = "" }
@@ -875,18 +834,10 @@ struct MacChatListView: View {
         }
     }
 
-    /// The window's Back/Forward for the Go menu and the Coordinator
-    /// header capsule.
+    /// The window's Back/Forward for the Go menu.
     private var navigationActions: MacNavigationActions {
         MacNavigationActions(canGoBack: history.canGoBack, canGoForward: history.canGoForward,
                              goBack: { goBack() }, goForward: { goForward() })
-    }
-
-    /// Coordinator's header stands in for the whole sidebar toolbar.
-    private var coordinatorHeaderActions: MacNavigationActions {
-        var actions = navigationActions
-        actions.newChat = { showingNewChat = true }
-        return actions
     }
 
     private func goBack() {
@@ -1002,35 +953,8 @@ struct MacChatListView: View {
         decisionsPaneState.cancelRecording()
     }
 
-    /// Every path that lands here — a title tap from the coordinator chat
-    /// (via `showMission`'s `onBack`), a mission page's "back to the
-    /// conversation", a milestone jump into the coordinator room
-    /// (`openMilestone`), and "Open conversation" for that room — must
-    /// keep the Coordinator entry selected rather than open the same chat
-    /// under Conversations, mirroring iOS's `AppShellNavigation.openChat`
-    /// coordinator special-case (Bugbot).
-    /// Whether landing on `convoID` should select the Coordinator nav
-    /// entry instead of Conversations — true exactly when it names the
-    /// coordinator's own conversation, mirroring iOS's
-    /// `AppShellNavigation.openChat` coordinator special-case. A pure
-    /// helper so `MacMissionsNavTests` can pin it without live view state
-    /// (`showConversation` itself is private).
-    static func navForShowingConversation(_ convoID: String, coordinatorConvoID: String?) -> MacNav {
-        if let coordinatorConvoID, !coordinatorConvoID.isEmpty, convoID == coordinatorConvoID {
-            return .coordinator
-        }
-        return .conversations
-    }
-
     private func showConversation(_ convoID: String) {
-        let target = Self.navForShowingConversation(convoID, coordinatorConvoID: coordinatorConvoID)
-        nav = target
-        // The coordinator's own conversation is shown at its fixed nav
-        // entry (`detailContent`'s `.coordinator` case reads
-        // `coordinatorConvoID` directly) — never route it through
-        // Conversations, or through a `selectedSummaryID` assignment that
-        // would leave that entry pointed at it too.
-        guard target != .coordinator else { return }
+        nav = .conversations
         // A same-id assignment never runs `handleSelectionChange`, so the
         // search results panel would stay over the chat (Bugbot, PR #195).
         if searchQueryIsEmpty == false { searchModel?.query = "" }

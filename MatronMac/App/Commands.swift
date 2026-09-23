@@ -19,10 +19,11 @@ public enum MatronCommand: String, CaseIterable, Sendable {
     case decreaseFontSize
     case resetFontSize
     case refresh
-    /// App shell (spec §5): nav-column selection — ⌘1 / ⌘2 / ⌘3.
-    case showCoordinator
-    case showConversations
+    /// App shell (spec §5): nav-column selection — ⌘1 / ⌘2 / ⌘3, top to
+    /// bottom.
+    case showMissions
     case showDecisions
+    case showConversations
 }
 
 public extension Notification.Name {
@@ -45,7 +46,7 @@ public extension Notification.Name {
 ///   - `.toggleSidebar`  — `MacChatListView` (flips `NavigationSplitViewVisibility`)
 ///   - `.slashCommand`   — `MacChatView` (toggles `composerVM.palettePinnedOpen`)
 ///   - `.refresh`        — `MacChatView` (triggers `viewModel.refresh()`)
-///   - `.showCoordinator/.showConversations/.showDecisions` — `MacChatListView` (sets `nav`)
+///   - `.showMissions/.showDecisions/.showConversations` — `MacChatListView` (sets `nav`)
 ///
 /// Posted-but-unhandled (placeholder menu items, listeners land later):
 ///   - `.findInChat`            — Phase 6 wires SearchService; today the
@@ -90,11 +91,11 @@ struct ChatCommands: Commands {
         CommandGroup(after: .sidebar) {
             Button("Toggle Sidebar") { post(.toggleSidebar) }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
-            Button("Coordinator") { post(.showCoordinator) }
+            Button("Missions") { post(.showMissions) }
                 .keyboardShortcut("1", modifiers: .command)
-            Button("Conversations") { post(.showConversations) }
-                .keyboardShortcut("2", modifiers: .command)
             Button("Decisions") { post(.showDecisions) }
+                .keyboardShortcut("2", modifiers: .command)
+            Button("Conversations") { post(.showConversations) }
                 .keyboardShortcut("3", modifiers: .command)
             Divider()
             // TODO Phase 5: wire font-size commands to a design-system
@@ -133,24 +134,6 @@ struct MacNavigationActions {
     var canGoForward: Bool
     var goBack: () -> Void
     var goForward: () -> Void
-    /// New Chat, for a host that also stands in for the sidebar's toolbar
-    /// (the Coordinator chat header). The Go menu ignores it.
-    var newChat: (() -> Void)? = nil
-
-    /// What a view draws from these actions; closures aren't comparable.
-    struct DrawnState: Equatable {
-        var present: Bool
-        var canGoBack: Bool
-        var canGoForward: Bool
-        var hasNewChat: Bool
-
-        init(_ actions: MacNavigationActions?) {
-            present = actions != nil
-            canGoBack = actions?.canGoBack ?? false
-            canGoForward = actions?.canGoForward ?? false
-            hasNewChat = actions?.newChat != nil
-        }
-    }
 }
 
 extension FocusedValues {
