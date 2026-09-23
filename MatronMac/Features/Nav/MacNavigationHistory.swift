@@ -1,0 +1,129 @@
+import Foundation
+import Observation
+
+/// What the chat detail shows beside (or instead of) the timeline (spec
+/// §1). Hoisted to the shell per window so it is part of a place and
+/// survives the per-conversation `MacChatView` being torn down.
+enum MacChatPaneRoute: Equatable {
+    /// The tasks-and-decisions pane is open; `path` is its push stack
+    /// (empty = the list).
+    case items(path: [String])
+    /// A subagent child open in the split pane.
+    case subChat(id: String)
+
+    var isItems: Bool {
+        if case .items = self { return true }
+        return false
+    }
+
+    var itemsPath: [String]? {
+        if case .items(let path) = self { return path }
+        return nil
+    }
+
+    var subChatID: String? {
+        if case .subChat(let id) = self { return id }
+        return nil
+    }
+
+    /// The route the chat view's three local states describe. The two
+    /// panes share one slot — opening either closes the other — so a
+    /// sub-chat wins when both are set mid-transaction.
+    static func from(itemsOpen: Bool, path: [String], subChatID: String?) -> MacChatPaneRoute? {
+        if let subChatID { return .subChat(id: subChatID) }
+        return itemsOpen ? .items(path: path) : nil
+    }
+}
+
+/// Where the user is in a window (spec §1): the shell's selection state,
+/// normalised so fields that do not apply to the selected nav entry are
+/// absent and cannot mint a spurious history entry.
+struct MacPlace: Equatable {
+    enum Detail: Equatable {
+        case coordinator(pane: MacChatPaneRoute?)
+        /// `nil` id is the "Select a chat" empty state.
+        case conversation(id: String?, pane: MacChatPaneRoute?)
+        case mission(id: String?)
+        case decision(id: String?)
+    }
+
+    var detail: Detail
+
+    var nav: MacNav {
+        switch detail {
+        case .coordinator: return .coordinator
+        case .conversation: return .conversations
+        case .mission: return .missions
+        case .decision: return .decisions
+        }
+    }
+
+    var pane: MacChatPaneRoute? {
+        switch detail {
+        case .coordinator(let pane): return pane
+        case .conversation(_, let pane): return pane
+        case .mission, .decision: return nil
+        }
+    }
+
+    /// The conversation the chat detail is showing at this place, if any:
+    /// the coordinator's own conversation under the Coordinator entry.
+    func displayedConversationID(coordinatorConvoID: String?) -> String? {
+        switch detail {
+        case .coordinator:
+            guard let coordinatorConvoID, !coordinatorConvoID.isEmpty else { return nil }
+            return coordinatorConvoID
+        case .conversation(let id, _): return id
+        case .mission, .decision: return nil
+        }
+    }
+}
+
+/// The window's Back/Forward history (spec §2). Pure: the shell reports
+/// every place it lands on through `visit`, and restores what `goBack` /
+/// `goForward` return. Both set `current` to the returned place BEFORE
+/// the shell restores it, so the restore's own `visit` is a no-op and no
+/// "restoring" flag is needed. Only `canGoBack` / `canGoForward` are read
+/// from SwiftUI bodies (the two buttons); everything else is written from
+/// `onChange` handlers.
+@MainActor
+@Observable
+final class MacNavigationHistory {
+    static let capacity = 50
+
+    private(set) var current: MacPlace?
+    private(set) var back: [MacPlace] = []
+    private(set) var forward: [MacPlace] = []
+
+    var canGoBack: Bool { !back.isEmpty }
+    var canGoForward: Bool { !forward.isEmpty }
+
+    /// No-op when `place` is already current. Otherwise the current place
+    /// moves onto `back`, `forward` is dropped (a new branch, as in a
+    /// browser) and `back` is capped at `capacity`.
+    func visit(_ place: MacPlace) {
+        guard place != current else { return }
+        if let current {
+            back.append(current)
+            if back.count > Self.capacity { back.removeFirst(back.count - Self.capacity) }
+        }
+        forward.removeAll()
+        current = place
+    }
+
+    /// The place to restore, or `nil` with nothing to go back to.
+    func goBack() -> MacPlace? {
+        guard let previous = back.popLast() else { return nil }
+        if let current { forward.append(current) }
+        current = previous
+        return previous
+    }
+
+    /// The place to restore, or `nil` with nothing to go forward to.
+    func goForward() -> MacPlace? {
+        guard let next = forward.popLast() else { return nil }
+        if let current { back.append(current) }
+        current = next
+        return next
+    }
+}
