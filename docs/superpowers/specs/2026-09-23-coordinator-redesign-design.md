@@ -190,12 +190,19 @@ chat…* on a chosen box) stays in Settings and in the panel's empty state.
 
 ### 3c. iPhone
 
-- The Coordinator tab goes. A floating Coordinator button sits at the
-  bottom trailing corner above the tab bar on every tab, with the unread
-  dot the tab had.
-- Tapping it presents the Coordinator chat as a sheet (detents `.large`
-  and `.medium`), swiped away to return. Its tasks page stays reachable
-  inside the sheet the same way as in any chat.
+- The Coordinator tab goes. On the tabs' root screens (Missions,
+  Decisions, the Conversations list) a floating Coordinator button sits at
+  the bottom trailing corner above the tab bar, with the unread dot the
+  tab had.
+- Inside a conversation there is no floating button (it would sit over
+  the composer). The Coordinator opens from that chat's ⓘ sheet
+  (`SessionStatusSheet`, a *Coordinator* row, handed off in `onDismiss`
+  like the media browser) and from a Coordinator button at the top of its
+  tasks page (Dan, #2757).
+- Every entry presents the Coordinator chat as a sheet (detents `.large`
+  and `.medium`), swiped away to return to the same screen. Its tasks
+  page stays reachable inside the sheet the same way as in any chat. The
+  entries are hidden inside the Coordinator's own sheet.
 - The conversation is left out of the Conversations list; notification
   taps and links into it open the sheet.
 
@@ -232,7 +239,7 @@ today (no block, no enforcement); nothing breaks.
 - **Apps:** setting migration (local only / journal only / both
   different); Mac panel persists across nav changes and Back/Forward,
   title bar stays 52 pt with it open, no toolbar items in `»`; iPhone
-  button present on every tab and sheet dismisses to the same screen;
+  button on every tab root and none inside a chat, ⓘ-sheet and tasks-page entries open the sheet, and it dismisses to the same screen;
   Coordinator excluded from Conversations; Unassigned section.
 - **End to end:** give the Coordinator a three-part request; it creates
   three unassigned missions, starts a session on one, and that session's
