@@ -84,7 +84,7 @@ struct ChatListView: View {
     /// type-checker under its budget) and so the search sheet's seed + live
     /// refresh share one source.
     private var allChatSummaries: [ChatSummary] {
-        viewModel.groups.flatMap(\.summaries)
+        viewModel.allSummaries
     }
 
     var body: some View {

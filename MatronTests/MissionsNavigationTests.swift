@@ -3,8 +3,8 @@ import XCTest
 
 @MainActor
 final class MissionsNavigationTests: XCTestCase {
-    func testTabOrderIsCoordinatorMissionsDecisionsConversations() {
-        XCTAssertEqual(AppTab.allCases, [.coordinator, .missions, .decisions, .conversations])
+    func testTabOrderIsMissionsDecisionsConversations() {
+        XCTAssertEqual(AppTab.allCases, [.missions, .decisions, .conversations])
     }
 
     /// Both routes ride the one `PathPrefixedRoute` round-trip, and their
@@ -65,15 +65,15 @@ final class MissionsNavigationTests: XCTestCase {
         XCTAssertEqual(nav.chatPath, ["c1"])
     }
 
-    /// The coordinator conversation always goes to its own tab, whoever
+    /// The Coordinator's conversation always presents its sheet, whoever
     /// asked — otherwise two `ChatView`s share one cached view model.
     func testOpenConversationFromMissionsRoutesTheCoordinatorToItsTab() {
         let nav = AppShellNavigation()
         nav.coordinatorConvoID = "c-coord"
         nav.openConversation(fromMissions: "c-coord")
-        XCTAssertEqual(nav.tab, .coordinator)
-        XCTAssertEqual(nav.coordinatorPath, [])
+        XCTAssertTrue(nav.isCoordinatorPresented)
         XCTAssertEqual(nav.chatPath, [])
+        XCTAssertEqual(nav.tab, .conversations)
     }
 
     func testSwipeAtRootWalksTheNewBarOrder() {
@@ -101,11 +101,9 @@ final class MissionsNavigationTests: XCTestCase {
     func testSwipeSkipsMissionsAndUnsupportedClampsOffIt() {
         let nav = AppShellNavigation()
         nav.missionsSupported = false
-        nav.tab = .coordinator
-        XCTAssertTrue(nav.swipeRoot(translation: .init(width: -120, height: 5)))
-        XCTAssertEqual(nav.tab, .decisions, "Missions is skipped when unsupported")
-        XCTAssertTrue(nav.swipeRoot(translation: .init(width: 120, height: 5)))
-        XCTAssertEqual(nav.tab, .coordinator)
+        nav.tab = .decisions
+        XCTAssertFalse(nav.swipeRoot(translation: .init(width: 120, height: 5)), "Missions is skipped when unsupported")
+        XCTAssertEqual(nav.tab, .decisions)
 
         nav.missionsSupported = true
         nav.tab = .missions
@@ -141,7 +139,7 @@ final class MissionsNavigationTests: XCTestCase {
         // must pop the mission page all the way off, landing back on the
         // (implicit) root — never a no-op.
         XCTAssertEqual(
-            CoordinatorTabView.missionOpenConversationOutcome(
+            CoordinatorSheet.missionOpenConversationOutcome(
                 target: "c-coord", current: "c-coord", coordinatorConvoID: "c-coord"),
             .popMission)
 
@@ -149,7 +147,7 @@ final class MissionsNavigationTests: XCTestCase {
         // on the stack: a link back into THAT chat pops the mission page
         // to reveal it, same as the Conversations tab.
         XCTAssertEqual(
-            CoordinatorTabView.missionOpenConversationOutcome(
+            CoordinatorSheet.missionOpenConversationOutcome(
                 target: "c-other", current: "c-other", coordinatorConvoID: "c-coord"),
             .popMission)
 
@@ -157,13 +155,13 @@ final class MissionsNavigationTests: XCTestCase {
         // targets the coordinator's OWN room: clear all the way to the
         // root rather than stack a second copy of it.
         XCTAssertEqual(
-            CoordinatorTabView.missionOpenConversationOutcome(
+            CoordinatorSheet.missionOpenConversationOutcome(
                 target: "c-coord", current: "c-other", coordinatorConvoID: "c-coord"),
             .clearToRoot)
 
         // A third, unrelated room: push it on top of the mission page.
         XCTAssertEqual(
-            CoordinatorTabView.missionOpenConversationOutcome(
+            CoordinatorSheet.missionOpenConversationOutcome(
                 target: "c-third", current: "c-other", coordinatorConvoID: "c-coord"),
             .push("c-third"))
     }

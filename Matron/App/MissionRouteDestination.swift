@@ -4,7 +4,7 @@ import MatronViewModels
 
 /// The `MissionRoute` push destination, shared by every `[String]` stack
 /// that can carry one — the Conversations tab (`ChatListView`) and the
-/// Coordinator tab (`CoordinatorTabView`). A title tap or a milestone card
+/// Coordinator sheet (`CoordinatorSheet`). A title tap or a milestone card
 /// pushes the same route onto whichever tab the chat happens to be mounted
 /// on, so the page it opens must not depend on which tab that was (Bugbot:
 /// the Coordinator's decoder never tried `MissionRoute` at all and opened

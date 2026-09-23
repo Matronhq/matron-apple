@@ -47,22 +47,17 @@ final class AppShellNavigationTests: XCTestCase {
     // horizontal drags, so a non-empty path ignores it.
     func test_rootSwipe_left_goesToTheNextTab_andRight_comesBack() {
         let nav = AppShellNavigation()
-        nav.tab = .coordinator
-        XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: -120, height: 10)))
-        XCTAssertEqual(nav.tab, .missions)
+        nav.tab = .missions
         XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: -120, height: 10)))
         XCTAssertEqual(nav.tab, .decisions)
         XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: -120, height: 10)))
         XCTAssertEqual(nav.tab, .conversations)
         XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: -120, height: 10)), "nothing to the right of the last tab")
-        XCTAssertEqual(nav.tab, .conversations)
         XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 120, height: 10)))
-        XCTAssertEqual(nav.tab, .decisions)
         XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 120, height: 10)))
         XCTAssertEqual(nav.tab, .missions)
-        XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 120, height: 10)), "Coordinator sits to the left of Missions")
-        XCTAssertEqual(nav.tab, .coordinator)
-        XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: 120, height: 10)), "nothing to the left of the first tab")
+        XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: 120, height: 10)),
+                       "Missions is the first tab now the Coordinator tab is gone")
     }
 
     func test_rootSwipe_ignoresShortOrVerticalDrags_andNonRootStacks() {
@@ -80,89 +75,93 @@ final class AppShellNavigationTests: XCTestCase {
         XCTAssertEqual(nav.tab, .decisions)
     }
 
-    /// Bugbot, PR #197: the coordinator conversation must never be mounted
-    /// in Conversations as well — every route to it lands on its tab.
-    func test_coordinatorConversation_alwaysRoutesToItsOwnTab() {
+    /// Spec §3c: every route into the Coordinator's conversation presents
+    /// the sheet; nothing selects a tab for it.
+    func test_everyRouteToTheCoordinator_presentsTheSheet() {
         let nav = AppShellNavigation()
         nav.coordinatorConvoID = "!coord:s"
         nav.coordinatorPath = ["!child:s"]
         nav.openChat("!coord:s")
-        XCTAssertEqual(nav.tab, .coordinator)
-        XCTAssertEqual(nav.coordinatorPath, [], "a deep link lands at the coordinator root")
-        XCTAssertEqual(nav.chatPath, [])
+        XCTAssertTrue(nav.isCoordinatorPresented)
+        XCTAssertEqual(nav.coordinatorPath, [], "a deep link lands at the Coordinator's root")
+        XCTAssertEqual(nav.tab, .conversations, "the tab underneath is left alone")
+
+        nav.isCoordinatorPresented = false
         nav.tab = .decisions
         nav.openConversation(fromDecisions: "!coord:s")
-        XCTAssertEqual(nav.tab, .coordinator)
-        XCTAssertEqual(nav.chatPath, [])
-        // A chat-list row push of the coordinator hands off.
-        nav.tab = .conversations
-        nav.chatPath = ["!coord:s"]
-        XCTAssertTrue(nav.redirectCoordinatorPush())
-        XCTAssertEqual(nav.tab, .coordinator)
-        XCTAssertEqual(nav.chatPath, [])
-        // An origin link from an open chat appends it on top: pop just that
-        // entry and hand off, leaving the chat beneath where it was.
-        nav.tab = .conversations
-        nav.chatPath = ["!other:s", "!coord:s"]
-        XCTAssertTrue(nav.redirectCoordinatorPush())
-        XCTAssertEqual(nav.tab, .coordinator)
-        XCTAssertEqual(nav.chatPath, ["!other:s"])
-        // Any other push is left alone.
-        nav.tab = .conversations
-        nav.chatPath = ["!other:s"]
-        XCTAssertFalse(nav.redirectCoordinatorPush())
-        XCTAssertEqual(nav.chatPath, ["!other:s"])
-        nav.coordinatorConvoID = nil
-        nav.chatPath = ["!coord:s"]
-        XCTAssertFalse(nav.redirectCoordinatorPush(), "no coordinator set: it is an ordinary chat")
+        XCTAssertTrue(nav.isCoordinatorPresented)
+        XCTAssertEqual(nav.tab, .decisions)
+
+        nav.isCoordinatorPresented = false
+        nav.openConversation(fromMissions: "!coord:s")
+        XCTAssertTrue(nav.isCoordinatorPresented)
     }
 
-    /// Bugbot (PR #197, High): the coordinator must never be mounted twice.
-    /// Assigning it to a chat already on the Conversations stack — even
-    /// with an item detail above it — evicts that chat, and an origin link
-    /// that pushes the coordinator onto its own stack pops to the root.
-    func test_coordinatorIsNeverMountedTwice() {
-        let nav = AppShellNavigation()
-        // Assignment while the chat is open beneath an item detail.
-        nav.tab = .conversations
-        nav.chatPath = ["!other:s", "!coord:s", "item/abc"]
-        nav.coordinatorConvoID = "!coord:s"
-        XCTAssertEqual(nav.tab, .coordinator, "assigning an open chat hands off to its tab")
-        XCTAssertEqual(nav.chatPath, ["!other:s"], "the chat and everything above it leave the Conversations stack")
-        XCTAssertEqual(nav.coordinatorPath, [])
-        // Re-assigning the same id is a no-op.
-        nav.tab = .conversations
-        nav.coordinatorConvoID = "!coord:s"
-        XCTAssertEqual(nav.tab, .conversations)
-        // A second copy pushed onto the Coordinator stack pops to the root.
-        nav.tab = .coordinator
-        nav.coordinatorPath = ["item/abc", "!coord:s"]
-        XCTAssertTrue(nav.redirectCoordinatorPush())
-        XCTAssertEqual(nav.coordinatorPath, [])
-        XCTAssertEqual(nav.tab, .coordinator)
-        // Other chats on the Coordinator stack are fine.
-        nav.coordinatorPath = ["!other:s"]
-        XCTAssertFalse(nav.redirectCoordinatorPush())
-        XCTAssertEqual(nav.coordinatorPath, ["!other:s"])
-    }
-
-    /// Bugbot (PR #197): the stack bindings' setters redirect on the way
-    /// in, so the coordinator id is never stored — a second copy cannot
-    /// mount even for a frame.
-    func test_stackSetters_redirectTheCoordinatorBeforeItIsStored() {
+    /// An origin link pushing the Coordinator onto Conversations stores
+    /// only what is beneath it and presents the sheet instead — one mount.
+    func test_chatPathSetter_redirectsTheCoordinatorToTheSheet() {
         let nav = AppShellNavigation()
         nav.coordinatorConvoID = "!coord:s"
-        nav.tab = .conversations
-        nav.setChatPath(["!other:s", "!coord:s"])
+        nav.setChatPath(["!other:s", "!coord:s", "item/abc"])
         XCTAssertEqual(nav.chatPath, ["!other:s"])
-        XCTAssertEqual(nav.tab, .coordinator)
-        nav.setCoordinatorPath(["item/abc", "!coord:s"])
-        XCTAssertEqual(nav.coordinatorPath, [])
-        nav.setCoordinatorPath(["!other:s"])
-        XCTAssertEqual(nav.coordinatorPath, ["!other:s"], "other pushes are stored as-is")
-        nav.tab = .conversations
+        XCTAssertTrue(nav.isCoordinatorPresented)
+        nav.isCoordinatorPresented = false
         nav.setChatPath(["!other:s", "item/abc"])
         XCTAssertEqual(nav.chatPath, ["!other:s", "item/abc"])
+        XCTAssertFalse(nav.isCoordinatorPresented)
+    }
+
+    /// A second copy pushed onto the sheet's own stack pops it to its root.
+    func test_coordinatorPathSetter_popsASecondCopyToTheRoot() {
+        let nav = AppShellNavigation()
+        nav.coordinatorConvoID = "!coord:s"
+        nav.setCoordinatorPath(["item/abc", "!coord:s"])
+        XCTAssertEqual(nav.coordinatorPath, [])
+        nav.setCoordinatorPath(["!child:s"])
+        XCTAssertEqual(nav.coordinatorPath, ["!child:s"])
+    }
+
+    /// Presenting the sheet evicts the same conversation from Conversations
+    /// first (it may be open there from before it became the Coordinator):
+    /// two ChatViews would share one cached ChatViewModel.
+    func test_presentingTheSheet_evictsTheSameChatFromConversations() {
+        let nav = AppShellNavigation()
+        nav.chatPath = ["!other:s", "!coord:s", "item/abc"]
+        nav.coordinatorConvoID = "!coord:s"
+        XCTAssertEqual(nav.chatPath, ["!other:s", "!coord:s", "item/abc"], "assignment alone yanks nothing")
+        nav.presentCoordinator()
+        XCTAssertEqual(nav.chatPath, ["!other:s"])
+        XCTAssertTrue(nav.isCoordinatorPresented)
+    }
+
+    /// A new Coordinator starts at its root (Bugbot, PR #197).
+    func test_changingTheCoordinator_resetsTheSheetStack() {
+        let nav = AppShellNavigation()
+        nav.coordinatorConvoID = "!a:s"
+        nav.coordinatorPath = ["!child:s"]
+        nav.coordinatorConvoID = "!b:s"
+        XCTAssertEqual(nav.coordinatorPath, [])
+    }
+
+    /// A tap on another conversation's notification leaves the sheet for it.
+    func test_openingAnotherChat_dismissesTheSheet() {
+        let nav = AppShellNavigation()
+        nav.coordinatorConvoID = "!coord:s"
+        nav.presentCoordinator()
+        nav.openChat("!r:s")
+        XCTAssertFalse(nav.isCoordinatorPresented)
+        XCTAssertEqual(nav.chatPath, ["!r:s"])
+    }
+
+    /// Review focus: a session the Coordinator starts auto-opens underneath;
+    /// the sheet stays where the user is.
+    func test_autoOpen_keepsTheCoordinatorSheetUp() {
+        let nav = AppShellNavigation()
+        nav.coordinatorConvoID = "!coord:s"
+        nav.presentCoordinator()
+        nav.openChat("!spawned:s", dismissingCoordinator: false)
+        XCTAssertTrue(nav.isCoordinatorPresented)
+        XCTAssertEqual(nav.chatPath, ["!spawned:s"])
         XCTAssertEqual(nav.tab, .conversations)
     }
 
@@ -171,25 +170,5 @@ final class AppShellNavigationTests: XCTestCase {
         nav.pushDecision("it_9")
         XCTAssertEqual(nav.decisionsPath, [ItemRoute(id: "it_9")])
         XCTAssertEqual(nav.tab, .conversations, "pushing a decision never changes the tab")
-    }
-
-    func test_coordinatorTab_hasItsOwnStack() {
-        let nav = AppShellNavigation()
-        nav.tab = .coordinator
-        nav.push("!child:s", on: .coordinator)
-        XCTAssertEqual(nav.coordinatorPath, ["!child:s"], "a sub-chat opened from the coordinator pushes on coordinatorPath")
-        XCTAssertEqual(nav.chatPath, [], "…not on the Conversations stack")
-        XCTAssertEqual(nav.tab, .coordinator)
-        nav.push(ItemRoute(id: "it_1").pathValue, on: .coordinator)
-        XCTAssertEqual(nav.coordinatorPath, ["!child:s", "item/it_1"])
-    }
-
-    func test_deepLink_leavesTheCoordinatorStackAlone() {
-        let nav = AppShellNavigation()
-        nav.tab = .coordinator
-        nav.coordinatorPath = ["!child:s"]
-        nav.openChat("!r:s")
-        XCTAssertEqual(nav.tab, .conversations)
-        XCTAssertEqual(nav.coordinatorPath, ["!child:s"])
     }
 }

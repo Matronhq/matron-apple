@@ -2,10 +2,10 @@ import Foundation
 import Observation
 
 /// The bottom tabs (app shell, spec §3), left to right in the bar — and
-/// `allCases` order is the swipe order too (`AppShellNavigation.swipeRoot`).
+/// `allCases` order is the swipe order too. The Coordinator is a sheet
+/// over any tab since the Coordinator redesign (§3c), not a tab.
 /// The app opens on Conversations.
 enum AppTab: Hashable, CaseIterable {
-    case coordinator
     case missions
     case decisions
     case conversations
@@ -46,70 +46,55 @@ final class AppShellNavigation {
     /// and the sub-chat switcher replaces entries in place.
     var chatPath: [String] = []
     var decisionsPath: [ItemRoute] = []
-    /// Coordinator tab stack: sub-chats and items opened from the
-    /// coordinator push here, so back returns to it.
+    /// The Coordinator sheet's own stack (spec §3c): sub-chats, items and
+    /// missions opened inside the sheet push here, so back returns to the
+    /// Coordinator.
     var coordinatorPath: [String] = []
     /// Missions tab stack: `MissionRoute.pathValue` entries, plus
     /// `ItemRoute.pathValue` for an item opened from a mission page.
     var missionsPath: [String] = []
+    /// Whether the Coordinator sheet is up. Every entry — the floating
+    /// button on a tab root, the ⓘ-sheet row and tasks-page button in a
+    /// chat, a notification tap or link into the Coordinator's
+    /// conversation — goes through `presentCoordinator()`.
+    var isCoordinatorPresented = false
 
     init() {}
 
-    /// Open a top-level conversation by REPLACING the whole Conversations
-    /// path, never appending: notification taps, search results and
-    /// auto-opened new conversations used to stack chat-on-chat. Back from
-    /// a conversation always returns to the chat list (Dan, 2026-08-06).
-    /// No-op on the path when the target is already the sole open chat.
-    func openChat(_ roomID: String) {
+    /// Open a top-level conversation by REPLACING the Conversations path
+    /// (Dan, 2026-08-06). The Coordinator's conversation presents the
+    /// sheet instead. `dismissingCoordinator: false` is for the auto-open of
+    /// a freshly started session: it lands underneath and the sheet stays.
+    func openChat(_ roomID: String, dismissingCoordinator: Bool = true) {
         if roomID == coordinatorConvoID {
-            // The coordinator has its own tab (spec §5b); never mount it
-            // in Conversations as well — the two ChatViews would share one
-            // cached ChatViewModel and the first to leave would stop the
-            // other's stream (Bugbot, PR #197).
-            tab = .coordinator
-            coordinatorPath = []
+            presentCoordinator()
             return
         }
+        if dismissingCoordinator { isCoordinatorPresented = false }
         tab = .conversations
         if chatPath != [roomID] { chatPath = [roomID] }
     }
 
-    /// The designated coordinator conversation, mirrored from
-    /// `CoordinatorSetting` by the shell so the rules below can route to
-    /// its tab. `nil` when none is set.
+    /// The designated Coordinator conversation, mirrored from the cached
+    /// setting by the shell. A new one starts the sheet at its root.
     var coordinatorConvoID: String? {
-        didSet { if coordinatorConvoID != oldValue { redirectCoordinatorPush() } }
+        didSet {
+            guard coordinatorConvoID != oldValue else { return }
+            coordinatorPath = []
+        }
     }
 
-    /// Chat-list rows (`NavigationLink`) and origin links from an open
-    /// chat push straight onto `chatPath`, so the coordinator can land on
-    /// that stack: cut the stack back to just below its first entry and
-    /// hand off to the Coordinator tab instead of mounting it twice
-    /// (Bugbot, PR #197 — the entries beneath stay, so back in
-    /// Conversations is unchanged). Anywhere on the stack, not only on
-    /// top: assigning the coordinator to a chat that is ALREADY open (with,
-    /// say, an item detail above it) must evict it too, which is why
-    /// `coordinatorConvoID`'s `didSet` runs this as well as every
-    /// `chatPath` change. An origin link on the Coordinator stack can
-    /// likewise push the coordinator id onto `coordinatorPath`, stacking a
-    /// second copy over the root — that stack is popped to its root. Both
-    /// copies would share one cached `ChatViewModel`, and the first to
-    /// disappear stops the other's stream. Returns whether anything moved.
-    @discardableResult
-    func redirectCoordinatorPush() -> Bool {
-        guard let coordinator = coordinatorConvoID else { return false }
-        var moved = false
-        if coordinatorPath.contains(coordinator) {
-            coordinatorPath = []
-            moved = true
-        }
-        if let index = chatPath.firstIndex(of: coordinator) {
+    /// Presents the Coordinator sheet at its root. The same conversation
+    /// open in Conversations (from before it became the Coordinator) is
+    /// cut from that stack first: two ChatViews would share one cached
+    /// ChatViewModel, and the first to leave stops the other's stream
+    /// (Bugbot, PR #197).
+    func presentCoordinator() {
+        if let coordinator = coordinatorConvoID, let index = chatPath.firstIndex(of: coordinator) {
             chatPath.removeSubrange(index...)
-            tab = .coordinator
-            coordinatorPath = []
-            moved = true
         }
-        return moved
+        coordinatorPath = []
+        isCoordinatorPresented = true
     }
 
     /// "Open conversation" from a Decisions row or its detail: switch to
@@ -151,32 +136,36 @@ final class AppShellNavigation {
 
     /// Shared body of `openConversation(fromDecisions:)` and
     /// `openConversation(fromMissions:)` — one rule, so the two entry points
-    /// cannot drift on the coordinator special case.
+    /// cannot drift on the Coordinator special case.
     private func handOffToConversations(_ convoID: String) {
         if convoID == coordinatorConvoID {
-            tab = .coordinator
-            coordinatorPath = []
+            presentCoordinator()
             return
         }
         tab = .conversations
         if chatPath.last != convoID { chatPath.append(convoID) }
     }
 
-    /// The setters behind the two `NavigationStack(path:)` bindings
-    /// (Bugbot, PR #197): a chat-list `NavigationLink` or an origin link
-    /// writes the whole new path here BEFORE anything mounts, so the
-    /// coordinator id is redirected on the way in and a second
-    /// `ChatDestinationView` for it never appears — not even for one
-    /// frame, whose `onDisappear` would stop the stream the Coordinator
-    /// root is showing. Reads still go through `chatPath`/`coordinatorPath`.
+    /// The Conversations stack binding's setter: a push of the Coordinator
+    /// (origin link, spawned-room Open) keeps only what is beneath it and
+    /// presents the sheet, so it never mounts on this stack for a frame.
     func setChatPath(_ new: [String]) {
-        chatPath = new
-        redirectCoordinatorPush()
+        if let coordinator = coordinatorConvoID, let index = new.firstIndex(of: coordinator) {
+            chatPath = Array(new[..<index])
+            presentCoordinator()
+        } else {
+            chatPath = new
+        }
     }
 
+    /// The sheet stack binding's setter: a second copy of the Coordinator
+    /// pops the sheet to its root.
     func setCoordinatorPath(_ new: [String]) {
-        coordinatorPath = new
-        redirectCoordinatorPush()
+        if let coordinator = coordinatorConvoID, new.contains(coordinator) {
+            coordinatorPath = []
+        } else {
+            coordinatorPath = new
+        }
     }
 
     func pushDecision(_ itemID: String) {
@@ -188,7 +177,6 @@ final class AppShellNavigation {
     func push(_ value: String, on tab: AppTab) {
         switch tab {
         case .conversations: chatPath.append(value)
-        case .coordinator: coordinatorPath.append(value)
         case .decisions: if let route = ItemRoute(pathValue: value) { decisionsPath.append(route) }
         case .missions: missionsPath.append(value)
         }
@@ -197,7 +185,6 @@ final class AppShellNavigation {
     /// Whether the selected tab is showing its root (nothing pushed).
     var isAtRoot: Bool {
         switch tab {
-        case .coordinator: return coordinatorPath.isEmpty
         case .conversations: return chatPath.isEmpty
         case .decisions: return decisionsPath.isEmpty
         case .missions: return missionsPath.isEmpty
