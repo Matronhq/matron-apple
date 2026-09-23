@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import MatronModels
 
 /// Tracker-item deep links (item #115).
 ///
@@ -28,6 +29,12 @@ public enum MatronItemLink {
         /// Consume silently — matrix-internal URLs, and item links when no
         /// in-app handler is installed.
         case swallow
+        /// A well-formed `matron://consent/…` link (item #2318) — the
+        /// journal's pointer from a consent item to the ask it mirrors.
+        /// Opened in-app by the item hosts (the conversation holding the
+        /// card, or the room); message renderers treat it as `.swallow`,
+        /// since a consent link belongs on an item, not in prose.
+        case openConsent(ConsentLink)
     }
 
     /// The item number in `matron://item/<positive integer>`, or `nil` for
@@ -71,6 +78,7 @@ public enum MatronItemLink {
     /// pre-existing scheme policy, unchanged apart from `matron` itself.
     public static func action(for url: URL) -> Action {
         if let number = itemNumber(from: url) { return .openTrackerItem(number) }
+        if let consent = ConsentLink.parse(url) { return .openConsent(consent) }
         switch url.scheme?.lowercased() {
         case "matron":
             // A `matron` URL we don't understand — a malformed item link, or

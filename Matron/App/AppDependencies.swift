@@ -441,7 +441,10 @@ final class AppDependencies {
     /// Item detail sheet/screen.
     @MainActor func makeItemDetailViewModel(for session: UserSession, itemID: String) -> ItemDetailViewModel {
         let c = core(for: session)
-        return ItemDetailViewModel(itemID: itemID, store: c.store, api: c.api, sync: c.items)
+        // `events` + `agentSpawn` (item #2318): the consent card inside
+        // item detail reads the origin conversation's card and outcome from
+        // the same store the timeline does, and answers on the same API.
+        return ItemDetailViewModel(itemID: itemID, store: c.store, api: c.api, sync: c.items, events: c.store, agentSpawn: c.api)
     }
 
     func pushService(for session: UserSession) -> any PushService {

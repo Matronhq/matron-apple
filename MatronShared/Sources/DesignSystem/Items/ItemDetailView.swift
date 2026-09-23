@@ -1,5 +1,6 @@
 import SwiftUI
 import Foundation
+import MatronEvents
 import MatronModels
 
 /// Full detail surface for a single tracker item: header, body, item-level
@@ -36,9 +37,15 @@ public struct ItemDetailView: View {
         /// (Bugbot, PR #198). Defaulted to `nil` so existing call sites and
         /// snapshot tests stay source-compatible.
         public var loadedCommentCount: Int?
-        public init(item: TrackerItem, comments: [TrackerComment], pending: [PendingComment], originTitle: String?, availableResolutions: [ItemResolution], isBusy: Bool, loadedCommentCount: Int? = nil) {
+        /// The spawn consent ask this item mirrors (item #2318), derived by
+        /// `ItemDetailViewModel.spawnConsent`; `nil` for every other item.
+        /// Defaulted so existing call sites and snapshot tests stay
+        /// source-compatible.
+        public var spawnConsent: ItemSpawnConsent?
+        public init(item: TrackerItem, comments: [TrackerComment], pending: [PendingComment], originTitle: String?, availableResolutions: [ItemResolution], isBusy: Bool, loadedCommentCount: Int? = nil, spawnConsent: ItemSpawnConsent? = nil) {
             self.item = item; self.comments = comments; self.pending = pending; self.originTitle = originTitle
             self.availableResolutions = availableResolutions; self.isBusy = isBusy; self.loadedCommentCount = loadedCommentCount
+            self.spawnConsent = spawnConsent
         }
     }
 
@@ -67,6 +74,15 @@ public struct ItemDetailView: View {
     /// so the host can persist it for next time. Defaulted to `nil` for
     /// the same reason.
     let onBottomVisibilityChange: ((Bool) -> Void)?
+    /// Answers the spawn consent card: `true` approves, `false` declines —
+    /// the same `POST /agent-spawn/answer` the timeline card uses, via the
+    /// host's view model. `nil` (previews, tests, hosts without an
+    /// answerer) draws whatever state the model carries; the model itself
+    /// never offers buttons when nothing is wired to them.
+    let onAnswerSpawn: ((Bool) -> Void)?
+    /// Opens the room a started spawn talks in. `nil` omits the Open
+    /// button, as on the timeline card.
+    let onOpenRoom: ((String) -> Void)?
 
     /// Whether the comment thread's bottom is currently visible — read by
     /// the follow-tail `.onChange(of: rowCount)` below, written by
@@ -93,11 +109,13 @@ public struct ItemDetailView: View {
                 onOpenAttachment: @escaping (TrackerAttachment) -> Void, onOpenLink: @escaping (URL) -> Void,
                 onOpenConversation: @escaping (String) -> Void, onSubmit: @escaping () -> Void, onAttach: @escaping () -> Void,
                 onVoiceNote: @escaping () -> Void, onClose: @escaping (ItemResolution) -> Void, onReopen: @escaping () -> Void,
-                now: Date = Date(), startsAtBottom: Bool = false, onBottomVisibilityChange: ((Bool) -> Void)? = nil) {
+                now: Date = Date(), startsAtBottom: Bool = false, onBottomVisibilityChange: ((Bool) -> Void)? = nil,
+                onAnswerSpawn: ((Bool) -> Void)? = nil, onOpenRoom: ((String) -> Void)? = nil) {
         self.model = model; self._draft = draft; self.image = image; self.onOpenAttachment = onOpenAttachment
         self.onOpenLink = onOpenLink; self.onOpenConversation = onOpenConversation; self.onSubmit = onSubmit
         self.onAttach = onAttach; self.onVoiceNote = onVoiceNote; self.onClose = onClose; self.onReopen = onReopen
         self.now = now; self.startsAtBottom = startsAtBottom; self.onBottomVisibilityChange = onBottomVisibilityChange
+        self.onAnswerSpawn = onAnswerSpawn; self.onOpenRoom = onOpenRoom
     }
 
     private var item: TrackerItem { model.item }
@@ -134,6 +152,7 @@ public struct ItemDetailView: View {
                     VStack(alignment: .leading, spacing: ItemTypography.threadSpacing) {
                         header
                         if !item.labels.isEmpty || !item.links.isEmpty { meta }
+                        if let consent = model.spawnConsent { spawnConsentCard(consent) }
                         if !item.body.isEmpty || !item.attachments.isEmpty { bodyCard }
                         Divider()
                         ForEach(model.comments) { comment in commentView(comment) }
@@ -331,6 +350,43 @@ public struct ItemDetailView: View {
                     Label(link.title ?? link.url, systemImage: "link").font(.caption).lineLimit(1)
                 }.buttonStyle(.plain).foregroundStyle(Color.accentColor)
             }
+        }
+    }
+
+    /// The spawn consent card for a consent item (item #2318), between the
+    /// meta row and the body so the answer sits near the top of the thread.
+    /// The full `AgentSpawnRequestCard` when the card's own event is in the
+    /// local store — its task is then byte-for-byte what the timeline card
+    /// shows. Without it there is nothing to approve: the id in the item's
+    /// link is agent-written and could name an ask the user has never seen,
+    /// so the placeholder says the card has not arrived and offers no
+    /// buttons; the view model re-derives the moment it syncs. The body
+    /// stays either way; it holds facts (model, room flag) the card does
+    /// not draw.
+    @ViewBuilder
+    private func spawnConsentCard(_ consent: ItemSpawnConsent) -> some View {
+        if let request = consent.request {
+            AgentSpawnRequestCard(request: request, state: consent.state,
+                                  onApprove: { onAnswerSpawn?(true) }, onDeny: { onAnswerSpawn?(false) },
+                                  onOpen: onOpenRoom)
+        } else {
+            VStack(alignment: .leading, spacing: 10) {
+                Label {
+                    Text("Agent spawn request").font(.callout.weight(.semibold))
+                } icon: {
+                    Image(systemName: "sparkles.rectangle.stack").foregroundStyle(.tint)
+                }
+                Text("The request card hasn't reached this device yet. It can be approved once it arrives, or from the conversation it was asked in.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding()
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.matronBubbleBot)
+                    .shadow(color: .matronBubbleShadow, radius: 2, y: 1)
+            )
         }
     }
 

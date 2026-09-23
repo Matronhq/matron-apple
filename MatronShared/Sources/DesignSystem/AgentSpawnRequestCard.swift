@@ -69,6 +69,30 @@ public struct AgentSpawnRequestCard: View {
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary))
 
+            AgentSpawnAnswerControls(state: state, onApprove: onApprove, onDeny: onDeny, onOpen: onOpen)
+        }
+        .padding()
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.matronBubbleBot)
+                .shadow(color: .matronBubbleShadow, radius: 2, y: 1)
+        )
+    }
+}
+
+/// The answer half of the spawn card: Decline / Approve while the ask is
+/// open, the outcome line (plus an Open button into a started room) once it
+/// is not, and the failure message under a send that did not land. Its own
+/// view so the card's header and facts stay a pure rendering of the
+/// request, and the state machine's four cases are read in one place.
+struct AgentSpawnAnswerControls: View {
+    let state: AgentSpawnCardState
+    let onApprove: () -> Void
+    let onDeny: () -> Void
+    let onOpen: ((String) -> Void)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
             switch state {
             case .idle, .sending, .failed:
                 controls
@@ -80,12 +104,6 @@ public struct AgentSpawnRequestCard: View {
                 Text(message).font(.caption).foregroundStyle(.red)
             }
         }
-        .padding()
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color.matronBubbleBot)
-                .shadow(color: .matronBubbleShadow, radius: 2, y: 1)
-        )
     }
 
     @ViewBuilder
@@ -127,8 +145,10 @@ public struct AgentSpawnRequestCard: View {
         .font(.callout)
         .foregroundStyle(.secondary)
     }
+}
 
-    private func detail(label: String, value: String) -> some View {
+private extension AgentSpawnRequestCard {
+    func detail(label: String, value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label).font(.caption).foregroundStyle(.secondary)
             Text(value).font(.callout)
