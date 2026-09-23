@@ -114,8 +114,8 @@ struct MacChatHeaderBar: View {
     }
 }
 
-/// Back/Forward as a header capsule: the Coordinator stand-in for the
-/// sidebar's `MacHistoryToolbarItems` (#2608).
+/// Back/Forward (and New Chat) as a header capsule: the Coordinator
+/// stand-in for the sidebar's toolbar, which has no room there (#2608).
 struct MacHeaderHistoryCluster: View {
     let navigation: MacNavigationActions
 
@@ -129,6 +129,11 @@ struct MacHeaderHistoryCluster: View {
                 .disabled(!navigation.canGoForward)
                 .help("Forward")
                 .accessibilityLabel("Forward")
+            if let newChat = navigation.newChat {
+                Button { newChat() } label: { Image(systemName: "square.and.pencil") }
+                    .help("New chat")
+                    .accessibilityLabel("New chat")
+            }
         }
         .modifier(MacChatHeaderInactiveDim(opacity: 0.5))
         .padding(.horizontal, 12)

@@ -5,6 +5,11 @@ import MatronModels
 import MatronJournal
 import MatronViewModels
 import MatronDesignSystem
+import os
+
+/// Item-detail slot lifecycle (#2608: a Decisions detail spinner that never
+/// cleared). `log show --predicate 'subsystem == "chat.matron" && category == "item-slots"'`.
+private let slotLogger = Logger(subsystem: "chat.matron", category: "item-slots")
 
 /// Header chrome shared by the list and detail pushes: title, back/close.
 /// Split out of `MacItemsPane` so it — and the populated list inside it —
@@ -127,8 +132,12 @@ final class MacItemsPaneState {
     /// tests exercise slot lifetime without writing to the real defaults.
     let readMemory: ItemReadMemory
 
-    init(readMemory: ItemReadMemory = ItemReadMemory()) {
+    /// Names this surface in the `item-slots` log ("pane", "decisions").
+    let surfaceName: String
+
+    init(readMemory: ItemReadMemory = ItemReadMemory(), surfaceName: String = "pane") {
         self.readMemory = readMemory
+        self.surfaceName = surfaceName
     }
 
     /// This item's slot, created on first push. Never recycles another
@@ -145,6 +154,10 @@ final class MacItemsPaneState {
     /// single-slot swap did inline. `retained` is the stack (or, stackless,
     /// the one selected item).
     func releaseSlots(keeping retained: Set<String>) {
+        let released = slots.keys.filter { !retained.contains($0) }
+        if !released.isEmpty {
+            slotLogger.log("\(self.surfaceName, privacy: .public) release \(released, privacy: .public) keeping \(retained.sorted(), privacy: .public)")
+        }
         for (id, slot) in slots where !retained.contains(id) {
             slot.viewModel?.stop()
             readMemory.store(itemID: id, atBottom: slot.isAtBottom)
@@ -179,6 +192,7 @@ final class MacItemsPaneState {
     /// it. The stackless surface has no path to observe, so its one visible
     /// host both activates and releases.
     func activateSlot(for itemID: String, surface: MacItemDetailSurface) -> MacItemDetailSlot? {
+        slotLogger.log("\(self.surfaceName, privacy: .public) activate \(itemID, privacy: .public) path=\(self.path, privacy: .public) existing=\(self.slots[itemID] != nil) vm=\(self.slots[itemID]?.viewModel != nil)")
         switch surface {
         case .stack:
             guard path.last == itemID else { return nil }
@@ -589,6 +603,7 @@ struct MacItemDetailHost: View {
             let vm = deps.makeItemDetailViewModel(for: session, itemID: itemID)
             slot.viewModel = vm
             vm.start()
+            slotLogger.log("\(state.surfaceName, privacy: .public) started vm \(itemID, privacy: .public)")
         }
         // Belt-and-braces for the LAST item viewed in a pane close/window
         // teardown, which the in-place swap above never sees (there's no

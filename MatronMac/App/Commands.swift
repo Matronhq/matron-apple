@@ -133,17 +133,22 @@ struct MacNavigationActions {
     var canGoForward: Bool
     var goBack: () -> Void
     var goForward: () -> Void
+    /// New Chat, for a host that also stands in for the sidebar's toolbar
+    /// (the Coordinator chat header). The Go menu ignores it.
+    var newChat: (() -> Void)? = nil
 
     /// What a view draws from these actions; closures aren't comparable.
     struct DrawnState: Equatable {
         var present: Bool
         var canGoBack: Bool
         var canGoForward: Bool
+        var hasNewChat: Bool
 
         init(_ actions: MacNavigationActions?) {
             present = actions != nil
             canGoBack = actions?.canGoBack ?? false
             canGoForward = actions?.canGoForward ?? false
+            hasNewChat = actions?.newChat != nil
         }
     }
 }

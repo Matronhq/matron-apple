@@ -79,7 +79,7 @@ struct MacChatListView: View {
     /// running whichever entry is selected so the badge is live, stopped
     /// in `onDisappear` (sign-out tears this view down).
     @State private var decisionsVM: ItemsPanelViewModel?
-    @State private var decisionsPaneState = MacItemsPaneState()
+    @State private var decisionsPaneState = MacItemsPaneState(surfaceName: "decisions")
     @State private var selectedDecisionID: String?
     @State private var decisionsOriginTitles: [String: String] = [:]
     /// The per-session Missions list view model, started/stopped the same
@@ -360,36 +360,40 @@ struct MacChatListView: View {
                 // selection come from `sidebarWidths(for:)`.
                 .navigationSplitViewColumnWidth(min: widths.min, ideal: widths.ideal, max: widths.max)
                 .toolbar {
-                    // Spec 2026-09-23 §5: the window's Back/Forward, top-left
-                    // in the SIDEBAR section — see `MacHistoryToolbarItems`.
-                    // Coordinator's 72 pt sidebar has no toolbar room;
-                    // the chat header carries them there instead.
+                    // Coordinator's sidebar is the 72 pt nav column alone:
+                    // no room for any toolbar item, which AppKit then drew
+                    // BEHIND the chat header, visible but dead (#2608). There
+                    // the header carries Back/Forward and New Chat instead
+                    // (`coordinatorHeaderActions`); ⌘N stays on the menu.
                     if nav != .coordinator {
+                        // Spec 2026-09-23 §5: the window's Back/Forward,
+                        // top-left in the SIDEBAR section — see
+                        // `MacHistoryToolbarItems`.
                         MacHistoryToolbarItems(history: history, goBack: goBack, goForward: goForward)
-                    }
-                    // With the sidebar toggle removed the new-chat button
-                    // is the only item in the sidebar section and packs
-                    // to its leading edge; the flexible spacer pushes it
-                    // to the sidebar's trailing edge (Dan, 2026-07-15).
-                    // `ToolbarSpacer` needs the macOS 26 SDK (Swift 6.2
-                    // toolchain) — CI's Xcode 16.4 compiles without it.
-                    #if compiler(>=6.2)
-                    if #available(macOS 26.0, *) {
-                        ToolbarSpacer(.flexible, placement: .primaryAction)
-                    }
-                    #endif
-                    ToolbarItem(placement: .primaryAction) {
-                        Button { showingNewChat = true } label: {
-                            Image(systemName: "square.and.pencil")
+                        // With the sidebar toggle removed the new-chat button
+                        // is the only item in the sidebar section and packs
+                        // to its leading edge; the flexible spacer pushes it
+                        // to the sidebar's trailing edge (Dan, 2026-07-15).
+                        // `ToolbarSpacer` needs the macOS 26 SDK (Swift 6.2
+                        // toolchain) — CI's Xcode 16.4 compiles without it.
+                        #if compiler(>=6.2)
+                        if #available(macOS 26.0, *) {
+                            ToolbarSpacer(.flexible, placement: .primaryAction)
                         }
-                        .help("New chat")
-                        .keyboardShortcut("n", modifiers: .command)
+                        #endif
+                        ToolbarItem(placement: .primaryAction) {
+                            Button { showingNewChat = true } label: {
+                                Image(systemName: "square.and.pencil")
+                            }
+                            .help("New chat")
+                            .keyboardShortcut("n", modifiers: .command)
+                        }
                     }
                 }
         } detail: {
             // The chat header rides in the window's title bar, fed by
             // whichever chat column is mounted in here — `MacChatHeaderHost`.
-            MacChatHeaderHost(navigation: nav == .coordinator ? navigationActions : nil) { detailContent }
+            MacChatHeaderHost(navigation: nav == .coordinator ? coordinatorHeaderActions : nil) { detailContent }
         }
     }
 
@@ -802,6 +806,7 @@ struct MacChatListView: View {
     /// state: a decision's recording guard, and the search-query clear so
     /// the results panel cannot stay over a restored chat.
     private func restore(_ place: MacPlace) {
+        listLogger.log("history restore \(String(describing: place.detail), privacy: .public)")
         switch place.detail {
         case .coordinator(let pane):
             nav = .coordinator
@@ -843,6 +848,13 @@ struct MacChatListView: View {
     private var navigationActions: MacNavigationActions {
         MacNavigationActions(canGoBack: history.canGoBack, canGoForward: history.canGoForward,
                              goBack: { goBack() }, goForward: { goForward() })
+    }
+
+    /// Coordinator's header stands in for the whole sidebar toolbar.
+    private var coordinatorHeaderActions: MacNavigationActions {
+        var actions = navigationActions
+        actions.newChat = { showingNewChat = true }
+        return actions
     }
 
     private func goBack() {
@@ -945,6 +957,7 @@ struct MacChatListView: View {
     }
 
     private func navChanged(from old: MacNav, to new: MacNav) {
+        listLogger.log("nav \(String(describing: old), privacy: .public) → \(String(describing: new), privacy: .public) decision=\(selectedDecisionID ?? "nil", privacy: .public)")
         // The search field unmounts with Conversations; an unconsumed ⌘F
         // request must not outlive it (Bugbot, PR #195).
         if old == .conversations { focusSearch = false }
