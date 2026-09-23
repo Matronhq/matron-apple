@@ -103,7 +103,18 @@ public struct ItemDetailView: View {
     /// its own base — it grows and shrinks with Dynamic Type in step with
     /// the markdown next to it. A fixed `.system(size:)` would agree at
     /// the default size and diverge at every other.
-    @ScaledMetric(relativeTo: .body) private var bodySize: CGFloat = ItemTypography.baseSize * ItemTypography.bodyScale
+    @ScaledMetric(relativeTo: .body) private var scaledBodySize: CGFloat = ItemTypography.baseSize * ItemTypography.bodyScale
+    /// On the Mac the markdown bodies are `SelectableMessageText` at the
+    /// fixed `Style.item` size, so the plain `Text` beside them takes that
+    /// same size or the two drift apart under a non-default Dynamic Type
+    /// (Bugbot, PR #232).
+    private var bodySize: CGFloat {
+        #if os(macOS)
+        MarkdownAttributed.Style.item.baseFontSize
+        #else
+        scaledBodySize
+        #endif
+    }
     #if os(macOS)
     /// The thread's cross-card selection (tracker #2533): the body card and
     /// every text comment render through the chat timeline's NSTextView
