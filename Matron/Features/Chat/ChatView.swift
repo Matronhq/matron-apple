@@ -41,6 +41,9 @@ struct ChatView: View {
     @Environment(\.chatNavigationPath) private var navigationPath
     @Environment(\.appDependencies) private var deps
     @Environment(\.currentSession) private var session
+    /// "Open the Coordinator" from the shell (Coordinator redesign §3c);
+    /// `nil` inside the Coordinator's own sheet, which hides both entries.
+    @Environment(\.openCoordinator) private var openCoordinator
     @State private var wasBackgrounded = false
     /// Local text for the in-conversation search bar's field — seeded from
     /// `viewModel.chatSearch?.query`, submitted back via `beginChatSearch`.
@@ -229,6 +232,12 @@ struct ChatView: View {
         path.wrappedValue.append(value)
     }
 
+    /// The ⓘ sheet's Coordinator row action: present only when the shell
+    /// offers the Coordinator here. Static so a test pins the rule.
+    static func coordinatorRowAction(_ open: OpenCoordinatorAction?, arm: @escaping () -> Void) -> (() -> Void)? {
+        open == nil ? nil : arm
+    }
+
     /// Static twin of `pushItem` — a mission rides the same `[String]`
     /// stack the chat itself is mounted on. Idempotent for the mission
     /// already on top, mirroring `pushItem` (a double title tap or a
@@ -365,6 +374,9 @@ struct ChatView: View {
     /// while the sheet is still up races the dismissal animation, and the
     /// sheet has no access to this view's `navigationPath` regardless.
     @State private var pendingChildOpen: String?
+    /// Set by the info sheet's Coordinator row; consumed in its `onDismiss`
+    /// (one sheet per presenter, like `pendingMediaOpen`).
+    @State private var pendingCoordinatorOpen = false
     /// Which mission this conversation belongs to (spec: Transcript and
     /// title). Derived locally from the mission cache — the snapshot
     /// never carries it — so it is nil until the first missions refresh,
@@ -1036,6 +1048,13 @@ struct ChatView: View {
                     navigationPath?.wrappedValue.append(id)
                 }
             )
+            // Dan, #2757: the Coordinator is reachable from a chat's tasks
+            // page. Absent inside the Coordinator's own sheet.
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if let openCoordinator {
+                    CoordinatorEntryButton { openCoordinator() }
+                }
+            }
             // `conversationOriginLabels()` — a full id→label scan, drawn
             // only by the "All" scope, so the conversation scope skips it
             // (see the matching comment in `MacItemsPane`).
@@ -1212,12 +1231,18 @@ struct ChatView: View {
                 pendingChildOpen = nil
                 navigationPath?.wrappedValue.append(id)
             }
+            // A Coordinator tap: present once the info sheet is gone.
+            if pendingCoordinatorOpen {
+                pendingCoordinatorOpen = false
+                openCoordinator?()
+            }
         }) {
             SessionStatusSheet(
                 viewModel: viewModel, boxName: boxName,
                 onOpenMedia: { pendingMediaOpen = true },
                 strip: stripViewModel,
-                onOpenSubagent: { id in pendingChildOpen = id }
+                onOpenSubagent: { id in pendingChildOpen = id },
+                onOpenCoordinator: Self.coordinatorRowAction(openCoordinator) { pendingCoordinatorOpen = true }
             )
         }
         .sheet(isPresented: $showMediaBrowser) {

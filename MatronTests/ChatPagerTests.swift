@@ -118,4 +118,15 @@ final class ChatPagerTests: XCTestCase {
         ChatView.pushMission("ms_2", onto: nil)
         XCTAssertEqual(path.count, 2, "no path (previews/tests) is a no-op")
     }
+
+    /// The ⓘ row exists only where the shell installed an action — never
+    /// inside the Coordinator's own sheet.
+    @MainActor
+    func test_coordinatorRowAction_followsTheEnvironment() {
+        XCTAssertNil(ChatView.coordinatorRowAction(nil, arm: {}))
+        var armed = 0
+        let action = ChatView.coordinatorRowAction(OpenCoordinatorAction {}, arm: { armed += 1 })
+        action?()
+        XCTAssertEqual(armed, 1)
+    }
 }
