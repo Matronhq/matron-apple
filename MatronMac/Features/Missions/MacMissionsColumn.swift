@@ -7,6 +7,8 @@ import MatronViewModels
 /// on the host so the nav badge stays live while another entry shows.
 struct MacMissionsColumn: View {
     let viewModel: MissionsListViewModel
+    var coordinatorConvoID: String? = nil
+    var originTitles: [String: String] = [:]
     let onSelect: (String) -> Void
 
     var body: some View {
@@ -15,7 +17,10 @@ struct MacMissionsColumn: View {
                          // Not proven false yet ⇒ treated as supported,
                          // same as every other `isSupported` consumer
                          // (CodeRabbit #209 fix round 2, H2).
-                         isSupported: viewModel.isSupported != false, isRefreshing: viewModel.isRefreshing),
+                         isSupported: viewModel.isSupported != false, isRefreshing: viewModel.isRefreshing,
+                         unassigned: viewModel.unassigned,
+                         attributions: MissionsListViewModel.attributions(
+                            for: viewModel.unassigned, coordinatorConvoID: coordinatorConvoID, originTitles: originTitles)),
             onSelect: onSelect,
             onRefresh: { await viewModel.refresh() })
         .alert("Missions", isPresented: Binding(get: { viewModel.error != nil },

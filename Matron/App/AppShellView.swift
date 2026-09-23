@@ -192,7 +192,7 @@ struct AppShellView: View {
                                // alerts — the host owns that path.
                                onOpenItem: { nav.pushDecision($0) })
             }
-            .task(id: decisionsVM.awaitingYou.map(\.originConvoID)) {
+            .task(id: decisionsVM.awaitingYou.map(\.originConvoID) + missionsVM.unassigned.map(\.originConvoID)) {
                 let labels = (try? await deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
                 // See the Mac twin in `MacChatListView`: a cancelled task's
                 // read still completes and must not overwrite its successor.
@@ -215,7 +215,8 @@ struct AppShellView: View {
 
     private var missionsTab: some View {
         NavigationStack(path: missionsPath) {
-            MissionsTabRoot(viewModel: missionsVM, onSelect: { nav.pushMission($0) })
+            MissionsTabRoot(viewModel: missionsVM, coordinatorConvoID: coordinatorConvoID, originTitles: originTitles,
+                            onSelect: { nav.pushMission($0) })
                 .simultaneousGesture(rootSwipe)
                 .navigationDestination(for: String.self) { value in
                     if let mission = MissionRoute(pathValue: value) {

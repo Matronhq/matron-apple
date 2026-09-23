@@ -567,7 +567,7 @@ struct MacChatListView: View {
                 decisionsVM = vm
                 vm.start()
             }
-            .task(id: decisionsVM?.awaitingYou.map(\.originConvoID) ?? []) {
+            .task(id: (decisionsVM?.awaitingYou.map(\.originConvoID) ?? []) + (missionsVM?.unassigned.map(\.originConvoID) ?? [])) {
                 guard let deps, let session else { return }
                 let labels = (try? await deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
                 // A cancelled task's read still completes (GRDB's async read
@@ -902,7 +902,8 @@ struct MacChatListView: View {
     @ViewBuilder
     private var missionsColumn: some View {
         if let missionsVM {
-            MacMissionsColumn(viewModel: missionsVM, onSelect: { pickMission($0) })
+            MacMissionsColumn(viewModel: missionsVM, coordinatorConvoID: coordinatorConvoID, originTitles: decisionsOriginTitles,
+                              onSelect: { pickMission($0) })
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }
