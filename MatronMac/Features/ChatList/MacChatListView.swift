@@ -52,13 +52,14 @@ struct MacChatListView: View {
     @Environment(\.currentSession) private var session
     @State private var selectedSummaryID: ChatSummary.ID?
     @State private var showingNewChat = false
-    /// I5 (Mac fix wave, part 1): whether the tasks-and-decisions pane is
-    /// open. Lives HERE, not in `MacChatView` (which is `.id(id)`-keyed
-    /// per selection and torn down on every conversation switch) — the
-    /// spec wants this per-window, so it must survive a selection change.
-    /// Passed down as a binding; `MacChatView`'s toolbar toggle and its
-    /// sub-chat mutual-exclusion logic keep working unchanged through it.
-    @State private var itemsPaneOpen = false
+    /// The chat detail's pane route — the tasks-and-decisions pane with
+    /// its push stack, or an open sub-chat — per WINDOW (spec 2026-09-23
+    /// §3). Lives HERE, not in `MacChatView` (which is `.id(id)`-keyed per
+    /// selection and torn down on every conversation switch), so it
+    /// survives a switch and is part of the place the Back/Forward
+    /// history records. `MacChatView` keeps its local states in step
+    /// through the binding. (Replaces the I5-era `itemsPaneOpen` Bool.)
+    @State private var paneRoute: MacChatPaneRoute?
     /// App shell (spec §5): which top-level surface the sidebar's nav
     /// column has selected. Internal (not private) so tests can read the
     /// default. Also driven by ⌘1/⌘2/⌘3 via the command bus.
@@ -860,7 +861,7 @@ struct MacChatListView: View {
                 id: id, title: summary?.title, boxName: summary?.boxName,
                 sessionShort: summary?.sessionShort, boxShort: summary?.boxShort,
                 roomBoxNames: summary?.roomBoxNames ?? [], roomBoxShorts: summary?.roomBoxShorts ?? [],
-                itemsPaneOpen: itemsPaneOpen
+                paneRoute: paneRoute
             )) {
             let (chatVM, composerVM) = vmCache.viewModels(for: id, deps: deps, session: session)
             MacChatView(
@@ -877,10 +878,10 @@ struct MacChatListView: View {
                     return vmCache.subChatViewModels(
                         for: childID, parentConvoID: parent, deps: deps, session: session)
                 },
-                // I5 (Mac fix wave, part 1): hoisted here so the pane's
-                // open/closed state survives a conversation switch — see
-                // `itemsPaneOpen`'s declaration above.
-                itemsPaneOpen: $itemsPaneOpen,
+                // Spec 2026-09-23 §3: hoisted here so the pane's route
+                // survives a conversation switch and the history can
+                // restore it — see `paneRoute`'s declaration above.
+                paneRoute: $paneRoute,
                 chatTitle: summary?.title ?? "",
                 boxName: summary?.boxName,
                 sessionShort: summary?.sessionShort,
@@ -1118,10 +1119,10 @@ struct MacChatDetailGate<Content: View>: View, Equatable {
         let boxShort: String?
         let roomBoxNames: [String]
         let roomBoxShorts: [String]
-        /// The pane toggle reaches `MacChatView` as a `Binding`, which
+        /// The pane route reaches `MacChatView` as a `Binding`, which
         /// tracks its source on its own; carried here as well so the gate
         /// never depends on that.
-        let itemsPaneOpen: Bool
+        let paneRoute: MacChatPaneRoute?
     }
 
     let key: Key

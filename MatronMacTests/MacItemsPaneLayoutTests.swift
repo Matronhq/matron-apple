@@ -142,7 +142,7 @@ final class MacItemsPaneLayoutTests: XCTestCase {
             return MacChatView(
                 viewModel: chatVM, composerVM: composerVM, stripViewModel: stripVM,
                 subChatProvider: { _ in (chatVM, stripVM) },
-                itemsPaneOpen: .constant(true), chatTitle: "Chat \(id)")
+                paneRoute: .constant(.items(path: [])), chatTitle: "Chat \(id)")
         }
         .environment(\.appDependencies, deps)
         .environment(\.currentSession, session)
@@ -188,7 +188,7 @@ final class MacItemsPaneLayoutTests: XCTestCase {
         let view = MacChatView(
             viewModel: chatVM, composerVM: composerVM, stripViewModel: stripVM,
             subChatProvider: { _ in (chatVM, stripVM) },
-            itemsPaneOpen: .constant(true), chatTitle: "Chat")
+            paneRoute: .constant(.items(path: [])), chatTitle: "Chat")
             .environment(\.appDependencies, deps)
             .environment(\.currentSession, session)
 

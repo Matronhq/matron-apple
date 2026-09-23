@@ -44,22 +44,38 @@ struct MacChatView: View {
     /// strip / switcher; cleared by the pane's close button. Reset per
     /// parent chat because `MacChatView` is rebuilt with `.id(id)`.
     @State private var openSubChatID: String?
-    /// Whether the tasks-and-decisions pane (Task 10) is open. Shares the
-    /// sub-chat slot with `openSubChatID` — opening either one closes the
-    /// other (see the toolbar call site and `onOpenSubChat` below).
-    ///
-    /// I5 (Mac fix wave, part 1): hoisted to `MacChatListView` — the spec
-    /// wants this per-WINDOW, but `MacChatView` itself is torn down and
-    /// rebuilt per conversation (`.id(id)` in
-    /// `MacChatListView.chatDetail`), so a plain `@State` here reset on
-    /// every conversation switch. `itemsPaneOpen` is the caller's binding;
-    /// default `.constant(false)` keeps every other call site (tests,
-    /// previews) compiling unchanged. `showItemsPane` stays as a computed
-    /// proxy so every existing read/write site below is unchanged.
-    var itemsPaneOpen: Binding<Bool> = .constant(false)
+    /// The pane route — the tasks-and-decisions pane with its push stack,
+    /// or an open sub-chat — hoisted to `MacChatListView` per WINDOW (spec
+    /// 2026-09-23 §3): `MacChatView` is torn down and rebuilt per
+    /// conversation (`.id(id)` in `MacChatListView.chatDetail`), so state
+    /// held here would reset on every switch, and the window's Back/Forward
+    /// history records and restores this route as part of a place. The
+    /// caller's binding; default `.constant(nil)` keeps every other call
+    /// site (tests, previews) compiling unchanged. `openSubChatID` and
+    /// `itemsPaneState` stay the LOCAL source of truth every existing
+    /// read/write site uses; the two `onChange`s on the outer view keep
+    /// them and this binding in step both ways.
+    var paneRoute: Binding<MacChatPaneRoute?> = .constant(nil)
+    /// Whether the tasks-and-decisions pane is open — a proxy over the
+    /// route, so every read/write site below is unchanged. Setting `true`
+    /// opens the pane on its current local stack; setting `false` closes
+    /// it and leaves a `.subChat` route alone (the sub-chat sites clear
+    /// `openSubChatID` themselves).
     private var showItemsPane: Bool {
-        get { itemsPaneOpen.wrappedValue }
-        nonmutating set { itemsPaneOpen.wrappedValue = newValue }
+        get { paneRoute.wrappedValue?.isItems ?? false }
+        nonmutating set {
+            let isItems = paneRoute.wrappedValue?.isItems ?? false
+            if newValue, !isItems {
+                paneRoute.wrappedValue = .items(path: itemsPaneState.path)
+            } else if !newValue, isItems {
+                paneRoute.wrappedValue = nil
+            }
+        }
+    }
+    /// The route this view's local states describe (`MacChatPaneRoute.from`).
+    /// Observed by the local → shell `onChange`.
+    private var localRoute: MacChatPaneRoute? {
+        MacChatPaneRoute.from(itemsOpen: showItemsPane, path: itemsPaneState.path, subChatID: openSubChatID)
     }
     /// The pane's view model, created lazily in the outer `.task` and kept
     /// running even while the pane is closed so the toolbar's needs-you
@@ -389,6 +405,28 @@ struct MacChatView: View {
     /// pane below its min, so 820 keeps a small margin above that.
     private static let sideBySideMinWidth: CGFloat = 820
 
+    /// Shell → local (spec §3): the local states a route from the shell
+    /// should produce. Pure so the mapping is testable without a window.
+    /// A `.items` route clears an open sub-chat (shared slot) and sets the
+    /// pane's stack; a `.subChat` route opens that child and keeps the
+    /// pane's stack for a later reopen, as closing the pane does today;
+    /// `nil` closes the sub-chat. Unchanged values are returned as-is so
+    /// applying the route a local change just reported is a no-op.
+    static func localState(applying route: MacChatPaneRoute?, path: [String], subChatID: String?)
+        -> (path: [String], subChatID: String?) {
+        switch route {
+        case .items(let newPath): return (newPath, nil)
+        case .subChat(let id): return (path, id)
+        case nil: return (path, nil)
+        }
+    }
+
+    private func applyPaneRoute(_ route: MacChatPaneRoute?) {
+        let next = Self.localState(applying: route, path: itemsPaneState.path, subChatID: openSubChatID)
+        if openSubChatID != next.subChatID { openSubChatID = next.subChatID }
+        if itemsPaneState.path != next.path { itemsPaneState.path = next.path }
+    }
+
     /// A tapped `matron://item/<n>` link in a message body (item #115),
     /// resolved by the shared `TrackerItemLinkResolver`. A known item lands
     /// exactly where an inline `.itemMarker` card does — the items pane,
@@ -556,6 +594,20 @@ struct MacChatView: View {
         // pushes onto the pane's stack rather than replacing it.
         .trackerItemLinks(itemLinkRelay, resolve: { await openTrackerItem(num: $0) },
                           open: { showItem($0) })
+        // Pane route sync (spec 2026-09-23 §3). Local → shell: a push, a
+        // pop, a sub-chat open/close, or the ⇧⌘I toggle re-derives
+        // `localRoute` and writes the window's binding, which the history
+        // records. Shell → local: a Back/Forward restore onto THIS
+        // conversation writes the binding and lands here; `initial: true`
+        // seeds a freshly mounted chat from a restored route before any
+        // local change can report a transient empty stack. Each direction
+        // only writes what differs, so the echo of its own write is a no-op.
+        .onChange(of: localRoute) { _, route in
+            if paneRoute.wrappedValue != route { paneRoute.wrappedValue = route }
+        }
+        .onChange(of: paneRoute.wrappedValue, initial: true) { _, route in
+            applyPaneRoute(route)
+        }
         // Minor (Mac fix wave, part 1): ⌘⇧I toggles the tasks-and-decisions
         // pane. Attached HERE (the stable outer view, same reasoning as the
         // observation lifecycle below) rather than as a toolbar-item
