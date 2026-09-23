@@ -1209,7 +1209,8 @@ struct MacChatView: View {
 
             // The composer spans the full pane width — only message bubbles
             // carry the readable cap (Dan, 2026-07-15).
-            MacComposerView(viewModel: composerVM)
+            // The panel's composer leaves the voice hotkey to the main chat.
+            MacComposerView(viewModel: composerVM, claimsVoiceHotkey: respondsToMenuCommands)
         }
         // matron-web's cream timeline gradient behind the whole chat
         // column — bubbles and the composer material share the warm ground.

@@ -46,6 +46,32 @@ private struct Harness: View {
     }
 }
 
+/// Counts writes to the stored width — each one re-evaluates the root
+/// view that owns the `@SceneStorage`.
+private final class WidthStore: ObservableObject {
+    @Published var isOpen = true
+    var width: Double = 380
+    var writes = 0
+}
+
+private struct DragHarness: View {
+    @ObservedObject var store: WidthStore
+    let panelCounter: Counter
+    var body: some View {
+        MacCoordinatorPanelContainer(isOpen: store.isOpen, width: Binding(
+            get: { store.width },
+            set: { store.width = $0; store.writes += 1; store.objectWillChange.send() })) {
+            Color.white
+        } panel: {
+            PanelProbe(counter: panelCounter)
+        }
+    }
+}
+
+private final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 @MainActor
 final class MacCoordinatorPanelLayoutTests: XCTestCase {
     func test_clampKeepsTheSpecMinimum() {
@@ -149,6 +175,62 @@ final class MacCoordinatorPanelLayoutTests: XCTestCase {
         XCTAssertEqual(counter.appears, 1)
     }
 
+    /// Fix round 1 (ruling 4): a drag resizes the panel live but writes the
+    /// stored (scene) width ONCE, on release — every write re-evaluates the
+    /// window's root view.
+    func test_drag_resizesLive_andCommitsTheWidthOnceOnRelease() async {
+        let store = WidthStore()
+        let panel = Counter()
+        let window = mountForMouse(DragHarness(store: store, panelCounter: panel), width: 1000)
+        await Self.settle(window)
+        XCTAssertEqual(panel.width, 380, accuracy: 1)
+        let edge: CGFloat = 1000 - 380
+        await Self.mouse(.leftMouseDown, x: edge + 3, in: window)
+        for step in 1...5 {
+            await Self.mouse(.leftMouseDragged, x: edge + 3 - CGFloat(step) * 20, in: window)
+        }
+        XCTAssertEqual(panel.width, 480, accuracy: 2, "the panel follows the pointer while dragging")
+        XCTAssertEqual(store.writes, 0, "no stored-width writes mid-drag")
+        await Self.mouse(.leftMouseUp, x: edge + 3 - 100, in: window)
+        await Self.settle(window)
+        XCTAssertEqual(store.writes, 1, "one write on release")
+        XCTAssertEqual(store.width, 480, accuracy: 2)
+        XCTAssertEqual(panel.width, 480, accuracy: 2)
+    }
+
+    /// Fix round 1 (ruling 5): the handle's hit area sits mostly INSIDE the
+    /// panel (about 2 pt outside, 7 pt inside), so it barely overlaps the
+    /// detail's trailing edge.
+    func test_handleHitArea_isBiasedIntoThePanel() async {
+        XCTAssertEqual(MacCoordinatorPanelContainer<Color, Color>.handleOutside, 2)
+        XCTAssertEqual(MacCoordinatorPanelContainer<Color, Color>.handleInside, 7)
+        let store = WidthStore()
+        let window = mountForMouse(DragHarness(store: store, panelCounter: Counter()), width: 1000)
+        await Self.settle(window)
+        let edge: CGFloat = 1000 - 380
+        // 3 pt out over the detail: not the handle.
+        await Self.mouse(.leftMouseDown, x: edge - 3, in: window)
+        await Self.mouse(.leftMouseDragged, x: edge - 60, in: window)
+        await Self.mouse(.leftMouseUp, x: edge - 60, in: window)
+        await Self.settle(window)
+        XCTAssertEqual(store.writes, 0, "a press 3 pt over the detail must not resize the panel")
+        // 6 pt in: the handle.
+        await Self.mouse(.leftMouseDown, x: edge + 6, in: window)
+        await Self.mouse(.leftMouseDragged, x: edge - 40, in: window)
+        await Self.mouse(.leftMouseUp, x: edge - 40, in: window)
+        await Self.settle(window)
+        XCTAssertEqual(store.writes, 1, "a press 6 pt inside the panel's edge grabs the handle")
+    }
+
+    private static func mouse(_ type: NSEvent.EventType, x: CGFloat, in window: NSWindow) async {
+        let event = NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: 200), modifierFlags: [],
+                                       timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                       context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1)
+        if let event { window.sendEvent(event) }
+        let end = Date().addingTimeInterval(0.06)
+        while Date() < end { try? await Task.sleep(nanoseconds: 10_000_000) }
+    }
+
     /// A real window: a windowless `NSHostingView` does not reliably run
     /// `onAppear`.
     private func mount<V: View>(_ view: V, width: CGFloat) -> NSWindow {
@@ -156,6 +238,19 @@ final class MacCoordinatorPanelLayoutTests: XCTestCase {
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentViewController = NSHostingController(rootView: view)
+        window.setContentSize(NSSize(width: width, height: 400))
+        window.orderFront(nil)
+        self.window = window
+        return window
+    }
+
+    /// Mouse tests: the test host never gets a key window, and a hosting
+    /// view in a non-key window swallows the first click — this one takes it.
+    private func mountForMouse<V: View>(_ view: V, width: CGFloat) -> NSWindow {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 400),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = FirstMouseHostingView(rootView: view)
         window.setContentSize(NSSize(width: width, height: 400))
         window.orderFront(nil)
         self.window = window

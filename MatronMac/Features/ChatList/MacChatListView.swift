@@ -383,6 +383,15 @@ struct MacChatListView: View {
 
     private func toggleCoordinatorPanel() { coordinatorPanelOpen.toggle() }
 
+    /// Hides the new Coordinator from the list and, when it is the chat
+    /// open in the detail, moves it into the panel.
+    private func coordinatorChanged(to id: String?) {
+        viewModel.hiddenConversationID = id
+        let landing = Self.landingAfterCoordinatorChange(selected: selectedSummaryID, coordinatorConvoID: id)
+        if landing.selection != selectedSummaryID { selectedSummaryID = landing.selection }
+        if landing.opensPanel { coordinatorPanelOpen = true }
+    }
+
     private var coordinatorPanel: some View {
         MacCoordinatorPanel(
             coordinatorConvoID: coordinatorConvoID, chatListVM: viewModel, vmCache: coordinatorVMCache,
@@ -411,6 +420,34 @@ struct MacChatListView: View {
     /// Where "show me that conversation" lands (spec §3b). A pure helper so
     /// `MacMissionsNavTests` pins it.
     enum ConversationTarget: Equatable { case panel, detail }
+
+    /// Back/Forward onto a place showing the Coordinator's conversation
+    /// opens the panel. The selection keeps the place's id (rewriting it
+    /// would record a new place and cut Forward off); `detailShowsChat`
+    /// keeps the detail on "Select a chat" meanwhile.
+    static func restoreOpensPanel(_ id: String?, coordinatorConvoID: String?) -> Bool {
+        guard let id else { return false }
+        return conversationTarget(id, coordinatorConvoID: coordinatorConvoID) == .panel
+    }
+
+    /// Whether the detail builds a chat for the selection: never for a
+    /// stale restore, and never for the Coordinator — it lives in the
+    /// panel, and two mounts of one conversation would share a composer.
+    static func detailShowsChat(_ id: String?, coordinatorConvoID: String?, isStaleRestore: Bool) -> Bool {
+        guard let id, !isStaleRestore else { return false }
+        return conversationTarget(id, coordinatorConvoID: coordinatorConvoID) == .detail
+    }
+
+    struct ConversationLanding: Equatable { var selection: String?; var opensPanel: Bool }
+
+    /// The open conversation just became the Coordinator (Settings, the
+    /// chooser, another device): it moves out of the detail into the panel.
+    static func landingAfterCoordinatorChange(selected: String?, coordinatorConvoID: String?) -> ConversationLanding {
+        guard let selected, conversationTarget(selected, coordinatorConvoID: coordinatorConvoID) == .panel else {
+            return .init(selection: selected, opensPanel: false)
+        }
+        return .init(selection: nil, opensPanel: true)
+    }
 
     static func conversationTarget(_ convoID: String, coordinatorConvoID: String?) -> ConversationTarget {
         if let coordinatorConvoID, !coordinatorConvoID.isEmpty, convoID == coordinatorConvoID { return .panel }
@@ -556,7 +593,7 @@ struct MacChatListView: View {
         content
             // The Coordinator's conversation lives in the panel, not the
             // Conversations list (spec §3b).
-            .onChange(of: coordinatorConvoID, initial: true) { _, id in viewModel.hiddenConversationID = id }
+            .onChange(of: coordinatorConvoID, initial: true) { _, id in coordinatorChanged(to: id) }
             .sheet(isPresented: $showingCoordinatorChooser) {
                 if let deps, let session {
                     MacCoordinatorChooserSheet(deps: deps, session: session) { id in
@@ -872,6 +909,8 @@ struct MacChatListView: View {
             staleRestoredID = id.flatMap { id in allChatSummaries.contains { $0.id == id } ? nil : id }
             selectedSummaryID = id
             paneRoute = MacOwnedPaneRoute(owner: id, route: pane)
+            // The Coordinator's conversation shows in the panel only.
+            if Self.restoreOpensPanel(id, coordinatorConvoID: coordinatorConvoID) { coordinatorPanelOpen = true }
         case .mission(let id):
             // A restored page offers no "back to the conversation": the
             // global Back covers that now (spec §4).
@@ -1042,7 +1081,8 @@ struct MacChatListView: View {
     /// id with a title that fills in live once the snapshot arrives.
     @ViewBuilder
     private var detail: some View {
-        if let id = selectedSummaryID, !isStaleRestore(id) {
+        if let id = selectedSummaryID,
+           Self.detailShowsChat(id, coordinatorConvoID: coordinatorConvoID, isStaleRestore: isStaleRestore(id)) {
             chatDetail(for: id)
         } else {
             ContentUnavailableView(

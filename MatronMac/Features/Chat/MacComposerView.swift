@@ -28,6 +28,17 @@ struct MacComposerView: View {
     /// it can re-claim the bus when that window becomes key.
     @State private var voiceComposerID = UUID()
     @State private var hostWindow: NSWindow?
+    /// `false` for the Coordinator panel's composer: with two composers in
+    /// one window the voice hotkey belongs to the main chat, so this one
+    /// never claims the bus on mount or when the window becomes key — only
+    /// when the user puts the caret in it (and on leaving, the bus goes back
+    /// to the main composer, see `VoiceNoteCommandBus.release`).
+    var claimsVoiceHotkey: Bool = true
+    /// Whether this composer's text view is first responder. The send
+    /// button's Return shortcut exists only while it is: a window-level
+    /// shortcut answers Return wherever focus is, so with two composers in
+    /// a window it could send the wrong conversation's draft.
+    @State private var inputFocused = false
 
     /// Placeholder shown in the empty composer — drawn as a SwiftUI overlay,
     /// since `NSTextView` has no placeholder of its own.
@@ -173,13 +184,16 @@ struct MacComposerView: View {
         // window must not steal the key window's claim.
         .background(WindowAccessor { window in
             hostWindow = window
-            voiceBus?.claimIfKey(voiceComposerID, isKey: window?.isKeyWindow == true)
+            guard claimsVoiceHotkey else { return }
+            voiceBus?.claimIfKey(voiceComposerID, isKey: window?.isKeyWindow == true,
+                                 window: window.map(ObjectIdentifier.init))
         })
         // With File → New Window, several composers share the bus; the
         // one whose window is key is the one a press should land in.
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
-            guard let hostWindow, let window = note.object as? NSWindow, window === hostWindow else { return }
-            voiceBus?.claim(voiceComposerID)
+            guard claimsVoiceHotkey, let hostWindow, let window = note.object as? NSWindow,
+                  window === hostWindow else { return }
+            voiceBus?.claim(voiceComposerID, window: ObjectIdentifier(window))
         }
         // The global hotkey: each press is one toggle, resolved against
         // this composer's own recorder so a hotkey note and a mouse note
@@ -318,7 +332,14 @@ struct MacComposerView: View {
                     return true
                 },
                 onPasteAttachments: { claimPasteboardAttachments() },
-                onAttachablePasteboardTypes: { attachablePasteboardTypes() }
+                onAttachablePasteboardTypes: { attachablePasteboardTypes() },
+                onFocusChange: { focused in
+                    inputFocused = focused
+                    // Typing here is choosing this chat: the hotkey follows.
+                    if focused {
+                        voiceBus?.claim(voiceComposerID, window: hostWindow.map(ObjectIdentifier.init))
+                    }
+                }
             )
                 .frame(height: min(
                     max(inputContentHeight, Self.singleLineInputHeight),
@@ -392,7 +413,9 @@ struct MacComposerView: View {
                 // handled by the local key monitor installed in `.onAppear`
                 // (the `axis: .vertical` TextField doesn't insert a newline
                 // for Shift+Return on its own), matching Slack / Discord.
-                .keyboardShortcut(.return, modifiers: [])
+                // Only while this composer's input has focus — see
+                // `inputFocused`; unfocused, Return is not this draft's.
+                .keyboardShortcut(inputFocused ? KeyboardShortcut(.return, modifiers: []) : nil)
             }
         }
         .padding()

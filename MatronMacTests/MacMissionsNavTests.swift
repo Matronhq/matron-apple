@@ -45,4 +45,31 @@ final class MacMissionsNavTests: XCTestCase {
         XCTAssertEqual(MacChatListView.conversationTarget("c-coord", coordinatorConvoID: nil), .detail)
         XCTAssertEqual(MacChatListView.conversationTarget("c-coord", coordinatorConvoID: ""), .detail)
     }
+
+    /// Fix round 1: Back/Forward onto a place that shows the Coordinator's
+    /// conversation opens the panel; the detail keeps the place (so the
+    /// history is not rewritten) but draws "Select a chat", never a second
+    /// copy of the Coordinator.
+    func testRestoringTheCoordinatorsConversation_opensThePanel_andNotTheDetail() {
+        XCTAssertTrue(MacChatListView.restoreOpensPanel("c-coord", coordinatorConvoID: "c-coord"))
+        XCTAssertFalse(MacChatListView.restoreOpensPanel("c-other", coordinatorConvoID: "c-coord"))
+        XCTAssertFalse(MacChatListView.restoreOpensPanel(nil, coordinatorConvoID: "c-coord"))
+        XCTAssertFalse(MacChatListView.detailShowsChat("c-coord", coordinatorConvoID: "c-coord", isStaleRestore: false))
+        XCTAssertTrue(MacChatListView.detailShowsChat("c-other", coordinatorConvoID: "c-coord", isStaleRestore: false))
+        XCTAssertFalse(MacChatListView.detailShowsChat("c-other", coordinatorConvoID: "c-coord", isStaleRestore: true))
+        XCTAssertFalse(MacChatListView.detailShowsChat(nil, coordinatorConvoID: nil, isStaleRestore: false))
+    }
+
+    /// Fix round 1: making the OPEN conversation the Coordinator moves it
+    /// out of the detail and into the panel.
+    func testCoordinatorBecomingTheSelectedChat_clearsTheSelection_andOpensThePanel() {
+        XCTAssertEqual(MacChatListView.landingAfterCoordinatorChange(selected: "c1", coordinatorConvoID: "c1"),
+                       .init(selection: nil, opensPanel: true))
+        XCTAssertEqual(MacChatListView.landingAfterCoordinatorChange(selected: "c1", coordinatorConvoID: "c2"),
+                       .init(selection: "c1", opensPanel: false))
+        XCTAssertEqual(MacChatListView.landingAfterCoordinatorChange(selected: nil, coordinatorConvoID: "c2"),
+                       .init(selection: nil, opensPanel: false))
+        XCTAssertEqual(MacChatListView.landingAfterCoordinatorChange(selected: "c1", coordinatorConvoID: nil),
+                       .init(selection: "c1", opensPanel: false))
+    }
 }

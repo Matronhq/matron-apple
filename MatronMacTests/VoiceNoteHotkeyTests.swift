@@ -124,6 +124,27 @@ final class VoiceNoteHotkeyTests: XCTestCase {
         XCTAssertFalse(bus.hasActiveComposer)
     }
 
+    /// Coordinator panel (Task 14 fix round 1): two composers share a
+    /// window. When the one holding the bus goes away, the bus goes back to
+    /// the one before it IN THAT WINDOW — not to nothing (the hotkey went
+    /// dead after closing the panel) and never to a released composer or
+    /// another window's.
+    func test_bus_releaseHandsTheBusBackToThePreviousClaimantInThatWindow() {
+        let bus = VoiceNoteCommandBus()
+        let windowA = NSObject(), windowB = NSObject()
+        let main = UUID(), panel = UUID(), other = UUID()
+        bus.claim(main, window: ObjectIdentifier(windowA))
+        bus.claim(other, window: ObjectIdentifier(windowB))
+        bus.claim(panel, window: ObjectIdentifier(windowA))
+        bus.release(panel)
+        XCTAssertEqual(bus.activeComposerID, main, "the window's remaining composer takes the bus back")
+        bus.release(main)
+        XCTAssertNil(bus.activeComposerID, "no composer left in window A: another window's does not inherit")
+        bus.claim(panel, window: ObjectIdentifier(windowA))
+        bus.release(panel)
+        XCTAssertNil(bus.activeComposerID, "a released composer is never handed the bus again")
+    }
+
     /// With File → New Window, several composers observe the same bus; a
     /// press must land in exactly one — the claimed (key-window) composer.
     func test_bus_pressTargetsTheActiveComposerOnly() {

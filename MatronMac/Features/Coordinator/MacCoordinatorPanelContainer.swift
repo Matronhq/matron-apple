@@ -20,13 +20,19 @@ struct MacCoordinatorPanelContainer<Detail: View, Panel: View>: View {
     @ViewBuilder let detail: () -> Detail
     @ViewBuilder let panel: () -> Panel
 
-    /// The panel's width when the current drag began. `@GestureState`, so
-    /// a cancelled drag (the window losing key mid-drag, say) resets it
-    /// and the next drag starts from the live width.
-    @GestureState private var dragStart: CGFloat?
+    /// The live drag's horizontal translation. The panel draws at the
+    /// dragged width from this local state, and the stored width (the
+    /// window's `@SceneStorage`, whose every write re-evaluates the root
+    /// view) is written once, on release. `@GestureState`, so a cancelled
+    /// drag (the window losing key mid-drag, say) snaps back and writes
+    /// nothing.
+    @GestureState private var dragTranslation: CGFloat?
 
-    /// The handle's hit area either side of its 1 pt line.
-    static var handleHitWidth: CGFloat { 9 }
+    /// The handle's hit area around its 1 pt line (on the panel's leading
+    /// edge): a little over the detail, mostly inside the panel, so it
+    /// barely overlaps the detail's trailing edge (scroller, bubbles).
+    static var handleOutside: CGFloat { 2 }
+    static var handleInside: CGFloat { 7 }
 
     init(isOpen: Bool, width: Binding<Double>,
          @ViewBuilder detail: @escaping () -> Detail, @ViewBuilder panel: @escaping () -> Panel) {
@@ -38,7 +44,7 @@ struct MacCoordinatorPanelContainer<Detail: View, Panel: View>: View {
 
     var body: some View {
         GeometryReader { geo in
-            let panelWidth = MacCoordinatorPanelLayout.clamp(CGFloat(width))
+            let panelWidth = liveWidth
             let mode = MacCoordinatorPanelLayout.mode(isOpen: isOpen, containerWidth: geo.size.width, panelWidth: panelWidth)
             let drawn = MacCoordinatorPanelLayout.drawnPanelWidth(mode: mode, panelWidth: panelWidth,
                                                                    containerWidth: geo.size.width)
@@ -54,13 +60,19 @@ struct MacCoordinatorPanelContainer<Detail: View, Panel: View>: View {
         }
     }
 
+    /// The stored width, or the dragged one while a drag is live.
+    private var liveWidth: CGFloat {
+        guard let dragTranslation else { return MacCoordinatorPanelLayout.clamp(CGFloat(width)) }
+        return MacCoordinatorPanelLayout.resized(from: CGFloat(width), translation: dragTranslation)
+    }
+
     private func panelColumn(width: CGFloat, overlay: Bool) -> some View {
         panel()
             .frame(width: width)
             .frame(maxHeight: .infinity)
             .background(.background)
-            // The line sits on the panel's leading edge; its wider hit
-            // area straddles it, over the detail's last few points.
+            // The line sits on the panel's leading edge; its hit area
+            // reaches `handleOutside` over the detail.
             .overlay(alignment: .leading) { resizeHandle }
             .shadow(color: .black.opacity(overlay ? 0.18 : 0), radius: overlay ? 12 : 0, x: -2)
     }
@@ -69,20 +81,21 @@ struct MacCoordinatorPanelContainer<Detail: View, Panel: View>: View {
         Rectangle()
             .fill(Color(nsColor: .separatorColor))
             .frame(width: 1)
-            .frame(width: Self.handleHitWidth)
+            // Line centred on the panel's edge: half a point either side.
+            .padding(.leading, Self.handleOutside - 0.5)
+            .frame(width: Self.handleOutside + Self.handleInside, alignment: .leading)
             .frame(maxHeight: .infinity)
             .contentShape(Rectangle())
-            .offset(x: -Self.handleHitWidth / 2 + 0.5)
+            .offset(x: -Self.handleOutside)
             .pointerStyle(.columnResize)
             .gesture(
                 DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                    // One callback: `start` is this drag's own state, so
-                    // the width never compounds on an update that ran
-                    // before the gesture state landed.
-                    .updating($dragStart) { value, start, _ in
-                        let origin = start ?? CGFloat(width)
-                        start = origin
-                        width = Double(MacCoordinatorPanelLayout.resized(from: origin, translation: value.translation.width))
+                    .updating($dragTranslation) { value, translation, _ in
+                        translation = value.translation.width
+                    }
+                    .onEnded { value in
+                        width = Double(MacCoordinatorPanelLayout.resized(from: CGFloat(width),
+                                                                         translation: value.translation.width))
                     }
             )
             .accessibilityHidden(true)

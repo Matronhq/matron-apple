@@ -94,17 +94,37 @@ final class VoiceNoteCommandBus {
 
     var hasActiveComposer: Bool { activeComposerID != nil }
 
-    func claim(_ id: UUID) { activeComposerID = id }
+    /// Every live claimant, oldest claim first, with its window — so a
+    /// release can hand the bus back to the composer that held it before,
+    /// in the same window (the Coordinator panel puts two composers in one).
+    private var claims: [(id: UUID, window: ObjectIdentifier?)] = []
+
+    func claim(_ id: UUID, window: ObjectIdentifier? = nil) {
+        claims.removeAll { $0.id == id }
+        claims.append((id, window))
+        activeComposerID = id
+    }
 
     /// A composer mounting in a window that is NOT key (a chat switch in a
     /// background window) must not steal the key window's claim; it may
     /// only take an unclaimed bus.
-    func claimIfKey(_ id: UUID, isKey: Bool) {
-        if isKey || activeComposerID == nil { activeComposerID = id }
+    func claimIfKey(_ id: UUID, isKey: Bool, window: ObjectIdentifier? = nil) {
+        if isKey || activeComposerID == nil { claim(id, window: window) }
     }
 
+    /// Drops `id` for good. If it held the bus, the most recent earlier
+    /// claimant in the SAME window takes it back — closing the Coordinator
+    /// panel returns the hotkey to the main chat instead of leaving the
+    /// window without one; another window's composer never inherits.
     func release(_ id: UUID) {
-        if activeComposerID == id { activeComposerID = nil }
+        guard let index = claims.lastIndex(where: { $0.id == id }) else {
+            if activeComposerID == id { activeComposerID = nil }
+            return
+        }
+        let window = claims[index].window
+        claims.remove(at: index)
+        guard activeComposerID == id else { return }
+        activeComposerID = claims.last(where: { $0.window == window })?.id
     }
 
     func setRecording(_ id: UUID, start: Date?) {

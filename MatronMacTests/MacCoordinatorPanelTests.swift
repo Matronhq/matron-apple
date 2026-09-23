@@ -48,6 +48,24 @@ private final class ShellModel: ObservableObject {
 
 private final class Captured { var panelProps: MacChatToolbarProps? }
 
+private final class VoiceHarnessModel: ObservableObject {
+    @Published var panelOpen = false
+}
+
+private struct VoiceHarness: View {
+    @ObservedObject var model: VoiceHarnessModel
+    let main: MacChatView
+    let panel: MacChatView
+
+    var body: some View {
+        HStack(spacing: 0) {
+            main
+            if model.panelOpen { panel }
+        }
+        .frame(width: 1000, height: 500)
+    }
+}
+
 /// App-shaped detail: the header host over the panel container, the panel
 /// holding a chat that publishes its own header props.
 private struct PanelShellHarness: View {
@@ -126,13 +144,82 @@ final class MacCoordinatorPanelTests: XCTestCase {
         window.contentViewController = host
         window.orderFront(nil)
         self.window = window
-        try? await Task.sleep(nanoseconds: 500_000_000)
+        let mounted = await Self.poll(seconds: 5) { Self.composerTextViews(in: window).count == 2 }
+        XCTAssertTrue(mounted, "both chats' composers must be on screen")
 
         NotificationCenter.default.post(name: .matronCommand(.slashCommand), object: nil)
-        try? await Task.sleep(nanoseconds: 300_000_000)
+        let answered = await Self.poll(seconds: 5) { mainComposer.palettePinnedOpen }
 
-        XCTAssertTrue(mainComposer.palettePinnedOpen)
+        XCTAssertTrue(answered)
         XCTAssertFalse(panelComposer.palettePinnedOpen)
+    }
+
+    /// Fix round 1 (I1): two composers in one window, both with a sendable
+    /// draft. Return sends the FOCUSED composer's draft only — the send
+    /// button's window-level Return shortcut used to claim the key for
+    /// whichever composer SwiftUI picked, whatever had focus.
+    func test_return_sendsOnlyTheFocusedComposersDraft() async throws {
+        let (main, mainComposer) = chat("main", respondsToMenuCommands: true)
+        let (panel, panelComposer) = chat("coord", respondsToMenuCommands: false)
+        mainComposer.input = "main draft"
+        panelComposer.input = "panel draft"
+        let window = mountKey(HStack(spacing: 0) { main; panel }.frame(width: 1000, height: 500))
+        let mounted = await Self.poll(seconds: 5) { Self.composerTextViews(in: window).count == 2 }
+        XCTAssertTrue(mounted)
+        let views = Self.composerTextViews(in: window)
+        let (mainText, panelText) = (views[0], views[1])
+
+        // Neither composer focused: Return is no composer's to take (it
+        // used to send the main chat's draft from anywhere in the window).
+        window.makeFirstResponder(nil)
+        await Self.spin(seconds: 0.3)
+        Self.pressReturn(in: window)
+        await Self.spin(seconds: 0.5)
+        XCTAssertEqual(mainComposer.input, "main draft", "an unfocused composer must not send on Return")
+        XCTAssertEqual(panelComposer.input, "panel draft", "an unfocused composer must not send on Return")
+
+        XCTAssertTrue(window.makeFirstResponder(panelText))
+        await Self.spin(seconds: 0.3)
+        Self.pressReturn(in: window)
+        let panelSent = await Self.poll(seconds: 3) { panelComposer.input.isEmpty }
+        XCTAssertTrue(panelSent, "Return in the panel composer sends the panel's draft")
+        XCTAssertEqual(mainComposer.input, "main draft", "…and never the main chat's")
+
+        panelComposer.input = "panel draft 2"
+        XCTAssertTrue(window.makeFirstResponder(mainText))
+        await Self.spin(seconds: 0.3)
+        Self.pressReturn(in: window)
+        let mainSent = await Self.poll(seconds: 3) { mainComposer.input.isEmpty }
+        XCTAssertTrue(mainSent, "Return in the main composer sends the main draft")
+        XCTAssertEqual(panelComposer.input, "panel draft 2", "…and never the panel's")
+    }
+
+    /// Fix round 1 (I2): the global voice-note hotkey stays with the main
+    /// chat. Opening the panel must not steal the bus, and closing it must
+    /// not leave the window with no claimant.
+    func test_voiceHotkey_staysWithTheMainChat_whenThePanelOpensAndCloses() async throws {
+        let bus = VoiceNoteCommandBus()
+        let model = VoiceHarnessModel()
+        let (main, _) = chat("main", respondsToMenuCommands: true)
+        let (panel, _) = chat("coord", respondsToMenuCommands: false)
+        let window = mountKey(VoiceHarness(model: model, main: main, panel: panel).environment(bus))
+        let claimed = await Self.poll(seconds: 5) { bus.activeComposerID != nil }
+        XCTAssertTrue(claimed, "the main composer claims the bus on mount")
+        let mainClaim = bus.activeComposerID
+
+        model.panelOpen = true
+        let panelMounted = await Self.poll(seconds: 5) { Self.composerTextViews(in: window).count == 2 }
+        XCTAssertTrue(panelMounted)
+        window.makeKeyAndOrderFront(nil)
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        await Self.spin(seconds: 0.5)
+        XCTAssertEqual(bus.activeComposerID, mainClaim, "opening the panel (or the window re-keying) must not steal the hotkey")
+
+        model.panelOpen = false
+        let panelGone = await Self.poll(seconds: 5) { Self.composerTextViews(in: window).count == 1 }
+        XCTAssertTrue(panelGone)
+        await Self.spin(seconds: 0.3)
+        XCTAssertEqual(bus.activeComposerID, mainClaim, "closing the panel leaves the hotkey live on the main chat")
     }
 
     func test_panelHeaderTitle_fallsBackToCoordinator() {
@@ -183,6 +270,37 @@ final class MacCoordinatorPanelTests: XCTestCase {
         model.panelWidth = 380
         await Self.spin(seconds: 0.5)
         XCTAssertEqual(header.model.trailingInset, 380, accuracy: 0.5)
+    }
+
+    /// A window made key, so focus and key equivalents behave as in the app.
+    private func mountKey<V: View>(_ view: V) -> NSWindow {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 500),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = NSHostingController(rootView: view)
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        self.window = window
+        return window
+    }
+
+    /// The composers' text views, leftmost (main) first.
+    private static func composerTextViews(in window: NSWindow) -> [ComposerTextView] {
+        func collect(_ view: NSView) -> [ComposerTextView] {
+            (view as? ComposerTextView).map { [$0] } ?? view.subviews.flatMap(collect)
+        }
+        guard let root = window.contentView else { return [] }
+        return collect(root).sorted { $0.convert($0.bounds, to: nil).minX < $1.convert($1.bounds, to: nil).minX }
+    }
+
+    /// A plain Return through the app's own dispatch, key equivalents first.
+    private static func pressReturn(in window: NSWindow) {
+        for type in [NSEvent.EventType.keyDown, .keyUp] {
+            guard let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                               windowNumber: window.windowNumber, context: nil, characters: "\r",
+                                               charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36) else { continue }
+            NSApp.sendEvent(event)
+        }
     }
 
     private func mount<V: View>(_ view: V, width: CGFloat = 1300) -> NSWindow {

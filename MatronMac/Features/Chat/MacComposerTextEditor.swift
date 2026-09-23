@@ -37,6 +37,11 @@ struct MacComposerTextEditor: NSViewRepresentable {
     let onCommit: () -> Bool
     let onPasteAttachments: () -> Bool
     let onAttachablePasteboardTypes: () -> [NSPasteboard.PasteboardType]
+    /// `true` when the text view becomes first responder, `false` when it
+    /// resigns. The composer keys its Return shortcut and its voice-hotkey
+    /// claim off this: with the Coordinator panel open a window holds two
+    /// composers, and only the focused one may answer.
+    var onFocusChange: ((Bool) -> Void)? = nil
 
     /// Matches the `.padding(8)` the SwiftUI field carried, so the swap
     /// doesn't move the text. `MacComposerView.singleLineInputHeight`
@@ -77,6 +82,7 @@ struct MacComposerTextEditor: NSViewRepresentable {
         textView.delegate = context.coordinator
         textView.claimPasteboardAttachments = onPasteAttachments
         textView.attachablePasteboardTypes = onAttachablePasteboardTypes
+        textView.focusChanged = onFocusChange
 
         let scrollView = NSScrollView()
         scrollView.documentView = textView
@@ -109,6 +115,7 @@ struct MacComposerTextEditor: NSViewRepresentable {
         guard let textView = scrollView.documentView as? ComposerTextView else { return }
         textView.claimPasteboardAttachments = onPasteAttachments
         textView.attachablePasteboardTypes = onAttachablePasteboardTypes
+        textView.focusChanged = onFocusChange
         if textView.string != text {
             textView.string = text
             // External writes (history recall, palette completion) replace
@@ -186,6 +193,20 @@ struct MacComposerTextEditor: NSViewRepresentable {
 /// class's doc for the 2026-08-02 freeze).
 final class ComposerTextView: MouseTrackingRescueTextView {
     var claimPasteboardAttachments: (() -> Bool)?
+    /// See `MacComposerTextEditor.onFocusChange`.
+    var focusChanged: ((Bool) -> Void)?
+
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became { focusChanged?(true) }
+        return became
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned { focusChanged?(false) }
+        return resigned
+    }
 
     /// The composer owns its undo stack (item #102). `allowsUndo` with no
     /// manager of its own registered every edit on the WINDOW's shared
