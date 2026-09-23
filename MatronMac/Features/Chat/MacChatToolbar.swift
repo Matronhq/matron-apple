@@ -107,7 +107,7 @@ struct MacChatToolbar {
     /// glass capsules come out equal and align as a row. Sized to the
     /// tallest content: three compact usage rows (3 × ~11pt lines +
     /// 2 × 2pt spacing ≈ 37pt).
-    private static let clusterHeight: CGFloat = 38
+    static let clusterHeight: CGFloat = 38
 
     /// Explicit init (not the synthesized memberwise one) — a stored
     /// property's own default value is NOT exposed as a defaulted

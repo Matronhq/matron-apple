@@ -133,6 +133,19 @@ struct MacNavigationActions {
     var canGoForward: Bool
     var goBack: () -> Void
     var goForward: () -> Void
+
+    /// What a view draws from these actions; closures aren't comparable.
+    struct DrawnState: Equatable {
+        var present: Bool
+        var canGoBack: Bool
+        var canGoForward: Bool
+
+        init(_ actions: MacNavigationActions?) {
+            present = actions != nil
+            canGoBack = actions?.canGoBack ?? false
+            canGoForward = actions?.canGoForward ?? false
+        }
+    }
 }
 
 extension FocusedValues {

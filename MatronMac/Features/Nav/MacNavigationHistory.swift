@@ -159,8 +159,9 @@ final class MacNavigationHistory {
 /// looked right but lands in the DETAIL section, which the chat header
 /// accessory leaves zero-width, so AppKit folded the chevrons into its
 /// `»` overflow however wide the window was (Dan, #2608; PR #228 for the
-/// accessory). Coordinator's 72 pt sidebar has no toolbar room at all:
-/// there they share the `»` with New Chat, and ⌘[ / ⌘] still work.
+/// accessory). Coordinator's 72 pt sidebar has no toolbar room at all,
+/// so there the shell leaves these out and the chat header draws
+/// `MacHeaderHistoryCluster` instead.
 struct MacHistoryToolbarItems: ToolbarContent {
     let history: MacNavigationHistory
     let goBack: () -> Void

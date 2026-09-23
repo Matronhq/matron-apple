@@ -362,7 +362,11 @@ struct MacChatListView: View {
                 .toolbar {
                     // Spec 2026-09-23 §5: the window's Back/Forward, top-left
                     // in the SIDEBAR section — see `MacHistoryToolbarItems`.
-                    MacHistoryToolbarItems(history: history, goBack: goBack, goForward: goForward)
+                    // Coordinator's 72 pt sidebar has no toolbar room;
+                    // the chat header carries them there instead.
+                    if nav != .coordinator {
+                        MacHistoryToolbarItems(history: history, goBack: goBack, goForward: goForward)
+                    }
                     // With the sidebar toggle removed the new-chat button
                     // is the only item in the sidebar section and packs
                     // to its leading edge; the flexible spacer pushes it
@@ -385,7 +389,7 @@ struct MacChatListView: View {
         } detail: {
             // The chat header rides in the window's title bar, fed by
             // whichever chat column is mounted in here — `MacChatHeaderHost`.
-            MacChatHeaderHost { detailContent }
+            MacChatHeaderHost(navigation: nav == .coordinator ? navigationActions : nil) { detailContent }
         }
     }
 
@@ -478,9 +482,7 @@ struct MacChatListView: View {
             // Go ▸ Back / Forward, ⌘[ / ⌘] (spec 2026-09-23 §5): published
             // to the menu bar for THIS window only, unlike the bus above;
             // history is per window (PR #233 review I1).
-            .focusedSceneValue(\.macNavigation, MacNavigationActions(
-                canGoBack: history.canGoBack, canGoForward: history.canGoForward,
-                goBack: { goBack() }, goForward: { goForward() }))
+            .focusedSceneValue(\.macNavigation, navigationActions)
             // Leaving Decisions through the nav column (Bugbot, PR #195): the
             // detail host has no teardown of its own (I6 — a same-item rebuild
             // must keep the draft), so stop its VM and any recording here and
@@ -834,6 +836,13 @@ struct MacChatListView: View {
             selectedDecisionID = id
             nav = .decisions
         }
+    }
+
+    /// The window's Back/Forward for the Go menu and the Coordinator
+    /// header capsule.
+    private var navigationActions: MacNavigationActions {
+        MacNavigationActions(canGoBack: history.canGoBack, canGoForward: history.canGoForward,
+                             goBack: { goBack() }, goForward: { goForward() })
     }
 
     private func goBack() {
