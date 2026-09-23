@@ -43,7 +43,13 @@ struct MacChatView: View {
     /// when only the parent timeline shows. Set by the running-subagent
     /// strip / switcher; cleared by the pane's close button. Reset per
     /// parent chat because `MacChatView` is rebuilt with `.id(id)`.
-    @State private var openSubChatID: String?
+    /// Reads the handed-in route until the first apply (see
+    /// `routeApplied`).
+    private var openSubChatID: String? {
+        get { routeApplied ? localSubChatID : paneRoute.wrappedValue?.subChatID }
+        nonmutating set { localSubChatID = newValue }
+    }
+    @State private var localSubChatID: String?
     /// The pane route — the tasks-and-decisions pane with its push stack,
     /// or an open sub-chat — hoisted to `MacChatListView` per WINDOW (spec
     /// 2026-09-23 §3): `MacChatView` is torn down and rebuilt per
@@ -62,8 +68,20 @@ struct MacChatView: View {
     /// one update is one `localRoute` change, so nothing half-applied is
     /// ever mirrored back (PR #233 review C1).
     var paneRoute: Binding<MacChatPaneRoute?> = .constant(nil)
-    /// Whether the tasks-and-decisions pane is open.
-    @State private var showItemsPane = false
+    /// Whether the tasks-and-decisions pane is open. Reads the handed-in
+    /// route until the first apply (see `routeApplied`).
+    private var showItemsPane: Bool {
+        get { routeApplied ? localItemsOpen : paneRoute.wrappedValue?.isItems == true }
+        nonmutating set { localItemsOpen = newValue }
+    }
+    @State private var localItemsOpen = false
+    /// `false` until the `initial: true` shell → local `onChange` has run.
+    /// Until then the two pane flags read the route the shell handed this
+    /// freshly mounted chat, so its FIRST frame already has the pane
+    /// open or the sub-chat split. Defaulting to closed showed the chat
+    /// alone for one frame and then split it, re-mounting the transcript
+    /// on every switch into a chat with the pane open (Bugbot, PR #233).
+    @State private var routeApplied = false
     /// The route this view's local states describe (`MacChatPaneRoute.from`).
     /// Observed by the local → shell `onChange`.
     private var localRoute: MacChatPaneRoute? {
@@ -412,12 +430,14 @@ struct MacChatView: View {
         }
     }
 
+    /// Writes only what differs, so applying the echo of a local change
+    /// (a route the local states already describe) changes nothing.
     private func applyPaneRoute(_ route: MacChatPaneRoute?) {
-        guard route != localRoute else { return }
         let next = Self.localState(applying: route, path: itemsPaneState.path)
-        if showItemsPane != next.itemsOpen { showItemsPane = next.itemsOpen }
-        if openSubChatID != next.subChatID { openSubChatID = next.subChatID }
+        if localItemsOpen != next.itemsOpen { localItemsOpen = next.itemsOpen }
+        if localSubChatID != next.subChatID { localSubChatID = next.subChatID }
         if itemsPaneState.path != next.path { itemsPaneState.path = next.path }
+        if !routeApplied { routeApplied = true }
     }
 
     /// A tapped `matron://item/<n>` link in a message body (item #115),
@@ -593,8 +613,8 @@ struct MacChatView: View {
         // records. Shell → local: a Back/Forward restore onto THIS
         // conversation writes the binding and lands here; `initial: true`
         // seeds a freshly mounted chat from the route the shell hands it.
-        // `applyPaneRoute` ignores a route the local states already
-        // describe, so the echo of a local write is a no-op.
+        // `applyPaneRoute` writes only what differs, so the echo of a
+        // local write is a no-op.
         .onChange(of: localRoute) { _, route in
             if paneRoute.wrappedValue != route { paneRoute.wrappedValue = route }
         }

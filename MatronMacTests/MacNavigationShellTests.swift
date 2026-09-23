@@ -80,15 +80,31 @@ final class MacNavigationShellTests: XCTestCase {
                                                  coordinatorConvoID: nil).owner, nil)
     }
 
-    /// Landing on a chat (a click, a restore, the coordinator) leaves the
-    /// owned route alone: ownership changes only through the chat's own
-    /// writes and through `restore`.
-    func test_paneRouteLandingOn_chatPlacesLeaveTheRouteAlone() {
+    /// Landing on a chat that doesn't own the route claims the switch
+    /// reset for it; the chat that owns it (a restore sets the owner
+    /// first) keeps its route as restored.
+    func test_paneRouteLandingOn_otherChatClaimsTheReset_ownerKeepsItsRoute() {
         let owned = MacOwnedPaneRoute(owner: "c1", route: route)
-        XCTAssertEqual(MacChatListView.paneRoute(owned, landingOn: MacPlace(detail: .conversation(id: "c2", pane: nil)),
+        XCTAssertEqual(MacChatListView.paneRoute(owned, landingOn: MacPlace(detail: .conversation(id: "c2", pane: .items(path: []))),
+                                                 coordinatorConvoID: nil),
+                       MacOwnedPaneRoute(owner: "c2", route: .items(path: [])))
+        XCTAssertEqual(MacChatListView.paneRoute(owned, landingOn: MacPlace(detail: .conversation(id: "c1", pane: route)),
                                                  coordinatorConvoID: nil), owned)
         XCTAssertEqual(MacChatListView.paneRoute(owned, landingOn: MacPlace(detail: .coordinator(pane: nil)),
-                                                 coordinatorConvoID: "k"), owned)
+                                                 coordinatorConvoID: "k"),
+                       MacOwnedPaneRoute(owner: "k", route: .items(path: [])))
+    }
+
+    /// CodeRabbit, PR #233: c1 has a sub-chat open, the user clicks c2
+    /// (which shows no pane, so never writes the route), then clicks c1
+    /// again. A click resets: c1 must NOT reopen the sub-chat.
+    func test_paneRouteLandingOn_switchAwayAndBack_doesNotResurfaceASubChat() {
+        var owned = MacOwnedPaneRoute(owner: "c1", route: .subChat(id: "s1"))
+        owned = MacChatListView.paneRoute(owned, landingOn: MacPlace(detail: .conversation(id: "c2", pane: nil)),
+                                          coordinatorConvoID: nil)
+        owned = MacChatListView.paneRoute(owned, landingOn: MacPlace(detail: .conversation(id: "c1", pane: nil)),
+                                          coordinatorConvoID: nil)
+        XCTAssertNil(owned.route(for: "c1"))
     }
 
     /// Review M3: the empty launch state is never the first entry, so a

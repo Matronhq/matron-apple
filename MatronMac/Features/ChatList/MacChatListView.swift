@@ -66,6 +66,10 @@ struct MacChatListView: View {
     /// `recordPlace` from the `onChange` on `currentPlace`; read from the
     /// body only through `canGoBack` / `canGoForward` (the two buttons).
     @State private var history = MacNavigationHistory()
+    /// A conversation Back/Forward restored after it left the list (see
+    /// `restore`). Shown as "Select a chat" while it's selected and still
+    /// absent; a rejoin brings its summary back and it opens again.
+    @State private var staleRestoredID: String?
     /// App shell (spec §5): which top-level surface the sidebar's nav
     /// column has selected. Internal (not private) so tests can read the
     /// default. Also driven by ⌘1/⌘2/⌘3 via the command bus.
@@ -141,6 +145,10 @@ struct MacChatListView: View {
     /// its time budget once the search-refresh `.onChange` was added.
     private var allChatSummaries: [ChatSummary] {
         viewModel.groups.flatMap(\.summaries)
+    }
+
+    private func isStaleRestore(_ id: String) -> Bool {
+        id == staleRestoredID && !allChatSummaries.contains { $0.id == id }
     }
 
     /// Hoisted for the same type-checker-budget reason as
@@ -229,15 +237,23 @@ struct MacChatListView: View {
         }
     }
 
-    /// The owned route after the window lands on `place` (spec §3). A
-    /// place that shows no chat drops the owner but keeps the route, so
-    /// coming back to a chat by any means but Back resets like a click,
-    /// and an open pane stays open on its list.
+    /// The owned route after the window lands on `place` (spec §3).
+    /// Landing on a chat that doesn't own the route (a click, ⌘1, a
+    /// notification) claims the switch reset for it, so the old owner's
+    /// pushed item or sub-chat can't resurface on a later click back
+    /// (CodeRabbit, PR #233). A restore already set the owner to the
+    /// place's chat, so it's kept as restored. A place that shows no chat
+    /// drops the owner but keeps the route, so coming back to a chat by
+    /// any means but Back resets like a click, and an open pane stays open
+    /// on its list. The place itself never changes here: it reads the
+    /// same `route(for:)` value either way.
     static func paneRoute(_ owned: MacOwnedPaneRoute, landingOn place: MacPlace,
                           coordinatorConvoID: String?) -> MacOwnedPaneRoute {
-        guard place.displayedConversationID(coordinatorConvoID: coordinatorConvoID) == nil,
-              owned.owner != nil else { return owned }
-        return MacOwnedPaneRoute(owner: nil, route: owned.route)
+        guard let shown = place.displayedConversationID(coordinatorConvoID: coordinatorConvoID) else {
+            return owned.owner == nil ? owned : MacOwnedPaneRoute(owner: nil, route: owned.route)
+        }
+        guard shown != owned.owner else { return owned }
+        return MacOwnedPaneRoute(owner: shown, route: owned.route(for: shown))
     }
 
     /// The route binding handed to the chat `id` shows. Reads resolve
@@ -803,6 +819,12 @@ struct MacChatListView: View {
         case .conversation(let id, let pane):
             nav = .conversations
             if searchQueryIsEmpty == false { searchModel?.query = "" }
+            // A conversation left since this place was recorded: keep the
+            // selection (so the place, and Forward past it, stay intact)
+            // but show "Select a chat" instead of building a dead chat.
+            // Only restores do this; a fresh room selected before its
+            // summary lands still opens (see `detail`).
+            staleRestoredID = id.flatMap { id in allChatSummaries.contains { $0.id == id } ? nil : id }
             selectedSummaryID = id
             paneRoute = MacOwnedPaneRoute(owner: id, route: pane)
         case .mission(let id):
@@ -812,7 +834,15 @@ struct MacChatListView: View {
             selectedMissionID = id
             nav = .missions
         case .decision(let id):
-            if let id { decisionsPaneState.cancelRecordingIfNavigating(to: id) }
+            if let id {
+                decisionsPaneState.cancelRecordingIfNavigating(to: id)
+            } else {
+                // Back onto an empty Decisions selection: no host stays on
+                // screen, and `navChanged` won't run if the window is
+                // already on Decisions (CodeRabbit, PR #233).
+                decisionsPaneState.releaseAllSlots()
+                decisionsPaneState.cancelRecording()
+            }
             selectedDecisionID = id
             nav = .decisions
         }
@@ -977,7 +1007,7 @@ struct MacChatListView: View {
     /// id with a title that fills in live once the snapshot arrives.
     @ViewBuilder
     private var detail: some View {
-        if let id = selectedSummaryID {
+        if let id = selectedSummaryID, !isStaleRestore(id) {
             chatDetail(for: id)
         } else {
             ContentUnavailableView(
