@@ -56,7 +56,7 @@ struct AppShellView: View {
     }
 
     var body: some View {
-        TabView(selection: $nav.tab) {
+        withCoordinatorSheet(TabView(selection: $nav.tab) {
             if missionsVM.isSupported != false {
                 missionsTab
                     .tabItem { Label("Missions", systemImage: "flag.checkered") }
@@ -71,11 +71,9 @@ struct AppShellView: View {
             conversationsTab
                 .tabItem { Label("Conversations", systemImage: "bubble.left.and.bubble.right") }
                 .tag(AppTab.conversations)
-        }
+        })
         .environment(\.appDependencies, deps)
         .environment(\.currentSession, session)
-        .environment(\.openCoordinator, openCoordinator)
-        .sheet(isPresented: $nav.isCoordinatorPresented) { coordinatorSheet }
         // Notification-tap deep link: NotificationDelegate publishes the
         // room id; the shell switches to Conversations and sets the path.
         // Idempotent on duplicate sends.
@@ -134,6 +132,15 @@ struct AppShellView: View {
             CoordinatorFloatingButton(hasUnread: coordinatorHasUnread) { nav.presentCoordinator() }
                 .padding(16)
         }
+    }
+
+    /// The "open the Coordinator" action for every chat under the tabs,
+    /// and the one sheet it presents (spec §3c). A helper, not inline
+    /// modifiers, for CI's Xcode 16.4 type-checker budget.
+    private func withCoordinatorSheet(_ content: some View) -> some View {
+        content
+            .environment(\.openCoordinator, openCoordinator)
+            .sheet(isPresented: $nav.isCoordinatorPresented) { coordinatorSheet }
     }
 
     private var coordinatorSheet: some View {

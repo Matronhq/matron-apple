@@ -70,6 +70,10 @@ final class AppShellNavigation {
             presentCoordinator()
             return
         }
+        // Already open inside the sheet the user is looking at: landing it
+        // underneath too would mount a second ChatView on the same cached
+        // ChatViewModel (Bugbot, PR #197).
+        if !dismissingCoordinator, isCoordinatorPresented, coordinatorPath.contains(roomID) { return }
         if dismissingCoordinator { isCoordinatorPresented = false }
         tab = .conversations
         if chatPath != [roomID] { chatPath = [roomID] }
@@ -149,23 +153,41 @@ final class AppShellNavigation {
     /// The Conversations stack binding's setter: a push of the Coordinator
     /// (origin link, spawned-room Open) keeps only what is beneath it and
     /// presents the sheet, so it never mounts on this stack for a frame.
+    /// While the sheet is up, a chat also open on its stack is cut from
+    /// there (with everything above it), so one chat never mounts twice.
     func setChatPath(_ new: [String]) {
         if let coordinator = coordinatorConvoID, let index = new.firstIndex(of: coordinator) {
             chatPath = Array(new[..<index])
             presentCoordinator()
         } else {
             chatPath = new
+            if isCoordinatorPresented { coordinatorPath = Self.cut(coordinatorPath, sharingChatsWith: new) }
         }
     }
 
     /// The sheet stack binding's setter: a second copy of the Coordinator
-    /// pops the sheet to its root.
+    /// pops the sheet to its root. A chat pushed here that is also open in
+    /// Conversations underneath (an auto-opened session, then Open or the
+    /// sub-chat strip) is cut from that stack, mirroring
+    /// `presentCoordinator`'s eviction: two ChatViews would share one
+    /// cached ChatViewModel, and dismissing the sheet would stop the
+    /// stream the Conversations copy still shows (Bugbot, PR #197).
     func setCoordinatorPath(_ new: [String]) {
         if let coordinator = coordinatorConvoID, new.contains(coordinator) {
             coordinatorPath = []
         } else {
             coordinatorPath = new
+            chatPath = Self.cut(chatPath, sharingChatsWith: new)
         }
+    }
+
+    /// `stack` cut at its first chat id that `other` also holds, with
+    /// everything above it. Item and mission routes are pages, not chats,
+    /// and never count.
+    private static func cut(_ stack: [String], sharingChatsWith other: [String]) -> [String] {
+        let chats = Set(other.filter { !isAnyPathPrefixedRoute($0) })
+        guard let index = stack.firstIndex(where: { chats.contains($0) }) else { return stack }
+        return Array(stack[..<index])
     }
 
     func pushDecision(_ itemID: String) {

@@ -64,16 +64,18 @@ struct CoordinatorSheet: View {
     }
 
     var body: some View {
+        // The chooser sits inside the wrapper too, so nothing in the sheet
+        // can offer "open the Coordinator" — by construction.
         InsideCoordinatorSheet {
             stack
+                .sheet(isPresented: $showingChooser) {
+                    CoordinatorChooserSheet(deps: deps, session: session) { id in
+                        showingChooser = false
+                        Task { @MainActor in saveError = await deps.setCoordinator(id, for: session) }
+                    }
+                }
         }
         .environment(\.chatNavigationPath, $path)
-        .sheet(isPresented: $showingChooser) {
-            CoordinatorChooserSheet(deps: deps, session: session) { id in
-                showingChooser = false
-                Task { @MainActor in saveError = await deps.setCoordinator(id, for: session) }
-            }
-        }
         .alert("Coordinator", isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })) {
             Button("OK") { saveError = nil }
         } message: {
