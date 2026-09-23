@@ -233,4 +233,38 @@ final class AppDependenciesTests: XCTestCase {
                                   homeserverURL: URL(string: "https://s")!, accessToken: "t")
         XCTAssertTrue(deps.coordinatorSync(for: session) === deps.coordinatorSync(for: session))
     }
+
+    /// Different users must get different `CoordinatorSync` instances, each
+    /// bound to its own per-user defaults key — sharing one across users
+    /// would let one account's Coordinator pick leak into (or be
+    /// overwritten by) another's local cache. Modelled on
+    /// `test_mediaService_isDistinct_perUser`.
+    func test_coordinatorSync_isDistinct_perUser() {
+        deps = AppDependencies()
+        let userA = "@a-coord-\(UUID().uuidString.prefix(8)):s"
+        let userB = "@b-coord-\(UUID().uuidString.prefix(8)):s"
+        defer {
+            CoordinatorSetting.clear(for: userA)
+            CoordinatorSetting.clear(for: userB)
+        }
+        let s1 = UserSession(userID: userA, deviceID: "D",
+                             homeserverURL: URL(string: "https://s")!, accessToken: "t")
+        let s2 = UserSession(userID: userB, deviceID: "D",
+                             homeserverURL: URL(string: "https://s")!, accessToken: "t")
+
+        let a = deps.coordinatorSync(for: s1)
+        let b = deps.coordinatorSync(for: s2)
+        XCTAssertFalse(a === b, "different sessions must get different CoordinatorSync instances")
+
+        // Each `CoordinatorSync` is constructed in `core(for:)` from
+        // `CoordinatorSetting(userID: session.userID)` — a per-user defaults
+        // key. Writing through that same key type (not through
+        // `CoordinatorSync.set(_:)`, which would reach the network) and
+        // reading it back under the other user's key proves the isolation
+        // without a live journal.
+        CoordinatorSetting(userID: userA).convoID = "!coord-a:s"
+        XCTAssertEqual(CoordinatorSetting(userID: userA).convoID, "!coord-a:s")
+        XCTAssertNil(CoordinatorSetting(userID: userB).convoID,
+                    "a write to user A's Coordinator key must not appear under user B's")
+    }
 }
