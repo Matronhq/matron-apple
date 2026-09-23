@@ -116,4 +116,10 @@ public enum AgentSpawnCardState: Equatable, Sendable {
     case sending
     case resolved(SpawnOutcome)
     case failed(String)
+
+    /// The ask is no longer waiting on an answer from anyone.
+    public var isResolved: Bool {
+        if case .resolved = self { return true }
+        return false
+    }
 }

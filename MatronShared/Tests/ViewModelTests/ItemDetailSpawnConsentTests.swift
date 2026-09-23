@@ -179,6 +179,38 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
         XCTAssertEqual(vm.availableResolutions, [], "Approve and Decline are the only honest closes; cancelling would park the spawn unseen")
     }
 
+    /// Bugbot (PR #230): a closed consent item still offers Reopen (and a
+    /// user's comment on a closed item reopens it too). Once the ask is
+    /// settled the item is an ordinary question again — the guard must
+    /// hide the closes only while the card is still awaiting an answer,
+    /// or a reopened item can never be closed.
+    func testAReopenedConsentItemWithItsOutcomeOffersTheQuestionCloses() async throws {
+        let events = Events(); events.rows["c1"] = [Self.card, Self.started]
+        let (vm, store, _) = try await make(events: events)
+        store.itemCont?.yield(Self.item())
+        try await waitUntil { vm.spawnConsent?.state.isResolvedStarted == true }
+        XCTAssertEqual(vm.availableResolutions, [.cancelled], "the ask is settled; the item closes like any question")
+    }
+
+    func testAnAskSettledByAConflictLeavesTheItemCloseable() async throws {
+        let events = Events(); events.rows["c1"] = [Self.card]
+        let spawn = Spawn(); spawn.error = JournalAPIError.conflict
+        let (vm, store, _) = try await make(events: events, spawn: spawn)
+        store.itemCont?.yield(Self.item())
+        try await waitUntil { vm.spawnConsent?.state == .idle }
+        XCTAssertEqual(vm.availableResolutions, [])
+        await vm.answerSpawn(approve: true)
+        XCTAssertEqual(vm.availableResolutions, [.cancelled], "no longer waiting means nothing left to park unseen")
+    }
+
+    func testACardStillSyncingKeepsTheClosesHidden() async throws {
+        let (vm, store, _) = try await make(events: Events())
+        store.itemCont?.yield(Self.item())
+        try await waitUntil { vm.spawnConsent != nil }
+        XCTAssertNil(vm.spawnConsent?.request)
+        XCTAssertEqual(vm.availableResolutions, [], "no card yet: the ask may still be parked, so no manual close")
+    }
+
     func testASpawnOutcomeInTheStoreResolvesTheCard() async throws {
         let events = Events(); events.rows["c1"] = [Self.card, Self.started]
         let (vm, store, _) = try await make(events: events)

@@ -240,12 +240,18 @@ public final class ItemDetailViewModel {
     /// force, so reversing it leads. A reply still in the outbox counts
     /// (Bugbot): it is the user's, and it will land.
     ///
-    /// An open consent ask (item #2318) offers none: Approve and Decline
-    /// are its only honest closes. Cancelling the item would hide it while
-    /// the spawn request stays parked on the journal for its full life —
-    /// the journal closes the item itself on every terminal outcome.
+    /// A consent ask (item #2318) still awaiting its answer offers none:
+    /// Approve and Decline are its only honest closes. Cancelling the item
+    /// would hide it while the spawn request stays parked on the journal
+    /// for its full life — the journal closes the item itself on every
+    /// terminal outcome. Only *awaiting*, though (Bugbot, PR #230): a
+    /// closed item offers Reopen, and a user's comment on a closed item
+    /// reopens it too. Once the card has resolved — an outcome row, a 409
+    /// answered elsewhere — there is nothing left to park unseen, and the
+    /// reopened item closes like any other question. A card that has not
+    /// synced yet (no request) still counts as awaiting.
     public var availableResolutions: [ItemResolution] {
-        if let item, item.isConsentAsk, item.state == .open { return [] }
+        if let item, item.isConsentAsk, item.state == .open, !(spawnConsent?.state.isResolved ?? false) { return [] }
         return Self.resolutions(for: item?.kind,
                                 userHasReplied: !pendingComments.isEmpty || comments.contains { $0.author == .user && $0.kind == .comment })
     }
