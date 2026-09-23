@@ -1383,6 +1383,37 @@ final class JournalSyncEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    /// Controller ruling (Task 4 review): the hello's `.snapshot` already
+    /// reflects everything up to its head seq, so a `coordinator` event
+    /// reached via the catch-up replay at or below that seq is old news —
+    /// it must not be republished over the fresh snapshot. A live event
+    /// past the head seq still publishes normally.
+    func testCoordinatorEventsAtOrBelowTheHelloSeqAreSkippedButLiveOnesPublish() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(#"{"kind":"control","op":"hello_ok","seq":5,"coordinator_convo_id":"c-current"}"#)
+        socket.serve(journalLine(1))
+        socket.serve(journalLine(2))
+        socket.serve(journalLine(3))
+        socket.serve(journalLine(4))
+        // Part of the catch-up replay (seq 5 == the hello's head seq):
+        // already reflected in "c-current" above.
+        socket.serve(coordinatorLine(5, convo: "c-old", role: "assigned"))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.coordinatorUpdates().makeAsyncIterator()
+        let first = await iterator.next()
+        XCTAssertEqual(first, .snapshot("c-current"))
+
+        // A genuinely live event past the head seq.
+        socket.serve(coordinatorLine(6, convo: "c-new", role: "assigned"))
+        let second = await iterator.next()
+        XCTAssertEqual(second, .assigned(convoID: "c-new"),
+                       "seq 5 (<= the hello's head seq 5) must be skipped as an already-reflected replay")
+        await engine.endSync()
+    }
+
     func testCoordinatorUpdatesSkipAHelloWithoutTheField() async throws {
         let socket = FakeWebSocketConnection()
         socket.serve(helloOK(1))

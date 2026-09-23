@@ -7,6 +7,15 @@ import MatronModels
 /// on start, the `hello_ok` field on every connect (`.snapshot`), and live
 /// `coordinator` events. Writes: `set(_:)`, the user's own pick or clear.
 /// The cache is what every view reads, so nothing else writes it.
+///
+/// Reconnect-vs-backlog ordering (a reconnect's fresh `.snapshot` landing
+/// before the backlog's own replayed `assigned`/`released` events) is
+/// resolved upstream, in `JournalSyncEngine.publishCoordinatorEvent`, by
+/// comparing each event's journal `seq` against the hello's head seq — not
+/// here. An earlier version of this actor tried to resolve it locally by
+/// comparing cached values, which also dropped genuine live `assigned`
+/// events (a user with no Coordinator picking one elsewhere arrives as a
+/// bare `assigned`, with nothing to contradict); that approach is gone.
 public actor CoordinatorSync {
     private static let logger = Logger(subsystem: "chat.matron", category: "coordinator-sync")
 
@@ -20,23 +29,26 @@ public actor CoordinatorSync {
     /// store and `set(_:)` writes it alone.
     public private(set) var isSupported: Bool?
 
-    /// The cache value as of the most recent `.snapshot` delivered through
-    /// the update stream (a fresh reconnect hello) — armed only by that
-    /// case, never by `refresh()`'s plain `GET`. Reconnect ordering (Task 2
-    /// review, minor 1) means the hello's `.snapshot(current)` publishes
-    /// *before* the backlog's replayed `assigned`/`released` events; those
-    /// stale events must not be allowed to flicker the cache away from what
-    /// the snapshot just established. `hasSnapshotFloor` distinguishes "no
-    /// snapshot seen yet" (guard off, e.g. `test_liveEvents_followTheRole`'s
-    /// steady-state live events) from "snapshot said nil" (guard on).
-    private var hasSnapshotFloor = false
-    private var snapshotFloorConvoID: String?
+    /// Bumped by every applied live update (`apply(_:)`) and by `set(_:)`.
+    /// `refresh()` snapshots this before its `GET` and checks it again after:
+    /// if it moved, a live update landed while the GET was in flight and is
+    /// more authoritative than that GET's answer, which is dropped instead
+    /// of applied. This guards an actor-reentrancy hazard: `start()` creates
+    /// the update-stream subscription (which can replay a fresher snapshot
+    /// immediately) and then suspends inside `refresh()`'s `GET` — without
+    /// this check, a slow/stale GET answer that resolves afterward can
+    /// clobber what the live subscription already correctly set.
+    private var epoch = 0
 
     public init(api: any CoordinatorProviding, setting: CoordinatorSetting,
                 updates: @escaping @Sendable () -> AsyncStream<CoordinatorUpdate>) {
         self.api = api
         self.setting = setting
         self.updates = updates
+    }
+
+    deinit {
+        updatesTask?.cancel()
     }
 
     public func start() async {
@@ -54,13 +66,22 @@ public actor CoordinatorSync {
     public func stop() {
         updatesTask?.cancel()
         updatesTask = nil
+        // Invalidate any `refresh()` still in flight so a GET answer that
+        // resolves after `stop()` is dropped rather than resurrecting state
+        // once the caller believes the sync has stopped.
+        epoch += 1
     }
 
     /// `GET /coordinator` and reconcile. A transport failure leaves the cache
     /// as it is; the next connect's hello reconciles instead.
     public func refresh() async {
+        let startEpoch = epoch
         do {
             let journal = try await api.coordinator()
+            guard epoch == startEpoch else {
+                Self.logger.debug("dropping a GET /coordinator answer superseded by a live update")
+                return
+            }
             isSupported = true
             await reconcile(journal: journal)
         } catch JournalAPIError.notFound {
@@ -76,32 +97,33 @@ public actor CoordinatorSync {
     public func set(_ convoID: String?) async throws {
         if isSupported == false {
             setting.convoID = convoID
+            epoch += 1
             return
         }
-        let stored = try await api.setCoordinator(convoID)
-        setting.convoID = stored
-        setting.migrated = true
+        do {
+            let stored = try await api.setCoordinator(convoID)
+            setting.convoID = stored
+            setting.migrated = true
+            epoch += 1
+        } catch JournalAPIError.notFound where isSupported == nil {
+            // We never learned whether this journal has the route — the
+            // startup GET failed transport-side rather than 404ing — so a
+            // 404 here reads as "no route" as plausibly as "convo not
+            // owned". Treat it as the former: the user's pick still has to
+            // land somewhere, and future calls skip the PUT outright.
+            isSupported = false
+            setting.convoID = convoID
+            epoch += 1
+        }
     }
 
     private func apply(_ update: CoordinatorUpdate) async {
+        epoch += 1
         switch update {
         case .snapshot(let journal):
             isSupported = true
             await reconcile(journal: journal)
-            hasSnapshotFloor = true
-            snapshotFloorConvoID = setting.convoID
         case .assigned(let convoID):
-            if hasSnapshotFloor, snapshotFloorConvoID == setting.convoID, convoID != setting.convoID {
-                // A backlog replay racing the fresh hello snapshot: the
-                // snapshot already reflects the journal's current truth, so
-                // a stale assigned for a different id is dropped rather
-                // than flickering the cache away from it. Any subsequent
-                // real change (a matching release, another snapshot, a
-                // local `set(_:)`) moves the cache off the floor and this
-                // guard stops applying.
-                Self.logger.debug("ignoring stale coordinator 'assigned' contradicting the latest snapshot")
-                return
-            }
             setting.convoID = convoID
             setting.migrated = true
         case .released(let convoID):

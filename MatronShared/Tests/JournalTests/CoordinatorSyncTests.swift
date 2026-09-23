@@ -8,6 +8,7 @@ private final class FakeCoordinatorAPI: CoordinatorProviding, @unchecked Sendabl
     private var _getError: Error?
     private var _putError: Error?
     private var _puts: [String?] = []
+    private var _getDelayNanoseconds: UInt64 = 0
 
     init(journal: String? = nil) { _journal = journal }
 
@@ -15,8 +16,15 @@ private final class FakeCoordinatorAPI: CoordinatorProviding, @unchecked Sendabl
     var getError: Error? { get { lock.withLock { _getError } } set { lock.withLock { _getError = newValue } } }
     var putError: Error? { get { lock.withLock { _putError } } set { lock.withLock { _putError = newValue } } }
     var puts: [String?] { lock.withLock { _puts } }
+    /// Artificial delay before `coordinator()` answers — lets a test race a
+    /// live update against a slow startup `GET`.
+    var getDelayNanoseconds: UInt64 {
+        get { lock.withLock { _getDelayNanoseconds } }
+        set { lock.withLock { _getDelayNanoseconds = newValue } }
+    }
 
     func coordinator() async throws -> String? {
+        if getDelayNanoseconds > 0 { try? await Task.sleep(nanoseconds: getDelayNanoseconds) }
         if let getError { throw getError }
         return journal
     }
@@ -159,25 +167,61 @@ final class CoordinatorSyncTests: XCTestCase {
         XCTAssertEqual(setting.convoID, "c1")
     }
 
-    /// Controller ruling (Task 2 review, minor 1): on reconnect the fresh
-    /// hello `.snapshot(current)` publishes before the backlog's replayed
-    /// `assigned`/`released` events. A stale replayed `assigned` for an id
-    /// other than the snapshot must not flicker the cache away from it.
-    /// Proven here by racing it against a *real* release of the snapshot's
-    /// own id: if the stale `assigned` had wrongly applied, the release
-    /// (which only clears a match) would be a no-op and the cache would be
-    /// stuck at the stale id forever instead of converging to nil.
-    func test_snapshotThenStaleBacklogAssigned_convergesOnTheSnapshot() async {
-        let api = FakeCoordinatorAPI(journal: "c-current")
+    /// Reconnect-vs-backlog ordering is resolved upstream now (journal `seq`
+    /// vs. the hello's head seq, in `JournalSyncEngine`), not by comparing
+    /// cached values here — an earlier local attempt at this dropped
+    /// exactly this case: a user with no Coordinator (`.snapshot(nil)`) who
+    /// picks one on another device gets only a bare `assigned`, with no
+    /// preceding `released` to "contradict" a stale cache guard.
+    func test_snapshotNil_thenAssigned_isAdopted() async {
+        let api = FakeCoordinatorAPI(journal: nil)
         let (sync, setting, events) = make(api)
         await sync.start()
-        XCTAssertEqual(setting.convoID, "c-current")
+        XCTAssertNil(setting.convoID)
 
-        events.yield(.snapshot("c-current"))
-        events.yield(.assigned(convoID: "c-old"))
-        events.yield(.released(convoID: "c-current"))
+        events.yield(.snapshot(nil))
+        events.yield(.assigned(convoID: "cX"))
 
-        await eventually { setting.convoID == nil }
-        XCTAssertNil(setting.convoID, "the stale 'assigned' must have been ignored, letting this release match and clear the cache")
+        await eventually { setting.convoID == "cX" }
+        XCTAssertEqual(setting.convoID, "cX")
+    }
+
+    /// Minor 1 (actor reentrancy): `start()` creates the update-stream
+    /// subscription — which can replay a fresher snapshot immediately — and
+    /// then suspends inside `refresh()`'s `GET`. A slow GET answer that
+    /// resolves after that live snapshot already landed must not clobber it.
+    func test_refresh_dropsAStaleGETAnswer_racingALiveSnapshot() async throws {
+        let api = FakeCoordinatorAPI(journal: "c-stale")
+        api.getDelayNanoseconds = 150_000_000
+        let (sync, setting, events) = make(api)
+        let starting = Task { await sync.start() }
+
+        try await Task.sleep(nanoseconds: 20_000_000)
+        events.yield(.snapshot("c-live"))
+        await eventually { setting.convoID == "c-live" }
+
+        await starting.value
+        XCTAssertEqual(setting.convoID, "c-live", "the slow startup GET must not overwrite a newer live snapshot")
+        XCTAssertEqual(api.puts, [], "no PUT: the live snapshot already carried a journal value")
+    }
+
+    /// Minor 4: a startup `GET` that failed transport-side (so `isSupported`
+    /// is still `nil`, not `false`) leaves `set(_:)` uncertain whether the
+    /// journal has the route at all. A `PUT` 404 in that state reads as "no
+    /// route" (as plausibly as "convo not owned") and must fall back to a
+    /// cache-only write instead of throwing to the caller.
+    func test_set_whenSupportUnknownAndPutIsNotFound_fallsBackToCacheOnly() async throws {
+        let api = FakeCoordinatorAPI(journal: nil)
+        api.getError = JournalAPIError.transport("offline")
+        let (sync, setting, _) = make(api)
+        await sync.start()
+        let supportedBefore = await sync.isSupported
+        XCTAssertNil(supportedBefore)
+
+        api.putError = JournalAPIError.notFound
+        try await sync.set("cNew")
+        XCTAssertEqual(setting.convoID, "cNew")
+        let supportedAfter = await sync.isSupported
+        XCTAssertEqual(supportedAfter, false)
     }
 }

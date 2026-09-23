@@ -132,6 +132,15 @@ public actor JournalSyncEngine {
     /// The latest known whole answer, replayed to a late subscriber: the
     /// hello arrives during the handshake, before any subscriber can exist.
     private var lastCoordinatorSnapshot: CoordinatorUpdate?
+    /// The journal's head `seq` as of the most recent `hello_ok`. A
+    /// reconnect's fresh hello already reflects everything up to this seq,
+    /// so a `coordinator` journal event at or below it — reached via the
+    /// catch-up replay, not a live write — is old news the snapshot above
+    /// already carries; publishing it too would flicker (or, if the replay
+    /// buffer is truncated, permanently misstate) the cache away from that
+    /// snapshot. `nil` until the first hello lands, so nothing is dropped
+    /// before we actually know a head seq to compare against.
+    private var lastHelloHeadSeq: Int64?
     private var ephemeralContinuations: [UUID: (convoID: String, continuation: AsyncStream<EphemeralUpdate>.Continuation)] = [:]
     private var activityContinuations: [UUID: (convoID: String, continuation: AsyncStream<ActivityUpdate>.Continuation)] = [:]
     private var toolStreamContinuations: [UUID: (convoID: String, continuation: AsyncStream<ToolStreamUpdate>.Continuation)] = [:]
@@ -798,7 +807,8 @@ public actor JournalSyncEngine {
     }
     private func unregisterCoordinatorUpdates(id: UUID) { coordinatorContinuations.removeValue(forKey: id) }
 
-    private func publishCoordinatorHello(_ hello: HelloCoordinator) {
+    private func publishCoordinatorHello(_ hello: HelloCoordinator, headSeq: Int64) {
+        lastHelloHeadSeq = headSeq
         guard case .known(let convoID) = hello else { return }
         let update = CoordinatorUpdate.snapshot(convoID)
         lastCoordinatorSnapshot = update
@@ -808,6 +818,13 @@ public actor JournalSyncEngine {
     private func publishCoordinatorEvent(_ event: JournalEvent) {
         guard event.type == JournalEventType.coordinator,
               let marker = CoordinatorMarkerEvent.parse(payload: event.payload) else { return }
+        // Reconnect ordering: the hello's `.snapshot` publishes before the
+        // backlog replay reaches this event, so anything at or below that
+        // hello's head seq is already reflected in it — drop it rather than
+        // reapplying old news over fresh truth. `lastHelloHeadSeq == nil`
+        // (no hello recorded yet) always publishes: never drop a live event
+        // for lack of something to compare it against.
+        if let lastHelloHeadSeq, event.seq <= lastHelloHeadSeq { return }
         let update: CoordinatorUpdate
         switch marker.role {
         case .assigned:
@@ -977,7 +994,7 @@ public actor JournalSyncEngine {
                 let (connection, headSeq) = try await JournalConnection.establish(
                     connector: connector, wsURL: api.wsURL, token: token, cursor: cursor)
                 liveConnection = connection
-                publishCoordinatorHello(connection.coordinatorHello)
+                publishCoordinatorHello(connection.coordinatorHello, headSeq: headSeq)
                 attempt = 0
                 if let viewingConvoID {
                     try? await connection.send(.viewing(convoID: viewingConvoID))
