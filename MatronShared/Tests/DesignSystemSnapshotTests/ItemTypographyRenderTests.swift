@@ -62,6 +62,9 @@ final class ItemTypographyRenderTests: XCTestCase {
                        "item-style text view \(item)pt wide vs expected \(expected)pt (chat \(chat)pt × 1.25/1.10)")
     }
 
+    /// `Theme.matronItem` is the iOS item renderer now (the Mac thread
+    /// renders through the text view above); measured here, on the Mac
+    /// host, only because MarkdownUI lays out identically on both.
     func testItemBodyIsLargerThanTheMacChatTimeline() {
         let chat = inkWidth(SelectableMessageText(sample))
         let item = inkWidth(MarkdownText(sample, theme: .matronItem))

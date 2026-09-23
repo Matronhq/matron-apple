@@ -355,12 +355,15 @@ public struct ItemDetailView: View {
     static func bodySelectionID(for itemID: String) -> String { "body:" + itemID }
 
     /// Row order for the cross-card selection: the body card first (when
-    /// there is a body), then every comment with a text body. Status rows
-    /// and empty bodies render no text view, so they cannot take part.
+    /// it renders at all — a body or attachments), then every comment
+    /// that is not a status row. A card with no text (a voice note, a
+    /// file) has no text view to highlight, but it is still a row a drag
+    /// passes THROUGH, and the transcript stands in a marker for it — the
+    /// chat timeline's rule for an uncaptioned image (reviewer, PR #232).
     static func selectionOrder(item: TrackerItem, comments: [TrackerComment]) -> [String] {
         var ids: [String] = []
-        if !item.body.isEmpty { ids.append(bodySelectionID(for: item.id)) }
-        ids += comments.filter { $0.kind != .status && !$0.body.isEmpty }.map(\.id)
+        if !item.body.isEmpty || !item.attachments.isEmpty { ids.append(bodySelectionID(for: item.id)) }
+        ids += comments.filter { $0.kind != .status }.map(\.id)
         return ids
     }
 
@@ -545,44 +548,70 @@ public struct ItemDetailView: View {
 extension ItemDetailView {
     /// The pasteboard text for a finished cross-card selection — the chat
     /// timeline's own "[date] Name: text" shape (`TranscriptFormatter`),
-    /// one line per selected card in row order. Cards whose selected part
-    /// is empty (the pointer sat in the gap above them) and ids that no
-    /// longer name a card contribute nothing. The reader is "Me", as in
-    /// the timeline; the agent is "Agent", as in the card captions.
+    /// one entry per selected card in row order. The selected text comes
+    /// first; each attachment follows on its own line as a marker
+    /// (`attachmentMarker`), so a voice-note reply copies its transcript
+    /// rather than vanishing. A card whose text view exists but has
+    /// nothing selected (the pointer sat in the gap above it) and an id
+    /// that no longer names a card contribute nothing. The reader is
+    /// "Me", as in the timeline; the agent is "Agent", as in the captions.
     static func transcript(item: TrackerItem, comments: [TrackerComment], spans: [SelectedSpan],
                            locale: Locale = .current, timeZone: TimeZone = .current) -> SelectionTranscript {
         var entries: [TranscriptEntry] = []
         for span in spans {
-            guard let text = span.text, !text.isEmpty else { continue }
             let author: ItemAuthor
             let date: Date
+            let attachments: [TrackerAttachment]
             if span.id == bodySelectionID(for: item.id) {
                 author = item.createdBy
                 date = item.createdAt
+                attachments = item.attachments
             } else if let comment = comments.first(where: { $0.id == span.id }) {
                 author = comment.author
                 date = comment.createdAt
+                attachments = comment.attachments
             } else {
                 continue
             }
-            entries.append(TranscriptEntry(timestamp: date, name: author == .user ? "Me" : "Agent", text: text))
+            // `""` means a text view exists and none of it is selected —
+            // skip the whole card, markers included, as the timeline does
+            // for an image whose caption view has an empty selection.
+            if let text = span.text, text.isEmpty { continue }
+            var lines: [String] = []
+            if let text = span.text { lines.append(text) }
+            lines += attachments.map(attachmentMarker)
+            guard !lines.isEmpty else { continue }
+            entries.append(TranscriptEntry(timestamp: date, name: author == .user ? "Me" : "Agent",
+                                           text: lines.joined(separator: "\n")))
         }
         return SelectionTranscript(text: TranscriptFormatter.format(entries, locale: locale, timeZone: timeZone),
                                    messageCount: entries.count)
     }
 
+    /// What an attachment contributes to a copied transcript: a voice
+    /// note carries its transcript (the words are what the reader wants),
+    /// an image the timeline's `[Photo]`, anything else `[File: name]`.
+    static func attachmentMarker(_ attachment: TrackerAttachment) -> String {
+        if attachment.isAudio {
+            if let transcript = attachment.transcript, !transcript.isEmpty { return "[Voice note] " + transcript }
+            return "[Voice note]"
+        }
+        if attachment.isImage { return "[Photo]" }
+        return "[File: \(attachment.name)]"
+    }
+
     /// Row order as the controller wants it, recomputed from the model.
     fileprivate var selectionOrder: [String] { Self.selectionOrder(item: item, comments: model.comments) }
 
-    /// Installs the spans → transcript bridge. Captures the CURRENT model
-    /// by value: comments are immutable once posted and the provider is
-    /// re-installed whenever the model changes, so what a finished
-    /// selection copies is what the cards showed when it finished.
-    fileprivate func installTranscriptProvider() {
-        let item = self.item, comments = model.comments
+    /// Installs the spans → transcript bridge for `model` — the value the
+    /// `onChange` that calls this just received, captured by value:
+    /// comments are immutable once posted and the provider is re-installed
+    /// whenever the model changes, so what a finished selection copies is
+    /// what the cards showed when it finished.
+    fileprivate func installTranscriptProvider(for model: Model) {
         cardSelection.transcriptProvider = { [weak cardSelection] in
             guard let cardSelection else { return SelectionTranscript(text: "", messageCount: 0) }
-            return Self.transcript(item: item, comments: comments, spans: cardSelection.selectedSpans())
+            return Self.transcript(item: model.item, comments: model.comments, spans: cardSelection.selectedSpans())
         }
     }
 }
@@ -603,8 +632,8 @@ private extension View {
             .onChange(of: detail.selectionOrder, initial: true) { _, order in
                 detail.cardSelection.orderedIDs = order
             }
-            .onChange(of: detail.model, initial: true) { _, _ in
-                detail.installTranscriptProvider()
+            .onChange(of: detail.model, initial: true) { _, model in
+                detail.installTranscriptProvider(for: model)
             }
             .onDisappear { detail.cardSelection.clear() }
         #else
