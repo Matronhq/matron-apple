@@ -53,6 +53,7 @@ private final class RouteBox {
 final class MacItemsPaneStackTests: XCTestCase {
     private var deps: AppDependencies!
     private var window: NSWindow?
+    private var paneState: MacItemsPaneState?
 
     override func tearDown() async throws {
         window?.close()
@@ -87,6 +88,11 @@ final class MacItemsPaneStackTests: XCTestCase {
         let header = MacChatHeaderAccessory.existing(in: window)
         XCTAssertEqual(header?.isHidden, false, "the chat header must stay up", file: file, line: line)
         XCTAssertEqual(header?.model.props?.roomID, "k", file: file, line: line)
+        // The pane's own Back exists only while an item is pushed, so its
+        // presence proves the item is showing in the pane (CodeRabbit, #233).
+        // The pushed item's detail host is mounted on top of the pane: its
+        // `.task` activated the item's slot (CodeRabbit, #233).
+        XCTAssertNotNil(paneState?.slots[pushed], "the pane must show the pushed item", file: file, line: line)
         let toolbarIDs = (window.toolbar?.items ?? []).map(\.itemIdentifier.rawValue)
         XCTAssertFalse(toolbarIDs.contains { $0.contains("navigationStack.back") },
                        "no system Back may reach the toolbar: \(toolbarIDs)", file: file, line: line)
@@ -100,6 +106,8 @@ final class MacItemsPaneStackTests: XCTestCase {
         let chatVM = ChatViewModel(roomID: "k", timeline: timeline, media: NoMedia())
         let composerVM = ComposerViewModel(roomID: "k", timeline: timeline, commands: [])
         let strip = SubChatStripViewModel(chat: NoChat(), parentConvoID: "k")
+        let paneState = MacItemsPaneState()
+        self.paneState = paneState
         let root = NavigationSplitView {
             List { Text("nav") }
                 .toolbar(removing: .sidebarToggle)
@@ -109,7 +117,7 @@ final class MacItemsPaneStackTests: XCTestCase {
                 MacChatView(viewModel: chatVM, composerVM: composerVM, stripViewModel: strip,
                             subChatProvider: { _ in (chatVM, strip) },
                             paneRoute: Binding(get: { box.route }, set: { box.route = $0 }),
-                            chatTitle: "Coordinator")
+                            itemsPaneState: paneState, chatTitle: "Coordinator")
             }
         }
         .environment(\.appDependencies, deps)

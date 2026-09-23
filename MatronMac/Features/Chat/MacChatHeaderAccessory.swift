@@ -91,26 +91,41 @@ struct MacChatHeaderBar: View {
 
     @ViewBuilder private var bar: some View {
         if let props = model.props {
-            let toolbar = MacChatToolbar(props: props)
-            // Each group sits in a stack so the layout always sees three
-            // subviews — an empty cluster is otherwise no subview at all.
-            MacChatHeaderLayout {
-                HStack(spacing: 10) {
-                    if let navigation = model.navigation { MacHeaderHistoryCluster(navigation: navigation) }
-                    toolbar.modelItem
-                }
-                HStack(spacing: 0) { toolbar.titleItem }
-                HStack(spacing: 10) {
-                    toolbar.usageItem
-                    toolbar.buttonsItem
-                    toolbar.subagentsCapsule
-                }
+            barContent(props: props)
+        } else if let navigation = model.navigation {
+            // No chat column publishing (an empty Coordinator, the narrow
+            // items/sub-chat takeover): the header still carries the
+            // window's Back/Forward and New Chat, which have nowhere else
+            // to go on Coordinator (Bugbot/CodeRabbit, #233).
+            HStack {
+                MacHeaderHistoryCluster(navigation: navigation)
+                Spacer()
             }
             .buttonStyle(.borderless)
-            // Insets and capsule paddings are measured off the system toolbar
-            // this replaced, so the header did not move when it changed hands.
             .padding(.horizontal, 8)
         }
+    }
+
+    @ViewBuilder private func barContent(props: MacChatToolbarProps) -> some View {
+        let toolbar = MacChatToolbar(props: props)
+        // Each group sits in a stack so the layout always sees three
+        // subviews — an empty cluster is otherwise no subview at all.
+        MacChatHeaderLayout {
+            HStack(spacing: 10) {
+                if let navigation = model.navigation { MacHeaderHistoryCluster(navigation: navigation) }
+                toolbar.modelItem
+            }
+            HStack(spacing: 0) { toolbar.titleItem }
+            HStack(spacing: 10) {
+                toolbar.usageItem
+                toolbar.buttonsItem
+                toolbar.subagentsCapsule
+            }
+        }
+        .buttonStyle(.borderless)
+        // Insets and capsule paddings are measured off the system toolbar
+        // this replaced, so the header did not move when it changed hands.
+        .padding(.horizontal, 8)
     }
 }
 

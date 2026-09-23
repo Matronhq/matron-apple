@@ -63,6 +63,7 @@ private struct CoordinatorHarness: View {
             List { Text("nav") }
                 .toolbar(removing: .sidebarToggle)
                 .navigationSplitViewColumnWidth(min: 72, ideal: 72, max: 72)
+                .toolbar { MacCoordinatorToolbarPlaceholder() }
         } detail: {
             MacChatHeaderHost(navigation: navigation) {
                 Color.clear.preference(key: MacChatToolbarPreference.self, value: MacChatToolbarProps(
@@ -141,6 +142,15 @@ final class MacHistoryToolbarTests: XCTestCase {
         let leading = header.hitRegions.capsules.min { $0.minX < $1.minX }
         XCTAssertNotNil(leading)
         XCTAssertLessThan(leading?.minX ?? .infinity, 20, "the chevron capsule sits at the header's leading edge")
+
+        // Dan, #2608: with no sidebar toolbar item at all the title bar
+        // shrank to 32 pt and cropped the 52 pt header.
+        window.contentView?.superview?.layoutSubtreeIfNeeded()
+        let titleBar = window.frame.height - window.contentLayoutRect.height
+        XCTAssertGreaterThanOrEqual(titleBar, MacChatHeaderAccessory.height,
+                                    "the title bar must be tall enough for the header, got \(titleBar)")
+        XCTAssertFalse(Self.hasClippedIndicator(in: window.contentView?.superview),
+                       "the placeholder must not be folded into the » overflow")
     }
 
     private static func hasClippedIndicator(in view: NSView?) -> Bool {

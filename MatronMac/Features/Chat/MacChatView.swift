@@ -106,7 +106,10 @@ struct MacChatView: View {
     /// when the window crosses `sideBySideMinWidth` — see
     /// `MacItemsPaneState`'s doc comment. One instance per `MacChatView`
     /// lifetime (resets on a genuine room switch, same as `itemsVM`).
-    @State private var itemsPaneState = MacItemsPaneState()
+    /// Internal, not private, only so a test can hand in its own and read
+    /// the slots back (`MacItemsPaneStackTests`); every call site keeps
+    /// the default.
+    @State var itemsPaneState = MacItemsPaneState()
     /// `[#65](matron://item/65)` taps from any message body (item #115).
     /// The relay's `action` goes into the environment with a stable closure
     /// identity (see `TrackerItemLinkRelay`) — every rendered message body
@@ -434,6 +437,9 @@ struct MacChatView: View {
     /// (a route the local states already describe) changes nothing.
     private func applyPaneRoute(_ route: MacChatPaneRoute?) {
         let next = Self.localState(applying: route, path: itemsPaneState.path)
+        // A restore that opens the pane straight onto an item behaves like a
+        // link tap: the pane's Back closes it (#2608).
+        if !showItemsPane, next.itemsOpen, !next.path.isEmpty { itemsPaneState.openedOnItem = true }
         if localItemsOpen != next.itemsOpen { localItemsOpen = next.itemsOpen }
         if localSubChatID != next.subChatID { localSubChatID = next.subChatID }
         if itemsPaneState.path != next.path { itemsPaneState.path = next.path }
@@ -455,6 +461,9 @@ struct MacChatView: View {
     /// The navigation half, run by `trackerItemLinks` only if the tap that
     /// asked for it is still the latest one (item #115, fix round 5).
     @MainActor private func showItem(_ id: String) {
+        // Opened straight onto the item: the pane's Back closes it again
+        // rather than dropping to a list the user never opened (#2608).
+        if !showItemsPane { itemsPaneState.openedOnItem = true }
         openSubChatID = nil
         showItemsPane = true
         itemsPaneState.path = [id]
@@ -851,13 +860,9 @@ struct MacChatView: View {
                         // `onOpenSubChat` above, and `itemsPaneState` is
                         // the shared `@Observable` instance both HSplitView
                         // branches already read `path` from, so setting it
-                        // here is all `MacItemsPane`'s `NavigationStack`
-                        // needs to push (see `MacItemsPaneState`).
-                        onOpenItem: { id in
-                            openSubChatID = nil
-                            showItemsPane = true
-                            itemsPaneState.path = [id]
-                        },
+                        // here is all `MacItemsPane` needs to show it
+                        // (see `MacItemsPaneState`).
+                        onOpenItem: { id in showItem(id) },
                         onOpenMission: onOpenMission,
                         onPreviewImage: { url, img in
                             imagePreview = ImagePreview(gallery: ImageGalleries.conversation(

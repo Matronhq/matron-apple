@@ -180,3 +180,16 @@ struct MacHistoryToolbarItems: ToolbarContent {
         }
     }
 }
+
+/// Coordinator's sidebar toolbar: one invisible 1 pt item. With NO items
+/// SwiftUI drops the window's NSToolbar and the title bar shrinks from 52
+/// to 32 pt, cropping the 52 pt chat header top and bottom (#2608). A 1 pt
+/// item keeps the toolbar and is too small to be clipped into the »
+/// overflow (both measured in `MacHistoryToolbarTests`).
+struct MacCoordinatorToolbarPlaceholder: ToolbarContent {
+    var body: some ToolbarContent {
+        ToolbarItem(placement: .automatic) {
+            Color.clear.frame(width: 1, height: 1).accessibilityHidden(true)
+        }
+    }
+}

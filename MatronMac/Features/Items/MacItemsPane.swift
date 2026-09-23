@@ -80,6 +80,12 @@ struct MacItemsPaneChrome<Content: View>: View {
 @MainActor @Observable
 final class MacItemsPaneState {
     var path: [String] = []
+    /// The pane was opened straight onto an item (a `#123` link, an item
+    /// card, a Back/Forward restore), not from its list. Back from that
+    /// first item then closes the pane, returning the user to where they
+    /// were, instead of revealing a list they never opened (#2608).
+    /// Cleared whenever the list is on screen.
+    var openedOnItem = false
     var showCreate = false
     var originTitles: [String: String] = [:]
 
@@ -106,6 +112,22 @@ final class MacItemsPaneState {
     /// (teardown, the bar's own Cancel button) needs both halves done
     /// together, or a stale `recordingItemID` could outlive the recording
     /// it named.
+    enum BackResult: Equatable { case popped, closePane, nothing }
+
+    /// The pane's Back: one level down the stack, or, from the item the
+    /// pane was opened straight onto (`openedOnItem`), empties the stack
+    /// and asks the caller to close the pane, back to where the user was.
+    func back() -> BackResult {
+        guard !path.isEmpty else { return .nothing }
+        if path.count == 1, openedOnItem {
+            path = []
+            openedOnItem = false
+            return .closePane
+        }
+        path.removeLast()
+        return .popped
+    }
+
     func cancelRecording() {
         detailRecorder.cancel()
         recordingItemID = nil
@@ -264,9 +286,13 @@ struct MacItemsPane: View {
     let onClose: () -> Void
     @Environment(\.appDependencies) private var deps
 
+    private func pop() {
+        if state.back() == .closePane { onClose() }
+    }
+
     var body: some View {
         MacItemsPaneChrome(title: "Tasks & decisions", showsBackChevron: showsBackChevron,
-                           onPop: state.path.isEmpty ? nil : { state.path.removeLast() },
+                           onPop: state.path.isEmpty ? nil : pop,
                            onClose: onClose) {
             // The pane's stack is `state.path`, drawn here by hand. It was a
             // `NavigationStack`, but inside the window's `NavigationSplitView`
@@ -298,6 +324,9 @@ struct MacItemsPane: View {
                 .opacity(state.path.isEmpty ? 1 : 0)
                 .allowsHitTesting(state.path.isEmpty)
                 .accessibilityHidden(!state.path.isEmpty)
+                // Hidden under an open item: a row button that still had
+                // keyboard focus must not answer Return (CodeRabbit, #233).
+                .disabled(!state.path.isEmpty)
 
                 if let top = state.path.last {
                     MacItemDetailHost(itemID: top, session: session, currentConvoID: viewModel.convoID,
@@ -339,6 +368,7 @@ struct MacItemsPane: View {
         // no detail host is left to run anything.
         .onChange(of: state.path) { _, path in
             state.releaseSlots(keeping: Set(path))
+            if path.isEmpty { state.openedOnItem = false }
         }
         .task(id: viewModel.scope) {
             // Labels for the "All" scope rows come from the local store's

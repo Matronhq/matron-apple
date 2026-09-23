@@ -365,7 +365,10 @@ struct MacChatListView: View {
                     // BEHIND the chat header, visible but dead (#2608). There
                     // the header carries Back/Forward and New Chat instead
                     // (`coordinatorHeaderActions`); ⌘N stays on the menu.
-                    if nav != .coordinator {
+                    if nav == .coordinator {
+                        // Keeps the 52 pt title bar the header needs.
+                        MacCoordinatorToolbarPlaceholder()
+                    } else {
                         // Spec 2026-09-23 §5: the window's Back/Forward,
                         // top-left in the SIDEBAR section — see
                         // `MacHistoryToolbarItems`.
@@ -514,6 +517,12 @@ struct MacChatListView: View {
             // `initial: true` seeds the history with the first place so the
             // first move away has somewhere to go back to.
             .onChange(of: currentPlace, initial: true) { _, place in recordPlace(place) }
+            // A later selection of anything else ends a stale restore, so a
+            // notification tap or auto-open of that id opens it normally
+            // (Bugbot, #233).
+            .onChange(of: selectedSummaryID) { _, id in
+                if id != staleRestoredID { staleRestoredID = nil }
+            }
             // Optional chaining through `missionsVM?` already flattens to
             // a plain `Bool?` (fix round 3, N4: the earlier `?? nil` was
             // a no-op) — nil either way means "not proven false," never
