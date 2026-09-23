@@ -24,20 +24,43 @@ import os
 /// `SelectableMessageText.sizeThatFits`), so the output is a pure function of the
 /// source; converted strings are memoised in an `NSCache` keyed on the source,
 /// mirroring `MarkdownText.contentCache`.
-enum MarkdownAttributed {
+public enum MarkdownAttributed {
 
     // MARK: - Sizing constants
 
-    /// Base body size: the 13pt macOS system body at `MessageTextScale.scale`
-    /// (≈14.3pt). This is the Mac chat timeline's own, independent size —
-    /// `Theme.matronMessage` renders at the plain system body size instead
-    /// (its `.em` scale was a MarkdownUI no-op; see #823), so the two are
-    /// not required to match.
-    static let baseFontSize: CGFloat = 13 * MessageTextScale.scale
+    /// The per-surface metrics of a render: body size, paragraph gap and
+    /// leading. Everything else about the conversion (indents, heading
+    /// ratios, code chrome, link policy) is shared, so a chat message and
+    /// a tracker item read as the same markdown at two reading scales.
+    /// `Hashable` because it is half of the memo key (see `rendered`).
+    public struct Style: Hashable, Sendable {
+        /// Body point size; headings and inline code scale off it.
+        public let baseFontSize: CGFloat
+        /// Space after a paragraph, in points — the visual gap MarkdownUI
+        /// leaves between blocks.
+        public let paragraphSpacing: CGFloat
+        /// Extra leading between wrapped lines, on top of the font's own.
+        public let lineSpacing: CGFloat
 
-    /// Space after a paragraph, in points — the visual gap MarkdownUI leaves
-    /// between blocks.
-    private static let paragraphSpacing: CGFloat = 8
+        /// The Mac chat timeline: the 13pt macOS system body at
+        /// `MessageTextScale.scale` (≈14.3pt). This is the timeline's own,
+        /// independent size — `Theme.matronMessage` renders at the plain
+        /// system body size instead (its `.em` scale was a MarkdownUI
+        /// no-op; see #823), so the two are not required to match.
+        public static let chat = Style(baseFontSize: 13 * MessageTextScale.scale, paragraphSpacing: 8, lineSpacing: 0)
+
+        /// The tracker item thread (tracker #2533): `ItemTypography`'s
+        /// reading face — ≈16.25pt body, a real paragraph gap and the
+        /// thread's leading — the same numbers `Theme.matronItem` gives
+        /// MarkdownUI on iOS, so the two platforms' item bodies match.
+        public static let item = Style(baseFontSize: ItemTypography.baseSize * ItemTypography.bodyScale,
+                                       paragraphSpacing: ItemTypography.paragraphSpacing,
+                                       lineSpacing: ItemTypography.lineSpacing)
+    }
+
+    /// The chat timeline's body size, kept as a name because the size
+    /// discussion in `MarkdownText`/`ItemTypography` refers to it.
+    static let baseFontSize: CGFloat = Style.chat.baseFontSize
 
     /// Hanging indent for list items and block quotes, in points.
     private static let listIndent: CGFloat = 18
@@ -249,19 +272,35 @@ enum MarkdownAttributed {
     /// O(source) size-cache key build. Messages are immutable, so the same body
     /// converts once; a long streaming session churns intermediate texts
     /// through the bounded cache without pinning them.
-    static func rendered(for source: String) -> Rendered {
+    static func rendered(for source: String, style: Style = .chat) -> Rendered {
         let key = source as NSString
-        if let cached = renderedCache.object(forKey: key) { return cached }
-        let built = Rendered(attributed: build(from: source))
-        renderedCache.setObject(built, forKey: key)
+        let cache = renderedCache(for: style)
+        if let cached = cache.object(forKey: key) { return cached }
+        let built = Rendered(attributed: build(from: source, style: style))
+        cache.setObject(built, forKey: key)
         return built
     }
 
     /// Converts markdown `source` to a display-ready `NSAttributedString`.
-    /// Thin wrapper over `rendered(for:)` for callers that only need the
-    /// string (copy-time reconstruction, tests).
-    static func attributedString(for source: String) -> NSAttributedString {
-        rendered(for: source).attributed
+    /// Thin wrapper over `rendered(for:style:)` for callers that only need
+    /// the string (copy-time reconstruction, tests).
+    static func attributedString(for source: String, style: Style = .chat) -> NSAttributedString {
+        rendered(for: source, style: style).attributed
+    }
+
+    /// One memo per style, each keyed on the source alone: a body rendered
+    /// for the chat and for an item are two entries (same characters,
+    /// different fonts and heights), and a lookup still costs one hash of
+    /// the source — no composite key to build. Styles are a closed, tiny
+    /// set, so the dictionary never grows past a handful.
+    private static func renderedCache(for style: Style) -> NSCache<NSString, Rendered> {
+        cachesLock.lock()
+        defer { cachesLock.unlock() }
+        if let cache = renderedCaches[style] { return cache }
+        let cache = NSCache<NSString, Rendered>()
+        cache.countLimit = 400
+        renderedCaches[style] = cache
+        return cache
     }
 
     /// Custom attribute carrying `MarkdownRunSemantics` for copy-time
@@ -269,13 +308,12 @@ enum MarkdownAttributed {
     /// it must never influence rendering or measured size.
     static let semanticsKey = NSAttributedString.Key("matron.markdown.semantics")
 
-    /// Bounded, thread-safe memo — mirrors `MarkdownText.contentCache`
-    /// (countLimit 400, evicts under memory pressure).
-    private static let renderedCache: NSCache<NSString, Rendered> = {
-        let cache = NSCache<NSString, Rendered>()
-        cache.countLimit = 400
-        return cache
-    }()
+    /// Bounded, thread-safe memos — mirror `MarkdownText.contentCache`
+    /// (countLimit 400 each, evict under memory pressure). Guarded by
+    /// `cachesLock` only for the dictionary itself; `NSCache` is its own
+    /// lock.
+    nonisolated(unsafe) private static var renderedCaches: [Style: NSCache<NSString, Rendered>] = [:]
+    private static let cachesLock = NSLock()
 
     private static let log = Logger(subsystem: "chat.matron", category: "MarkdownAttributed")
 
@@ -298,7 +336,7 @@ enum MarkdownAttributed {
 
     // MARK: - Conversion
 
-    private static func build(from source: String) -> NSAttributedString {
+    private static func build(from source: String, style renderStyle: Style) -> NSAttributedString {
         // Chat bodies are prose — see MarkdownSource for the one shape the
         // parser would otherwise swallow whole.
         let source = MarkdownSource.escapingReferenceDefinitions(source)
@@ -320,9 +358,9 @@ enum MarkdownAttributed {
             return NSAttributedString(
                 string: source,
                 attributes: [
-                    .font: font(size: baseFontSize),
+                    .font: font(size: renderStyle.baseFontSize),
                     .foregroundColor: NSColor.labelColor,
-                    .paragraphStyle: paragraphStyle(for: .paragraph),
+                    .paragraphStyle: paragraphStyle(for: .paragraph, style: renderStyle),
                 ]
             )
         }
@@ -407,7 +445,7 @@ enum MarkdownAttributed {
                     // paragraph style too.
                     if case .tableCell = previousSemantics?.block ?? .paragraph, let currentCellStyle {
                         separatorAttrs[.paragraphStyle] = currentCellStyle
-                        separatorAttrs[.font] = font(size: baseFontSize)
+                        separatorAttrs[.font] = font(size: renderStyle.baseFontSize)
                     }
                     output.append(NSAttributedString(string: "\n", attributes: separatorAttrs))
                 }
@@ -450,6 +488,10 @@ enum MarkdownAttributed {
                     let style = NSMutableParagraphStyle()
                     style.textBlocks = [cellBlock]
                     style.paragraphSpacing = 0
+                    // The render style's leading applies inside cells too —
+                    // an item-style table read at chat leading beside 4pt
+                    // prose (Bugbot, PR #232).
+                    style.lineSpacing = renderStyle.lineSpacing
                     if column < alignments.count {
                         style.alignment = nsAlignment(alignments[column])
                     }
@@ -459,7 +501,7 @@ enum MarkdownAttributed {
                 }
             }
             if isNewBlock, let marker = block.marker {
-                var markerAttrs = runAttributes(block: block, inline: [], link: nil, isFirstBlock: isFirstBlock)
+                var markerAttrs = runAttributes(block: block, inline: [], link: nil, isFirstBlock: isFirstBlock, style: renderStyle)
                 markerAttrs[Self.semanticsKey] = MarkdownRunSemantics(
                     block: block, blockIdentity: blockIdentity, inline: [], link: nil
                 )
@@ -481,7 +523,8 @@ enum MarkdownAttributed {
                 block: block,
                 inline: run.inlinePresentationIntent ?? [],
                 link: run.link,
-                isFirstBlock: isFirstBlock
+                isFirstBlock: isFirstBlock,
+                style: renderStyle
             )
             // The cell's style carries its table block and column alignment;
             // every run of the cell shares it.
@@ -499,7 +542,7 @@ enum MarkdownAttributed {
            let currentCellStyle, !output.mutableString.hasSuffix("\n") {
             var terminatorAttrs: [NSAttributedString.Key: Any] = [
                 .paragraphStyle: currentCellStyle,
-                .font: font(size: baseFontSize),
+                .font: font(size: renderStyle.baseFontSize),
             ]
             if let previousSemantics {
                 terminatorAttrs[Self.semanticsKey] = MarkdownRunSemantics(
@@ -538,10 +581,11 @@ enum MarkdownAttributed {
         block: BlockKind,
         inline: InlinePresentationIntent,
         link: URL?,
-        isFirstBlock: Bool = false
+        isFirstBlock: Bool = false,
+        style renderStyle: Style
     ) -> [NSAttributedString.Key: Any] {
         var attrs: [NSAttributedString.Key: Any] = [
-            .paragraphStyle: paragraphStyle(for: block, isFirstBlock: isFirstBlock),
+            .paragraphStyle: paragraphStyle(for: block, isFirstBlock: isFirstBlock, style: renderStyle),
         ]
 
         let isCode = block.isCodeBlock || inline.contains(.code)
@@ -554,9 +598,9 @@ enum MarkdownAttributed {
         if block.isCodeBlock {
             size = 12
         } else if inline.contains(.code) {
-            size = block.fontSize * 0.92
+            size = block.fontSize(base: renderStyle.baseFontSize) * 0.92
         } else {
-            size = block.fontSize
+            size = block.fontSize(base: renderStyle.baseFontSize)
         }
 
         attrs[.font] = font(size: size, bold: isBold, italic: isItalic, monospaced: isCode)
@@ -595,10 +639,14 @@ enum MarkdownAttributed {
         return attrs
     }
 
-    /// Paragraph style for a block: shared body spacing plus block-specific
-    /// indents. A fresh instance per run keeps the styles value-safe.
-    private static func paragraphStyle(for block: BlockKind, isFirstBlock: Bool = false) -> NSMutableParagraphStyle {
+    /// Paragraph style for a block: the render style's body spacing and
+    /// leading plus block-specific indents. A fresh instance per run keeps
+    /// the styles value-safe.
+    private static func paragraphStyle(for block: BlockKind, isFirstBlock: Bool = false,
+                                       style renderStyle: Style) -> NSMutableParagraphStyle {
         let style = NSMutableParagraphStyle()
+        let paragraphSpacing = renderStyle.paragraphSpacing
+        style.lineSpacing = renderStyle.lineSpacing
         switch block {
         case .listItem:
             // Hanging indent so wrapped lines align past the marker.
@@ -769,21 +817,22 @@ enum BlockKind: Hashable {
         }
     }
 
-    /// Base font size for the block. Headers step up over the body size;
-    /// keep it simple — h1 1.3×, h2 1.15×, h3 1.05×, h4–h6 fall back to
-    /// body. (Walked down from 1.4/1.25/1.1 — headings read oversized
-    /// inside chat bubbles; Dan, 2026-07-15.)
-    var fontSize: CGFloat {
+    /// Font size for the block at a render style's body size `base`.
+    /// Headers step up over the body size; keep it simple — h1 1.3×, h2
+    /// 1.15×, h3 1.05×, h4–h6 fall back to body. (Walked down from
+    /// 1.4/1.25/1.1 — headings read oversized inside chat bubbles; Dan,
+    /// 2026-07-15.)
+    func fontSize(base: CGFloat) -> CGFloat {
         switch self {
         case .header(let level):
             switch level {
-            case 1: return MarkdownAttributed.baseFontSize * 1.3
-            case 2: return MarkdownAttributed.baseFontSize * 1.15
-            case 3: return MarkdownAttributed.baseFontSize * 1.05
-            default: return MarkdownAttributed.baseFontSize
+            case 1: return base * 1.3
+            case 2: return base * 1.15
+            case 3: return base * 1.05
+            default: return base
             }
         default:
-            return MarkdownAttributed.baseFontSize
+            return base
         }
     }
 

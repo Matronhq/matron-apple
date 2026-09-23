@@ -36,10 +36,12 @@ public struct SelectableMessageText: View {
     ///     text can't identify a size (bugbot, PR #37).
     ///   - itemID: the timeline item this body belongs to; enables the
     ///     cross-message selection. `nil` opts out.
-    public init(_ source: String, itemID: String? = nil) {
+    ///   - style: the reading scale — `.chat` (the timeline, the default)
+    ///     or `.item` (the tracker item thread, tracker #2533).
+    public init(_ source: String, itemID: String? = nil, style: MarkdownAttributed.Style = .chat) {
         self.source = source
         self.itemID = itemID
-        self.rendered = MarkdownAttributed.rendered(for: source)
+        self.rendered = MarkdownAttributed.rendered(for: source, style: style)
     }
 
     public var body: some View {
@@ -193,9 +195,30 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
     /// above that row, where the span then ran the wrong way) and the
     /// within-message drag (a pointer a few points above the first line, inside
     /// the escalation slop, jumped the selection to the rest of the message).
+    ///
+    /// The same quirk has a second form: a point in the paragraph-spacing gap
+    /// BELOW a paragraph maps to that paragraph's START (the first gap in a
+    /// message maps to 0). A drag moving down through a gap then snapped the
+    /// selection back a whole paragraph and forward again, visible as the
+    /// selection jumping back and forth (tracker #2533 follow-up; the item
+    /// style's 14 pt gap made it easy to hit). A gap point is pulled up onto
+    /// the paragraph's last line, so it resolves to that line at the
+    /// pointer's x, as the line itself would.
     func characterIndex(atViewPoint point: NSPoint) -> Int {
         if point.y < 0 { return 0 }
-        return characterIndexForInsertion(at: point)
+        return characterIndexForInsertion(at: pointOutOfParagraphGap(point))
+    }
+
+    private func pointOutOfParagraphGap(_ point: NSPoint) -> NSPoint {
+        let origin = textContainerOrigin
+        let inContainer = NSPoint(x: point.x - origin.x, y: point.y - origin.y)
+        guard let fragment = textLayoutManager?.textLayoutFragment(for: inContainer),
+              let lastLine = fragment.textLineFragments.last else { return point }
+        let frame = fragment.layoutFragmentFrame
+        let textBottom = frame.minY + lastLine.typographicBounds.maxY
+        guard inContainer.y >= textBottom else { return point }
+        let lineMid = frame.minY + lastLine.typographicBounds.midY
+        return NSPoint(x: point.x, y: lineMid + origin.y)
     }
 
     func setCrossSelection(_ range: NSRange?) {
@@ -367,7 +390,7 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
         armLinkPress(for: event)
         window?.makeFirstResponder(self)
 
-        let anchorIndex = characterIndexForInsertion(at: convert(event.locationInWindow, from: nil))
+        let anchorIndex = characterIndex(atViewPoint: convert(event.locationInWindow, from: nil))
         setSelectedRange(NSRange(location: anchorIndex, length: 0))
 
         var escalated = false

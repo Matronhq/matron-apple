@@ -242,6 +242,76 @@ final class MarkdownAttributedTests: XCTestCase {
         XCTAssertTrue(first === second, "same source should hit the NSCache")
     }
 
+    // MARK: - Styles (tracker item thread, tracker #2533)
+
+    /// The chat timeline's metrics are the default — nothing about the
+    /// existing renders moves when a style is introduced.
+    func test_chatStyle_isTheDefault_andKeepsTheTimelineMetrics() {
+        let attributed = convert("First.\n\nSecond.")
+        let attrs = attributes(of: attributed, atFirst: "First")
+        XCTAssertEqual(font(attrs).pointSize, MarkdownAttributed.Style.chat.baseFontSize, accuracy: 0.01)
+        XCTAssertEqual(MarkdownAttributed.Style.chat.baseFontSize, 13 * 1.10, accuracy: 0.01)
+        let style = attrs[.paragraphStyle] as? NSParagraphStyle
+        XCTAssertEqual(style?.paragraphSpacing, 8)
+        XCTAssertEqual(style?.lineSpacing, 0)
+    }
+
+    /// The item thread renders through the same converter at
+    /// `ItemTypography`'s own numbers: ≈16.25pt body, 4pt leading, 14pt
+    /// paragraph gap — the same face `Theme.matronItem` gave MarkdownUI.
+    func test_itemStyle_rendersBodyAtTheItemScaleWithItemLeading() {
+        let attributed = MarkdownAttributed.attributedString(for: "First.\n\nSecond.", style: .item)
+        let attrs = attributes(of: attributed, atFirst: "First")
+        XCTAssertEqual(font(attrs).pointSize, 13 * 1.25, accuracy: 0.01)
+        let style = attrs[.paragraphStyle] as? NSParagraphStyle
+        XCTAssertEqual(style?.paragraphSpacing, 14)
+        XCTAssertEqual(style?.lineSpacing, 4)
+    }
+
+    /// Headings step up from the STYLE's base, not the chat constant — an
+    /// item h1 is 1.3× the item body, not 1.3× the smaller chat body.
+    func test_itemStyle_headingsScaleOffTheItemBase() {
+        let attributed = MarkdownAttributed.attributedString(for: "# Title\n\nBody.", style: .item)
+        let h1 = font(attributes(of: attributed, atFirst: "Title"))
+        XCTAssertEqual(h1.pointSize, 13 * 1.25 * 1.3, accuracy: 0.01)
+    }
+
+    /// Inline code keeps its 0.92em step relative to the style's body, so
+    /// code inside an item reads at item scale too.
+    func test_itemStyle_inlineCodeScalesWithTheBody() {
+        let attributed = MarkdownAttributed.attributedString(for: "run `npm ci` now", style: .item)
+        let code = font(attributes(of: attributed, atFirst: "npm ci"))
+        XCTAssertEqual(code.pointSize, 13 * 1.25 * 0.92, accuracy: 0.01)
+    }
+
+    /// Table cells build their own paragraph style (it carries the text
+    /// block), so the item leading has to reach them separately — a table
+    /// inside an item must not read at chat leading (Bugbot, PR #232).
+    func test_itemStyle_tableCellsCarryTheItemLeading() {
+        let source = "| Repo | PR |\n| :--- | ---: |\n| bridge | 215 |"
+        let attributed = MarkdownAttributed.attributedString(for: source, style: .item)
+        let cell = attributes(of: attributed, atFirst: "bridge")[.paragraphStyle] as? NSParagraphStyle
+        XCTAssertEqual(cell?.textBlocks.count, 1, "not a table cell")
+        XCTAssertEqual(cell?.lineSpacing, 4)
+        let chatCell = attributes(of: MarkdownAttributed.attributedString(for: source), atFirst: "bridge")[.paragraphStyle] as? NSParagraphStyle
+        XCTAssertEqual(chatCell?.lineSpacing, 0)
+    }
+
+    /// The memo is keyed on (source, style): the same body rendered for
+    /// the chat and for an item must be two entries, and each style must
+    /// still hit its own.
+    func test_styles_doNotShareCacheEntries() {
+        let source = "One body, two surfaces."
+        let chat = MarkdownAttributed.rendered(for: source, style: .chat)
+        let item = MarkdownAttributed.rendered(for: source, style: .item)
+        XCTAssertFalse(chat === item, "chat and item renders of one source must not share a cache entry")
+        XCTAssertTrue(MarkdownAttributed.rendered(for: source, style: .chat) === chat)
+        XCTAssertTrue(MarkdownAttributed.rendered(for: source, style: .item) === item)
+        XCTAssertNotEqual(chat.size(width: 600).height, 0)
+        XCTAssertGreaterThan(item.size(width: 600).width, chat.size(width: 600).width,
+                             "the larger face must lay out wider at the same width proposal")
+    }
+
     // MARK: - Size measurement
 
     /// `Rendered.size(width:)` through the same conversion path the view uses.
