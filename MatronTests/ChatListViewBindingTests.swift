@@ -55,7 +55,9 @@ final class ChatListViewBindingTests: XCTestCase {
                         lastActivity: .now, unreadCount: 7)
         ]
         let fake = FakeChatActionsForList(snapshots: [initial, updated])
-        let vm = ChatListViewModel(chat: fake)
+        // `.zero`: this pins the lookup contract, not the sidebar's 1/s
+        // snapshot coalescing — both snapshots must land inside the wait.
+        let vm = ChatListViewModel(chat: fake, coalesceInterval: .zero)
         let view = ChatListView(viewModel: vm)
 
         vm.start()
@@ -83,7 +85,7 @@ final class ChatListViewBindingTests: XCTestCase {
         // Second snapshot drops the room entirely.
         let withoutRoom: [ChatSummary] = []
         let fake = FakeChatActionsForList(snapshots: [initial, withoutRoom])
-        let vm = ChatListViewModel(chat: fake)
+        let vm = ChatListViewModel(chat: fake, coalesceInterval: .zero)
         let view = ChatListView(viewModel: vm)
 
         vm.start()
