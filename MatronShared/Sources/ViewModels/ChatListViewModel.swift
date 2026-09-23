@@ -31,13 +31,38 @@ public final class ChatListViewModel {
     /// next successful snapshot.
     public private(set) var error: String?
 
+    /// The Coordinator's conversation (Coordinator redesign §3b/§3c): left
+    /// out of `groups` — the Conversations list — but still counted in
+    /// `totalUnread` and published as `hiddenSummary` for the Coordinator
+    /// button's unread dot and the panel / sheet title. `nil` hides nothing.
+    /// Changing it re-partitions the latest snapshot at once.
+    public var hiddenConversationID: String? {
+        didSet {
+            guard hiddenConversationID != oldValue, let lastSnapshot else { return }
+            // Supersedes any parked snapshot: `lastSnapshot` is the newest.
+            flushTask?.cancel()
+            flushTask = nil
+            pending = nil
+            let result = Self.partition(lastSnapshot, hiding: hiddenConversationID)
+            apply(groups: result.groups, totalUnread: result.totalUnread, hidden: result.hidden)
+        }
+    }
+    public private(set) var hiddenSummary: ChatSummary?
+    /// Every chat including the hidden one — what search reads, so a hit in
+    /// the Coordinator still opens it (in the panel / sheet).
+    public var allSummaries: [ChatSummary] {
+        groups.flatMap(\.summaries) + (hiddenSummary.map { [$0] } ?? [])
+    }
+    /// The newest raw snapshot, kept so `hiddenConversationID` can re-partition.
+    private var lastSnapshot: [ChatSummary]?
+
     private let chat: ChatService
     private var observationTask: Task<Void, Never>?
 
     /// Snapshots are applied at most once per interval; see `schedule`.
     private let coalesceInterval: Duration
     private var lastApplied: ContinuousClock.Instant?
-    private var pending: (groups: [GroupedSummaries], totalUnread: Int)?
+    private var pending: (groups: [GroupedSummaries], totalUnread: Int, hidden: ChatSummary?)?
     private var flushTask: Task<Void, Never>?
 
     /// - Parameter coalesceInterval: minimum spacing between two applied
@@ -65,9 +90,14 @@ public final class ChatListViewModel {
             do {
                 for try await snapshot in chat.chatSummaries() {
                     if Task.isCancelled { return }
-                    let (grouped, unread) = await Self.derive(from: snapshot)
+                    self.lastSnapshot = snapshot
+                    let hiding = self.hiddenConversationID
+                    let result = await Self.derive(from: snapshot, hiding: hiding)
                     if Task.isCancelled { return }
-                    self.schedule(groups: grouped, totalUnread: unread)
+                    // The id changed while this derived: `didSet` already
+                    // applied this same snapshot under the new id.
+                    guard hiding == self.hiddenConversationID else { continue }
+                    self.schedule(groups: result.groups, totalUnread: result.totalUnread, hidden: result.hidden)
                 }
             } catch {
                 let message = error.localizedDescription
@@ -82,8 +112,18 @@ public final class ChatListViewModel {
     /// Grouping sorts and buckets every chat, so it runs off the main actor:
     /// while agents are live a snapshot lands up to four times a second, and
     /// on the main actor that work competed with a conversation switch.
-    private nonisolated static func derive(from snapshot: [ChatSummary]) async -> ([GroupedSummaries], Int) {
-        (group(summaries: snapshot), snapshot.reduce(0) { $0 + $1.unreadCount })
+    private nonisolated static func derive(from snapshot: [ChatSummary], hiding: String?) async
+        -> (groups: [GroupedSummaries], totalUnread: Int, hidden: ChatSummary?) {
+        partition(snapshot, hiding: hiding)
+    }
+
+    /// Splits the hidden chat out of a snapshot. Unread counts the whole
+    /// snapshot: the app and dock badges include the Coordinator.
+    public nonisolated static func partition(_ snapshot: [ChatSummary], hiding hiddenID: String?)
+        -> (groups: [GroupedSummaries], totalUnread: Int, hidden: ChatSummary?) {
+        let hidden = hiddenID.flatMap { id in snapshot.first { $0.id == id } }
+        let visible = hiddenID.map { id in snapshot.filter { $0.id != id } } ?? snapshot
+        return (group(summaries: visible), snapshot.reduce(0) { $0 + $1.unreadCount }, hidden)
     }
 
     /// Applies a snapshot now if the last one is at least `coalesceInterval`
@@ -95,10 +135,10 @@ public final class ChatListViewModel {
     /// main-thread hangs. Only the newest snapshot matters, so the ones
     /// that arrive inside the interval are dropped, never queued: the list
     /// is at most one interval behind and never plays catch-up.
-    private func schedule(groups grouped: [GroupedSummaries], totalUnread unread: Int) {
+    private func schedule(groups grouped: [GroupedSummaries], totalUnread unread: Int, hidden: ChatSummary?) {
         let now = ContinuousClock.now
         if let lastApplied, now - lastApplied < coalesceInterval {
-            pending = (grouped, unread)
+            pending = (grouped, unread, hidden)
             if flushTask == nil {
                 let delay = coalesceInterval - (now - lastApplied)
                 flushTask = Task { [weak self] in
@@ -107,7 +147,7 @@ public final class ChatListViewModel {
                     self.flushTask = nil
                     if let pending = self.pending {
                         self.pending = nil
-                        self.apply(groups: pending.groups, totalUnread: pending.totalUnread)
+                        self.apply(groups: pending.groups, totalUnread: pending.totalUnread, hidden: pending.hidden)
                     }
                 }
             }
@@ -119,16 +159,18 @@ public final class ChatListViewModel {
         flushTask?.cancel()
         flushTask = nil
         pending = nil
-        apply(groups: grouped, totalUnread: unread)
+        apply(groups: grouped, totalUnread: unread, hidden: hidden)
     }
 
     /// `@Observable` notifies on every write, equal or not, and each
     /// notification re-evaluates every view that read the property — so
     /// only write what actually changed.
-    private func apply(groups grouped: [GroupedSummaries], totalUnread unread: Int) {
+    private func apply(groups grouped: [GroupedSummaries], totalUnread unread: Int, hidden: ChatSummary?) {
         lastApplied = .now
         if groups != grouped { groups = grouped }
-        if hasChats != !grouped.isEmpty { hasChats = !grouped.isEmpty }
+        if hiddenSummary != hidden { hiddenSummary = hidden }
+        let anyChat = !grouped.isEmpty || hidden != nil
+        if hasChats != anyChat { hasChats = anyChat }
         if totalUnread != unread { totalUnread = unread }
         if isLoading { isLoading = false }
         if error != nil { error = nil }

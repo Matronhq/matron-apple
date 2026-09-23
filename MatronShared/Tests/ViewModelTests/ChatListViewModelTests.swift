@@ -329,6 +329,64 @@ final class ChatListViewModelTests: XCTestCase {
         XCTAssertFalse(hasChatsChanged.value, "hasChats is written only when it flips")
         XCTAssertEqual(vm.groups.flatMap(\.summaries).count, 2)
     }
+
+    @MainActor
+    private func waitForGroups(_ vm: ChatListViewModel) async {
+        let start = Date()
+        while vm.groups.isEmpty && Date().timeIntervalSince(start) < 2 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+
+    /// Coordinator redesign §3b/§3c: the Coordinator's conversation is left
+    /// out of the list but still counted and still findable.
+    @MainActor
+    func test_hiddenConversation_leavesTheList_butStaysCountedAndSearchable() async {
+        let bot = BotIdentity(matrixID: "@b:s", displayName: "Bot", avatarURL: nil)
+        let fake = FakeStreamingChatService()
+        fake.snapshotsToEmit = [[
+            ChatSummary(id: "!coord:s", title: "Coordinator", bot: bot, lastActivity: .now, unreadCount: 2),
+            ChatSummary(id: "!b:s", title: "B", bot: bot, lastActivity: .now, unreadCount: 1),
+        ]]
+        let vm = ChatListViewModel(chat: fake, coalesceInterval: .zero)
+        vm.hiddenConversationID = "!coord:s"
+        vm.start()
+        await waitForGroups(vm)
+        XCTAssertEqual(vm.groups.flatMap(\.summaries).map(\.id), ["!b:s"])
+        XCTAssertEqual(vm.hiddenSummary?.id, "!coord:s")
+        XCTAssertEqual(vm.totalUnread, 3, "the badge still counts the Coordinator's unread")
+        XCTAssertEqual(Set(vm.allSummaries.map(\.id)), ["!coord:s", "!b:s"])
+    }
+
+    /// Assigning or clearing re-partitions the latest snapshot at once, with
+    /// no new snapshot needed.
+    @MainActor
+    func test_changingTheHiddenID_repartitionsImmediately() async {
+        let bot = BotIdentity(matrixID: "@b:s", displayName: "Bot", avatarURL: nil)
+        let fake = FakeStreamingChatService()
+        fake.snapshotsToEmit = [[
+            ChatSummary(id: "!a:s", title: "A", bot: bot, lastActivity: .now, unreadCount: 0),
+            ChatSummary(id: "!b:s", title: "B", bot: bot, lastActivity: .now, unreadCount: 0),
+        ]]
+        let vm = ChatListViewModel(chat: fake, coalesceInterval: .zero)
+        vm.start()
+        await waitForGroups(vm)
+        vm.hiddenConversationID = "!a:s"
+        XCTAssertEqual(vm.groups.flatMap(\.summaries).map(\.id), ["!b:s"])
+        XCTAssertEqual(vm.hiddenSummary?.id, "!a:s")
+        vm.hiddenConversationID = nil
+        XCTAssertEqual(Set(vm.groups.flatMap(\.summaries).map(\.id)), ["!a:s", "!b:s"])
+        XCTAssertNil(vm.hiddenSummary)
+    }
+
+    func test_partition_isAPureSplit() {
+        let bot = BotIdentity(matrixID: "@b:s", displayName: "Bot", avatarURL: nil)
+        let a = ChatSummary(id: "!a:s", title: "A", bot: bot, lastActivity: nil, unreadCount: 4)
+        let result = ChatListViewModel.partition([a], hiding: "!a:s")
+        XCTAssertTrue(result.groups.isEmpty)
+        XCTAssertEqual(result.hidden?.id, "!a:s")
+        XCTAssertEqual(result.totalUnread, 4)
+    }
 }
 
 private final class Flag: @unchecked Sendable {
