@@ -794,6 +794,53 @@ final class NewChatViewModelTests: XCTestCase {
                        "nor its folder cache")
     }
 
+    // MARK: Pinned model (Coordinator redesign §2e)
+
+    func test_pinnedModel_isSent_evenWhenTheBoxDoesNotListIt() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(9, connected: true)])
+        fake.replies["recent_folders"] = foldersReply(#"""
+        {"folders":[],"model_options":[{"value":"sonnet","label":"Sonnet"}]}
+        """#)
+        fake.replies["start"] = .ok(resultData: Data(#"{"convo_id":"c-new"}"#.utf8))
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache(), pinnedModel: "opus[1m]")
+        await vm.load()
+        XCTAssertFalse(vm.modelPickerVisible, "a pinned model hides the picker")
+        await vm.start(workdir: "~/dev/app")
+        XCTAssertEqual(fake.requests.last?.params["model"] as? String, "opus[1m]")
+    }
+
+    func test_noPin_keepsTheOldBehaviour() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(9, connected: true)])
+        fake.replies["recent_folders"] = foldersReply(#"{"folders":[]}"#)
+        fake.replies["start"] = .ok(resultData: Data(#"{"convo_id":"c-new"}"#.utf8))
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        XCTAssertNil(vm.pinnedModel)
+        await vm.load()
+        await vm.start(workdir: "~/dev/app")
+        XCTAssertNil(fake.requests.last?.params["model"])
+    }
+
+    /// Controller ruling: the pin only applies to a Claude start. A Codex
+    /// pick on a pinned sheet must send no model at all — the bridge answers
+    /// `bad_model` to any Claude alias on a Codex `start`, pinned or not.
+    func test_pinnedModel_isNotSent_whenCodexIsPicked() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(9, connected: true)])
+        fake.replies["recent_folders"] = foldersReply(#"""
+        {"folders":[],"default_agent":"claude",
+         "agent_options":[{"value":"claude","label":"Claude Code"},{"value":"codex","label":"Codex"}]}
+        """#)
+        fake.replies["start"] = .ok(resultData: Data(#"{"convo_id":"c-new"}"#.utf8))
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache(), pinnedModel: "opus[1m]")
+        await vm.load()
+        vm.selectedAgent = "codex"
+        await vm.start(workdir: "~/dev/app")
+        XCTAssertNil(fake.requests.last?.params["model"], "a Codex start must never carry a Claude alias")
+        XCTAssertEqual(fake.requests.last?.params["agent"] as? String, "codex")
+    }
+
     func test_selectAgent_fromRoster() async {
         let fake = FakeAgentRPCProvider()
         fake.devicesResult = .success([agent(3, connected: true), agent(4, connected: true)])

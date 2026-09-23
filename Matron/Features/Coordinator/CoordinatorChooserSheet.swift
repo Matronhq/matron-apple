@@ -72,7 +72,7 @@ struct CoordinatorChooserSheet: View {
             .task { viewModel.start() }
             .onDisappear { viewModel.cancel() }
             .sheet(isPresented: $showingNewChat) {
-                NewChatSheet(deps: deps, session: session) { convoID in
+                NewChatSheet(deps: deps, session: session, pinnedModel: CoordinatorSetting.newChatModel) { convoID in
                     showingNewChat = false
                     onPick(convoID)
                 }

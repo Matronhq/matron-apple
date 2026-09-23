@@ -65,14 +65,15 @@ struct MacNewChatSheet: View {
     @State private var layout: Layout
 
     init(deps: AppDependencies, session: UserSession, windowSize: CGSize? = nil,
-         onCreated: @escaping (String) -> Void) {
+         pinnedModel: String? = nil, onCreated: @escaping (String) -> Void) {
         self.deps = deps
         self.session = session
         self.onCreated = onCreated
         _layout = State(initialValue: Self.layout(for: windowSize))
         _viewModel = State(initialValue: NewChatViewModel(
             api: deps.agentRPCService(for: session),
-            capacityCache: deps.boxCapacityCache(for: session)))
+            capacityCache: deps.boxCapacityCache(for: session),
+            pinnedModel: pinnedModel))
     }
 
     var body: some View {

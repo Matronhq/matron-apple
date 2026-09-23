@@ -24,13 +24,15 @@ struct NewChatSheet: View {
     /// its late `.done` must not yank the user into a chat they abandoned.
     @State private var cancelled = false
 
-    init(deps: AppDependencies, session: UserSession, onCreated: @escaping (String) -> Void) {
+    init(deps: AppDependencies, session: UserSession, pinnedModel: String? = nil,
+         onCreated: @escaping (String) -> Void) {
         self.deps = deps
         self.session = session
         self.onCreated = onCreated
         _viewModel = State(initialValue: NewChatViewModel(
             api: deps.agentRPCService(for: session),
-            capacityCache: deps.boxCapacityCache(for: session)))
+            capacityCache: deps.boxCapacityCache(for: session),
+            pinnedModel: pinnedModel))
     }
 
     var body: some View {

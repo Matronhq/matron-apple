@@ -69,7 +69,8 @@ struct MacCoordinatorChooserSheet: View {
         .onDisappear { viewModel.cancel() }
         .sheet(isPresented: $showingNewChat) {
             MacNewChatSheet(deps: deps, session: session,
-                            windowSize: NSApp.keyWindow?.contentLayoutRect.size) { convoID in
+                            windowSize: NSApp.keyWindow?.contentLayoutRect.size,
+                            pinnedModel: CoordinatorSetting.newChatModel) { convoID in
                 showingNewChat = false
                 onPick(convoID)
             }
