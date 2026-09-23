@@ -6,6 +6,10 @@ import SwiftUI
 @Observable @MainActor
 final class MacChatHeaderModel {
     var props: MacChatToolbarProps?
+    /// Title-bar width at the trailing edge the header leaves empty: the
+    /// Coordinator panel's width while it is open (spec §3b). The accessory
+    /// still spans the whole detail column; only the bar is padded.
+    var trailingInset: CGFloat = 0
 }
 
 /// The capsule the system toolbar used to draw around each item. Each one
@@ -78,6 +82,7 @@ struct MacChatHeaderBar: View {
 
     var body: some View {
         bar
+            .padding(.trailing, model.trailingInset)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .coordinateSpace(name: Self.coordinateSpace)
             .onPreferenceChange(MacChatHeaderCapsuleFrames.self) { frames in
@@ -254,15 +259,22 @@ final class MacChatHeaderAccessory: NSTitlebarAccessoryViewController {
 @MainActor
 final class MacChatHeaderLink {
     private var latest: MacChatToolbarProps?
+    private var latestInset: CGFloat = 0
     weak var accessory: MacChatHeaderAccessory? {
         didSet {
             if let latest { accessory?.model.props = latest }
+            accessory?.model.trailingInset = latestInset
         }
     }
 
     func publish(_ props: MacChatToolbarProps?) {
         latest = props
         accessory?.model.props = props
+    }
+
+    func publishTrailingInset(_ inset: CGFloat) {
+        latestInset = inset
+        accessory?.model.trailingInset = inset
     }
 }
 
@@ -344,12 +356,16 @@ struct MacChatHeaderAccessoryInstaller: NSViewRepresentable {
 /// `MacChatListView` instead, every title / badge / status change would
 /// re-evaluate that whole root view, sidebar included.
 struct MacChatHeaderHost<Content: View>: View {
+    /// See `MacChatHeaderModel.trailingInset`.
+    var trailingInset: CGFloat = 0
     @ViewBuilder let content: Content
     @State private var link = MacChatHeaderLink()
 
     var body: some View {
         let link = link
+        let inset = trailingInset
         content
+            .onChange(of: inset, initial: true) { link.publishTrailingInset(inset) }
             .background {
                 GeometryReader { geo in
                     MacChatHeaderAccessoryInstaller(link: link, width: geo.size.width)
