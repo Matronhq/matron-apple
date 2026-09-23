@@ -23,6 +23,10 @@ public enum MatronCommand: String, CaseIterable, Sendable {
     case showCoordinator
     case showConversations
     case showDecisions
+    /// Navigation history (spec 2026-09-23 §5): the Go menu's Back / Forward,
+    /// ⌘[ / ⌘].
+    case goBack
+    case goForward
 }
 
 public extension Notification.Name {
@@ -46,6 +50,7 @@ public extension Notification.Name {
 ///   - `.slashCommand`   — `MacChatView` (toggles `composerVM.palettePinnedOpen`)
 ///   - `.refresh`        — `MacChatView` (triggers `viewModel.refresh()`)
 ///   - `.showCoordinator/.showConversations/.showDecisions` — `MacChatListView` (sets `nav`)
+///   - `.goBack/.goForward`  — `MacChatListView` (window navigation history)
 ///
 /// Posted-but-unhandled (placeholder menu items, listeners land later):
 ///   - `.findInChat`            — Phase 6 wires SearchService; today the
@@ -100,6 +105,17 @@ struct ChatCommands: Commands {
                 .keyboardShortcut("-", modifiers: .command)
             Button("Reset Font Size") { post(.resetFontSize) }
                 .keyboardShortcut("0", modifiers: .command)
+        }
+
+        // Go menu — the window's navigation history (spec 2026-09-23 §5).
+        // Both items stay enabled: `Commands` cannot read view state, and a
+        // press with nothing to go to is a no-op in the listener, the same
+        // shape as ⌘1/⌘2/⌘3 above.
+        CommandMenu("Go") {
+            Button("Back") { post(.goBack) }
+                .keyboardShortcut("[", modifiers: .command)
+            Button("Forward") { post(.goForward) }
+                .keyboardShortcut("]", modifiers: .command)
         }
     }
 

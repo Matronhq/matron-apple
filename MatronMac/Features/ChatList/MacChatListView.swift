@@ -467,6 +467,10 @@ struct MacChatListView: View {
             .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showCoordinator))) { _ in nav = .coordinator }
             .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showConversations))) { _ in nav = .conversations }
             .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showDecisions))) { _ in nav = .decisions }
+            // Go ▸ Back / Forward, ⌘[ / ⌘] (spec 2026-09-23 §5) — same bus
+            // shape as ⌘1/⌘2/⌘3; a press with nothing to go to is a no-op.
+            .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.goBack))) { _ in goBack() }
+            .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.goForward))) { _ in goForward() }
             // Leaving Decisions through the nav column (Bugbot, PR #195): the
             // detail host has no teardown of its own (I6 — a same-item rebuild
             // must keep the draft), so stop its VM and any recording here and

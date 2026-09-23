@@ -28,6 +28,7 @@ final class MacCommandsTests: XCTestCase {
             .newChat, .signOut, .findInChat, .slashCommand,
             .toggleSidebar, .increaseFontSize, .decreaseFontSize, .resetFontSize,
             .refresh, .showCoordinator, .showConversations, .showDecisions,
+            .goBack, .goForward,
         ]
         for trigger in triggers {
             XCTAssertTrue(MatronCommand.allCases.contains(trigger), "missing \(trigger)")
@@ -56,6 +57,21 @@ final class MacCommandsTests: XCTestCase {
         NotificationCenter.default.post(name: .matronCommand(.showDecisions), object: nil)
         wait(for: [exp], timeout: 1)
         NotificationCenter.default.removeObserver(observer)
+    }
+
+    /// Spec 2026-09-23 §5: ⌘[ / ⌘] and the Go menu post the window's
+    /// Back/Forward over the same bus as ⌘1/⌘2/⌘3.
+    func test_post_goBackAndGoForward_notifyObservers() {
+        for command in [MatronCommand.goBack, .goForward] {
+            let exp = expectation(description: "\(command) observed")
+            let observer = NotificationCenter.default.addObserver(
+                forName: .matronCommand(command), object: nil, queue: nil
+            ) { _ in exp.fulfill() }
+            NotificationCenter.default.post(name: .matronCommand(command), object: nil)
+            wait(for: [exp], timeout: 1)
+            NotificationCenter.default.removeObserver(observer)
+        }
+        XCTAssertNotEqual(Notification.Name.matronCommand(.goBack), .matronCommand(.goForward))
     }
 
     /// `ChatCommands` is a `Commands` struct — instantiation alone is
