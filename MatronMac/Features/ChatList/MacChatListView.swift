@@ -482,6 +482,13 @@ struct MacChatListView: View {
                     showConversation(roomID)
                 }
             }
+    }
+
+    /// Nav-entry commands, coordinator wiring and the Back/Forward history
+    /// observers. Split from `withCommandListeners` so neither chain blows
+    /// CI Xcode 16.4's type-checker budget (PR #233).
+    private func withNavigationListeners(_ content: some View) -> some View {
+        content
             // ⌘1/⌘2/⌘3 (Commands.swift) — same bus shape as `.toggleSidebar`.
             .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showCoordinator))) { _ in nav = .coordinator }
             .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showConversations))) { _ in nav = .conversations }
@@ -672,7 +679,7 @@ struct MacChatListView: View {
     }
 
     var body: some View {
-        withLifecycle(withCommandListeners(splitView))
+        withLifecycle(withNavigationListeners(withCommandListeners(splitView)))
     }
 
     /// Sidebar column wrapper: connection banner (when not `.running`)
