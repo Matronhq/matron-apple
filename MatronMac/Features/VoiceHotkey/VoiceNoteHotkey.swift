@@ -112,6 +112,19 @@ final class VoiceNoteCommandBus {
         if isKey || activeComposerID == nil { claim(id, window: window) }
     }
 
+    /// A composer that never claims on mount (the Coordinator panel's)
+    /// offers itself instead: it joins the claimants as the OLDEST, so the
+    /// window's own claimant keeps the bus and `release` hands it back here
+    /// when that claimant leaves — the main chat unmounting for Missions or
+    /// Decisions (Bugbot B1, PR #234). Alone in the key window, or on an
+    /// unclaimed bus, it takes the bus now.
+    func offer(_ id: UUID, isKey: Bool, window: ObjectIdentifier? = nil) {
+        guard !claims.contains(where: { $0.id == id }) else { return }
+        claims.insert((id, window), at: 0)
+        let windowHasClaimant = claims.contains { $0.id != id && $0.window == window }
+        if activeComposerID == nil || (isKey && !windowHasClaimant) { activeComposerID = id }
+    }
+
     /// Drops `id` for good. If it held the bus, the most recent earlier
     /// claimant in the SAME window takes it back — closing the Coordinator
     /// panel returns the hotkey to the main chat instead of leaving the

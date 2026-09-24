@@ -145,6 +145,39 @@ final class VoiceNoteHotkeyTests: XCTestCase {
         XCTAssertNil(bus.activeComposerID, "a released composer is never handed the bus again")
     }
 
+    /// Bugbot B1 (PR #234): the Coordinator panel's composer never claims on
+    /// mount, but it OFFERS itself — so when the main chat unmounts
+    /// (Missions, Decisions) the window's hotkey falls back to it instead of
+    /// going dead. An offer never steals a claim held in its window.
+    func test_bus_offeredComposerInheritsWhenTheWindowsClaimantLeaves() {
+        let bus = VoiceNoteCommandBus()
+        // Kept alive: a freed object's identifier can be reused.
+        let objectA = NSObject(), objectB = NSObject()
+        let windowA = ObjectIdentifier(objectA), windowB = ObjectIdentifier(objectB)
+        let main = UUID(), panel = UUID(), other = UUID()
+        bus.claim(main, window: windowA)
+        bus.offer(panel, isKey: true, window: windowA)
+        XCTAssertEqual(bus.activeComposerID, main, "an offer never steals its window's claim")
+        bus.release(main)
+        XCTAssertEqual(bus.activeComposerID, panel, "the offered panel composer inherits the window's hotkey")
+
+        // Alone in the key window from the start (panel opened over
+        // Missions): it takes the bus from a background window's composer.
+        let bus2 = VoiceNoteCommandBus()
+        bus2.claim(other, window: windowB)
+        bus2.offer(panel, isKey: true, window: windowA)
+        XCTAssertEqual(bus2.activeComposerID, panel)
+        // …but not while its window is in the background.
+        let bus3 = VoiceNoteCommandBus()
+        bus3.claim(other, window: windowB)
+        bus3.offer(panel, isKey: false, window: windowA)
+        XCTAssertEqual(bus3.activeComposerID, other)
+        // A later claim (focus in the main composer) still wins.
+        bus.claim(main, window: windowA)
+        XCTAssertEqual(bus.activeComposerID, main)
+        withExtendedLifetime((objectA, objectB)) {}
+    }
+
     /// With File → New Window, several composers observe the same bus; a
     /// press must land in exactly one — the claimed (key-window) composer.
     func test_bus_pressTargetsTheActiveComposerOnly() {

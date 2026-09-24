@@ -50,6 +50,7 @@ private final class Captured { var panelProps: MacChatToolbarProps? }
 
 private final class VoiceHarnessModel: ObservableObject {
     @Published var panelOpen = false
+    @Published var mainShown = true
 }
 
 private struct VoiceHarness: View {
@@ -59,7 +60,11 @@ private struct VoiceHarness: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            main
+            if model.mainShown {
+                main.environment(\.macComposerSoleInWindow, !model.panelOpen)
+            } else {
+                Text("Missions")
+            }
             if model.panelOpen { panel }
         }
         .frame(width: 1000, height: 500)
@@ -114,10 +119,13 @@ private struct PanelShellHarness: View {
 @MainActor
 final class MacCoordinatorPanelTests: XCTestCase {
     private var window: NSWindow?
+    private var otherWindow: NSWindow?
 
     override func tearDown() async throws {
         window?.close()
         window = nil
+        otherWindow?.close()
+        otherWindow = nil
         try await super.tearDown()
     }
 
@@ -265,6 +273,67 @@ final class MacCoordinatorPanelTests: XCTestCase {
         XCTAssertTrue(panelGone)
         await Self.spin(seconds: 0.3)
         XCTAssertEqual(bus.activeComposerID, mainClaim, "closing the panel leaves the hotkey live on the main chat")
+    }
+
+    /// Final review I1: caret in window A's panel composer, window B
+    /// becomes key and claims, then A is key again — A's panel composer
+    /// must take the hotkey back (the main composer declines because
+    /// another composer is focused), or F5 records into B's chat.
+    func test_voiceHotkey_reKeyingAWindow_returnsTheHotkeyToItsFocusedPanel() async throws {
+        let bus = VoiceNoteCommandBus()
+        let model = VoiceHarnessModel()
+        model.panelOpen = true
+        let (main, _) = chat("main", respondsToMenuCommands: true)
+        let (panel, _) = chat("coord", respondsToMenuCommands: false)
+        let windowA = mountKey(VoiceHarness(model: model, main: main, panel: panel).environment(bus))
+        let mounted = await Self.poll(seconds: 5) { Self.composerTextViews(in: windowA).count == 2 && bus.activeComposerID != nil }
+        XCTAssertTrue(mounted)
+        XCTAssertTrue(windowA.makeFirstResponder(Self.composerTextViews(in: windowA)[1]))
+        let panelClaimed = await Self.poll(seconds: 3) { bus.activeComposerID != nil }
+        XCTAssertTrue(panelClaimed)
+        await Self.spin(seconds: 0.3)
+        let panelClaim = bus.activeComposerID
+
+        let (other, _) = chat("other", respondsToMenuCommands: true)
+        let windowB = NSWindow(contentRect: NSRect(x: 40, y: 40, width: 800, height: 500),
+                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        windowB.isReleasedWhenClosed = false
+        windowB.contentViewController = NSHostingController(rootView: other.frame(width: 800, height: 500).environment(bus))
+        otherWindow = windowB
+        windowB.makeKeyAndOrderFront(nil)
+        let bMounted = await Self.poll(seconds: 5) { Self.composerTextViews(in: windowB).count == 1 }
+        XCTAssertTrue(bMounted)
+        await Self.spin(seconds: 0.3)
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: windowB)
+        let bClaimed = await Self.poll(seconds: 5) { bus.activeComposerID != panelClaim && bus.activeComposerID != nil }
+        XCTAssertTrue(bClaimed, "window B's composer takes the hotkey while B is key")
+
+        windowA.makeKeyAndOrderFront(nil)
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: windowA)
+        let back = await Self.poll(seconds: 3) { bus.activeComposerID == panelClaim }
+        XCTAssertTrue(back, "window A key again: its focused panel composer holds the hotkey")
+    }
+
+    /// Bugbot B1 (PR #234): the main chat unmounting (Missions, Decisions)
+    /// while the panel composer is on screen must not leave the window's
+    /// hotkey dead — the panel composer inherits it.
+    func test_voiceHotkey_mainChatUnmounting_handsTheHotkeyToThePanel() async throws {
+        let bus = VoiceNoteCommandBus()
+        let model = VoiceHarnessModel()
+        model.panelOpen = true
+        let (main, _) = chat("main", respondsToMenuCommands: true)
+        let (panel, _) = chat("coord", respondsToMenuCommands: false)
+        let window = mountKey(VoiceHarness(model: model, main: main, panel: panel).environment(bus))
+        let mounted = await Self.poll(seconds: 5) { Self.composerTextViews(in: window).count == 2 && bus.activeComposerID != nil }
+        XCTAssertTrue(mounted)
+        await Self.spin(seconds: 0.3)
+        let mainClaim = bus.activeComposerID
+
+        model.mainShown = false
+        let handedOver = await Self.poll(seconds: 5) {
+            Self.composerTextViews(in: window).count == 1 && bus.activeComposerID != nil && bus.activeComposerID != mainClaim
+        }
+        XCTAssertTrue(handedOver, "the panel composer holds the hotkey once the main chat is gone")
     }
 
     func test_panelHeaderTitle_fallsBackToCoordinator() {
