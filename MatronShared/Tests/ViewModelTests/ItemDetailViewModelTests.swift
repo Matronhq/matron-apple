@@ -404,9 +404,31 @@ final class ItemDetailViewModelTests: XCTestCase {
         sync.onEnqueue = { _ in store.storedItem = self.question(chosen: "Go") }  // row already drained
         await vm.chooseAction("Go")
         XCTAssertEqual(vm.selectedAction, "Go")
+        store.itemCont?.yield(question(chosen: "Go"))                        // the stream confirms the tap
+        try await waitUntil { vm.item?.chosenAction == "Go" }
         store.itemCont?.yield(question(actions: ["Go", "Wait"], chosen: nil))
         try await waitUntil { vm.item?.chosenAction == nil }
         XCTAssertNil(vm.selectedAction, "no stale in-flight marker once the tap has settled")
+    }
+
+    /// CodeRabbit (PR #242): snapshots the streams already had in flight —
+    /// an empty outbox, the item from before the tap — can land after
+    /// `chooseAction` read the store. The choice must survive them until a
+    /// newer item snapshot confirms it.
+    func testStaleSnapshotsAfterATapKeepItSelected() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = try await startedWithItem(question(), sync: sync, store: store)
+        sync.onEnqueue = { _ in store.storedItem = self.question(chosen: "Go") }  // posted at once
+        await vm.chooseAction("Go")
+        store.outboxCont?.yield([])                   // stale: before the row
+        store.itemCont?.yield(question())             // stale: before the choice
+        try await waitUntil { vm.item?.chosenAction == nil }
+        XCTAssertEqual(vm.selectedAction, "Go", "a stale snapshot never unselects the tap")
+        await vm.chooseAction("Go")
+        XCTAssertEqual(sync.actions, ["Go"], "and never lets a duplicate through")
+        store.itemCont?.yield(question(chosen: "Go"))
+        try await waitUntil { vm.item?.chosenAction == "Go" }
+        XCTAssertEqual(vm.selectedAction, "Go")
     }
 
     func testCloseWithCommentPassesCommentThrough() async {

@@ -78,6 +78,7 @@ public final class ItemDetailViewModel {
             for await v in s {
                 guard let self, !Task.isCancelled else { return }
                 self.item = v
+                self.settleEnqueueingAction(with: v)
                 self.subscribeConsentRows()
                 self.refreshSpawnConsent()
             }
@@ -333,13 +334,35 @@ public final class ItemDetailViewModel {
         // Take the store's answer now rather than waiting on the streams:
         // the row still queued (offline) or the item the posted tap
         // updated. Only then does the in-flight marker give way.
-        if let rows = try? store.itemOutboxRows(itemID: itemID) { pendingComments = rows }
-        if let fresh = try? store.item(id: itemID) {
+        let rows = try? store.itemOutboxRows(itemID: itemID)
+        if let rows { pendingComments = rows }
+        let fresh = try? store.item(id: itemID)
+        if let fresh {
             item = fresh
             subscribeConsentRows()
             refreshSpawnConsent()
         }
-        if enqueueingAction == label { enqueueingAction = nil }
+        // The marker outlives this read until the ITEM STREAM confirms the
+        // choice: a snapshot the streams had already in flight (an empty
+        // outbox, the item before the tap) can land after the read above,
+        // and without the marker the button would drop to unselected and
+        // take a duplicate tap (CodeRabbit, PR #242). Stream snapshots
+        // arrive in order, so the first one that carries the choice is
+        // newer than any stale one. Only a tap that landed nowhere — no
+        // queued row, no recorded choice — clears it now.
+        let queued = rows?.contains { $0.commentAction == label } ?? false
+        if !queued, fresh?.chosenAction != label, enqueueingAction == label { enqueueingAction = nil }
+    }
+
+    /// Hands the in-flight tap over to the journal once the item stream
+    /// reports it as the choice — or drops it when the item stops offering
+    /// the label (the agent replaced the actions; the tap is re-sent as a
+    /// typed reply).
+    private func settleEnqueueingAction(with fresh: TrackerItem?) {
+        guard let pending = enqueueingAction else { return }
+        if fresh?.chosenAction == pending || !(fresh?.offeredActions.contains(pending) ?? false) {
+            enqueueingAction = nil
+        }
     }
 
     /// "Attach a file/photo" — distinct from `submitComment(attachments:)`
